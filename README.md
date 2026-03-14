@@ -98,7 +98,7 @@ contact = "you@example.com"   # required by MusicBrainz API policy
 
 [artwork]
 min_dimension = 1000          # minimum cover art width and height in pixels
-max_bytes = 1_000_000         # maximum cover art file size (1 MB)
+max_bytes = 2_000_000         # maximum cover art file size (1 MB)
 
 [library]
 # Variables: {artist} {album_artist} {album} {year} {track} {disc} {title} {ext}

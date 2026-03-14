@@ -76,8 +76,8 @@ class LibraryConfig:
 @dataclass
 class BandcampConfig:
     username: str
-    cookie_file: Path | None    # if set, bypasses interactive login
-    format: str                 # e.g. "mp3-v0", "mp3-320", "flac"
+    cookie_file: Path | None  # if set, bypasses interactive login
+    format: str  # e.g. "mp3-v0", "mp3-320", "flac"
     poll_interval_minutes: int  # 0 = manual only
 
 

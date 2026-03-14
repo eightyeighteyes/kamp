@@ -42,7 +42,9 @@ def extract(path: Path) -> Path:
 
     if not _has_audio(dest):
         shutil.rmtree(dest)
-        raise ExtractionError(f"ZIP {path} contained no supported audio files (.mp3, .m4a)")
+        raise ExtractionError(
+            f"ZIP {path} contained no supported audio files (.mp3, .m4a)"
+        )
 
     path.unlink()
     logger.info("Deleted original ZIP %s", path)

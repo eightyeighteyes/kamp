@@ -21,10 +21,10 @@ from tune_shifter.bandcamp import (
 )
 from tune_shifter.config import BandcampConfig
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _bc_config(tmp_path: Path) -> BandcampConfig:
     return BandcampConfig(
@@ -37,6 +37,7 @@ def _bc_config(tmp_path: Path) -> BandcampConfig:
 
 def _make_pagedata_html(blob: dict[str, Any]) -> str:
     import html as html_lib
+
     encoded = html_lib.escape(json.dumps(blob), quote=True)
     return f'<div id="pagedata" data-blob="{encoded}"></div>'
 
@@ -67,7 +68,9 @@ def _item(
 def _download_links(items: list[dict[str, Any]]) -> dict[int, str]:
     """Fake collection-page DOM link extraction result."""
     return {
-        item["sale_item_id"]: f"https://bandcamp.com/download?sitem_id={item['sale_item_id']}"
+        item[
+            "sale_item_id"
+        ]: f"https://bandcamp.com/download?sitem_id={item['sale_item_id']}"
         for item in items
     }
 
@@ -143,6 +146,7 @@ def _make_playwright_mock(
 # State helpers
 # ---------------------------------------------------------------------------
 
+
 class TestState:
     def test_load_missing_returns_empty(self, tmp_path: Path) -> None:
         assert _load_state(tmp_path / "nonexistent.json") == {}
@@ -161,6 +165,7 @@ class TestState:
 # ---------------------------------------------------------------------------
 # _validate_session
 # ---------------------------------------------------------------------------
+
 
 class TestValidateSession:
     def test_missing_file_returns_false(self, tmp_path: Path) -> None:
@@ -226,6 +231,7 @@ class TestValidateSession:
 # sync_new_purchases
 # ---------------------------------------------------------------------------
 
+
 class TestSyncNewPurchases:
     def _run(
         self,
@@ -287,7 +293,9 @@ class TestSyncNewPurchases:
         items = [_item(99)]
         pw_mock = _make_playwright_mock(items)
 
-        def fake_download(item: dict[str, Any], bc_config: BandcampConfig, staging_dir: Path, sf: Path) -> Path:
+        def fake_download(
+            item: dict[str, Any], bc_config: BandcampConfig, staging_dir: Path, sf: Path
+        ) -> Path:
             staging_dir.mkdir(parents=True, exist_ok=True)
             path = staging_dir / f"{item['sale_item_id']}.zip"
             path.write_bytes(b"fake")
@@ -309,7 +317,9 @@ class TestSyncNewPurchases:
         config = _bc_config(tmp_path)
         call_num = 0
 
-        def fake_download(item: dict[str, Any], bc_config: BandcampConfig, staging_dir: Path, sf: Path) -> Path:
+        def fake_download(
+            item: dict[str, Any], bc_config: BandcampConfig, staging_dir: Path, sf: Path
+        ) -> Path:
             nonlocal call_num
             call_num += 1
             staging_dir.mkdir(parents=True, exist_ok=True)
@@ -344,7 +354,9 @@ class TestSyncNewPurchases:
         pw_mock = _make_playwright_mock(items)
         call_num = 0
 
-        def fake_download(item: dict[str, Any], bc_config: BandcampConfig, staging_dir: Path, sf: Path) -> Path:
+        def fake_download(
+            item: dict[str, Any], bc_config: BandcampConfig, staging_dir: Path, sf: Path
+        ) -> Path:
             nonlocal call_num
             call_num += 1
             if call_num == 1:
@@ -391,7 +403,9 @@ class TestSyncNewPurchases:
         pw.__exit__ = MagicMock(return_value=False)
         pw_mock = MagicMock(return_value=pw)
 
-        def fake_download(item: dict[str, Any], bc_config: BandcampConfig, staging_dir: Path, sf: Path) -> Path:
+        def fake_download(
+            item: dict[str, Any], bc_config: BandcampConfig, staging_dir: Path, sf: Path
+        ) -> Path:
             staging_dir.mkdir(parents=True, exist_ok=True)
             path = staging_dir / f"{item['sale_item_id']}.zip"
             path.write_bytes(b"fake")
@@ -410,6 +424,7 @@ class TestSyncNewPurchases:
 # ---------------------------------------------------------------------------
 # mark_collection_synced
 # ---------------------------------------------------------------------------
+
 
 class TestMarkCollectionSynced:
     def test_marks_all_items_without_downloading(self, tmp_path: Path) -> None:

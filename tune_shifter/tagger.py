@@ -114,7 +114,9 @@ def _search_release(artist: str, album: str) -> ReleaseInfo:
 
     releases: list[dict[str, Any]] = result.get("release-list", [])
     if not releases:
-        raise TaggingError(f"No MusicBrainz results for artist={artist!r} album={album!r}")
+        raise TaggingError(
+            f"No MusicBrainz results for artist={artist!r} album={album!r}"
+        )
 
     best = max(releases, key=lambda r: int(r.get("ext:score", 0)))
     return _parse_release(best)

@@ -44,7 +44,9 @@ SAMPLE_RELEASE: dict[str, Any] = {
 }
 
 
-def _make_mp3(path: Path, artist: str = "Old Artist", album: str = "Old Album", track: int = 1) -> None:
+def _make_mp3(
+    path: Path, artist: str = "Old Artist", album: str = "Old Album", track: int = 1
+) -> None:
     """Write a minimal ID3-tagged MP3 stub."""
     tags = id3.ID3()
     tags["TPE1"] = id3.TPE1(encoding=3, text=artist)
@@ -55,7 +57,9 @@ def _make_mp3(path: Path, artist: str = "Old Artist", album: str = "Old Album", 
     tags.save(str(path))
 
 
-def _make_m4a(path: Path, artist: str = "Old Artist", album: str = "Old Album", track: int = 1) -> None:
+def _make_m4a(
+    path: Path, artist: str = "Old Artist", album: str = "Old Album", track: int = 1
+) -> None:
     """Write a minimal M4A stub — we can't easily make a real one, so mock mutagen."""
     path.write_bytes(b"\x00" * 32)
 
@@ -63,6 +67,7 @@ def _make_m4a(path: Path, artist: str = "Old Artist", album: str = "Old Album", 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestTagDirectory:
     def test_raises_on_no_audio_files(self, tmp_path: Path) -> None:
@@ -74,8 +79,11 @@ class TestTagDirectory:
         _make_mp3(mp3)
 
         import musicbrainzngs
+
         with patch.object(
-            musicbrainzngs, "search_releases", side_effect=musicbrainzngs.WebServiceError("network error")
+            musicbrainzngs,
+            "search_releases",
+            side_effect=musicbrainzngs.WebServiceError("network error"),
         ):
             with pytest.raises(TaggingError, match="MusicBrainz search failed"):
                 tag_directory(tmp_path, [mp3])
@@ -111,10 +119,22 @@ class TestTagDirectory:
 
         multi_result: dict[str, Any] = {
             "release-list": [
-                {"id": "low", "title": "Low Score", "date": "", "ext:score": "50",
-                 "artist-credit": [{"artist": {"name": "A"}}], "medium-list": []},
-                {"id": "high", "title": "High Score", "date": "2021", "ext:score": "99",
-                 "artist-credit": [{"artist": {"name": "B"}}], "medium-list": []},
+                {
+                    "id": "low",
+                    "title": "Low Score",
+                    "date": "",
+                    "ext:score": "50",
+                    "artist-credit": [{"artist": {"name": "A"}}],
+                    "medium-list": [],
+                },
+                {
+                    "id": "high",
+                    "title": "High Score",
+                    "date": "2021",
+                    "ext:score": "99",
+                    "artist-credit": [{"artist": {"name": "B"}}],
+                    "medium-list": [],
+                },
             ]
         }
 

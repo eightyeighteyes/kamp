@@ -61,9 +61,7 @@ class Syncer:
             state_file=state_file,
         )
         if paths:
-            logger.info(
-                "Sync complete: %d file(s) downloaded to staging.", len(paths)
-            )
+            logger.info("Sync complete: %d file(s) downloaded to staging.", len(paths))
         else:
             logger.info("Sync complete: nothing new.")
 

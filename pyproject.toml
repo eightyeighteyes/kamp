@@ -15,6 +15,9 @@ dependencies = [
     "playwright>=1.44",
 ]
 
+[tool.setuptools.packages.find]
+include = ["tune_shifter*"]
+
 [project.scripts]
 tune-shifter = "tune_shifter.__main__:main"
 
@@ -30,6 +33,7 @@ dev = [
 
 [tool.black]
 line-length = 88
+target-version = ["py311"]
 
 [tool.mypy]
 strict = true

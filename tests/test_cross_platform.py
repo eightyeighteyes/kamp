@@ -7,22 +7,24 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 # ---------------------------------------------------------------------------
 # Config path
 # ---------------------------------------------------------------------------
+
 
 class TestDefaultConfigPath:
     def test_posix_uses_xdg_config(self) -> None:
         with patch.object(sys, "platform", "linux"):
             # Re-run the function directly to avoid module-level caching
             from tune_shifter.config import _default_config_path
+
             path = _default_config_path()
         assert path == Path.home() / ".config" / "tune-shifter" / "config.toml"
 
     def test_macos_uses_xdg_config(self) -> None:
         with patch.object(sys, "platform", "darwin"):
             from tune_shifter.config import _default_config_path
+
             path = _default_config_path()
         assert path == Path.home() / ".config" / "tune-shifter" / "config.toml"
 
@@ -33,6 +35,7 @@ class TestDefaultConfigPath:
             patch.dict("os.environ", {"APPDATA": fake_appdata}),
         ):
             from tune_shifter.config import _default_config_path
+
             path = _default_config_path()
         assert path == Path(fake_appdata) / "tune-shifter" / "config.toml"
 
@@ -42,13 +45,17 @@ class TestDefaultConfigPath:
             patch.dict("os.environ", {}, clear=True),
         ):
             from tune_shifter.config import _default_config_path
+
             path = _default_config_path()
-        assert path == Path.home() / "AppData" / "Roaming" / "tune-shifter" / "config.toml"
+        assert (
+            path == Path.home() / "AppData" / "Roaming" / "tune-shifter" / "config.toml"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Signal handling
 # ---------------------------------------------------------------------------
+
 
 class TestSignalHandling:
     def _run_main_signals(self, has_sigterm: bool) -> list[int]:
@@ -72,7 +79,9 @@ class TestSignalHandling:
                 )
                 mock_signal_mod.signal = fake_signal
                 # hasattr(signal, "SIGTERM") must return False
-                type(mock_signal_mod).__contains__ = lambda self, item: item != "SIGTERM"
+                type(mock_signal_mod).__contains__ = (
+                    lambda self, item: item != "SIGTERM"
+                )
 
             # Directly exercise the signal registration logic
             watcher = MagicMock()

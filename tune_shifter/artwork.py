@@ -35,10 +35,16 @@ def fetch_and_embed(
     """
     image_bytes = _fetch_cover(mbid, min_dimension, max_bytes)
     if image_bytes is None:
-        logger.warning("No qualifying cover art found for release %s — skipping artwork", mbid)
+        logger.warning(
+            "No qualifying cover art found for release %s — skipping artwork", mbid
+        )
         return
 
-    logger.info("Embedding cover art (%d bytes) into %d file(s)", len(image_bytes), len(audio_files))
+    logger.info(
+        "Embedding cover art (%d bytes) into %d file(s)",
+        len(image_bytes),
+        len(audio_files),
+    )
     for path in audio_files:
         _embed(path, image_bytes)
 
@@ -50,7 +56,9 @@ def _fetch_cover(mbid: str, min_dimension: int, max_bytes: int) -> bytes | None:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as exc:
-        raise ArtworkError(f"Could not fetch cover art listing for {mbid}: {exc}") from exc
+        raise ArtworkError(
+            f"Could not fetch cover art listing for {mbid}: {exc}"
+        ) from exc
 
     listing: dict[str, Any] = resp.json()
     images: list[dict[str, Any]] = listing.get("images", [])
@@ -74,7 +82,9 @@ def _fetch_cover(mbid: str, min_dimension: int, max_bytes: int) -> bytes | None:
         raw = img_resp.content
 
         if len(raw) > max_bytes:
-            logger.debug("Skipping image %s: %d bytes > %d limit", image_url, len(raw), max_bytes)
+            logger.debug(
+                "Skipping image %s: %d bytes > %d limit", image_url, len(raw), max_bytes
+            )
             continue
 
         try:
@@ -90,7 +100,9 @@ def _fetch_cover(mbid: str, min_dimension: int, max_bytes: int) -> bytes | None:
             )
             continue
 
-        logger.info("Selected cover art: %s (%dx%d, %d bytes)", image_url, w, h, len(raw))
+        logger.info(
+            "Selected cover art: %s (%dx%d, %d bytes)", image_url, w, h, len(raw)
+        )
         return raw
 
     return None

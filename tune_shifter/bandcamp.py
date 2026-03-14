@@ -52,6 +52,7 @@ class BandcampAPIError(Exception):
 # Public entry points
 # ---------------------------------------------------------------------------
 
+
 def mark_collection_synced(
     bc_config: BandcampConfig,
     state_file: Path,
@@ -121,8 +122,7 @@ def sync_new_purchases(
         collection = _fetch_collection(page, fan_id)
 
         new_items = [
-            item for item in collection
-            if str(item["sale_item_id"]) not in state
+            item for item in collection if str(item["sale_item_id"]) not in state
         ]
 
         if not new_items:
@@ -175,6 +175,7 @@ def sync_new_purchases(
 # Session management
 # ---------------------------------------------------------------------------
 
+
 def _session_file() -> Path:
     return _state_dir() / "bandcamp_session.json"
 
@@ -219,11 +220,14 @@ def _validate_session(session_file: Path) -> bool:
     # Step 1: check for a non-expired js_logged_in=1 cookie.
     now = time.time()
     cookies: list[dict[str, Any]] = state.get("cookies", [])
+
     def _cookie_valid(c: dict[str, Any]) -> bool:
         if c.get("name") != "js_logged_in" or c.get("value") != "1":
             return False
         expires = c.get("expires", -1)
-        return expires < 0 or expires > now  # expires < 0 means session cookie (never expires)
+        return (
+            expires < 0 or expires > now
+        )  # expires < 0 means session cookie (never expires)
 
     logged_in = any(_cookie_valid(c) for c in cookies)
     if not logged_in:
@@ -259,7 +263,9 @@ def _run_interactive_login(session_file: Path) -> None:
         browser = p.chromium.launch(headless=False)
         context = browser.new_context()
         page = context.new_page()
-        page.goto("https://bandcamp.com/login", wait_until="domcontentloaded", timeout=30_000)
+        page.goto(
+            "https://bandcamp.com/login", wait_until="domcontentloaded", timeout=30_000
+        )
 
         # Wait until Bandcamp redirects away from the login page (login completed).
         page.wait_for_url(
@@ -295,15 +301,17 @@ def _session_from_cookie_file(cookie_file: Path) -> Path:
                     expires = float(parts[4])
                 except ValueError:
                     expires = -1.0
-                cookies.append({
-                    "name": parts[5],
-                    "value": parts[6],
-                    "domain": parts[0],
-                    "path": parts[2],
-                    "expires": expires,
-                    "httpOnly": False,
-                    "secure": parts[3].upper() == "TRUE",
-                })
+                cookies.append(
+                    {
+                        "name": parts[5],
+                        "value": parts[6],
+                        "domain": parts[0],
+                        "path": parts[2],
+                        "expires": expires,
+                        "httpOnly": False,
+                        "secure": parts[3].upper() == "TRUE",
+                    }
+                )
     except OSError as exc:
         raise CookieError(f"Could not read cookie file {cookie_file}: {exc}") from exc
 
@@ -322,6 +330,7 @@ def _session_from_cookie_file(cookie_file: Path) -> Path:
 # ---------------------------------------------------------------------------
 # Fan ID and collection
 # ---------------------------------------------------------------------------
+
 
 def _get_fan_id_from_page(page: Any, username: str) -> int:
     url = f"https://bandcamp.com/{username}"
@@ -370,8 +379,7 @@ def _get_download_links(
     prev_height = 0
 
     while True:
-        links: dict[int, str] = page.evaluate(
-            """() => {
+        links: dict[int, str] = page.evaluate("""() => {
                 const out = {};
                 document.querySelectorAll(
                     'a[href*="bandcamp.com/download?"][href*="sitem_id="]'
@@ -380,8 +388,7 @@ def _get_download_links(
                     if (m) out[parseInt(m[1])] = a.href;
                 });
                 return out;
-            }"""
-        )
+            }""")
         for raw_id, url in links.items():
             iid = int(raw_id)
             if iid in item_ids:
@@ -442,6 +449,7 @@ def _paginate(page: Any, endpoint: str, fan_id: int) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
+
 
 def _download_item(
     item: dict[str, Any],
@@ -534,9 +542,7 @@ def _browser_download(
         if temp_path is None:
             context.close()
             browser.close()
-            raise BandcampAPIError(
-                f"Download did not complete for {redownload_url}"
-            )
+            raise BandcampAPIError(f"Download did not complete for {redownload_url}")
 
         shutil.move(str(temp_path), str(dest))
         context.close()
@@ -546,6 +552,7 @@ def _browser_download(
 # ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
+
 
 def _load_state(state_file: Path) -> dict[str, float]:
     if not state_file.exists():

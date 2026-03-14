@@ -8,14 +8,20 @@ from unittest.mock import MagicMock, patch
 import mutagen.id3 as id3
 import pytest
 
-from tune_shifter.config import ArtworkConfig, Config, LibraryConfig, MusicBrainzConfig, PathsConfig
+from tune_shifter.config import (
+    ArtworkConfig,
+    Config,
+    LibraryConfig,
+    MusicBrainzConfig,
+    PathsConfig,
+)
 from tune_shifter.pipeline import run
 from tune_shifter.tagger import ReleaseInfo, TrackInfo
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def config(tmp_path: Path) -> Config:
@@ -68,8 +74,16 @@ MB_SEARCH_RESULT: dict[str, Any] = {
                 {
                     "position": "1",
                     "track-list": [
-                        {"number": "1", "position": "1", "recording": {"title": "First Track"}},
-                        {"number": "2", "position": "2", "recording": {"title": "Second Track"}},
+                        {
+                            "number": "1",
+                            "position": "1",
+                            "recording": {"title": "First Track"},
+                        },
+                        {
+                            "number": "2",
+                            "position": "2",
+                            "recording": {"title": "Second Track"},
+                        },
                     ],
                 }
             ],
@@ -81,6 +95,7 @@ MB_SEARCH_RESULT: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestPipelineRun:
     def test_zip_lands_in_library(self, tmp_path: Path, config: Config) -> None:
@@ -118,7 +133,9 @@ class TestPipelineRun:
         library_files = list(config.paths.library.rglob("*.mp3"))
         assert len(library_files) == 2
 
-    def test_quarantine_on_extraction_failure(self, tmp_path: Path, config: Config) -> None:
+    def test_quarantine_on_extraction_failure(
+        self, tmp_path: Path, config: Config
+    ) -> None:
         config.paths.staging.mkdir(parents=True)
 
         bad_zip = config.paths.staging / "bad.zip"
@@ -131,7 +148,9 @@ class TestPipelineRun:
         quarantined = list(errors_dir.iterdir())
         assert len(quarantined) == 1
 
-    def test_quarantine_on_tagging_failure(self, tmp_path: Path, config: Config) -> None:
+    def test_quarantine_on_tagging_failure(
+        self, tmp_path: Path, config: Config
+    ) -> None:
         config.paths.staging.mkdir(parents=True)
 
         album_dir = config.paths.staging / "mystery-album"

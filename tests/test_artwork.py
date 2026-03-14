@@ -10,10 +10,10 @@ from PIL import Image
 
 from tune_shifter.artwork import ArtworkError, fetch_and_embed
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_jpeg(width: int, height: int) -> bytes:
     """Return bytes of a real JPEG with the given dimensions."""
@@ -24,11 +24,7 @@ def _make_jpeg(width: int, height: int) -> bytes:
 
 
 def _listing_response(image_url: str) -> dict:
-    return {
-        "images": [
-            {"image": image_url, "front": True, "back": False}
-        ]
-    }
+    return {"images": [{"image": image_url, "front": True, "back": False}]}
 
 
 def _mock_requests_get(listing: dict, image_bytes: bytes) -> MagicMock:
@@ -52,6 +48,7 @@ def _mock_requests_get(listing: dict, image_bytes: bytes) -> MagicMock:
 
 def _make_mp3(path: Path) -> None:
     import mutagen.id3 as id3
+
     tags = id3.ID3()
     path.write_bytes(b"\xff\xfb" * 64)
     tags.save(str(path))
@@ -60,6 +57,7 @@ def _make_mp3(path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestFetchAndEmbed:
     def test_embeds_qualifying_jpeg_in_mp3(self, tmp_path: Path) -> None:
@@ -74,6 +72,7 @@ class TestFetchAndEmbed:
             fetch_and_embed("abc-123", [mp3], min_dimension=1000, max_bytes=5_000_000)
 
         import mutagen.id3 as id3
+
         tags = id3.ID3(str(mp3))
         assert any(k.startswith("APIC") for k in tags)
 
@@ -90,6 +89,7 @@ class TestFetchAndEmbed:
             fetch_and_embed("abc-123", [mp3], min_dimension=1000, max_bytes=5_000_000)
 
         import mutagen.id3 as id3
+
         tags = id3.ID3(str(mp3))
         assert not any(k.startswith("APIC") for k in tags)
 
@@ -106,6 +106,7 @@ class TestFetchAndEmbed:
             fetch_and_embed("abc-123", [mp3], min_dimension=1000, max_bytes=1)
 
         import mutagen.id3 as id3
+
         tags = id3.ID3(str(mp3))
         assert not any(k.startswith("APIC") for k in tags)
 

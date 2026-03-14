@@ -16,7 +16,7 @@ from .pipeline import run
 logger = logging.getLogger(__name__)
 
 _SETTLE_SECONDS = 2.0  # wait for file to stop growing before processing
-_POLL_INTERVAL = 0.5   # how often to check file size during settle
+_POLL_INTERVAL = 0.5  # how often to check file size during settle
 
 
 class _StagingHandler(FileSystemEventHandler):

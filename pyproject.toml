@@ -15,6 +15,9 @@ dependencies = [
     "playwright>=1.44",
 ]
 
+[tool.setuptools.packages.find]
+include = ["tune_shifter*"]
+
 [project.scripts]
 tune-shifter = "tune_shifter.__main__:main"
 

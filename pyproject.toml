@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tune-shifter"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "watchdog>=4.0",
+    "musicbrainzngs>=0.7",
+    "mutagen>=1.47",
+    "requests>=2.31",
+    "Pillow>=10.0",
+    "playwright>=1.44",
+]
+
+[project.scripts]
+tune-shifter = "tune_shifter.__main__:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "mypy>=1.9",
+    "black>=24.0",
+    "types-requests>=2.31",
+    "types-Pillow>=10.0",
+]
+
+[tool.black]
+line-length = 88
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+
+[[tool.mypy.overrides]]
+# musicbrainzngs ships no type stubs
+module = ["musicbrainzngs", "musicbrainzngs.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tune_shifter.__main__"]
+disable_error_code = ["import-untyped"]
+
+[[tool.mypy.overrides]]
+# mutagen has partial stubs that don't cover ID3 frame classes or MP4 methods;
+# silence the resulting errors in modules that rely on it heavily.
+module = ["tune_shifter.tagger", "tune_shifter.mover", "tune_shifter.artwork"]
+disable_error_code = ["no-untyped-call", "attr-defined", "unused-ignore"]
+
+[[tool.mypy.overrides]]
+# playwright ships no type stubs
+module = [
+    "playwright",
+    "playwright.*",
+    "tune_shifter.bandcamp",
+    "tune_shifter.syncer",
+]
+ignore_missing_imports = true
+disable_error_code = [
+    "import-untyped", "no-untyped-call", "attr-defined",
+    "unused-ignore", "var-annotated", "type-arg", "no-any-return",
+]

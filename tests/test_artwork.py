@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
-from tune_shifter.artwork import ArtworkError, fetch_and_embed
+from tune_shifter.artwork import ArtworkError, fetch_and_embed, find_local_artwork
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -198,3 +198,108 @@ class TestFetchAndEmbed:
 
         assert "covr" in mock_tags
         mock_mp4.save.assert_called_once()
+
+
+class TestLocalArtwork:
+    def test_uses_local_cover_jpg_when_qualifying(self, tmp_path: Path) -> None:
+        """A qualifying cover.jpg in the directory is embedded with no network calls."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        cover = tmp_path / "cover.jpg"
+        cover.write_bytes(_make_jpeg(1200, 1200))
+
+        with patch("tune_shifter.artwork.requests.get") as mock_get:
+            fetch_and_embed(
+                "abc-123",
+                [mp3],
+                min_dimension=1000,
+                max_bytes=5_000_000,
+                directory=tmp_path,
+            )
+
+        mock_get.assert_not_called()
+        import mutagen.id3 as id3
+
+        tags = id3.ID3(str(mp3))
+        assert any(k.startswith("APIC") for k in tags)
+
+    def test_falls_back_to_online_when_local_too_small(self, tmp_path: Path) -> None:
+        """A sub-minimum local image triggers the online fallback."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        cover = tmp_path / "cover.jpg"
+        cover.write_bytes(_make_jpeg(500, 500))
+
+        with patch("tune_shifter.artwork.requests.get") as mock_get:
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"images": []}
+            mock_get.return_value = resp
+
+            fetch_and_embed(
+                "abc-123",
+                [mp3],
+                min_dimension=1000,
+                max_bytes=5_000_000,
+                directory=tmp_path,
+            )
+
+        assert mock_get.called
+
+    def test_resizes_oversized_local_art(self, tmp_path: Path) -> None:
+        """Local art exceeding max_bytes is re-encoded to fit within the limit."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        cover = tmp_path / "cover.jpg"
+        # Write a high-quality large JPEG
+        large_jpeg = _make_jpeg(2000, 2000)
+        cover.write_bytes(large_jpeg)
+        max_bytes = len(large_jpeg) // 2  # force re-encoding
+
+        with patch("tune_shifter.artwork.requests.get") as mock_get:
+            fetch_and_embed(
+                "abc-123",
+                [mp3],
+                min_dimension=1000,
+                max_bytes=max_bytes,
+                directory=tmp_path,
+            )
+
+        mock_get.assert_not_called()
+        import mutagen.id3 as id3
+
+        tags = id3.ID3(str(mp3))
+        apic_keys = [k for k in tags if k.startswith("APIC")]
+        assert apic_keys
+        embedded_bytes = tags[apic_keys[0]].data
+        assert len(embedded_bytes) <= max_bytes
+
+    def test_prefers_cover_jpg_over_other_images(self, tmp_path: Path) -> None:
+        """cover.jpg is chosen over a non-preferred filename."""
+        (tmp_path / "photo.jpg").write_bytes(_make_jpeg(1200, 1200))
+        (tmp_path / "cover.jpg").write_bytes(_make_jpeg(1200, 1200))
+
+        result = find_local_artwork(tmp_path)
+        assert result is not None
+        assert result.name == "cover.jpg"
+
+    def test_no_local_art_falls_back_to_online(self, tmp_path: Path) -> None:
+        """A directory with no images triggers the online artwork fetch."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+
+        with patch("tune_shifter.artwork.requests.get") as mock_get:
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"images": []}
+            mock_get.return_value = resp
+
+            fetch_and_embed(
+                "abc-123",
+                [mp3],
+                min_dimension=1000,
+                max_bytes=5_000_000,
+                directory=tmp_path,
+            )
+
+        assert mock_get.called

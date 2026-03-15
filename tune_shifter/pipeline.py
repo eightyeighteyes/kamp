@@ -53,6 +53,7 @@ def run(path: Path, config: Config) -> None:
             min_dimension=config.artwork.min_dimension,
             max_bytes=config.artwork.max_bytes,
             release_group_mbid=release.release_group_mbid,
+            directory=directory,
         )
     except ArtworkError as exc:
         # Artwork failure is non-fatal: log and continue

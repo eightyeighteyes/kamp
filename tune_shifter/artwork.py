@@ -17,9 +17,85 @@ logger = logging.getLogger(__name__)
 COVER_ART_ARCHIVE_URL = "https://coverartarchive.org/release/{mbid}"
 RELEASE_GROUP_ART_URL = "https://coverartarchive.org/release-group/{mbid}"
 
+_PREFERRED_ART_NAMES = ("cover", "folder", "artwork", "front")
+
 
 class ArtworkError(Exception):
     pass
+
+
+def find_local_artwork(directory: Path) -> Path | None:
+    """Return the best image file found directly in *directory*, or None.
+
+    Prefers filenames whose stem contains a recognised art keyword
+    (cover, folder, artwork, front) in that priority order.  Falls back to
+    the alphabetically first image if no keyword matches.
+    """
+    candidates: list[Path] = []
+    for pattern in ("*.jpg", "*.jpeg", "*.png"):
+        candidates.extend(directory.glob(pattern))
+    if not candidates:
+        return None
+    for hint in _PREFERRED_ART_NAMES:
+        for p in sorted(candidates):
+            if hint in p.stem.lower():
+                return p
+    return sorted(candidates)[0]
+
+
+def _load_local_artwork(path: Path, min_dimension: int, max_bytes: int) -> bytes | None:
+    """Load *path* and return qualifying image bytes, resizing if necessary.
+
+    Returns None if the image cannot be opened or its dimensions are below
+    *min_dimension* (caller should fall back to online sources).  If the raw
+    file exceeds *max_bytes*, re-encodes as JPEG at progressively lower quality;
+    if still too large, scales dimensions down to *min_dimension* on the short
+    edge before a final encode.
+    """
+    raw = path.read_bytes()
+    try:
+        img = Image.open(io.BytesIO(raw))
+        w, h = img.size
+    except Exception as exc:
+        logger.debug("Could not open local artwork %s: %s", path, exc)
+        return None
+
+    if w < min_dimension or h < min_dimension:
+        logger.debug(
+            "Local artwork %s too small (%dx%d < %dpx) — will try online",
+            path,
+            w,
+            h,
+            min_dimension,
+        )
+        return None
+
+    if len(raw) <= max_bytes:
+        logger.debug("Using local artwork %s (%dx%d, %d bytes)", path, w, h, len(raw))
+        return raw
+
+    # Re-encode as JPEG at progressively lower quality to fit within max_bytes
+    rgb = img.convert("RGB")
+    for quality in (85, 70, 55, 40):
+        buf = io.BytesIO()
+        rgb.save(buf, format="JPEG", quality=quality)
+        if buf.tell() <= max_bytes:
+            logger.debug(
+                "Re-encoded local artwork %s to %d bytes (quality=%d)",
+                path,
+                buf.tell(),
+                quality,
+            )
+            return buf.getvalue()
+
+    # Quality reduction wasn't enough: scale dimensions down to min_dimension
+    # on the short edge and try one more time at quality=75
+    scale = min_dimension / min(w, h)
+    resized = rgb.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    resized.save(buf, format="JPEG", quality=75)
+    logger.debug("Scaled and re-encoded local artwork %s to %d bytes", path, buf.tell())
+    return buf.getvalue()
 
 
 def fetch_and_embed(
@@ -28,18 +104,30 @@ def fetch_and_embed(
     min_dimension: int,
     max_bytes: int,
     release_group_mbid: str = "",
+    directory: Path | None = None,
 ) -> None:
-    """Download qualifying front cover art and embed it in all audio files.
+    """Embed front cover art into all audio files.
 
-    A qualifying image must be at least *min_dimension* × *min_dimension* pixels
-    and no larger than *max_bytes* bytes.  If the release MBID has no art,
-    falls back to the release-group MBID (which aggregates art across all editions).
-    If no qualifying image is found, logs a warning but does not raise — the
-    pipeline continues without artwork.
+    Checks *directory* for a bundled image first (e.g. cover.jpg from a
+    Bandcamp ZIP).  If no qualifying local image is found, falls back to the
+    MusicBrainz Cover Art Archive (release MBID, then release-group MBID).
+    A qualifying image must be at least *min_dimension* × *min_dimension* px;
+    oversized images are resized to fit within *max_bytes*.  If no art is
+    found at all, logs a warning but does not raise — the pipeline continues.
     """
-    image_bytes = _fetch_cover(
-        COVER_ART_ARCHIVE_URL.format(mbid=mbid), min_dimension, max_bytes
-    )
+    image_bytes: bytes | None = None
+
+    if directory is not None:
+        local = find_local_artwork(directory)
+        if local is not None:
+            image_bytes = _load_local_artwork(local, min_dimension, max_bytes)
+            if image_bytes is not None:
+                logger.info("Using bundled artwork from %s", local)
+
+    if image_bytes is None:
+        image_bytes = _fetch_cover(
+            COVER_ART_ARCHIVE_URL.format(mbid=mbid), min_dimension, max_bytes
+        )
     if image_bytes is None and release_group_mbid:
         logger.debug(
             "No art for release %s; trying release-group %s", mbid, release_group_mbid

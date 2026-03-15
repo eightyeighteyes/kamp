@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0](https://github.com/eightyeighteyes/tune-shifter/compare/v0.4.0...v0.5.0) (2026-03-15)
+
+
+### Features
+
+* interactive first-run configuration setup ([91365a6](https://github.com/eightyeighteyes/tune-shifter/commit/91365a69be44323cae646c878513877dd6425577))
+* interactive first-run configuration setup ([a7f62ac](https://github.com/eightyeighteyes/tune-shifter/commit/a7f62acfa883da8a8bfb086fff5347bd857a0c88))
+
+
+### Documentation
+
+* update USAGE.md for interactive first-run setup ([e318da9](https://github.com/eightyeighteyes/tune-shifter/commit/e318da90095bece1e56ed18dda896e2852fab0ca))
+
 ## [0.4.0](https://github.com/eightyeighteyes/tune-shifter/compare/v0.3.0...v0.4.0) (2026-03-15)
 
 

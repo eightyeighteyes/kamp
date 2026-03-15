@@ -3,6 +3,12 @@
 Uses the unofficial fancollection API (reverse-engineered from Bandcamp's web app)
 and a Playwright-managed browser session for authentication. All endpoints are
 undocumented and may change without notice.
+
+Excluded from coverage (see pyproject.toml [tool.coverage.run] omit list) because
+all meaningful code paths require a live Playwright-managed Chromium instance and
+real Bandcamp credentials. There is no practical way to stub the browser session
+at a granularity that would produce reliable unit tests; correctness is verified
+through manual QA against a real account.
 """
 
 from __future__ import annotations

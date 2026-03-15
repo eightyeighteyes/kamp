@@ -1,4 +1,12 @@
-"""Entry point for the tune-shifter daemon."""
+"""Entry point for the tune-shifter daemon.
+
+Excluded from coverage (see pyproject.toml [tool.coverage.run] omit list) because
+this module is pure CLI/daemon lifecycle glue: argparse dispatch, launchctl subprocess
+calls, and signal handlers. Meaningfully unit-testing it would require spawning
+subprocesses or mocking the entire OS-level daemon lifecycle, with little marginal
+value over the integration tests already covering the underlying modules (Watcher,
+Syncer, Config, etc.).
+"""
 
 from __future__ import annotations
 

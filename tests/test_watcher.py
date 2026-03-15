@@ -12,7 +12,7 @@ from tune_shifter.config import (
     MusicBrainzConfig,
     PathsConfig,
 )
-from tune_shifter.watcher import _StagingHandler
+from tune_shifter.watcher import _StagingHandler, Watcher
 
 
 @pytest.fixture
@@ -164,6 +164,65 @@ class TestOnModified:
             handler.on_modified(self._dir_modified_event(str(config.paths.staging)))
 
         mock_schedule.assert_not_called()
+
+
+class TestStartupScan:
+    def test_existing_directory_is_scheduled_on_start(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A directory already in staging when the daemon starts gets scheduled."""
+        config.paths.staging.mkdir(parents=True, exist_ok=True)
+        (config.paths.staging / "Artist - Album").mkdir()
+
+        scheduled: list[Path] = []
+        monkeypatch.setattr(
+            _StagingHandler, "_schedule", lambda self, p: scheduled.append(p)
+        )
+
+        watcher = Watcher(config)
+        monkeypatch.setattr(watcher._observer, "start", lambda: None)
+        monkeypatch.setattr(watcher._observer, "schedule", lambda *a, **kw: None)
+        watcher.start()
+
+        assert any(p.name == "Artist - Album" for p in scheduled)
+
+    def test_existing_zip_is_scheduled_on_start(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ZIP already in staging when the daemon starts gets scheduled."""
+        config.paths.staging.mkdir(parents=True, exist_ok=True)
+        (config.paths.staging / "album.zip").write_bytes(b"PK")
+
+        scheduled: list[Path] = []
+        monkeypatch.setattr(
+            _StagingHandler, "_schedule", lambda self, p: scheduled.append(p)
+        )
+
+        watcher = Watcher(config)
+        monkeypatch.setattr(watcher._observer, "start", lambda: None)
+        monkeypatch.setattr(watcher._observer, "schedule", lambda *a, **kw: None)
+        watcher.start()
+
+        assert any(p.name == "album.zip" for p in scheduled)
+
+    def test_errors_directory_is_not_scheduled_on_start(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The errors/ subdirectory is not scheduled on startup."""
+        config.paths.staging.mkdir(parents=True, exist_ok=True)
+        (config.paths.staging / "errors").mkdir()
+
+        scheduled: list[Path] = []
+        monkeypatch.setattr(
+            _StagingHandler, "_schedule", lambda self, p: scheduled.append(p)
+        )
+
+        watcher = Watcher(config)
+        monkeypatch.setattr(watcher._observer, "start", lambda: None)
+        monkeypatch.setattr(watcher._observer, "schedule", lambda *a, **kw: None)
+        watcher.start()
+
+        assert not any(p.name == "errors" for p in scheduled)
 
 
 class TestOnCreated:

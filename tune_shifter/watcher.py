@@ -142,6 +142,8 @@ class Watcher:
         self._observer.schedule(self._handler, str(staging), recursive=False)
         self._observer.start()
         logger.info("Watching staging directory: %s", staging)
+        # Process any items already present when the daemon starts.
+        self._handler._scan_staging_root()
 
     def stop(self) -> None:
         self._observer.stop()

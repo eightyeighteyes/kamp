@@ -33,7 +33,7 @@ def _get_version() -> str:
     if _PYPROJECT.exists():
         with open(_PYPROJECT, "rb") as f:
             data = tomllib.load(f)
-        return str(data.get("project", {}).get("version") or "unknown")
+        return str(data.get("project", {}).get("version") or "unknown") + "-dev"
     try:
         return importlib.metadata.version("tune-shifter")
     except importlib.metadata.PackageNotFoundError:

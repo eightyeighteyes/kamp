@@ -7,7 +7,12 @@ import mutagen.id3 as id3
 import mutagen.mp4
 import pytest
 
-from tune_shifter.mover import MoveError, _cleanup_staging, _destination, move_to_library
+from tune_shifter.mover import (
+    MoveError,
+    _cleanup_staging,
+    _destination,
+    move_to_library,
+)
 
 TEMPLATE = "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
 
@@ -116,15 +121,18 @@ class TestM4ADestination:
         m4a = tmp_path / "01.m4a"
         m4a.write_bytes(b"")  # content doesn't matter — MP4 is mocked
 
-        with patch("tune_shifter.mover.mutagen.mp4.MP4", return_value=self._mock_mp4(
-            artist="Artist",
-            album_artist="Album Artist",
-            album="My Album",
-            year="2021",
-            track=3,
-            disc=1,
-            title="My Track",
-        )):
+        with patch(
+            "tune_shifter.mover.mutagen.mp4.MP4",
+            return_value=self._mock_mp4(
+                artist="Artist",
+                album_artist="Album Artist",
+                album="My Album",
+                year="2021",
+                track=3,
+                disc=1,
+                title="My Track",
+            ),
+        ):
             library = tmp_path / "library"
             result = _destination(m4a, library, TEMPLATE)
 
@@ -167,7 +175,14 @@ class TestMoveToLibrary:
         staging = tmp_path / "Artist - Album"
         staging.mkdir()
         mp3 = staging / "01.mp3"
-        _make_mp3(mp3, album_artist="Artist", album="Album", year="2021", track="1", title="Song")
+        _make_mp3(
+            mp3,
+            album_artist="Artist",
+            album="Album",
+            year="2021",
+            track="1",
+            title="Song",
+        )
         library = tmp_path / "library"
         library.mkdir()
 
@@ -182,7 +197,14 @@ class TestMoveToLibrary:
         staging = tmp_path / "Artist - Album"
         staging.mkdir()
         mp3 = staging / "01.mp3"
-        _make_mp3(mp3, album_artist="Artist", album="Album", year="2021", track="1", title="Song")
+        _make_mp3(
+            mp3,
+            album_artist="Artist",
+            album="Album",
+            year="2021",
+            track="1",
+            title="Song",
+        )
         library = tmp_path / "library"
 
         with patch("tune_shifter.mover.shutil.move", side_effect=OSError("disk full")):
@@ -192,7 +214,14 @@ class TestMoveToLibrary:
     def test_template_error_raises_move_error(self, tmp_path: Path) -> None:
         """_destination raises MoveError when the template references a missing key."""
         mp3 = tmp_path / "01.mp3"
-        _make_mp3(mp3, album_artist="Artist", album="Album", year="2021", track="1", title="Song")
+        _make_mp3(
+            mp3,
+            album_artist="Artist",
+            album="Album",
+            year="2021",
+            track="1",
+            title="Song",
+        )
         library = tmp_path / "library"
         bad_template = "{nonexistent_key}.{ext}"
 

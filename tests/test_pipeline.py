@@ -176,9 +176,7 @@ class TestPipelineRun:
 
         assert (config.paths.staging / "errors" / "empty-album").exists()
 
-    def test_artwork_failure_is_nonfatal(
-        self, tmp_path: Path, config: Config
-    ) -> None:
+    def test_artwork_failure_is_nonfatal(self, tmp_path: Path, config: Config) -> None:
         """An ArtworkError is logged as a warning and the pipeline continues."""
         config.paths.staging.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
@@ -207,9 +205,7 @@ class TestPipelineRun:
         # File should have been moved to library despite artwork failure
         assert list(config.paths.library.rglob("*.mp3"))
 
-    def test_quarantine_on_move_failure(
-        self, tmp_path: Path, config: Config
-    ) -> None:
+    def test_quarantine_on_move_failure(self, tmp_path: Path, config: Config) -> None:
         """A MoveError causes the directory to be quarantined."""
         config.paths.staging.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
@@ -241,7 +237,9 @@ class TestPipelineRun:
         item = config.paths.staging / "bad-album"
         item.mkdir()
 
-        with patch("tune_shifter.pipeline.shutil.move", side_effect=OSError("no space")):
+        with patch(
+            "tune_shifter.pipeline.shutil.move", side_effect=OSError("no space")
+        ):
             _quarantine(item, config.paths.staging)
         # Should not raise; errors/ dir was created even if move failed
 

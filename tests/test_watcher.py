@@ -413,7 +413,9 @@ class TestWaitForStableSize:
 
 
 class TestWatcherStopJoin:
-    def test_stop_and_join(self, config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_stop_and_join(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Watcher.stop() and join() delegate to the observer."""
         watcher = Watcher(config)
         monkeypatch.setattr(watcher._observer, "start", lambda: None)

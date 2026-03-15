@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import logging
 import shutil
 import signal
@@ -137,6 +138,16 @@ def _cmd_sync(config: Config, mark_synced: bool = False) -> None:
 
 
 def _cmd_daemon(config: Config) -> None:
+    _logger = logging.getLogger(__name__)
+    pkg_version = importlib.metadata.version("tune-shifter")
+    install_path = Path(__file__).resolve().parent
+    _logger.info(
+        "tune-shifter %s (Python %s, %s)",
+        pkg_version,
+        sys.version.split()[0],
+        install_path,
+    )
+
     watcher = Watcher(config)
     syncer = Syncer(config)
 

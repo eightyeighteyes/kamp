@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,17 @@ import mutagen.id3 as id3
 import mutagen.mp4
 
 logger = logging.getLogger(__name__)
+
+# Matches iTunes-style edition suffixes in album names, e.g. "(Deluxe Edition)",
+# "[Remastered]", "(Super Deluxe Version)".  Stripped before retrying a failed
+# MusicBrainz search so that "Album (Deluxe Edition)" can still match "Album".
+_EDITION_RE = re.compile(
+    r"\s*[\(\[]"
+    r"(deluxe|expanded|remastered|anniversary|special|super deluxe|"
+    r"bonus track|explicit|clean|international)"
+    r"[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
 
 
 class TaggingError(Exception):
@@ -113,6 +125,23 @@ def _search_release(artist: str, album: str) -> ReleaseInfo:
         raise TaggingError(f"MusicBrainz search failed: {exc}") from exc
 
     releases: list[dict[str, Any]] = result.get("release-list", [])
+
+    if not releases:
+        # Retry once with any iTunes edition suffix stripped from the album name
+        # (e.g. "Abbey Road (Super Deluxe Edition)" → "Abbey Road").
+        cleaned = _EDITION_RE.sub("", album).strip()
+        if cleaned != album:
+            logger.debug(
+                "No results for %r; retrying with cleaned name %r", album, cleaned
+            )
+            try:
+                result = musicbrainzngs.search_releases(
+                    artist=artist, release=cleaned, limit=5
+                )
+            except musicbrainzngs.WebServiceError as exc:
+                raise TaggingError(f"MusicBrainz search failed: {exc}") from exc
+            releases = result.get("release-list", [])
+
     if not releases:
         raise TaggingError(
             f"No MusicBrainz results for artist={artist!r} album={album!r}"

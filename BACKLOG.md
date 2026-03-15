@@ -12,7 +12,7 @@ If no bandcamp config exists when sync is one, give the user an interactive prom
 
 ## Bug: Uncaught Attribute Type-Id
 
-Is this a problem?
+Is this a problem?  If so, fix it. If not, put in debug level logging if possible (since it's from a different library).
 
 ```
 26-03-15 12:14:58  INFO      tune_shifter.tagger  Searching MusicBrainz for artist='Earthless' album='Black Heaven'

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tune-shifter"
-version = "0.7.0"
+version = "0.8.0"
 description = "Automated audio library ingest from Bandcamp downloads."
 authors = []
 packages = [{include = "tune_shifter"}]

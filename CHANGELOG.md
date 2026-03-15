@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0](https://github.com/eightyeighteyes/tune-shifter/compare/v0.7.0...v0.8.0) (2026-03-15)
+
+
+### Features
+
+* enforce 95% code coverage in CI ([#26](https://github.com/eightyeighteyes/tune-shifter/issues/26)) ([fe78eb7](https://github.com/eightyeighteyes/tune-shifter/commit/fe78eb720630c97cea03bdec64e3f591109b18e0))
+* migrate from setuptools to Poetry ([#27](https://github.com/eightyeighteyes/tune-shifter/issues/27)) ([7f58471](https://github.com/eightyeighteyes/tune-shifter/commit/7f5847161c25493ad4d857fffc2a204e111ba85b))
+* scan staging directory for existing items on daemon start ([#22](https://github.com/eightyeighteyes/tune-shifter/issues/22)) ([cc4de25](https://github.com/eightyeighteyes/tune-shifter/commit/cc4de255966473bca23f469ce3b332e2cb817ed4))
+
+
+### Bug Fixes
+
+* prevent concurrent pipeline runs on the same staging item ([#24](https://github.com/eightyeighteyes/tune-shifter/issues/24)) ([3177906](https://github.com/eightyeighteyes/tune-shifter/commit/31779064f7e95e887447f50b782e9ede53d264ac))
+* suppress noisy musicbrainzngs INFO logs ([#25](https://github.com/eightyeighteyes/tune-shifter/issues/25)) ([e27d444](https://github.com/eightyeighteyes/tune-shifter/commit/e27d44470a3755f10fe03ad81a697966e428683c))
+
 ## [0.7.0](https://github.com/eightyeighteyes/tune-shifter/compare/v0.6.0...v0.7.0) (2026-03-15)
 
 

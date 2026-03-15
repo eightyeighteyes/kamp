@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.2](https://github.com/eightyeighteyes/tune-shifter/compare/v0.2.1...v0.2.2) (2026-03-15)
+
+
+### Bug Fixes
+
+* homebrew symlink doesn't exist ([046c19d](https://github.com/eightyeighteyes/tune-shifter/commit/046c19d62e3f51df2d11df3840716594d1163b58))
+
 ## [0.2.1](https://github.com/eightyeighteyes/tune-shifter/compare/v0.2.0...v0.2.1) (2026-03-15)
 
 

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import musicbrainzngs
 import mutagen
@@ -42,6 +43,22 @@ class ReleaseInfo:
     album_artist: str
     year: str
     tracks: dict[str, TrackInfo]  # keyed by filename stem (best-effort) or track number
+    # Extended MusicBrainz fields (default to empty so existing callers don't break)
+    artist_sort: str = ""
+    album_artist_sort: str = ""
+    artists: list[str] = field(default_factory=list)
+    artist_mbids: list[str] = field(default_factory=list)
+    album_artist_mbid: str = ""
+    label: str = ""
+    catalog_number: str = ""
+    barcode: str = ""
+    asin: str = ""
+    release_type: str = ""
+    release_status: str = ""
+    release_country: str = ""
+    original_date: str = ""
+    script: str = ""
+    total_discs: int = 1
 
 
 @dataclass
@@ -49,6 +66,8 @@ class TrackInfo:
     number: int
     disc: int
     title: str
+    recording_mbid: str = ""
+    total_tracks: int = 0
 
 
 def configure_musicbrainz(app_name: str, app_version: str, contact: str) -> None:
@@ -123,16 +142,37 @@ def _read_existing_metadata(path: Path) -> tuple[str, str]:
     return artist, album
 
 
+def _mb_call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Call a musicbrainzngs function, retrying on transient errors with exponential backoff."""
+    delay = 1.0
+    max_retries = 3
+    for attempt in range(max_retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except (musicbrainzngs.WebServiceError, musicbrainzngs.NetworkError) as exc:
+            if attempt == max_retries:
+                raise TaggingError(
+                    f"MusicBrainz request failed after {max_retries} retries: {exc}"
+                ) from exc
+            logger.warning(
+                "MusicBrainz request failed (attempt %d/%d), retrying in %gs: %s",
+                attempt + 1,
+                max_retries,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+            delay *= 2
+
+
 def _search_release(artist: str, album: str) -> ReleaseInfo:
     logger.debug("MusicBrainz search: artist=%r release=%r", artist, album)
-    try:
-        result = musicbrainzngs.search_releases(
-            artist=artist,
-            release=album,
-            limit=5,
-        )
-    except musicbrainzngs.WebServiceError as exc:
-        raise TaggingError(f"MusicBrainz search failed: {exc}") from exc
+    result = _mb_call(
+        musicbrainzngs.search_releases,
+        artist=artist,
+        release=album,
+        limit=5,
+    )
 
     releases: list[dict[str, Any]] = result.get("release-list", [])
     logger.debug("MusicBrainz returned %d result(s)", len(releases))
@@ -145,12 +185,12 @@ def _search_release(artist: str, album: str) -> ReleaseInfo:
             logger.debug(
                 "No results for %r; retrying with cleaned name %r", album, cleaned
             )
-            try:
-                result = musicbrainzngs.search_releases(
-                    artist=artist, release=cleaned, limit=5
-                )
-            except musicbrainzngs.WebServiceError as exc:
-                raise TaggingError(f"MusicBrainz search failed: {exc}") from exc
+            result = _mb_call(
+                musicbrainzngs.search_releases,
+                artist=artist,
+                release=cleaned,
+                limit=5,
+            )
             releases = result.get("release-list", [])
 
     if not releases:
@@ -164,13 +204,11 @@ def _search_release(artist: str, album: str) -> ReleaseInfo:
     # search_releases returns minimal data (no full date, no track listings).
     # Fetch the full release to get accurate year and track info.
     logger.debug("Fetching full release details for %s", best_mbid)
-    try:
-        detail = musicbrainzngs.get_release_by_id(
-            best_mbid,
-            includes=["artists", "recordings", "release-groups"],
-        )
-    except musicbrainzngs.WebServiceError as exc:
-        raise TaggingError(f"MusicBrainz release lookup failed: {exc}") from exc
+    detail = _mb_call(
+        musicbrainzngs.get_release_by_id,
+        best_mbid,
+        includes=["artists", "recordings", "release-groups", "labels"],
+    )
 
     return _parse_release(detail["release"])
 
@@ -179,26 +217,51 @@ def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
     mbid: str = raw["id"]
     title: str = raw.get("title", "")
     year: str = raw.get("date", "")[:4]
-    release_group_mbid: str = raw.get("release-group", {}).get("id", "")
 
+    release_group = raw.get("release-group", {})
+    release_group_mbid: str = release_group.get("id", "")
+    release_type: str = release_group.get("primary-type", "")
+    original_date: str = release_group.get("first-release-date", "")
+
+    # Artist credit — each dict entry has .artist.{name, sort-name, id}
     artist_credit = raw.get("artist-credit", [])
-    artist = ""
-    album_artist = ""
-    if artist_credit:
-        first = artist_credit[0]
-        if isinstance(first, dict):
-            artist = first.get("artist", {}).get("name", "")
-            album_artist = artist
+    credits = [c for c in artist_credit if isinstance(c, dict)]
+    artists = [c.get("name") or c.get("artist", {}).get("name", "") for c in credits]
+    artist = " ".join(a for a in artists if a)
+    album_artist = artist
+    artist_sort = " ".join(c.get("artist", {}).get("sort-name", "") for c in credits)
+    album_artist_sort = artist_sort
+    artist_mbids = [c.get("artist", {}).get("id", "") for c in credits]
+    album_artist_mbid = artist_mbids[0] if artist_mbids else ""
+
+    # Label info — first entry wins; label may be absent (e.g. self-released)
+    label_info_list = raw.get("label-info-list", [])
+    label = ""
+    catalog_number = ""
+    if label_info_list:
+        first = label_info_list[0]
+        label = first.get("label", {}).get("name", "") if first.get("label") else ""
+        catalog_number = first.get("catalog-number", "")
+
+    medium_list = raw.get("medium-list", [])
+    total_discs = len(medium_list) or 1
 
     tracks: dict[str, TrackInfo] = {}
-    medium_list = raw.get("medium-list", [])
     for medium in medium_list:
         disc_num = int(medium.get("position", 1))
-        for track_raw in medium.get("track-list", []):
+        track_list = medium.get("track-list", [])
+        total_tracks = len(track_list)
+        for track_raw in track_list:
             track_num = int(track_raw.get("number", track_raw.get("position", 0)))
-            track_title = track_raw.get("recording", {}).get("title", "")
+            recording = track_raw.get("recording", {})
             key = f"{disc_num}-{track_num}"
-            tracks[key] = TrackInfo(number=track_num, disc=disc_num, title=track_title)
+            tracks[key] = TrackInfo(
+                number=track_num,
+                disc=disc_num,
+                title=recording.get("title", ""),
+                recording_mbid=recording.get("id", ""),
+                total_tracks=total_tracks,
+            )
 
     return ReleaseInfo(
         mbid=mbid,
@@ -208,6 +271,21 @@ def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
         album_artist=album_artist,
         year=year,
         tracks=tracks,
+        artist_sort=artist_sort,
+        album_artist_sort=album_artist_sort,
+        artists=artists,
+        artist_mbids=artist_mbids,
+        album_artist_mbid=album_artist_mbid,
+        label=label,
+        catalog_number=catalog_number,
+        barcode=raw.get("barcode", ""),
+        asin=raw.get("asin", ""),
+        release_type=release_type,
+        release_status=raw.get("status", ""),
+        release_country=raw.get("country", ""),
+        original_date=original_date,
+        script=raw.get("text-representation", {}).get("script", ""),
+        total_discs=total_discs,
     )
 
 
@@ -263,6 +341,7 @@ def _write_mp3_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -
     except id3.ID3NoHeaderError:
         tags = id3.ID3()
 
+    # Core tags
     tags["TPE1"] = id3.TPE1(encoding=3, text=release.artist)
     tags["TPE2"] = id3.TPE2(encoding=3, text=release.album_artist)
     tags["TALB"] = id3.TALB(encoding=3, text=release.title)
@@ -271,10 +350,89 @@ def _write_mp3_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -
         encoding=3, desc="MusicBrainz Release Id", text=release.mbid
     )
 
+    # Sort names
+    if release.artist_sort:
+        tags["TSOP"] = id3.TSOP(encoding=3, text=release.artist_sort)
+    if release.album_artist_sort:
+        tags["TSO2"] = id3.TSO2(encoding=3, text=release.album_artist_sort)
+
+    # Multi-value artists (semicolon-joined per Picard convention)
+    if release.artists:
+        tags["TXXX:ARTISTS"] = id3.TXXX(
+            encoding=3, desc="ARTISTS", text="; ".join(release.artists)
+        )
+
+    # MusicBrainz IDs
+    if release.artist_mbids:
+        tags["TXXX:MusicBrainz Artist Id"] = id3.TXXX(
+            encoding=3,
+            desc="MusicBrainz Artist Id",
+            text="; ".join(release.artist_mbids),
+        )
+    if release.album_artist_mbid:
+        tags["TXXX:MusicBrainz Album Artist Id"] = id3.TXXX(
+            encoding=3,
+            desc="MusicBrainz Album Artist Id",
+            text=release.album_artist_mbid,
+        )
+    if release.release_group_mbid:
+        tags["TXXX:MusicBrainz Release Group Id"] = id3.TXXX(
+            encoding=3,
+            desc="MusicBrainz Release Group Id",
+            text=release.release_group_mbid,
+        )
+
+    # Release metadata
+    if release.release_type:
+        tags["TXXX:MusicBrainz Album Type"] = id3.TXXX(
+            encoding=3, desc="MusicBrainz Album Type", text=release.release_type
+        )
+    if release.release_status:
+        tags["TXXX:MusicBrainz Album Status"] = id3.TXXX(
+            encoding=3, desc="MusicBrainz Album Status", text=release.release_status
+        )
+    if release.release_country:
+        tags["TXXX:MusicBrainz Album Release Country"] = id3.TXXX(
+            encoding=3,
+            desc="MusicBrainz Album Release Country",
+            text=release.release_country,
+        )
+    if release.original_date:
+        tags["TDOR"] = id3.TDOR(encoding=3, text=release.original_date)
+    if release.label:
+        tags["TPUB"] = id3.TPUB(encoding=3, text=release.label)
+    if release.catalog_number:
+        tags["TXXX:CATALOGNUMBER"] = id3.TXXX(
+            encoding=3, desc="CATALOGNUMBER", text=release.catalog_number
+        )
+    if release.barcode:
+        tags["TXXX:BARCODE"] = id3.TXXX(
+            encoding=3, desc="BARCODE", text=release.barcode
+        )
+    if release.asin:
+        tags["TXXX:ASIN"] = id3.TXXX(encoding=3, desc="ASIN", text=release.asin)
+    if release.script:
+        tags["TXXX:SCRIPT"] = id3.TXXX(encoding=3, desc="SCRIPT", text=release.script)
+
+    # Track and disc numbers with totals
     if track is not None:
-        tags["TRCK"] = id3.TRCK(encoding=3, text=str(track.number))
-        tags["TPOS"] = id3.TPOS(encoding=3, text=str(track.disc))
+        total_trck = (
+            f"{track.number}/{track.total_tracks}"
+            if track.total_tracks
+            else str(track.number)
+        )
+        total_tpos = (
+            f"{track.disc}/{release.total_discs}"
+            if release.total_discs > 1
+            else str(track.disc)
+        )
+        tags["TRCK"] = id3.TRCK(encoding=3, text=total_trck)
+        tags["TPOS"] = id3.TPOS(encoding=3, text=total_tpos)
         tags["TIT2"] = id3.TIT2(encoding=3, text=track.title)
+        if track.recording_mbid:
+            tags["TXXX:MusicBrainz Track Id"] = id3.TXXX(
+                encoding=3, desc="MusicBrainz Track Id", text=track.recording_mbid
+            )
 
     tags.save(str(path))
     logger.debug("Wrote MP3 tags to %s", path)
@@ -286,18 +444,80 @@ def _write_m4a_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -
         audio.add_tags()
 
     assert audio.tags is not None
+
+    def _ff(value: str) -> list[mutagen.mp4.MP4FreeForm]:
+        """Wrap a string as a single-element MP4FreeForm list."""
+        return [mutagen.mp4.MP4FreeForm(value.encode())]
+
+    # Core tags
     audio.tags["\xa9ART"] = [release.artist]
     audio.tags["aART"] = [release.album_artist]
     audio.tags["\xa9alb"] = [release.title]
     audio.tags["\xa9day"] = [release.year]
-    audio.tags["----:com.apple.iTunes:MusicBrainz Release Id"] = [
-        mutagen.mp4.MP4FreeForm(release.mbid.encode())
-    ]
+    audio.tags["----:com.apple.iTunes:MusicBrainz Release Id"] = _ff(release.mbid)
 
+    # Sort names
+    if release.artist_sort:
+        audio.tags["soar"] = [release.artist_sort]
+    if release.album_artist_sort:
+        audio.tags["soaa"] = [release.album_artist_sort]
+
+    # Multi-value artists
+    if release.artists:
+        audio.tags["----:com.apple.iTunes:ARTISTS"] = _ff("; ".join(release.artists))
+
+    # MusicBrainz IDs
+    if release.artist_mbids:
+        audio.tags["----:com.apple.iTunes:MusicBrainz Artist Id"] = _ff(
+            "; ".join(release.artist_mbids)
+        )
+    if release.album_artist_mbid:
+        audio.tags["----:com.apple.iTunes:MusicBrainz Album Artist Id"] = _ff(
+            release.album_artist_mbid
+        )
+    if release.release_group_mbid:
+        audio.tags["----:com.apple.iTunes:MusicBrainz Release Group Id"] = _ff(
+            release.release_group_mbid
+        )
+
+    # Release metadata
+    if release.release_type:
+        audio.tags["----:com.apple.iTunes:MusicBrainz Album Type"] = _ff(
+            release.release_type
+        )
+    if release.release_status:
+        audio.tags["----:com.apple.iTunes:MusicBrainz Album Status"] = _ff(
+            release.release_status
+        )
+    if release.release_country:
+        audio.tags["----:com.apple.iTunes:MusicBrainz Album Release Country"] = _ff(
+            release.release_country
+        )
+    if release.original_date:
+        audio.tags["----:com.apple.iTunes:ORIGINALDATE"] = _ff(release.original_date)
+        audio.tags["----:com.apple.iTunes:ORIGINALYEAR"] = _ff(
+            release.original_date[:4]
+        )
+    if release.label:
+        audio.tags["----:com.apple.iTunes:LABEL"] = _ff(release.label)
+    if release.catalog_number:
+        audio.tags["----:com.apple.iTunes:CATALOGNUMBER"] = _ff(release.catalog_number)
+    if release.barcode:
+        audio.tags["----:com.apple.iTunes:BARCODE"] = _ff(release.barcode)
+    if release.asin:
+        audio.tags["----:com.apple.iTunes:ASIN"] = _ff(release.asin)
+    if release.script:
+        audio.tags["----:com.apple.iTunes:SCRIPT"] = _ff(release.script)
+
+    # Track and disc numbers with totals
     if track is not None:
-        audio.tags["trkn"] = [(track.number, 0)]
-        audio.tags["disk"] = [(track.disc, 0)]
+        audio.tags["trkn"] = [(track.number, track.total_tracks)]
+        audio.tags["disk"] = [(track.disc, release.total_discs)]
         audio.tags["\xa9nam"] = [track.title]
+        if track.recording_mbid:
+            audio.tags["----:com.apple.iTunes:MusicBrainz Track Id"] = _ff(
+                track.recording_mbid
+            )
 
     audio.save()
     logger.debug("Wrote M4A tags to %s", path)

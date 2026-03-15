@@ -158,6 +158,8 @@ tune-shifter install-service
 Logs are written to `~/.local/share/tune-shifter/daemon.log`.
 
 ```bash
+launchctl unload ~/Library/LaunchAgents/com.tune-shifter.plist   # pause the service
+launchctl load ~/Library/LaunchAgents/com.tune-shifter.plist   # restart the service
 tune-shifter uninstall-service   # remove the service registration
 ```
 

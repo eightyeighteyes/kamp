@@ -4,11 +4,18 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import musicbrainzngs
 import mutagen.id3 as id3
 import mutagen.mp4
 import pytest
 
-from tune_shifter.tagger import ReleaseInfo, TaggingError, TrackInfo, tag_directory
+from tune_shifter.tagger import (
+    ReleaseInfo,
+    TaggingError,
+    TrackInfo,
+    _search_release,
+    tag_directory,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -43,14 +50,38 @@ SAMPLE_RELEASE: dict[str, Any] = {
     ]
 }
 
-# Full release detail returned by get_release_by_id — includes date, tracks, release-group.
+# Full release detail returned by get_release_by_id — includes all extended fields.
 SAMPLE_RELEASE_DETAIL: dict[str, Any] = {
     "release": {
         "id": "abc-123",
         "title": "Great Album",
         "date": "2020-04-01",
-        "artist-credit": [{"artist": {"name": "Cool Artist"}}],
-        "release-group": {"id": "rg-456"},
+        "status": "Official",
+        "country": "US",
+        "barcode": "123456789",
+        "asin": "B08XYZ",
+        "text-representation": {"script": "Latn"},
+        "artist-credit": [
+            {
+                "name": "Cool Artist",
+                "artist": {
+                    "id": "artist-mbid-1",
+                    "name": "Cool Artist",
+                    "sort-name": "Artist, Cool",
+                },
+            }
+        ],
+        "release-group": {
+            "id": "rg-456",
+            "primary-type": "Album",
+            "first-release-date": "2020-04-01",
+        },
+        "label-info-list": [
+            {
+                "label": {"name": "Great Label"},
+                "catalog-number": "GRL-001",
+            }
+        ],
         "medium-list": [
             {
                 "position": "1",
@@ -58,12 +89,12 @@ SAMPLE_RELEASE_DETAIL: dict[str, Any] = {
                     {
                         "number": "1",
                         "position": "1",
-                        "recording": {"title": "First Track"},
+                        "recording": {"id": "rec-111", "title": "First Track"},
                     },
                     {
                         "number": "2",
                         "position": "2",
-                        "recording": {"title": "Second Track"},
+                        "recording": {"id": "rec-222", "title": "Second Track"},
                     },
                 ],
             }
@@ -106,15 +137,14 @@ class TestTagDirectory:
         mp3 = tmp_path / "01.mp3"
         _make_mp3(mp3)
 
-        import musicbrainzngs
-
         with patch.object(
             musicbrainzngs,
             "search_releases",
             side_effect=musicbrainzngs.WebServiceError("network error"),
         ):
-            with pytest.raises(TaggingError, match="MusicBrainz search failed"):
-                tag_directory(tmp_path, [mp3])
+            with patch("tune_shifter.tagger.time.sleep"):
+                with pytest.raises(TaggingError, match="after 3 retries"):
+                    tag_directory(tmp_path, [mp3])
 
     def test_raises_when_no_results(self, tmp_path: Path) -> None:
         mp3 = tmp_path / "01.mp3"
@@ -144,6 +174,19 @@ class TestTagDirectory:
         assert str(tags["TPE1"]) == "Cool Artist"
         assert str(tags["TDRC"]) == "2020"
         assert str(tags["TXXX:MusicBrainz Release Id"]) == "abc-123"
+        # Extended tags
+        assert str(tags["TSOP"]) == "Artist, Cool"
+        assert str(tags["TXXX:MusicBrainz Artist Id"]) == "artist-mbid-1"
+        assert str(tags["TXXX:MusicBrainz Release Group Id"]) == "rg-456"
+        assert str(tags["TXXX:MusicBrainz Album Type"]) == "Album"
+        assert str(tags["TXXX:MusicBrainz Album Status"]) == "Official"
+        assert str(tags["TXXX:MusicBrainz Album Release Country"]) == "US"
+        assert str(tags["TPUB"]) == "Great Label"
+        assert str(tags["TXXX:CATALOGNUMBER"]) == "GRL-001"
+        assert str(tags["TXXX:BARCODE"]) == "123456789"
+        assert str(tags["TDOR"]) == "2020-04-01"
+        assert str(tags["TRCK"]) == "1/2"
+        assert str(tags["TXXX:MusicBrainz Track Id"]) == "rec-111"
 
     def test_selects_highest_score(self, tmp_path: Path) -> None:
         mp3 = tmp_path / "01.mp3"
@@ -281,3 +324,37 @@ class TestTagDirectoryM4a:
         assert initial_tags["\xa9day"] == ["2020"]
         assert "----:com.apple.iTunes:MusicBrainz Release Id" in initial_tags
         mock_mp4.save.assert_called()
+
+
+class TestRetry:
+    def test_retries_on_web_service_error(self, tmp_path: Path) -> None:
+        """_mb_call retries up to 3 times before raising TaggingError."""
+        call_count = 0
+
+        def flaky(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise musicbrainzngs.WebServiceError("503")
+            return SAMPLE_RELEASE
+
+        with patch.object(musicbrainzngs, "search_releases", side_effect=flaky):
+            with patch(
+                "musicbrainzngs.get_release_by_id", return_value=SAMPLE_RELEASE_DETAIL
+            ):
+                with patch("tune_shifter.tagger.time.sleep"):
+                    result = _search_release("Cool Artist", "Great Album")
+
+        assert call_count == 3
+        assert result.mbid == "abc-123"
+
+    def test_raises_after_max_retries(self, tmp_path: Path) -> None:
+        """TaggingError is raised when all retries are exhausted."""
+
+        def always_fail(*args: Any, **kwargs: Any) -> None:
+            raise musicbrainzngs.WebServiceError("503")
+
+        with patch.object(musicbrainzngs, "search_releases", side_effect=always_fail):
+            with patch("tune_shifter.tagger.time.sleep"):
+                with pytest.raises(TaggingError, match="after 3 retries"):
+                    _search_release("Cool Artist", "Great Album")

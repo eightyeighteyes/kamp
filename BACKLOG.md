@@ -1,17 +1,4 @@
 # Backlog
-
-## Optionally Mark Synced on First Bandcamp Sync
-
-*If this is my first time running tune-shifter sync, ask if I've already downloaded all my bandcamp purchases*
-
-If sync is "first run" (bandcamp config is missing), part of the config / onboarding should be asking the user the following question:
-
-> Have you already downloaded your Bandcamp collection (y/n)? [y]
-
-If `y`, then the first run of sync should be `mark-synced`.
-
-If `n`, then the first run of sync should be a normal Bandcamp sync.
-
 ## Process on Start
 
 *When daemon starts, I want everything in the staging folder to be processed*

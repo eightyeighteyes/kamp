@@ -149,6 +149,49 @@ class Config:
         return config
 
     @classmethod
+    def bandcamp_setup(cls, path: Path) -> "Config":
+        """Interactively collect Bandcamp credentials, append to config, and return Config.
+
+        Called when sync is run without a [bandcamp] section present.
+        Appends the new section to the existing file so comments and other
+        settings are preserved.
+        """
+        print("\nNo Bandcamp section found in config. Let's set it up.")
+        print(f"(Adding [bandcamp] to {path})\n")
+
+        # username is required — loop until non-empty
+        username = ""
+        while not username:
+            username = _prompt("Bandcamp username", "")
+            if not username:
+                print("  Username is required.")
+
+        cookie_file_str = _prompt(
+            "Cookie file path (leave blank to use interactive login)", ""
+        )
+        fmt = _prompt("Download format (mp3-v0, mp3-320, flac, …)", "mp3-v0")
+        poll_str = _prompt("Poll interval in minutes (0 = manual sync only)", "0")
+        poll_interval = int(poll_str) if poll_str.isdigit() else 0
+
+        # Build the TOML snippet — omit cookie_file when not provided
+        lines = [
+            "\n[bandcamp]",
+            f'username = "{username}"',
+        ]
+        if cookie_file_str:
+            lines.append(f'cookie_file = "{cookie_file_str}"')
+        lines += [
+            f'format = "{fmt}"',
+            f"poll_interval_minutes = {poll_interval}",
+            "",  # trailing newline
+        ]
+        with open(path, "a") as f:
+            f.write("\n".join(lines))
+
+        print(f"\nBandcamp config saved to {path}\n")
+        return cls.load(path)
+
+    @classmethod
     def load(cls, path: Path = DEFAULT_CONFIG_PATH) -> "Config":
         """Load config from a TOML file, creating it with defaults if absent."""
         if not path.exists():

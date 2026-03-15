@@ -137,7 +137,7 @@ def main() -> None:
     )
 
     if command == "sync":
-        _cmd_sync(config, mark_synced=getattr(args, "mark_synced", False))
+        _cmd_sync(config, args.config, mark_synced=getattr(args, "mark_synced", False))
     else:
         # daemon (with optional CLI overrides)
         if hasattr(args, "staging") and args.staging:
@@ -147,7 +147,18 @@ def main() -> None:
         _cmd_daemon(config)
 
 
-def _cmd_sync(config: Config, mark_synced: bool = False) -> None:
+def _cmd_sync(config: Config, config_path: Path, mark_synced: bool = False) -> None:
+    if config.bandcamp is None:
+        if sys.stdin.isatty():
+            config = Config.bandcamp_setup(config_path)
+        else:
+            print(
+                f"No [bandcamp] section in {config_path}. "
+                "Add one manually or run tune-shifter sync interactively.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     syncer = Syncer(config)
     if mark_synced:
         syncer.mark_synced()

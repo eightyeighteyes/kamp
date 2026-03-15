@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0](https://github.com/eightyeighteyes/tune-shifter/compare/v0.6.0...v0.7.0) (2026-03-15)
+
+
+### Features
+
+* ask mark-synced question on first Bandcamp setup ([#20](https://github.com/eightyeighteyes/tune-shifter/issues/20)) ([a247acd](https://github.com/eightyeighteyes/tune-shifter/commit/a247acd585fa9e3c4af7eed3f21b1c88a7f14662))
+* interactive Bandcamp setup when sync has no config ([#19](https://github.com/eightyeighteyes/tune-shifter/issues/19)) ([24ef672](https://github.com/eightyeighteyes/tune-shifter/commit/24ef6725aa81d87b520cfe20625094c376ad6c7f))
+
+
+### Bug Fixes
+
+* use rmtree to fully remove staging dir after ingest ([#17](https://github.com/eightyeighteyes/tune-shifter/issues/17)) ([c291518](https://github.com/eightyeighteyes/tune-shifter/commit/c29151800ddaf1a90fbf48bf7415a5f91f8d44c0))
+
 ## [0.6.0](https://github.com/eightyeighteyes/tune-shifter/compare/v0.5.0...v0.6.0) (2026-03-15)
 
 

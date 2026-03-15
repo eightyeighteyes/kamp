@@ -1,21 +1,5 @@
 ## Backlog
 
-### Homebrew Installable
-
-*I want to be able to install tune-shifter through homebrew*
-
-A github action process exists to run CI.  CI runs tests and validates formatting.
-
-A github action process exists to make a release.
-
-Releases are published to homebrew.
-
-A user can run `brew install tune-shifter` to download and install tune-shifter.
-
-USAGE.md is displayed after install.
-
-Release Please is used to create a release, including version management and tagging. Poetry's project version should be consistent with the version that Release Please creates.
-
 ### Support Purchases from Apple Music Store
 
 *If I put a folder of .M4A files I purchased in the iTunes store into my staging folder, it should be tagged, imaged, and added to my library.*

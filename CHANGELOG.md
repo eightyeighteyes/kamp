@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+
+---
+
 ## [0.2.0](https://github.com/eightyeighteyes/tune-shifter/compare/v0.1.0...v0.2.0) (2026-03-15)
 
+### Added
+
+- **GitHub Actions CI** — runs `black`, `mypy`, and `pytest` on every push to `main` and on pull requests
+- **Homebrew distribution** — `brew tap eightyeighteyes/tune-shifter && brew install tune-shifter` installs the app; USAGE.md is displayed inline after install via formula `caveats`
+- **Automated releases via Release Please** — merging a Release PR (opened automatically from Conventional Commits) tags the release, builds and attaches the sdist, and syncs the Homebrew formula; `pyproject.toml` version is bumped automatically
 
 ### Features
 
@@ -34,4 +44,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **TOML configuration** — config file written to `~/.config/tune-shifter/config.toml` on first run with sensible defaults; all paths, MusicBrainz contact, artwork constraints, library template, and Bandcamp options are configurable
 - **MP3 and AAC/M4A support**
 
-[0.1.0]: https://github.com/yourname/tune-shifter/releases/tag/v0.1.0
+[Unreleased]: https://github.com/eightyeighteyes/tune-shifter/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/eightyeighteyes/tune-shifter/releases/tag/v0.1.0

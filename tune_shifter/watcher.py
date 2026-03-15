@@ -31,6 +31,8 @@ class _StagingHandler(FileSystemEventHandler):
         self._staging_root = config.paths.staging
         # Track paths being debounced: path → timer
         self._pending: dict[Path, threading.Timer] = {}
+        # Track paths whose pipeline is currently running to prevent double-execution
+        self._in_flight: set[Path] = set()
         self._lock = threading.Lock()
 
     def on_created(self, event: FileSystemEvent) -> None:
@@ -64,8 +66,9 @@ class _StagingHandler(FileSystemEventHandler):
             return
         with self._lock:
             pending_paths = set(self._pending)
+            in_flight_paths = set(self._in_flight)
         for child in children:
-            if child in pending_paths:
+            if child in pending_paths or child in in_flight_paths:
                 continue
             if child.is_dir() and child.name != "errors":
                 self._schedule(child)
@@ -86,6 +89,9 @@ class _StagingHandler(FileSystemEventHandler):
 
     def _schedule(self, path: Path) -> None:
         with self._lock:
+            if path in self._in_flight:
+                logger.debug("Skipping schedule: %s is already being processed", path)
+                return
             existing = self._pending.pop(path, None)
             if existing is not None:
                 existing.cancel()
@@ -97,20 +103,24 @@ class _StagingHandler(FileSystemEventHandler):
     def _process(self, path: Path) -> None:
         with self._lock:
             self._pending.pop(path, None)
-
-        if not path.exists():
-            logger.debug("Path no longer exists, skipping: %s", path)
-            return
-
-        # Wait until file size stops changing (fully written)
-        if path.is_file():
-            _wait_for_stable_size(path)
-
-        logger.info("Triggering pipeline for %s", path)
+            self._in_flight.add(path)
         try:
-            run(path, self._config)
-        except Exception:
-            logger.exception("Unhandled error in pipeline for %s", path)
+            if not path.exists():
+                logger.debug("Path no longer exists, skipping: %s", path)
+                return
+
+            # Wait until file size stops changing (fully written)
+            if path.is_file():
+                _wait_for_stable_size(path)
+
+            logger.info("Triggering pipeline for %s", path)
+            try:
+                run(path, self._config)
+            except Exception:
+                logger.exception("Unhandled error in pipeline for %s", path)
+        finally:
+            with self._lock:
+                self._in_flight.discard(path)
 
 
 def _wait_for_stable_size(path: Path, timeout: float = 60.0) -> None:

@@ -225,6 +225,58 @@ class TestStartupScan:
         assert not any(p.name == "errors" for p in scheduled)
 
 
+class TestInFlight:
+    def test_in_flight_path_is_not_rescheduled(self, config: Config) -> None:
+        """_schedule is a no-op for a path currently being processed."""
+        handler = _make_handler(config)
+        path = config.paths.staging / "my-album"
+        handler._in_flight.add(path)
+
+        handler._schedule(path)
+
+        assert path not in handler._pending
+
+    def test_scan_staging_root_skips_in_flight(self, config: Config) -> None:
+        """_scan_staging_root does not schedule a path that is currently in-flight."""
+        handler = _make_handler(config)
+        album = config.paths.staging / "my-album"
+        album.mkdir()
+        handler._in_flight.add(album)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler._scan_staging_root()
+
+        mock_schedule.assert_not_called()
+
+    def test_in_flight_cleared_after_process(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After _process completes, the path is removed from _in_flight."""
+        handler = _make_handler(config)
+        album = config.paths.staging / "my-album"
+        album.mkdir()
+        monkeypatch.setattr("tune_shifter.watcher.run", lambda path, cfg: None)
+        handler._process(album)
+
+        assert album not in handler._in_flight
+
+    def test_in_flight_cleared_after_process_error(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_in_flight is cleaned up even when run() raises."""
+        handler = _make_handler(config)
+        album = config.paths.staging / "my-album"
+        album.mkdir()
+
+        def _boom(path: Path, cfg: object) -> None:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("tune_shifter.watcher.run", _boom)
+        handler._process(album)  # exception is caught internally
+
+        assert album not in handler._in_flight
+
+
 class TestOnCreated:
     def test_directory_created_in_staging_is_scheduled(self, config: Config) -> None:
         handler = _make_handler(config)

@@ -1,34 +1,4 @@
 # Backlog
-## Bug: Uncaught Attribute Type-Id
-
-Is this a problem?  If so, fix it. If not, put in debug level logging if possible (since it's from a different library).
-
-```
-26-03-15 12:14:58  INFO      tune_shifter.tagger  Searching MusicBrainz for artist='Earthless' album='Black Heaven'
-2026-03-15 12:14:58  INFO      musicbrainzngs  in <ws2:release-group>, uncaught attribute type-id
-2026-03-15 12:14:58  INFO      musicbrainzngs  in <ws2:release-group>, uncaught attribute type-id
-2026-03-15 12:14:58  INFO      musicbrainzngs  in <ws2:release-group>, uncaught attribute type-id
-2026-03-15 12:14:58  INFO      musicbrainzngs  in <ws2:release-group>, uncaught attribute type-id
-2026-03-15 12:14:58  INFO      musicbrainzngs  in <ws2:release-group>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:artist>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:release-group>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:artist>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:label>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:artist>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:recording>, uncaught <first-release-date>
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:artist>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:recording>, uncaught <first-release-date>
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:artist>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:recording>, uncaught <first-release-date>
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:artist>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:recording>, uncaught <first-release-date>
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:artist>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:recording>, uncaught <first-release-date>
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:artist>, uncaught attribute type-id
-2026-03-15 12:14:59  INFO      musicbrainzngs  in <ws2:recording>, uncaught <first-release-date>
-2026-03-15 12:14:59  INFO      tune_shifter.tagger  Matched release: 'Black Heaven' (mbid=b0562a95-2dbf-419a-85d9-eca1d082f682)
-```
-
 ## Optimization: Check existing tags / embedded image to see if they even need to be updated
 
 ## Best Release

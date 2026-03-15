@@ -102,6 +102,12 @@ def main() -> None:
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # At INFO (the default), musicbrainzngs emits noisy schema-evolution messages for
+    # every unrecognised XML attribute. Suppress those to WARNING so they don't clutter
+    # normal output. At DEBUG the user wants everything, so don't override; at WARNING/
+    # ERROR the root logger already handles filtering without our help.
+    if args.log_level == "INFO":
+        logging.getLogger("musicbrainzngs").setLevel(logging.WARNING)
 
     # Default to daemon when no subcommand given
     command = args.command or "daemon"

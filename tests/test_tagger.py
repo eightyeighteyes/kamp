@@ -142,3 +142,50 @@ class TestTagDirectory:
             release = tag_directory(tmp_path, [mp3])
 
         assert release.mbid == "high"
+
+
+class TestEditionSuffixRetry:
+    def test_retries_with_cleaned_album_name(self, tmp_path: Path) -> None:
+        """First search with "(Deluxe Edition)" returns nothing; retry with stripped
+        name succeeds and tags are written."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3, album="Great Album (Deluxe Edition)", track=1)
+
+        empty: dict[str, Any] = {"release-list": []}
+
+        with patch(
+            "musicbrainzngs.search_releases", side_effect=[empty, SAMPLE_RELEASE]
+        ) as mock_search:
+            release = tag_directory(tmp_path, [mp3])
+
+        assert release.mbid == "abc-123"
+        # First call used the full name; second used the stripped name
+        assert mock_search.call_count == 2
+        first_call_album = mock_search.call_args_list[0].kwargs["release"]
+        second_call_album = mock_search.call_args_list[1].kwargs["release"]
+        assert "Deluxe Edition" in first_call_album
+        assert "Deluxe Edition" not in second_call_album
+
+    def test_no_retry_when_album_has_no_suffix(self, tmp_path: Path) -> None:
+        """Album names without an edition suffix do not trigger a second search."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3, album="Great Album", track=1)
+
+        with patch(
+            "musicbrainzngs.search_releases", return_value={"release-list": []}
+        ) as mock_search:
+            with pytest.raises(TaggingError):
+                tag_directory(tmp_path, [mp3])
+
+        assert mock_search.call_count == 1
+
+    def test_raises_when_retry_also_finds_nothing(self, tmp_path: Path) -> None:
+        """If both the original and cleaned name return no results, TaggingError is raised."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3, album="Obscure Album (Remastered)", track=1)
+
+        empty: dict[str, Any] = {"release-list": []}
+
+        with patch("musicbrainzngs.search_releases", return_value=empty):
+            with pytest.raises(TaggingError, match="No MusicBrainz results"):
+                tag_directory(tmp_path, [mp3])

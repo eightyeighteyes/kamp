@@ -7,7 +7,12 @@ import threading
 import time
 from pathlib import Path
 
-from watchdog.events import FileCreatedEvent, FileSystemEvent, FileSystemEventHandler
+from watchdog.events import (
+    FileCreatedEvent,
+    FileSystemEvent,
+    FileSystemEventHandler,
+    FileSystemMovedEvent,
+)
 from watchdog.observers import Observer
 
 from .config import Config
@@ -23,6 +28,7 @@ class _StagingHandler(FileSystemEventHandler):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self._config = config
+        self._staging_root = config.paths.staging
         # Track paths being debounced: path → timer
         self._pending: dict[Path, threading.Timer] = {}
         self._lock = threading.Lock()
@@ -38,6 +44,45 @@ class _StagingHandler(FileSystemEventHandler):
             path = Path(str(event.src_path))
             if path.suffix.lower() == ".zip":
                 self._schedule(path)
+
+    def on_modified(self, event: FileSystemEvent) -> None:
+        # FSEvents on macOS coalesces renames into DirModifiedEvent on the parent
+        # directory rather than emitting DirCreatedEvent/DirMovedEvent for the new
+        # item. Scan staging root on every modification and schedule any item that
+        # has appeared and is not already pending.
+        if not event.is_directory:
+            return
+        if Path(str(event.src_path)) != self._staging_root:
+            return
+        self._scan_staging_root()
+
+    def _scan_staging_root(self) -> None:
+        """Schedule any directories or ZIPs in staging that are not already pending."""
+        try:
+            children = list(self._staging_root.iterdir())
+        except OSError:
+            return
+        with self._lock:
+            pending_paths = set(self._pending)
+        for child in children:
+            if child in pending_paths:
+                continue
+            if child.is_dir() and child.name != "errors":
+                self._schedule(child)
+            elif child.is_file() and child.suffix.lower() == ".zip":
+                self._schedule(child)
+
+    def on_moved(self, event: FileSystemMovedEvent) -> None:
+        # On macOS, dragging a folder/file into staging fires a moved event rather
+        # than a created event. Handle it the same way, but only for items whose
+        # destination is directly inside staging (not nested subdirectories).
+        dest = Path(str(event.dest_path))
+        if dest.parent != self._staging_root:
+            return
+        if event.is_directory and dest.name != "errors":
+            self._schedule(dest)
+        elif not event.is_directory and dest.suffix.lower() == ".zip":
+            self._schedule(dest)
 
     def _schedule(self, path: Path) -> None:
         with self._lock:

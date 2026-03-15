@@ -1,11 +1,5 @@
 ## Backlog
 
-### Support Purchases from Apple Music Store
-
-*If I put a folder of .M4A files I purchased in the iTunes store into my staging folder, it should be tagged, imaged, and added to my library.*
-
-Currently, this doesn't appear to work. These files are either completely ignored, or the errors don't show up in the daemon log.
-
 ### Bandcamp Album Art
 
 *If an archive already has high quality album art, I want to use that (as long as it's not too big)*
@@ -17,6 +11,8 @@ If the art that is distributed with the archive is not larger than config.artwor
 If the art is larger than config.artwork.max_bytes, scale it down to an acceptable size.
 
 If the art is smaller than 1/2 config.artwork.max_bytes or doesn't meet config.artwork.min_dimension requirements, fall back to our existing image search.
+
+### Switch to Poetry for dependency management
 
 ### Interactive First Run Configuration
 

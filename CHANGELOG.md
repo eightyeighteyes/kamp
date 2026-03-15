@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1](https://github.com/eightyeighteyes/tune-shifter/compare/v0.2.0...v0.2.1) (2026-03-15)
+
+
+### Bug Fixes
+
+* work around release please trigger limitation ([09f3f05](https://github.com/eightyeighteyes/tune-shifter/commit/09f3f05a2740cb993e52f217b77773d138a47e34))
+
 ## [Unreleased]
 
 

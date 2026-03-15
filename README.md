@@ -66,8 +66,23 @@ Bandcamp purchase
 
 ## Installation
 
+### Homebrew (recommended)
+
 ```bash
-git clone https://github.com/yourname/tune-shifter
+brew tap eightyeighteyes/tune-shifter
+brew install tune-shifter
+```
+
+After install, download the Playwright browser binaries required for Bandcamp auto-download:
+
+```bash
+/opt/homebrew/opt/tune-shifter/venv/bin/playwright install chromium
+```
+
+### From source
+
+```bash
+git clone https://github.com/eightyeighteyes/tune-shifter
 cd tune-shifter
 pip install -e .
 playwright install chromium

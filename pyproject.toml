@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tune-shifter"
-version = "0.2.2"
+version = "0.2.3"
 requires-python = ">=3.11"
 dependencies = [
     "watchdog>=4.0",

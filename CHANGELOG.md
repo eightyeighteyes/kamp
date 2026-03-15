@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.3](https://github.com/eightyeighteyes/tune-shifter/compare/v0.2.2...v0.2.3) (2026-03-15)
+
+
+### Bug Fixes
+
+* install dependencies so they are in virtualenv after brew install ([048298c](https://github.com/eightyeighteyes/tune-shifter/commit/048298c146c7272147defa00a9b123cccd9da2f2))
+
 ## [0.2.2](https://github.com/eightyeighteyes/tune-shifter/compare/v0.2.1...v0.2.2) (2026-03-15)
 
 

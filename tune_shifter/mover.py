@@ -146,9 +146,9 @@ def _make_vars(
 
 
 def _cleanup_staging(staging_dir: Path) -> None:
-    """Remove the staging subdirectory if it is now empty."""
+    """Remove the staging subdirectory and any remaining non-audio files."""
     try:
-        staging_dir.rmdir()
-        logger.info("Removed empty staging directory %s", staging_dir)
+        shutil.rmtree(staging_dir)
+        logger.info("Removed staging directory %s", staging_dir)
     except OSError:
-        logger.debug("Staging directory not empty or already removed: %s", staging_dir)
+        logger.debug("Could not remove staging directory: %s", staging_dir)

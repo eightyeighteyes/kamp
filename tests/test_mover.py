@@ -5,7 +5,7 @@ from pathlib import Path
 import mutagen.id3 as id3
 import pytest
 
-from tune_shifter.mover import _destination
+from tune_shifter.mover import _cleanup_staging, _destination
 
 TEMPLATE = "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
 
@@ -66,3 +66,22 @@ class TestDestination:
 
         assert ":" not in str(result)
         assert "?" not in str(result)
+
+
+class TestCleanup:
+    def test_removes_directory_with_leftover_non_audio_files(
+        self, tmp_path: Path
+    ) -> None:
+        """Staging dir is fully removed even when non-audio files remain."""
+        staging = tmp_path / "Artist - Album"
+        staging.mkdir()
+        (staging / "cover.jpg").write_bytes(b"fake image")
+        (staging / "booklet.pdf").write_bytes(b"fake pdf")
+
+        _cleanup_staging(staging)
+
+        assert not staging.exists()
+
+    def test_does_not_raise_when_directory_is_missing(self, tmp_path: Path) -> None:
+        """OSError from rmtree is caught; cleanup never raises."""
+        _cleanup_staging(tmp_path / "nonexistent")

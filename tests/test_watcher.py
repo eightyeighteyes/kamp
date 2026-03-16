@@ -412,6 +412,83 @@ class TestWaitForStableSize:
                 _wait_for_stable_size(f)
 
 
+class TestDuplicateRunPrevention:
+    """The pipeline notifies the watcher of the extracted directory so that any
+    pending debounce timer for it is cancelled before Run 2 can start."""
+
+    def test_process_passes_claim_callback_to_run(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_process passes a _on_directory callback to run(); verifies callback arg."""
+        handler = _make_handler(config)
+        album = config.paths.staging / "my-album"
+        album.mkdir()
+
+        received_callbacks: list[object] = []
+
+        def _fake_run(path: Path, cfg: object, _on_directory: object = None) -> None:
+            received_callbacks.append(_on_directory)
+
+        monkeypatch.setattr("tune_shifter.watcher.run", _fake_run)
+        handler._process(album)
+
+        assert len(received_callbacks) == 1
+        assert callable(received_callbacks[0])
+
+    def test_claim_callback_cancels_pending_dir_timer(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the pipeline calls the callback, any pending timer for the
+        extracted directory is cancelled and the directory is added to _in_flight."""
+        handler = _make_handler(config)
+        zip_path = config.paths.staging / "album.zip"
+        zip_path.write_bytes(b"PK")
+
+        extracted_dir = config.paths.staging / "album"
+        extracted_dir.mkdir()
+
+        # Simulate a pending timer for the extracted directory (as the watcher
+        # would create when on_created fires for the new directory).
+        pending_timer = MagicMock()
+        handler._pending[extracted_dir] = pending_timer
+
+        def _fake_run(path: Path, cfg: object, _on_directory: object = None) -> None:
+            # The pipeline calls the callback right after extraction
+            if callable(_on_directory):
+                _on_directory(extracted_dir)
+
+        monkeypatch.setattr("tune_shifter.watcher.run", _fake_run)
+        handler._process(zip_path)
+
+        # The pending timer for the extracted directory must have been cancelled
+        pending_timer.cancel.assert_called_once()
+        # The extracted directory must NOT be in _in_flight after _process finishes
+        assert extracted_dir not in handler._in_flight
+
+    def test_claim_callback_blocks_in_flight_scheduling(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A directory added to _in_flight by the callback cannot be rescheduled."""
+        handler = _make_handler(config)
+        zip_path = config.paths.staging / "album.zip"
+        zip_path.write_bytes(b"PK")
+
+        extracted_dir = config.paths.staging / "album"
+        extracted_dir.mkdir()
+
+        def _fake_run(path: Path, cfg: object, _on_directory: object = None) -> None:
+            if callable(_on_directory):
+                _on_directory(extracted_dir)
+            # Simulate the pipeline still running — try to schedule the directory
+            handler._schedule(extracted_dir)
+
+        monkeypatch.setattr("tune_shifter.watcher.run", _fake_run)
+        handler._process(zip_path)
+
+        # _schedule while in-flight must have been a no-op
+        assert extracted_dir not in handler._pending
+
+
 class TestWatcherStopJoin:
     def test_stop_and_join(
         self, config: Config, monkeypatch: pytest.MonkeyPatch

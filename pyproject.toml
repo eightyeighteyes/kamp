@@ -70,10 +70,11 @@ module = ["tune_shifter.__main__"]
 disable_error_code = ["import-untyped"]
 
 [[tool.mypy.overrides]]
-# mutagen has partial stubs that don't cover ID3 frame classes or MP4 methods;
-# silence the resulting errors in modules that rely on it heavily.
+# mutagen has partial stubs that don't cover ID3 frame classes, MP4 methods, or
+# FLAC tag access (audio.tags is typed as VCFLACDict | MetadataBlock; the union
+# causes false union-attr/index errors on the VCFLACDict branch we always use).
 module = ["tune_shifter.tagger", "tune_shifter.mover", "tune_shifter.artwork"]
-disable_error_code = ["no-untyped-call", "attr-defined", "unused-ignore"]
+disable_error_code = ["no-untyped-call", "attr-defined", "unused-ignore", "union-attr", "index"]
 
 [[tool.mypy.overrides]]
 # playwright ships no type stubs

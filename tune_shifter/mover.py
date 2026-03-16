@@ -7,6 +7,7 @@ import re
 import shutil
 from pathlib import Path
 
+import mutagen.flac
 import mutagen.id3 as _id3
 import mutagen.mp4
 
@@ -117,6 +118,23 @@ def _read_tags(path: Path) -> dict[str, object]:
                 disc = disk_v[0][0] if disk_v else 1  # type: ignore[index]
                 nam_v = t4.get("\xa9nam")
                 title = str(nam_v[0]) if nam_v else path.stem
+        elif suffix == ".flac":
+            flac = mutagen.flac.FLAC(str(path))
+            if flac.tags is not None:
+
+                def _get(key: str) -> str:
+                    vals = flac.tags.get(key)  # type: ignore[union-attr]
+                    return vals[0] if vals else ""
+
+                artist = _get("ARTIST")
+                album_artist = _get("ALBUMARTIST") or artist
+                album = _get("ALBUM")
+                year = _get("DATE")[:4] if _get("DATE") else ""
+                trck_s = _get("TRACKNUMBER").split("/")[0]
+                track = int(trck_s) if trck_s.isdigit() else 0
+                disc_s = _get("DISCNUMBER").split("/")[0]
+                disc = int(disc_s) if disc_s.isdigit() else 1
+                title = _get("TITLE") or path.stem
     except Exception:
         pass
 

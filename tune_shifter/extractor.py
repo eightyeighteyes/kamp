@@ -43,7 +43,7 @@ def extract(path: Path) -> Path:
     if not _has_audio(dest):
         shutil.rmtree(dest)
         raise ExtractionError(
-            f"ZIP {path} contained no supported audio files (.mp3, .m4a)"
+            f"ZIP {path} contained no supported audio files (.mp3, .m4a, .flac)"
         )
 
     path.unlink()
@@ -51,20 +51,23 @@ def extract(path: Path) -> Path:
     return dest
 
 
+_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".flac"}
+
+
 def _has_audio(directory: Path) -> bool:
-    """Return True if *directory* contains at least one .mp3 or .m4a file."""
+    """Return True if *directory* contains at least one supported audio file."""
     return any(
-        f.suffix.lower() in {".mp3", ".m4a"}
+        f.suffix.lower() in _AUDIO_EXTENSIONS
         for f in directory.rglob("*")
         if f.is_file()
     )
 
 
 def find_audio_files(directory: Path) -> list[Path]:
-    """Return a sorted list of .mp3 and .m4a files under *directory*."""
+    """Return a sorted list of supported audio files (.mp3, .m4a, .flac) under *directory*."""
     files = [
         f
         for f in directory.rglob("*")
-        if f.is_file() and f.suffix.lower() in {".mp3", ".m4a"}
+        if f.is_file() and f.suffix.lower() in _AUDIO_EXTENSIONS
     ]
     return sorted(files)

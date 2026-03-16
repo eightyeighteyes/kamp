@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 from .artwork import ArtworkError, fetch_and_embed
@@ -15,7 +16,11 @@ from .tagger import TaggingError, is_tagged, read_release_mbids, tag_directory
 logger = logging.getLogger(__name__)
 
 
-def run(path: Path, config: Config) -> None:
+def run(
+    path: Path,
+    config: Config,
+    _on_directory: Callable[[Path], None] | None = None,
+) -> None:
     """Process a single staging item (ZIP or directory) end-to-end.
 
     On per-step failure the item is moved to staging/errors/ so the watcher
@@ -30,6 +35,13 @@ def run(path: Path, config: Config) -> None:
         logger.error("Extraction failed: %s", exc)
         _quarantine(path, config.paths.staging)
         return
+
+    # Notify the watcher of the staging directory as early as possible so it
+    # can cancel any pending debounce timer for this directory.  Without this,
+    # extracting a ZIP creates the directory, the watcher schedules it for a
+    # second pipeline run, and that run races the first.
+    if _on_directory is not None:
+        _on_directory(directory)
 
     audio_files = find_audio_files(directory)
     if not audio_files:

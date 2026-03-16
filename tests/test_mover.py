@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import mutagen.flac
 import mutagen.id3 as id3
 import mutagen.mp4
 import pytest
@@ -165,6 +166,101 @@ class TestM4ADestination:
         with patch("tune_shifter.mover.mutagen.mp4.MP4", return_value=mock_mp4):
             library = tmp_path / "library"
             result = _destination(m4a, library, TEMPLATE)
+
+        assert "Unknown Artist" in str(result)
+
+
+class TestFlacDestination:
+    def _mock_flac(self, **tags: object) -> MagicMock:
+        """Return a mock mutagen.flac.FLAC with Vorbis comment dict."""
+        flac = MagicMock()
+        vorbis: dict[str, list[object]] = {}
+        if "artist" in tags:
+            vorbis["ARTIST"] = [tags["artist"]]
+        if "album_artist" in tags:
+            vorbis["ALBUMARTIST"] = [tags["album_artist"]]
+        if "album" in tags:
+            vorbis["ALBUM"] = [tags["album"]]
+        if "year" in tags:
+            vorbis["DATE"] = [tags["year"]]
+        if "track" in tags:
+            vorbis["TRACKNUMBER"] = [tags["track"]]
+        if "disc" in tags:
+            vorbis["DISCNUMBER"] = [tags["disc"]]
+        if "title" in tags:
+            vorbis["TITLE"] = [tags["title"]]
+        flac.tags = vorbis
+        return flac
+
+    def test_flac_tags_are_read(self, tmp_path: Path) -> None:
+        """_destination reads Vorbis comments from a FLAC file via mutagen.flac."""
+        flac_file = tmp_path / "01.flac"
+        flac_file.write_bytes(b"")  # content doesn't matter — FLAC is mocked
+
+        with patch(
+            "tune_shifter.mover.mutagen.flac.FLAC",
+            return_value=self._mock_flac(
+                artist="Artist",
+                album_artist="Album Artist",
+                album="My Album",
+                year="2021",
+                track="3",
+                disc="1",
+                title="My Track",
+            ),
+        ):
+            library = tmp_path / "library"
+            result = _destination(flac_file, library, TEMPLATE)
+
+        assert result.parent == library / "Album Artist" / "2021 - My Album"
+        assert result.name == "03 - My Track.flac"
+
+    def test_flac_tracknumber_with_slash_is_parsed(self, tmp_path: Path) -> None:
+        """TRACKNUMBER in 'N/total' format is parsed correctly."""
+        flac_file = tmp_path / "05.flac"
+        flac_file.write_bytes(b"")
+
+        with patch(
+            "tune_shifter.mover.mutagen.flac.FLAC",
+            return_value=self._mock_flac(
+                album_artist="Band",
+                album="Record",
+                year="2019",
+                track="5/12",
+                title="Fifth",
+            ),
+        ):
+            library = tmp_path / "library"
+            result = _destination(flac_file, library, TEMPLATE)
+
+        assert result.name == "05 - Fifth.flac"
+
+    def test_flac_falls_back_to_defaults_when_tags_absent(self, tmp_path: Path) -> None:
+        """_destination uses fallback values when FLAC tags dict is empty."""
+        flac_file = tmp_path / "track.flac"
+        flac_file.write_bytes(b"")
+
+        mock_flac = MagicMock()
+        mock_flac.tags = {}  # empty Vorbis comment dict
+
+        with patch("tune_shifter.mover.mutagen.flac.FLAC", return_value=mock_flac):
+            library = tmp_path / "library"
+            result = _destination(flac_file, library, TEMPLATE)
+
+        assert "Unknown Artist" in str(result)
+        assert "Unknown Album" in str(result)
+
+    def test_flac_no_tags_object_falls_back(self, tmp_path: Path) -> None:
+        """_destination handles flac.tags being None gracefully."""
+        flac_file = tmp_path / "track.flac"
+        flac_file.write_bytes(b"")
+
+        mock_flac = MagicMock()
+        mock_flac.tags = None
+
+        with patch("tune_shifter.mover.mutagen.flac.FLAC", return_value=mock_flac):
+            library = tmp_path / "library"
+            result = _destination(flac_file, library, TEMPLATE)
 
         assert "Unknown Artist" in str(result)
 

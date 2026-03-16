@@ -431,12 +431,34 @@ class TestFetchCoverEdgeCases:
 
 class TestEmbed:
     def test_unsupported_format_logs_warning(self, tmp_path: Path) -> None:
-        """_embed logs a warning for formats other than mp3/m4a."""
+        """_embed logs a warning for unsupported formats."""
         from tune_shifter.artwork import _embed
 
-        flac = tmp_path / "track.flac"
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        _embed(ogg, b"\xff\xd8\xff")  # must not raise
+
+    def test_embed_flac_writes_picture_block(self, tmp_path: Path) -> None:
+        """_embed_flac clears existing pictures and embeds the new image."""
+        from tune_shifter.artwork import _embed_flac
+
+        flac = tmp_path / "01.flac"
         flac.write_bytes(b"fLaC")
-        _embed(flac, b"\xff\xd8\xff")  # must not raise
+
+        mock_flac = MagicMock()
+        mock_pic = MagicMock()
+
+        with (
+            patch("tune_shifter.artwork.mutagen.flac.FLAC", return_value=mock_flac),
+            patch("tune_shifter.artwork.mutagen.flac.Picture", return_value=mock_pic),
+        ):
+            _embed_flac(flac, _make_jpeg(600, 600))
+
+        mock_flac.clear_pictures.assert_called_once()
+        mock_flac.add_picture.assert_called_once_with(mock_pic)
+        mock_flac.save.assert_called_once()
+        assert mock_pic.type == 3
+        assert mock_pic.data is not None
 
     def test_embed_mp3_creates_id3_when_header_missing(self, tmp_path: Path) -> None:
         """_embed_mp3 creates a fresh ID3 when the file has no existing header."""
@@ -592,13 +614,58 @@ class TestHasEmbeddedArt:
 
     def test_unsupported_format_returns_false(self, tmp_path: Path) -> None:
         """Returns False for unsupported file formats."""
-        flac = tmp_path / "track.flac"
-        flac.write_bytes(b"fLaC")
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
 
         assert (
-            has_embedded_art(flac, min_dimension=self._MIN, max_bytes=self._MAX)
-            is False
+            has_embedded_art(ogg, min_dimension=self._MIN, max_bytes=self._MAX) is False
         )
+
+    def test_flac_qualifying_art_returns_true(self, tmp_path: Path) -> None:
+        """Returns True for a FLAC whose embedded picture meets quality requirements."""
+        flac = tmp_path / "01.flac"
+        flac.write_bytes(b"fLaC")
+
+        mock_pic = MagicMock()
+        mock_pic.data = _make_jpeg(600, 600)
+        mock_flac = MagicMock()
+        mock_flac.pictures = [mock_pic]
+
+        with patch("tune_shifter.artwork.mutagen.flac.FLAC", return_value=mock_flac):
+            assert (
+                has_embedded_art(flac, min_dimension=self._MIN, max_bytes=self._MAX)
+                is True
+            )
+
+    def test_flac_art_too_small_returns_false(self, tmp_path: Path) -> None:
+        """Returns False when FLAC embedded picture dimensions are below min_dimension."""
+        flac = tmp_path / "01.flac"
+        flac.write_bytes(b"fLaC")
+
+        mock_pic = MagicMock()
+        mock_pic.data = _make_jpeg(200, 200)
+        mock_flac = MagicMock()
+        mock_flac.pictures = [mock_pic]
+
+        with patch("tune_shifter.artwork.mutagen.flac.FLAC", return_value=mock_flac):
+            assert (
+                has_embedded_art(flac, min_dimension=self._MIN, max_bytes=self._MAX)
+                is False
+            )
+
+    def test_flac_without_pictures_returns_false(self, tmp_path: Path) -> None:
+        """Returns False for a FLAC with no PICTURE blocks."""
+        flac = tmp_path / "01.flac"
+        flac.write_bytes(b"fLaC")
+
+        mock_flac = MagicMock()
+        mock_flac.pictures = []
+
+        with patch("tune_shifter.artwork.mutagen.flac.FLAC", return_value=mock_flac):
+            assert (
+                has_embedded_art(flac, min_dimension=self._MIN, max_bytes=self._MAX)
+                is False
+            )
 
     def test_read_error_returns_false(self, tmp_path: Path) -> None:
         """Returns False when reading the file raises an exception."""

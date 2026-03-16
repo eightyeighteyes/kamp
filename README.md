@@ -9,7 +9,7 @@ Built with Python 3 by [Claude Sonnet 4.6](https://www.anthropic.com/claude).
 ## Features
 
 - **Bandcamp auto-download** — polls your Bandcamp collection for new purchases and downloads them automatically; authenticates via a one-time interactive browser login (no credentials stored)
-- **Automatic tagging** — looks up every release on [MusicBrainz](https://musicbrainz.org) and writes canonical tags (artist, album artist, album, year, track number, disc number, MusicBrainz release ID)
+- **Automatic tagging** — looks up every release on [MusicBrainz](https://musicbrainz.org) and writes canonical tags (artist, album artist, album, year, track number, disc number, MusicBrainz IDs)
 - **Cover art** — fetches front cover art from the [MusicBrainz Cover Art Archive](https://coverartarchive.org), validates minimum dimensions (≥ 1000 × 1000 px) and maximum file size (≤ 1 MB), and embeds it in every track
 - **Filesystem watcher** — monitors your staging directory; drop a ZIP or folder in and it is processed automatically
 - **Configurable library layout** — moves finished files into your library using a template you control (`{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}`)
@@ -57,7 +57,7 @@ Bandcamp purchase
 |---|---|
 | `watchdog` | Filesystem event monitoring |
 | `musicbrainzngs` | MusicBrainz release lookup |
-| `mutagen` | Reading and writing audio tags (MP3, M4A) |
+| `mutagen` | Reading and writing audio tags (MP3, M4A, FLAC) |
 | `requests` | HTTP client for the Cover Art Archive and session validation |
 | `Pillow` | Image dimension validation |
 | `playwright` | Headless browser for Bandcamp authentication and download |
@@ -191,6 +191,7 @@ Drop any Bandcamp ZIP or already-extracted folder into your staging directory. T
 
 - MP3
 - AAC / M4A
+- FLAC
 
 ---
 

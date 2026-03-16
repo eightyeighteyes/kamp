@@ -50,6 +50,15 @@ class TestExtract:
         with pytest.raises(ExtractionError, match="no supported audio files"):
             extract(zip_path)
 
+    def test_zip_with_flac_is_extracted(self, tmp_path: Path) -> None:
+        zip_path = tmp_path / "album.zip"
+        _make_zip(zip_path, {"01 - Track.flac": b"fLaC fake"})
+
+        result = extract(zip_path)
+
+        assert result == tmp_path / "album"
+        assert (result / "01 - Track.flac").exists()
+
     def test_bad_zip_raises(self, tmp_path: Path) -> None:
         bad_zip = tmp_path / "bad.zip"
         bad_zip.write_bytes(b"this is not a zip file")
@@ -65,6 +74,14 @@ class TestFindAudioFiles:
         files = find_audio_files(tmp_path)
         assert len(files) == 2
         assert all(f.suffix in {".mp3", ".m4a"} for f in files)
+
+    def test_finds_flac(self, tmp_path: Path) -> None:
+        (tmp_path / "01.flac").write_bytes(b"")
+        (tmp_path / "02.mp3").write_bytes(b"")
+        (tmp_path / "cover.jpg").write_bytes(b"")
+        files = find_audio_files(tmp_path)
+        assert len(files) == 2
+        assert any(f.suffix == ".flac" for f in files)
 
     def test_returns_sorted_list(self, tmp_path: Path) -> None:
         (tmp_path / "03.mp3").write_bytes(b"")

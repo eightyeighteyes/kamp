@@ -104,6 +104,23 @@ class _StagingHandler(FileSystemEventHandler):
         with self._lock:
             self._pending.pop(path, None)
             self._in_flight.add(path)
+
+        # Track any directory the pipeline extracts so we can cancel its
+        # pending debounce timer and prevent a duplicate pipeline run.
+        claimed_dir: list[Path] = []
+
+        def _claim_directory(directory: Path) -> None:
+            """Called by the pipeline right after extraction."""
+            with self._lock:
+                existing = self._pending.pop(directory, None)
+                if existing is not None:
+                    existing.cancel()
+                    logger.debug(
+                        "Cancelled duplicate timer for extracted dir %s", directory
+                    )
+                self._in_flight.add(directory)
+            claimed_dir.append(directory)
+
         try:
             if not path.exists():
                 logger.debug("Path no longer exists, skipping: %s", path)
@@ -115,12 +132,14 @@ class _StagingHandler(FileSystemEventHandler):
 
             logger.info("Triggering pipeline for %s", path)
             try:
-                run(path, self._config)
+                run(path, self._config, _on_directory=_claim_directory)
             except Exception:
                 logger.exception("Unhandled error in pipeline for %s", path)
         finally:
             with self._lock:
                 self._in_flight.discard(path)
+                if claimed_dir:
+                    self._in_flight.discard(claimed_dir[0])
 
 
 def _wait_for_stable_size(path: Path, timeout: float = 60.0) -> None:

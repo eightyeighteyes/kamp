@@ -262,6 +262,51 @@ class TestPipelineRun:
         assert errors_dir.exists()
 
 
+class TestOnDirectoryCallback:
+    def test_callback_called_with_extracted_directory(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """run() calls _on_directory with the staging directory immediately after
+        extraction so the watcher can cancel any pending timer for that directory."""
+        import zipfile
+
+        config.paths.staging.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+
+        zip_path = config.paths.staging / "artist-album.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("01 - Track.mp3", b"\xff\xfb" * 64)
+
+        claimed: list[Path] = []
+
+        with (
+            patch("tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE),
+            patch("tune_shifter.pipeline.fetch_and_embed"),
+            patch(
+                "tune_shifter.pipeline.move_to_library",
+                return_value=[],
+            ),
+        ):
+            run(zip_path, config, _on_directory=claimed.append)
+
+        assert len(claimed) == 1
+        assert claimed[0].parent == config.paths.staging
+        assert claimed[0].name == "artist-album"
+
+    def test_callback_not_called_on_extraction_failure(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """_on_directory must not fire when extraction fails."""
+        config.paths.staging.mkdir(parents=True)
+        bad_zip = config.paths.staging / "bad.zip"
+        bad_zip.write_bytes(b"not a zip")
+
+        claimed: list[Path] = []
+        run(bad_zip, config, _on_directory=claimed.append)
+
+        assert claimed == []
+
+
 class TestSkipAlreadyTagged:
     """Pipeline skips the MusicBrainz lookup when all files already have an MBID.
     Artwork always runs — better art may be available (bundled in ZIP, or online).

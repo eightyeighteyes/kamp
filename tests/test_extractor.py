@@ -65,6 +65,15 @@ class TestExtract:
         with pytest.raises(ExtractionError, match="Failed to open ZIP"):
             extract(bad_zip)
 
+    def test_zip_with_ogg_is_extracted(self, tmp_path: Path) -> None:
+        zip_path = tmp_path / "album.zip"
+        _make_zip(zip_path, {"01 - Track.ogg": b"OggS"})
+
+        result = extract(zip_path)
+
+        assert result == tmp_path / "album"
+        assert (result / "01 - Track.ogg").exists()
+
 
 class TestFindAudioFiles:
     def test_finds_mp3_and_m4a(self, tmp_path: Path) -> None:
@@ -90,6 +99,14 @@ class TestFindAudioFiles:
         files = find_audio_files(tmp_path)
         names = [f.name for f in files]
         assert names == sorted(names)
+
+    def test_finds_ogg(self, tmp_path: Path) -> None:
+        (tmp_path / "01.ogg").write_bytes(b"")
+        (tmp_path / "02.mp3").write_bytes(b"")
+        (tmp_path / "cover.jpg").write_bytes(b"")
+        files = find_audio_files(tmp_path)
+        assert len(files) == 2
+        assert any(f.suffix == ".ogg" for f in files)
 
     def test_empty_directory(self, tmp_path: Path) -> None:
         assert find_audio_files(tmp_path) == []

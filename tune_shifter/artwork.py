@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 import mutagen.flac
 import mutagen.id3 as id3
 import mutagen.mp4
+import mutagen.oggvorbis
 import requests
 from PIL import Image
 
@@ -56,6 +58,15 @@ def has_embedded_art(path: Path, min_dimension: int, max_bytes: int) -> bool:
             if not flac.pictures:
                 return False
             image_bytes = flac.pictures[0].data
+        elif suffix == ".ogg":
+            ogg = mutagen.oggvorbis.OggVorbis(str(path))
+            if ogg.tags is None:
+                return False
+            pic_data = ogg.tags.get("METADATA_BLOCK_PICTURE")
+            if not pic_data:
+                return False
+            pic = mutagen.flac.Picture(base64.b64decode(pic_data[0]))
+            image_bytes = pic.data
         else:
             return False
 
@@ -297,6 +308,8 @@ def _embed(path: Path, image_bytes: bytes) -> None:
         _embed_m4a(path, image_bytes)
     elif suffix == ".flac":
         _embed_flac(path, image_bytes)
+    elif suffix == ".ogg":
+        _embed_ogg(path, image_bytes)
     else:
         logger.warning("Cannot embed artwork in unsupported format: %s", path)
 
@@ -357,6 +370,28 @@ def _embed_flac(path: Path, image_bytes: bytes) -> None:
     audio.add_picture(pic)
     audio.save()
     logger.debug("Embedded cover art in FLAC %s", path)
+
+
+def _embed_ogg(path: Path, image_bytes: bytes) -> None:
+    # OGG Vorbis stores art as a base64-encoded FLAC Picture block in the
+    # METADATA_BLOCK_PICTURE Vorbis comment — reuse mutagen.flac.Picture.
+    audio = mutagen.oggvorbis.OggVorbis(str(path))
+
+    pic = mutagen.flac.Picture()
+    pic.type = 3  # front cover
+    pic.mime = _detect_mime(image_bytes)
+    pic.data = image_bytes
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        pic.width, pic.height = img.size
+        pic.depth = 24
+    except Exception:
+        pass
+
+    encoded = base64.b64encode(pic.write()).decode("ascii")
+    audio["METADATA_BLOCK_PICTURE"] = [encoded]
+    audio.save()
+    logger.debug("Embedded cover art in OGG %s", path)
 
 
 def _detect_mime(data: bytes) -> str:

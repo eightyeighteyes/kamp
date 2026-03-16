@@ -14,6 +14,7 @@ import mutagen
 import mutagen.flac
 import mutagen.id3 as id3
 import mutagen.mp4
+import mutagen.oggvorbis
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,12 @@ def is_tagged(path: Path) -> bool:
                 return False
             vals = audio.tags.get("MUSICBRAINZ_ALBUMID")
             return bool(vals and vals[0])
+        if suffix == ".ogg":
+            ogg = mutagen.oggvorbis.OggVorbis(str(path))
+            if ogg.tags is None:
+                return False
+            vals = ogg.tags.get("MUSICBRAINZ_ALBUMID")
+            return bool(vals and vals[0])
     except Exception:
         pass
     return False
@@ -131,6 +138,13 @@ def read_release_mbids(path: Path) -> tuple[str, str]:
                 return "", ""
             rel_vals = audio.tags.get("MUSICBRAINZ_ALBUMID")
             rg_vals = audio.tags.get("MUSICBRAINZ_RELEASEGROUPID")
+            return (rel_vals[0] if rel_vals else ""), (rg_vals[0] if rg_vals else "")
+        if suffix == ".ogg":
+            ogg = mutagen.oggvorbis.OggVorbis(str(path))
+            if ogg.tags is None:
+                return "", ""
+            rel_vals = ogg.tags.get("MUSICBRAINZ_ALBUMID")
+            rg_vals = ogg.tags.get("MUSICBRAINZ_RELEASEGROUPID")
             return (rel_vals[0] if rel_vals else ""), (rg_vals[0] if rg_vals else "")
     except Exception:
         pass
@@ -194,6 +208,13 @@ def _read_existing_metadata(path: Path) -> tuple[str, str]:
             if flac.tags is not None:
                 art_vals = flac.tags.get("ARTIST")
                 alb_vals = flac.tags.get("ALBUM")
+                artist = art_vals[0] if art_vals else ""
+                album = alb_vals[0] if alb_vals else ""
+        elif suffix == ".ogg":
+            ogg = mutagen.oggvorbis.OggVorbis(str(path))
+            if ogg.tags is not None:
+                art_vals = ogg.tags.get("ARTIST")
+                alb_vals = ogg.tags.get("ALBUM")
                 artist = art_vals[0] if art_vals else ""
                 album = alb_vals[0] if alb_vals else ""
     except Exception as exc:
@@ -402,6 +423,8 @@ def _write_tags(path: Path, release: ReleaseInfo) -> None:
         _write_m4a_tags(path, release, track_info)
     elif suffix == ".flac":
         _write_flac_tags(path, release, track_info)
+    elif suffix == ".ogg":
+        _write_ogg_tags(path, release, track_info)
     else:
         logger.warning("Unsupported format for tagging: %s", path)
 
@@ -440,6 +463,17 @@ def _match_track(path: Path, release: ReleaseInfo) -> TrackInfo | None:
                     trck_s = trck_vals[0].split("/")[0]
                     track_num = int(trck_s) if trck_s.isdigit() else 0
                 disc_vals = flac.tags.get("DISCNUMBER")
+                if disc_vals:
+                    disc_s = disc_vals[0].split("/")[0]
+                    disc = int(disc_s) if disc_s.isdigit() else 1
+        elif suffix == ".ogg":
+            ogg = mutagen.oggvorbis.OggVorbis(str(path))
+            if ogg.tags is not None:
+                trck_vals = ogg.tags.get("TRACKNUMBER")
+                if trck_vals:
+                    trck_s = trck_vals[0].split("/")[0]
+                    track_num = int(trck_s) if trck_s.isdigit() else 0
+                disc_vals = ogg.tags.get("DISCNUMBER")
                 if disc_vals:
                     disc_s = disc_vals[0].split("/")[0]
                     disc = int(disc_s) if disc_s.isdigit() else 1
@@ -638,76 +672,94 @@ def _write_m4a_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -
     logger.debug("Wrote M4A tags to %s", path)
 
 
-def _write_flac_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -> None:
-    audio = mutagen.flac.FLAC(str(path))
-    if audio.tags is None:
-        audio.add_tags()
+def _assign_vorbis_tags(
+    tags: Any, release: ReleaseInfo, track: TrackInfo | None
+) -> None:
+    """Write MusicBrainz metadata into a Vorbis comment dict (FLAC or OGG).
 
-    assert audio.tags is not None
+    Accepts any object that supports ``tags[key] = [value]`` assignment —
+    both ``VCFLACDict`` (FLAC) and ``VComment`` (OGG Vorbis) qualify.
+    """
 
     def _v(value: str) -> list[str]:
-        """Wrap a string as a single-element Vorbis comment list."""
         return [value]
 
     # Core tags
-    audio.tags["ARTIST"] = _v(release.artist)
-    audio.tags["ALBUMARTIST"] = _v(release.album_artist)
-    audio.tags["ALBUM"] = _v(release.title)
-    audio.tags["DATE"] = _v(release.year)
-    audio.tags["MUSICBRAINZ_ALBUMID"] = _v(release.mbid)
+    tags["ARTIST"] = _v(release.artist)
+    tags["ALBUMARTIST"] = _v(release.album_artist)
+    tags["ALBUM"] = _v(release.title)
+    tags["DATE"] = _v(release.year)
+    tags["MUSICBRAINZ_ALBUMID"] = _v(release.mbid)
 
     # Sort names
     if release.artist_sort:
-        audio.tags["ARTISTSORT"] = _v(release.artist_sort)
+        tags["ARTISTSORT"] = _v(release.artist_sort)
     if release.album_artist_sort:
-        audio.tags["ALBUMARTISTSORT"] = _v(release.album_artist_sort)
+        tags["ALBUMARTISTSORT"] = _v(release.album_artist_sort)
 
     # Multi-value artists
     if release.artists:
-        audio.tags["ARTISTS"] = _v("; ".join(release.artists))
+        tags["ARTISTS"] = _v("; ".join(release.artists))
 
     # MusicBrainz IDs
     if release.artist_mbids:
-        audio.tags["MUSICBRAINZ_ARTISTID"] = _v("; ".join(release.artist_mbids))
+        tags["MUSICBRAINZ_ARTISTID"] = _v("; ".join(release.artist_mbids))
     if release.album_artist_mbid:
-        audio.tags["MUSICBRAINZ_ALBUMARTISTID"] = _v(release.album_artist_mbid)
+        tags["MUSICBRAINZ_ALBUMARTISTID"] = _v(release.album_artist_mbid)
     if release.release_group_mbid:
-        audio.tags["MUSICBRAINZ_RELEASEGROUPID"] = _v(release.release_group_mbid)
+        tags["MUSICBRAINZ_RELEASEGROUPID"] = _v(release.release_group_mbid)
 
     # Release metadata
     if release.release_type:
-        audio.tags["MUSICBRAINZ_ALBUMTYPE"] = _v(release.release_type)
+        tags["MUSICBRAINZ_ALBUMTYPE"] = _v(release.release_type)
     if release.release_status:
-        audio.tags["MUSICBRAINZ_ALBUMSTATUS"] = _v(release.release_status)
+        tags["MUSICBRAINZ_ALBUMSTATUS"] = _v(release.release_status)
     if release.release_country:
-        audio.tags["RELEASECOUNTRY"] = _v(release.release_country)
+        tags["RELEASECOUNTRY"] = _v(release.release_country)
     if release.original_date:
-        audio.tags["ORIGINALDATE"] = _v(release.original_date)
-        # ORIGINALYEAR is the year-only portion, mirroring the M4A convention so
-        # players that don't parse ORIGINALDATE still display the original year.
-        audio.tags["ORIGINALYEAR"] = _v(release.original_date[:4])
+        tags["ORIGINALDATE"] = _v(release.original_date)
+        # ORIGINALYEAR is the year-only portion so players that don't parse
+        # ORIGINALDATE still display the original year.
+        tags["ORIGINALYEAR"] = _v(release.original_date[:4])
     if release.label:
-        audio.tags["LABEL"] = _v(release.label)
+        tags["LABEL"] = _v(release.label)
     if release.catalog_number:
-        audio.tags["CATALOGNUMBER"] = _v(release.catalog_number)
+        tags["CATALOGNUMBER"] = _v(release.catalog_number)
     if release.barcode:
-        audio.tags["BARCODE"] = _v(release.barcode)
+        tags["BARCODE"] = _v(release.barcode)
     if release.asin:
-        audio.tags["ASIN"] = _v(release.asin)
+        tags["ASIN"] = _v(release.asin)
     if release.script:
-        audio.tags["SCRIPT"] = _v(release.script)
+        tags["SCRIPT"] = _v(release.script)
 
     # Track and disc numbers — write number and total as separate tags per
     # the MusicBrainz Picard convention for Vorbis comments.
     if track is not None:
-        audio.tags["TRACKNUMBER"] = _v(str(track.number))
+        tags["TRACKNUMBER"] = _v(str(track.number))
         if track.total_tracks:
-            audio.tags["TOTALTRACKS"] = _v(str(track.total_tracks))
-        audio.tags["DISCNUMBER"] = _v(str(track.disc))
-        audio.tags["TOTALDISCS"] = _v(str(release.total_discs))
-        audio.tags["TITLE"] = _v(track.title)
+            tags["TOTALTRACKS"] = _v(str(track.total_tracks))
+        tags["DISCNUMBER"] = _v(str(track.disc))
+        tags["TOTALDISCS"] = _v(str(release.total_discs))
+        tags["TITLE"] = _v(track.title)
         if track.recording_mbid:
-            audio.tags["MUSICBRAINZ_TRACKID"] = _v(track.recording_mbid)
+            tags["MUSICBRAINZ_TRACKID"] = _v(track.recording_mbid)
 
+
+def _write_flac_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -> None:
+    audio = mutagen.flac.FLAC(str(path))
+    if audio.tags is None:
+        audio.add_tags()
+    assert audio.tags is not None
+    _assign_vorbis_tags(audio.tags, release, track)
     audio.save()
     logger.debug("Wrote FLAC tags to %s", path)
+
+
+def _write_ogg_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -> None:
+    audio = mutagen.oggvorbis.OggVorbis(str(path))
+    # OggVorbis always has a VComment block; no add_tags() call needed.
+    if audio.tags is None:  # pragma: no cover — defensive guard
+        return
+    _assign_vorbis_tags(audio.tags, release, track)
+    audio.save()
+    logger.debug("Wrote OGG tags to %s", path)

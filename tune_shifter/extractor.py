@@ -43,7 +43,7 @@ def extract(path: Path) -> Path:
     if not _has_audio(dest):
         shutil.rmtree(dest)
         raise ExtractionError(
-            f"ZIP {path} contained no supported audio files (.mp3, .m4a, .flac)"
+            f"ZIP {path} contained no supported audio files (.mp3, .m4a, .flac, .ogg)"
         )
 
     path.unlink()
@@ -51,7 +51,7 @@ def extract(path: Path) -> Path:
     return dest
 
 
-_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".flac"}
+_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".flac", ".ogg"}
 
 
 def _has_audio(directory: Path) -> bool:
@@ -64,7 +64,7 @@ def _has_audio(directory: Path) -> bool:
 
 
 def find_audio_files(directory: Path) -> list[Path]:
-    """Return a sorted list of supported audio files (.mp3, .m4a, .flac) under *directory*."""
+    """Return a sorted list of supported audio files (.mp3, .m4a, .flac, .ogg) under *directory*."""
     files = [
         f
         for f in directory.rglob("*")

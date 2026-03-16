@@ -17,6 +17,7 @@ from tune_shifter.tagger import (
     _read_existing_metadata,
     _search_release,
     _write_flac_tags,
+    _write_ogg_tags,
     _write_tags,
     configure_musicbrainz,
     is_tagged,
@@ -596,9 +597,9 @@ class TestWriteTagsEdgeCases:
 
     def test_unsupported_format_logs_warning(self, tmp_path: Path) -> None:
         """_write_tags logs a warning for unsupported formats and does not raise."""
-        ogg = tmp_path / "track.ogg"
-        ogg.write_bytes(b"OggS")
-        _write_tags(ogg, self._make_release())  # must not raise
+        wav = tmp_path / "track.wav"
+        wav.write_bytes(b"RIFF")
+        _write_tags(wav, self._make_release())  # must not raise
 
     def test_mp3_without_id3_header_gets_fresh_tags(self, tmp_path: Path) -> None:
         """_write_tags on an MP3 with no ID3 header creates a fresh tag set."""
@@ -960,3 +961,175 @@ class TestTagDirectoryFlac:
         assert tags["TOTALDISCS"] == ["1"]
         assert "TOTALTRACKS" not in tags  # total_tracks=0 → omitted
         assert "MUSICBRAINZ_TRACKID" not in tags
+
+
+class TestIsTaggedOgg:
+    def test_ogg_with_mbid_returns_true(self, tmp_path: Path) -> None:
+        """is_tagged returns True when the OGG has a MUSICBRAINZ_ALBUMID tag."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_ogg = MagicMock()
+        mock_ogg.tags = {"MUSICBRAINZ_ALBUMID": ["rel-123"]}
+
+        with patch(
+            "tune_shifter.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            assert is_tagged(ogg) is True
+
+    def test_ogg_without_mbid_returns_false(self, tmp_path: Path) -> None:
+        """is_tagged returns False when the OGG has no MUSICBRAINZ_ALBUMID tag."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_ogg = MagicMock()
+        mock_ogg.tags = {}
+
+        with patch(
+            "tune_shifter.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            assert is_tagged(ogg) is False
+
+    def test_ogg_with_none_tags_returns_false(self, tmp_path: Path) -> None:
+        """is_tagged returns False when the OGG tags object is None."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_ogg = MagicMock()
+        mock_ogg.tags = None
+
+        with patch(
+            "tune_shifter.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            assert is_tagged(ogg) is False
+
+
+class TestReadReleaseMbidsOgg:
+    def test_ogg_returns_correct_mbids(self, tmp_path: Path) -> None:
+        """read_release_mbids extracts both MBIDs from OGG Vorbis comments."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_ogg = MagicMock()
+        mock_ogg.tags = {
+            "MUSICBRAINZ_ALBUMID": ["rel-abc"],
+            "MUSICBRAINZ_RELEASEGROUPID": ["rg-xyz"],
+        }
+
+        with patch(
+            "tune_shifter.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            rel, rg = read_release_mbids(ogg)
+
+        assert rel == "rel-abc"
+        assert rg == "rg-xyz"
+
+    def test_ogg_missing_tags_returns_empty_strings(self, tmp_path: Path) -> None:
+        """read_release_mbids returns empty strings for OGG with no MBID tags."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_ogg = MagicMock()
+        mock_ogg.tags = {}
+
+        with patch(
+            "tune_shifter.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            rel, rg = read_release_mbids(ogg)
+
+        assert rel == ""
+        assert rg == ""
+
+
+class TestTagDirectoryOgg:
+    def test_ogg_tags_written(self, tmp_path: Path) -> None:
+        """MusicBrainz metadata is written to OGG Vorbis comment fields."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        initial_tags: dict[str, Any] = {
+            "ARTIST": ["Old Artist"],
+            "ALBUM": ["Old Album"],
+            "TRACKNUMBER": ["1"],
+        }
+        mock_ogg = MagicMock()
+        mock_ogg.tags = initial_tags
+
+        with patch(
+            "tune_shifter.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            with patch("musicbrainzngs.search_releases", return_value=SAMPLE_RELEASE):
+                with patch(
+                    "musicbrainzngs.get_release_by_id",
+                    return_value=SAMPLE_RELEASE_DETAIL,
+                ):
+                    release = tag_directory(tmp_path, [ogg])
+
+        assert release.mbid == "abc-123"
+        assert initial_tags["ARTIST"] == ["Cool Artist"]
+        assert initial_tags["ALBUM"] == ["Great Album"]
+        assert initial_tags["DATE"] == ["2020"]
+        assert initial_tags["MUSICBRAINZ_ALBUMID"] == ["abc-123"]
+        assert initial_tags["MUSICBRAINZ_RELEASEGROUPID"] == ["rg-456"]
+        assert initial_tags["ORIGINALDATE"] == ["2020-04-01"]
+        assert initial_tags["ORIGINALYEAR"] == ["2020"]
+        assert initial_tags["TRACKNUMBER"] == ["1"]
+        assert initial_tags["TOTALTRACKS"] == ["2"]
+        assert initial_tags["DISCNUMBER"] == ["1"]
+        assert initial_tags["TOTALDISCS"] == ["1"]
+        mock_ogg.save.assert_called()
+
+    def test_ogg_match_track_reads_tracknumber(self, tmp_path: Path) -> None:
+        """_match_track correctly parses TRACKNUMBER from OGG Vorbis comments."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_ogg = MagicMock()
+        mock_ogg.tags = {
+            "ARTIST": ["Artist"],
+            "ALBUM": ["Album"],
+            "TRACKNUMBER": ["2"],
+            "DISCNUMBER": ["1"],
+        }
+
+        with patch(
+            "tune_shifter.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            with patch("musicbrainzngs.search_releases", return_value=SAMPLE_RELEASE):
+                with patch(
+                    "musicbrainzngs.get_release_by_id",
+                    return_value=SAMPLE_RELEASE_DETAIL,
+                ):
+                    tag_directory(tmp_path, [ogg])
+
+        # Track 2 is "Second Track" in SAMPLE_RELEASE_DETAIL
+        assert mock_ogg.tags.get("TITLE") == ["Second Track"]
+
+    def test_write_ogg_tags_writes_core_fields(self, tmp_path: Path) -> None:
+        """_write_ogg_tags writes core Vorbis comment fields via _assign_vorbis_tags."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        tags: dict[str, Any] = {}
+        mock_ogg = MagicMock()
+        mock_ogg.tags = tags
+
+        release = ReleaseInfo(
+            mbid="abc-123",
+            release_group_mbid="rg-456",
+            title="Album",
+            artist="Artist",
+            album_artist="Artist",
+            year="2020",
+            tracks={},
+        )
+
+        with patch(
+            "tune_shifter.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            _write_ogg_tags(ogg, release, None)
+
+        assert tags["ARTIST"] == ["Artist"]
+        assert tags["ALBUM"] == ["Album"]
+        assert tags["MUSICBRAINZ_ALBUMID"] == ["abc-123"]
+        mock_ogg.save.assert_called_once()

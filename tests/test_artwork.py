@@ -15,6 +15,7 @@ from tune_shifter.artwork import (
     _detect_mime,
     _embed_m4a,
     _embed_mp3,
+    _embed_ogg,
     _load_local_artwork,
     fetch_and_embed,
     find_local_artwork,
@@ -434,9 +435,9 @@ class TestEmbed:
         """_embed logs a warning for unsupported formats."""
         from tune_shifter.artwork import _embed
 
-        ogg = tmp_path / "track.ogg"
-        ogg.write_bytes(b"OggS")
-        _embed(ogg, b"\xff\xd8\xff")  # must not raise
+        wav = tmp_path / "track.wav"
+        wav.write_bytes(b"RIFF")
+        _embed(wav, b"\xff\xd8\xff")  # must not raise
 
     def test_embed_flac_writes_picture_block(self, tmp_path: Path) -> None:
         """_embed_flac clears existing pictures and embeds the new image."""
@@ -459,6 +460,33 @@ class TestEmbed:
         mock_flac.save.assert_called_once()
         assert mock_pic.type == 3
         assert mock_pic.data is not None
+
+    def test_embed_ogg_writes_metadata_block_picture(self, tmp_path: Path) -> None:
+        """_embed_ogg embeds art as a base64 METADATA_BLOCK_PICTURE Vorbis comment."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_ogg = MagicMock()
+        mock_pic = MagicMock()
+        mock_pic.write.return_value = b"\x00" * 32
+
+        with (
+            patch(
+                "tune_shifter.artwork.mutagen.oggvorbis.OggVorbis",
+                return_value=mock_ogg,
+            ),
+            patch("tune_shifter.artwork.mutagen.flac.Picture", return_value=mock_pic),
+        ):
+            _embed_ogg(ogg, _make_jpeg(600, 600))
+
+        # The METADATA_BLOCK_PICTURE key must be set and be a non-empty list
+        assert mock_ogg.__setitem__.called
+        call_args = mock_ogg.__setitem__.call_args
+        assert call_args[0][0] == "METADATA_BLOCK_PICTURE"
+        assert isinstance(call_args[0][1], list)
+        assert len(call_args[0][1]) == 1
+        mock_ogg.save.assert_called_once()
+        assert mock_pic.type == 3
 
     def test_embed_mp3_creates_id3_when_header_missing(self, tmp_path: Path) -> None:
         """_embed_mp3 creates a fresh ID3 when the file has no existing header."""
@@ -614,11 +642,11 @@ class TestHasEmbeddedArt:
 
     def test_unsupported_format_returns_false(self, tmp_path: Path) -> None:
         """Returns False for unsupported file formats."""
-        ogg = tmp_path / "track.ogg"
-        ogg.write_bytes(b"OggS")
+        wav = tmp_path / "track.wav"
+        wav.write_bytes(b"RIFF")
 
         assert (
-            has_embedded_art(ogg, min_dimension=self._MIN, max_bytes=self._MAX) is False
+            has_embedded_art(wav, min_dimension=self._MIN, max_bytes=self._MAX) is False
         )
 
     def test_flac_qualifying_art_returns_true(self, tmp_path: Path) -> None:
@@ -664,6 +692,90 @@ class TestHasEmbeddedArt:
         with patch("tune_shifter.artwork.mutagen.flac.FLAC", return_value=mock_flac):
             assert (
                 has_embedded_art(flac, min_dimension=self._MIN, max_bytes=self._MAX)
+                is False
+            )
+
+    def test_ogg_qualifying_art_returns_true(self, tmp_path: Path) -> None:
+        """Returns True for an OGG whose METADATA_BLOCK_PICTURE meets quality requirements."""
+        import base64
+
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_pic = MagicMock()
+        mock_pic.data = _make_jpeg(600, 600)
+        mock_ogg = MagicMock()
+        mock_ogg.tags = {
+            "METADATA_BLOCK_PICTURE": [base64.b64encode(b"\x00" * 8).decode()]
+        }
+
+        with (
+            patch(
+                "tune_shifter.artwork.mutagen.oggvorbis.OggVorbis",
+                return_value=mock_ogg,
+            ),
+            patch("tune_shifter.artwork.mutagen.flac.Picture", return_value=mock_pic),
+        ):
+            assert (
+                has_embedded_art(ogg, min_dimension=self._MIN, max_bytes=self._MAX)
+                is True
+            )
+
+    def test_ogg_art_too_small_returns_false(self, tmp_path: Path) -> None:
+        """Returns False when OGG embedded art is below min_dimension."""
+        import base64
+
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_pic = MagicMock()
+        mock_pic.data = _make_jpeg(200, 200)
+        mock_ogg = MagicMock()
+        mock_ogg.tags = {
+            "METADATA_BLOCK_PICTURE": [base64.b64encode(b"\x00" * 8).decode()]
+        }
+
+        with (
+            patch(
+                "tune_shifter.artwork.mutagen.oggvorbis.OggVorbis",
+                return_value=mock_ogg,
+            ),
+            patch("tune_shifter.artwork.mutagen.flac.Picture", return_value=mock_pic),
+        ):
+            assert (
+                has_embedded_art(ogg, min_dimension=self._MIN, max_bytes=self._MAX)
+                is False
+            )
+
+    def test_ogg_without_picture_returns_false(self, tmp_path: Path) -> None:
+        """Returns False for an OGG with no METADATA_BLOCK_PICTURE tag."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_ogg = MagicMock()
+        mock_ogg.tags = {}
+
+        with patch(
+            "tune_shifter.artwork.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            assert (
+                has_embedded_art(ogg, min_dimension=self._MIN, max_bytes=self._MAX)
+                is False
+            )
+
+    def test_ogg_with_none_tags_returns_false(self, tmp_path: Path) -> None:
+        """Returns False when OGG tags object is None."""
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+
+        mock_ogg = MagicMock()
+        mock_ogg.tags = None
+
+        with patch(
+            "tune_shifter.artwork.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            assert (
+                has_embedded_art(ogg, min_dimension=self._MIN, max_bytes=self._MAX)
                 is False
             )
 

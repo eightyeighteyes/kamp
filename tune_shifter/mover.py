@@ -10,6 +10,7 @@ from pathlib import Path
 import mutagen.flac
 import mutagen.id3 as _id3
 import mutagen.mp4
+import mutagen.oggvorbis
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,23 @@ def _read_tags(path: Path) -> dict[str, object]:
                 disc_s = _get("DISCNUMBER").split("/")[0]
                 disc = int(disc_s) if disc_s.isdigit() else 1
                 title = _get("TITLE") or path.stem
+        elif suffix == ".ogg":
+            ogg = mutagen.oggvorbis.OggVorbis(str(path))
+            if ogg.tags is not None:
+
+                def _oget(key: str) -> str:
+                    vals = ogg.tags.get(key)  # type: ignore[union-attr]
+                    return vals[0] if vals else ""
+
+                artist = _oget("ARTIST")
+                album_artist = _oget("ALBUMARTIST") or artist
+                album = _oget("ALBUM")
+                year = _oget("DATE")[:4] if _oget("DATE") else ""
+                trck_s = _oget("TRACKNUMBER").split("/")[0]
+                track = int(trck_s) if trck_s.isdigit() else 0
+                disc_s = _oget("DISCNUMBER").split("/")[0]
+                disc = int(disc_s) if disc_s.isdigit() else 1
+                title = _oget("TITLE") or path.stem
     except Exception:
         pass
 

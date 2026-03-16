@@ -27,6 +27,9 @@
 ## Does Bandcamp auto-download actually work? Test poll_interval_minutes.
 *Single* — manual QA task; set a short poll interval and verify downloads trigger correctly
 
+## Menu Bar Status Item
+*LP* — when the daemon runs, show a menu bar icon with a "Sync Now" item; requires `rumps` dependency and threading integration with the daemon lifecycle
+
 # Needs Refinement
 ## Best Release
 *Side* — when multiple MB results exist, prefer the release closest to the original physical format (LP/CD over digital/streaming)

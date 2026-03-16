@@ -328,6 +328,8 @@ def _cmd_install_shortcut() -> None:
         plistlib.dump(shortcut_data, f, fmt=plistlib.FMT_BINARY)
 
     try:
+        # shortcuts sign emits spurious ObjC runtime warnings to stderr that
+        # are internal to Apple's tool and not actionable; suppress them.
         subprocess.run(
             [
                 "shortcuts",
@@ -340,6 +342,7 @@ def _cmd_install_shortcut() -> None:
                 str(_SHORTCUT_FILE),
             ],
             check=True,
+            stderr=subprocess.DEVNULL,
         )
     finally:
         unsigned.unlink(missing_ok=True)

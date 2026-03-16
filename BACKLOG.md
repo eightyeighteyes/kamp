@@ -3,6 +3,9 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
+## OGG Support
+*Side* — same as FLAC but via `mutagen.oggvorbis`; can be done alongside FLAC in one pass
+
 ## Producer Support
 *Side* — add recording-rels include to `get_release_by_id` call and traverse relationships to extract producer credits
 
@@ -11,12 +14,6 @@
 
 ## Config Arguments
 *Side* — add `tune-shifter config set <key> <value>` and `tune-shifter config show` subcommands; reads/writes existing TOML file
-
-## FLAC Support
-*Side* — extend tagger, mover, and artwork embed to handle `.flac` via `mutagen.flac.FLAC`; mirrors existing MP3/M4A paths
-
-## OGG Support
-*Side* — same as FLAC but via `mutagen.oggvorbis`; can be done alongside FLAC in one pass
 
 ## Cross-platform service installation (Linux systemd, Windows Task Scheduler)
 *Side* — Linux systemd unit file is straightforward; Windows Task Scheduler adds another side; can ship incrementally
@@ -31,7 +28,7 @@
 ## Best Release
 *Side* — when multiple MB results exist, prefer the release closest to the original physical format (LP/CD over digital/streaming)
 
-⚠️ Needs scoping: what ranking heuristic? (release format field, country, date proximity?) and what's the fallback when no physical release exists?
+⚠️ Needs scoping: what ranking heuristic? (release format field, country, date proximity?) and what's the fallback when no physical release exists? Note: date-based tie-breaking (earliest release wins) is already implemented; remaining work is format/country preference.
 
 ## AcoustID Support
 *LP* — fingerprint audio with `fpcalc`/chromaprint, look up recording via AcoustID API, feed MBID into existing tagger

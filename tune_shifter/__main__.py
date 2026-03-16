@@ -302,7 +302,14 @@ try
 on error msg
     display notification msg with title "tune-shifter: sync failed"
 end try"""
-    subprocess.run(["osacompile", "-o", str(_SHORTCUT_APP), "-e", script], check=True)
+    # osacompile mishandles spaces in the -o path even in list-form subprocess calls,
+    # signing "." instead of the bundle. Running from within the target directory with
+    # a relative name avoids the issue entirely.
+    subprocess.run(
+        ["osacompile", "-o", _SHORTCUT_APP.name, "-e", script],
+        cwd=str(_SHORTCUT_APP.parent),
+        check=True,
+    )
     print(f"Shortcut installed: {_SHORTCUT_APP}")
     print('Open Spotlight (\u2318 Space), type "Bandcamp Sync", and press Enter.')
     print(

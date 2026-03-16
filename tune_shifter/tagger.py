@@ -272,19 +272,38 @@ def _search_release(artist: str, album: str) -> ReleaseInfo:
             f"No MusicBrainz results for artist={artist!r} album={album!r}"
         )
 
-    best = max(releases, key=lambda r: int(r.get("ext:score", 0)))
-    best_mbid: str = best["id"]
+    # Sort candidates: highest score first; break ties by earliest release date so
+    # original/digital releases (e.g. 2020-03-27) beat later vinyl reissues (2021-04-30).
+    def _sort_key(r: dict[str, Any]) -> tuple[int, str]:
+        score = int(r.get("ext:score", 0))
+        date = r.get("date", "") or "9999"
+        return (-score, date)
+
+    candidates = sorted(releases, key=_sort_key)
 
     # search_releases returns minimal data (no full date, no track listings).
-    # Fetch the full release to get accurate year and track info.
-    logger.debug("Fetching full release details for %s", best_mbid)
-    detail = _mb_call(
-        musicbrainzngs.get_release_by_id,
-        best_mbid,
-        includes=["artists", "recordings", "release-groups", "labels"],
-    )
+    # Fetch the full release to get accurate year and track info.  Try each
+    # candidate in preference order; skip releases whose metadata cannot be
+    # parsed (e.g. vinyl with non-numeric track numbers like "A1").
+    last_err: Exception = TaggingError("no candidates")
+    for candidate in candidates:
+        candidate_mbid: str = candidate["id"]
+        logger.debug("Fetching full release details for %s", candidate_mbid)
+        detail = _mb_call(
+            musicbrainzngs.get_release_by_id,
+            candidate_mbid,
+            includes=["artists", "recordings", "release-groups", "labels"],
+        )
+        try:
+            return _parse_release(detail["release"])
+        except (ValueError, KeyError) as exc:
+            logger.debug("Skipping release %s: %s", candidate_mbid, exc)
+            last_err = exc
+            continue
 
-    return _parse_release(detail["release"])
+    raise TaggingError(
+        f"No parseable MusicBrainz release for artist={artist!r} album={album!r}: {last_err}"
+    )
 
 
 def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
@@ -326,7 +345,16 @@ def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
         track_list = medium.get("track-list", [])
         total_tracks = len(track_list)
         for track_raw in track_list:
-            track_num = int(track_raw.get("number", track_raw.get("position", 0)))
+            # Vinyl releases use non-numeric track numbers like "A1", "B2".
+            # Fall back to the 1-based position within the medium so the parser
+            # does not crash; track matching for non-numeric tracks will rely on
+            # position rather than the printed side+number.
+            num_str = str(track_raw.get("number", ""))
+            if num_str.isdigit():
+                track_num = int(num_str)
+            else:
+                pos = track_raw.get("position", 0)
+                track_num = int(pos) if str(pos).isdigit() else 0
             recording = track_raw.get("recording", {})
             key = f"{disc_num}-{track_num}"
             tracks[key] = TrackInfo(
@@ -655,6 +683,9 @@ def _write_flac_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) 
         audio.tags["RELEASECOUNTRY"] = _v(release.release_country)
     if release.original_date:
         audio.tags["ORIGINALDATE"] = _v(release.original_date)
+        # ORIGINALYEAR is the year-only portion, mirroring the M4A convention so
+        # players that don't parse ORIGINALDATE still display the original year.
+        audio.tags["ORIGINALYEAR"] = _v(release.original_date[:4])
     if release.label:
         audio.tags["LABEL"] = _v(release.label)
     if release.catalog_number:
@@ -666,20 +697,14 @@ def _write_flac_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) 
     if release.script:
         audio.tags["SCRIPT"] = _v(release.script)
 
-    # Track and disc numbers with totals
+    # Track and disc numbers — write number and total as separate tags per
+    # the MusicBrainz Picard convention for Vorbis comments.
     if track is not None:
-        total_trck = (
-            f"{track.number}/{track.total_tracks}"
-            if track.total_tracks
-            else str(track.number)
-        )
-        total_disc = (
-            f"{track.disc}/{release.total_discs}"
-            if release.total_discs > 1
-            else str(track.disc)
-        )
-        audio.tags["TRACKNUMBER"] = _v(total_trck)
-        audio.tags["DISCNUMBER"] = _v(total_disc)
+        audio.tags["TRACKNUMBER"] = _v(str(track.number))
+        if track.total_tracks:
+            audio.tags["TOTALTRACKS"] = _v(str(track.total_tracks))
+        audio.tags["DISCNUMBER"] = _v(str(track.disc))
+        audio.tags["TOTALDISCS"] = _v(str(release.total_discs))
         audio.tags["TITLE"] = _v(track.title)
         if track.recording_mbid:
             audio.tags["MUSICBRAINZ_TRACKID"] = _v(track.recording_mbid)

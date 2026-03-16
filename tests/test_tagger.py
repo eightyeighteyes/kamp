@@ -13,6 +13,7 @@ from tune_shifter.tagger import (
     ReleaseInfo,
     TaggingError,
     TrackInfo,
+    _parse_release,
     _read_existing_metadata,
     _search_release,
     _write_flac_tags,
@@ -227,6 +228,168 @@ class TestTagDirectory:
 
         # The winning MBID ("high") must be passed to get_release_by_id
         assert mock_get.call_args[0][0] == "high"
+
+    def test_tie_breaks_by_earliest_date(self, tmp_path: Path) -> None:
+        """When scores are equal, the earlier-dated release is preferred over a
+        later vinyl reissue."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+
+        tied_result: dict[str, Any] = {
+            "release-list": [
+                {
+                    "id": "vinyl-reissue",
+                    "title": "Album",
+                    "date": "2021-04-30",
+                    "ext:score": "100",
+                    "artist-credit": [{"artist": {"name": "Artist"}}],
+                },
+                {
+                    "id": "original",
+                    "title": "Album",
+                    "date": "2020-03-27",
+                    "ext:score": "100",
+                    "artist-credit": [{"artist": {"name": "Artist"}}],
+                },
+            ]
+        }
+
+        with patch("musicbrainzngs.search_releases", return_value=tied_result):
+            with patch(
+                "musicbrainzngs.get_release_by_id", return_value=SAMPLE_RELEASE_DETAIL
+            ) as mock_get:
+                tag_directory(tmp_path, [mp3])
+
+        # Earlier-dated release must be tried first
+        assert mock_get.call_args_list[0][0][0] == "original"
+
+    def test_falls_back_to_next_candidate_on_parse_error(self, tmp_path: Path) -> None:
+        """If the top candidate cannot be parsed (e.g. vinyl track numbers),
+        the next candidate is tried automatically."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3, track=1)
+
+        # First candidate has a vinyl track number ("A1") that fails int()
+        vinyl_detail: dict[str, Any] = {
+            "release": {
+                "id": "vinyl-id",
+                "title": "Album",
+                "date": "2021-04-30",
+                "status": "Official",
+                "country": "US",
+                "barcode": "",
+                "asin": "",
+                "text-representation": {},
+                "artist-credit": [
+                    {"artist": {"id": "a1", "name": "Artist", "sort-name": "Artist"}}
+                ],
+                "release-group": {
+                    "id": "rg-1",
+                    "primary-type": "Album",
+                    "first-release-date": "",
+                },
+                "label-info-list": [],
+                "medium-list": [
+                    {
+                        "position": "1",
+                        "track-list": [
+                            {
+                                "number": "A1",
+                                "position": "1",
+                                "recording": {"id": "rec-111", "title": "Track One"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+
+        def _get_release(mbid: str, **_kwargs: Any) -> dict[str, Any]:
+            if mbid == "vinyl-id":
+                return vinyl_detail
+            return SAMPLE_RELEASE_DETAIL
+
+        two_candidates: dict[str, Any] = {
+            "release-list": [
+                {
+                    "id": "vinyl-id",
+                    "date": "2021",
+                    "ext:score": "100",
+                    "artist-credit": [{"artist": {"name": "Artist"}}],
+                },
+                {
+                    "id": "abc-123",
+                    "date": "2020",
+                    "ext:score": "100",
+                    "artist-credit": [{"artist": {"name": "Artist"}}],
+                },
+            ]
+        }
+
+        with patch("musicbrainzngs.search_releases", return_value=two_candidates):
+            with patch("musicbrainzngs.get_release_by_id", side_effect=_get_release):
+                release = tag_directory(tmp_path, [mp3])
+
+        assert release.mbid == "abc-123"
+
+
+class TestParseReleaseVinyl:
+    def test_non_numeric_track_number_uses_position(self) -> None:
+        """Vinyl track numbers like 'A1' fall back to the medium position."""
+        raw: dict[str, Any] = {
+            "id": "vinyl-id",
+            "title": "Album",
+            "date": "2021",
+            "status": "Official",
+            "country": "US",
+            "barcode": "",
+            "asin": "",
+            "text-representation": {},
+            "artist-credit": [
+                {"artist": {"id": "a1", "name": "Artist", "sort-name": "Artist"}}
+            ],
+            "release-group": {
+                "id": "rg-1",
+                "primary-type": "Album",
+                "first-release-date": "",
+            },
+            "label-info-list": [],
+            "medium-list": [
+                {
+                    "position": "1",
+                    "track-list": [
+                        {
+                            "number": "A1",
+                            "position": "1",
+                            "recording": {"id": "rec-1", "title": "Side A Track 1"},
+                        },
+                        {
+                            "number": "A2",
+                            "position": "2",
+                            "recording": {"id": "rec-2", "title": "Side A Track 2"},
+                        },
+                    ],
+                },
+                {
+                    "position": "2",
+                    "track-list": [
+                        {
+                            "number": "B1",
+                            "position": "1",
+                            "recording": {"id": "rec-3", "title": "Side B Track 1"},
+                        },
+                    ],
+                },
+            ],
+        }
+        release = _parse_release(raw)
+
+        # Non-numeric "A1" falls back to position=1 on disc 1
+        assert "1-1" in release.tracks
+        assert release.tracks["1-1"].title == "Side A Track 1"
+        assert "1-2" in release.tracks
+        assert "2-1" in release.tracks
+        assert release.tracks["2-1"].title == "Side B Track 1"
 
 
 class TestEditionSuffixRetry:
@@ -655,6 +818,14 @@ class TestTagDirectoryFlac:
         assert initial_tags["DATE"] == ["2020"]
         assert initial_tags["MUSICBRAINZ_ALBUMID"] == ["abc-123"]
         assert initial_tags["MUSICBRAINZ_RELEASEGROUPID"] == ["rg-456"]
+        # ORIGINALYEAR is the year-only companion to ORIGINALDATE
+        assert initial_tags["ORIGINALDATE"] == ["2020-04-01"]
+        assert initial_tags["ORIGINALYEAR"] == ["2020"]
+        # Track 1 of 2 on disc 1 of 1
+        assert initial_tags["TRACKNUMBER"] == ["1"]
+        assert initial_tags["TOTALTRACKS"] == ["2"]
+        assert initial_tags["DISCNUMBER"] == ["1"]
+        assert initial_tags["TOTALDISCS"] == ["1"]
         mock_flac.save.assert_called()
 
     def test_flac_match_track_reads_tracknumber(self, tmp_path: Path) -> None:
@@ -750,6 +921,7 @@ class TestTagDirectoryFlac:
         assert "MUSICBRAINZ_ALBUMSTATUS" not in tags
         assert "RELEASECOUNTRY" not in tags
         assert "ORIGINALDATE" not in tags
+        assert "ORIGINALYEAR" not in tags
         assert "LABEL" not in tags
         assert "CATALOGNUMBER" not in tags
         assert "BARCODE" not in tags
@@ -784,4 +956,7 @@ class TestTagDirectoryFlac:
             _write_flac_tags(flac, release, track)
 
         assert tags["TITLE"] == ["Track One"]
+        assert tags["TRACKNUMBER"] == ["1"]
+        assert tags["TOTALDISCS"] == ["1"]
+        assert "TOTALTRACKS" not in tags  # total_tracks=0 → omitted
         assert "MUSICBRAINZ_TRACKID" not in tags

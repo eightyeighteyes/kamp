@@ -13,10 +13,12 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import logging
+import plistlib
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -29,7 +31,8 @@ from .watcher import Watcher
 _SERVICE_LABEL = "com.tune-shifter"
 _PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{_SERVICE_LABEL}.plist"
 _LOG_PATH = _state_dir() / "daemon.log"
-_SHORTCUT_APP = Path.home() / "Applications" / "Bandcamp Sync.app"
+_SHORTCUT_NAME = "Bandcamp Sync"
+_SHORTCUT_FILE = _state_dir() / "Bandcamp Sync.shortcut"
 
 # pyproject.toml lives one level above the package directory and is the canonical
 # version source kept up to date by release-please.  Prefer it over
@@ -290,52 +293,65 @@ def _cmd_uninstall_service() -> None:
 
 
 def _cmd_install_shortcut() -> None:
-    _SHORTCUT_APP.parent.mkdir(parents=True, exist_ok=True)
-    # /bin/zsh -l loads the login profile so tune-shifter is on PATH regardless
-    # of install method (Homebrew, pipx, source checkout, etc.).
-    # try/on error surfaces failures — including a missing [bandcamp] config —
-    # as a notification instead of silently doing nothing.
-    script = """\
-try
-    do shell script "/bin/zsh -l -c 'tune-shifter sync'"
-    display notification "Bandcamp sync complete" with title "tune-shifter"
-on error msg
-    display notification msg with title "tune-shifter: sync failed"
-end try"""
-    # osacompile mishandles spaces in the -o path even in list-form subprocess calls,
-    # signing "." instead of the bundle. Running from within the target directory with
-    # a relative name avoids the issue entirely.
-    subprocess.run(
-        ["osacompile", "-o", _SHORTCUT_APP.name, "-e", script],
-        cwd=str(_SHORTCUT_APP.parent),
-        check=True,
-    )
-    # osacompile omits CFBundleIdentifier, which Spotlight requires to index an app
-    # as an Application. Inject it with PlistBuddy, then re-sign so the bundle
-    # signature covers the updated plist, then force Spotlight to index it.
-    _info_plist = _SHORTCUT_APP / "Contents" / "Info.plist"
-    subprocess.run(
-        [
-            "/usr/libexec/PlistBuddy",
-            "-c",
-            "Add :CFBundleIdentifier string com.tune-shifter.bandcamp-sync",
-            str(_info_plist),
+    # Build a minimal Shortcuts action that runs tune-shifter sync via a login
+    # shell so the PATH is populated regardless of install method.
+    shortcut_data = {
+        "WFWorkflowActions": [
+            {
+                "WFWorkflowActionIdentifier": "is.workflow.actions.runshellscript",
+                "WFWorkflowActionParameters": {
+                    "WFShellScriptActionScript": ("/bin/zsh -l -c 'tune-shifter sync'"),
+                    "WFShellScriptShell": "/bin/zsh",
+                },
+            }
         ],
-        check=False,
+        "WFWorkflowClientVersion": "1130",
+        "WFWorkflowHasShortcutInputVariables": False,
+        "WFWorkflowIcon": {
+            "WFWorkflowIconGlyphNumber": 59511,
+            "WFWorkflowIconStartColor": 1925823743,
+        },
+        "WFWorkflowImportQuestions": [],
+        "WFWorkflowInputContentItemClasses": [],
+        "WFWorkflowMinimumClientVersion": 900,
+        "WFWorkflowMinimumClientVersionString": "900",
+        "WFWorkflowOutputContentItemClasses": [],
+        "WFWorkflowTypes": [],
+    }
+
+    _SHORTCUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write unsigned plist to a temp file, sign it, write signed copy to state dir.
+    # The signed file persists so uninstall can locate it and reinstalls are idempotent.
+    with tempfile.NamedTemporaryFile(suffix=".shortcut", delete=False) as f:
+        unsigned = Path(f.name)
+        plistlib.dump(shortcut_data, f, fmt=plistlib.FMT_BINARY)
+
+    try:
+        subprocess.run(
+            [
+                "shortcuts",
+                "sign",
+                "--mode",
+                "anyone",
+                "--input",
+                str(unsigned),
+                "--output",
+                str(_SHORTCUT_FILE),
+            ],
+            check=True,
+        )
+    finally:
+        unsigned.unlink(missing_ok=True)
+
+    # Opening the signed .shortcut file launches the Shortcuts app with a
+    # one-click "Add Shortcut" confirmation dialog; no programmatic install
+    # path exists on this macOS version.
+    subprocess.run(["open", str(_SHORTCUT_FILE)], check=True)
+    print(
+        'The Shortcuts app will open — click "Add Shortcut" to complete installation.'
     )
-    subprocess.run(
-        ["codesign", "--force", "--sign", "-", str(_SHORTCUT_APP)], check=False
-    )
-    # Register with Launch Services (the app database Spotlight queries for applications).
-    # mdimport alone is insufficient — lsregister is what makes an app appear in Spotlight.
-    _LS_REGISTER = Path(
-        "/System/Library/Frameworks/CoreServices.framework"
-        "/Frameworks/LaunchServices.framework/Support/lsregister"
-    )
-    subprocess.run([str(_LS_REGISTER), "-f", str(_SHORTCUT_APP)], check=False)
-    subprocess.run(["mdimport", str(_SHORTCUT_APP)], check=False)
-    print(f"Shortcut installed: {_SHORTCUT_APP}")
-    print('Open Spotlight (\u2318 Space), type "Bandcamp Sync", and press Enter.')
+    print(f'\nThen open Spotlight (\u2318 Space) and type "{_SHORTCUT_NAME}".')
     print(
         "\nNote: run 'tune-shifter sync' in a terminal first to set up Bandcamp credentials."
     )
@@ -343,11 +359,24 @@ end try"""
 
 
 def _cmd_uninstall_shortcut() -> None:
-    if not _SHORTCUT_APP.exists():
-        print("Shortcut is not installed.")
-        return
-    shutil.rmtree(_SHORTCUT_APP)
-    print("Shortcut removed.")
+    # Use the Shortcuts Events scripting bridge to delete by name.
+    result = subprocess.run(
+        [
+            "osascript",
+            "-e",
+            f'tell application "Shortcuts Events" to delete '
+            f'(shortcuts whose name is "{_SHORTCUT_NAME}")',
+        ],
+        capture_output=True,
+    )
+    _SHORTCUT_FILE.unlink(missing_ok=True)
+    if result.returncode == 0:
+        print("Shortcut removed.")
+    else:
+        print(
+            f'Shortcut "{_SHORTCUT_NAME}" not found in Shortcuts app '
+            "(may have already been removed)."
+        )
 
 
 if __name__ == "__main__":

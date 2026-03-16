@@ -192,6 +192,7 @@ Drop any Bandcamp ZIP or already-extracted folder into your staging directory. T
 - MP3
 - AAC / M4A
 - FLAC
+- OGG Vorbis
 
 ---
 

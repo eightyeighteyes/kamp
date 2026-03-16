@@ -70,6 +70,59 @@ class TrackInfo:
     total_tracks: int = 0
 
 
+def is_tagged(path: Path) -> bool:
+    """Return True if *path* already has a MusicBrainz Release ID tag.
+
+    The MBID is written only after a successful full tag pass, so its presence
+    implies all other tags were written in the same run.  Returns False on any
+    read error so callers can safely fall through to the full tagging path.
+    """
+    try:
+        suffix = path.suffix.lower()
+        if suffix == ".mp3":
+            tags = id3.ID3(str(path))
+            frame = tags.get("TXXX:MusicBrainz Release Id")
+            return bool(frame and str(frame))
+        if suffix == ".m4a":
+            audio = mutagen.mp4.MP4(str(path))
+            if audio.tags is None:
+                return False
+            vals = audio.tags.get("----:com.apple.iTunes:MusicBrainz Release Id")
+            return bool(vals)
+    except Exception:
+        pass
+    return False
+
+
+def read_release_mbids(path: Path) -> tuple[str, str]:
+    """Return (release_mbid, release_group_mbid) from an already-tagged file.
+
+    Used by the pipeline skip path to recover the MBIDs needed for artwork
+    without re-querying MusicBrainz.  Returns ("", "") on any read error.
+    """
+    try:
+        suffix = path.suffix.lower()
+        if suffix == ".mp3":
+            tags = id3.ID3(str(path))
+            rel = tags.get("TXXX:MusicBrainz Release Id")
+            rg = tags.get("TXXX:MusicBrainz Release Group Id")
+            return str(rel) if rel else "", str(rg) if rg else ""
+        if suffix == ".m4a":
+            audio = mutagen.mp4.MP4(str(path))
+            if audio.tags is None:
+                return "", ""
+            rel_vals = audio.tags.get("----:com.apple.iTunes:MusicBrainz Release Id")
+            rg_vals = audio.tags.get(
+                "----:com.apple.iTunes:MusicBrainz Release Group Id"
+            )
+            rel_mbid = rel_vals[0].decode() if rel_vals else ""  # type: ignore[union-attr]
+            rg_mbid = rg_vals[0].decode() if rg_vals else ""  # type: ignore[union-attr]
+            return rel_mbid, rg_mbid
+    except Exception:
+        pass
+    return "", ""
+
+
 def configure_musicbrainz(app_name: str, app_version: str, contact: str) -> None:
     musicbrainzngs.set_useragent(app_name, app_version, contact)
 

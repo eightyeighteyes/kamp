@@ -24,6 +24,29 @@ class ArtworkError(Exception):
     pass
 
 
+def has_embedded_art(path: Path) -> bool:
+    """Return True if *path* already has embedded cover art.
+
+    Checked independently of tagging so a file with tags but no art (e.g. a
+    prior run where the artwork step failed non-fatally) can still be re-embedded
+    without re-running the MusicBrainz lookup.  Returns False on any read error.
+    """
+    try:
+        suffix = path.suffix.lower()
+        if suffix == ".mp3":
+            tags = id3.ID3(str(path))
+            return any(k.startswith("APIC") for k in tags)
+        if suffix == ".m4a":
+            audio = mutagen.mp4.MP4(str(path))
+            if audio.tags is None:
+                return False
+            covr = audio.tags.get("covr")
+            return bool(covr)
+    except Exception:
+        pass
+    return False
+
+
 def find_local_artwork(directory: Path) -> Path | None:
     """Return the best image file found directly in *directory*, or None.
 

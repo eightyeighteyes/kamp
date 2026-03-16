@@ -18,6 +18,7 @@ from tune_shifter.artwork import (
     _load_local_artwork,
     fetch_and_embed,
     find_local_artwork,
+    has_embedded_art,
 )
 
 # ---------------------------------------------------------------------------
@@ -473,3 +474,83 @@ class TestDetectMime:
 
     def test_returns_jpeg_for_other_bytes(self) -> None:
         assert _detect_mime(b"\xff\xd8\xff\xe0") == "image/jpeg"
+
+
+class TestHasEmbeddedArt:
+    def test_mp3_with_apic_returns_true(self, tmp_path: Path) -> None:
+        """has_embedded_art returns True for an MP3 with an APIC frame."""
+        import mutagen.id3 as id3_
+
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3_.ID3()
+        tags["APIC:Cover"] = id3_.APIC(
+            encoding=3,
+            mime="image/jpeg",
+            type=3,
+            desc="Cover",
+            data=_make_jpeg(100, 100),
+        )
+        tags.save(str(mp3))
+
+        assert has_embedded_art(mp3) is True
+
+    def test_mp3_without_apic_returns_false(self, tmp_path: Path) -> None:
+        """has_embedded_art returns False for an MP3 with no APIC frame."""
+        import mutagen.id3 as id3_
+
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3_.ID3().save(str(mp3))
+
+        assert has_embedded_art(mp3) is False
+
+    def test_m4a_with_covr_returns_true(self, tmp_path: Path) -> None:
+        """has_embedded_art returns True for an M4A with a covr tag."""
+        m4a = tmp_path / "01.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = {"covr": [b"\xff\xd8\xff"]}  # non-empty covr
+
+        with patch("tune_shifter.artwork.mutagen.mp4.MP4", return_value=mock_mp4):
+            assert has_embedded_art(m4a) is True
+
+    def test_m4a_without_covr_returns_false(self, tmp_path: Path) -> None:
+        """has_embedded_art returns False for an M4A with no covr tag."""
+        m4a = tmp_path / "01.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = {}
+
+        with patch("tune_shifter.artwork.mutagen.mp4.MP4", return_value=mock_mp4):
+            assert has_embedded_art(m4a) is False
+
+    def test_m4a_with_none_tags_returns_false(self, tmp_path: Path) -> None:
+        """has_embedded_art returns False when M4A tags object is None."""
+        m4a = tmp_path / "01.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = None
+
+        with patch("tune_shifter.artwork.mutagen.mp4.MP4", return_value=mock_mp4):
+            assert has_embedded_art(m4a) is False
+
+    def test_unsupported_format_returns_false(self, tmp_path: Path) -> None:
+        """has_embedded_art returns False for unsupported file formats."""
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"fLaC")
+
+        assert has_embedded_art(flac) is False
+
+    def test_read_error_returns_false(self, tmp_path: Path) -> None:
+        """has_embedded_art returns False when reading the file raises an exception."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+
+        with patch(
+            "tune_shifter.artwork.id3.ID3", side_effect=Exception("corrupt")
+        ):
+            assert has_embedded_art(mp3) is False

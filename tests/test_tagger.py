@@ -17,6 +17,8 @@ from tune_shifter.tagger import (
     _search_release,
     _write_tags,
     configure_musicbrainz,
+    is_tagged,
+    read_release_mbids,
     tag_directory,
 )
 
@@ -443,3 +445,132 @@ class TestWriteTagsEdgeCases:
 
         tags = id3.ID3(str(mp3))
         assert str(tags["TALB"]) == "Album"
+
+
+class TestIsTagged:
+    def test_mp3_with_mbid_returns_true(self, tmp_path: Path) -> None:
+        """is_tagged returns True when the MP3 has a MusicBrainz Release Id frame."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TXXX:MusicBrainz Release Id"] = id3.TXXX(
+            encoding=3, desc="MusicBrainz Release Id", text="abc-123"
+        )
+        tags.save(str(mp3))
+
+        assert is_tagged(mp3) is True
+
+    def test_mp3_without_mbid_returns_false(self, tmp_path: Path) -> None:
+        """is_tagged returns False when the MP3 has no MusicBrainz Release Id."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        assert is_tagged(mp3) is False
+
+    def test_m4a_with_mbid_returns_true(self, tmp_path: Path) -> None:
+        """is_tagged returns True when the M4A has a MusicBrainz Release Id tag."""
+        m4a = tmp_path / "01.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = {
+            "----:com.apple.iTunes:MusicBrainz Release Id": [b"abc-123"]
+        }
+
+        with patch("tune_shifter.tagger.mutagen.mp4.MP4", return_value=mock_mp4):
+            assert is_tagged(m4a) is True
+
+    def test_m4a_without_mbid_returns_false(self, tmp_path: Path) -> None:
+        """is_tagged returns False when the M4A has no MusicBrainz Release Id tag."""
+        m4a = tmp_path / "01.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = {}
+
+        with patch("tune_shifter.tagger.mutagen.mp4.MP4", return_value=mock_mp4):
+            assert is_tagged(m4a) is False
+
+    def test_m4a_with_none_tags_returns_false(self, tmp_path: Path) -> None:
+        """is_tagged returns False when M4A tags object is None."""
+        m4a = tmp_path / "01.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = None
+
+        with patch("tune_shifter.tagger.mutagen.mp4.MP4", return_value=mock_mp4):
+            assert is_tagged(m4a) is False
+
+    def test_unsupported_format_returns_false(self, tmp_path: Path) -> None:
+        """is_tagged returns False for unsupported file formats."""
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"fLaC")
+
+        assert is_tagged(flac) is False
+
+    def test_read_error_returns_false(self, tmp_path: Path) -> None:
+        """is_tagged returns False when reading the file raises an exception."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+
+        with patch("tune_shifter.tagger.id3.ID3", side_effect=Exception("corrupt")):
+            assert is_tagged(mp3) is False
+
+
+class TestReadReleaseMbids:
+    def test_mp3_returns_correct_mbids(self, tmp_path: Path) -> None:
+        """read_release_mbids extracts both release and release-group IDs from MP3."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TXXX:MusicBrainz Release Id"] = id3.TXXX(
+            encoding=3, desc="MusicBrainz Release Id", text="rel-111"
+        )
+        tags["TXXX:MusicBrainz Release Group Id"] = id3.TXXX(
+            encoding=3, desc="MusicBrainz Release Group Id", text="rg-222"
+        )
+        tags.save(str(mp3))
+
+        rel, rg = read_release_mbids(mp3)
+        assert rel == "rel-111"
+        assert rg == "rg-222"
+
+    def test_mp3_missing_frames_returns_empty_strings(self, tmp_path: Path) -> None:
+        """read_release_mbids returns empty strings for MP3 with no MBID frames."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        rel, rg = read_release_mbids(mp3)
+        assert rel == ""
+        assert rg == ""
+
+    def test_m4a_returns_correct_mbids(self, tmp_path: Path) -> None:
+        """read_release_mbids extracts both MBIDs from M4A tags."""
+        m4a = tmp_path / "01.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = {
+            "----:com.apple.iTunes:MusicBrainz Release Id": [b"rel-111"],
+            "----:com.apple.iTunes:MusicBrainz Release Group Id": [b"rg-222"],
+        }
+
+        with patch("tune_shifter.tagger.mutagen.mp4.MP4", return_value=mock_mp4):
+            rel, rg = read_release_mbids(m4a)
+
+        assert rel == "rel-111"
+        assert rg == "rg-222"
+
+    def test_read_error_returns_empty_tuple(self, tmp_path: Path) -> None:
+        """read_release_mbids returns ('', '') when reading raises an exception."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+
+        with patch("tune_shifter.tagger.id3.ID3", side_effect=Exception("io error")):
+            rel, rg = read_release_mbids(mp3)
+
+        assert rel == ""
+        assert rg == ""

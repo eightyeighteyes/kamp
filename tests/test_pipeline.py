@@ -260,3 +260,149 @@ class TestPipelineRun:
 
         errors_dir = config.paths.staging / "errors"
         assert errors_dir.exists()
+
+
+class TestSkipAlreadyProcessed:
+    """Pipeline skips expensive steps when files are already tagged / have art."""
+
+    def _setup_dir(self, config: Config) -> tuple[Path, Path]:
+        """Create staging + library dirs and return (album_dir, mp3)."""
+        config.paths.staging.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        album_dir = config.paths.staging / "great-album"
+        album_dir.mkdir()
+        mp3 = album_dir / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags.save(str(mp3))
+        return album_dir, mp3
+
+    def test_skips_both_steps_when_all_tagged_and_have_art(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """When all files are tagged and have art, neither MB lookup nor artwork fetch runs."""
+        album_dir, mp3 = self._setup_dir(config)
+
+        with (
+            patch("tune_shifter.pipeline.is_tagged", return_value=True),
+            patch("tune_shifter.pipeline.has_embedded_art", return_value=True),
+            patch(
+                "tune_shifter.pipeline.read_release_mbids",
+                return_value=("rel-abc", "rg-abc"),
+            ),
+            patch("tune_shifter.pipeline.tag_directory") as mock_tag,
+            patch("tune_shifter.pipeline.fetch_and_embed") as mock_art,
+            patch(
+                "tune_shifter.pipeline.move_to_library", return_value=[mp3]
+            ),
+        ):
+            run(album_dir, config)
+
+        mock_tag.assert_not_called()
+        mock_art.assert_not_called()
+
+    def test_skips_tagging_but_runs_artwork_when_no_art(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """When tagged but art is missing, MB lookup is skipped but artwork runs."""
+        album_dir, mp3 = self._setup_dir(config)
+
+        with (
+            patch("tune_shifter.pipeline.is_tagged", return_value=True),
+            patch("tune_shifter.pipeline.has_embedded_art", return_value=False),
+            patch(
+                "tune_shifter.pipeline.read_release_mbids",
+                return_value=("rel-abc", "rg-abc"),
+            ),
+            patch("tune_shifter.pipeline.tag_directory") as mock_tag,
+            patch("tune_shifter.pipeline.fetch_and_embed") as mock_art,
+            patch(
+                "tune_shifter.pipeline.move_to_library", return_value=[mp3]
+            ),
+        ):
+            run(album_dir, config)
+
+        mock_tag.assert_not_called()
+        mock_art.assert_called_once()
+
+    def test_runs_tagging_but_skips_artwork_when_all_have_art(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """When files are untagged but already have art, MB lookup runs, artwork is skipped."""
+        album_dir, mp3 = self._setup_dir(config)
+
+        with (
+            patch("tune_shifter.pipeline.is_tagged", return_value=False),
+            patch("tune_shifter.pipeline.has_embedded_art", return_value=True),
+            patch(
+                "tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE
+            ) as mock_tag,
+            patch("tune_shifter.pipeline.fetch_and_embed") as mock_art,
+            patch(
+                "tune_shifter.pipeline.move_to_library", return_value=[mp3]
+            ),
+        ):
+            run(album_dir, config)
+
+        mock_tag.assert_called_once()
+        mock_art.assert_not_called()
+
+    def test_runs_both_steps_for_fresh_files(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """Fresh files (no tags, no art) run both the MB lookup and artwork steps."""
+        album_dir, mp3 = self._setup_dir(config)
+
+        with (
+            patch("tune_shifter.pipeline.is_tagged", return_value=False),
+            patch("tune_shifter.pipeline.has_embedded_art", return_value=False),
+            patch(
+                "tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE
+            ) as mock_tag,
+            patch("tune_shifter.pipeline.fetch_and_embed") as mock_art,
+            patch(
+                "tune_shifter.pipeline.move_to_library", return_value=[mp3]
+            ),
+        ):
+            run(album_dir, config)
+
+        mock_tag.assert_called_once()
+        mock_art.assert_called_once()
+
+    def test_heterogeneous_directory_runs_tagging(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """If any file is untagged, the full MB lookup runs for the whole directory."""
+        config.paths.staging.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        album_dir = config.paths.staging / "partial-album"
+        album_dir.mkdir()
+
+        mp3_a = album_dir / "01.mp3"
+        mp3_b = album_dir / "02.mp3"
+        for mp3 in (mp3_a, mp3_b):
+            mp3.write_bytes(b"\xff\xfb" * 64)
+            id3.ID3().save(str(mp3))
+
+        # 01 is tagged; 02 is not — the all() check must fail
+        def is_tagged_side_effect(path: Path) -> bool:
+            return path.name == "01.mp3"
+
+        with (
+            patch(
+                "tune_shifter.pipeline.is_tagged",
+                side_effect=is_tagged_side_effect,
+            ),
+            patch("tune_shifter.pipeline.has_embedded_art", return_value=False),
+            patch(
+                "tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE
+            ) as mock_tag,
+            patch("tune_shifter.pipeline.fetch_and_embed"),
+            patch(
+                "tune_shifter.pipeline.move_to_library",
+                return_value=[mp3_a, mp3_b],
+            ),
+        ):
+            run(album_dir, config)
+
+        mock_tag.assert_called_once()

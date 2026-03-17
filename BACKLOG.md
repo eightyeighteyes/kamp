@@ -3,9 +3,6 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
-## Does Bandcamp auto-download actually work? Test poll_interval_minutes.
-*Single* — manual QA task; set a short poll interval and verify downloads trigger correctly
-
 ## Producer Support
 *Side* — add recording-rels include to `get_release_by_id` call and traverse relationships to extract producer credits
 
@@ -46,6 +43,8 @@
 ## Allow a user to verify tags before they're written
 ⚠️ Not scoped — needs UI design (CLI prompt? TUI? GUI?) before estimating
 
-# Needs Estimation
+## App Version shouldn't be configurable
+*Single* — `musicbrainz.app_version` is part of our contract with MB; remove it from the config file and schema, and derive it from `_get_version()` at startup instead
 
-Nothing to estimate.
+## Hotload config changes
+*Side* — watchdog (already a dep) can watch the config file cheaply; the complexity is safely propagating changes to the live `Syncer` (poll interval) and `Watcher` (paths) threads without a full restart

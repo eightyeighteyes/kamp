@@ -17,7 +17,7 @@ from tune_shifter.syncer import Syncer
 def _make_config(tmp_path: Path, poll_interval: int = 0) -> Config:
     return Config(
         paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
-        musicbrainz=MusicBrainzConfig(app_name="test", contact="t@t.com"),
+        musicbrainz=MusicBrainzConfig(contact="t@t.com"),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(
             path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
@@ -34,7 +34,7 @@ def _make_config(tmp_path: Path, poll_interval: int = 0) -> Config:
 def _make_config_no_bandcamp(tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
-        musicbrainz=MusicBrainzConfig(app_name="test", contact="t@t.com"),
+        musicbrainz=MusicBrainzConfig(contact="t@t.com"),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(
             path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"

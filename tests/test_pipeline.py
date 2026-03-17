@@ -32,10 +32,7 @@ def config(tmp_path: Path) -> Config:
             staging=tmp_path / "staging",
             library=tmp_path / "library",
         ),
-        musicbrainz=MusicBrainzConfig(
-            app_name="tune-shifter-test",
-            contact="test@example.com",
-        ),
+        musicbrainz=MusicBrainzConfig(contact="test@example.com"),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=5_000_000),
         library=LibraryConfig(
             path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"

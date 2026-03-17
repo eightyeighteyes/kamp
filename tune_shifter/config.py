@@ -36,7 +36,6 @@ staging = "~/Music/staging"
 library = "~/Music"
 
 [musicbrainz]
-app_name = "tune-shifter"
 contact = "user@example.com"  # Update with your contact email
 
 [artwork]
@@ -57,7 +56,6 @@ class PathsConfig:
 
 @dataclass
 class MusicBrainzConfig:
-    app_name: str
     contact: str
 
 
@@ -122,10 +120,7 @@ class Config:
 
         config = cls(
             paths=PathsConfig(staging=staging, library=library),
-            musicbrainz=MusicBrainzConfig(
-                app_name="tune-shifter",
-                contact=contact,
-            ),
+            musicbrainz=MusicBrainzConfig(contact=contact),
             artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
             library=LibraryConfig(
                 path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
@@ -225,10 +220,7 @@ class Config:
                 staging=Path(p["staging"]).expanduser(),
                 library=Path(p["library"]).expanduser(),
             ),
-            musicbrainz=MusicBrainzConfig(
-                app_name=mb["app_name"],
-                contact=mb["contact"],
-            ),
+            musicbrainz=MusicBrainzConfig(contact=mb["contact"]),
             artwork=ArtworkConfig(
                 min_dimension=int(art["min_dimension"]),
                 max_bytes=int(art["max_bytes"]),
@@ -249,7 +241,6 @@ class Config:
 _CONFIG_KEY_TYPES: dict[str, type] = {
     "paths.staging": str,
     "paths.library": str,
-    "musicbrainz.app_name": str,
     "musicbrainz.contact": str,
     "artwork.min_dimension": int,
     "artwork.max_bytes": int,

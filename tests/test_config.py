@@ -133,7 +133,6 @@ staging = "~/Music/staging"
 library = "~/Music"
 
 [musicbrainz]
-app_name = "tune-shifter"
 contact = "user@example.com"  # Update with your contact email
 
 [artwork]

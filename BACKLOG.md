@@ -37,7 +37,32 @@ Add a `--menu-bar` flag to the `daemon` subcommand. When set (and on macOS), cal
 
 ### ⚠️ Open design questions — needs answers before work starts
 
-**launchd + AppKit compatibility** — `rumps.App.run()` starts an NSApplication main loop. When launched via launchd as a background `LaunchAgent`, this requires `LSUIElement = true` in the plist to suppress the Dock icon and allow a menu-bar-only process. The existing `_cmd_install_service` plist template does not include this key. Does adding it break anything? More critically: does a bare CLI process (no `.app` bundle, no `Info.plist`) work with AppKit at all when launched by launchd, or does it require a proper bundle? Needs a spike before `MenuBarApp` work starts — if a bundle is required, the Homebrew CLI formula distribution model needs redesign and the estimate grows to 2xLP.
+**launchd + AppKit compatibility** — *Spiked. No bundle required; estimate stays LP.*
+
+When launchd starts a bare CLI process (no `.app` bundle, no `Info.plist`), the process is spawned as a background process type and has no Window Server connection. Calling `NSApplication.sharedApplication()` at that point fails with `_RegisterApplication(), FAILED TO establish the default connection to the WindowServer`. This is the root failure mode.
+
+**`LSUIElement` in the launchd plist does nothing.** `LSUIElement` is an `Info.plist` key consumed by the OS when a `.app` bundle launches; it has no effect in a `~/Library/LaunchAgents/` plist. Adding it to the existing launchd plist template would be a no-op.
+
+**The fix is purely in Python, before NSApplication initialises.** macOS exposes `TransformProcessType` (Carbon ApplicationServices) and the modern Objective-C equivalent `NSApp.setActivationPolicy_()` to convert a background process into a UI-element process at runtime — no bundle required. The call must happen before `NSApplication.sharedApplication()` is invoked (i.e. before `rumps.App.__init__` runs).
+
+Concrete approach in `MenuBarApp.__init__`:
+
+```python
+import platform
+if platform.system() == "Darwin":
+    from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+    NSApplication.sharedApplication().setActivationPolicy_(
+        NSApplicationActivationPolicyAccessory
+    )
+```
+
+`NSApplicationActivationPolicyAccessory` is the programmatic equivalent of `LSUIElement = true`: the process gets a menu bar presence and Window Server access, no Dock icon appears, and the app is excluded from Cmd-Tab cycling. `pyobjc-framework-Cocoa` (a transitive dependency of `rumps`) already provides `AppKit`, so no new dependency is needed.
+
+**The launchd plist does not need changes.** LaunchAgents run in the user's login session and inherit Window Server access once the process type is transformed. The existing plist template is sufficient; `LSUIElement` stays out of it.
+
+**Implication for `install-service`:** when the `--menu-bar` flag is used, `_cmd_install_service` should append `daemon --menu-bar` to `ProgramArguments`. That's a one-line change scoped inside the wire-up Single.
+
+**Estimate unchanged: LP.** A `.app` bundle is not required; the Homebrew formula distribution model is unaffected.
 
 **Icon design** — Single static icon or state-based set (idle / syncing / error)? SF Symbols (no asset files needed, macOS 11+) via `rumps`'s `template_image` vs a custom PNG. Minimum viable: one SF Symbol (`music.note` or `arrow.triangle.2.circlepath`). The icon name/asset must be decided before `MenuBarApp` work starts.
 

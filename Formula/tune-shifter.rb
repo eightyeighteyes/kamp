@@ -26,6 +26,7 @@ class TuneShifter < Formula
     system venv/"bin/pip", "install", "--upgrade", "pip"
     system venv/"bin/pip", "install", buildpath
     bin.install_symlink venv/"bin/tune-shifter"
+    zsh_completion.install "completions/_tune-shifter"
     (share/"tune-shifter").install "USAGE.md"
   end
 

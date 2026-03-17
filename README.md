@@ -79,6 +79,8 @@ After install, download the Playwright browser binaries required for Bandcamp au
 /opt/homebrew/opt/tune-shifter/venv/bin/playwright install chromium
 ```
 
+zsh tab completion is included and activated automatically via Homebrew's shell integration.
+
 ### From source
 
 ```bash

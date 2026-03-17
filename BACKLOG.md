@@ -3,6 +3,9 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
+## zsh shortcuts
+*Side* — write a `_tune-shifter` zsh completion function covering all subcommands (`daemon`, `sync`, `install-service`, `uninstall-service`, `config show/set`) and global flags; install via Homebrew formula to `share/zsh/site-functions/`
+
 ## Producer Support
 *Side* — add recording-rels include to `get_release_by_id` call and traverse relationships to extract producer credits
 
@@ -43,22 +46,5 @@
 ## Allow a user to verify tags before they're written
 ⚠️ Not scoped — needs UI design (CLI prompt? TUI? GUI?) before estimating
 
-# Needs Estimation
-
-## zsh shortcuts
-I want tab completion for tune-shifter commands in zsh.
-
-## bug: tune-shifter somehow gets pip installed when homebrew installed
-after brew install i see 
-```
-[tune-shifter] which tune-shifter
-/Users/theodore.terry/.pyenv/shims/tune-shifter
-```
-
-but if i do `pip uninstall tune-shifter`, i see:
-```
-[tune-shifter] which tune-shifter
-/opt/homebrew/bin/tune-shifter
-```
-
-## 
+## bug: pyenv shim shadows Homebrew binary after dev/brew cycle
+*Single* — formula is clean (isolated venv). Root cause: a past dev practice (pre-Poetry) wrote `tune-shifter` to pyenv's global site-packages; `pyenv rehash` registered the shim and it persisted. Fix: audit current dev paths for any global pip writes; add `.python-version` to the repo so pyenv doesn't pick up executables from Poetry's cache venv; document the canonical dev workflow.

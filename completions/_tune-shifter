@@ -1,0 +1,106 @@
+#compdef tune-shifter
+
+# zsh completion for tune-shifter
+# Installed to share/zsh/site-functions/ via the Homebrew formula.
+
+_tune_shifter() {
+  local state line
+  typeset -A opt_args
+
+  # Global options available at the top level
+  local -a global_opts
+  global_opts=(
+    '--config[Path to config file]:config file:_files -g "*.toml"'
+    '--log-level[Log verbosity]:level:(DEBUG INFO WARNING ERROR)'
+  )
+
+  _arguments -C \
+    $global_opts \
+    '1:subcommand:->subcommand' \
+    '*::args:->args'
+
+  case $state in
+    subcommand)
+      local -a subcommands
+      subcommands=(
+        'daemon:Watch staging directory and poll Bandcamp (default)'
+        'sync:One-shot Bandcamp download, then exit'
+        'install-service:Register tune-shifter as a launchd user agent (macOS)'
+        'uninstall-service:Remove the launchd user agent registration'
+        'config:Read or update configuration values'
+      )
+      _describe 'subcommand' subcommands
+      ;;
+
+    args)
+      case $line[1] in
+        daemon)
+          _arguments \
+            $global_opts \
+            '--staging[Staging directory to watch]:directory:_files -/' \
+            '--library[Library directory for finished files]:directory:_files -/'
+          ;;
+
+        sync)
+          _arguments \
+            $global_opts \
+            '--mark-synced[Mark entire collection as synced without downloading]'
+          ;;
+
+        install-service|uninstall-service)
+          # No subcommand-specific options
+          _arguments $global_opts
+          ;;
+
+        config)
+          _arguments -C \
+            $global_opts \
+            '1:config-command:->config_command' \
+            '*::config-args:->config_args'
+
+          case $state in
+            config_command)
+              local -a config_cmds
+              config_cmds=(
+                'show:Print current configuration'
+                'set:Set a config value (dot-notation key)'
+              )
+              _describe 'config command' config_cmds
+              ;;
+
+            config_args)
+              case $line[1] in
+                set)
+                  # Complete KEY on first positional, VALUE on second
+                  if (( CURRENT == 2 )); then
+                    local -a config_keys
+                    config_keys=(
+                      'paths.staging:Path to the staging directory'
+                      'paths.library:Path to the music library directory'
+                      'musicbrainz.contact:Contact email for MusicBrainz User-Agent'
+                      'artwork.min_dimension:Minimum cover art dimension in pixels'
+                      'artwork.max_bytes:Maximum cover art file size in bytes'
+                      'library.path_template:Path template for library files'
+                      'bandcamp.username:Bandcamp username'
+                      'bandcamp.cookie_file:Path to Bandcamp cookie file'
+                      'bandcamp.format:Preferred download format'
+                      'bandcamp.poll_interval_minutes:Polling interval in minutes (0 = manual)'
+                    )
+                    _describe 'config key' config_keys
+                  elif (( CURRENT == 3 )) && [[ $line[2] == 'bandcamp.format' ]]; then
+                    # Enumerate valid format choices for this specific key
+                    local -a formats
+                    formats=(mp3-v0 mp3-320 flac aac-hi vorbis alac wav)
+                    _values 'format' $formats
+                  fi
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_tune_shifter "$@"

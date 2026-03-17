@@ -13,6 +13,7 @@ from tune_shifter.__main__ import (
     _cmd_stop,
     _launchd_domain,
     _service_pid,
+    _service_registered,
     _yn_prompt,
 )
 
@@ -55,6 +56,17 @@ def _launchctl_result(stdout: str, returncode: int = 0) -> MagicMock:
     result.returncode = returncode
     result.stdout = stdout
     return result
+
+
+class TestServiceRegistered:
+    def test_returns_true_when_registered(self) -> None:
+        output = f"PID\tStatus\tLabel\n-\t0\t{_SERVICE_LABEL}\n"
+        with patch("subprocess.run", return_value=_launchctl_result(output)):
+            assert _service_registered() is True
+
+    def test_returns_false_when_not_registered(self) -> None:
+        with patch("subprocess.run", return_value=_launchctl_result("", returncode=1)):
+            assert _service_registered() is False
 
 
 class TestServicePid:
@@ -136,7 +148,7 @@ class TestCmdPlay:
             _cmd_play()
         assert "already running" in capsys.readouterr().out
 
-    def test_starts_stopped_service(
+    def test_starts_unregistered_service(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         plist = tmp_path / "com.tune-shifter.plist"
@@ -144,11 +156,30 @@ class TestCmdPlay:
         with (
             patch("tune_shifter.__main__._PLIST_PATH", plist),
             patch("tune_shifter.__main__._service_pid", return_value=None),
+            patch("tune_shifter.__main__._service_registered", return_value=False),
             patch("subprocess.run") as mock_run,
         ):
             _cmd_play()
         mock_run.assert_called_once_with(
             ["launchctl", "bootstrap", _launchd_domain(), str(plist)], check=True
+        )
+        assert "started" in capsys.readouterr().out
+
+    def test_kickstarts_registered_but_stopped_service(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        plist = tmp_path / "com.tune-shifter.plist"
+        plist.touch()
+        domain = _launchd_domain()
+        with (
+            patch("tune_shifter.__main__._PLIST_PATH", plist),
+            patch("tune_shifter.__main__._service_pid", return_value=None),
+            patch("tune_shifter.__main__._service_registered", return_value=True),
+            patch("subprocess.run") as mock_run,
+        ):
+            _cmd_play()
+        mock_run.assert_called_once_with(
+            ["launchctl", "kickstart", f"{domain}/{_SERVICE_LABEL}"], check=True
         )
         assert "started" in capsys.readouterr().out
 

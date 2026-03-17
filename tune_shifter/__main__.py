@@ -310,17 +310,31 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"
 
 
+def _launchctl_list() -> subprocess.CompletedProcess[str]:
+    """Run `launchctl list <label>` and return the result."""
+    return subprocess.run(
+        ["launchctl", "list", _SERVICE_LABEL],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _service_registered() -> bool:
+    """Return True if tune-shifter is registered in the launchd namespace.
+
+    A non-zero exit from `launchctl list` means the label is unknown to launchd.
+    Zero exit means the service is registered (running or stopped).
+    """
+    return _launchctl_list().returncode == 0
+
+
 def _service_pid() -> int | None:
     """Return the PID of the running tune-shifter service, or None if not running.
 
     Queries launchctl for the service label. A positive PID means the process is
     alive; "-" or 0 means the service is registered but not currently running.
     """
-    result = subprocess.run(
-        ["launchctl", "list", _SERVICE_LABEL],
-        capture_output=True,
-        text=True,
-    )
+    result = _launchctl_list()
     if result.returncode != 0:
         return None
     lines = result.stdout.strip().splitlines()
@@ -359,11 +373,18 @@ def _cmd_play() -> None:
     if _service_pid() is not None:
         print("tune-shifter is already running.")
         return
-    # bootstrap registers and starts the service; it returns a proper non-zero
-    # exit code on failure, unlike the deprecated `launchctl load`.
-    subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(_PLIST_PATH)], check=True
-    )
+    if _service_registered():
+        # Registered but not running (PID = "-"): bootstrap would fail with EIO
+        # because the label is already in launchd's namespace. Use kickstart instead.
+        subprocess.run(
+            ["launchctl", "kickstart", f"{_launchd_domain()}/{_SERVICE_LABEL}"],
+            check=True,
+        )
+    else:
+        # Not registered at all: bootstrap from the plist.
+        subprocess.run(
+            ["launchctl", "bootstrap", _launchd_domain(), str(_PLIST_PATH)], check=True
+        )
     print("tune-shifter started.")
 
 

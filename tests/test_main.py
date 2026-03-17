@@ -234,10 +234,14 @@ class TestCmdStatus:
     ) -> None:
         plist = tmp_path / "com.tune-shifter.plist"
         plist.touch()
+        # returncode=1 → not registered; no crash info, no subprocess needed
         with (
             patch("tune_shifter.__main__._PLIST_PATH", plist),
             patch("tune_shifter.__main__._service_pid", return_value=None),
-            patch("tune_shifter.__main__._service_registered", return_value=False),
+            patch(
+                "tune_shifter.__main__._launchctl_list",
+                return_value=_launchctl_result("", returncode=1),
+            ),
         ):
             _cmd_status()
         assert "not running" in capsys.readouterr().out

@@ -134,7 +134,6 @@ library = "~/Music"
 
 [musicbrainz]
 app_name = "tune-shifter"
-app_version = "0.1.0"
 contact = "user@example.com"  # Update with your contact email
 
 [artwork]
@@ -261,9 +260,7 @@ class TestConfigSet:
         self, tmp_path: Path
     ) -> None:
         """Setting a key only modifies the correct section."""
-        # Both [paths] and [bandcamp] have a "format"-like naming; use a real
-        # example: [musicbrainz].app_version and [bandcamp].format are distinct.
-        # Here we verify that setting paths.library doesn't touch library.path_template.
+        # Verify that setting paths.library doesn't touch library.path_template.
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
         config_set(path, "paths.library", "~/NewLib")

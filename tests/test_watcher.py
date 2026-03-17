@@ -24,7 +24,6 @@ def config(tmp_path: Path) -> Config:
         ),
         musicbrainz=MusicBrainzConfig(
             app_name="tune-shifter-test",
-            app_version="0.0.1",
             contact="test@example.com",
         ),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=5_000_000),

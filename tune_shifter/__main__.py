@@ -23,6 +23,7 @@ from pathlib import Path
 import musicbrainzngs
 
 from .config import DEFAULT_CONFIG_PATH, Config, _state_dir, config_set, config_show
+from .config_monitor import ConfigMonitor
 from .syncer import Syncer
 from .watcher import Watcher
 
@@ -183,7 +184,7 @@ def main() -> None:
             config.paths.staging = args.staging
         if hasattr(args, "library") and args.library:
             config.paths.library = args.library
-        _cmd_daemon(config)
+        _cmd_daemon(config, args.config)
 
 
 def _cmd_config(
@@ -250,7 +251,7 @@ def _cmd_sync(config: Config, config_path: Path, mark_synced: bool = False) -> N
         syncer.sync_once()
 
 
-def _cmd_daemon(config: Config) -> None:
+def _cmd_daemon(config: Config, config_path: Path) -> None:
     _logger = logging.getLogger(__name__)
     pkg_version = _get_version()
     install_path = Path(__file__).resolve().parent
@@ -264,11 +265,19 @@ def _cmd_daemon(config: Config) -> None:
     watcher = Watcher(config)
     syncer = Syncer(config)
 
+    def _on_config_reload(new_config: Config) -> None:
+        watcher.reload(new_config)
+        syncer.reload(new_config)
+
+    monitor = ConfigMonitor(config_path, _on_config_reload)
+
     watcher.start()
     syncer.start()
+    monitor.start()
 
     def _shutdown(signum: int, frame: object) -> None:
         logging.getLogger(__name__).info("Shutting down…")
+        monitor.stop()
         syncer.stop()
         watcher.stop()
 

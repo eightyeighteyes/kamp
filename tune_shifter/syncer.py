@@ -46,6 +46,34 @@ class Syncer:
         if self._thread is not None:
             self._thread.join(timeout=5)
 
+    def reload(self, config: Config) -> None:
+        """Apply a new config live.
+
+        If ``poll_interval_minutes`` changed the polling thread is restarted so
+        the new interval takes effect immediately rather than at the end of the
+        current sleep.
+        """
+        old_interval = (
+            self._config.bandcamp.poll_interval_minutes if self._config.bandcamp else 0
+        )
+        new_interval = config.bandcamp.poll_interval_minutes if config.bandcamp else 0
+        self._config = config
+
+        if old_interval != new_interval:
+            logger.info(
+                "Poll interval changed (%d → %d min); restarting syncer thread.",
+                old_interval,
+                new_interval,
+            )
+            self._stop_event.set()
+            if self._thread is not None:
+                self._thread.join(timeout=5)
+            self._stop_event.clear()
+            self._thread = None
+            self.start()
+        else:
+            logger.info("Syncer config reloaded.")
+
     def sync_once(self) -> None:
         """Download any new purchases immediately (one-shot, blocking)."""
         bc = self._config.bandcamp

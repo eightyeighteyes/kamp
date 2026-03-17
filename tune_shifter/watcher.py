@@ -179,6 +179,32 @@ class Watcher:
         self._observer.join()
         logger.info("Watcher stopped")
 
+    def reload(self, config: Config) -> None:
+        """Apply a new config live.
+
+        Updates the handler's config so future pipeline runs see the new
+        settings.  If the staging path changed the observer is rescheduled to
+        the new directory immediately.
+        """
+        old_staging = self._config.paths.staging
+        self._config = config
+        self._handler._config = config
+
+        if config.paths.staging != old_staging:
+            logger.info(
+                "Staging path changed (%s → %s); rescheduling observer.",
+                old_staging,
+                config.paths.staging,
+            )
+            self._observer.unschedule_all()
+            new_staging = config.paths.staging
+            new_staging.mkdir(parents=True, exist_ok=True)
+            self._handler = _StagingHandler(config)
+            self._observer.schedule(self._handler, str(new_staging), recursive=False)
+            self._handler._scan_staging_root()
+        else:
+            logger.info("Watcher config reloaded.")
+
     def join(self) -> None:
         """Block until the observer thread exits (e.g. after stop())."""
         self._observer.join()

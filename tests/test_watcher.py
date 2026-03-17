@@ -502,3 +502,66 @@ class TestWatcherStopJoin:
         watcher.start()
         watcher.stop()
         watcher.join()
+
+
+class TestWatcherReload:
+    def _patched_watcher(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> Watcher:
+        watcher = Watcher(config)
+        monkeypatch.setattr(watcher._observer, "start", lambda: None)
+        monkeypatch.setattr(watcher._observer, "schedule", lambda *a, **kw: None)
+        monkeypatch.setattr(watcher._observer, "stop", lambda: None)
+        monkeypatch.setattr(watcher._observer, "join", lambda **kw: None)
+        watcher.start()
+        return watcher
+
+    def test_reload_updates_config_on_handler(
+        self, config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """reload() propagates new config to the handler."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        new_config = Config(
+            paths=config.paths,
+            musicbrainz=config.musicbrainz,
+            artwork=ArtworkConfig(min_dimension=500, max_bytes=5_000_000),
+            library=config.library,
+        )
+        watcher.reload(new_config)
+        assert watcher._handler._config.artwork.min_dimension == 500
+
+    def test_reload_same_path_does_not_reschedule(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """reload() with the same staging path does not touch the observer."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        reschedule_calls: list[int] = []
+        monkeypatch.setattr(
+            watcher._observer,
+            "unschedule_all",
+            lambda: reschedule_calls.append(1),
+        )
+        watcher.reload(config)
+        assert reschedule_calls == []
+
+    def test_reload_changed_path_reschedules_observer(
+        self, config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """reload() with a new staging path unschedules and reschedules the observer."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        reschedule_calls: list[int] = []
+        monkeypatch.setattr(
+            watcher._observer,
+            "unschedule_all",
+            lambda: reschedule_calls.append(1),
+        )
+        new_staging = tmp_path / "new_staging"
+        new_config = Config(
+            paths=PathsConfig(staging=new_staging, library=config.paths.library),
+            musicbrainz=config.musicbrainz,
+            artwork=config.artwork,
+            library=config.library,
+        )
+        watcher.reload(new_config)
+        assert reschedule_calls == [1]
+        assert watcher._config.paths.staging == new_staging

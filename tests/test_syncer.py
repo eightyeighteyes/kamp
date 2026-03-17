@@ -108,6 +108,50 @@ class TestSyncOnce:
                 syncer.sync_once()
 
 
+class TestReload:
+    def test_reload_updates_config(self, tmp_path: Path) -> None:
+        """reload() replaces the stored config."""
+        syncer = Syncer(_make_config(tmp_path, poll_interval=0))
+        new_config = _make_config(tmp_path, poll_interval=0)
+        new_config.musicbrainz.contact = "new@example.com"
+        syncer.reload(new_config)
+        assert syncer._config.musicbrainz.contact == "new@example.com"
+
+    def test_reload_same_interval_does_not_restart_thread(self, tmp_path: Path) -> None:
+        """reload() with unchanged poll_interval leaves the thread running."""
+        with patch("tune_shifter.syncer.sync_new_purchases", return_value=[]):
+            with patch("tune_shifter.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path, poll_interval=60))
+                syncer.start()
+                original_thread = syncer._thread
+                syncer.reload(_make_config(tmp_path, poll_interval=60))
+                assert syncer._thread is original_thread
+                syncer.stop()
+
+    def test_reload_changed_interval_restarts_thread(self, tmp_path: Path) -> None:
+        """reload() with a new poll_interval stops and restarts the thread."""
+        with patch("tune_shifter.syncer.sync_new_purchases", return_value=[]):
+            with patch("tune_shifter.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path, poll_interval=60))
+                syncer.start()
+                original_thread = syncer._thread
+                syncer.reload(_make_config(tmp_path, poll_interval=30))
+                assert syncer._thread is not original_thread
+                assert syncer._thread is not None
+                assert syncer._thread.is_alive()
+                syncer.stop()
+
+    def test_reload_interval_to_zero_stops_thread(self, tmp_path: Path) -> None:
+        """reload() with interval=0 stops the polling thread."""
+        with patch("tune_shifter.syncer.sync_new_purchases", return_value=[]):
+            with patch("tune_shifter.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path, poll_interval=60))
+                syncer.start()
+                assert syncer._thread is not None
+                syncer.reload(_make_config(tmp_path, poll_interval=0))
+                assert syncer._thread is None
+
+
 class TestMarkSynced:
     def test_warns_when_no_bandcamp(self, tmp_path: Path) -> None:
         """mark_synced() warns and returns when [bandcamp] is absent."""

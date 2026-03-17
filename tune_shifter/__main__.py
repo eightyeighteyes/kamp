@@ -14,6 +14,7 @@ import argparse
 import importlib.metadata
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -319,6 +320,25 @@ def _launchctl_list() -> subprocess.CompletedProcess[str]:
     )
 
 
+# Matches simple scalar entries in launchctl list output, e.g.:
+#     "PID" = 12345;
+#     "LastExitStatus" = 256;
+#     "Label" = "com.tune-shifter";
+# Skips complex values (arrays, nested dicts) that span multiple lines.
+_LAUNCHCTL_ENTRY_RE = re.compile(r'^\s*"(\w+)"\s*=\s*(?:"([^"]*)"|([\w./\-]+));\s*$')
+
+
+def _parse_launchctl_info(output: str) -> dict[str, str]:
+    """Extract scalar key/value pairs from launchctl dict output."""
+    info: dict[str, str] = {}
+    for line in output.splitlines():
+        m = _LAUNCHCTL_ENTRY_RE.match(line)
+        if m:
+            # group(2) is a quoted string value; group(3) is an unquoted value
+            info[m.group(1)] = m.group(2) if m.group(2) is not None else m.group(3)
+    return info
+
+
 def _service_registered() -> bool:
     """Return True if tune-shifter is registered in the launchd namespace.
 
@@ -332,15 +352,13 @@ def _service_pid() -> int | None:
     """Return the PID of the running tune-shifter service, or None if not running.
 
     Queries launchctl for the service label. A positive PID means the process is
-    alive; "-" or 0 means the service is registered but not currently running.
+    alive; absent or 0 means the service is registered but not currently running.
     """
     result = _launchctl_list()
     if result.returncode != 0:
         return None
-    lines = result.stdout.strip().splitlines()
-    if len(lines) < 2:
-        return None
-    pid_str = lines[1].split("\t")[0]
+    info = _parse_launchctl_info(result.stdout)
+    pid_str = info.get("PID", "")
     if not pid_str.isdigit():
         return None
     pid = int(pid_str)
@@ -394,6 +412,16 @@ def _cmd_status() -> None:
         return
     pid = _service_pid()
     if pid is None:
+        result = _launchctl_list()
+        if result.returncode == 0:
+            # Registered but not running — surface the last exit code so the
+            # user can tell whether it crashed or was cleanly stopped.
+            info = _parse_launchctl_info(result.stdout)
+            last_exit = info.get("LastExitStatus", "0")
+            if last_exit != "0":
+                print(f"tune-shifter is not running (crashed, last exit: {last_exit})")
+                print(f"  Logs → {_LOG_PATH}")
+                return
         print("tune-shifter is not running.")
         return
     ps = subprocess.run(

@@ -37,7 +37,6 @@ library = "~/Music"
 
 [musicbrainz]
 app_name = "tune-shifter"
-app_version = "0.1.0"
 contact = "user@example.com"  # Update with your contact email
 
 [artwork]
@@ -59,7 +58,6 @@ class PathsConfig:
 @dataclass
 class MusicBrainzConfig:
     app_name: str
-    app_version: str
     contact: str
 
 
@@ -126,7 +124,6 @@ class Config:
             paths=PathsConfig(staging=staging, library=library),
             musicbrainz=MusicBrainzConfig(
                 app_name="tune-shifter",
-                app_version="0.1.0",
                 contact=contact,
             ),
             artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
@@ -230,7 +227,6 @@ class Config:
             ),
             musicbrainz=MusicBrainzConfig(
                 app_name=mb["app_name"],
-                app_version=mb["app_version"],
                 contact=mb["contact"],
             ),
             artwork=ArtworkConfig(
@@ -254,7 +250,6 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "paths.staging": str,
     "paths.library": str,
     "musicbrainz.app_name": str,
-    "musicbrainz.app_version": str,
     "musicbrainz.contact": str,
     "artwork.min_dimension": int,
     "artwork.max_bytes": int,

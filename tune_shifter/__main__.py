@@ -167,9 +167,11 @@ def main() -> None:
             )
             sys.exit(1)
 
+    # app_version is not user-configurable — always use the running package version
+    # so the User-Agent we send to MusicBrainz accurately identifies the software.
     musicbrainzngs.set_useragent(
         config.musicbrainz.app_name,
-        config.musicbrainz.app_version,
+        _get_version(),
         config.musicbrainz.contact,
     )
 

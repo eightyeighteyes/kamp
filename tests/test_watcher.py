@@ -258,7 +258,7 @@ class TestInFlight:
         handler = _make_handler(config)
         album = config.paths.staging / "my-album"
         album.mkdir()
-        monkeypatch.setattr("tune_shifter.watcher.run", lambda path, cfg: None)
+        monkeypatch.setattr("tune_shifter.watcher.run", lambda path, cfg, **kw: None)
         handler._process(album)
 
         assert album not in handler._in_flight
@@ -422,7 +422,9 @@ class TestDuplicateRunPrevention:
 
         received_callbacks: list[object] = []
 
-        def _fake_run(path: Path, cfg: object, _on_directory: object = None) -> None:
+        def _fake_run(
+            path: Path, cfg: object, _on_directory: object = None, **kw: object
+        ) -> None:
             received_callbacks.append(_on_directory)
 
         monkeypatch.setattr("tune_shifter.watcher.run", _fake_run)
@@ -448,7 +450,9 @@ class TestDuplicateRunPrevention:
         pending_timer = MagicMock()
         handler._pending[extracted_dir] = pending_timer
 
-        def _fake_run(path: Path, cfg: object, _on_directory: object = None) -> None:
+        def _fake_run(
+            path: Path, cfg: object, _on_directory: object = None, **kw: object
+        ) -> None:
             # The pipeline calls the callback right after extraction
             if callable(_on_directory):
                 _on_directory(extracted_dir)
@@ -683,3 +687,39 @@ class TestWatcherReload:
         watcher.reload(new_config)
         assert reschedule_calls == [1]
         assert watcher._config.paths.staging == new_staging
+
+
+class TestStageCallback:
+    def test_stage_callback_forwarded_to_run(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_process passes handler.stage_callback as stage_callback kwarg to run()."""
+        handler = _make_handler(config)
+        album = config.paths.staging / "my-album"
+        album.mkdir()
+
+        received: dict[str, object] = {}
+
+        def _fake_run(
+            path: object,
+            cfg: object,
+            _on_directory: object = None,
+            stage_callback: object = None,
+        ) -> None:
+            received["stage_callback"] = stage_callback
+
+        cb = lambda stage: None  # noqa: E731
+        handler.stage_callback = cb
+        monkeypatch.setattr("tune_shifter.watcher.run", _fake_run)
+        handler._process(album)
+
+        assert received["stage_callback"] is cb
+
+    def test_watcher_stage_callback_setter_propagates_to_handler(
+        self, config: Config
+    ) -> None:
+        """Setting Watcher.stage_callback updates the live handler."""
+        watcher = Watcher(config)
+        cb = lambda stage: None  # noqa: E731
+        watcher.stage_callback = cb
+        assert watcher._handler.stage_callback is cb

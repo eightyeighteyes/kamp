@@ -3,9 +3,6 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
-## Menu Bar: Show Pipeline Status (Idle, Tagging, Updating Artwork, Moving)
-*Side* — requires threading a stage-change callback through `pipeline.py` (Watcher-owned) and the Syncer path; two separate status sources need to be reconciled in `MenuBarApp._refresh`
-
 ## ALAC Support
 *Single* — add `"alac"` to `_FORMAT_LABELS` in `bandcamp.py`; the rest of the pipeline already handles `.m4a` containers (ALAC and AAC share the same container format and tag schema via `mutagen.mp4.MP4`)
 

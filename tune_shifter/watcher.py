@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from watchdog.events import (
@@ -34,6 +35,8 @@ class _StagingHandler(FileSystemEventHandler):
         # Track paths whose pipeline is currently running to prevent double-execution
         self._in_flight: set[Path] = set()
         self._lock = threading.Lock()
+        # Set by Watcher to surface current pipeline stage in the menu bar.
+        self.stage_callback: Callable[[str], None] | None = None
 
     def on_created(self, event: FileSystemEvent) -> None:
         if event.is_directory:
@@ -132,7 +135,12 @@ class _StagingHandler(FileSystemEventHandler):
 
             logger.info("Triggering pipeline for %s", path)
             try:
-                run(path, self._config, _on_directory=_claim_directory)
+                run(
+                    path,
+                    self._config,
+                    _on_directory=_claim_directory,
+                    stage_callback=self.stage_callback,
+                )
             except Exception:
                 logger.exception("Unhandled error in pipeline for %s", path)
         finally:
@@ -165,6 +173,16 @@ class Watcher:
         self._observer = Observer()
         self._handler = _StagingHandler(config)
         self._paused = False
+        self._stage_callback: Callable[[str], None] | None = None
+
+    @property
+    def stage_callback(self) -> Callable[[str], None] | None:
+        return self._stage_callback
+
+    @stage_callback.setter
+    def stage_callback(self, cb: Callable[[str], None] | None) -> None:
+        self._stage_callback = cb
+        self._handler.stage_callback = cb
 
     def start(self) -> None:
         staging = self._config.paths.staging
@@ -201,6 +219,7 @@ class Watcher:
         staging = self._config.paths.staging
         self._observer = Observer()
         self._handler = _StagingHandler(self._config)
+        self._handler.stage_callback = self._stage_callback
         self._observer.schedule(self._handler, str(staging), recursive=False)
         self._observer.start()
         self._handler._scan_staging_root()
@@ -234,6 +253,7 @@ class Watcher:
             new_staging = config.paths.staging
             new_staging.mkdir(parents=True, exist_ok=True)
             self._handler = _StagingHandler(config)
+            self._handler.stage_callback = self._stage_callback
             self._observer.schedule(self._handler, str(new_staging), recursive=False)
             self._handler._scan_staging_root()
         else:

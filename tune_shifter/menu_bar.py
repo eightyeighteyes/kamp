@@ -63,9 +63,10 @@ class MenuBarApp(rumps.App):
         self._core = core
         self._sync_in_progress = False
         self._pulse_active = False
-        # Written by background sync thread; read only by the main-thread _refresh
-        # timer to avoid touching AppKit objects off the main thread.
+        # Written by background threads; read only by the main-thread _refresh timer
+        # to avoid touching AppKit objects off the main thread (trace trap risk).
         self._sync_status: str = ""
+        self._pipeline_status: str = ""
 
         # Replace the text title with an SF Symbol icon.
         self._set_sf_symbol_icon()
@@ -108,6 +109,11 @@ class MenuBarApp(rumps.App):
         # Apply initial enabled state for bandcamp-dependent items.
         self._refresh_bandcamp_items()
 
+        # Wire pipeline stage updates.  core.start() is called before
+        # MenuBarApp(core).run(), so the watcher is already running here.
+        if self._core.watcher:
+            self._core.watcher.stage_callback = self._on_pipeline_stage
+
     # ------------------------------------------------------------------
     # Menu callbacks
     # ------------------------------------------------------------------
@@ -147,6 +153,14 @@ class MenuBarApp(rumps.App):
         """
         self._sync_status = msg
 
+    def _on_pipeline_stage(self, stage: str) -> None:
+        """Store the current pipeline stage for the main-thread _refresh timer.
+
+        Called from the watcher's pipeline thread — same AppKit threading rule
+        applies: write to a plain Python str only.
+        """
+        self._pipeline_status = stage
+
     def _on_format(self, sender: rumps.MenuItem) -> None:
         """Write the selected download format to the config file."""
         fmt = next(k for k, v in self._format_items.items() if v is sender)
@@ -178,7 +192,12 @@ class MenuBarApp(rumps.App):
         else:
             self._toggle_item.title = "Stop"
 
-        if self._sync_in_progress:
+        if self._pipeline_status:
+            # Pipeline stage (Extracting / Tagging / Updating artwork / Moving)
+            # takes priority — it's more specific than the sync label.
+            self._status_item.title = f"Status: {self._pipeline_status}"
+            self._set_pulse(True)
+        elif self._sync_in_progress:
             label = self._sync_status or "Syncing\u2026"
             self._status_item.title = f"Status: {label}"
             self._set_pulse(True)

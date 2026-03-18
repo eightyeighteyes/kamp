@@ -395,3 +395,58 @@ class TestSkipAlreadyTagged:
             run(album_dir, config)
 
         mock_tag.assert_called_once()
+
+
+class TestStageCallback:
+    """stage_callback receives stage labels in order and is cleared in finally."""
+
+    def _setup_dir(self, config: Config) -> Path:
+        config.paths.staging.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        album_dir = config.paths.staging / "test-album"
+        album_dir.mkdir()
+        mp3 = album_dir / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+        return album_dir
+
+    def test_stages_called_in_order_on_success(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """stage_callback receives Tagging→Updating artwork→Moving→'' in order."""
+        album_dir = self._setup_dir(config)
+        calls: list[str] = []
+
+        with (
+            patch("tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE),
+            patch("tune_shifter.pipeline.fetch_and_embed"),
+            patch("tune_shifter.pipeline.move_to_library", return_value=[]),
+        ):
+            run(album_dir, config, stage_callback=calls.append)
+
+        assert calls == ["Extracting", "Tagging", "Updating artwork", "Moving", ""]
+
+    def test_finally_clears_on_extraction_failure(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """stage_callback('') fires even when extraction fails."""
+        config.paths.staging.mkdir(parents=True)
+        bad_zip = config.paths.staging / "bad.zip"
+        bad_zip.write_bytes(b"not a zip")
+        calls: list[str] = []
+
+        run(bad_zip, config, stage_callback=calls.append)
+
+        assert calls[-1] == ""
+
+    def test_finally_clears_on_tagging_failure(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """stage_callback('') fires even when tagging fails."""
+        album_dir = self._setup_dir(config)
+        calls: list[str] = []
+
+        with patch("musicbrainzngs.search_releases", return_value={"release-list": []}):
+            run(album_dir, config, stage_callback=calls.append)
+
+        assert calls[-1] == ""

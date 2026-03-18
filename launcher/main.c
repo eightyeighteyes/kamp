@@ -38,24 +38,41 @@ int main(int argc, char *argv[]) {
     /*
      * Inject "-m tune_shifter" after argv[0] so the effect is:
      *   tune-shifter [user args]  →  python -m tune_shifter [user args]
+     *
+     * Py_Main takes wchar_t **, so each char * argument must be decoded via
+     * Py_DecodeLocale.  We free them with PyMem_RawFree after Py_Main returns.
      */
     int new_argc = argc + 2;
-    char **new_argv = malloc((size_t)(new_argc + 1) * sizeof(char *));
-    if (new_argv == NULL) {
+    const char *char_argv[new_argc + 1];
+    char_argv[0] = argv[0];
+    char_argv[1] = "-m";
+    char_argv[2] = "tune_shifter";
+    for (int i = 1; i < argc; i++) {
+        char_argv[i + 2] = argv[i];
+    }
+    char_argv[new_argc] = NULL;
+
+    wchar_t **w_argv = malloc((size_t)(new_argc + 1) * sizeof(wchar_t *));
+    if (w_argv == NULL) {
         PyMem_RawFree(program);
         return 1;
     }
-    new_argv[0] = argv[0];
-    new_argv[1] = "-m";
-    new_argv[2] = "tune_shifter";
-    for (int i = 1; i < argc; i++) {
-        new_argv[i + 2] = argv[i];
+    for (int i = 0; i < new_argc; i++) {
+        w_argv[i] = Py_DecodeLocale(char_argv[i], NULL);
+        if (w_argv[i] == NULL) {
+            fprintf(stderr, "tune-shifter: Py_DecodeLocale failed for arg %d\n", i);
+            for (int j = 0; j < i; j++) PyMem_RawFree(w_argv[j]);
+            free(w_argv);
+            PyMem_RawFree(program);
+            return 1;
+        }
     }
-    new_argv[new_argc] = NULL;
+    w_argv[new_argc] = NULL;
 
-    int rc = Py_Main(new_argc, new_argv);
+    int rc = Py_Main(new_argc, w_argv);
 
-    free(new_argv);
+    for (int i = 0; i < new_argc; i++) PyMem_RawFree(w_argv[i]);
+    free(w_argv);
     PyMem_RawFree(program);
     return rc;
 }

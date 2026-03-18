@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.1](https://github.com/eightyeighteyes/tune-shifter/compare/v0.15.0...v0.15.1) (2026-03-18)
+
+
+### Bug Fixes
+
+* include launcher/main.c in sdist ([#60](https://github.com/eightyeighteyes/tune-shifter/issues/60)) ([540ee13](https://github.com/eightyeighteyes/tune-shifter/commit/540ee13959ef26839b510d14b2437ce8829404a5))
+
 ## [0.15.0](https://github.com/eightyeighteyes/tune-shifter/compare/v0.14.0...v0.15.0) (2026-03-18)
 
 

@@ -152,6 +152,42 @@ class TestReload:
                 assert syncer._thread is None
 
 
+class TestPauseResume:
+    def test_pause_stops_polling_thread(self, tmp_path: Path) -> None:
+        """pause() stops the polling thread."""
+        with patch("tune_shifter.syncer.sync_new_purchases", return_value=[]):
+            with patch("tune_shifter.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path, poll_interval=60))
+                syncer.start()
+                assert syncer._thread is not None and syncer._thread.is_alive()
+                syncer.pause()
+                assert syncer._thread is None or not syncer._thread.is_alive()
+
+    def test_pause_when_no_thread_is_safe(self, tmp_path: Path) -> None:
+        """pause() is safe when no polling thread was ever started."""
+        syncer = Syncer(_make_config_no_bandcamp(tmp_path))
+        syncer.pause()  # must not raise
+
+    def test_resume_restarts_polling_thread(self, tmp_path: Path) -> None:
+        """resume() starts a new polling thread after a pause."""
+        with patch("tune_shifter.syncer.sync_new_purchases", return_value=[]):
+            with patch("tune_shifter.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path, poll_interval=60))
+                syncer.start()
+                syncer.pause()
+                syncer.resume()
+                assert syncer._thread is not None
+                assert syncer._thread.is_alive()
+                syncer.stop()
+
+    def test_resume_noop_when_no_bandcamp(self, tmp_path: Path) -> None:
+        """resume() is a no-op when there is no [bandcamp] config."""
+        syncer = Syncer(_make_config_no_bandcamp(tmp_path))
+        syncer.pause()
+        syncer.resume()
+        assert syncer._thread is None
+
+
 class TestMarkSynced:
     def test_warns_when_no_bandcamp(self, tmp_path: Path) -> None:
         """mark_synced() warns and returns when [bandcamp] is absent."""

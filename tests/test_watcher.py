@@ -501,6 +501,127 @@ class TestWatcherStopJoin:
         watcher.join()
 
 
+class TestWatcherPauseResume:
+    def _patched_watcher(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> Watcher:
+        watcher = Watcher(config)
+        monkeypatch.setattr(watcher._observer, "start", lambda: None)
+        monkeypatch.setattr(watcher._observer, "schedule", lambda *a, **kw: None)
+        monkeypatch.setattr(watcher._observer, "stop", lambda: None)
+        monkeypatch.setattr(watcher._observer, "join", lambda **kw: None)
+        watcher.start()
+        return watcher
+
+    def test_pause_cancels_pending_timers(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pause() cancels any in-flight debounce timers."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        timer = MagicMock()
+        watcher._handler._pending[config.paths.staging / "album"] = timer
+
+        watcher.pause()
+
+        timer.cancel.assert_called_once()
+
+    def test_pause_stops_observer(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pause() stops the watchdog observer."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        stop_calls: list[int] = []
+        monkeypatch.setattr(watcher._observer, "stop", lambda: stop_calls.append(1))
+
+        watcher.pause()
+
+        assert stop_calls == [1]
+
+    def test_pause_is_idempotent(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Calling pause() twice does not double-stop the observer."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        stop_calls: list[int] = []
+        monkeypatch.setattr(watcher._observer, "stop", lambda: stop_calls.append(1))
+
+        watcher.pause()
+        watcher.pause()
+
+        assert stop_calls == [1]
+
+    def test_resume_creates_new_observer_and_starts(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """resume() creates a fresh observer and starts watching again."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        watcher.pause()
+
+        start_calls: list[int] = []
+        # Patch Observer class so the new instance is controllable
+        mock_observer = MagicMock()
+        mock_observer.start = lambda: start_calls.append(1)
+        mock_observer.schedule = lambda *a, **kw: None
+        monkeypatch.setattr("tune_shifter.watcher.Observer", lambda: mock_observer)
+
+        watcher.resume()
+
+        assert start_calls == [1]
+
+    def test_resume_scans_staging_for_existing_items(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """resume() picks up items already in staging."""
+        config.paths.staging.mkdir(parents=True, exist_ok=True)
+        (config.paths.staging / "Artist - Album").mkdir()
+        watcher = self._patched_watcher(config, monkeypatch)
+        watcher.pause()
+
+        scheduled: list[Path] = []
+        monkeypatch.setattr(
+            "tune_shifter.watcher.Observer",
+            lambda: MagicMock(start=lambda: None, schedule=lambda *a, **kw: None),
+        )
+        monkeypatch.setattr(
+            _StagingHandler, "_schedule", lambda self, p: scheduled.append(p)
+        )
+
+        watcher.resume()
+
+        assert any(p.name == "Artist - Album" for p in scheduled)
+
+    def test_resume_is_idempotent(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Calling resume() when not paused does nothing."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        start_calls: list[int] = []
+        monkeypatch.setattr(
+            "tune_shifter.watcher.Observer",
+            lambda: MagicMock(
+                start=lambda: start_calls.append(1), schedule=lambda *a, **kw: None
+            ),
+        )
+
+        watcher.resume()  # not paused — should be a no-op
+
+        assert start_calls == []
+
+    def test_stop_when_paused_is_safe(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """stop() after pause() does not attempt to stop an already-stopped observer."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        stop_calls: list[int] = []
+        monkeypatch.setattr(watcher._observer, "stop", lambda: stop_calls.append(1))
+        watcher.pause()
+        stop_calls.clear()
+
+        watcher.stop()  # must not raise or double-stop
+
+        assert stop_calls == []
+
+
 class TestWatcherReload:
     def _patched_watcher(
         self, config: Config, monkeypatch: pytest.MonkeyPatch

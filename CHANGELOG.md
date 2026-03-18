@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.3](https://github.com/eightyeighteyes/tune-shifter/compare/v0.15.2...v0.15.3) (2026-03-18)
+
+
+### Bug Fixes
+
+* compile launcher to buildpath then bin.install ([#64](https://github.com/eightyeighteyes/tune-shifter/issues/64)) ([f8bb106](https://github.com/eightyeighteyes/tune-shifter/commit/f8bb10679386db6ae8e62186366673420f1295ab))
+
 ## [0.15.2](https://github.com/eightyeighteyes/tune-shifter/compare/v0.15.1...v0.15.2) (2026-03-18)
 
 

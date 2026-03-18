@@ -43,6 +43,7 @@ class TuneShifter < Formula
                 "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')").chomp
     py_ver = Utils.safe_popen_read(venv_python, "-c",
                 "import sysconfig; print(sysconfig.get_config_var('LDVERSION') or '')").chomp
+    # Compile into buildpath first; bin/ doesn't exist until bin.install creates it.
     system ENV.cc,
            buildpath/"launcher/main.c",
            "-DVENV_PYTHON=\"#{venv_python}\"",
@@ -51,7 +52,8 @@ class TuneShifter < Formula
            "-L#{lib_dir}", "-lpython#{py_ver}",
            *ldflags.split,
            "-Wno-deprecated-declarations",
-           "-o", bin/"tune-shifter"
+           "-o", buildpath/"tune-shifter"
+    bin.install buildpath/"tune-shifter"
 
     zsh_completion.install "completions/_tune-shifter"
     (share/"tune-shifter").install "USAGE.md"

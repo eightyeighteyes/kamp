@@ -14,6 +14,7 @@ Built with Python 3 by [Claude Sonnet 4.6](https://www.anthropic.com/claude).
 - **Filesystem watcher** — monitors your staging directory; drop a ZIP or folder in and it is processed automatically
 - **Configurable library layout** — moves finished files into your library using a template you control (`{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}`)
 - **Error quarantine** — failed items are moved to `staging/errors/` so nothing loops or blocks the queue
+- **macOS menu bar** — optional status-bar icon with pipeline Play/Stop toggle, on-demand Bandcamp sync, and a live sync status indicator with pulse animation
 - **Background service** — one command registers the daemon as a system service that starts at login (macOS launchd)
 - **Cross-platform** — macOS, Linux, and Windows (Python 3.11+)
 
@@ -61,6 +62,7 @@ Bandcamp purchase
 | `requests` | HTTP client for the Cover Art Archive and session validation |
 | `Pillow` | Image dimension validation |
 | `playwright` | Headless browser for Bandcamp authentication and download |
+| `rumps` | macOS menu bar integration (macOS only) |
 
 ---
 
@@ -148,6 +150,32 @@ Override paths without editing the config:
 ```bash
 tune-shifter daemon --staging ~/Downloads/staging --library ~/Music
 ```
+
+### macOS menu bar
+
+Pass `--menu-bar` to show a status-bar icon while the daemon runs:
+
+```bash
+tune-shifter daemon --menu-bar
+```
+
+The menu provides:
+
+| Item | Action |
+|---|---|
+| **Stop / Play** | Pause or resume the ingest pipeline without stopping the process |
+| **Bandcamp Sync** | Trigger an immediate sync; grayed out if `[bandcamp]` is not configured |
+| **Sync Status** | Read-only: "Status: Idle" or "Status: Syncing…" (icon pulses during sync) |
+| **About Tune-Shifter** | Opens the project GitHub page |
+| **Quit** | Shuts down the daemon and removes the menu bar icon |
+
+To always start with the menu bar when running as a service:
+
+```bash
+tune-shifter install-service --menu-bar
+```
+
+---
 
 ### Run as a background service (macOS)
 

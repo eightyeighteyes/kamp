@@ -17,6 +17,7 @@ mutagen = ">=1.47"
 requests = ">=2.31"
 Pillow = ">=10.0"
 playwright = ">=1.44"
+rumps = {version = ">=0.4", markers = "sys_platform == 'darwin'"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"
@@ -76,6 +77,11 @@ disable_error_code = ["import-untyped"]
 # causes false union-attr/index errors on the VCFLACDict branch we always use).
 module = ["tune_shifter.tagger", "tune_shifter.mover", "tune_shifter.artwork"]
 disable_error_code = ["no-untyped-call", "attr-defined", "unused-ignore", "union-attr", "index"]
+
+[[tool.mypy.overrides]]
+# rumps ships no type stubs
+module = ["rumps", "rumps.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # playwright ships no type stubs

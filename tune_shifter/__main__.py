@@ -19,21 +19,18 @@ import shutil
 import signal
 import subprocess
 import sys
-import threading
 import tomllib
 from pathlib import Path
 
 import musicbrainzngs
 
 from .config import DEFAULT_CONFIG_PATH, Config, _state_dir, config_set, config_show
-from .config_monitor import ConfigMonitor
+from .daemon_core import DaemonCore, _PID_PATH
 from .syncer import Syncer
-from .watcher import Watcher
 
 _SERVICE_LABEL = "com.tune-shifter"
 _PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{_SERVICE_LABEL}.plist"
 _LOG_PATH = _state_dir() / "daemon.log"
-_PID_PATH = _state_dir() / "daemon.pid"
 
 # pyproject.toml lives one level above the package directory and is the canonical
 # version source kept up to date by release-please.  Prefer it over
@@ -293,54 +290,9 @@ def _cmd_daemon(config: Config, config_path: Path) -> None:
         install_path,
     )
 
-    watcher = Watcher(config)
-    syncer = Syncer(config)
-
-    def _on_config_reload(new_config: Config) -> None:
-        watcher.reload(new_config)
-        syncer.reload(new_config)
-
-    monitor = ConfigMonitor(config_path, _on_config_reload)
-
-    watcher.start()
-    syncer.start()
-    monitor.start()
-
-    # Write pidfile so `daemon pause` / `daemon resume` can signal this process.
-    _PID_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PID_PATH.write_text(str(os.getpid()))
-
-    _done = threading.Event()
-
-    def _shutdown(signum: int, frame: object) -> None:
-        logging.getLogger(__name__).info("Shutting down…")
-        monitor.stop()
-        syncer.stop()
-        watcher.stop()
-        _done.set()
-
-    def _pause(signum: int, frame: object) -> None:
-        logging.getLogger(__name__).info("Pipeline pausing…")
-        watcher.pause()
-        syncer.pause()
-
-    def _resume(signum: int, frame: object) -> None:
-        logging.getLogger(__name__).info("Pipeline resuming…")
-        watcher.resume()
-        syncer.resume()
-
-    signal.signal(signal.SIGINT, _shutdown)
-    if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, _shutdown)  # not available on Windows
-    if hasattr(signal, "SIGUSR1"):
-        signal.signal(signal.SIGUSR1, _pause)
-    if hasattr(signal, "SIGUSR2"):
-        signal.signal(signal.SIGUSR2, _resume)
-
-    try:
-        _done.wait()
-    finally:
-        _PID_PATH.unlink(missing_ok=True)
+    core = DaemonCore(config, config_path)
+    core.start()
+    core.wait()
 
 
 def _cmd_daemon_signal(sig: int, action: str) -> None:

@@ -3,16 +3,7 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
-## Producer Support
-*Side* — add recording-rels include to `get_release_by_id` call and traverse relationships to extract producer credits
-
-## One File At A Time
-*Single* — watcher already handles ZIPs; extend to schedule individual audio files (`.mp3`, `.m4a`, etc.) dropped directly into staging
-
-## Cross-platform service installation (Linux systemd, Windows Task Scheduler)
-*Side* — Linux systemd unit file is straightforward; Windows Task Scheduler adds another side; can ship incrementally
-
-## Menu Bar Status Item
+## Menu Bar Status Item - Epic
 *LP* — when the daemon runs, show a menu bar icon with pipeline start/stop and Bandcamp sync controls.
 
 Icon: SF Symbol `music.note.square.stack`; pulse animation while a Bandcamp sync is in progress.
@@ -50,6 +41,15 @@ Ships the menu described above. Play/Stop calls `DaemonCore.start()` / `DaemonCo
 Add a `--menu-bar` flag to the `daemon` subcommand. When set (and on macOS), call `MenuBarApp.run()` instead of `watcher.join()`. When `--menu-bar` is used, `_cmd_install_service` appends `daemon --menu-bar` to `ProgramArguments`. No behavioural change on Linux/Windows or when flag is omitted.
 
 *launchd + AppKit compatibility spiked — no bundle required, estimate unchanged at LP.*
+
+## Producer Support
+*Side* — add recording-rels include to `get_release_by_id` call and traverse relationships to extract producer credits
+
+## One File At A Time
+*Single* — watcher already handles ZIPs; extend to schedule individual audio files (`.mp3`, `.m4a`, etc.) dropped directly into staging
+
+## Cross-platform service installation (Linux systemd, Windows Task Scheduler)
+*Side* — Linux systemd unit file is straightforward; Windows Task Scheduler adds another side; can ship incrementally
 
 ## ALAC Support
 *Single* — add `"alac"` to `_FORMAT_LABELS` in `bandcamp.py`; the rest of the pipeline already handles `.m4a` containers (ALAC and AAC share the same container format and tag schema via `mutagen.mp4.MP4`)

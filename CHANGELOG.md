@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.2](https://github.com/eightyeighteyes/tune-shifter/compare/v0.15.1...v0.15.2) (2026-03-18)
+
+
+### Bug Fixes
+
+* remove single-quote wrapping from -DVENV_PYTHON compiler flag ([#62](https://github.com/eightyeighteyes/tune-shifter/issues/62)) ([700b5b3](https://github.com/eightyeighteyes/tune-shifter/commit/700b5b324f166e997aa8a12902f61c867ac29aed))
+
 ## [0.15.1](https://github.com/eightyeighteyes/tune-shifter/compare/v0.15.0...v0.15.1) (2026-03-18)
 
 

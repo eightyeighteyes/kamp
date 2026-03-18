@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +107,7 @@ def sync_new_purchases(
     bc_config: BandcampConfig,
     staging_dir: Path,
     state_file: Path,
+    status_callback: Callable[[str], None] | None = None,
 ) -> list[Path]:
     """Download any purchases not yet recorded in *state_file* to *staging_dir*.
 
@@ -161,6 +163,10 @@ def sync_new_purchases(
             continue
         item["redownload_url"] = dl_url
         try:
+            if status_callback:
+                status_callback(
+                    f"{item.get('item_title', '?')} by {item.get('band_name', '?')}"
+                )
             path = _download_item(item, bc_config, staging_dir, session_file)
             downloaded.append(path)
             state[str(item["sale_item_id"])] = time.time()

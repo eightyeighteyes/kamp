@@ -72,6 +72,7 @@ class DaemonCore:
         self._syncer = Syncer(self._config)
 
         def _on_config_reload(new_config: Config) -> None:
+            self._config = new_config
             if self._watcher:
                 self._watcher.reload(new_config)
             if self._syncer:

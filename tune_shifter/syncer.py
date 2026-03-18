@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from .bandcamp import mark_collection_synced, sync_new_purchases
@@ -23,6 +24,7 @@ class Syncer:
         self._config = config
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self.status_callback: Callable[[str], None] | None = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -105,6 +107,7 @@ class Syncer:
             bc_config=bc,
             staging_dir=self._config.paths.staging,
             state_file=state_file,
+            status_callback=self.status_callback,
         )
         if paths:
             logger.info("Sync complete: %d file(s) downloaded to staging.", len(paths))

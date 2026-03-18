@@ -3,26 +3,6 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
-## Menu Bar: Enable Bandcamp items when config gains [bandcamp] section
-*Single* — `DaemonCore._on_config_reload` never assigns `self._config = new_config`; fix that one line and the 5-second `_refresh` timer picks up the updated state automatically. No new wiring needed.
-
-## Menu Bar: Show What's Being Downloaded from Bandcamp in Sync Status
-*Single* — album title is already available in the `bandcamp.py` download loop; thread a status callback through `Syncer` → `MenuBarApp` and update `_status_item.title`
-
-## Menu Bar: Bandcamp Download Format Selector
-*Single* — add a `rumps` submenu under Bandcamp Sync with the supported format labels; selecting one calls `config_set` to update `bandcamp.format` and reloads config
-```
-Bandcamp Sync
-Sync Status
-Download Format -> AAC-HI
-                   ALAC
-                   FLAC
-                   MP3-320
-                   MP3-V0 ✓
-                   Ogg Vorbis
-                   WAV
-```
-
 ## Menu Bar: Show Pipeline Status (Idle, Tagging, Updating Artwork, Moving)
 *Side* — requires threading a stage-change callback through `pipeline.py` (Watcher-owned) and the Syncer path; two separate status sources need to be reconciled in `MenuBarApp._refresh`
 

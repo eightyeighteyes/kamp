@@ -134,6 +134,25 @@ class TestStart:
         mock_watcher.return_value.reload.assert_called_once_with(new_config)
         mock_syncer.return_value.reload.assert_called_once_with(new_config)
 
+    def test_config_reload_updates_core_config(
+        self,
+        config: Config,
+        config_path: Path,
+        mock_watcher: MagicMock,
+        mock_syncer: MagicMock,
+        mock_monitor: MagicMock,
+        mock_pid: Path,
+    ) -> None:
+        core = DaemonCore(config, config_path)
+        with patch.object(core, "_install_signal_handlers"):
+            core.start()
+
+        _, reload_cb = mock_monitor.call_args.args
+        new_config = MagicMock(spec=Config)
+        reload_cb(new_config)
+
+        assert core._config is new_config
+
 
 class TestStop:
     def test_pauses_watcher_and_syncer(

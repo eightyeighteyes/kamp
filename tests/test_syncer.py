@@ -188,6 +188,26 @@ class TestPauseResume:
         assert syncer._thread is None
 
 
+class TestStatusCallback:
+    def test_status_callback_default_is_none(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        assert syncer.status_callback is None
+
+    def test_status_callback_passed_to_sync_new_purchases(self, tmp_path: Path) -> None:
+        """sync_once() forwards status_callback to sync_new_purchases."""
+        callback = lambda msg: None  # noqa: E731
+        with patch(
+            "tune_shifter.syncer.sync_new_purchases", return_value=[]
+        ) as mock_sync:
+            with patch("tune_shifter.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path))
+                syncer.status_callback = callback
+                syncer.sync_once()
+        mock_sync.assert_called_once()
+        _, kwargs = mock_sync.call_args
+        assert kwargs["status_callback"] is callback
+
+
 class TestMarkSynced:
     def test_warns_when_no_bandcamp(self, tmp_path: Path) -> None:
         """mark_synced() warns and returns when [bandcamp] is absent."""

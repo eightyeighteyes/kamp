@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import tomllib
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from .watcher import Watcher
 _SERVICE_LABEL = "com.tune-shifter"
 _PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{_SERVICE_LABEL}.plist"
 _LOG_PATH = _state_dir() / "daemon.log"
+_PID_PATH = _state_dir() / "daemon.pid"
 
 # pyproject.toml lives one level above the package directory and is the canonical
 # version source kept up to date by release-please.  Prefer it over
@@ -76,13 +78,22 @@ def main() -> None:
 
     subparsers = parser.add_subparsers(dest="command")
 
-    # daemon subcommand (default)
+    # daemon subcommand (default) with pause/resume subcommands
     daemon_parser = subparsers.add_parser(
         "daemon",
         help="Watch staging directory and (optionally) poll Bandcamp. Default when no subcommand given.",
     )
     daemon_parser.add_argument("--staging", metavar="DIR", type=Path, default=None)
     daemon_parser.add_argument("--library", metavar="DIR", type=Path, default=None)
+    daemon_sub = daemon_parser.add_subparsers(dest="daemon_command")
+    daemon_sub.add_parser(
+        "pause",
+        help="Pause the running daemon's pipeline (watcher + Bandcamp polling).",
+    )
+    daemon_sub.add_parser(
+        "resume",
+        help="Resume the running daemon's pipeline after a pause.",
+    )
 
     # sync subcommand
     sync_parser = subparsers.add_parser(
@@ -193,12 +204,18 @@ def main() -> None:
     if command == "sync":
         _cmd_sync(config, args.config, mark_synced=getattr(args, "mark_synced", False))
     else:
-        # daemon (with optional CLI overrides)
-        if hasattr(args, "staging") and args.staging:
-            config.paths.staging = args.staging
-        if hasattr(args, "library") and args.library:
-            config.paths.library = args.library
-        _cmd_daemon(config, args.config)
+        daemon_command = getattr(args, "daemon_command", None)
+        if daemon_command == "pause":
+            _cmd_daemon_signal(signal.SIGUSR1, "pause")
+        elif daemon_command == "resume":
+            _cmd_daemon_signal(signal.SIGUSR2, "resume")
+        else:
+            # daemon (with optional CLI overrides)
+            if hasattr(args, "staging") and args.staging:
+                config.paths.staging = args.staging
+            if hasattr(args, "library") and args.library:
+                config.paths.library = args.library
+            _cmd_daemon(config, args.config)
 
 
 def _cmd_config(
@@ -289,17 +306,57 @@ def _cmd_daemon(config: Config, config_path: Path) -> None:
     syncer.start()
     monitor.start()
 
+    # Write pidfile so `daemon pause` / `daemon resume` can signal this process.
+    _PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _PID_PATH.write_text(str(os.getpid()))
+
+    _done = threading.Event()
+
     def _shutdown(signum: int, frame: object) -> None:
         logging.getLogger(__name__).info("Shutting down…")
         monitor.stop()
         syncer.stop()
         watcher.stop()
+        _done.set()
+
+    def _pause(signum: int, frame: object) -> None:
+        logging.getLogger(__name__).info("Pipeline pausing…")
+        watcher.pause()
+        syncer.pause()
+
+    def _resume(signum: int, frame: object) -> None:
+        logging.getLogger(__name__).info("Pipeline resuming…")
+        watcher.resume()
+        syncer.resume()
 
     signal.signal(signal.SIGINT, _shutdown)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _shutdown)  # not available on Windows
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, _pause)
+    if hasattr(signal, "SIGUSR2"):
+        signal.signal(signal.SIGUSR2, _resume)
 
-    watcher.join()
+    try:
+        _done.wait()
+    finally:
+        _PID_PATH.unlink(missing_ok=True)
+
+
+def _cmd_daemon_signal(sig: int, action: str) -> None:
+    """Send *sig* to the running daemon process identified by the pidfile."""
+    try:
+        pid = int(_PID_PATH.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        print("No running tune-shifter daemon found.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        print("Daemon process not found (stale PID file?).", file=sys.stderr)
+        _PID_PATH.unlink(missing_ok=True)
+        sys.exit(1)
+    print(f"Daemon pipeline {action}d.")
 
 
 def _launchd_domain() -> str:

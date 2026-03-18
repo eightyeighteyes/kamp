@@ -74,6 +74,24 @@ class Syncer:
         else:
             logger.info("Syncer config reloaded.")
 
+    def pause(self) -> None:
+        """Stop the polling thread temporarily.
+
+        The stop event is set and the thread is joined, but the event is *not*
+        cleared — call resume() to restart polling.
+        """
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        self._thread = None
+        logger.info("Syncer paused")
+
+    def resume(self) -> None:
+        """Restart the polling thread after a pause."""
+        self._stop_event.clear()
+        self.start()
+        logger.info("Syncer resumed")
+
     def sync_once(self) -> None:
         """Download any new purchases immediately (one-shot, blocking)."""
         bc = self._config.bandcamp

@@ -164,6 +164,7 @@ class Watcher:
         self._config = config
         self._observer = Observer()
         self._handler = _StagingHandler(config)
+        self._paused = False
 
     def start(self) -> None:
         staging = self._config.paths.staging
@@ -174,9 +175,42 @@ class Watcher:
         # Process any items already present when the daemon starts.
         self._handler._scan_staging_root()
 
-    def stop(self) -> None:
+    def pause(self) -> None:
+        """Stop pipeline processing without tearing down the daemon.
+
+        Cancels pending debounce timers and stops the observer thread.
+        Items dropped into staging while paused are picked up on resume()
+        via _scan_staging_root().
+        """
+        if self._paused:
+            return
+        self._paused = True
+        with self._handler._lock:
+            for timer in self._handler._pending.values():
+                timer.cancel()
+            self._handler._pending.clear()
         self._observer.stop()
         self._observer.join()
+        logger.info("Watcher paused")
+
+    def resume(self) -> None:
+        """Restart watching after a pause."""
+        if not self._paused:
+            return
+        self._paused = False
+        staging = self._config.paths.staging
+        self._observer = Observer()
+        self._handler = _StagingHandler(self._config)
+        self._observer.schedule(self._handler, str(staging), recursive=False)
+        self._observer.start()
+        self._handler._scan_staging_root()
+        logger.info("Watcher resumed")
+
+    def stop(self) -> None:
+        # Observer is already stopped when paused; avoid a redundant stop/join.
+        if not self._paused:
+            self._observer.stop()
+            self._observer.join()
         logger.info("Watcher stopped")
 
     def reload(self, config: Config) -> None:

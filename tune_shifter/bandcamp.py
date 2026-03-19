@@ -436,10 +436,25 @@ def _paginate(page: Any, endpoint: str, fan_id: int) -> list[dict[str, Any]]:
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(body)
                 });
+                if (r.status === 401 || r.status === 403 || r.status === 302) {
+                    return {__auth_error: true, status: r.status};
+                }
+                if (!r.ok) {
+                    const preview = (await r.text()).slice(0, 200);
+                    throw new Error(`HTTP ${r.status} from ${url}: ${preview}`);
+                }
                 return await r.json();
             }""",
             [endpoint, payload],
         )
+
+        if result.get("__auth_error"):
+            # Session expired mid-sync — clear it so the next run triggers re-login.
+            _session_file().unlink(missing_ok=True)
+            raise BandcampAPIError(
+                f"Bandcamp session expired (HTTP {result.get('status')}) — "
+                "session cleared. Run 'tune-shifter sync' to re-authenticate."
+            )
 
         if result.get("error"):
             raise BandcampAPIError(

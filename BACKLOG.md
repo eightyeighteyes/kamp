@@ -3,10 +3,8 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
-## Memory Optimization
-*Side* — profile the running daemon to identify the dominant allocation (likely Playwright loaded at startup via `bandcamp.py` even when not syncing); implement targeted fix (lazy import or subprocess isolation). Could stretch to LP if Playwright requires architectural isolation.
-
-The daemon eats 120MB of RAM while running. What takes so much memory, and is there any way to reduce the memory footprint of this small application?
+## Pipeline subprocess isolation: run each album ingest in an isolated process
+*Side* — same pattern as Bandcamp sync isolation: `watcher.py` spawns a subprocess per album drop, passes `path`/`config` as arguments, receives stage updates via a queue for the menu bar status item, and re-emits log records into the parent stream. Main process stays near 40 MB permanently regardless of how many albums have been processed (mutagen, musicbrainzngs, requests, Pillow are never resident in the parent). Key scoping question: stage-callback timing — the menu bar polls every 5 s so a small queue-drain latency is acceptable.
 
 ## Error Handling: when there's an error in the pipeline, send a system level notification
 *Single* — hook points already exist (`ExtractionError`, `TaggingError`, `ArtworkError`, `MoveError` in `pipeline.py`, bare `except Exception` in `watcher.py`); wire `rumps.notification()` to each failure site.

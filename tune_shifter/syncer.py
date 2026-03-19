@@ -213,15 +213,18 @@ class Syncer:
             (bc, self._config.paths.staging, state_file),
         )
 
-        # Drain status messages while the subprocess runs, forwarding each
-        # to the caller's callback so the menu bar can update in real time.
+        # Drain both queues while the subprocess runs.  log_q MUST be drained
+        # here — if the subprocess fills it without the parent consuming it,
+        # the subprocess blocks on put() and proc.is_alive() never becomes
+        # False (deadlock).  Draining here also surfaces logs in real time.
         while proc.is_alive():  # pragma: no cover
             try:
-                msg = status_q.get(timeout=0.5)
+                msg = status_q.get(timeout=0.1)
                 if self.status_callback is not None:
                     self.status_callback(msg)
             except queue.Empty:
                 pass
+            _replay_log_queue(log_q)
 
         # Drain any messages that arrived just before the process exited.
         while True:

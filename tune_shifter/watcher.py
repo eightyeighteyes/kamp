@@ -18,7 +18,7 @@ from watchdog.observers import Observer
 
 from .config import Config
 from .extractor import AUDIO_EXTENSIONS
-from .pipeline import run
+from .pipeline import run_in_subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ class _StagingHandler(FileSystemEventHandler):
 
             logger.info("Triggering pipeline for %s", path)
             try:
-                run(
+                run_in_subprocess(
                     path,
                     self._config,
                     _on_directory=_claim_directory,

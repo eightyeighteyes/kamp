@@ -17,7 +17,7 @@ from tune_shifter.config import (
 )
 from tune_shifter.artwork import ArtworkError
 from tune_shifter.mover import MoveError
-from tune_shifter.pipeline import _quarantine, run
+from tune_shifter.pipeline_impl import _quarantine, run
 from tune_shifter.tagger import ReleaseInfo, TrackInfo
 
 # ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ class TestPipelineRun:
             patch("musicbrainzngs.search_releases", return_value=MB_SEARCH_RESULT),
             patch("musicbrainzngs.get_release_by_id", return_value=MB_RELEASE_DETAIL),
             patch(
-                "tune_shifter.pipeline.fetch_and_embed",
+                "tune_shifter.pipeline_impl.fetch_and_embed",
                 side_effect=ArtworkError("no art"),
             ),
         ):
@@ -216,10 +216,12 @@ class TestPipelineRun:
         tags.save(str(mp3))
 
         with (
-            patch("tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE),
-            patch("tune_shifter.pipeline.fetch_and_embed"),
             patch(
-                "tune_shifter.pipeline.move_to_library",
+                "tune_shifter.pipeline_impl.tag_directory", return_value=MOCK_RELEASE
+            ),
+            patch("tune_shifter.pipeline_impl.fetch_and_embed"),
+            patch(
+                "tune_shifter.pipeline_impl.move_to_library",
                 side_effect=MoveError("disk full"),
             ),
         ):
@@ -234,7 +236,7 @@ class TestPipelineRun:
         item.mkdir()
 
         with patch(
-            "tune_shifter.pipeline.shutil.move", side_effect=OSError("no space")
+            "tune_shifter.pipeline_impl.shutil.move", side_effect=OSError("no space")
         ):
             _quarantine(item, config.paths.staging)
         # Should not raise; errors/ dir was created even if move failed
@@ -276,10 +278,12 @@ class TestOnDirectoryCallback:
         claimed: list[Path] = []
 
         with (
-            patch("tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE),
-            patch("tune_shifter.pipeline.fetch_and_embed"),
             patch(
-                "tune_shifter.pipeline.move_to_library",
+                "tune_shifter.pipeline_impl.tag_directory", return_value=MOCK_RELEASE
+            ),
+            patch("tune_shifter.pipeline_impl.fetch_and_embed"),
+            patch(
+                "tune_shifter.pipeline_impl.move_to_library",
                 return_value=[],
             ),
         ):
@@ -326,14 +330,14 @@ class TestSkipAlreadyTagged:
         album_dir, mp3 = self._setup_dir(config)
 
         with (
-            patch("tune_shifter.pipeline.is_tagged", return_value=True),
+            patch("tune_shifter.pipeline_impl.is_tagged", return_value=True),
             patch(
-                "tune_shifter.pipeline.read_release_mbids",
+                "tune_shifter.pipeline_impl.read_release_mbids",
                 return_value=("rel-abc", "rg-abc"),
             ),
-            patch("tune_shifter.pipeline.tag_directory") as mock_tag,
-            patch("tune_shifter.pipeline.fetch_and_embed") as mock_art,
-            patch("tune_shifter.pipeline.move_to_library", return_value=[mp3]),
+            patch("tune_shifter.pipeline_impl.tag_directory") as mock_tag,
+            patch("tune_shifter.pipeline_impl.fetch_and_embed") as mock_art,
+            patch("tune_shifter.pipeline_impl.move_to_library", return_value=[mp3]),
         ):
             run(album_dir, config)
 
@@ -347,12 +351,12 @@ class TestSkipAlreadyTagged:
         album_dir, mp3 = self._setup_dir(config)
 
         with (
-            patch("tune_shifter.pipeline.is_tagged", return_value=False),
+            patch("tune_shifter.pipeline_impl.is_tagged", return_value=False),
             patch(
-                "tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE
+                "tune_shifter.pipeline_impl.tag_directory", return_value=MOCK_RELEASE
             ) as mock_tag,
-            patch("tune_shifter.pipeline.fetch_and_embed") as mock_art,
-            patch("tune_shifter.pipeline.move_to_library", return_value=[mp3]),
+            patch("tune_shifter.pipeline_impl.fetch_and_embed") as mock_art,
+            patch("tune_shifter.pipeline_impl.move_to_library", return_value=[mp3]),
         ):
             run(album_dir, config)
 
@@ -380,15 +384,15 @@ class TestSkipAlreadyTagged:
 
         with (
             patch(
-                "tune_shifter.pipeline.is_tagged",
+                "tune_shifter.pipeline_impl.is_tagged",
                 side_effect=is_tagged_side_effect,
             ),
             patch(
-                "tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE
+                "tune_shifter.pipeline_impl.tag_directory", return_value=MOCK_RELEASE
             ) as mock_tag,
-            patch("tune_shifter.pipeline.fetch_and_embed"),
+            patch("tune_shifter.pipeline_impl.fetch_and_embed"),
             patch(
-                "tune_shifter.pipeline.move_to_library",
+                "tune_shifter.pipeline_impl.move_to_library",
                 return_value=[mp3_a, mp3_b],
             ),
         ):
@@ -418,9 +422,11 @@ class TestStageCallback:
         calls: list[str] = []
 
         with (
-            patch("tune_shifter.pipeline.tag_directory", return_value=MOCK_RELEASE),
-            patch("tune_shifter.pipeline.fetch_and_embed"),
-            patch("tune_shifter.pipeline.move_to_library", return_value=[]),
+            patch(
+                "tune_shifter.pipeline_impl.tag_directory", return_value=MOCK_RELEASE
+            ),
+            patch("tune_shifter.pipeline_impl.fetch_and_embed"),
+            patch("tune_shifter.pipeline_impl.move_to_library", return_value=[]),
         ):
             run(album_dir, config, stage_callback=calls.append)
 

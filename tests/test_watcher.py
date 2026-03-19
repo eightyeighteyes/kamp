@@ -287,7 +287,9 @@ class TestInFlight:
         handler = _make_handler(config)
         album = config.paths.staging / "my-album"
         album.mkdir()
-        monkeypatch.setattr("tune_shifter.watcher.run", lambda path, cfg, **kw: None)
+        monkeypatch.setattr(
+            "tune_shifter.watcher.run_in_subprocess", lambda path, cfg, **kw: None
+        )
         handler._process(album)
 
         assert album not in handler._in_flight
@@ -303,7 +305,7 @@ class TestInFlight:
         def _boom(path: Path, cfg: object) -> None:
             raise RuntimeError("boom")
 
-        monkeypatch.setattr("tune_shifter.watcher.run", _boom)
+        monkeypatch.setattr("tune_shifter.watcher.run_in_subprocess", _boom)
         handler._process(album)  # exception is caught internally
 
         assert album not in handler._in_flight
@@ -468,7 +470,7 @@ class TestDuplicateRunPrevention:
         ) -> None:
             received_callbacks.append(_on_directory)
 
-        monkeypatch.setattr("tune_shifter.watcher.run", _fake_run)
+        monkeypatch.setattr("tune_shifter.watcher.run_in_subprocess", _fake_run)
         handler._process(album)
 
         assert len(received_callbacks) == 1
@@ -498,7 +500,7 @@ class TestDuplicateRunPrevention:
             if callable(_on_directory):
                 _on_directory(extracted_dir)
 
-        monkeypatch.setattr("tune_shifter.watcher.run", _fake_run)
+        monkeypatch.setattr("tune_shifter.watcher.run_in_subprocess", _fake_run)
         handler._process(zip_path)
 
         # The pending timer for the extracted directory must have been cancelled
@@ -523,7 +525,7 @@ class TestDuplicateRunPrevention:
             # Simulate the pipeline still running — try to schedule the directory
             handler._schedule(extracted_dir)
 
-        monkeypatch.setattr("tune_shifter.watcher.run", _fake_run)
+        monkeypatch.setattr("tune_shifter.watcher.run_in_subprocess", _fake_run)
         handler._process(zip_path)
 
         # _schedule while in-flight must have been a no-op
@@ -751,7 +753,7 @@ class TestStageCallback:
 
         cb = lambda stage: None  # noqa: E731
         handler.stage_callback = cb
-        monkeypatch.setattr("tune_shifter.watcher.run", _fake_run)
+        monkeypatch.setattr("tune_shifter.watcher.run_in_subprocess", _fake_run)
         handler._process(album)
 
         assert received["stage_callback"] is cb

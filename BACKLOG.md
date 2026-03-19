@@ -3,18 +3,26 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
-## ALAC Support
-*Single* — add `"alac"` to `_FORMAT_LABELS` in `bandcamp.py`; the rest of the pipeline already handles `.m4a` containers (ALAC and AAC share the same container format and tag schema via `mutagen.mp4.MP4`)
-
 ## Tagging: Skip artwork fetch when existing art meets quality requirements
 *Single* — add a guard in `artwork.py` (or `pipeline.py`) that checks embedded art dimensions before making a Cover Art Archive request; saves a few seconds per ingest when Bandcamp art already meets the threshold
-
-## Tagging: Producer Support
-*Side* — add recording-rels include to `get_release_by_id` call and traverse relationships to extract producer credits
 
 ## Pipeline: One File At A Time
 *Single* — watcher already handles ZIPs; extend to schedule individual audio files (`.mp3`, `.m4a`, etc.) dropped directly into staging
 
+## Memory Optimization
+*Side* — profile the running daemon to identify the dominant allocation (likely Playwright loaded at startup via `bandcamp.py` even when not syncing); implement targeted fix (lazy import or subprocess isolation). Could stretch to LP if Playwright requires architectural isolation.
+
+The daemon eats 120MB of RAM while running. What takes so much memory, and is there any way to reduce the memory footprint of this small application?
+
+## Error Handling: when there's an error in the pipeline, send a system level notification
+*Single* — hook points already exist (`ExtractionError`, `TaggingError`, `ArtworkError`, `MoveError` in `pipeline.py`, bare `except Exception` in `watcher.py`); wire `rumps.notification()` to each failure site.
+
+Possible error states to inform the user about:
+- Download failure
+- Download timeout
+- Tagging failure
+- Unable to find image for release
+- Library folder doesn't exist
 ## Bandcamp Logout: Remove or replace the active Bandcamp session
 *Side* — two surfaces (CLI `tune-shifter sync logout` + menu bar Logout item); CLI deletes the session file and state file; menu bar item calls the same logic and refreshes Bandcamp item state
 ```
@@ -53,3 +61,4 @@ Logout
 
 # Needs Estimation
 -- don't discard this section --
+

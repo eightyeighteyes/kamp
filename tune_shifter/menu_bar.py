@@ -24,6 +24,8 @@ import rumps  # noqa: E402 — guarded above
 
 from .daemon_core import DaemonCore, _PID_PATH
 
+logger = logging.getLogger(__name__)
+
 _ABOUT_URL = "https://github.com/eightyeighteyes/tune-shifter"
 _SYMBOL_NAME = "music.note.list"  # music.note.square.stack does not exist in SF Symbols
 
@@ -139,6 +141,8 @@ class MenuBarApp(rumps.App):
             try:
                 syncer.status_callback = self._on_sync_status
                 syncer.sync_once()
+            except Exception:
+                logger.exception("Unhandled error during manual Bandcamp sync")
             finally:
                 syncer.status_callback = None
                 self._sync_in_progress = False

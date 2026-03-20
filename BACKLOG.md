@@ -1,5 +1,8 @@
-# 0.17.0
+# 0.16.1
+## Bug: macOS status bar doesn't show download/pipeline status
+*Side* — regression from 0.16.0 subprocess isolation. Stage/status callbacks now cross the process boundary via IPC queues; something in the wiring between the drain loop and the rumps menu update is broken in the real daemon context. Reproducible when running as a service with automatic Bandcamp sync.
 
+# 0.17.0
 
 ## Error Handling: when there's an error in the pipeline, send a system level notification
 *Single* — hook points already exist (`ExtractionError`, `TaggingError`, `ArtworkError`, `MoveError` in `pipeline.py`, bare `except Exception` in `watcher.py`); wire `rumps.notification()` to each failure site.
@@ -88,6 +91,3 @@ Target: Windows 10/11 only. Distribution via Chocolatey.
 
 # Needs Estimation
 -- don't discard this section --
-
-## Bug: macOS status bar doesn't show download/pipeline status
-*Side* — regression from 0.16.0 subprocess isolation. Stage/status callbacks now cross the process boundary via IPC queues; something in the wiring between the drain loop and the rumps menu update is broken in the real daemon context. Reproducible when running as a service with automatic Bandcamp sync.

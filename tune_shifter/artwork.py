@@ -143,27 +143,33 @@ def _load_local_artwork(path: Path, min_dimension: int, max_bytes: int) -> bytes
         logger.debug("Using local artwork %s (%dx%d, %d bytes)", path, w, h, len(raw))
         return raw
 
-    # Re-encode as JPEG at progressively lower quality to fit within max_bytes
+    compressed = _compress_to_max_bytes(img, min_dimension, max_bytes)
+    logger.debug("Re-encoded local artwork %s to %d bytes", path, len(compressed))
+    return compressed
+
+
+def _compress_to_max_bytes(
+    img: Image.Image, min_dimension: int, max_bytes: int
+) -> bytes:
+    """Re-encode *img* as JPEG to fit within *max_bytes*.
+
+    Tries quality levels 85 → 70 → 55 → 40.  If still too large, scales the
+    image down so its short edge equals *min_dimension* and encodes once more
+    at quality=75.  Always returns bytes.
+    """
     rgb = img.convert("RGB")
     for quality in (85, 70, 55, 40):
         buf = io.BytesIO()
         rgb.save(buf, format="JPEG", quality=quality)
         if buf.tell() <= max_bytes:
-            logger.debug(
-                "Re-encoded local artwork %s to %d bytes (quality=%d)",
-                path,
-                buf.tell(),
-                quality,
-            )
             return buf.getvalue()
 
-    # Quality reduction wasn't enough: scale dimensions down to min_dimension
-    # on the short edge and try one more time at quality=75
+    # Quality reduction insufficient: scale to min_dimension on the short edge
+    w, h = img.size
     scale = min_dimension / min(w, h)
     resized = rgb.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
     buf = io.BytesIO()
     resized.save(buf, format="JPEG", quality=75)
-    logger.debug("Scaled and re-encoded local artwork %s to %d bytes", path, buf.tell())
     return buf.getvalue()
 
 
@@ -279,12 +285,6 @@ def _fetch_cover(url: str, min_dimension: int, max_bytes: int) -> bytes | None:
 
         raw = img_resp.content
 
-        if len(raw) > max_bytes:
-            logger.debug(
-                "Skipping image %s: %d bytes > %d limit", image_url, len(raw), max_bytes
-            )
-            continue
-
         try:
             img = Image.open(io.BytesIO(raw))
             w, h = img.size
@@ -297,6 +297,18 @@ def _fetch_cover(url: str, min_dimension: int, max_bytes: int) -> bytes | None:
                 "Skipping image %s: %dx%d < %d minimum", image_url, w, h, min_dimension
             )
             continue
+
+        if len(raw) > max_bytes:
+            compressed = _compress_to_max_bytes(img, min_dimension, max_bytes)
+            if len(compressed) > max_bytes:
+                logger.debug(
+                    "Skipping image %s: could not compress to %d bytes",
+                    image_url,
+                    max_bytes,
+                )
+                continue
+            raw = compressed
+            logger.debug("Compressed CAA image %s to %d bytes", image_url, len(raw))
 
         logger.info(
             "Selected cover art: %s (%dx%d, %d bytes)", image_url, w, h, len(raw)

@@ -10,8 +10,11 @@ from PIL import Image
 
 import requests as req_lib
 
+import mutagen.id3 as id3
+
 from tune_shifter.artwork import (
     ArtworkError,
+    _compress_to_max_bytes,
     _detect_mime,
     _embed_m4a,
     _embed_mp3,
@@ -114,7 +117,8 @@ class TestFetchAndEmbed:
         mock_get = _mock_requests_get(listing, image_bytes)
 
         with patch("tune_shifter.artwork.requests.get", mock_get):
-            # max_bytes set below the generated image size
+            # max_bytes=1 is so small that even maximum compression cannot satisfy
+            # it, so the image is still skipped
             fetch_and_embed("abc-123", [mp3], min_dimension=1000, max_bytes=1)
 
         import mutagen.id3 as id3
@@ -496,6 +500,41 @@ class TestFetchCoverEdgeCases:
 
         with patch("tune_shifter.artwork.requests.get", mock_get):
             fetch_and_embed("mbid-x", [], min_dimension=1000, max_bytes=1_000_000)
+
+    def test_oversized_caa_image_is_compressed_and_used(self, tmp_path: Path) -> None:
+        """An oversized CAA image is compressed to fit max_bytes rather than skipped."""
+        # High-quality source so quality reduction can achieve the target size
+        img = Image.new("RGB", (1200, 1200), color=(80, 120, 160))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=95)
+        large_jpeg = buf.getvalue()
+        max_bytes = len(large_jpeg) - 1  # just below raw size, achievable by re-encode
+        listing = {"images": [{"image": "http://x.com/img.jpg", "front": True}]}
+
+        call_count = 0
+
+        def mock_get(url: str, **kw: object) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            if call_count == 1:
+                resp.json.return_value = listing
+            else:
+                resp.content = large_jpeg
+            return resp
+
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        with patch("tune_shifter.artwork.requests.get", mock_get):
+            fetch_and_embed("mbid-x", [mp3], min_dimension=100, max_bytes=max_bytes)
+
+        tags = id3.ID3(str(mp3))
+        apic_keys = [k for k in tags if k.startswith("APIC")]
+        assert apic_keys, "No art was embedded"
+        assert len(tags[apic_keys[0]].data) <= max_bytes
 
 
 class TestEmbed:

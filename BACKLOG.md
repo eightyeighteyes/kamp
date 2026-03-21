@@ -1,15 +1,5 @@
 # 0.17.0
 
-## Error Handling: when there's an error in the pipeline, send a system level notification
-*Single* — hook points already exist (`ExtractionError`, `TaggingError`, `ArtworkError`, `MoveError` in `pipeline.py`, bare `except Exception` in `watcher.py`); wire `rumps.notification()` to each failure site.
-
-Possible error states to inform the user about:
-- Download failure
-- Download timeout
-- Tagging failure
-- Unable to find image for release
-- Library folder doesn't exist
-
 ## Bandcamp Logout: Remove or replace the active Bandcamp session
 *Side* — two surfaces (CLI `tune-shifter sync logout` + menu bar Logout item); CLI deletes the session file and state file; menu bar item calls the same logic and refreshes Bandcamp item state
 ```

@@ -127,6 +127,7 @@ class Syncer:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self.status_callback: Callable[[str], None] | None = None
+        self.error_callback: Callable[[str, str, str], None] | None = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -303,6 +304,12 @@ class Syncer:
         while not self._stop_event.is_set():
             try:
                 self.sync_once()
-            except Exception:
+            except Exception as exc:
                 logger.exception("Unhandled error during Bandcamp sync")
+                if self.error_callback is not None:
+                    self.error_callback(
+                        "Tune-Shifter",
+                        "Bandcamp sync failed",
+                        str(exc)[:120],
+                    )
             self._stop_event.wait(timeout=interval_seconds)

@@ -116,7 +116,9 @@ class MenuBarApp(rumps.App):
         # running here.  status_callback must be wired at init — not just for
         # manual syncs — so that automatic (scheduled) syncs also update the bar.
         self._core.watcher.stage_callback = self._on_pipeline_stage
+        self._core.watcher.notification_callback = self._on_notification
         self._core.syncer.status_callback = self._on_sync_status
+        self._core.syncer.error_callback = self._on_notification
 
     # ------------------------------------------------------------------
     # Menu callbacks
@@ -148,6 +150,15 @@ class MenuBarApp(rumps.App):
                 self._sync_in_progress = False
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _on_notification(self, title: str, subtitle: str, message: str) -> None:
+        """Fire a macOS notification.
+
+        Called from pipeline worker threads and the syncer thread.
+        rumps.notification() dispatches via NSUserNotificationCenter which is
+        thread-safe, so no main-thread hop is required.
+        """
+        rumps.notification(title, subtitle, message)
 
     def _on_sync_status(self, msg: str) -> None:
         """Store the current download target for the main-thread _refresh timer.

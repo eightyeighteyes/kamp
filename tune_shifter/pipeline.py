@@ -8,6 +8,7 @@ lives in pipeline_impl.py; this module is only the IPC wrapper.
 
 from __future__ import annotations
 
+import json
 import logging
 import logging.handlers
 import multiprocessing
@@ -24,6 +25,12 @@ logger = logging.getLogger(__name__)
 # Encodes the directory path so the parent can invoke _claim_directory without
 # sharing mutable state across the process boundary.
 _DIR_SENTINEL = "__dir__:"
+
+# Prefix written to stage_q when the pipeline wants the parent to fire a macOS
+# notification.  Payload is a compact JSON object with "title", "subtitle", and
+# "message" keys so path separators / colons in the message don't cause parsing
+# ambiguity.
+_NOTIFY_SENTINEL = "__notify__:"
 
 
 def _pipeline_worker(
@@ -68,6 +75,7 @@ def _pipeline_worker(
             config,
             _on_directory=lambda d: stage_q.put(f"{_DIR_SENTINEL}{d}"),
             stage_callback=lambda s: stage_q.put(s),
+            notify_callback=lambda s: stage_q.put(s),
         )
         result_q.put(("ok", None))
     except Exception as exc:  # noqa: BLE001
@@ -102,11 +110,21 @@ def _handle_stage_msg(
     msg: str,
     stage_callback: Callable[[str], None] | None,
     on_directory: Callable[[Path], None] | None,
+    notification_callback: Callable[[str, str, str], None] | None = None,
 ) -> None:
     """Dispatch a single message from stage_q to the appropriate callback."""
     if msg.startswith(_DIR_SENTINEL):
         if on_directory is not None:
             on_directory(Path(msg[len(_DIR_SENTINEL) :]))
+    elif msg.startswith(_NOTIFY_SENTINEL):
+        if notification_callback is not None:
+            try:
+                payload = json.loads(msg[len(_NOTIFY_SENTINEL) :])
+                notification_callback(
+                    payload["title"], payload["subtitle"], payload["message"]
+                )
+            except Exception:
+                logger.warning("Malformed notification sentinel: %r", msg)
     elif stage_callback is not None:
         stage_callback(msg)
 
@@ -126,6 +144,7 @@ def run_in_subprocess(
     config: Config,
     _on_directory: Callable[[Path], None] | None = None,
     stage_callback: Callable[[str], None] | None = None,
+    notification_callback: Callable[[str, str, str], None] | None = None,
 ) -> None:
     """Process a single staging item in an isolated subprocess.
 
@@ -139,17 +158,17 @@ def run_in_subprocess(
     )
 
     # Drain both queues while the subprocess runs.  _DIR_SENTINEL messages in
-    # stage_q are routed to _on_directory; everything else goes to
-    # stage_callback.  log_q MUST also be drained here — multiprocessing.Queue
-    # uses an OS pipe with a finite buffer; if the subprocess fills log_q
-    # without the parent consuming it, the subprocess blocks on put() and
-    # proc.is_alive() never becomes False (deadlock).  Draining here also
-    # surfaces log records in real-time rather than only after the subprocess
-    # exits.
+    # stage_q are routed to _on_directory; _NOTIFY_SENTINEL messages are routed
+    # to notification_callback; everything else goes to stage_callback.
+    # log_q MUST also be drained here — multiprocessing.Queue uses an OS pipe
+    # with a finite buffer; if the subprocess fills log_q without the parent
+    # consuming it, the subprocess blocks on put() and proc.is_alive() never
+    # becomes False (deadlock).  Draining here also surfaces log records in
+    # real-time rather than only after the subprocess exits.
     while proc.is_alive():  # pragma: no cover
         try:
             msg = stage_q.get(timeout=0.1)
-            _handle_stage_msg(msg, stage_callback, _on_directory)
+            _handle_stage_msg(msg, stage_callback, _on_directory, notification_callback)
         except queue.Empty:
             pass
         _replay_log_queue(log_q)
@@ -158,7 +177,7 @@ def run_in_subprocess(
     while True:
         try:
             msg = stage_q.get_nowait()
-            _handle_stage_msg(msg, stage_callback, _on_directory)
+            _handle_stage_msg(msg, stage_callback, _on_directory, notification_callback)
         except queue.Empty:
             break
 

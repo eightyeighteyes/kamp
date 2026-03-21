@@ -748,6 +748,7 @@ class TestStageCallback:
             cfg: object,
             _on_directory: object = None,
             stage_callback: object = None,
+            **kw: object,
         ) -> None:
             received["stage_callback"] = stage_callback
 

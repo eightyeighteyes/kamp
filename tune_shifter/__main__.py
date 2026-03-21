@@ -147,6 +147,18 @@ def main() -> None:
     subparsers.add_parser("play", help="Start the tune-shifter service.")
     subparsers.add_parser("status", help="Show whether tune-shifter is running.")
 
+    # test-notify subcommand (macOS only, no config file needed)
+    test_notify_parser = subparsers.add_parser(
+        "test-notify",
+        help="Fire a test macOS notification directly — useful for verifying notification permissions (macOS only).",
+    )
+    test_notify_parser.add_argument(
+        "--type",
+        choices=["extraction", "tagging", "artwork", "move", "download"],
+        required=True,
+        help="Which error type to simulate.",
+    )
+
     # config subcommand
     config_parser = subparsers.add_parser(
         "config",
@@ -200,6 +212,10 @@ def main() -> None:
     # Config commands bypass daemon lifecycle (no musicbrainzngs setup needed).
     if command == "config":
         _cmd_config(args, config_parser)
+        return
+
+    if command == "test-notify":
+        _cmd_test_notify(getattr(args, "type"))
         return
 
     try:
@@ -278,6 +294,130 @@ def _yn_prompt(question: str, default: bool = True) -> bool:
     if not raw:
         return default
     return raw.startswith("y")
+
+
+_NOTIFY_SUBTITLES: dict[str, str] = {
+    "extraction": "Extraction failed",
+    "tagging": "Tagging failed",
+    "artwork": "Artwork warning",
+    "move": "Move failed",
+    "download": "Bandcamp sync failed",
+}
+
+
+def _cmd_test_notify(notify_type: str) -> None:
+    """Run the pipeline (or syncer) to a specific failure point and fire a real notification.
+
+    For pipeline types (extraction, tagging, artwork, move): creates a temporary
+    staging item whose name contains a test-injection marker, then runs the full
+    run_in_subprocess() so the complete IPC path
+    (pipeline_impl → stage_q → notification_callback) is exercised.
+
+    For the download type: calls the error_callback directly, mirroring what
+    Syncer._run() does when sync_once() raises (there is no subprocess IPC for
+    download errors).
+
+    Notifications are delivered via osascript so the command works from any CLI
+    context without requiring a running rumps.App bundle.
+    """
+    if platform.system() != "Darwin":
+        print("test-notify is only supported on macOS.", file=sys.stderr)
+        sys.exit(1)
+
+    import json as _json
+    import subprocess as _sp
+    import tempfile as _tmp
+
+    def _show(title: str, subtitle: str, message: str) -> None:
+        _sp.run(
+            [
+                "osascript",
+                "-e",
+                f"display notification {_json.dumps(message)} with title {_json.dumps(title)} subtitle {_json.dumps(subtitle)}",
+            ],
+            check=False,
+        )
+
+    if notify_type == "download":
+        # Download errors go straight to Syncer.error_callback — no IPC path.
+        _show("Tune-Shifter", "Bandcamp sync failed", "Test notification (download)")
+        print("Notification sent: Bandcamp sync failed")
+        return
+
+    # For pipeline types: run the real pipeline to the injection point.
+    from .config import (
+        ArtworkConfig,
+        Config,
+        LibraryConfig,
+        MusicBrainzConfig,
+        PathsConfig,
+    )
+    from .pipeline import run_in_subprocess
+    from .pipeline_impl import _TEST_INJECT
+
+    with _tmp.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        staging = tmp_path / "staging"
+        library = tmp_path / "library"
+        staging.mkdir()
+        library.mkdir()
+
+        cfg = Config(
+            paths=PathsConfig(staging=staging, library=library),
+            musicbrainz=MusicBrainzConfig(contact="test@example.com"),
+            artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
+            library=LibraryConfig(
+                path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
+            ),
+        )
+
+        item = staging / _TEST_INJECT[notify_type]
+        item.mkdir()
+
+        if notify_type in ("tagging", "artwork", "move"):
+            _write_test_mp3(
+                item / "track01.mp3", with_mbid=notify_type in ("artwork", "move")
+            )
+
+        received: list[tuple[str, str, str]] = []
+
+        def _on_notify(title: str, subtitle: str, message: str) -> None:
+            received.append((title, subtitle, message))
+            _show(title, subtitle, message)
+
+        run_in_subprocess(item, cfg, notification_callback=_on_notify)
+
+    if received:
+        print(f"Notification sent: {received[0][1]}")
+    else:
+        print("Warning: no notification was fired.", file=sys.stderr)
+        sys.exit(1)
+
+
+def _write_test_mp3(path: Path, *, with_mbid: bool = False) -> None:
+    """Write a minimal fake MP3 to *path*, optionally with MusicBrainz MBID tags.
+
+    Used by test-notify to create test fixtures that satisfy pipeline preconditions
+    (find_audio_files returns a file; is_tagged returns True when with_mbid=True)
+    without network access.
+    """
+    from mutagen import id3
+
+    path.write_bytes(b"\xff\xfb" * 64)
+    id3.ID3().save(str(path))
+    if with_mbid:
+        tags = id3.ID3(str(path))
+        tags.add(
+            id3.TXXX(encoding=3, desc="MusicBrainz Release Id", text=["test-mbid"])
+        )
+        tags.add(
+            id3.TXXX(
+                encoding=3,
+                desc="MusicBrainz Release Group Id",
+                text=["test-rg-mbid"],
+            )
+        )
+        tags.save(str(path))
 
 
 def _cmd_sync(config: Config, config_path: Path, mark_synced: bool = False) -> None:

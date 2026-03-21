@@ -38,6 +38,8 @@ class _StagingHandler(FileSystemEventHandler):
         self._lock = threading.Lock()
         # Set by Watcher to surface current pipeline stage in the menu bar.
         self.stage_callback: Callable[[str], None] | None = None
+        # Set by Watcher to deliver error notifications to the menu bar.
+        self.notification_callback: Callable[[str, str, str], None] | None = None
 
     def on_created(self, event: FileSystemEvent) -> None:
         if event.is_directory:
@@ -146,6 +148,7 @@ class _StagingHandler(FileSystemEventHandler):
                     self._config,
                     _on_directory=_claim_directory,
                     stage_callback=self.stage_callback,
+                    notification_callback=self.notification_callback,
                 )
             except Exception:
                 logger.exception("Unhandled error in pipeline for %s", path)
@@ -180,6 +183,7 @@ class Watcher:
         self._handler = _StagingHandler(config)
         self._paused = False
         self._stage_callback: Callable[[str], None] | None = None
+        self._notification_callback: Callable[[str, str, str], None] | None = None
 
     @property
     def stage_callback(self) -> Callable[[str], None] | None:
@@ -189,6 +193,15 @@ class Watcher:
     def stage_callback(self, cb: Callable[[str], None] | None) -> None:
         self._stage_callback = cb
         self._handler.stage_callback = cb
+
+    @property
+    def notification_callback(self) -> Callable[[str, str, str], None] | None:
+        return self._notification_callback
+
+    @notification_callback.setter
+    def notification_callback(self, cb: Callable[[str, str, str], None] | None) -> None:
+        self._notification_callback = cb
+        self._handler.notification_callback = cb
 
     def start(self) -> None:
         staging = self._config.paths.staging
@@ -226,6 +239,7 @@ class Watcher:
         self._observer = Observer()
         self._handler = _StagingHandler(self._config)
         self._handler.stage_callback = self._stage_callback
+        self._handler.notification_callback = self._notification_callback
         self._observer.schedule(self._handler, str(staging), recursive=False)
         self._observer.start()
         self._handler._scan_staging_root()
@@ -260,6 +274,7 @@ class Watcher:
             new_staging.mkdir(parents=True, exist_ok=True)
             self._handler = _StagingHandler(config)
             self._handler.stage_callback = self._stage_callback
+            self._handler.notification_callback = self._notification_callback
             self._observer.schedule(self._handler, str(new_staging), recursive=False)
             self._handler._scan_staging_root()
         else:

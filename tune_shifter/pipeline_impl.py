@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from collections.abc import Callable
@@ -15,12 +16,48 @@ from .tagger import TaggingError, is_tagged, read_release_mbids, tag_directory
 
 logger = logging.getLogger(__name__)
 
+# Marker embedded in a staging item's name to inject a failure at a specific
+# pipeline stage.  Used exclusively by `tune-shifter test-notify` so the full
+# IPC notification path (pipeline_impl → stage_q → notification_callback) can
+# be exercised without a real audio file or network access.
+_TEST_INJECT = {
+    "extraction": "__test_extraction_error",
+    "tagging": "__test_tagging_error",
+    "artwork": "__test_artwork_error",
+    "move": "__test_move_error",
+}
+
+# Sentinel prefix must match pipeline.py — imported lazily to avoid a circular
+# dependency; duplicated as a string literal here so pipeline_impl stays usable
+# standalone (e.g. in tests that call run() directly).
+_NOTIFY_SENTINEL = "__notify__:"
+
+
+def _notify(
+    notify_callback: Callable[[str], None] | None,
+    subtitle: str,
+    message: str,
+) -> None:
+    """Emit a notification payload via notify_callback using the __notify__: sentinel.
+
+    notify_callback receives an already-serialised sentinel string so
+    pipeline_impl stays decoupled from how the parent delivers the notification.
+    The caller (pipeline_worker) wires it to stage_q.put, same as stage_callback.
+    """
+    if notify_callback is None:
+        return
+    payload = json.dumps(
+        {"title": "Tune-Shifter", "subtitle": subtitle, "message": message}
+    )
+    notify_callback(f"{_NOTIFY_SENTINEL}{payload}")
+
 
 def run(
     path: Path,
     config: Config,
     _on_directory: Callable[[Path], None] | None = None,
     stage_callback: Callable[[str], None] | None = None,
+    notify_callback: Callable[[str], None] | None = None,
 ) -> None:
     """Process a single staging item (ZIP or directory) end-to-end.
 
@@ -28,6 +65,8 @@ def run(
     does not trigger on it again.  *stage_callback* (if provided) is called
     with the current stage name ("Extracting", "Tagging", etc.) and with an
     empty string in a finally block so the caller can always reset its display.
+    *notify_callback* (if provided) receives __notify__: sentinel strings that
+    the parent process routes to rumps.notification().
     """
     logger.info("Pipeline started for %s", path)
 
@@ -35,10 +74,13 @@ def run(
         # --- 1. Extract -------------------------------------------------------
         if stage_callback:
             stage_callback("Extracting")
+        if _TEST_INJECT["extraction"] in path.name:
+            raise ExtractionError("Injected by test-notify --type extraction")
         try:
             directory = extract(path)
         except ExtractionError as exc:
             logger.error("Extraction failed: %s", exc)
+            _notify(notify_callback, "Extraction failed", path.name)
             _quarantine(path, config.paths.staging)
             return
 
@@ -52,6 +94,9 @@ def run(
         audio_files = find_audio_files(directory)
         if not audio_files:
             logger.error("No audio files found in %s", directory)
+            _notify(
+                notify_callback, "Extraction failed", f"No audio files in {path.name}"
+            )
             _quarantine(directory, config.paths.staging)
             return
 
@@ -66,10 +111,13 @@ def run(
             mbid, rg_mbid = read_release_mbids(audio_files[0])
             title = "(already tagged)"
         else:
+            if _TEST_INJECT["tagging"] in directory.name:
+                raise TaggingError("Injected by test-notify --type tagging")
             try:
                 release = tag_directory(directory, audio_files)
             except TaggingError as exc:
                 logger.error("Tagging failed: %s", exc)
+                _notify(notify_callback, "Tagging failed", path.name)
                 _quarantine(directory, config.paths.staging)
                 return
             mbid, rg_mbid = release.mbid, release.release_group_mbid
@@ -82,22 +130,31 @@ def run(
         # fallback and is cheap when no network call is needed.
         if stage_callback:
             stage_callback("Updating artwork")
-        try:
-            fetch_and_embed(
-                mbid=mbid,
-                audio_files=audio_files,
-                min_dimension=config.artwork.min_dimension,
-                max_bytes=config.artwork.max_bytes,
-                release_group_mbid=rg_mbid,
-                directory=directory,
-            )
-        except ArtworkError as exc:
-            # Artwork failure is non-fatal: log and continue
-            logger.warning("Artwork step failed: %s", exc)
+        if _TEST_INJECT["artwork"] in directory.name:
+            raise ArtworkError("Injected by test-notify --type artwork")
+        elif _TEST_INJECT["move"] not in directory.name:
+            # Skip network artwork fetch when testing the move stage so it
+            # doesn't raise its own ArtworkError before we reach the move
+            # injection point.
+            try:
+                fetch_and_embed(
+                    mbid=mbid,
+                    audio_files=audio_files,
+                    min_dimension=config.artwork.min_dimension,
+                    max_bytes=config.artwork.max_bytes,
+                    release_group_mbid=rg_mbid,
+                    directory=directory,
+                )
+            except ArtworkError as exc:
+                # Artwork failure is non-fatal: log and continue.
+                logger.warning("Artwork step failed: %s", exc)
+                _notify(notify_callback, "Artwork warning", str(exc)[:120])
 
         # --- 4. Move ----------------------------------------------------------
         if stage_callback:
             stage_callback("Moving")
+        if _TEST_INJECT["move"] in directory.name:
+            raise MoveError("Injected by test-notify --type move")
         try:
             destinations = move_to_library(
                 audio_files=audio_files,
@@ -107,6 +164,7 @@ def run(
             )
         except MoveError as exc:
             logger.error("Move failed: %s", exc)
+            _notify(notify_callback, "Move failed", path.name)
             _quarantine(directory, config.paths.staging)
             return
 

@@ -71,8 +71,9 @@ module = ["musicbrainzngs", "musicbrainzngs.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# __main__ uses mutagen for _write_test_mp3 (same partial-stub issues as tagger/mover/artwork)
 module = ["tune_shifter.__main__"]
-disable_error_code = ["import-untyped"]
+disable_error_code = ["import-untyped", "no-untyped-call", "attr-defined"]
 
 [[tool.mypy.overrides]]
 # mutagen has partial stubs that don't cover ID3 frame classes, MP4 methods, or

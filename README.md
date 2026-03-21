@@ -14,6 +14,7 @@ Built with Python 3 by [Claude Sonnet 4.6](https://www.anthropic.com/claude).
 - **Filesystem watcher** — monitors your staging directory; drop a ZIP or folder in and it is processed automatically
 - **Configurable library layout** — moves finished files into your library using a template you control (`{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}`)
 - **Error quarantine** — failed items are moved to `staging/errors/` so nothing loops or blocks the queue
+- **Error notifications** — macOS system notifications for pipeline failures (extraction, tagging, artwork, download) and Bandcamp sync failures
 - **macOS menu bar** — optional status-bar icon with pipeline Play/Stop toggle, on-demand Bandcamp sync, and a live sync status indicator with pulse animation
 - **Background service** — one command registers the daemon as a system service that starts at login (macOS launchd)
 - **Cross-platform** — macOS, Linux, and Windows (Python 3.11+)
@@ -199,6 +200,22 @@ tune-shifter config set artwork.min_dimension 500
 ```
 
 Keys use dot notation (`section.field`). Run `tune-shifter config set --help` to see all valid keys.
+
+### Test notifications (macOS)
+
+Verify that macOS notification permissions are granted and the full notification path works by simulating a failure at a specific pipeline stage:
+
+```bash
+tune-shifter test-notify --type extraction  # simulate extraction failure
+tune-shifter test-notify --type tagging     # simulate MusicBrainz tagging failure
+tune-shifter test-notify --type artwork     # simulate cover art warning
+tune-shifter test-notify --type move        # simulate library move failure
+tune-shifter test-notify --type download    # simulate Bandcamp sync failure
+```
+
+Each command runs the real pipeline (or syncer) up to the named stage, injects a failure, and fires a notification via the same code path the daemon uses — so if the notification appears, the full chain is working.
+
+---
 
 ### One-shot Bandcamp sync
 

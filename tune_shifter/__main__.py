@@ -327,9 +327,19 @@ def _cmd_test_notify(notify_type: str) -> None:
     import tempfile as _tmp
 
     import rumps
+    from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+    from Foundation import NSDate, NSRunLoop
+
+    # Initialize an accessory NSApplication (no dock icon) so the AppKit event
+    # loop can dispatch NSUserNotificationCenter.deliverNotification_ below.
+    # Without this, the notification is queued but the loop never runs to send it.
+    _app = NSApplication.sharedApplication()
+    _app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
     def _show(title: str, subtitle: str, message: str) -> None:
         rumps.notification(title, subtitle, message)
+        # Spin the run loop briefly to flush the delivery.
+        NSRunLoop.mainRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.5))
 
     if notify_type == "download":
         # Download errors go straight to Syncer.error_callback — no IPC path.

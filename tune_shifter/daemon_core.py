@@ -40,8 +40,11 @@ class DaemonCore:
         self._config_path = config_path
         self._state: DaemonState = "stopped"
         self._done = threading.Event()
-        self._watcher: Watcher | None = None
-        self._syncer: Syncer | None = None
+        # Created here so callers can wire callbacks (e.g. status_callback on
+        # Syncer) before start() launches threads — avoids a race where the
+        # first automatic sync fires before the menu bar has wired its callback.
+        self._watcher: Watcher = Watcher(config)
+        self._syncer: Syncer = Syncer(config)
         self._monitor: ConfigMonitor | None = None
 
     # ------------------------------------------------------------------
@@ -53,13 +56,13 @@ class DaemonCore:
         return self._state
 
     @property
-    def watcher(self) -> Watcher | None:
-        """The active Watcher instance, or None before start()."""
+    def watcher(self) -> Watcher:
+        """The Watcher instance (available immediately after construction)."""
         return self._watcher
 
     @property
-    def syncer(self) -> Syncer | None:
-        """The active Syncer instance, or None before start()."""
+    def syncer(self) -> Syncer:
+        """The Syncer instance (available immediately after construction)."""
         return self._syncer
 
     # ------------------------------------------------------------------
@@ -67,16 +70,12 @@ class DaemonCore:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Create and start all pipeline components, write pidfile, install signals."""
-        self._watcher = Watcher(self._config)
-        self._syncer = Syncer(self._config)
+        """Start all pipeline components, write pidfile, install signals."""
 
         def _on_config_reload(new_config: Config) -> None:
             self._config = new_config
-            if self._watcher:
-                self._watcher.reload(new_config)
-            if self._syncer:
-                self._syncer.reload(new_config)
+            self._watcher.reload(new_config)
+            self._syncer.reload(new_config)
 
         self._monitor = ConfigMonitor(self._config_path, _on_config_reload)
 
@@ -94,19 +93,15 @@ class DaemonCore:
     def stop(self) -> None:
         """Pause the pipeline (watcher + syncer). Used by the Play/Stop menu toggle."""
         _logger.info("Pipeline pausing…")
-        if self._watcher:
-            self._watcher.pause()
-        if self._syncer:
-            self._syncer.pause()
+        self._watcher.pause()
+        self._syncer.pause()
         self._state = "paused"
 
     def resume(self) -> None:
         """Resume the pipeline after stop()."""
         _logger.info("Pipeline resuming…")
-        if self._watcher:
-            self._watcher.resume()
-        if self._syncer:
-            self._syncer.resume()
+        self._watcher.resume()
+        self._syncer.resume()
         self._state = "running"
 
     def shutdown(self) -> None:
@@ -114,10 +109,8 @@ class DaemonCore:
         _logger.info("Shutting down…")
         if self._monitor:
             self._monitor.stop()
-        if self._syncer:
-            self._syncer.stop()
-        if self._watcher:
-            self._watcher.stop()
+        self._syncer.stop()
+        self._watcher.stop()
         self._state = "stopped"
         self._done.set()
 

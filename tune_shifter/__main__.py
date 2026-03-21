@@ -321,12 +321,17 @@ def _cmd_daemon(config: Config, config_path: Path, menu_bar: bool = False) -> No
     )
 
     core = DaemonCore(config, config_path)
-    core.start()
     if menu_bar and platform.system() == "Darwin":
         from .menu_bar import MenuBarApp
 
-        MenuBarApp(core).run()
+        # Wire callbacks BEFORE core.start() launches threads so that the
+        # first automatic Bandcamp sync (which fires immediately on thread
+        # start) already has status_callback set.
+        app = MenuBarApp(core)
+        core.start()
+        app.run()
     else:
+        core.start()
         core.wait()
 
 

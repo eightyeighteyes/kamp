@@ -65,11 +65,19 @@ class TestInitialState:
     def test_state_is_stopped_before_start(self, core: DaemonCore) -> None:
         assert core.state == "stopped"
 
-    def test_watcher_is_none_before_start(self, core: DaemonCore) -> None:
-        assert core.watcher is None
+    def test_watcher_exists_before_start(
+        self, core: DaemonCore, mock_watcher: MagicMock
+    ) -> None:
+        # Watcher is created at __init__ time so callers can wire callbacks
+        # before start() launches threads.
+        assert core.watcher is mock_watcher.return_value
 
-    def test_syncer_is_none_before_start(self, core: DaemonCore) -> None:
-        assert core.syncer is None
+    def test_syncer_exists_before_start(
+        self, core: DaemonCore, mock_syncer: MagicMock
+    ) -> None:
+        # Syncer is created at __init__ time so callers can wire callbacks
+        # before start() launches threads.
+        assert core.syncer is mock_syncer.return_value
 
 
 class TestStart:
@@ -230,7 +238,7 @@ class TestShutdown:
 
 
 class TestBeforeStart:
-    """stop/resume/shutdown are safe to call before start() (components are None)."""
+    """stop/resume/shutdown are safe to call before start()."""
 
     def test_stop_before_start_is_safe(self, core: DaemonCore) -> None:
         core.stop()  # must not raise

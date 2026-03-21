@@ -115,10 +115,8 @@ class MenuBarApp(rumps.App):
         # before MenuBarApp(core).run(), so the watcher and syncer are already
         # running here.  status_callback must be wired at init — not just for
         # manual syncs — so that automatic (scheduled) syncs also update the bar.
-        if self._core.watcher:
-            self._core.watcher.stage_callback = self._on_pipeline_stage
-        if self._core.syncer:
-            self._core.syncer.status_callback = self._on_sync_status
+        self._core.watcher.stage_callback = self._on_pipeline_stage
+        self._core.syncer.status_callback = self._on_sync_status
 
     # ------------------------------------------------------------------
     # Menu callbacks

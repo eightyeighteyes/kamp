@@ -274,8 +274,14 @@ class TestStatusCallback:
                 syncer.status_callback = received.append
                 syncer.sync_once()
 
-        # sync_once() appends "" at the end to signal completion to the menu bar.
-        assert received == ["Downloading: Album A", "Downloading: Album B", ""]
+        # sync_once() prepends "Syncing…" to signal start, then forwards
+        # per-item messages from the worker, then appends "" to signal completion.
+        assert received == [
+            "Syncing\u2026",
+            "Downloading: Album A",
+            "Downloading: Album B",
+            "",
+        ]
 
 
 class TestLazyImport:

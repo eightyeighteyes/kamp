@@ -211,6 +211,12 @@ class Syncer:
 
         state_file = _state_dir() / "bandcamp_state.json"
         logger.info("Starting Bandcamp sync…")
+        # Signal "sync in progress" immediately — the subprocess spends most
+        # of its time logging in and fetching the collection before any per-item
+        # status_callback is invoked, so without this the menu bar would show
+        # "Idle" for the entire sync unless there are actual downloads.
+        if self.status_callback is not None:
+            self.status_callback("Syncing\u2026")
 
         proc, status_q, log_q, result_q = _spawn_worker(
             _sync_worker,

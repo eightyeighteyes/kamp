@@ -1,8 +1,3 @@
-# 0.18.0
-
-## Improve Image Retrieval: Compress CAA images over size threshold
-*Single* — when a CAA candidate exceeds `max_bytes`, apply the same Pillow downscale/compress logic already used for oversized Bandcamp ZIP art rather than skipping it. Reuses existing compression helper; needs a test covering the compress-then-embed path for CAA images.
-
 # 1.0.0
 
 ## Rebrand to "kamp-daemon"

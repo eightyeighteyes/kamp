@@ -152,13 +152,39 @@ class MenuBarApp(rumps.App):
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_notification(self, title: str, subtitle: str, message: str) -> None:
-        """Fire a macOS notification.
+        """Fire a macOS notification via UNUserNotificationCenter.
 
-        Called from pipeline worker threads and the syncer thread.
-        rumps.notification() dispatches via NSUserNotificationCenter which is
-        thread-safe, so no main-thread hop is required.
+        NSUserNotificationCenter (rumps.notification) is deprecated and silently
+        dropped on macOS 14+.  Called from pipeline worker threads and the syncer
+        thread; UNUserNotificationCenter uses XPC so it is thread-safe.
         """
-        rumps.notification(title, subtitle, message)
+        try:
+            import uuid
+
+            import objc
+
+            objc.loadBundle(
+                "UserNotifications",
+                bundle_path="/System/Library/Frameworks/UserNotifications.framework",
+                module_globals={},
+            )
+            UNCH = objc.lookUpClass("UNUserNotificationCenter")
+            Content = objc.lookUpClass("UNMutableNotificationContent")
+            Request = objc.lookUpClass("UNNotificationRequest")
+
+            content = Content.new()
+            content.setTitle_(title)
+            content.setSubtitle_(subtitle)
+            content.setBody_(message)
+
+            request = Request.requestWithIdentifier_content_trigger_(
+                str(uuid.uuid4()), content, None
+            )
+            UNCH.currentNotificationCenter().addNotificationRequest_withCompletionHandler_(
+                request, None
+            )
+        except Exception:
+            logger.warning("Failed to deliver notification: %s — %s", subtitle, message)
 
     def _on_sync_status(self, msg: str) -> None:
         """Store the current download target for the main-thread _refresh timer.

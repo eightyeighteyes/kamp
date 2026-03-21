@@ -325,31 +325,70 @@ def _cmd_test_notify(notify_type: str) -> None:
         sys.exit(1)
 
     import tempfile as _tmp
+    import time
+    import uuid
 
-    import rumps as _rumps
-    from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+    import objc
+    from Foundation import NSDate, NSRunLoop
 
     def _show(title: str, subtitle: str, message: str) -> None:
-        """Fire a notification via a short-lived accessory rumps.App.
+        """Deliver a notification via UNUserNotificationCenter (macOS 10.14+).
 
-        rumps.notification() requires a running AppKit event loop to dispatch
-        the delivery — a bare runUntilDate_ spin is not sufficient on macOS 14+.
-        Spinning up a minimal App provides exactly the same context as the daemon.
+        NSUserNotificationCenter (used by rumps.notification) is deprecated and
+        silently dropped on macOS 14+.  UNUserNotificationCenter is the modern
+        API; it uses XPC to usernoted so no AppKit event loop is required.
         """
+        objc.loadBundle(
+            "UserNotifications",
+            bundle_path="/System/Library/Frameworks/UserNotifications.framework",
+            module_globals={},
+        )
+        UNCH = objc.lookUpClass("UNUserNotificationCenter")
+        Content = objc.lookUpClass("UNMutableNotificationContent")
+        Request = objc.lookUpClass("UNNotificationRequest")
 
-        class _Notifier(_rumps.App):
-            def __init__(self) -> None:
-                NSApplication.sharedApplication().setActivationPolicy_(
-                    NSApplicationActivationPolicyAccessory
-                )
-                super().__init__("tune-shifter", icon=None, quit_button=None)
+        center = UNCH.currentNotificationCenter()
 
-            @_rumps.timer(0.2)
-            def _fire(self, _: object) -> None:
-                _rumps.notification(title, subtitle, message)
-                _rumps.quit_application()
+        # Request auth; if already decided the callback fires immediately.
+        # Options: alert = 4, sound = 2.
+        _granted: list[bool] = []
+        center.requestAuthorizationWithOptions_completionHandler_(
+            6,
+            lambda ok, err: _granted.append(bool(ok)),
+        )
+        deadline = time.time() + 3.0
+        while not _granted and time.time() < deadline:
+            NSRunLoop.mainRunLoop().runUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(0.05)
+            )
 
-        _Notifier().run()
+        if not _granted or not _granted[0]:
+            print(
+                "Notification permission not granted — "
+                "enable in System Settings > Notifications.",
+                file=sys.stderr,
+            )
+            return
+
+        content = Content.new()
+        content.setTitle_(title)
+        content.setSubtitle_(subtitle)
+        content.setBody_(message)
+
+        request = Request.requestWithIdentifier_content_trigger_(
+            str(uuid.uuid4()), content, None
+        )
+
+        _done: list[bool] = []
+        center.addNotificationRequest_withCompletionHandler_(
+            request,
+            lambda err: _done.append(True),
+        )
+        deadline = time.time() + 3.0
+        while not _done and time.time() < deadline:
+            NSRunLoop.mainRunLoop().runUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(0.05)
+            )
 
     if notify_type == "download":
         # Download errors go straight to Syncer.error_callback — no IPC path.

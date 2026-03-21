@@ -4,7 +4,7 @@
   "packages": {
     ".": {
       "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true
+      "release-as": "1.0.0"
     }
   }
 }

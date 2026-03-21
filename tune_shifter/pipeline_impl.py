@@ -74,9 +74,9 @@ def run(
         # --- 1. Extract -------------------------------------------------------
         if stage_callback:
             stage_callback("Extracting")
-        if _TEST_INJECT["extraction"] in path.name:
-            raise ExtractionError("Injected by test-notify --type extraction")
         try:
+            if _TEST_INJECT["extraction"] in path.name:
+                raise ExtractionError("Injected by test-notify --type extraction")
             directory = extract(path)
         except ExtractionError as exc:
             logger.error("Extraction failed: %s", exc)
@@ -111,9 +111,9 @@ def run(
             mbid, rg_mbid = read_release_mbids(audio_files[0])
             title = "(already tagged)"
         else:
-            if _TEST_INJECT["tagging"] in directory.name:
-                raise TaggingError("Injected by test-notify --type tagging")
             try:
+                if _TEST_INJECT["tagging"] in directory.name:
+                    raise TaggingError("Injected by test-notify --type tagging")
                 release = tag_directory(directory, audio_files)
             except TaggingError as exc:
                 logger.error("Tagging failed: %s", exc)
@@ -130,13 +130,13 @@ def run(
         # fallback and is cheap when no network call is needed.
         if stage_callback:
             stage_callback("Updating artwork")
-        if _TEST_INJECT["artwork"] in directory.name:
-            raise ArtworkError("Injected by test-notify --type artwork")
-        elif _TEST_INJECT["move"] not in directory.name:
-            # Skip network artwork fetch when testing the move stage so it
-            # doesn't raise its own ArtworkError before we reach the move
-            # injection point.
-            try:
+        try:
+            if _TEST_INJECT["artwork"] in directory.name:
+                raise ArtworkError("Injected by test-notify --type artwork")
+            elif _TEST_INJECT["move"] not in directory.name:
+                # Skip network artwork fetch when testing the move stage so it
+                # doesn't raise its own ArtworkError before we reach the move
+                # injection point.
                 fetch_and_embed(
                     mbid=mbid,
                     audio_files=audio_files,
@@ -145,17 +145,17 @@ def run(
                     release_group_mbid=rg_mbid,
                     directory=directory,
                 )
-            except ArtworkError as exc:
-                # Artwork failure is non-fatal: log and continue.
-                logger.warning("Artwork step failed: %s", exc)
-                _notify(notify_callback, "Artwork warning", str(exc)[:120])
+        except ArtworkError as exc:
+            # Artwork failure is non-fatal: log and continue.
+            logger.warning("Artwork step failed: %s", exc)
+            _notify(notify_callback, "Artwork warning", str(exc)[:120])
 
         # --- 4. Move ----------------------------------------------------------
         if stage_callback:
             stage_callback("Moving")
-        if _TEST_INJECT["move"] in directory.name:
-            raise MoveError("Injected by test-notify --type move")
         try:
+            if _TEST_INJECT["move"] in directory.name:
+                raise MoveError("Injected by test-notify --type move")
             destinations = move_to_library(
                 audio_files=audio_files,
                 staging_dir=directory,

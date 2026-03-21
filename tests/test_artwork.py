@@ -108,7 +108,10 @@ class TestFetchAndEmbed:
         tags = id3.ID3(str(mp3))
         assert not any(k.startswith("APIC") for k in tags)
 
-    def test_skips_image_too_large_in_bytes(self, tmp_path: Path) -> None:
+    def test_raises_when_image_cannot_be_compressed_to_limit(
+        self, tmp_path: Path
+    ) -> None:
+        """ArtworkError is raised when an image exceeds max_bytes and compression fails."""
         mp3 = tmp_path / "01.mp3"
         _make_mp3(mp3)
 
@@ -118,13 +121,9 @@ class TestFetchAndEmbed:
 
         with patch("tune_shifter.artwork.requests.get", mock_get):
             # max_bytes=1 is so small that even maximum compression cannot satisfy
-            # it, so the image is still skipped
-            fetch_and_embed("abc-123", [mp3], min_dimension=1000, max_bytes=1)
-
-        import mutagen.id3 as id3
-
-        tags = id3.ID3(str(mp3))
-        assert not any(k.startswith("APIC") for k in tags)
+            # it — ArtworkError is raised so the pipeline can surface a notification
+            with pytest.raises(ArtworkError, match="could not be compressed"):
+                fetch_and_embed("abc-123", [mp3], min_dimension=1000, max_bytes=1)
 
     def test_raises_when_listing_request_fails(self, tmp_path: Path) -> None:
         import requests as req_lib

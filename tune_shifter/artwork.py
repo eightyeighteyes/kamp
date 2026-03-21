@@ -301,12 +301,10 @@ def _fetch_cover(url: str, min_dimension: int, max_bytes: int) -> bytes | None:
         if len(raw) > max_bytes:
             compressed = _compress_to_max_bytes(img, min_dimension, max_bytes)
             if len(compressed) > max_bytes:
-                logger.debug(
-                    "Skipping image %s: could not compress to %d bytes",
-                    image_url,
-                    max_bytes,
+                raise ArtworkError(
+                    f"CAA image {image_url} ({len(raw)} bytes) could not be compressed"
+                    f" to fit within {max_bytes} bytes"
                 )
-                continue
             raw = compressed
             logger.debug("Compressed CAA image %s to %d bytes", image_url, len(raw))
 

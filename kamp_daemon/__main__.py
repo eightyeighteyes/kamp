@@ -190,6 +190,11 @@ def main() -> None:
     # ERROR the root logger already handles filtering without our help.
     if args.log_level == "INFO":
         logging.getLogger("musicbrainzngs").setLevel(logging.WARNING)
+        # asyncio emits "Using selector: KqueueSelector" at DEBUG on every startup.
+        logging.getLogger("asyncio").setLevel(logging.WARNING)
+        # PIL.TiffImagePlugin emits per-tag DEBUG lines when decoding TIFF/JPEG EXIF
+        # data, which floods the log during every artwork embed.
+        logging.getLogger("PIL.TiffImagePlugin").setLevel(logging.WARNING)
 
     # Default to daemon when no subcommand given
     command = args.command or "daemon"

@@ -21,5 +21,6 @@ To manage the service:
 To sync your collection from Bandcamp, run:
   tune-shifter sync
 
-If most of your Bandcamp collection is already in your local library, run this first to avoid redownloading everything:
-  tune-shifter sync --mark-synced
+On first sync, tune-shifter will capture the state of your Bandcamp account. 
+If you want to download your whole Bandcamp collection in one go, you need to run:
+  tune-shifter sync --download-all

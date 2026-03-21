@@ -9,6 +9,7 @@
 - The API should be expressive
 
 # Workflow
+- After cloning, run `git config core.hooksPath .githooks` to enable the pre-commit hook (black + mypy).
 - Start work with a new branch created from a clean, updated main branch. Do not create files before creating a new branch.
 - One fix or feature per branch / PR.
 - Use red/green TDD

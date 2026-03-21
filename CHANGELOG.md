@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.0](https://github.com/eightyeighteyes/kamp-daemon/compare/v0.18.0...v1.0.0) (2026-03-21)
+
+
+### Bug Fixes
+
+* suppress asyncio and PIL.TiffImagePlugin debug log noise ([#87](https://github.com/eightyeighteyes/kamp-daemon/issues/87)) ([0d20c61](https://github.com/eightyeighteyes/kamp-daemon/commit/0d20c6162cb666a89a397e44436caf8f85b01a2f))
+
 ## [0.18.0](https://github.com/eightyeighteyes/kamp-daemon/compare/v0.17.0...v0.18.0) (2026-03-21)
 
 

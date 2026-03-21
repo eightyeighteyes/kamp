@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "kamp-daemon"
-version = "0.18.0"
+version = "1.0.0"
 description = "Automated audio library ingest from Bandcamp downloads."
 authors = []
 packages = [{include = "kamp_daemon"}]

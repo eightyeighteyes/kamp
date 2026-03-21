@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.17.0](https://github.com/eightyeighteyes/tune-shifter/compare/v0.16.1...v0.17.0) (2026-03-21)
+
+
+### Features
+
+* **logout:** add tune-shifter logout command and menu bar item ([#77](https://github.com/eightyeighteyes/tune-shifter/issues/77)) ([ca18a37](https://github.com/eightyeighteyes/tune-shifter/commit/ca18a379a940f16ffe772a6e75a1de064799a70e))
+* **notifications:** macOS notifications for pipeline and sync failures ([#75](https://github.com/eightyeighteyes/tune-shifter/issues/75)) ([194c0f3](https://github.com/eightyeighteyes/tune-shifter/commit/194c0f3ca567c52a72b60680c88df2c00046d343))
+* **syncer:** auto-mark collection on first sync; add --download-all ([#78](https://github.com/eightyeighteyes/tune-shifter/issues/78)) ([be19a70](https://github.com/eightyeighteyes/tune-shifter/commit/be19a705268375aa2a6270a660315cbae8c919b0))
+
 ## [0.16.1](https://github.com/eightyeighteyes/tune-shifter/compare/v0.16.0...v0.16.1) (2026-03-21)
 
 

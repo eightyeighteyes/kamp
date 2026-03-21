@@ -1,10 +1,3 @@
-# 1.0.0
-
-## Rebrand to "kamp-daemon"
-*Side* — rename package, CLI entry point, config dir (`~/.config/kamp-daemon`), state dir, log prefixes, README, and pyproject. Main risk is the config/state migration path for existing installs; needs a decision on auto-migrate vs. deprecation warning before starting.
-
-Replace EVERYTHING that says 'kamp-daemon' with 'kamp-daemon'
-
 # Backlog
 
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)

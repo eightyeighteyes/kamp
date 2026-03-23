@@ -1,17 +1,17 @@
-# This formula lives in the homebrew-kamp-daemon tap repo (Formula/kamp-daemon.rb).
+# This formula lives in the homebrew-kamp tap repo (Formula/kamp.rb).
 # A copy is kept here as source of truth. The release workflow patches `url` and
 # `sha256` in the tap repo automatically on each tagged release.
 #
 # One-time tap setup:
-#   brew tap GITHUB_USERNAME/kamp-daemon
-#   brew install kamp-daemon
+#   brew tap GITHUB_USERNAME/kamp
+#   brew install kamp
 #
-# (Requires a GitHub repo named `homebrew-kamp-daemon` containing this file.)
+# (Requires a GitHub repo named `homebrew-kamp` containing this file.)
 
-class KampDaemon < Formula
+class Kamp < Formula
   desc "Automated audio library ingest daemon for Bandcamp downloads"
-  homepage "https://github.com/eightyeighteyes/kamp-daemon"
-  url "https://github.com/eightyeighteyes/kamp-daemon/releases/download/v0.1.0/kamp_daemon-0.1.0.tar.gz"
+  homepage "https://github.com/eightyeighteyes/kamp"
+  url "https://github.com/eightyeighteyes/kamp/releases/download/v0.1.0/kamp_daemon-0.1.0.tar.gz"
   sha256 "PLACEHOLDER"
 
   license "GPL-3.0-only"
@@ -27,11 +27,11 @@ class KampDaemon < Formula
     system venv/"bin/pip", "install", "--upgrade", "pip"
     system venv/"bin/pip", "install", buildpath
 
-    # Compile a native launcher binary so macOS sets p_comm to "kamp-daemon"
+    # Compile a native launcher binary so macOS sets p_comm to "kamp"
     # at exec time.  A symlink to the Python shebang script would leave p_comm
     # as "python3.11", which shows up in Activity Monitor.  The compiled binary
     # embeds Python (Py_SetProgramName + Py_Main) and stays alive as the
-    # top-level process, so the kernel-level name is always "kamp-daemon".
+    # top-level process, so the kernel-level name is always "kamp".
     venv_python = venv/"bin/python3"
     cflags  = Utils.safe_popen_read(venv_python, "-c",
                 "import sysconfig; print(sysconfig.get_config_var('CFLAGS') or '')").chomp
@@ -52,15 +52,15 @@ class KampDaemon < Formula
            "-L#{lib_dir}", "-lpython#{py_ver}",
            *ldflags.split,
            "-Wno-deprecated-declarations",
-           "-o", buildpath/"kamp-daemon"
-    bin.install buildpath/"kamp-daemon"
+           "-o", buildpath/"kamp"
+    bin.install buildpath/"kamp"
 
-    zsh_completion.install "completions/_kamp-daemon"
-    (share/"kamp-daemon").install "USAGE.md"
+    zsh_completion.install "completions/_kamp"
+    (share/"kamp").install "USAGE.md"
   end
 
   def caveats
-    usage = (share/"kamp-daemon"/"USAGE.md").read
+    usage = (share/"kamp"/"USAGE.md").read
     <<~EOS
       #{usage}
       Bandcamp auto-download requires Playwright browser binaries.
@@ -72,6 +72,6 @@ class KampDaemon < Formula
   end
 
   test do
-    system bin/"kamp-daemon", "--help"
+    system bin/"kamp", "--help"
   end
 end

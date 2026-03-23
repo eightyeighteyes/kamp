@@ -119,7 +119,7 @@ class Syncer:
     """Run Bandcamp collection sync on a configurable interval.
 
     If ``poll_interval_minutes`` is 0 the syncer is a no-op daemon — use
-    ``sync_once()`` directly (e.g. from the ``kamp-daemon sync`` subcommand).
+    ``sync_once()`` directly (e.g. from the ``kamp sync`` subcommand).
     """
 
     def __init__(self, config: Config) -> None:
@@ -209,7 +209,7 @@ class Syncer:
         collection is marked as already synced before downloading.  This
         prevents re-downloading the full collection on a first run where the
         user already has their Bandcamp purchases locally.  Pass
-        ``skip_auto_mark=True`` (e.g. via ``kamp-daemon sync --download-all``)
+        ``skip_auto_mark=True`` (e.g. via ``kamp sync --download-all``)
         to bypass this behaviour and download everything from scratch.
         """
         bc = self._config.bandcamp

@@ -267,7 +267,7 @@ def _validate_session(session_file: Path) -> bool:
 def _run_interactive_login(session_file: Path) -> None:
     """Open a headed Playwright browser for the user to log in, then save the session."""
     print(
-        "\n[kamp-daemon] Opening browser — please log in to Bandcamp.\n"
+        "\n[kamp] Opening browser — please log in to Bandcamp.\n"
         "The window will close automatically once login is detected.\n"
     )
 
@@ -331,7 +331,7 @@ def _session_from_cookie_file(cookie_file: Path) -> Path:
         raise CookieError(f"No Bandcamp cookies found in {cookie_file}")
 
     state: dict[str, Any] = {"cookies": cookies, "origins": []}
-    fd, tmp = tempfile.mkstemp(suffix=".json", prefix="kamp-daemon-session-")
+    fd, tmp = tempfile.mkstemp(suffix=".json", prefix="kamp-session-")
     tf = Path(tmp)
     os.close(fd)
     tf.write_text(json.dumps(state))
@@ -453,7 +453,7 @@ def _paginate(page: Any, endpoint: str, fan_id: int) -> list[dict[str, Any]]:
             _session_file().unlink(missing_ok=True)
             raise BandcampAPIError(
                 f"Bandcamp session expired (HTTP {result.get('status')}) — "
-                "session cleared. Run 'kamp-daemon sync' to re-authenticate."
+                "session cleared. Run 'kamp sync' to re-authenticate."
             )
 
         if result.get("error"):

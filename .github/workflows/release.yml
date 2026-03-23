@@ -54,14 +54,14 @@ jobs:
           GH_USERNAME: eightyeighteyes
         run: |
           VERSION="${TAG#v}"
-          URL="https://github.com/${GH_USERNAME}/kamp-daemon/releases/download/${TAG}/${TARBALL_NAME}"
-          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${GH_USERNAME}/homebrew-kamp-daemon.git" tap
-          cp Formula/kamp-daemon.rb tap/Formula/kamp-daemon.rb
+          URL="https://github.com/${GH_USERNAME}/kamp/releases/download/${TAG}/${TARBALL_NAME}"
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${GH_USERNAME}/homebrew-kamp.git" tap
+          cp Formula/kamp.rb tap/Formula/kamp.rb
           cd tap
-          sed -i "s|url \".*\"|url \"${URL}\"|" Formula/kamp-daemon.rb
-          sed -i "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/kamp-daemon.rb
+          sed -i "s|url \".*\"|url \"${URL}\"|" Formula/kamp.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/kamp.rb
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          git add Formula/kamp-daemon.rb
-          git commit -m "kamp-daemon ${VERSION}"
+          git add Formula/kamp.rb
+          git commit -m "kamp ${VERSION}"
           git push

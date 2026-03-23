@@ -1,4 +1,4 @@
-# kamp-daemon
+# kamp
 
 A background daemon that automates the full ingest pipeline for a digital audio library — from Bandcamp purchase to tagged, art-embedded, organized file in your library — with no manual steps.
 
@@ -72,14 +72,14 @@ Bandcamp purchase
 ### Homebrew (recommended)
 
 ```bash
-brew tap eightyeighteyes/kamp-daemon
-brew install kamp-daemon
+brew tap eightyeighteyes/kamp
+brew install kamp
 ```
 
 After install, download the Playwright browser binaries required for Bandcamp auto-download:
 
 ```bash
-/opt/homebrew/opt/kamp-daemon/venv/bin/playwright install chromium
+/opt/homebrew/opt/kamp/venv/bin/playwright install chromium
 ```
 
 zsh tab completion is included and activated automatically via Homebrew's shell integration.
@@ -87,8 +87,8 @@ zsh tab completion is included and activated automatically via Homebrew's shell 
 ### From source
 
 ```bash
-git clone https://github.com/eightyeighteyes/kamp-daemon
-cd kamp-daemon
+git clone https://github.com/eightyeighteyes/kamp
+cd kamp
 poetry install
 playwright install chromium
 ```
@@ -97,22 +97,22 @@ playwright install chromium
 
 ## Configuration
 
-On first run, kamp-daemon creates a config file with defaults at:
+On first run, kamp creates a config file with defaults at:
 
 | Platform | Path |
 |---|---|
-| macOS / Linux | `~/.config/kamp-daemon/config.toml` |
-| Windows | `%APPDATA%\kamp-daemon\config.toml` |
+| macOS / Linux | `~/.config/kamp/config.toml` |
+| Windows | `%APPDATA%\kamp\config.toml` |
 
 Edit it before starting:
 
 ```toml
 [paths]
-staging = "~/Music/staging"   # drop ZIPs here; kamp-daemon watches this directory
+staging = "~/Music/staging"   # drop ZIPs here; kamp watches this directory
 library = "~/Music"           # finished files land here
 
 [musicbrainz]
-app_name = "kamp-daemon"
+app_name = "kamp"
 app_version = "0.1.0"
 contact = "you@example.com"   # required by MusicBrainz API policy
 
@@ -128,8 +128,8 @@ path_template = "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
 [bandcamp]
 username = "your-bandcamp-username"
 format = "mp3-v0"             # mp3-v0 | mp3-320 | flac
-poll_interval_minutes = 60    # 0 = polling disabled; use `kamp-daemon sync` manually
-# cookie_file = "~/.config/kamp-daemon/cookies.txt"  # advanced: bypass interactive login
+poll_interval_minutes = 60    # 0 = polling disabled; use `kamp sync` manually
+# cookie_file = "~/.config/kamp/cookies.txt"  # advanced: bypass interactive login
 ```
 
 ---
@@ -139,9 +139,9 @@ poll_interval_minutes = 60    # 0 = polling disabled; use `kamp-daemon sync` man
 ### Run the daemon
 
 ```bash
-kamp-daemon
+kamp
 # or explicitly:
-kamp-daemon daemon
+kamp daemon
 ```
 
 Watches the staging directory for new ZIPs and folders, and (if `[bandcamp]` is configured) polls Bandcamp for new purchases on the configured interval.
@@ -149,7 +149,7 @@ Watches the staging directory for new ZIPs and folders, and (if `[bandcamp]` is 
 Override paths without editing the config:
 
 ```bash
-kamp-daemon daemon --staging ~/Downloads/staging --library ~/Music
+kamp daemon --staging ~/Downloads/staging --library ~/Music
 ```
 
 ### macOS menu bar
@@ -168,50 +168,50 @@ On macOS the daemon shows a `music.note.list` status-bar icon by default. The me
 To run without the menu bar icon:
 
 ```bash
-kamp-daemon daemon --no-menu-bar
-kamp-daemon install-service --no-menu-bar  # persists the preference in the launchd plist
+kamp daemon --no-menu-bar
+kamp install-service --no-menu-bar  # persists the preference in the launchd plist
 ```
 
 ---
 
 ### Run as a background service (macOS)
 
-Register kamp-daemon as a launchd user agent so it starts at login and runs silently in the background:
+Register kamp as a launchd user agent so it starts at login and runs silently in the background:
 
 ```bash
-kamp-daemon install-service
+kamp install-service
 ```
 
-Logs are written to `~/.local/share/kamp-daemon/daemon.log`.
+Logs are written to `~/.local/share/kamp/daemon.log`.
 
 ```bash
-kamp-daemon stop              # pause the service
-kamp-daemon play              # resume the service
-kamp-daemon status            # check if it's running
-kamp-daemon uninstall-service # remove it permanently
+kamp stop              # pause the service
+kamp play              # resume the service
+kamp status            # check if it's running
+kamp uninstall-service # remove it permanently
 ```
 
 ### View or update config from the command line
 
 ```bash
-kamp-daemon config show
-kamp-daemon config set paths.staging ~/Downloads/staging
-kamp-daemon config set musicbrainz.contact me@example.com
-kamp-daemon config set artwork.min_dimension 500
+kamp config show
+kamp config set paths.staging ~/Downloads/staging
+kamp config set musicbrainz.contact me@example.com
+kamp config set artwork.min_dimension 500
 ```
 
-Keys use dot notation (`section.field`). Run `kamp-daemon config set --help` to see all valid keys.
+Keys use dot notation (`section.field`). Run `kamp config set --help` to see all valid keys.
 
 ### Test notifications (macOS)
 
 Verify that macOS notification permissions are granted and the full notification path works by simulating a failure at a specific pipeline stage:
 
 ```bash
-kamp-daemon test-notify --type extraction  # simulate extraction failure
-kamp-daemon test-notify --type tagging     # simulate MusicBrainz tagging failure
-kamp-daemon test-notify --type artwork     # simulate cover art warning
-kamp-daemon test-notify --type move        # simulate library move failure
-kamp-daemon test-notify --type download    # simulate Bandcamp sync failure
+kamp test-notify --type extraction  # simulate extraction failure
+kamp test-notify --type tagging     # simulate MusicBrainz tagging failure
+kamp test-notify --type artwork     # simulate cover art warning
+kamp test-notify --type move        # simulate library move failure
+kamp test-notify --type download    # simulate Bandcamp sync failure
 ```
 
 Each command runs the real pipeline (or syncer) up to the named stage, injects a failure, and fires a notification via the same code path the daemon uses — so if the notification appears, the full chain is working.
@@ -221,19 +221,19 @@ Each command runs the real pipeline (or syncer) up to the named stage, injects a
 ### One-shot Bandcamp sync
 
 ```bash
-kamp-daemon sync
+kamp sync
 ```
 
 Downloads any purchases not yet in your local state, places them in staging, and exits. The watcher (if running) picks them up automatically.
 
 ### First sync behaviour
 
-On the first sync (no state file yet), kamp-daemon assumes you already have your Bandcamp purchases in your local library and marks your entire collection as synced before downloading. Only purchases made after that point will be downloaded.
+On the first sync (no state file yet), kamp assumes you already have your Bandcamp purchases in your local library and marks your entire collection as synced before downloading. Only purchases made after that point will be downloaded.
 
 To override this and re-download your entire collection from scratch:
 
 ```bash
-kamp-daemon sync --download-all
+kamp sync --download-all
 ```
 
 This clears the local sync state and downloads everything.
@@ -243,7 +243,7 @@ This clears the local sync state and downloads everything.
 To delete the saved session and force re-authentication on the next sync:
 
 ```bash
-kamp-daemon logout
+kamp logout
 ```
 
 This also clears the sync state file, so the next sync will re-examine your full collection. Use this if your session expires or you want to switch accounts.
@@ -267,14 +267,14 @@ Drop any Bandcamp ZIP or already-extracted folder into your staging directory. T
 
 > **Note:** Bandcamp has no public API. The collection endpoints used here are reverse-engineered and could change without notice. No passwords are stored.
 
-On first sync, kamp-daemon opens a browser window and prompts you to log in to Bandcamp. Once you complete login the window closes automatically and the session is saved. Subsequent syncs (and the background daemon) reuse the saved session without opening a browser — you only need to log in again if your Bandcamp session expires.
+On first sync, kamp opens a browser window and prompts you to log in to Bandcamp. Once you complete login the window closes automatically and the session is saved. Subsequent syncs (and the background daemon) reuse the saved session without opening a browser — you only need to log in again if your Bandcamp session expires.
 
 The session file and download state are stored alongside each other:
 
 | Platform | Directory |
 |---|---|
-| macOS / Linux | `~/.local/share/kamp-daemon/` |
-| Windows | `%LOCALAPPDATA%\kamp-daemon\` |
+| macOS / Linux | `~/.local/share/kamp/` |
+| Windows | `%LOCALAPPDATA%\kamp\` |
 
 The session file (`bandcamp_session.json`) is written with owner-only permissions (`0600`). The state file (`bandcamp_state.json`) tracks which purchases have been downloaded so nothing is ever re-downloaded.
 

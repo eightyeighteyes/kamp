@@ -17,7 +17,7 @@ from .tagger import TaggingError, is_tagged, read_release_mbids, tag_directory
 logger = logging.getLogger(__name__)
 
 # Marker embedded in a staging item's name to inject a failure at a specific
-# pipeline stage.  Used exclusively by `kamp-daemon test-notify` so the full
+# pipeline stage.  Used exclusively by `kamp test-notify` so the full
 # IPC notification path (pipeline_impl → stage_q → notification_callback) can
 # be exercised without a real audio file or network access.
 _TEST_INJECT = {

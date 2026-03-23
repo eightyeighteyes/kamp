@@ -1,9 +1,9 @@
 /*
- * kamp-daemon launcher
+ * kamp launcher
  *
  * A minimal C binary that embeds Python and runs `python -m kamp_daemon`.
  * Because this binary stays alive as the top-level process (no exec), macOS
- * sets p_comm to "kamp-daemon" at exec time and it never changes — so both
+ * sets p_comm to "kamp" at exec time and it never changes — so both
  * Activity Monitor and `ps` show the correct name without any userspace tricks.
  *
  * Build (handled by the Homebrew formula):
@@ -12,7 +12,7 @@
  *     $(python3-config --cflags) \
  *     $(python3-config --ldflags --embed) \
  *     -Wno-deprecated-declarations \
- *     -o kamp-daemon
+ *     -o kamp
  *
  * VENV_PYTHON tells Python which prefix/site-packages to use so the venv's
  * packages are importable even though the binary lives outside the venv.
@@ -36,8 +36,8 @@ static const char _info_plist[] =
     "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\""
     " \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
     "<plist version=\"1.0\"><dict>"
-    "<key>CFBundleIdentifier</key><string>com.kamp-daemon</string>"
-    "<key>CFBundleName</key><string>kamp-daemon</string>"
+    "<key>CFBundleIdentifier</key><string>com.kamp</string>"
+    "<key>CFBundleName</key><string>kamp</string>"
     "<key>CFBundleVersion</key><string>1</string>"
     "</dict></plist>";
 
@@ -49,14 +49,14 @@ int main(int argc, char *argv[]) {
     /* Tell Python which interpreter prefix to use — picks up venv site-packages. */
     wchar_t *program = Py_DecodeLocale(VENV_PYTHON, NULL);
     if (program == NULL) {
-        fprintf(stderr, "kamp-daemon: Py_DecodeLocale failed\n");
+        fprintf(stderr, "kamp: Py_DecodeLocale failed\n");
         return 1;
     }
     Py_SetProgramName(program);
 
     /*
      * Inject "-m kamp_daemon" after argv[0] so the effect is:
-     *   kamp-daemon [user args]  →  python -m kamp_daemon [user args]
+     *   kamp [user args]  →  python -m kamp_daemon [user args]
      *
      * Py_Main takes wchar_t **, so each char * argument must be decoded via
      * Py_DecodeLocale.  We free them with PyMem_RawFree after Py_Main returns.
@@ -79,7 +79,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < new_argc; i++) {
         w_argv[i] = Py_DecodeLocale(char_argv[i], NULL);
         if (w_argv[i] == NULL) {
-            fprintf(stderr, "kamp-daemon: Py_DecodeLocale failed for arg %d\n", i);
+            fprintf(stderr, "kamp: Py_DecodeLocale failed for arg %d\n", i);
             for (int j = 0; j < i; j++) PyMem_RawFree(w_argv[j]);
             free(w_argv);
             PyMem_RawFree(program);

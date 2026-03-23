@@ -1,9 +1,9 @@
-#compdef kamp-daemon
+#compdef kamp
 
-# zsh completion for kamp-daemon
+# zsh completion for kamp
 # Installed to share/zsh/site-functions/ via the Homebrew formula.
 
-_kamp_daemon() {
+_kamp() {
   local state line
   typeset -A opt_args
 
@@ -25,11 +25,11 @@ _kamp_daemon() {
       subcommands=(
         'daemon:Watch staging directory and poll Bandcamp (default)'
         'sync:One-shot Bandcamp download, then exit'
-        'install-service:Register kamp-daemon as a launchd user agent (macOS)'
+        'install-service:Register kamp as a launchd user agent (macOS)'
         'uninstall-service:Remove the launchd user agent registration'
-        'stop:Stop the kamp-daemon service'
-        'play:Start the kamp-daemon service'
-        'status:Show whether kamp-daemon is running'
+        'stop:Stop the kamp service'
+        'play:Start the kamp service'
+        'status:Show whether kamp is running'
         'config:Read or update configuration values'
       )
       _describe 'subcommand' subcommands
@@ -106,4 +106,4 @@ _kamp_daemon() {
   esac
 }
 
-_kamp_daemon "$@"
+_kamp "$@"

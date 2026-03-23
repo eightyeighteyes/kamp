@@ -65,8 +65,8 @@ def _pipeline_worker(
         # called here because the parent's call does not carry over across the
         # process boundary.
         musicbrainzngs.set_useragent(
-            "kamp-daemon",
-            importlib.metadata.version("kamp-daemon"),
+            "kamp",
+            importlib.metadata.version("kamp"),
             config.musicbrainz.contact,
         )
 

@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "kamp-daemon"
+name = "kamp"
 version = "1.0.1"
 description = "Automated audio library ingest from Bandcamp downloads."
 authors = []
@@ -8,7 +8,7 @@ packages = [{include = "kamp_daemon"}]
 # installed by the Homebrew formula's zsh_completion.install call; launcher/main.c
 # is compiled by the formula into the native binary. MANIFEST.in is ignored by
 # poetry-core so all three must be declared here explicitly.
-include = ["USAGE.md", "completions/_kamp-daemon", "launcher/main.c"]
+include = ["USAGE.md", "completions/_kamp", "launcher/main.c"]
 
 [tool.poetry.dependencies]
 python = ">=3.11"
@@ -31,7 +31,7 @@ types-requests = ">=2.31"
 types-Pillow = ">=10.0"
 
 [tool.poetry.scripts]
-kamp-daemon = "kamp_daemon.__main__:main"
+kamp = "kamp_daemon.__main__:main"
 
 [build-system]
 requires = ["poetry-core"]

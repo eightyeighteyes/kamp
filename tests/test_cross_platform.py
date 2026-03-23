@@ -19,14 +19,14 @@ class TestDefaultConfigPath:
             from kamp_daemon.config import _default_config_path
 
             path = _default_config_path()
-        assert path == Path.home() / ".config" / "kamp-daemon" / "config.toml"
+        assert path == Path.home() / ".config" / "kamp" / "config.toml"
 
     def test_macos_uses_xdg_config(self) -> None:
         with patch.object(sys, "platform", "darwin"):
             from kamp_daemon.config import _default_config_path
 
             path = _default_config_path()
-        assert path == Path.home() / ".config" / "kamp-daemon" / "config.toml"
+        assert path == Path.home() / ".config" / "kamp" / "config.toml"
 
     def test_windows_uses_appdata(self) -> None:
         fake_appdata = r"C:\Users\User\AppData\Roaming"
@@ -37,7 +37,7 @@ class TestDefaultConfigPath:
             from kamp_daemon.config import _default_config_path
 
             path = _default_config_path()
-        assert path == Path(fake_appdata) / "kamp-daemon" / "config.toml"
+        assert path == Path(fake_appdata) / "kamp" / "config.toml"
 
     def test_windows_fallback_without_appdata(self) -> None:
         with (
@@ -47,9 +47,7 @@ class TestDefaultConfigPath:
             from kamp_daemon.config import _default_config_path
 
             path = _default_config_path()
-        assert (
-            path == Path.home() / "AppData" / "Roaming" / "kamp-daemon" / "config.toml"
-        )
+        assert path == Path.home() / "AppData" / "Roaming" / "kamp" / "config.toml"
 
 
 # ---------------------------------------------------------------------------

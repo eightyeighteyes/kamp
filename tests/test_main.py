@@ -99,7 +99,7 @@ class TestServicePid:
 
 class TestCmdStop:
     def test_not_installed(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         with patch("kamp_daemon.__main__._PLIST_PATH", plist):
             _cmd_stop()
         assert "not installed" in capsys.readouterr().out
@@ -107,7 +107,7 @@ class TestCmdStop:
     def test_already_stopped(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         plist.touch()
         with (
             patch("kamp_daemon.__main__._PLIST_PATH", plist),
@@ -119,7 +119,7 @@ class TestCmdStop:
     def test_stops_running_service(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         plist.touch()
         with (
             patch("kamp_daemon.__main__._PLIST_PATH", plist),
@@ -135,7 +135,7 @@ class TestCmdStop:
 
 class TestCmdPlay:
     def test_not_installed(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         with patch("kamp_daemon.__main__._PLIST_PATH", plist):
             _cmd_play()
         out = capsys.readouterr().out
@@ -144,7 +144,7 @@ class TestCmdPlay:
     def test_already_running(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         plist.touch()
         with (
             patch("kamp_daemon.__main__._PLIST_PATH", plist),
@@ -156,7 +156,7 @@ class TestCmdPlay:
     def test_starts_unregistered_service(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         plist.touch()
         with (
             patch("kamp_daemon.__main__._PLIST_PATH", plist),
@@ -173,7 +173,7 @@ class TestCmdPlay:
     def test_kickstarts_registered_but_stopped_service(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         plist.touch()
         domain = _launchd_domain()
         with (
@@ -191,7 +191,7 @@ class TestCmdPlay:
 
 class TestCmdStatus:
     def test_not_installed(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         with patch("kamp_daemon.__main__._PLIST_PATH", plist):
             _cmd_status()
         assert "not installed" in capsys.readouterr().out
@@ -199,7 +199,7 @@ class TestCmdStatus:
     def test_stopped_cleanly(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         plist.touch()
         # returncode=1 → not registered; no crash info, no subprocess needed
         with (
@@ -216,7 +216,7 @@ class TestCmdStatus:
     def test_crashed_shows_exit_code(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         plist.touch()
         with (
             patch("kamp_daemon.__main__._PLIST_PATH", plist),
@@ -234,7 +234,7 @@ class TestCmdStatus:
     def test_running_shows_uptime(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        plist = tmp_path / "com.kamp-daemon.plist"
+        plist = tmp_path / "com.kamp.plist"
         plist.touch()
         ps_result = MagicMock()
         ps_result.returncode = 0
@@ -263,7 +263,7 @@ class TestLogNoiseSuppression:
     def _run_main_with_log_level(self, level: str) -> None:
         from kamp_daemon.__main__ import main
 
-        with patch("sys.argv", ["kamp-daemon", "--log-level", level, "config", "show"]):
+        with patch("sys.argv", ["kamp", "--log-level", level, "config", "show"]):
             with patch("kamp_daemon.__main__._cmd_config"):
                 main()
 

@@ -3,21 +3,13 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
-## Prepare for creating a GUI
-*LP* — Rebrand installation and packaging from `kamp-daemon` to `kamp` in preparation for an Electron GUI app ("KAMP") that will bundle the daemon. The Python module (`kamp_daemon`) and its internals stay as-is; only the user-facing distribution layer moves. Breakdown:
+## If config doesn't exist before service is installed, run setup
+*Single* — guard `_cmd_install_service()` in `__main__.py`: check if the config file exists, and if not, bail with a message directing the user to run `kamp daemon` first (which triggers the interactive first-run setup). The interactive setup flow already exists in `config.py`.
 
-| Component | Notes |
-|---|---|
-| pyproject.toml: package name + entry point | `kamp-daemon` → `kamp` (name, console script) |
-| CLI command rename | `kamp-daemon` CLI → `kamp`; all help text, arg parser `prog=` |
-| Config + data paths | `~/.config/kamp-daemon/` → `~/.config/kamp/`; needs migration for existing users |
-| macOS service label + CFBundleIdentifier | `com.kamp-daemon` → `com.kamp` in `__main__.py` and `launcher/main.c`; requires uninstall/reinstall for existing users |
-| Homebrew formula | Rename `Formula/kamp-daemon.rb` → `Formula/kamp.rb`; update all internal references |
-| Homebrew tap repo | `homebrew-kamp-daemon` → `homebrew-kamp` (separate GitHub repo rename + CI update) |
-| CI/release workflow | Update tarball URL, tap clone path, commit message in `release.yml` |
-| Docs sweep | README.md, USAGE.md, completions/_kamp-daemon → completions/_kamp |
+## AcoustID Support (heavy tagging approach)
+*LP* — fingerprint audio with `fpcalc`/chromaprint, look up recording via AcoustID API, feed MBID into existing tagger. Prerequisite met: per-track lookup (`_lookup_release_by_recordings`) is already live. Fingerprinting should be its own subprocess pipeline phase.
 
-The GUI details (Electron app, library management) are forthcoming — this ticket is scoped to the packaging rebrand only.
+Priority order: AcoustID match → current tags (Artist/Album) → path (`staging/Artist/Album`).
 
 ## Full Windows Support
 *Box Set* — prerequisite: Rebrand must ship first. Breakdown:
@@ -47,11 +39,6 @@ Target: Windows 10/11 only. Distribution via Chocolatey.
 
 ⚠️ Needs scoping: what ranking heuristic? (release format field, country, date proximity?) and what's the fallback when no physical release exists? Note: date-based tie-breaking (earliest release wins) is already implemented; remaining work is format/country preference.
 
-## AcoustID Support (heavy tagging approach)
-*LP* — fingerprint audio with `fpcalc`/chromaprint, look up recording via AcoustID API, feed MBID into existing tagger. Prerequisite: per-track lookup (light approach) should ship first. Fingerprinting should be its own subprocess pipeline phase.
-
-⚠️ Needs scoping: how to handle mismatches between AcoustID result and existing MusicBrainz search? Which takes precedence?
-
 ## Nested Folders
 *Side* — when a folder-of-folders is dropped into staging, recurse into subdirectories and treat each leaf folder as an album
 
@@ -68,15 +55,3 @@ Target: Windows 10/11 only. Distribution via Chocolatey.
 
 # Needs Estimation
 -- don't discard this section --
-## bug: debug level log noise from asyncio (bandcamp) and PIL.TiffImagePlugin (artwork)
-
-2026-03-21 14:03:19  INFO      kamp_daemon.config_monitor  Watching config file for changes: /Users/theodore.terry/.config/kamp-daemon/config.toml
-2026-03-21 14:03:19  DEBUG     asyncio  Using selector: KqueueSelector
-2026-03-21 14:03:21  INFO      kamp_daemon.bandcamp  Fetched fan_id=4346318 for user 'tedd-e-terry'
-
-2026-03-21 14:03:39  DEBUG     PIL.TiffImagePlugin  tag: XResolution (282) - type: rational (5) Tag Location: 22 - Data Location: 74 - value: b'\x00\x00\x00H\x00\x00\x00\x01'
-2026-03-21 14:03:39  DEBUG     PIL.TiffImagePlugin  tag: YResolution (283) - type: rational (5) Tag Location: 34 - Data Location: 82 - value: b'\x00\x00\x00H\x00\x00\x00\x01'
-2026-03-21 14:03:39  DEBUG     PIL.TiffImagePlugin  tag: ResolutionUnit (296) - type: short (3) - value: b'\x00\x01'
-2026-03-21 14:03:39  DEBUG     PIL.TiffImagePlugin  tag: YCbCrPositioning (531) - type: short (3) - value: b'\x00\x01'
-2026-03-21 14:03:39  DEBUG     PIL.TiffImagePlugin  tag: ExifIFD (34665) - type: long (4) - value: b'\x00\x00\x00Z'
-2026-03-21 14:03:39  INFO      kamp_daemon.artwork  All 18 file(s) have qualifying embedded art — skipping Cover Art Archive fetch

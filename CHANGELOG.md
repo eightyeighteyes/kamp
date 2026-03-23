@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.2](https://github.com/eightyeighteyes/kamp/compare/v1.0.1...v1.0.2) (2026-03-23)
+
+
+### Bug Fixes
+
+* run first-run setup when config missing before install-service ([#94](https://github.com/eightyeighteyes/kamp/issues/94)) ([9ef9ed5](https://github.com/eightyeighteyes/kamp/commit/9ef9ed5acf36da14ebe39ea52fb946b60785cda5))
+
 ## [1.0.1](https://github.com/eightyeighteyes/kamp-daemon/compare/v1.0.0...v1.0.1) (2026-03-23)
 
 

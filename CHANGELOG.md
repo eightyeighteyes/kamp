@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1](https://github.com/eightyeighteyes/kamp-daemon/compare/v1.0.0...v1.0.1) (2026-03-23)
+
+
+### Bug Fixes
+
+* use joinphrase for multi-artist releases ([#89](https://github.com/eightyeighteyes/kamp-daemon/issues/89)) ([7a524f7](https://github.com/eightyeighteyes/kamp-daemon/commit/7a524f76926e9dde1cc6934c13ea580357ffefd5))
+
 ## [1.0.0](https://github.com/eightyeighteyes/kamp-daemon/compare/v0.18.0...v1.0.0) (2026-03-21)
 
 

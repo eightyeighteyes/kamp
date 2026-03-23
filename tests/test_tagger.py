@@ -13,11 +13,13 @@ from kamp_daemon.tagger import (
     ReleaseInfo,
     TaggingError,
     TrackInfo,
+    _lookup_release_by_acoustid,
     _lookup_release_by_recordings,
     _parse_release,
     _read_existing_metadata,
     _read_track_metadata,
     _search_release,
+    _write_acoustid_id,
     _write_flac_tags,
     _write_ogg_tags,
     _write_tags,
@@ -1347,3 +1349,201 @@ class TestTagDirectoryPerTrackPath:
 
         mock_search.assert_called_once()
         assert release.mbid == "abc-123"
+
+
+# AcoustID recording detail returned by get_recording_by_id
+SAMPLE_RECORDING_DETAIL: dict[str, Any] = {
+    "recording": {
+        "id": "rec-aaa",
+        "title": "First Track",
+        "release-list": [{"id": "abc-123"}, {"id": "other-release"}],
+    }
+}
+
+
+class TestLookupReleaseByAcoustid:
+    def test_votes_on_releases_and_fetches_winner(self, tmp_path: Path) -> None:
+        mp3_1 = tmp_path / "01.mp3"
+        mp3_2 = tmp_path / "02.mp3"
+        _make_mp3(mp3_1)
+        _make_mp3(mp3_2)
+
+        fp = (287.0, "AQADtEq")
+
+        def _mock_mb_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+            if fn is musicbrainzngs.get_recording_by_id:
+                return SAMPLE_RECORDING_DETAIL
+            if fn is musicbrainzngs.get_release_by_id:
+                return SAMPLE_RELEASE_DETAIL
+            raise AssertionError(f"Unexpected call: {fn}")
+
+        with (
+            patch("kamp_daemon.acoustid.fingerprint_file", return_value=fp),
+            patch(
+                "kamp_daemon.acoustid.lookup_matches",
+                return_value=[("fp-uuid-1", ["rec-aaa"])],
+            ),
+            patch("kamp_daemon.tagger._mb_call", side_effect=_mock_mb_call),
+        ):
+            release, acoustid_ids = _lookup_release_by_acoustid([mp3_1, mp3_2])
+
+        assert release.mbid == "abc-123"
+        assert acoustid_ids[mp3_1] == "fp-uuid-1"
+        assert acoustid_ids[mp3_2] == "fp-uuid-1"
+
+    def test_raises_when_no_fingerprints(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        with patch("kamp_daemon.acoustid.fingerprint_file", return_value=None):
+            with pytest.raises(
+                TaggingError, match="AcoustID found no matching releases"
+            ):
+                _lookup_release_by_acoustid([mp3])
+
+    def test_raises_when_no_matches(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        with (
+            patch("kamp_daemon.acoustid.fingerprint_file", return_value=(180.0, "abc")),
+            patch("kamp_daemon.acoustid.lookup_matches", return_value=[]),
+        ):
+            with pytest.raises(
+                TaggingError, match="AcoustID found no matching releases"
+            ):
+                _lookup_release_by_acoustid([mp3])
+
+
+class TestTagDirectoryAcoustidTier:
+    def test_acoustid_attempted_first(self, tmp_path: Path) -> None:
+        """Tier 0 (AcoustID) is tried before per-track recording search."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3, title="Some Track")
+        fake_release = _parse_release(SAMPLE_RELEASE_DETAIL["release"])
+
+        with (
+            patch(
+                "kamp_daemon.tagger._lookup_release_by_acoustid",
+                return_value=(fake_release, {mp3: "fp-uuid-1"}),
+            ) as mock_acoustid,
+            patch("musicbrainzngs.search_recordings") as mock_search_rec,
+        ):
+            result = tag_directory(tmp_path, [mp3])
+
+        mock_acoustid.assert_called_once_with([mp3])
+        mock_search_rec.assert_not_called()
+        assert result.mbid == "abc-123"
+
+    def test_acoustid_writes_acoustid_id_tag(self, tmp_path: Path) -> None:
+        """When AcoustID matches, the AcoustID ID is written as a tag."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3, title="Some Track")
+        fake_release = _parse_release(SAMPLE_RELEASE_DETAIL["release"])
+
+        with (
+            patch(
+                "kamp_daemon.tagger._lookup_release_by_acoustid",
+                return_value=(fake_release, {mp3: "fp-uuid-1"}),
+            ),
+            patch("kamp_daemon.tagger._write_acoustid_id") as mock_write_aid,
+        ):
+            tag_directory(tmp_path, [mp3])
+
+        mock_write_aid.assert_called_once_with(mp3, "fp-uuid-1")
+
+    def test_acoustid_falls_back_to_tier1_on_failure(self, tmp_path: Path) -> None:
+        """When AcoustID raises TaggingError, per-track recording search runs."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3, title="Some Track")
+
+        with (
+            patch(
+                "kamp_daemon.tagger._lookup_release_by_acoustid",
+                side_effect=TaggingError("no fingerprint"),
+            ),
+            patch(
+                "musicbrainzngs.search_recordings",
+                return_value=SAMPLE_RECORDING_RESULT,
+            ) as mock_search_rec,
+            patch(
+                "musicbrainzngs.get_release_by_id",
+                return_value=SAMPLE_RELEASE_DETAIL,
+            ),
+        ):
+            result = tag_directory(tmp_path, [mp3])
+
+        mock_search_rec.assert_called_once()
+        assert result.mbid == "abc-123"
+
+
+class TestWriteAcoustidId:
+    def test_writes_txxx_to_mp3(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "track.mp3"
+        _make_mp3(mp3)
+        _write_acoustid_id(mp3, "fp-uuid-1")
+        tags = id3.ID3(str(mp3))
+        assert tags.get("TXXX:Acoustid Id") is not None
+        assert str(tags["TXXX:Acoustid Id"]) == "fp-uuid-1"
+
+    def test_writes_acoustid_id_to_flac(self, tmp_path: Path) -> None:
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"fLaC")
+        tags: dict[str, Any] = {}
+        mock_flac = MagicMock()
+        mock_flac.tags = tags
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_flac):
+            _write_acoustid_id(flac, "fp-uuid-2")
+        assert tags["ACOUSTID_ID"] == ["fp-uuid-2"]
+        mock_flac.save.assert_called_once()
+
+    def test_writes_acoustid_id_to_ogg(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        tags: dict[str, Any] = {}
+        mock_ogg = MagicMock()
+        mock_ogg.tags = tags
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            _write_acoustid_id(ogg, "fp-uuid-3")
+        assert tags["ACOUSTID_ID"] == ["fp-uuid-3"]
+        mock_ogg.save.assert_called_once()
+
+    def test_writes_acoustid_id_to_m4a(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        tags: dict[str, Any] = {}
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = tags
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_mp4):
+            _write_acoustid_id(m4a, "fp-uuid-4")
+        assert b"fp-uuid-4" in tags["----:com.apple.iTunes:Acoustid Id"][0]
+        mock_mp4.save.assert_called_once()
+
+    def test_skips_flac_with_no_tags(self, tmp_path: Path) -> None:
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"fLaC")
+        mock_flac = MagicMock()
+        mock_flac.tags = None
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_flac):
+            _write_acoustid_id(flac, "fp-uuid-5")
+        mock_flac.save.assert_not_called()
+
+    def test_skips_ogg_with_no_tags(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_ogg = MagicMock()
+        mock_ogg.tags = None
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_ogg
+        ):
+            _write_acoustid_id(ogg, "fp-uuid-6")
+        mock_ogg.save.assert_not_called()
+
+    def test_skips_m4a_with_no_tags(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = None
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_mp4):
+            _write_acoustid_id(m4a, "fp-uuid-7")
+        mock_mp4.save.assert_not_called()

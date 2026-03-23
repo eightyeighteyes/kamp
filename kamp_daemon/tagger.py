@@ -156,19 +156,113 @@ def configure_musicbrainz(app_name: str, app_version: str, contact: str) -> None
     musicbrainzngs.set_useragent(app_name, app_version, contact)
 
 
+def _lookup_release_by_acoustid(
+    audio_files: list[Path],
+) -> tuple[ReleaseInfo, dict[Path, str]]:
+    """Fingerprint each file via fpcalc, query AcoustID, vote on release MBID.
+
+    Returns (ReleaseInfo, {file: acoustid_id}) so callers can write the
+    AcoustID fingerprint ID back to each file.  Raises TaggingError if
+    fpcalc is unavailable, the key is absent (dev build), or no matching
+    releases are found.
+    """
+    from .acoustid import fingerprint_file, lookup_matches
+
+    votes: Counter[str] = Counter()
+    file_acoustid_ids: dict[Path, str] = {}
+
+    for path in audio_files:
+        fp = fingerprint_file(path)
+        if fp is None:
+            continue
+        duration, fingerprint = fp
+        matches = lookup_matches(duration, fingerprint)
+        if matches:
+            # Best match (highest score) → the AcoustID ID for this file
+            file_acoustid_ids[path] = matches[0][0]
+        for _acoustid_id, rec_mbids in matches[:3]:
+            for rec_mbid in rec_mbids:
+                result = _mb_call(
+                    musicbrainzngs.get_recording_by_id, rec_mbid, includes=["releases"]
+                )
+                for rel in result["recording"].get("release-list", []):
+                    if rel_id := rel.get("id"):
+                        votes[rel_id] += 1
+
+    if not votes:
+        raise TaggingError("AcoustID found no matching releases")
+
+    winning_mbid = votes.most_common(1)[0][0]
+    logger.debug(
+        "AcoustID reconciliation: winning release=%s (votes=%s)",
+        winning_mbid,
+        dict(votes.most_common(5)),
+    )
+    detail = _mb_call(
+        musicbrainzngs.get_release_by_id,
+        winning_mbid,
+        includes=["artists", "recordings", "release-groups", "labels"],
+    )
+    return _parse_release(detail["release"]), file_acoustid_ids
+
+
+def _write_acoustid_id(path: Path, acoustid_id: str) -> None:
+    """Write the AcoustID fingerprint ID to the file's tags.
+
+    Uses the standard ACOUSTID_ID field name for each format, matching
+    the convention used by MusicBrainz Picard.
+    """
+    try:
+        suffix = path.suffix.lower()
+        if suffix == ".mp3":
+            try:
+                tags = id3.ID3(str(path))
+            except Exception:
+                tags = id3.ID3()
+            tags["TXXX:Acoustid Id"] = id3.TXXX(
+                encoding=3, desc="Acoustid Id", text=acoustid_id
+            )
+            tags.save(str(path))
+        elif suffix == ".m4a":
+            audio = mutagen.mp4.MP4(str(path))
+            if audio.tags is None:
+                return
+            audio.tags["----:com.apple.iTunes:Acoustid Id"] = [
+                mutagen.mp4.MP4FreeForm(acoustid_id.encode())
+            ]
+            audio.save()
+        elif suffix == ".flac":
+            audio_flac = mutagen.flac.FLAC(str(path))
+            if audio_flac.tags is None:
+                return
+            audio_flac.tags["ACOUSTID_ID"] = [acoustid_id]
+            audio_flac.save()
+        elif suffix == ".ogg":
+            audio_ogg = mutagen.oggvorbis.OggVorbis(str(path))
+            if audio_ogg.tags is None:
+                return
+            audio_ogg.tags["ACOUSTID_ID"] = [acoustid_id]
+            audio_ogg.save()
+    except Exception:
+        logger.debug("Could not write ACOUSTID_ID to %s", path)
+
+
 def tag_directory(
     directory: Path,
     audio_files: list[Path],
 ) -> ReleaseInfo:
     """Look up the release on MusicBrainz and write tags to all audio files.
 
-    First attempts a per-track lookup: each file's existing artist/title/album tags
-    are used to query MusicBrainz recordings, and the most common release MBID across
-    all tracks is selected.  This resolves track-count mismatches (e.g. 17-track vs
-    18-track editions) that cause title offsets when only the album name is matched.
+    Tier 0 — AcoustID fingerprint: waveform-based identification; works even
+    with no tags.  Requires fpcalc (ships via the chromaprint Homebrew dep)
+    and an embedded application key.  Silently skipped in dev builds.
 
-    Falls back to an album-level search (artist + album from the first file) when no
-    tracks have title tags or the per-track queries yield no results.
+    Tier 1 — per-track recording search: each file's existing artist/title/album
+    tags are used to query MusicBrainz recordings; the most common release MBID
+    across all tracks is selected.
+
+    Tier 2 — album-level search: artist + album from the first file (or directory
+    name heuristic).
 
     Returns the ReleaseInfo (including MBID) for the artwork step.
     Raises TaggingError on lookup failure or no audio files.
@@ -176,6 +270,21 @@ def tag_directory(
     if not audio_files:
         raise TaggingError(f"No audio files found in {directory}")
 
+    # Tier 0: AcoustID fingerprint
+    try:
+        release, acoustid_ids = _lookup_release_by_acoustid(audio_files)
+        logger.info("AcoustID matched: %r (mbid=%s)", release.title, release.mbid)
+        for audio_file in audio_files:
+            _write_tags(audio_file, release)
+            if acoustid_id := acoustid_ids.get(audio_file):
+                _write_acoustid_id(audio_file, acoustid_id)
+        return release
+    except TaggingError as exc:
+        logger.debug(
+            "AcoustID lookup failed (%s); falling back to tag-based search", exc
+        )
+
+    # Tier 1: per-track MusicBrainz recording search
     try:
         release = _lookup_release_by_recordings(audio_files)
         logger.info(

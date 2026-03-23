@@ -17,6 +17,7 @@ class Kamp < Formula
   license "GPL-3.0-only"
 
   depends_on "python@3.11"
+  depends_on "chromaprint"
 
   def install
     # Create a virtualenv and pip-install the package with all its dependencies.

@@ -3,11 +3,6 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
-## AcoustID Support (heavy tagging approach)
-*LP* — fingerprint audio with `fpcalc`/chromaprint, look up recording via AcoustID API, feed MBID into existing tagger. Prerequisite met: per-track lookup (`_lookup_release_by_recordings`) is already live. Fingerprinting should be its own subprocess pipeline phase.
-
-Priority order: AcoustID match → current tags (Artist/Album) → path (`staging/Artist/Album`).
-
 ## Full Windows Support
 *Box Set* — prerequisite: Rebrand must ship first. Breakdown:
 
@@ -49,6 +44,9 @@ Target: Windows 10/11 only. Distribution via Chocolatey.
 
 ## bug: pyenv shim shadows Homebrew binary after dev/brew cycle
 *Single* — formula is clean (isolated venv). Root cause: a past dev practice (pre-Poetry) wrote `kamp-daemon` to pyenv's global site-packages; `pyenv rehash` registered the shim and it persisted. Fix: audit current dev paths for any global pip writes; add `.python-version` to the repo so pyenv doesn't pick up executables from Poetry's cache venv; document the canonical dev workflow.
+
+## bug: macOS menu bar app reads "About Tune-Shifter" instead of "About Kamp"
+*Single* — leftover hardcoded string from the rebrand, likely in `menu_bar.py` or `__main__.py`.
 
 # Needs Estimation
 -- don't discard this section --

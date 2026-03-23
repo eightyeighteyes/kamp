@@ -199,7 +199,6 @@ def main() -> None:
     # Default to daemon when no subcommand given
     command = args.command or "daemon"
 
-    # Service commands don't require a config file.
     if command == "install-service":
         _cmd_install_service(
             args.config, menu_bar=not getattr(args, "no_menu_bar", False)
@@ -618,6 +617,8 @@ def _cmd_status() -> None:
 
 
 def _cmd_install_service(config_path: Path, menu_bar: bool = False) -> None:
+    if not config_path.exists():
+        Config.first_run_setup(config_path)
     exec_path = shutil.which("kamp") or sys.argv[0]
     _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     menu_bar_arg = "" if menu_bar else "\n        <string>--no-menu-bar</string>"

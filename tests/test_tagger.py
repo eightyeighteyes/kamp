@@ -1481,5 +1481,5 @@ class TestWriteAcoustidId:
         _make_mp3(mp3)
         _write_acoustid_id(mp3, "fp-uuid-1")
         tags = id3.ID3(str(mp3))
-        assert tags.get("TXXX:ACOUSTID_ID") is not None
-        assert str(tags["TXXX:ACOUSTID_ID"]) == "fp-uuid-1"
+        assert tags.get("TXXX:AcoustID") is not None
+        assert str(tags["TXXX:AcoustID"]) == "fp-uuid-1"

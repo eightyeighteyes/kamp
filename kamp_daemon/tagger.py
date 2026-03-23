@@ -219,15 +219,15 @@ def _write_acoustid_id(path: Path, acoustid_id: str) -> None:
                 tags = id3.ID3(str(path))
             except Exception:
                 tags = id3.ID3()
-            tags["TXXX:ACOUSTID_ID"] = id3.TXXX(
-                encoding=3, desc="ACOUSTID_ID", text=acoustid_id
+            tags["TXXX:AcoustID"] = id3.TXXX(
+                encoding=3, desc="AcoustID", text=acoustid_id
             )
             tags.save(str(path))
         elif suffix == ".m4a":
             audio = mutagen.mp4.MP4(str(path))
             if audio.tags is None:
                 return
-            audio.tags["----:com.apple.iTunes:ACOUSTID_ID"] = [
+            audio.tags["----:com.apple.iTunes:AcoustID"] = [
                 mutagen.mp4.MP4FreeForm(acoustid_id.encode())
             ]
             audio.save()
@@ -235,13 +235,13 @@ def _write_acoustid_id(path: Path, acoustid_id: str) -> None:
             audio_flac = mutagen.flac.FLAC(str(path))
             if audio_flac.tags is None:
                 return
-            audio_flac.tags["ACOUSTID_ID"] = [acoustid_id]
+            audio_flac.tags["AcoustID"] = [acoustid_id]
             audio_flac.save()
         elif suffix == ".ogg":
             audio_ogg = mutagen.oggvorbis.OggVorbis(str(path))
             if audio_ogg.tags is None:
                 return
-            audio_ogg.tags["ACOUSTID_ID"] = [acoustid_id]
+            audio_ogg.tags["AcoustID"] = [acoustid_id]
             audio_ogg.save()
     except Exception:
         logger.debug("Could not write ACOUSTID_ID to %s", path)

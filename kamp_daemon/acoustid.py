@@ -4,9 +4,9 @@ Provides two functions used by the tagger as Tier 0 identification:
   - fingerprint_file: runs fpcalc to produce a Chromaprint fingerprint
   - lookup_recording_mbids: queries the AcoustID API for recording MBIDs
 
-The application API key is XOR-encoded here to keep it out of plaintext
-source. The placeholder b"" is replaced by CI at build time using the
-ACOUSTID_KEY GitHub Actions secret and scripts/encode_acoustid_key.py.
+Both _KEY and _SALT are b"" placeholders in source. CI substitutes them
+at build time using secrets/encode_acoustid_key.py so neither the encoded
+key nor the XOR salt appears in the public repository.
 """
 
 from __future__ import annotations
@@ -18,16 +18,16 @@ from pathlib import Path
 
 import requests
 
-# Placeholder replaced at build time by CI (scripts/encode_acoustid_key.py).
-# XOR salt is b"kamp"; decode via _api_key().
+# Both placeholders are replaced by CI (scripts/encode_acoustid_key.py)
+# before the sdist is built. In dev builds both remain b"", causing
+# _api_key() to return "" and lookup_recording_mbids() to return [].
 _KEY: bytes = b""
-
-_SALT = b"kamp"
+_SALT: bytes = b""
 
 
 def _api_key() -> str:
     """Return the decoded AcoustID API key, or '' if no key is embedded."""
-    if not _KEY:
+    if not _KEY or not _SALT:
         return ""
     return bytes(b ^ _SALT[i % len(_SALT)] for i, b in enumerate(_KEY)).decode()
 

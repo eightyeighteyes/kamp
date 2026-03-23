@@ -25,9 +25,13 @@ jobs:
       - name: Embed AcoustID key
         env:
           ACOUSTID_KEY: ${{ secrets.ACOUSTID_KEY }}
+          ACOUSTID_SALT: ${{ secrets.ACOUSTID_SALT }}
         run: |
-          ENCODED=$(python scripts/encode_acoustid_key.py "$ACOUSTID_KEY")
-          sed -i "s|^_KEY: bytes = b\"\"|_KEY: bytes = ${ENCODED}|" kamp_daemon/acoustid.py
+          ENCODED=$(python scripts/encode_acoustid_key.py "$ACOUSTID_KEY" "$ACOUSTID_SALT")
+          ENCODED_KEY=$(echo "$ENCODED" | sed -n '1p')
+          ENCODED_SALT=$(echo "$ENCODED" | sed -n '2p')
+          sed -i "s|^_KEY: bytes = b\"\"|_KEY: bytes = ${ENCODED_KEY}|" kamp_daemon/acoustid.py
+          sed -i "s|^_SALT: bytes = b\"\"|_SALT: bytes = ${ENCODED_SALT}|" kamp_daemon/acoustid.py
 
       - name: Build sdist
         run: poetry build --format sdist

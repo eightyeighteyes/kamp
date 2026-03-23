@@ -67,17 +67,30 @@ class TestFingerprintFile:
         )
 
 
+# Test salt used in all _KEY/_SALT patches below.
+# Tests XOR "mykey" with b"salt": 'm'^'s'=0x3e, 'y'^'a'=0x18, 'k'^'l'=0x07, 'e'^'t'=0x11, 'y'^'s'=0x0a
+_TEST_SALT = b"salt"
+_TEST_KEY_PLAINTEXT = "mykey"
+_TEST_KEY_ENCODED = bytes(
+    ord(c) ^ _TEST_SALT[i % len(_TEST_SALT)] for i, c in enumerate(_TEST_KEY_PLAINTEXT)
+)
+
+
 class TestLookupRecordingMbids:
     def test_returns_empty_when_no_key_embedded(self) -> None:
-        # Patch _KEY to empty bytes (simulates dev build with no CI substitution)
-        with patch("kamp_daemon.acoustid._KEY", b""):
+        # Both _KEY and _SALT are empty → dev build, no key available
+        with (
+            patch("kamp_daemon.acoustid._KEY", b""),
+            patch("kamp_daemon.acoustid._SALT", b""),
+        ):
             assert lookup_recording_mbids(180.0, "AQADtEq") == []
 
     def test_returns_empty_on_no_results(self) -> None:
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"status": "ok", "results": []}
         with (
-            patch("kamp_daemon.acoustid._KEY", b"\x0e\x07\x14\x16"),  # "kamp" XOR'd
+            patch("kamp_daemon.acoustid._KEY", _TEST_KEY_ENCODED),
+            patch("kamp_daemon.acoustid._SALT", _TEST_SALT),
             patch("requests.get", return_value=mock_resp),
         ):
             assert lookup_recording_mbids(180.0, "AQADtEq") == []
@@ -103,7 +116,8 @@ class TestLookupRecordingMbids:
             ],
         }
         with (
-            patch("kamp_daemon.acoustid._KEY", b"\x0e\x07\x14\x16"),
+            patch("kamp_daemon.acoustid._KEY", _TEST_KEY_ENCODED),
+            patch("kamp_daemon.acoustid._SALT", _TEST_SALT),
             patch("requests.get", return_value=mock_resp),
         ):
             mbids = lookup_recording_mbids(180.0, "AQADtEq")
@@ -112,18 +126,16 @@ class TestLookupRecordingMbids:
     def test_calls_acoustid_api_with_correct_params(self) -> None:
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"status": "ok", "results": []}
-        # _KEY that decodes to "test" (XOR with b"kamp")
-        # 't'^'k'=0x1f, 'e'^'a'=0x04, 's'^'m'=0x1e, 't'^'p'=0x04
-        test_key_encoded = bytes([0x1F, 0x04, 0x1E, 0x04])
         with (
-            patch("kamp_daemon.acoustid._KEY", test_key_encoded),
+            patch("kamp_daemon.acoustid._KEY", _TEST_KEY_ENCODED),
+            patch("kamp_daemon.acoustid._SALT", _TEST_SALT),
             patch("requests.get", return_value=mock_resp) as mock_get,
         ):
             lookup_recording_mbids(287.0, "AQADtEqkSA==")
         mock_get.assert_called_once_with(
             "https://api.acoustid.org/v2/lookup",
             params={
-                "client": "test",
+                "client": _TEST_KEY_PLAINTEXT,
                 "meta": "recordingids",
                 "duration": 287,
                 "fingerprint": "AQADtEqkSA==",

@@ -1,29 +1,40 @@
 #!/usr/bin/env python3
-"""Encode the AcoustID API key for embedding in acoustid.py.
+"""Encode the AcoustID API key and salt for embedding in acoustid.py.
 
 Usage:
-    python scripts/encode_acoustid_key.py <plaintext_key>
+    python scripts/encode_acoustid_key.py <plaintext_key> <plaintext_salt>
 
-Prints a Python bytes literal (e.g. b"\\x0e\\x07...") that replaces the
-_KEY placeholder in kamp_daemon/acoustid.py.  The CI release workflow
-pipes this output into sed to patch the source before building.
+Prints two lines:
+    Line 1: Python bytes literal for _KEY  (XOR of key with salt)
+    Line 2: Python bytes literal for _SALT (salt as hex-escaped bytes)
 
-XOR salt matches the decoder in acoustid._api_key(): b"kamp".
+The CI release workflow pipes these into sed to patch acoustid.py before
+building the sdist. Both _KEY and _SALT are b"" placeholders in source so
+neither the encoded key nor the XOR salt is visible in the public repo.
 """
 
 import sys
 
 
-def encode(key: str) -> str:
-    salt = b"kamp"
-    encoded = bytes(ord(c) ^ salt[i % len(salt)] for i, c in enumerate(key))
-    # Produce a Python bytes literal with hex escapes for every byte.
-    inner = "".join(f"\\x{b:02x}" for b in encoded)
+def _bytes_literal(data: bytes) -> str:
+    """Return a Python bytes literal with all bytes hex-escaped."""
+    inner = "".join(f"\\x{b:02x}" for b in data)
     return f'b"{inner}"'
 
 
+def encode(key: str, salt: str) -> tuple[str, str]:
+    salt_bytes = salt.encode()
+    key_bytes = key.encode()
+    encoded = bytes(
+        b ^ salt_bytes[i % len(salt_bytes)] for i, b in enumerate(key_bytes)
+    )
+    return _bytes_literal(encoded), _bytes_literal(salt_bytes)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or not sys.argv[1]:
-        print("Usage: encode_acoustid_key.py <key>", file=sys.stderr)
+    if len(sys.argv) != 3 or not sys.argv[1] or not sys.argv[2]:
+        print("Usage: encode_acoustid_key.py <key> <salt>", file=sys.stderr)
         sys.exit(1)
-    print(encode(sys.argv[1]))
+    encoded_key, encoded_salt = encode(sys.argv[1], sys.argv[2])
+    print(encoded_key)
+    print(encoded_salt)

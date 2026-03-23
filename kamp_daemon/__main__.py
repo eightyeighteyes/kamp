@@ -643,6 +643,12 @@ def _cmd_install_service(config_path: Path, menu_bar: bool = False) -> None:
 </plist>"""
     _PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
     _PLIST_PATH.write_text(plist)
+    # Bootout any stale registration before bootstrapping — launchctl returns
+    # error 5 (ENXIO) if the label is already registered, even with a new plist.
+    if _service_registered():
+        subprocess.run(
+            ["launchctl", "bootout", _launchd_domain(), str(_PLIST_PATH)], check=False
+        )
     subprocess.run(
         ["launchctl", "bootstrap", _launchd_domain(), str(_PLIST_PATH)], check=True
     )

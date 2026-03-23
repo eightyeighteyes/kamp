@@ -9,6 +9,7 @@ import pytest
 
 from kamp_daemon.__main__ import (
     _SERVICE_LABEL,
+    _cmd_install_service,
     _cmd_play,
     _cmd_status,
     _cmd_stop,
@@ -282,3 +283,21 @@ class TestLogNoiseSuppression:
     def test_pil_tiff_not_suppressed_at_debug(self) -> None:
         self._run_main_with_log_level("DEBUG")
         assert logging.getLogger("PIL.TiffImagePlugin").level != logging.WARNING
+
+
+class TestCmdInstallService:
+    def test_runs_first_run_setup_when_no_config(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        config_path = tmp_path / "config.toml"
+        plist = tmp_path / "com.kamp.plist"
+        with (
+            patch("kamp_daemon.__main__._PLIST_PATH", plist),
+            patch("subprocess.run"),
+            patch(
+                "kamp_daemon.__main__.Config.first_run_setup",
+                return_value=None,
+            ) as mock_setup,
+        ):
+            _cmd_install_service(config_path)
+        mock_setup.assert_called_once_with(config_path)

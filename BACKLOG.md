@@ -3,9 +3,6 @@
 > Estimates use the vinyl scale: Single (<0.5), Side (0.5–1), LP (2), 2xLP (4), Box Set (4–8), Discography (>8)
 > ⚠️ = needs scoping before work can start
 
-## If config doesn't exist before service is installed, run setup
-*Single* — guard `_cmd_install_service()` in `__main__.py`: check if the config file exists, and if not, bail with a message directing the user to run `kamp daemon` first (which triggers the interactive first-run setup). The interactive setup flow already exists in `config.py`.
-
 ## AcoustID Support (heavy tagging approach)
 *LP* — fingerprint audio with `fpcalc`/chromaprint, look up recording via AcoustID API, feed MBID into existing tagger. Prerequisite met: per-track lookup (`_lookup_release_by_recordings`) is already live. Fingerprinting should be its own subprocess pipeline phase.
 

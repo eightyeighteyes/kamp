@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0](https://github.com/eightyeighteyes/kamp/compare/v1.0.2...v1.1.0) (2026-03-23)
+
+
+### Features
+
+* AcoustID fingerprint-based release lookup (Tier 0) ([#96](https://github.com/eightyeighteyes/kamp/issues/96)) ([f460380](https://github.com/eightyeighteyes/kamp/commit/f460380a5ceb76dcf22dbc5795e719e1bf57712c))
+
 ## [1.0.2](https://github.com/eightyeighteyes/kamp/compare/v1.0.1...v1.0.2) (2026-03-23)
 
 

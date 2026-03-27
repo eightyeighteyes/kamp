@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1](https://github.com/eightyeighteyes/kamp/compare/v1.1.0...v1.1.1) (2026-03-27)
+
+
+### Bug Fixes
+
+* homebrew install sometimes points to pyenv shim ([#98](https://github.com/eightyeighteyes/kamp/issues/98)) ([c052a7d](https://github.com/eightyeighteyes/kamp/commit/c052a7d9b34b4b88772ef409bf0ff5223f0d1c1a))
+
 ## [1.1.0](https://github.com/eightyeighteyes/kamp/compare/v1.0.2...v1.1.0) (2026-03-23)
 
 

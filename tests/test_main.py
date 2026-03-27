@@ -15,6 +15,7 @@ from kamp_daemon.__main__ import (
     _cmd_stop,
     _launchd_domain,
     _parse_launchctl_info,
+    _resolve_kamp_binary,
     _service_pid,
     _service_registered,
 )
@@ -285,6 +286,58 @@ class TestLogNoiseSuppression:
         assert logging.getLogger("PIL.TiffImagePlugin").level != logging.WARNING
 
 
+class TestResolveKampBinary:
+    def test_prefers_brew_prefix_path(self, tmp_path: Path) -> None:
+        brew_bin = tmp_path / "bin" / "kamp"
+        brew_bin.parent.mkdir()
+        brew_bin.touch()
+        brew_result = MagicMock()
+        brew_result.stdout = str(tmp_path)
+        with patch("subprocess.run", return_value=brew_result) as mock_run:
+            result = _resolve_kamp_binary()
+        mock_run.assert_called_once()
+        assert result == str(brew_bin)
+
+    def test_falls_back_to_known_homebrew_paths(self, tmp_path: Path) -> None:
+        fake_brew_bin = tmp_path / "kamp"
+        fake_brew_bin.touch()
+        with (
+            patch("subprocess.run", side_effect=FileNotFoundError),
+            patch(
+                "kamp_daemon.__main__._HOMEBREW_KAMP_PATHS",
+                [str(fake_brew_bin)],
+            ),
+        ):
+            result = _resolve_kamp_binary()
+        assert result == str(fake_brew_bin)
+
+    def test_warns_when_resolved_to_pyenv_shim(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        shim_path = "/Users/user/.pyenv/shims/kamp"
+        with (
+            patch("subprocess.run", side_effect=FileNotFoundError),
+            patch("kamp_daemon.__main__._HOMEBREW_KAMP_PATHS", []),
+            patch("shutil.which", return_value=shim_path),
+        ):
+            result = _resolve_kamp_binary()
+        assert result == shim_path
+        assert "pyenv shim" in capsys.readouterr().out
+
+    def test_plist_uses_resolved_binary(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.touch()
+        plist = tmp_path / "com.kamp.plist"
+        expected = "/opt/homebrew/bin/kamp"
+        with (
+            patch("kamp_daemon.__main__._PLIST_PATH", plist),
+            patch("kamp_daemon.__main__._resolve_kamp_binary", return_value=expected),
+            patch("subprocess.run"),
+        ):
+            _cmd_install_service(config_path)
+        assert expected in plist.read_text()
+
+
 class TestCmdInstallService:
     def test_runs_first_run_setup_when_no_config(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -294,6 +347,10 @@ class TestCmdInstallService:
         with (
             patch("kamp_daemon.__main__._PLIST_PATH", plist),
             patch("subprocess.run"),
+            patch(
+                "kamp_daemon.__main__._resolve_kamp_binary",
+                return_value="/opt/homebrew/bin/kamp",
+            ),
             patch(
                 "kamp_daemon.__main__.Config.first_run_setup",
                 return_value=None,

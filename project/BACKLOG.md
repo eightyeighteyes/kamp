@@ -42,9 +42,6 @@ Target: Windows 10/11 only. Distribution via Chocolatey.
 ## Allow a user to verify tags before they're written
 ⚠️ Not scoped — needs UI design (CLI prompt? TUI? GUI?) before estimating
 
-## bug: pyenv shim shadows Homebrew binary after dev/brew cycle
-*Single* — formula is clean (isolated venv). Root cause: a past dev practice (pre-Poetry) wrote `kamp-daemon` to pyenv's global site-packages; `pyenv rehash` registered the shim and it persisted. Fix: audit current dev paths for any global pip writes; add `.python-version` to the repo so pyenv doesn't pick up executables from Poetry's cache venv; document the canonical dev workflow.
-
 ## bug: macOS menu bar app reads "About Tune-Shifter" instead of "About Kamp"
 *Single* — leftover hardcoded string from the rebrand, likely in `menu_bar.py` or `__main__.py`.
 

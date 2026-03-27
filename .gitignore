@@ -29,4 +29,4 @@ htmlcov/
 .DS_Store
 
 # Claude
-.claude
+.claude/*.json

@@ -29,6 +29,10 @@ from .config import DEFAULT_CONFIG_PATH, Config, _state_dir, config_set, config_
 from .daemon_core import DaemonCore, _PID_PATH
 from .syncer import Syncer
 
+# Stable Homebrew binary locations (Apple Silicon, then Intel). Checked in order
+# before falling back to PATH, to avoid pyenv shims shadowing the Homebrew install.
+_HOMEBREW_KAMP_PATHS = ["/opt/homebrew/bin/kamp", "/usr/local/bin/kamp"]
+
 _SERVICE_LABEL = "com.kamp"
 _PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{_SERVICE_LABEL}.plist"
 _LOG_PATH = _state_dir() / "daemon.log"
@@ -616,10 +620,47 @@ def _cmd_status() -> None:
     print(f"kamp is running (pid {pid}, uptime {uptime})")
 
 
+def _resolve_kamp_binary() -> str:
+    """Return the path to the kamp binary to embed in the launchd plist.
+
+    Prefers the Homebrew-managed binary over pyenv shims. Pyenv shims depend on
+    a specific Python environment; launchd runs with a minimal PATH/env, so shims
+    often fail to locate their backing interpreter or site-packages at runtime.
+    """
+    # Ask Homebrew for the canonical prefix — most reliable when brew is available.
+    try:
+        result = subprocess.run(
+            ["brew", "--prefix", "kamp"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        candidate = Path(result.stdout.strip()) / "bin" / "kamp"
+        if candidate.exists():
+            return str(candidate)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    # Well-known Homebrew prefix locations (Apple Silicon / Intel).
+    for path in _HOMEBREW_KAMP_PATHS:
+        if Path(path).exists():
+            return path
+
+    # Fall back to PATH search, but warn loudly if it resolves to a pyenv shim.
+    found = shutil.which("kamp")
+    if found and ".pyenv/shims" in found:
+        print(
+            f"Warning: 'kamp' resolved to a pyenv shim ({found}).\n"
+            "The launchd service may fail after a Python environment change.\n"
+            "Fix: pip uninstall kamp && pyenv rehash, then re-run install-service."
+        )
+    return found or sys.argv[0]
+
+
 def _cmd_install_service(config_path: Path, menu_bar: bool = False) -> None:
     if not config_path.exists():
         Config.first_run_setup(config_path)
-    exec_path = shutil.which("kamp") or sys.argv[0]
+    exec_path = _resolve_kamp_binary()
     _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     menu_bar_arg = "" if menu_bar else "\n        <string>--no-menu-bar</string>"
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>

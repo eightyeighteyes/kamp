@@ -15,6 +15,10 @@ from kamp_core.library import (
     LibraryScanner,
     ScanResult,
     Track,
+    _read_mp3_tags,
+    _read_m4a_tags,
+    _read_vorbis_tags,
+    _read_tags,
 )
 
 # ---------------------------------------------------------------------------
@@ -211,6 +215,16 @@ class TestLibraryIndex:
         index.close()
 
         assert paths == {p1, p2}
+
+    def test_migrate_on_existing_db_is_idempotent(self, tmp_path: Path) -> None:
+        """Opening an already-migrated DB should not insert a second version row."""
+        db = tmp_path / "library.db"
+        LibraryIndex(db).close()
+        # Second open hits the `row is not None` branch in _migrate
+        index = LibraryIndex(db)
+        index.upsert_track(_sample_track(tmp_path / "01.mp3"))
+        assert len(index.all_tracks()) == 1
+        index.close()
 
 
 # ---------------------------------------------------------------------------
@@ -424,3 +438,100 @@ class TestLibraryScanner:
         assert t.disc_number == 2
         assert t.mb_release_id == "mbid-flac"
         assert t.ext == "flac"
+
+    def test_scan_reads_ogg_tags(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        (lib / "01.ogg").write_bytes(b"OggS")
+
+        mock_audio = MagicMock()
+        mock_audio.tags = {
+            "ARTIST": ["OGG Artist"],
+            "ALBUMARTIST": ["OGG Album Artist"],
+            "ALBUM": ["OGG Album"],
+            "DATE": ["2021"],
+            "TITLE": ["OGG Track"],
+            "TRACKNUMBER": ["4"],
+            "DISCNUMBER": ["1"],
+        }
+        mock_audio.pictures = []
+
+        with patch(
+            "kamp_core.library.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            index = LibraryIndex(tmp_path / "library.db")
+            LibraryScanner(index).scan(lib)
+            tracks = index.all_tracks()
+            index.close()
+
+        assert len(tracks) == 1
+        assert tracks[0].artist == "OGG Artist"
+        assert tracks[0].ext == "ogg"
+
+    def test_scan_nonexistent_directory(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = LibraryScanner(index).scan(tmp_path / "does_not_exist")
+        index.close()
+
+        assert result == ScanResult(added=0, removed=0, unchanged=0)
+
+    def test_scan_skips_unreadable_file(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        _make_mp3(lib / "bad.mp3")
+
+        with patch("kamp_core.library._read_tags", return_value=None):
+            index = LibraryIndex(tmp_path / "library.db")
+            result = LibraryScanner(index).scan(lib)
+            index.close()
+
+        assert result.added == 0
+
+
+# ---------------------------------------------------------------------------
+# Tag reader helpers
+# ---------------------------------------------------------------------------
+
+
+class TestTagReaders:
+    def test_read_mp3_tags_falls_back_on_no_id3_header(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "no_id3.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)  # MPEG bytes, no ID3 header
+        track = _read_mp3_tags(mp3)
+        assert track.title == ""
+        assert track.ext == "mp3"
+
+    def test_read_m4a_tags_falls_back_on_parse_error(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "bad.m4a"
+        m4a.write_bytes(b"\x00" * 8)
+        with patch("kamp_core.library.mutagen.mp4.MP4", side_effect=Exception("bad")):
+            track = _read_m4a_tags(m4a)
+        assert track.title == ""
+        assert track.ext == "m4a"
+
+    def test_read_vorbis_tags_falls_back_on_parse_error(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "bad.ogg"
+        ogg.write_bytes(b"\x00" * 8)
+        with patch(
+            "kamp_core.library.mutagen.oggvorbis.OggVorbis",
+            side_effect=Exception("bad"),
+        ):
+            track = _read_vorbis_tags(ogg, is_flac=False)
+        assert track.title == ""
+        assert track.ext == "ogg"
+
+    def test_read_tags_logs_and_returns_none_on_unexpected_error(
+        self, tmp_path: Path
+    ) -> None:
+        mp3 = tmp_path / "boom.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        with patch(
+            "kamp_core.library._read_mp3_tags", side_effect=RuntimeError("boom")
+        ):
+            result = _read_tags(mp3)
+        assert result is None
+
+    def test_read_tags_returns_none_for_unknown_extension(self, tmp_path: Path) -> None:
+        wav = tmp_path / "file.wav"
+        wav.write_bytes(b"")
+        assert _read_tags(wav) is None

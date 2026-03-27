@@ -80,7 +80,7 @@ disable_error_code = ["import-untyped", "import-not-found", "no-untyped-call", "
 # mutagen has partial stubs that don't cover ID3 frame classes, MP4 methods, or
 # FLAC tag access (audio.tags is typed as VCFLACDict | MetadataBlock; the union
 # causes false union-attr/index errors on the VCFLACDict branch we always use).
-module = ["kamp_daemon.tagger", "kamp_daemon.mover", "kamp_daemon.artwork", "kamp_core.library"]
+module = ["kamp_daemon.tagger", "kamp_daemon.mover", "kamp_daemon.artwork", "kamp_core.library", "tests.test_library"]
 disable_error_code = ["no-untyped-call", "attr-defined", "unused-ignore", "union-attr", "index", "var-annotated", "assignment", "arg-type"]
 
 [[tool.mypy.overrides]]

@@ -197,6 +197,8 @@ class MpvPlaybackEngine:
 
     def play(self, path: Path) -> None:
         self._send_command("loadfile", str(path), "replace")
+        # Explicitly unpause so calling play() after pause() always starts playback.
+        self._send_command("set_property", "pause", False)
 
     def pause(self) -> None:
         self._send_command("set_property", "pause", True)

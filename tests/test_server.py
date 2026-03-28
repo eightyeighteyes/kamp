@@ -137,13 +137,13 @@ class TestAlbumArtEndpoint:
         with patch(
             "kamp_core.server.extract_art", return_value=(b"IMGDATA", "image/jpeg")
         ):
-            res = c.get("/api/v1/albums/Artist/Album/art")
+            res = c.get("/api/v1/album-art?album_artist=Artist&album=Album")
         assert res.status_code == 200
         assert res.content == b"IMGDATA"
         assert "image/jpeg" in res.headers["content-type"]
 
     def test_returns_404_when_no_tracks(self, client: TestClient) -> None:
-        res = client.get("/api/v1/albums/Unknown/Ghost/art")
+        res = client.get("/api/v1/album-art?album_artist=Unknown&album=Ghost")
         assert res.status_code == 404
 
     def test_returns_404_when_no_tracks_have_art(
@@ -152,7 +152,7 @@ class TestAlbumArtEndpoint:
         mock_index.tracks_for_album.return_value = [_track(1)]  # embedded_art=False
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
-        res = c.get("/api/v1/albums/Artist/Album/art")
+        res = c.get("/api/v1/album-art?album_artist=Artist&album=Album")
         assert res.status_code == 404
 
     def test_returns_404_when_extract_returns_none(
@@ -164,7 +164,7 @@ class TestAlbumArtEndpoint:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
         with patch("kamp_core.server.extract_art", return_value=None):
-            res = c.get("/api/v1/albums/Artist/Album/art")
+            res = c.get("/api/v1/album-art?album_artist=Artist&album=Album")
         assert res.status_code == 404
 
 
@@ -193,7 +193,7 @@ class TestTracksForAlbumEndpoint:
         ]
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
-        data = c.get("/api/v1/albums/Aesop Rock/Labor Days/tracks").json()
+        data = c.get("/api/v1/tracks?album_artist=Aesop+Rock&album=Labor+Days").json()
         assert len(data) == 2
         assert data[0]["title"] == "Track 1"
         mock_index.tracks_for_album.assert_called_once_with("Aesop Rock", "Labor Days")
@@ -204,7 +204,7 @@ class TestTracksForAlbumEndpoint:
         mock_index.tracks_for_album.return_value = [_track(1)]
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
-        track = c.get("/api/v1/albums/Artist/Album/tracks").json()[0]
+        track = c.get("/api/v1/tracks?album_artist=Artist&album=Album").json()[0]
         assert set(track.keys()) >= {
             "title",
             "artist",
@@ -216,7 +216,7 @@ class TestTracksForAlbumEndpoint:
         }
 
     def test_returns_empty_list_for_unknown_album(self, client: TestClient) -> None:
-        response = client.get("/api/v1/albums/Unknown/Ghost/tracks")
+        response = client.get("/api/v1/tracks?album_artist=Unknown&album=Ghost")
         assert response.status_code == 200
         assert response.json() == []
 

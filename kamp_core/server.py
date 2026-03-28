@@ -162,16 +162,15 @@ def create_app(
     def get_artists() -> list[str]:
         return index.artists()
 
-    @app.get(
-        "/api/v1/albums/{album_artist}/{album}/tracks",
-        response_model=list[TrackOut],
-    )
+    @app.get("/api/v1/tracks", response_model=list[TrackOut])
     def get_tracks(album_artist: str, album: str) -> list[TrackOut]:
+        # Query parameters instead of path segments — artist/album names may
+        # contain slashes (e.g. "AC/DC") which would break URL path routing.
         return [
             TrackOut.from_track(t) for t in index.tracks_for_album(album_artist, album)
         ]
 
-    @app.get("/api/v1/albums/{album_artist}/{album}/art")
+    @app.get("/api/v1/album-art")
     def get_album_art(album_artist: str, album: str) -> Response:
         tracks = index.tracks_for_album(album_artist, album)
         for track in tracks:

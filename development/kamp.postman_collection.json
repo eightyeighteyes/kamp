@@ -35,8 +35,16 @@
           "name": "Get Tracks for Album",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/albums/Aesop Rock/Labor Days/tracks",
-            "description": "Returns tracks for a given album sorted by disc then track number. Replace the artist and album path segments with real values."
+            "url": "{{base_url}}/api/v1/tracks?album_artist=Aesop+Rock&album=Labor+Days",
+            "description": "Returns tracks for a given album sorted by disc then track number. Artist/album are query params (not path segments) to support names containing slashes (e.g. AC/DC)."
+          }
+        },
+        {
+          "name": "Get Album Art",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/album-art?album_artist=Aesop+Rock&album=Labor+Days",
+            "description": "Returns the embedded cover image as image/jpeg or image/png. Returns 404 if no art is embedded. Same query-param pattern as Get Tracks for Album."
           }
         },
         {

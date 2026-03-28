@@ -181,7 +181,13 @@ class TestMpvPlaybackEngine:
     def test_play_sends_loadfile_command(self) -> None:
         engine, send = _make_engine()
         engine.play(Path("/music/01.mp3"))
-        send.assert_called_once_with("loadfile", "/music/01.mp3", "replace")
+        send.assert_any_call("loadfile", "/music/01.mp3", "replace")
+
+    def test_play_always_unpauses(self) -> None:
+        """play() must unpause mpv so a paused engine resumes on the new track."""
+        engine, send = _make_engine()
+        engine.play(Path("/music/01.mp3"))
+        send.assert_any_call("set_property", "pause", False)
 
     def test_pause_sets_pause_true(self) -> None:
         engine, send = _make_engine()

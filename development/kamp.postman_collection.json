@@ -1,0 +1,216 @@
+{
+  "info": {
+    "name": "Kamp",
+    "description": "Kamp music player API. Set the `base_url` variable to the server address (default: http://localhost:8000).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Library",
+      "item": [
+        {
+          "name": "Get Albums",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/albums",
+            "description": "Returns all albums sorted by album artist then album title."
+          }
+        },
+        {
+          "name": "Get Artists",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/artists",
+            "description": "Returns a sorted, deduplicated list of album artists."
+          }
+        },
+        {
+          "name": "Get Tracks for Album",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/albums/Aesop Rock/Labor Days/tracks",
+            "description": "Returns tracks for a given album sorted by disc then track number. Replace the artist and album path segments with real values."
+          }
+        },
+        {
+          "name": "Scan Library",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/library/scan",
+            "description": "Triggers an incremental library scan. Returns { added, removed, unchanged }. Returns 503 if the server was started without a library path configured."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Player",
+      "item": [
+        {
+          "name": "Get State",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/player/state",
+            "description": "Returns current player state: playing, position, duration, volume, and current_track (null when idle)."
+          }
+        },
+        {
+          "name": "Play Album",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/play",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"album_artist\": \"Aesop Rock\",\n  \"album\": \"Labor Days\",\n  \"track_index\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Loads the specified album into the queue starting at track_index and begins playback. Returns 404 if the album is not in the library."
+          }
+        },
+        {
+          "name": "Pause",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/pause"
+          }
+        },
+        {
+          "name": "Resume",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/resume"
+          }
+        },
+        {
+          "name": "Stop",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/stop"
+          }
+        },
+        {
+          "name": "Seek",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/seek",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"position\": 60.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Seek to an absolute position in seconds."
+          }
+        },
+        {
+          "name": "Set Volume",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/volume",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"volume\": 80\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Set volume 0–100."
+          }
+        },
+        {
+          "name": "Next Track",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/next",
+            "description": "Advance to the next track in the queue. Stops playback if at the end (and repeat is off)."
+          }
+        },
+        {
+          "name": "Previous Track",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/prev",
+            "description": "Go back to the previous track. No-op if at the start of the queue (and repeat is off)."
+          }
+        },
+        {
+          "name": "Set Shuffle",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/shuffle",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shuffle\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Set Repeat",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/player/repeat",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"repeat\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

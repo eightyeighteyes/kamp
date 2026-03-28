@@ -155,6 +155,30 @@ def main() -> None:
         help="Delete saved Bandcamp session and sync state, requiring re-authentication on the next sync.",
     )
 
+    # server subcommand
+    server_parser = subparsers.add_parser(
+        "server",
+        help="Start the HTTP API server (REST + WebSocket) for the music player UI.",
+    )
+    server_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1)",
+    )
+    server_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to listen on (default: 8000)",
+    )
+    server_parser.add_argument(
+        "--library",
+        metavar="DIR",
+        type=Path,
+        default=None,
+        help="Override the library path from config.",
+    )
+
     # test-notify subcommand (macOS only, no config file needed)
     test_notify_parser = subparsers.add_parser(
         "test-notify",
@@ -257,6 +281,16 @@ def main() -> None:
         _get_version(),
         config.musicbrainz.contact,
     )
+
+    if command == "server":
+        library_override = getattr(args, "library", None)
+        _cmd_server(
+            config,
+            host=args.host,
+            port=args.port,
+            library_path=library_override,
+        )
+        return
 
     if command == "sync":
         _cmd_sync(
@@ -424,6 +458,46 @@ def _write_test_mp3(path: Path, *, with_mbid: bool = False) -> None:
             )
         )
         tags.save(str(path))
+
+
+def _cmd_server(
+    config: Config,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    library_path: Path | None = None,
+) -> None:
+    import uvicorn
+
+    from kamp_core.library import LibraryIndex
+    from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
+    from kamp_core.server import create_app
+
+    lib_path = (library_path or config.paths.library).expanduser().resolve()
+    db_path = _state_dir() / "library.db"
+
+    index = LibraryIndex(db_path)
+    engine = MpvPlaybackEngine()
+    queue: PlaybackQueue = PlaybackQueue()
+
+    # Advance the queue automatically at end-of-track; stop cleanly at the end.
+    def _on_track_end() -> None:
+        track = queue.next()
+        if track:
+            engine.play(track.file_path)
+        else:
+            engine.stop()
+
+    engine.on_track_end = _on_track_end
+
+    app = create_app(index=index, engine=engine, queue=queue, library_path=lib_path)
+
+    print(f"Kamp API server starting on http://{host}:{port}")
+    print(f"  Docs  → http://{host}:{port}/docs")
+    print(f"  Library → {lib_path}")
+    uvicorn.run(app, host=host, port=port)
+
+    engine.shutdown()
+    index.close()
 
 
 def _cmd_sync(config: Config, config_path: Path, download_all: bool = False) -> None:

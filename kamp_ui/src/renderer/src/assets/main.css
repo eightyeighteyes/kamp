@@ -291,3 +291,131 @@ html, body, #root {
   min-width: 24px;
   font-variant-numeric: tabular-nums;
 }
+
+/* Track list view ---------------------------------------------------------- */
+
+.track-list-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.track-list-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.back-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.back-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.track-list-album-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  overflow: hidden;
+}
+
+.track-list-album-title {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.track-list-album-artist {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.track-list-album-year {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.play-all-btn {
+  background: var(--accent);
+  border: none;
+  color: #000;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.play-all-btn:hover {
+  filter: brightness(1.1);
+}
+
+.track-rows {
+  list-style: none;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.track-row {
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.track-row:hover {
+  background: var(--surface-hover);
+}
+
+.track-row.current {
+  color: var(--accent);
+}
+
+.track-row-num {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  min-width: 24px;
+}
+
+.track-row.current .track-row-num {
+  color: var(--accent);
+}
+
+.track-row-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.track-row-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}

@@ -3,11 +3,13 @@ import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
 import { AlbumGrid } from './components/AlbumGrid'
+import { TrackList } from './components/TrackList'
 import { TransportBar } from './components/TransportBar'
 
 export default function App() {
   const loadLibrary = useStore((s) => s.loadLibrary)
   const applyServerState = useStore((s) => s.applyServerState)
+  const selectedAlbum = useStore((s) => s.library.selectedAlbum)
 
   useEffect(() => {
     loadLibrary()
@@ -29,7 +31,7 @@ export default function App() {
       <div className="app-body">
         <ArtistPanel />
         <main className="main-content">
-          <AlbumGrid />
+          {selectedAlbum ? <TrackList /> : <AlbumGrid />}
         </main>
       </div>
       <TransportBar />

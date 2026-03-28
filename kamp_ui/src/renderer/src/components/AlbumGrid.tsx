@@ -2,18 +2,17 @@ import { useStore } from '../store'
 import type { Album } from '../api/client'
 
 function AlbumCard({ album }: { album: Album }) {
-  const playAlbum = useStore((s) => s.playAlbum)
+  const selectAlbum = useStore((s) => s.selectAlbum)
   const currentTrack = useStore((s) => s.player.current_track)
   const playing = useStore((s) => s.player.playing)
 
   const isActive =
-    currentTrack?.album === album.album &&
-    currentTrack?.album_artist === album.album_artist
+    currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
   return (
     <div
       className={`album-card${isActive ? ' playing' : ''}`}
-      onClick={() => playAlbum(album.album_artist, album.album)}
+      onClick={() => selectAlbum(album)}
     >
       <div className="album-art">
         {playing && isActive && <div className="now-playing-badge">▶</div>}

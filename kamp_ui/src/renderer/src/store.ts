@@ -14,6 +14,7 @@ type LibraryState = {
   albums: Album[]
   artists: string[]
   selectedArtist: string | null
+  selectedAlbum: Album | null
   tracks: Track[]
   tracksAlbumKey: string | null // "artist\0album" key for the loaded track list
 }
@@ -25,6 +26,7 @@ type PlayerStore = {
   // Actions
   loadLibrary: () => Promise<void>
   selectArtist: (artist: string | null) => void
+  selectAlbum: (album: Album | null) => Promise<void>
   loadTracks: (albumArtist: string, album: string) => Promise<void>
   playAlbum: (albumArtist: string, album: string, trackIndex?: number) => Promise<void>
   playTrack: (albumArtist: string, album: string, trackIndex: number) => Promise<void>
@@ -54,6 +56,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     albums: [],
     artists: [],
     selectedArtist: null,
+    selectedAlbum: null,
     tracks: [],
     tracksAlbumKey: null
   },
@@ -66,7 +69,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   selectArtist: (artist) =>
-    set((s) => ({ library: { ...s.library, selectedArtist: artist } })),
+    set((s) => ({ library: { ...s.library, selectedArtist: artist, selectedAlbum: null } })),
+
+  selectAlbum: async (album) => {
+    set((s) => ({ library: { ...s.library, selectedAlbum: album } }))
+    if (album) await get().loadTracks(album.album_artist, album.album)
+  },
 
   loadTracks: async (albumArtist, album) => {
     const key = `${albumArtist}\0${album}`

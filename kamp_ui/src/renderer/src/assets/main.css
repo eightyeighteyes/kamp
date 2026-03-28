@@ -17,8 +17,8 @@
   --border: #2e2e2e;
   --text: #e0e0e0;
   --text-dim: #888;
-  --accent: #e07c3c;
-  --accent-dim: #7a3d1a;
+  --accent: #7c86e1;
+  --accent-dim: #252b5c;
   --error: #e06c75;
   --text-on-accent: #000;
   --transport-h: 88px;
@@ -274,11 +274,11 @@ body,
 }
 
 .album-card.playing {
-  box-shadow: 0 0 0 3px rgba(224, 124, 60, 0.35);
+  box-shadow: 0 0 0 3px rgba(124, 134, 225, 0.35);
 }
 
 .album-card.playing:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 0 3px rgba(224, 124, 60, 0.35);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 0 3px rgba(124, 134, 225, 0.35);
 }
 
 .album-art {

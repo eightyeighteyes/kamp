@@ -3,3 +3,9 @@ set -e
 
 poetry run black --check kamp_daemon/ tests/
 poetry run mypy kamp_daemon/
+
+# Run UI checks only when kamp_ui files are staged — skips on Python-only commits.
+if git diff --cached --name-only | grep -q '^kamp_ui/'; then
+  echo "kamp_ui changes detected — running typecheck and lint..."
+  (cd kamp_ui && npm run typecheck && npm run lint)
+fi

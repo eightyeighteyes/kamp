@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from kamp_core.library import LibraryIndex, LibraryScanner, Track
@@ -119,6 +120,15 @@ def create_app(
     makes the app easy to test: pass mock objects, use TestClient, done.
     """
     app = FastAPI(title="Kamp", version="1")
+
+    # Allow requests from the Electron renderer (Vite dev server and file://).
+    # This server only binds to 127.0.0.1, so wildcard origins are safe.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def _state_snapshot() -> PlayerStateOut:
         current = queue.current()

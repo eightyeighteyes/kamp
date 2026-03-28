@@ -22,8 +22,10 @@ type LibraryState = {
 type PlayerStore = {
   player: PlayerState
   library: LibraryState
+  serverStatus: 'connected' | 'disconnected'
 
   // Actions
+  setServerStatus: (status: 'connected' | 'disconnected') => void
   loadLibrary: () => Promise<void>
   selectArtist: (artist: string | null) => void
   selectAlbum: (album: Album | null) => Promise<void>
@@ -60,12 +62,19 @@ export const useStore = create<PlayerStore>((set, get) => ({
     tracks: [],
     tracksAlbumKey: null
   },
+  serverStatus: 'disconnected',
+
+  setServerStatus: (status) => set({ serverStatus: status }),
 
   applyServerState: (state) => set({ player: state }),
 
   loadLibrary: async () => {
-    const [albums, artists] = await Promise.all([api.getAlbums(), api.getArtists()])
-    set((s) => ({ library: { ...s.library, albums, artists } }))
+    try {
+      const [albums, artists] = await Promise.all([api.getAlbums(), api.getArtists()])
+      set((s) => ({ library: { ...s.library, albums, artists }, serverStatus: 'connected' }))
+    } catch {
+      set({ serverStatus: 'disconnected' })
+    }
   },
 
   selectArtist: (artist) =>

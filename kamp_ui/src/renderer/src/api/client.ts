@@ -115,9 +115,12 @@ export type StateMessage = PlayerState & { type: 'player.state' }
 
 export function connectStateStream(
   onState: (state: PlayerState) => void,
-  onClose?: () => void
+  onClose?: () => void,
+  onOpen?: () => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
+
+  ws.onopen = () => onOpen?.()
 
   ws.onmessage = (event) => {
     try {

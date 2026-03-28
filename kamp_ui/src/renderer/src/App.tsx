@@ -9,25 +9,52 @@ import { TransportBar } from './components/TransportBar'
 export default function App(): React.JSX.Element {
   const loadLibrary = useStore((s) => s.loadLibrary)
   const applyServerState = useStore((s) => s.applyServerState)
+  const setServerStatus = useStore((s) => s.setServerStatus)
+  const serverStatus = useStore((s) => s.serverStatus)
+  const hasAlbums = useStore((s) => s.library.albums.length > 0)
   const selectedAlbum = useStore((s) => s.library.selectedAlbum)
 
   useEffect(() => {
     loadLibrary()
 
-    // Connect WebSocket state stream. The cleanup function closes the
-    // socket and stops the polling interval when the component unmounts.
-    const disconnect = connectStateStream(applyServerState, () => {
-      // Reconnect after a short delay if the server closes the socket.
-      setTimeout(() => {
-        connectStateStream(applyServerState)
-      }, 2000)
-    })
+    // Connect WebSocket state stream. Re-establishes automatically when the
+    // server restarts. Each reconnect also reloads the library in case albums
+    // were added while the server was down.
+    const connect = (): (() => void) => {
+      return connectStateStream(
+        applyServerState,
+        () => {
+          setServerStatus('disconnected')
+          setTimeout(connect, 2000)
+        },
+        () => {
+          setServerStatus('connected')
+          loadLibrary()
+        }
+      )
+    }
 
+    const disconnect = connect()
     return disconnect
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  if (serverStatus === 'disconnected' && !hasAlbums) {
+    return (
+      <div className="server-offline">
+        <div className="server-offline-icon">⏻</div>
+        <div className="server-offline-title">kamp server is not running</div>
+        <div className="server-offline-hint">
+          Start it with <code>kamp server</code>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="app">
+      {serverStatus === 'disconnected' && (
+        <div className="reconnecting-banner">Reconnecting to server…</div>
+      )}
       <div className="app-body">
         <ArtistPanel />
         <main className="main-content">{selectedAlbum ? <TrackList /> : <AlbumGrid />}</main>

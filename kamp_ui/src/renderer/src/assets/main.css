@@ -42,6 +42,50 @@ body,
   height: 100%;
 }
 
+/* Server offline — full-screen prompt shown before any library data loads */
+.server-offline {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: var(--text-dim);
+}
+
+.server-offline-icon {
+  font-size: 48px;
+  opacity: 0.4;
+}
+
+.server-offline-title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.server-offline-hint {
+  font-size: 13px;
+}
+
+.server-offline-hint code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: monospace;
+}
+
+/* Reconnecting banner — shown when connection drops but library is cached */
+.reconnecting-banner {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 4px 16px;
+  text-align: center;
+}
+
 .app-body {
   display: flex;
   flex: 1;

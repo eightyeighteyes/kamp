@@ -83,7 +83,11 @@ class LibraryIndex:
 
     def __init__(self, db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path))
+        # check_same_thread=False is safe here: all writes are serialised through
+        # LibraryIndex methods, and SQLite operates in serialized mode by default.
+        # FastAPI dispatches sync handlers to a thread pool, so without this flag
+        # every request would raise ProgrammingError.
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._migrate()
 

@@ -51,12 +51,18 @@ export function TrackList(): React.JSX.Element | null {
             <li
               key={`${track.disc_number}-${track.track_number}`}
               className={`track-row${isCurrent ? ' current' : ''}`}
+              tabIndex={0}
               onClick={() => {
                 if (isCurrent) {
                   togglePlayPause()
                 } else {
                   playTrack(album.album_artist, album.album, i)
                 }
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                if (isCurrent) togglePlayPause()
+                else playTrack(album.album_artist, album.album, i)
               }}
             >
               <span className="track-row-num">

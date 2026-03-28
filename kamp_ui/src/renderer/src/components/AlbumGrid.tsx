@@ -13,7 +13,12 @@ function AlbumCard({ album }: { album: Album }): React.JSX.Element {
     currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
   return (
-    <div className={`album-card${isActive ? ' playing' : ''}`} onClick={() => selectAlbum(album)}>
+    <div
+      className={`album-card${isActive ? ' playing' : ''}`}
+      tabIndex={0}
+      onClick={() => selectAlbum(album)}
+      onKeyDown={(e) => e.key === 'Enter' && selectAlbum(album)}
+    >
       <div className={`album-art${artLoaded ? ' has-art' : ''}`}>
         {album.has_art && (
           <img

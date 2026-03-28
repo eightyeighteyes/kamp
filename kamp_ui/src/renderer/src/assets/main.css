@@ -86,6 +86,98 @@ body,
   text-align: center;
 }
 
+/* Setup screen ------------------------------------------------------------- */
+
+.setup-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+  color: var(--text-dim);
+}
+
+.setup-icon {
+  font-size: 52px;
+  opacity: 0.3;
+}
+
+.setup-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.setup-hint {
+  font-size: 13px;
+  text-align: center;
+  max-width: 380px;
+  line-height: 1.6;
+}
+
+.setup-hint code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.setup-scan-btn {
+  background: var(--accent);
+  border: none;
+  color: #000;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 28px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.setup-scan-btn:hover {
+  opacity: 0.85;
+}
+
+.setup-scanning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.setup-spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.setup-result {
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.setup-error {
+  font-size: 13px;
+  color: #e06c75;
+  text-align: center;
+  max-width: 380px;
+  line-height: 1.6;
+}
+
+/* App body ----------------------------------------------------------------- */
+
 .app-body {
   display: flex;
   flex: 1;

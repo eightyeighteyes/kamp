@@ -8,7 +8,7 @@
 
 import { create } from 'zustand'
 import * as api from './api/client'
-import type { Album, PlayerState, Track } from './api/client'
+import type { Album, PlayerState, ScanResult, Track } from './api/client'
 
 type LibraryState = {
   albums: Album[]
@@ -23,6 +23,9 @@ type PlayerStore = {
   player: PlayerState
   library: LibraryState
   serverStatus: 'connected' | 'disconnected'
+  scanStatus: 'idle' | 'scanning' | 'done' | 'error'
+  lastScanResult: ScanResult | null
+  scanError: string | null
 
   // Actions
   setServerStatus: (status: 'connected' | 'disconnected') => void
@@ -63,6 +66,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
     tracksAlbumKey: null
   },
   serverStatus: 'disconnected',
+  scanStatus: 'idle',
+  lastScanResult: null,
+  scanError: null,
 
   setServerStatus: (status) => set({ serverStatus: status }),
 
@@ -139,7 +145,17 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   scanLibrary: async () => {
-    await api.scanLibrary()
-    await get().loadLibrary()
+    set({ scanStatus: 'scanning', scanError: null })
+    try {
+      const result = await api.scanLibrary()
+      set({ scanStatus: 'done', lastScanResult: result })
+      await get().loadLibrary()
+    } catch (err) {
+      const msg =
+        err instanceof Error && err.message.includes('503')
+          ? 'Library path not configured. Set paths.library in your config.toml and restart the server.'
+          : 'Scan failed. Check the server logs for details.'
+      set({ scanStatus: 'error', scanError: msg })
+    }
   }
 }))

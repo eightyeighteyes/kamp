@@ -3,6 +3,7 @@ import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
 import { AlbumGrid } from './components/AlbumGrid'
+import { SetupScreen } from './components/SetupScreen'
 import { TrackList } from './components/TrackList'
 import { TransportBar } from './components/TransportBar'
 
@@ -50,14 +51,18 @@ export default function App(): React.JSX.Element {
     )
   }
 
+  const showSetup = serverStatus === 'connected' && !hasAlbums
+
   return (
     <div className="app">
       {serverStatus === 'disconnected' && (
         <div className="reconnecting-banner">Reconnecting to server…</div>
       )}
       <div className="app-body">
-        <ArtistPanel />
-        <main className="main-content">{selectedAlbum ? <TrackList /> : <AlbumGrid />}</main>
+        {!showSetup && <ArtistPanel />}
+        <main className="main-content">
+          {showSetup ? <SetupScreen /> : selectedAlbum ? <TrackList /> : <AlbumGrid />}
+        </main>
       </div>
       <TransportBar />
     </div>

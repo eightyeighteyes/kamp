@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0](https://github.com/eightyeighteyes/kamp/compare/v1.1.1...v1.2.0) (2026-03-28)
+
+
+### Features
+
+* album art ([#105](https://github.com/eightyeighteyes/kamp/issues/105)) ([f7945f8](https://github.com/eightyeighteyes/kamp/commit/f7945f8e67bd63e43f3876d914f43441a7ab0ae9))
+* Electron + React UI (kamp Phase 1) ([#104](https://github.com/eightyeighteyes/kamp/issues/104)) ([4c68463](https://github.com/eightyeighteyes/kamp/commit/4c684634198aa8511ab37684ff19560369ff9fdd))
+* error states for server offline and reconnecting ([#106](https://github.com/eightyeighteyes/kamp/issues/106)) ([5f84472](https://github.com/eightyeighteyes/kamp/commit/5f84472c2e28958afab1fe9c599947add5f28d31))
+* FastAPI REST + WebSocket server (kamp_core Phase 1) ([#103](https://github.com/eightyeighteyes/kamp/issues/103)) ([84aca6b](https://github.com/eightyeighteyes/kamp/commit/84aca6b0ef19144ac4ce6ea87d6e1ca0847fe1c9))
+* first-run setup screen with library scan ([#107](https://github.com/eightyeighteyes/kamp/issues/107)) ([be935a7](https://github.com/eightyeighteyes/kamp/commit/be935a7f64e4052acc4bf95a8958d35c0802a782))
+* PlaybackEngine and PlaybackQueue (kamp_core Phase 1) ([#102](https://github.com/eightyeighteyes/kamp/issues/102)) ([64a262e](https://github.com/eightyeighteyes/kamp/commit/64a262e39c7c8aa52b2c8ad236fd73ac3ffa39f8))
+* SQLite library index and scanner (kamp_core Phase 1) ([#100](https://github.com/eightyeighteyes/kamp/issues/100)) ([7e866d6](https://github.com/eightyeighteyes/kamp/commit/7e866d62f7a4253a43fbf047b3714276b73a4be7))
+
+
+### Bug Fixes
+
+* enable WAL journal mode to prevent database is locked errors ([#108](https://github.com/eightyeighteyes/kamp/issues/108)) ([ff4a30d](https://github.com/eightyeighteyes/kamp/commit/ff4a30d81edf85730661c168a10125b4a4ffc427))
+
 ## [1.1.1](https://github.com/eightyeighteyes/kamp/compare/v1.1.0...v1.1.1) (2026-03-27)
 
 

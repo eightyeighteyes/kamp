@@ -1,0 +1,128 @@
+/**
+ * Zustand store.
+ *
+ * All player and library state lives here. The renderer is a pure view layer:
+ * components read from the store and dispatch actions — they hold no state
+ * of their own that belongs in the daemon.
+ */
+
+import { create } from 'zustand'
+import * as api from './api/client'
+import type { Album, PlayerState, Track } from './api/client'
+
+type LibraryState = {
+  albums: Album[]
+  artists: string[]
+  selectedArtist: string | null
+  tracks: Track[]
+  tracksAlbumKey: string | null // "artist\0album" key for the loaded track list
+}
+
+type PlayerStore = {
+  player: PlayerState
+  library: LibraryState
+
+  // Actions
+  loadLibrary: () => Promise<void>
+  selectArtist: (artist: string | null) => void
+  loadTracks: (albumArtist: string, album: string) => Promise<void>
+  playAlbum: (albumArtist: string, album: string, trackIndex?: number) => Promise<void>
+  playTrack: (albumArtist: string, album: string, trackIndex: number) => Promise<void>
+  togglePlayPause: () => Promise<void>
+  stop: () => Promise<void>
+  next: () => Promise<void>
+  prev: () => Promise<void>
+  seek: (position: number) => Promise<void>
+  setVolume: (volume: number) => Promise<void>
+  setShuffle: (shuffle: boolean) => Promise<void>
+  setRepeat: (repeat: boolean) => Promise<void>
+  scanLibrary: () => Promise<void>
+  applyServerState: (state: PlayerState) => void
+}
+
+const initialPlayer: PlayerState = {
+  playing: false,
+  position: 0,
+  duration: 0,
+  volume: 100,
+  current_track: null
+}
+
+export const useStore = create<PlayerStore>((set, get) => ({
+  player: initialPlayer,
+  library: {
+    albums: [],
+    artists: [],
+    selectedArtist: null,
+    tracks: [],
+    tracksAlbumKey: null
+  },
+
+  applyServerState: (state) => set({ player: state }),
+
+  loadLibrary: async () => {
+    const [albums, artists] = await Promise.all([api.getAlbums(), api.getArtists()])
+    set((s) => ({ library: { ...s.library, albums, artists } }))
+  },
+
+  selectArtist: (artist) =>
+    set((s) => ({ library: { ...s.library, selectedArtist: artist } })),
+
+  loadTracks: async (albumArtist, album) => {
+    const key = `${albumArtist}\0${album}`
+    if (get().library.tracksAlbumKey === key) return
+    const tracks = await api.getTracksForAlbum(albumArtist, album)
+    set((s) => ({ library: { ...s.library, tracks, tracksAlbumKey: key } }))
+  },
+
+  playAlbum: async (albumArtist, album, trackIndex = 0) => {
+    await api.playAlbum(albumArtist, album, trackIndex)
+  },
+
+  playTrack: async (albumArtist, album, trackIndex) => {
+    await api.playAlbum(albumArtist, album, trackIndex)
+  },
+
+  togglePlayPause: async () => {
+    const { playing } = get().player
+    if (playing) {
+      await api.pause()
+    } else {
+      await api.resume()
+    }
+  },
+
+  stop: async () => {
+    await api.stop()
+  },
+
+  next: async () => {
+    await api.nextTrack()
+  },
+
+  prev: async () => {
+    await api.prevTrack()
+  },
+
+  seek: async (position) => {
+    await api.seek(position)
+  },
+
+  setVolume: async (volume) => {
+    await api.setVolume(volume)
+    set((s) => ({ player: { ...s.player, volume } }))
+  },
+
+  setShuffle: async (shuffle) => {
+    await api.setShuffle(shuffle)
+  },
+
+  setRepeat: async (repeat) => {
+    await api.setRepeat(repeat)
+  },
+
+  scanLibrary: async () => {
+    await api.scanLibrary()
+    await get().loadLibrary()
+  }
+}))

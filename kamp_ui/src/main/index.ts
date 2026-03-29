@@ -1,7 +1,66 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join } from 'path'
+import { join, resolve } from 'path'
+import { existsSync } from 'fs'
+import { spawn, ChildProcess } from 'child_process'
+import * as http from 'http'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+
+// ---------------------------------------------------------------------------
+// Server lifecycle
+// ---------------------------------------------------------------------------
+
+let serverProcess: ChildProcess | null = null
+
+function findKampBinary(): string | null {
+  // app.getAppPath() returns the kamp_ui directory; .venv lives one level up (repo root)
+  const venvBin = resolve(app.getAppPath(), '../.venv/bin/kamp')
+  if (existsSync(venvBin)) return venvBin
+  return null
+}
+
+function isServerRunning(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get('http://127.0.0.1:8000/api/v1/player/state', (res) => {
+      res.resume() // discard body
+      resolve(res.statusCode !== undefined)
+    })
+    req.on('error', () => resolve(false))
+    req.setTimeout(1000, () => {
+      req.destroy()
+      resolve(false)
+    })
+  })
+}
+
+async function startServer(): Promise<void> {
+  if (await isServerRunning()) return
+
+  const binary = findKampBinary()
+  if (!binary) {
+    console.error('[kamp] kamp binary not found — start the server manually')
+    return
+  }
+
+  serverProcess = spawn(binary, ['server'], {
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  serverProcess.stdout?.on('data', (d) => console.log('[kamp server]', String(d).trimEnd()))
+  serverProcess.stderr?.on('data', (d) => console.error('[kamp server]', String(d).trimEnd()))
+  serverProcess.on('exit', (code) => {
+    console.log(`[kamp server] exited (${code})`)
+    serverProcess = null
+  })
+}
+
+function stopServer(): void {
+  if (serverProcess) {
+    serverProcess.kill()
+    serverProcess = null
+  }
+}
 
 function createWindow(): void {
   // Create the browser window.
@@ -38,7 +97,7 @@ function createWindow(): void {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
@@ -60,6 +119,10 @@ app.whenReady().then(() => {
     return result.canceled ? null : result.filePaths[0]
   })
 
+  // Start the kamp server if it isn't already running. The renderer's
+  // existing reconnect loop handles the brief gap while the server starts up.
+  await startServer()
+
   createWindow()
 
   app.on('activate', function () {
@@ -77,6 +140,9 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
+
+// Kill the server we launched when the app exits.
+app.on('will-quit', stopServer)
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.

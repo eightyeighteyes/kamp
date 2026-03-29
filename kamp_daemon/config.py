@@ -45,6 +45,9 @@ max_bytes = 1_000_000  # 1 MB
 [library]
 # Available variables: {artist}, {album_artist}, {album}, {year}, {track}, {title}, {ext}
 path_template = "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
+
+[ui]
+active_view = "library"  # "library" | "now-playing"
 """
 
 
@@ -274,6 +277,10 @@ _CONFIG_KEY_CHOICES: dict[str, frozenset[str]] = {
     "ui.active_view": frozenset({"library", "now-playing"}),
 }
 
+# Sections that must be explicitly added by the user (e.g. via 'kamp sync').
+# Attempting to write a key into one of these when the section is absent raises.
+_OPTIONAL_SECTIONS: frozenset[str] = frozenset({"bandcamp"})
+
 
 def config_show(path: Path) -> str:
     """Return a formatted, human-readable representation of the config file.
@@ -324,7 +331,16 @@ def config_set(path: Path, key: str, value: str) -> None:
 
     section, field = key.split(".", 1)
     text = path.read_text()
-    new_text = _replace_in_section(text, section, field, toml_value)
+    try:
+        new_text = _replace_in_section(text, section, field, toml_value)
+    except KeyError as exc:
+        if "not found in config" in str(exc) and section not in _OPTIONAL_SECTIONS:
+            # Section is standard but absent (e.g. existing config predates this
+            # section). Append it so the value is persisted now and replaced on
+            # future writes once the section exists.
+            path.write_text(text + f"\n[{section}]\n{field} = {toml_value}\n")
+            return
+        raise
     path.write_text(new_text)
 
 
@@ -345,7 +361,7 @@ def _replace_in_section(text: str, section: str, field: str, toml_value: str) ->
     if not section_match:
         raise KeyError(
             f"Section [{section}] not found in config. "
-            f"Run 'kamp sync' to add [bandcamp], or check your config file."
+            f"Check your config file, or run 'kamp sync' to add optional sections like [bandcamp]."
         )
 
     # Find where this section ends: the next [header] or EOF

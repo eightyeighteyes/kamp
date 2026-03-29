@@ -229,6 +229,17 @@ class TestConfigSet:
         with pytest.raises(KeyError, match="bandcamp"):
             config_set(path, "bandcamp.username", "foo")
 
+    def test_set_ui_key_on_missing_section_appends_section(
+        self, tmp_path: Path
+    ) -> None:
+        """config_set appends [ui] when absent instead of raising (existing configs)."""
+        path = tmp_path / "config.toml"
+        # Simulate a config file that predates the [ui] section.
+        path.write_text(DEFAULT_CONFIG_CONTENT.split("\n[ui]")[0])
+        config_set(path, "ui.active_view", "now-playing")
+        loaded = Config.load(path)
+        assert loaded.ui.active_view == "now-playing"
+
     def test_round_trip_load_after_set(self, tmp_path: Path) -> None:
         """Config.load() succeeds and reflects the new value after config_set."""
         path = tmp_path / "config.toml"

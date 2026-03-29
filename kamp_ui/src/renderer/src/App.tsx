@@ -3,6 +3,7 @@ import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
 import { AlbumGrid } from './components/AlbumGrid'
+import { NowPlayingView } from './components/NowPlayingView'
 import { SetupScreen } from './components/SetupScreen'
 import { TrackList } from './components/TrackList'
 import { TransportBar } from './components/TransportBar'
@@ -14,6 +15,8 @@ export default function App(): React.JSX.Element {
   const serverStatus = useStore((s) => s.serverStatus)
   const hasAlbums = useStore((s) => s.library.albums.length > 0)
   const selectedAlbum = useStore((s) => s.library.selectedAlbum)
+  const activeView = useStore((s) => s.activeView)
+  const setActiveView = useStore((s) => s.setActiveView)
 
   useEffect(() => {
     loadLibrary()
@@ -69,10 +72,34 @@ export default function App(): React.JSX.Element {
       {serverStatus === 'reconnecting' && (
         <div className="reconnecting-banner">Reconnecting to server…</div>
       )}
+      {!showSetup && (
+        <nav className="view-tabs">
+          <button
+            className={activeView === 'library' ? 'active' : ''}
+            onClick={() => setActiveView('library')}
+          >
+            Library
+          </button>
+          <button
+            className={activeView === 'now-playing' ? 'active' : ''}
+            onClick={() => setActiveView('now-playing')}
+          >
+            Now Playing
+          </button>
+        </nav>
+      )}
       <div className="app-body">
-        {!showSetup && <ArtistPanel />}
+        {!showSetup && activeView === 'library' && <ArtistPanel />}
         <main className="main-content">
-          {showSetup ? <SetupScreen /> : selectedAlbum ? <TrackList /> : <AlbumGrid />}
+          {showSetup ? (
+            <SetupScreen />
+          ) : activeView === 'now-playing' ? (
+            <NowPlayingView />
+          ) : selectedAlbum ? (
+            <TrackList />
+          ) : (
+            <AlbumGrid />
+          )}
         </main>
       </div>
       <TransportBar />

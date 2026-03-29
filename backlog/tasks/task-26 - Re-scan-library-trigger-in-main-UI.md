@@ -1,10 +1,10 @@
 ---
 id: TASK-26
 title: Re-scan library trigger in main UI
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-29 14:09'
-updated_date: '2026-03-29 14:10'
+updated_date: '2026-03-29 16:27'
 labels:
   - feature
   - ui

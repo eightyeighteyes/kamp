@@ -1,10 +1,10 @@
 ---
 id: TASK-24
 title: 'refine: Library picker needs styling'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-29 13:58'
-updated_date: '2026-03-29 14:10'
+updated_date: '2026-03-29 16:27'
 labels:
   - polish
   - ui

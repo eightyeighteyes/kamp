@@ -89,8 +89,7 @@ export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
 
 export type ScanProgress = { active: boolean; current: number; total: number }
 
-export const getScanProgress = (): Promise<ScanProgress> =>
-  get('/api/v1/library/scan/progress')
+export const getScanProgress = (): Promise<ScanProgress> => get('/api/v1/library/scan/progress')
 
 // ---------------------------------------------------------------------------
 // Player

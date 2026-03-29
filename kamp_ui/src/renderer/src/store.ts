@@ -119,10 +119,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const { selectedAlbum } = get().library
     if (!selectedAlbum) return
     try {
-      const tracks = await api.getTracksForAlbum(
-        selectedAlbum.album_artist,
-        selectedAlbum.album
-      )
+      const tracks = await api.getTracksForAlbum(selectedAlbum.album_artist, selectedAlbum.album)
       set((s) => ({
         library: {
           ...s.library,

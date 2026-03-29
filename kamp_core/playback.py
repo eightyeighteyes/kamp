@@ -140,6 +140,7 @@ class MpvPlaybackEngine:
     def __init__(self, mpv_bin: str = "mpv") -> None:
         self.state = PlaybackState()
         self.on_track_end: Callable[[], None] | None = None
+        self.on_file_loaded: Callable[[], None] | None = None
         self._mpv_bin = mpv_bin
         self._proc: subprocess.Popen[bytes] | None = None
         self._sock: socket.socket | None = None
@@ -206,12 +207,18 @@ class MpvPlaybackEngine:
         Used on daemon startup to restore the previous session state without
         auto-resuming — the user must press play explicitly.
 
-        The start position is passed as a loadfile option rather than a
-        subsequent seek command, because mpv silently drops seek commands that
-        arrive before the demuxer is ready.
+        The seek is deferred to the ``file-loaded`` event callback so it only
+        runs after the demuxer is ready — seek commands sent before that point
+        are silently dropped by mpv.
         """
-        options = f"start={position}" if position > 0 else ""
-        self._send_command("loadfile", str(path), "replace", options)
+        if position > 0:
+            # One-shot: seek to position when mpv confirms the file is ready.
+            def _seek_then_clear() -> None:
+                self.seek(position)
+                self.on_file_loaded = None
+
+            self.on_file_loaded = _seek_then_clear
+        self._send_command("loadfile", str(path), "replace")
         self._send_command("set_property", "pause", True)
 
     def pause(self) -> None:
@@ -299,6 +306,10 @@ class MpvPlaybackEngine:
                 self.state.duration = float(data)
             elif prop == "pause" and isinstance(data, bool):
                 self.state.playing = not data
+
+        elif name == "file-loaded":
+            if self.on_file_loaded is not None:
+                self.on_file_loaded()
 
         elif name == "end-file":
             # Only fire on natural end-of-file, not user-initiated stops.

@@ -205,11 +205,14 @@ class MpvPlaybackEngine:
 
         Used on daemon startup to restore the previous session state without
         auto-resuming — the user must press play explicitly.
+
+        The start position is passed as a loadfile option rather than a
+        subsequent seek command, because mpv silently drops seek commands that
+        arrive before the demuxer is ready.
         """
-        self._send_command("loadfile", str(path), "replace")
+        options = f"start={position}" if position > 0 else ""
+        self._send_command("loadfile", str(path), "replace", options)
         self._send_command("set_property", "pause", True)
-        if position > 0:
-            self._send_command("seek", position, "absolute")
 
     def pause(self) -> None:
         self._send_command("set_property", "pause", True)

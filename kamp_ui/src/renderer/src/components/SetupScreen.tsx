@@ -20,7 +20,10 @@ export function SetupScreen(): React.JSX.Element {
       await setLibraryPath(dir)
     } catch {
       setPickError('Could not set library path. Check the server logs.')
+      return
     }
+    // Auto-trigger scan immediately after path is confirmed — scan manages its own error state.
+    scanLibrary()
   }
 
   return (
@@ -43,11 +46,6 @@ export function SetupScreen(): React.JSX.Element {
             </button>
           )}
           {pickError && <div className="setup-error">{pickError}</div>}
-          {configuredLibraryPath && (
-            <button className="setup-scan-btn" onClick={scanLibrary}>
-              Scan Library
-            </button>
-          )}
         </>
       )}
 

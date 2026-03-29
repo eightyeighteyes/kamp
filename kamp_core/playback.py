@@ -210,7 +210,11 @@ class MpvPlaybackEngine:
         self._send_command("seek", position, "absolute")
 
     def stop(self) -> None:
-        self._send_command("stop")
+        # Pause and seek to the beginning rather than unloading the file.
+        # mpv's "stop" command unloads the file, making resume() a no-op.
+        # Pausing + seeking keeps the track loaded so play() via resume() works.
+        self._send_command("set_property", "pause", True)
+        self._send_command("seek", 0, "absolute")
 
     @property
     def volume(self) -> int:

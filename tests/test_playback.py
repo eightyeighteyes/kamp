@@ -209,10 +209,11 @@ class TestMpvPlaybackEngine:
         engine.volume = 75
         send.assert_called_once_with("set_property", "volume", 75)
 
-    def test_stop_sends_stop_command(self) -> None:
+    def test_stop_pauses_and_seeks_to_start(self) -> None:
         engine, send = _make_engine()
         engine.stop()
-        send.assert_called_once_with("stop")
+        send.assert_any_call("set_property", "pause", True)
+        send.assert_any_call("seek", 0, "absolute")
 
     def test_on_track_end_callback_is_called(self) -> None:
         engine, _ = _make_engine()

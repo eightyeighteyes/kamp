@@ -90,7 +90,7 @@ class TestNotifySentinel:
         self, subtitle: str = "Tagging failed", message: str = "album"
     ) -> str:
         payload = json.dumps(
-            {"title": "Tune-Shifter", "subtitle": subtitle, "message": message}
+            {"title": "Kamp", "subtitle": subtitle, "message": message}
         )
         return f"{_NOTIFY_SENTINEL}{payload}"
 
@@ -102,7 +102,7 @@ class TestNotifySentinel:
             on_directory=None,
             notification_callback=lambda t, s, m: received.append((t, s, m)),
         )
-        assert received == [("Tune-Shifter", "Tagging failed", "my-album")]
+        assert received == [("Kamp", "Tagging failed", "my-album")]
 
     def test_notify_sentinel_not_forwarded_to_stage_callback(self) -> None:
         stage_received: list[str] = []
@@ -361,7 +361,7 @@ class TestSyncerErrorCallback:
                 syncer._run()
 
         assert len(received) == 1
-        assert received[0][0] == "Tune-Shifter"
+        assert received[0][0] == "Kamp"
         assert received[0][1] == "Bandcamp sync failed"
 
     def test_error_callback_not_required(self, tmp_path: Path) -> None:

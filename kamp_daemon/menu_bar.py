@@ -126,7 +126,7 @@ class MenuBarApp(rumps.App):
             self._format_menu,
             self._interval_menu,
             None,  # separator
-            rumps.MenuItem("About Tune-Shifter", callback=self._on_about),
+            rumps.MenuItem("About Kamp", callback=self._on_about),
             rumps.MenuItem("Quit", callback=self._on_quit),
         ]
 

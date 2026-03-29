@@ -330,7 +330,7 @@ class Syncer:
                 logger.exception("Unhandled error during Bandcamp sync")
                 if self.error_callback is not None:
                     self.error_callback(
-                        "Tune-Shifter",
+                        "Kamp",
                         "Bandcamp sync failed",
                         str(exc)[:120],
                     )

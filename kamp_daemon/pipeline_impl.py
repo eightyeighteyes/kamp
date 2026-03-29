@@ -46,9 +46,7 @@ def _notify(
     """
     if notify_callback is None:
         return
-    payload = json.dumps(
-        {"title": "Tune-Shifter", "subtitle": subtitle, "message": message}
-    )
+    payload = json.dumps({"title": "Kamp", "subtitle": subtitle, "message": message})
     notify_callback(f"{_NOTIFY_SENTINEL}{payload}")
 
 

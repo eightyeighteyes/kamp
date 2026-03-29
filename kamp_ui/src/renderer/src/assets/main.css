@@ -198,6 +198,36 @@ body,
   line-height: 1.6;
 }
 
+.setup-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  max-width: 380px;
+}
+
+.setup-change-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.setup-change-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 /* App body ----------------------------------------------------------------- */
 
 .app-body {
@@ -260,6 +290,60 @@ body,
 .artist-list li.active {
   background: var(--accent-dim);
   color: var(--accent);
+}
+
+.panel-library-footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.panel-library-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-library-change-btn,
+.panel-rescan-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.panel-library-change-btn:hover,
+.panel-rescan-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.panel-rescan-scanning {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.panel-rescan-progress {
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.panel-rescan-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 1px;
+  transition: width 0.3s ease;
 }
 
 /* Album grid --------------------------------------------------------------- */

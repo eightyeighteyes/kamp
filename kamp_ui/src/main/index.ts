@@ -42,8 +42,10 @@ async function startServer(): Promise<void> {
     return
   }
 
+  // detached: true puts the server in its own process group so that
+  // stopServer() can kill the group (server + uvicorn + mpv) all at once.
   serverProcess = spawn(binary, ['server'], {
-    detached: false,
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -56,8 +58,13 @@ async function startServer(): Promise<void> {
 }
 
 function stopServer(): void {
-  if (serverProcess) {
-    serverProcess.kill('SIGKILL')
+  if (serverProcess?.pid) {
+    try {
+      // Negative PID kills the entire process group (server + all children).
+      process.kill(-serverProcess.pid, 'SIGKILL')
+    } catch {
+      // Process may have already exited.
+    }
     serverProcess = null
   }
 }

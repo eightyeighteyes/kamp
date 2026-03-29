@@ -18,17 +18,28 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     loadLibrary()
 
-    // Connect WebSocket state stream. Re-establishes automatically when the
-    // server restarts. Each reconnect also reloads the library in case albums
-    // were added while the server was down.
+    // Connect WebSocket state stream. On close, retry with exponential backoff
+    // (1 s, 2 s, 4 s … capped at 30 s). After 8 failed attempts we give up and
+    // show the offline screen. Attempts reset to 0 on every successful open so
+    // that a sleep/wake cycle always gets a fresh run of retries.
+    let attempts = 0
+    const MAX_ATTEMPTS = 8
+
     const connect = (): (() => void) => {
       return connectStateStream(
         applyServerState,
         () => {
-          setServerStatus('disconnected')
-          setTimeout(connect, 2000)
+          attempts++
+          if (attempts >= MAX_ATTEMPTS) {
+            setServerStatus('disconnected')
+          } else {
+            setServerStatus('reconnecting')
+            const delay = Math.min(1000 * 2 ** (attempts - 1), 30000)
+            setTimeout(connect, delay)
+          }
         },
         () => {
+          attempts = 0
           setServerStatus('connected')
           loadLibrary()
         }
@@ -39,7 +50,7 @@ export default function App(): React.JSX.Element {
     return disconnect
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (serverStatus === 'disconnected' && !hasAlbums) {
+  if (serverStatus === 'disconnected') {
     return (
       <div className="server-offline">
         <div className="server-offline-icon">⏻</div>
@@ -55,7 +66,7 @@ export default function App(): React.JSX.Element {
 
   return (
     <div className="app">
-      {serverStatus === 'disconnected' && (
+      {serverStatus === 'reconnecting' && (
         <div className="reconnecting-banner">Reconnecting to server…</div>
       )}
       <div className="app-body">

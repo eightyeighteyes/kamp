@@ -22,7 +22,7 @@ type LibraryState = {
 type PlayerStore = {
   player: PlayerState
   library: LibraryState
-  serverStatus: 'connected' | 'disconnected'
+  serverStatus: 'connected' | 'reconnecting' | 'disconnected'
   scanStatus: 'idle' | 'scanning' | 'done' | 'error'
   lastScanResult: ScanResult | null
   scanError: string | null
@@ -31,7 +31,7 @@ type PlayerStore = {
   configuredLibraryPath: string | null
 
   // Actions
-  setServerStatus: (status: 'connected' | 'disconnected') => void
+  setServerStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void
   loadLibrary: () => Promise<void>
   selectArtist: (artist: string | null) => void
   selectAlbum: (album: Album | null) => Promise<void>
@@ -69,7 +69,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     tracks: [],
     tracksAlbumKey: null
   },
-  serverStatus: 'disconnected',
+  serverStatus: 'reconnecting',
   scanStatus: 'idle',
   lastScanResult: null,
   scanError: null,

@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS tracks (
     mb_release_id    TEXT    NOT NULL DEFAULT '',
     mb_recording_id  TEXT    NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS player_state (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),  -- single-row table
+    track_path TEXT    NOT NULL,
+    position   REAL    NOT NULL DEFAULT 0
+);
 """
 
 
@@ -216,6 +222,38 @@ class LibraryIndex:
         """Return the set of all file paths currently in the index."""
         rows = self._conn.execute("SELECT file_path FROM tracks").fetchall()
         return {Path(r["file_path"]) for r in rows}
+
+    def get_track_by_path(self, path: Path) -> "Track | None":
+        """Return the track for *path*, or None if not indexed."""
+        row = self._conn.execute(
+            "SELECT * FROM tracks WHERE file_path = ?", (str(path),)
+        ).fetchone()
+        return _row_to_track(row) if row else None
+
+    def save_player_state(self, track_path: Path, position: float) -> None:
+        """Persist the current track path and playback position."""
+        self._conn.execute(
+            """
+            INSERT INTO player_state (id, track_path, position) VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                track_path = excluded.track_path,
+                position   = excluded.position
+            """,
+            (str(track_path), position),
+        )
+        self._conn.commit()
+
+    def clear_player_state(self) -> None:
+        """Remove the persisted player state (e.g. after the queue is exhausted)."""
+        self._conn.execute("DELETE FROM player_state WHERE id = 1")
+        self._conn.commit()
+
+    def load_player_state(self) -> "tuple[Path, float] | None":
+        """Return (track_path, position) from the last session, or None."""
+        row = self._conn.execute(
+            "SELECT track_path, position FROM player_state WHERE id = 1"
+        ).fetchone()
+        return (Path(row["track_path"]), row["position"]) if row else None
 
     def close(self) -> None:
         with self._all_conns_lock:

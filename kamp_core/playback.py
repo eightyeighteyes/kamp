@@ -140,6 +140,7 @@ class MpvPlaybackEngine:
     def __init__(self, mpv_bin: str = "mpv") -> None:
         self.state = PlaybackState()
         self.on_track_end: Callable[[], None] | None = None
+        self.on_file_loaded: Callable[[], None] | None = None
         self._mpv_bin = mpv_bin
         self._proc: subprocess.Popen[bytes] | None = None
         self._sock: socket.socket | None = None
@@ -199,6 +200,26 @@ class MpvPlaybackEngine:
         self._send_command("loadfile", str(path), "replace")
         # Explicitly unpause so calling play() after pause() always starts playback.
         self._send_command("set_property", "pause", False)
+
+    def load_paused(self, path: Path, position: float = 0.0) -> None:
+        """Load *path* into mpv, paused at *position*, without starting playback.
+
+        Used on daemon startup to restore the previous session state without
+        auto-resuming — the user must press play explicitly.
+
+        The seek is deferred to the ``file-loaded`` event callback so it only
+        runs after the demuxer is ready — seek commands sent before that point
+        are silently dropped by mpv.
+        """
+        if position > 0:
+            # One-shot: seek to position when mpv confirms the file is ready.
+            def _seek_then_clear() -> None:
+                self.seek(position)
+                self.on_file_loaded = None
+
+            self.on_file_loaded = _seek_then_clear
+        self._send_command("loadfile", str(path), "replace")
+        self._send_command("set_property", "pause", True)
 
     def pause(self) -> None:
         self._send_command("set_property", "pause", True)
@@ -285,6 +306,10 @@ class MpvPlaybackEngine:
                 self.state.duration = float(data)
             elif prop == "pause" and isinstance(data, bool):
                 self.state.playing = not data
+
+        elif name == "file-loaded":
+            if self.on_file_loaded is not None:
+                self.on_file_loaded()
 
         elif name == "end-file":
             # Only fire on natural end-of-file, not user-initiated stops.

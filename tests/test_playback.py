@@ -215,6 +215,39 @@ class TestMpvPlaybackEngine:
         send.assert_any_call("set_property", "pause", True)
         send.assert_any_call("seek", 0, "absolute")
 
+    def test_load_paused_loads_and_pauses(self) -> None:
+        engine, send = _make_engine()
+        engine.load_paused(Path("/music/track.mp3"))
+        send.assert_any_call("loadfile", "/music/track.mp3", "replace")
+        send.assert_any_call("set_property", "pause", True)
+
+    def test_load_paused_registers_file_loaded_callback_when_position_nonzero(
+        self,
+    ) -> None:
+        engine, _ = _make_engine()
+        engine.load_paused(Path("/music/track.mp3"), 42.5)
+        assert engine.on_file_loaded is not None
+
+    def test_load_paused_no_callback_when_position_is_zero(self) -> None:
+        engine, _ = _make_engine()
+        engine.load_paused(Path("/music/track.mp3"), 0.0)
+        assert engine.on_file_loaded is None
+
+    def test_load_paused_callback_seeks_and_clears_itself(self) -> None:
+        engine, send = _make_engine()
+        engine.load_paused(Path("/music/track.mp3"), 42.5)
+        assert engine.on_file_loaded is not None
+        engine.on_file_loaded()  # simulate file-loaded event
+        send.assert_any_call("seek", 42.5, "absolute")
+        assert engine.on_file_loaded is None  # one-shot: cleared after firing
+
+    def test_file_loaded_event_triggers_on_file_loaded_callback(self) -> None:
+        engine, _ = _make_engine()
+        callback = MagicMock()
+        engine.on_file_loaded = callback
+        engine._handle_event({"event": "file-loaded"})
+        callback.assert_called_once()
+
     def test_on_track_end_callback_is_called(self) -> None:
         engine, _ = _make_engine()
         callback = MagicMock()

@@ -482,6 +482,16 @@ def _cmd_server(
     engine = MpvPlaybackEngine()
     queue: PlaybackQueue = PlaybackQueue()
 
+    # Restore the last session's track and position, paused, so the user can
+    # resume with a single press of play rather than hunting for the album again.
+    saved = index.load_player_state()
+    if saved:
+        saved_path, saved_pos = saved
+        track = index.get_track_by_path(saved_path)
+        if track:
+            queue.load([track], 0)
+            engine.load_paused(track.file_path, saved_pos)
+
     # Advance the queue automatically at end-of-track; stop cleanly at the end.
     def _on_track_end() -> None:
         track = queue.next()
@@ -489,8 +499,25 @@ def _cmd_server(
             engine.play(track.file_path)
         else:
             engine.stop()
+            # Queue exhausted — clear saved state so restart starts fresh
+            # rather than restoring the last track a few seconds from the end.
+            index.clear_player_state()
 
     engine.on_track_end = _on_track_end
+
+    # Persist current track and position every 5 s so restarts can resume.
+    def _state_saver() -> None:
+        import time
+
+        while True:
+            time.sleep(5)
+            current = queue.current()
+            if current:
+                index.save_player_state(current.file_path, engine.state.position)
+
+    import threading
+
+    threading.Thread(target=_state_saver, daemon=True, name="state-saver").start()
 
     # Persist library path changes back to config.toml so the next server start
     # picks up the user's choice without requiring a manual config edit.

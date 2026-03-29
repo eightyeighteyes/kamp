@@ -1,10 +1,10 @@
 ---
 id: TASK-38
 title: 'bug: play impossible to restart after stop'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-29 17:59'
-updated_date: '2026-03-29 18:00'
+updated_date: '2026-03-29 18:46'
 labels:
   - bug
   - playback

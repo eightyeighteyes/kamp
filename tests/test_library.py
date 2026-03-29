@@ -293,6 +293,64 @@ class TestLibraryIndex:
 
         assert albums[0].has_art is True
 
+    def test_get_track_by_path_returns_track(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _sample_track(tmp_path / "01.mp3")
+        index.upsert_track(track)
+        result = index.get_track_by_path(tmp_path / "01.mp3")
+        index.close()
+
+        assert result is not None
+        assert result.title == "A Song"
+
+    def test_get_track_by_path_returns_none_for_missing_path(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = index.get_track_by_path(tmp_path / "missing.mp3")
+        index.close()
+
+        assert result is None
+
+    def test_save_and_load_player_state(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.save_player_state(tmp_path / "track.mp3", 42.5)
+        result = index.load_player_state()
+        index.close()
+
+        assert result is not None
+        path, position = result
+        assert path == tmp_path / "track.mp3"
+        assert position == 42.5
+
+    def test_load_player_state_returns_none_when_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = index.load_player_state()
+        index.close()
+
+        assert result is None
+
+    def test_clear_player_state_removes_saved_state(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.save_player_state(tmp_path / "track.mp3", 42.5)
+        index.clear_player_state()
+        result = index.load_player_state()
+        index.close()
+
+        assert result is None
+
+    def test_save_player_state_overwrites_previous(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.save_player_state(tmp_path / "first.mp3", 10.0)
+        index.save_player_state(tmp_path / "second.mp3", 99.0)
+        result = index.load_player_state()
+        index.close()
+
+        assert result is not None
+        path, position = result
+        assert path == tmp_path / "second.mp3"
+        assert position == 99.0
+
 
 # ---------------------------------------------------------------------------
 # extract_art

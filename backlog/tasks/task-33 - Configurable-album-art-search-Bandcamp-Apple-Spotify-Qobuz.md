@@ -1,12 +1,15 @@
 ---
-id: DRAFT-4
+id: TASK-33
 title: 'Configurable album art search (Bandcamp, Apple, Spotify, Qobuz)'
 status: Draft
 assignee: []
 created_date: '2026-03-29 02:58'
+updated_date: '2026-03-29 17:49'
 labels:
   - feature
   - artwork
+  - 'estimate: 2xlp'
+milestone: m-7
 dependencies: []
 ---
 

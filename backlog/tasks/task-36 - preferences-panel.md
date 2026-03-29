@@ -1,5 +1,5 @@
 ---
-id: DRAFT-8
+id: TASK-36
 title: preferences panel
 status: Draft
 assignee: []

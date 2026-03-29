@@ -1,10 +1,10 @@
 ---
 id: TASK-7
 title: 'Now Playing view (artwork-centered, view switching)'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-29 03:11'
-updated_date: '2026-03-29 03:14'
+updated_date: '2026-03-29 16:28'
 labels:
   - feature
   - ui

@@ -1,10 +1,10 @@
 ---
 id: TASK-1
 title: 'bug: kamp UI can''t find server after computer sleeps'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-29 02:44'
-updated_date: '2026-03-29 14:03'
+updated_date: '2026-03-29 15:51'
 labels:
   - bug
   - ui

@@ -1,10 +1,10 @@
 ---
 id: TASK-4
 title: 'bug: macOS menu bar reads \"About Tune-Shifter\" instead of \"About Kamp\"'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-29 02:57'
-updated_date: '2026-03-29 03:14'
+updated_date: '2026-03-29 16:14'
 labels:
   - bug
   - macos

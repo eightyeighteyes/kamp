@@ -29,9 +29,12 @@ type PlayerStore = {
   scanProgress: ScanProgress | null
 
   configuredLibraryPath: string | null
+  // TODO(TASK-10): move to config.toml via preferences API once DRAFT-8 ships
+  activeView: 'library' | 'now-playing'
 
   // Actions
   setServerStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void
+  setActiveView: (view: 'library' | 'now-playing') => void
   loadLibrary: () => Promise<void>
   selectArtist: (artist: string | null) => void
   selectAlbum: (album: Album | null) => Promise<void>
@@ -75,8 +78,14 @@ export const useStore = create<PlayerStore>((set, get) => ({
   scanError: null,
   scanProgress: null,
   configuredLibraryPath: null,
+  activeView: (localStorage.getItem('kamp.activeView') as 'library' | 'now-playing') ?? 'library',
 
   setServerStatus: (status) => set({ serverStatus: status }),
+
+  setActiveView: (view) => {
+    localStorage.setItem('kamp.activeView', view)
+    set({ activeView: view })
+  },
 
   applyServerState: (state) => set({ player: state }),
 

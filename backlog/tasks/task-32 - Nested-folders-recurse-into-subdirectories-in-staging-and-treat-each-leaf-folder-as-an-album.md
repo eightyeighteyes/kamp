@@ -1,16 +1,17 @@
 ---
-id: DRAFT-3
+id: TASK-32
 title: >-
   Nested folders: recurse into subdirectories in staging and treat each leaf
   folder as an album
 status: Draft
 assignee: []
 created_date: '2026-03-29 02:58'
-updated_date: '2026-03-29 03:00'
+updated_date: '2026-03-29 17:47'
 labels:
   - feature
   - ingest
   - 'estimate: side'
+milestone: m-6
 dependencies: []
 ---
 

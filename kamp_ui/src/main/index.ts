@@ -57,7 +57,7 @@ async function startServer(): Promise<void> {
 
 function stopServer(): void {
   if (serverProcess) {
-    serverProcess.kill()
+    serverProcess.kill('SIGKILL')
     serverProcess = null
   }
 }
@@ -142,7 +142,10 @@ app.on('window-all-closed', () => {
 })
 
 // Kill the server we launched when the app exits.
+// `will-quit` handles graceful quit; `process.on('exit')` is the synchronous
+// fallback that fires even if the event loop is torn down abruptly.
 app.on('will-quit', stopServer)
+process.on('exit', stopServer)
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.

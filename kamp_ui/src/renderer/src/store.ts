@@ -106,6 +106,13 @@ export const useStore = create<PlayerStore>((set, get) => ({
     try {
       const [albums, artists] = await Promise.all([api.getAlbums(), api.getArtists()])
       set((s) => ({ library: { ...s.library, albums, artists }, serverStatus: 'connected' }))
+      // If an album is open, force-refresh its track list so deletions are
+      // reflected immediately (bypass the key guard by clearing it first).
+      const { selectedAlbum } = get().library
+      if (selectedAlbum) {
+        set((s) => ({ library: { ...s.library, tracksAlbumKey: null } }))
+        await get().loadTracks(selectedAlbum.album_artist, selectedAlbum.album)
+      }
     } catch {
       set({ serverStatus: 'disconnected' })
     }

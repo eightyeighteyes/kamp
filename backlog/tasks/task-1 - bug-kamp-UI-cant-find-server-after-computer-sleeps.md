@@ -4,8 +4,11 @@ title: 'bug: kamp UI can''t find server after computer sleeps'
 status: To Do
 assignee: []
 created_date: '2026-03-29 02:44'
-updated_date: '2026-03-29 03:14'
-labels: []
+updated_date: '2026-03-29 14:03'
+labels:
+  - bug
+  - ui
+  - 'estimate: single'
 milestone: m-0
 dependencies: []
 priority: medium
@@ -53,3 +56,11 @@ UI logs show:
 2026-03-28 23:02:05.106 Electron[73970:14927871] representedObject is not a WeakPtrToElectronMenuModelAsNSObject
 ```
 <!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 After sleep/wake, UI automatically reconnects to the server without user intervention
+- [ ] #2 UI shows the existing 'reconnecting' state while attempting to reconnect (not 'server not running')
+- [ ] #3 Reconnection uses exponential backoff to avoid hammering the server
+- [ ] #4 If the server is genuinely offline, the 'server not running' error state is still shown after retries are exhausted
+<!-- AC:END -->

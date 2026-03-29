@@ -1,11 +1,27 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useStore } from '../store'
 
 export function SetupScreen(): React.JSX.Element {
-  const scanLibrary = useStore((s) => s.scanLibrary)
   const scanStatus = useStore((s) => s.scanStatus)
   const lastScanResult = useStore((s) => s.lastScanResult)
   const scanError = useStore((s) => s.scanError)
+  const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
+  const setLibraryPath = useStore((s) => s.setLibraryPath)
+  const scanLibrary = useStore((s) => s.scanLibrary)
+  const scanProgress = useStore((s) => s.scanProgress)
+
+  const [pickError, setPickError] = useState<string | null>(null)
+
+  async function handleChoose(): Promise<void> {
+    setPickError(null)
+    const dir = await window.api.openDirectory()
+    if (dir === null) return // user cancelled
+    try {
+      await setLibraryPath(dir)
+    } catch {
+      setPickError('Could not set library path. Check the server logs.')
+    }
+  }
 
   return (
     <div className="setup-screen">
@@ -14,20 +30,47 @@ export function SetupScreen(): React.JSX.Element {
 
       {scanStatus === 'idle' && (
         <>
-          <div className="setup-hint">
-            Point <code>paths.library</code> at your music folder in{' '}
-            <code>~/.config/kamp/config.toml</code>, then scan to index it.
-          </div>
-          <button className="setup-scan-btn" onClick={scanLibrary}>
-            Scan Library
-          </button>
+          {configuredLibraryPath ? (
+            <div className="setup-path">
+              {configuredLibraryPath}
+              <button className="setup-change-btn" onClick={handleChoose}>
+                Change…
+              </button>
+            </div>
+          ) : (
+            <button className="setup-scan-btn" onClick={handleChoose}>
+              Choose Library Folder
+            </button>
+          )}
+          {pickError && <div className="setup-error">{pickError}</div>}
+          {configuredLibraryPath && (
+            <button className="setup-scan-btn" onClick={scanLibrary}>
+              Scan Library
+            </button>
+          )}
         </>
       )}
 
       {scanStatus === 'scanning' && (
         <div className="setup-scanning">
-          <span className="setup-spinner" />
-          Scanning…
+          {scanProgress && scanProgress.total > 0 ? (
+            <>
+              <div className="setup-progress-bar">
+                <div
+                  className="setup-progress-fill"
+                  style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}
+                />
+              </div>
+              <div className="setup-progress-label">
+                {scanProgress.current} / {scanProgress.total}
+              </div>
+            </>
+          ) : (
+            <>
+              <span className="setup-spinner" />
+              Scanning…
+            </>
+          )}
         </div>
       )}
 

@@ -8,7 +8,7 @@
 
 import { create } from 'zustand'
 import * as api from './api/client'
-import type { Album, PlayerState, ScanResult, Track } from './api/client'
+import type { Album, PlayerState, ScanProgress, ScanResult, Track } from './api/client'
 
 type LibraryState = {
   albums: Album[]
@@ -26,6 +26,9 @@ type PlayerStore = {
   scanStatus: 'idle' | 'scanning' | 'done' | 'error'
   lastScanResult: ScanResult | null
   scanError: string | null
+  scanProgress: ScanProgress | null
+
+  configuredLibraryPath: string | null
 
   // Actions
   setServerStatus: (status: 'connected' | 'disconnected') => void
@@ -44,6 +47,7 @@ type PlayerStore = {
   setShuffle: (shuffle: boolean) => Promise<void>
   setRepeat: (repeat: boolean) => Promise<void>
   scanLibrary: () => Promise<void>
+  setLibraryPath: (path: string) => Promise<void>
   applyServerState: (state: PlayerState) => void
 }
 
@@ -69,6 +73,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
   scanStatus: 'idle',
   lastScanResult: null,
   scanError: null,
+  scanProgress: null,
+  configuredLibraryPath: null,
 
   setServerStatus: (status) => set({ serverStatus: status }),
 
@@ -144,18 +150,36 @@ export const useStore = create<PlayerStore>((set, get) => ({
     await api.setRepeat(repeat)
   },
 
+  setLibraryPath: async (path) => {
+    await api.setLibraryPath(path)
+    set({ configuredLibraryPath: path })
+  },
+
   scanLibrary: async () => {
-    set({ scanStatus: 'scanning', scanError: null })
+    set({ scanStatus: 'scanning', scanError: null, scanProgress: null })
+
+    // Poll the server for progress at ~2 Hz while the scan runs.
+    const pollInterval = setInterval(async () => {
+      try {
+        const progress = await api.getScanProgress()
+        set({ scanProgress: progress })
+      } catch {
+        // Ignore transient poll errors — the scan result is what matters.
+      }
+    }, 500)
+
     try {
       const result = await api.scanLibrary()
-      set({ scanStatus: 'done', lastScanResult: result })
+      set({ scanStatus: 'done', lastScanResult: result, scanProgress: null })
       await get().loadLibrary()
     } catch (err) {
       const msg =
         err instanceof Error && err.message.includes('503')
-          ? 'Library path not configured. Set paths.library in your config.toml and restart the server.'
+          ? 'Library path not configured. Use the "Choose Library Folder" button.'
           : 'Scan failed. Check the server logs for details.'
-      set({ scanStatus: 'error', scanError: msg })
+      set({ scanStatus: 'error', scanError: msg, scanProgress: null })
+    } finally {
+      clearInterval(pollInterval)
     }
   }
 }))

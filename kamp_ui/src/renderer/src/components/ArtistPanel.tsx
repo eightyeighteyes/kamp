@@ -5,6 +5,14 @@ export function ArtistPanel(): React.JSX.Element {
   const artists = useStore((s) => s.library.artists)
   const selected = useStore((s) => s.library.selectedArtist)
   const selectArtist = useStore((s) => s.selectArtist)
+  const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
+  const setLibraryPath = useStore((s) => s.setLibraryPath)
+
+  async function handleChangeLibrary(): Promise<void> {
+    const dir = await window.api.openDirectory()
+    if (dir === null) return
+    await setLibraryPath(dir)
+  }
 
   return (
     <aside className="artist-panel">
@@ -30,6 +38,14 @@ export function ArtistPanel(): React.JSX.Element {
           </li>
         ))}
       </ul>
+      <div className="panel-library-footer">
+        <span className="panel-library-path" title={configuredLibraryPath ?? undefined}>
+          {configuredLibraryPath ?? '—'}
+        </span>
+        <button className="panel-library-change-btn" onClick={handleChangeLibrary}>
+          Change Library…
+        </button>
+      </div>
     </aside>
   )
 }

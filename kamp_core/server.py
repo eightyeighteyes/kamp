@@ -12,6 +12,7 @@ WebSocket:  /api/v1/ws   — client sends "ping", server replies with a
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,10 @@ class ScanResult(BaseModel):
     unchanged: int
 
 
+class LibraryPathRequest(BaseModel):
+    path: str
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -114,6 +119,7 @@ def create_app(
     engine: MpvPlaybackEngine,
     queue: PlaybackQueue,
     library_path: Path | None = None,
+    on_library_path_set: Callable[[Path], None] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -121,6 +127,14 @@ def create_app(
     makes the app easy to test: pass mock objects, use TestClient, done.
     """
     app = FastAPI(title="Kamp", version="1")
+
+    # Mutable containers for runtime-updatable state.
+    # library_path can be changed via POST /api/v1/config/library-path.
+    # scan_progress is written by the scan thread and read by GET /api/v1/library/scan/progress.
+    _state: dict[str, Any] = {
+        "library_path": library_path,
+        "scan_progress": {"active": False, "current": 0, "total": 0},
+    }
 
     # Allow requests from the Electron renderer (Vite dev server and file://).
     # This server only binds to 127.0.0.1, so wildcard origins are safe.
@@ -183,12 +197,37 @@ def create_app(
 
     @app.post("/api/v1/library/scan", response_model=ScanResult)
     def scan_library() -> ScanResult:
-        if library_path is None:
+        if _state["library_path"] is None:
             raise HTTPException(status_code=503, detail="Library path not configured")
-        result = LibraryScanner(index).scan(library_path)
+
+        def _on_progress(current: int, total: int) -> None:
+            _state["scan_progress"] = {"active": True, "current": current, "total": total}
+
+        _state["scan_progress"] = {"active": True, "current": 0, "total": 0}
+        try:
+            result = LibraryScanner(index).scan(_state["library_path"], on_progress=_on_progress)
+        finally:
+            _state["scan_progress"] = {"active": False, "current": 0, "total": 0}
+
         return ScanResult(
             added=result.added, removed=result.removed, unchanged=result.unchanged
         )
+
+    @app.get("/api/v1/library/scan/progress")
+    def get_scan_progress() -> dict[str, Any]:
+        return _state["scan_progress"]
+
+    @app.post("/api/v1/config/library-path")
+    def set_library_path(req: LibraryPathRequest) -> dict[str, Any]:
+        candidate = Path(req.path).expanduser().resolve()
+        if not candidate.exists():
+            raise HTTPException(status_code=422, detail="Path does not exist")
+        if not candidate.is_dir():
+            raise HTTPException(status_code=422, detail="Path is not a directory")
+        _state["library_path"] = candidate
+        if on_library_path_set is not None:
+            on_library_path_set(candidate)
+        return {"ok": True}
 
     # -----------------------------------------------------------------------
     # Player

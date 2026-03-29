@@ -84,6 +84,14 @@ export const getTracksForAlbum = (albumArtist: string, album: string): Promise<T
 
 export const scanLibrary = (): Promise<ScanResult> => post('/api/v1/library/scan')
 
+export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
+  post('/api/v1/config/library-path', { path })
+
+export type ScanProgress = { active: boolean; current: number; total: number }
+
+export const getScanProgress = (): Promise<ScanProgress> =>
+  get('/api/v1/library/scan/progress')
+
 // ---------------------------------------------------------------------------
 // Player
 // ---------------------------------------------------------------------------

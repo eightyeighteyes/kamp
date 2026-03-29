@@ -165,6 +165,26 @@ body,
   animation: spin 0.8s linear infinite;
 }
 
+.setup-progress-bar {
+  width: 260px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.setup-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.setup-progress-label {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
 .setup-result {
   font-size: 14px;
   color: var(--accent);

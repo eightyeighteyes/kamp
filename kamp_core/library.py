@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -446,12 +447,19 @@ class LibraryScanner:
     def __init__(self, index: LibraryIndex) -> None:
         self._index = index
 
-    def scan(self, library_path: Path) -> ScanResult:
+    def scan(
+        self,
+        library_path: Path,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> ScanResult:
         """Scan *library_path* recursively and update the index.
 
         Files already in the index are left untouched (unchanged).
         New files are read and added. Index entries whose files no longer
         exist on disk are removed.
+
+        *on_progress*, if provided, is called after each new file's tags are
+        read with (current, total) where total = number of new files to index.
         """
         if not library_path.exists():
             return ScanResult(added=0, removed=0, unchanged=0)
@@ -464,13 +472,17 @@ class LibraryScanner:
         in_index = self._index.indexed_paths()
 
         # Read tags for all new files, then commit in one transaction.
+        to_add = on_disk - in_index
+        total = len(to_add)
         new_tracks: list[Track] = []
-        for path in on_disk - in_index:
+        for current, path in enumerate(to_add, start=1):
             track = _read_tags(path)
             if track is not None:
                 new_tracks.append(track)
             else:
                 logger.warning("Skipped unreadable file: %s", path)
+            if on_progress is not None:
+                on_progress(current, total)
         self._index.upsert_many(new_tracks)
         added = len(new_tracks)
 

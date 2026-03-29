@@ -248,6 +248,60 @@ class TestLibraryScanEndpoint:
         assert response.status_code == 503
 
 
+class TestScanProgressEndpoint:
+    def test_progress_idle_by_default(self, client: TestClient) -> None:
+        res = client.get("/api/v1/library/scan/progress")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["active"] is False
+        assert data["current"] == 0
+        assert data["total"] == 0
+
+    def test_progress_callback_updates_state(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        # Capture the on_progress callback that scan_library passes to LibraryScanner.
+        captured: list[MagicMock] = []
+
+        def _fake_scan(path: object, on_progress: object = None) -> MagicMock:
+            captured.append(on_progress)  # type: ignore[arg-type]
+            return MagicMock(added=2, removed=0, unchanged=0)
+
+        with patch("kamp_core.server.LibraryScanner") as MockScanner:
+            MockScanner.return_value.scan.side_effect = _fake_scan
+            app = create_app(
+                index=mock_index,
+                engine=mock_engine,
+                queue=mock_queue,
+                library_path=Path("/music"),
+            )
+            c = TestClient(app)
+            c.post("/api/v1/library/scan")
+
+        # The callback was passed into scan().
+        assert len(captured) == 1
+        assert callable(captured[0])
+
+    def test_progress_resets_to_idle_after_scan(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        with patch("kamp_core.server.LibraryScanner") as MockScanner:
+            MockScanner.return_value.scan.return_value = MagicMock(
+                added=1, removed=0, unchanged=0
+            )
+            app = create_app(
+                index=mock_index,
+                engine=mock_engine,
+                queue=mock_queue,
+                library_path=Path("/music"),
+            )
+            c = TestClient(app)
+            c.post("/api/v1/library/scan")
+            data = c.get("/api/v1/library/scan/progress").json()
+
+        assert data["active"] is False
+
+
 # ---------------------------------------------------------------------------
 # Player endpoints
 # ---------------------------------------------------------------------------
@@ -413,3 +467,126 @@ class TestPlayerWebSocket:
             msg = ws.receive_json()
         assert msg["playing"] is True
         assert msg["position"] == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# Config: set library path
+# ---------------------------------------------------------------------------
+
+
+class TestSetLibraryPathEndpoint:
+    def _make_client(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        *,
+        on_library_path_set: object = None,
+    ) -> TestClient:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_library_path_set=on_library_path_set,
+        )
+        return TestClient(app)
+
+    def test_valid_directory_returns_ok(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        c = self._make_client(mock_index, mock_engine, mock_queue)
+        res = c.post("/api/v1/config/library-path", json={"path": str(tmp_path)})
+        assert res.status_code == 200
+        assert res.json() == {"ok": True}
+
+    def test_valid_path_unblocks_scan(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        # Start with no library_path — scan should return 503.
+        c = self._make_client(mock_index, mock_engine, mock_queue)
+        assert c.post("/api/v1/library/scan").status_code == 503
+
+        # Set a valid path — scan should now succeed.
+        c.post("/api/v1/config/library-path", json={"path": str(tmp_path)})
+        with patch("kamp_core.server.LibraryScanner") as MockScanner:
+            MockScanner.return_value.scan.return_value = MagicMock(
+                added=0, removed=0, unchanged=0
+            )
+            res = c.post("/api/v1/library/scan")
+        assert res.status_code == 200
+
+    def test_nonexistent_path_returns_422(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        c = self._make_client(mock_index, mock_engine, mock_queue)
+        res = c.post(
+            "/api/v1/config/library-path",
+            json={"path": "/this/does/not/exist/at/all"},
+        )
+        assert res.status_code == 422
+
+    def test_file_path_returns_422(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        f = tmp_path / "notadir.txt"
+        f.touch()
+        c = self._make_client(mock_index, mock_engine, mock_queue)
+        res = c.post("/api/v1/config/library-path", json={"path": str(f)})
+        assert res.status_code == 422
+
+    def test_callback_invoked_on_success(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        callback = MagicMock()
+        c = self._make_client(
+            mock_index, mock_engine, mock_queue, on_library_path_set=callback
+        )
+        c.post("/api/v1/config/library-path", json={"path": str(tmp_path)})
+        callback.assert_called_once_with(tmp_path.resolve())
+
+    def test_callback_not_invoked_on_invalid_path(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        callback = MagicMock()
+        c = self._make_client(
+            mock_index, mock_engine, mock_queue, on_library_path_set=callback
+        )
+        c.post(
+            "/api/v1/config/library-path",
+            json={"path": "/this/does/not/exist/at/all"},
+        )
+        callback.assert_not_called()
+
+    def test_no_callback_is_fine(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        # on_library_path_set=None (the default) — should not raise
+        c = self._make_client(mock_index, mock_engine, mock_queue)
+        res = c.post("/api/v1/config/library-path", json={"path": str(tmp_path)})
+        assert res.status_code == 200

@@ -587,6 +587,51 @@ class TestLibraryScanner:
 
         assert result.added == 0
 
+    def test_scan_calls_on_progress_for_each_new_file(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        _make_mp3(lib / "01.mp3")
+        _make_mp3(lib / "02.mp3")
+        _make_mp3(lib / "03.mp3")
+
+        calls: list[tuple[int, int]] = []
+        index = LibraryIndex(tmp_path / "library.db")
+        LibraryScanner(index).scan(lib, on_progress=lambda c, t: calls.append((c, t)))
+        index.close()
+
+        # One call per new file; total is always 3.
+        assert len(calls) == 3
+        assert all(total == 3 for _, total in calls)
+        assert sorted(current for current, _ in calls) == [1, 2, 3]
+
+    def test_scan_on_progress_not_called_when_no_new_files(
+        self, tmp_path: Path
+    ) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        _make_mp3(lib / "01.mp3")
+
+        index = LibraryIndex(tmp_path / "library.db")
+        # First scan indexes the file.
+        LibraryScanner(index).scan(lib)
+        # Second scan: nothing new — callback must not be called.
+        calls: list[tuple[int, int]] = []
+        LibraryScanner(index).scan(lib, on_progress=lambda c, t: calls.append((c, t)))
+        index.close()
+
+        assert calls == []
+
+    def test_scan_without_on_progress_still_works(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        _make_mp3(lib / "01.mp3")
+
+        index = LibraryIndex(tmp_path / "library.db")
+        result = LibraryScanner(index).scan(lib)  # no on_progress arg
+        index.close()
+
+        assert result.added == 1
+
 
 # ---------------------------------------------------------------------------
 # Tag reader helpers

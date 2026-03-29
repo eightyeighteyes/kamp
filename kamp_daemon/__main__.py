@@ -286,6 +286,7 @@ def main() -> None:
         library_override = getattr(args, "library", None)
         _cmd_server(
             config,
+            config_path=args.config,
             host=args.host,
             port=args.port,
             library_path=library_override,
@@ -462,6 +463,7 @@ def _write_test_mp3(path: Path, *, with_mbid: bool = False) -> None:
 
 def _cmd_server(
     config: Config,
+    config_path: Path,
     host: str = "127.0.0.1",
     port: int = 8000,
     library_path: Path | None = None,
@@ -471,6 +473,7 @@ def _cmd_server(
     from kamp_core.library import LibraryIndex
     from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
     from kamp_core.server import create_app
+    from kamp_daemon.config import config_set as _config_set
 
     lib_path = (library_path or config.paths.library).expanduser().resolve()
     db_path = _state_dir() / "library.db"
@@ -489,7 +492,18 @@ def _cmd_server(
 
     engine.on_track_end = _on_track_end
 
-    app = create_app(index=index, engine=engine, queue=queue, library_path=lib_path)
+    # Persist library path changes back to config.toml so the next server start
+    # picks up the user's choice without requiring a manual config edit.
+    def _on_library_path_set(path: Path) -> None:
+        _config_set(config_path, "paths.library", str(path))
+
+    app = create_app(
+        index=index,
+        engine=engine,
+        queue=queue,
+        library_path=lib_path,
+        on_library_path_set=_on_library_path_set,
+    )
 
     print(f"Kamp API server starting on http://{host}:{port}")
     print(f"  Docs  → http://{host}:{port}/docs")

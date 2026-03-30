@@ -492,48 +492,22 @@ def _cmd_server(
             queue.load([track], 0)
             engine.load_paused(track.file_path, saved_pos)
 
-    # Wire the macOS Now Playing widget and media key handlers.
-    # Falls back to NullMediaController on non-macOS or if the framework fails.
-    try:
-        from kamp_core.media_controller import CoreAudioMediaController
+    # Wire the macOS Now Playing widget.
+    # make_media_controller() returns NullMediaController on non-macOS.
+    # start() is best-effort — a failure here must never crash the server.
+    from kamp_core.media_controller import MediaController, make_media_controller
 
-        def _mc_next() -> None:
-            t = queue.next()
-            if t:
-                engine.play(t.file_path)
-
-        def _mc_prev() -> None:
-            t = queue.prev()
-            if t:
-                engine.play(t.file_path)
-
-        def _mc_play_pause() -> None:
-            if engine.state.playing:
-                engine.pause()
-            else:
-                engine.resume()
-
-        _mc: object = CoreAudioMediaController(
-            on_next=_mc_next, on_prev=_mc_prev, on_play_pause=_mc_play_pause
-        )
-    except ImportError:
-        from kamp_core.media_controller import NullMediaController
-
-        _mc = NullMediaController()
-
+    _mc: MediaController = make_media_controller()
     try:
         _mc.start()
     except Exception as exc:
-        # Now Playing integration is best-effort — don't crash the server.
         import logging as _logging
+        from kamp_core.media_controller import NullMediaController
 
         _logging.getLogger(__name__).warning(
-            "MediaController failed to start (%s); Now Playing integration disabled.",
-            exc,
+            "MediaController failed to start (%s); Now Playing disabled.", exc
         )
-        from kamp_core.media_controller import NullMediaController as _Null
-
-        _mc = _Null()
+        _mc = NullMediaController()
 
     # Advance the queue automatically at end-of-track; stop cleanly at the end.
     def _on_track_end() -> None:

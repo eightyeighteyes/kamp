@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, globalShortcut } from 'electron'
 import { join, resolve } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { spawn, ChildProcess } from 'child_process'
@@ -156,6 +156,27 @@ app.whenReady().then(async () => {
     return result.canceled ? null : result.filePaths[0]
   })
 
+  // Register next/prev media keys. mpv handles play/pause natively; we
+  // only need to route next/prev since our queue lives outside mpv.
+  // globalShortcut works at OS level so it fires even when the window is hidden.
+  if (process.platform === 'darwin') {
+    globalShortcut.register('MediaNextTrack', () => {
+      http
+        .request({ hostname: '127.0.0.1', port: 8000, path: '/api/v1/player/next', method: 'POST' })
+        .end()
+    })
+    globalShortcut.register('MediaPreviousTrack', () => {
+      http
+        .request({
+          hostname: '127.0.0.1',
+          port: 8000,
+          path: '/api/v1/player/previous',
+          method: 'POST'
+        })
+        .end()
+    })
+  }
+
   // Start the kamp server if it isn't already running. The renderer's
   // existing reconnect loop handles the brief gap while the server starts up.
   await startServer()
@@ -177,6 +198,9 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
+
+// Unregister global shortcuts before quitting — they persist for the process lifetime otherwise.
+app.on('will-quit', () => globalShortcut.unregisterAll())
 
 // Kill the server we launched when the app exits.
 // `will-quit` handles graceful quit; `process.on('exit')` is the synchronous

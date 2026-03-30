@@ -6,9 +6,11 @@ import type { Album, Track } from '../api/client'
 function SearchAlbumCard({ album }: { album: Album }): React.JSX.Element {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
+  const setActiveView = useStore((s) => s.setActiveView)
   const [artLoaded, setArtLoaded] = useState(false)
 
   const handleClick = (): void => {
+    void setActiveView('library')
     void selectAlbum(album)
     void setSearchQuery('')
   }

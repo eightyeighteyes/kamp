@@ -54,9 +54,10 @@ export default function App(): React.JSX.Element {
           loadUiState()
         },
         () => {
-          // Background scan completed — refresh album list and open track list.
-          void loadLibrary()
-          void refreshOpenAlbum()
+          // Background scan completed — refresh album list then open track list.
+          // Sequential: loadLibrary and refreshOpenAlbum both spread library state,
+          // so running them concurrently risks one overwriting the other's update.
+          void loadLibrary().then(() => refreshOpenAlbum())
         }
       )
     }

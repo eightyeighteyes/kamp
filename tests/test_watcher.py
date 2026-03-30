@@ -12,7 +12,13 @@ from kamp_daemon.config import (
     MusicBrainzConfig,
     PathsConfig,
 )
-from watchdog.events import FileCreatedEvent, FileDeletedEvent, FileMovedEvent
+from watchdog.events import (
+    DirDeletedEvent,
+    DirMovedEvent,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileMovedEvent,
+)
 
 from kamp_daemon.watcher import (
     LibraryWatcher,
@@ -834,6 +840,31 @@ class TestLibraryHandler:
                 FileMovedEvent(
                     str(tmp_path / "elsewhere" / "track.mp3"),
                     str(tmp_path / "library" / "track.mp3"),
+                )
+            )
+
+        mock_schedule.assert_called_once()
+
+    def test_fires_scan_on_directory_deleted(self, tmp_path: Path) -> None:
+        """Removing an entire album directory triggers a re-scan."""
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_deleted(DirDeletedEvent(str(tmp_path / "library" / "My Album")))
+
+        mock_schedule.assert_called_once()
+
+    def test_fires_scan_on_directory_moved_out(self, tmp_path: Path) -> None:
+        """Moving an entire album directory out of the library triggers a re-scan."""
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_moved(
+                DirMovedEvent(
+                    str(tmp_path / "library" / "My Album"),
+                    str(tmp_path / "elsewhere" / "My Album"),
                 )
             )
 

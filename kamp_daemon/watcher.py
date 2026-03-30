@@ -10,6 +10,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from watchdog.events import (
+    DirDeletedEvent,
+    DirMovedEvent,
     FileCreatedEvent,
     FileDeletedEvent,
     FileMovedEvent,
@@ -312,11 +314,17 @@ class _LibraryHandler(FileSystemEventHandler):
             self._schedule()
 
     def on_deleted(self, event: FileSystemEvent) -> None:
-        if isinstance(event, FileDeletedEvent) and self._is_audio(event.src_path):
+        # Directory deletions (e.g. entire album folder removed) are caught here
+        # in addition to individual audio file deletions.
+        if isinstance(event, (FileDeletedEvent, DirDeletedEvent)):
             self._schedule()
 
     def on_moved(self, event: FileSystemEvent) -> None:
-        if isinstance(event, FileMovedEvent) and (
+        # Catch both individual audio file moves and whole directory moves (e.g.
+        # album folder dragged out of the library).
+        if isinstance(event, DirMovedEvent):
+            self._schedule()
+        elif isinstance(event, FileMovedEvent) and (
             self._is_audio(event.src_path) or self._is_audio(event.dest_path)
         ):
             self._schedule()

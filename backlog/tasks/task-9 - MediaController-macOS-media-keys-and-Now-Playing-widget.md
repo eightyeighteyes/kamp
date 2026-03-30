@@ -1,10 +1,10 @@
 ---
 id: TASK-9
 title: 'MediaController: macOS media keys and Now Playing widget'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-29 03:11'
-updated_date: '2026-03-30 11:43'
+updated_date: '2026-03-30 22:21'
 labels:
   - feature
   - macos
@@ -13,7 +13,7 @@ labels:
 milestone: m-0
 dependencies: []
 priority: medium
-ordinal: 4750
+ordinal: 1000
 ---
 
 ## Description

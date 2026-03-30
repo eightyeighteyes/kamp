@@ -73,7 +73,6 @@ def mock_objc(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return mock
 
 
-@_SKIP_NON_DARWIN
 class TestCoreAudioMediaController:
     def _make_mc(self) -> "CoreAudioMediaController":  # noqa: F821
         from kamp_core.media_controller import CoreAudioMediaController

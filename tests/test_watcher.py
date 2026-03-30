@@ -12,7 +12,20 @@ from kamp_daemon.config import (
     MusicBrainzConfig,
     PathsConfig,
 )
-from kamp_daemon.watcher import _StagingHandler, Watcher
+from watchdog.events import (
+    DirDeletedEvent,
+    DirMovedEvent,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileMovedEvent,
+)
+
+from kamp_daemon.watcher import (
+    LibraryWatcher,
+    _LibraryHandler,
+    _StagingHandler,
+    Watcher,
+)
 
 
 @pytest.fixture
@@ -767,3 +780,143 @@ class TestStageCallback:
         cb = lambda stage: None  # noqa: E731
         watcher.stage_callback = cb
         assert watcher._handler.stage_callback is cb
+
+
+# ---------------------------------------------------------------------------
+# _LibraryHandler / LibraryWatcher
+# ---------------------------------------------------------------------------
+
+
+def _make_library_handler(
+    tmp_path: Path, on_scan: MagicMock | None = None
+) -> _LibraryHandler:
+    if on_scan is None:
+        on_scan = MagicMock()
+    lib = tmp_path / "library"
+    lib.mkdir(parents=True, exist_ok=True)
+    return _LibraryHandler(lib, on_scan)
+
+
+class TestLibraryHandler:
+    def test_fires_scan_on_audio_file_created(self, tmp_path: Path) -> None:
+        """Creating an audio file in the library schedules a re-scan."""
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_created(
+                FileCreatedEvent(str(tmp_path / "library" / "track.mp3"))
+            )
+
+        mock_schedule.assert_called_once()
+
+    def test_ignores_non_audio_file_created(self, tmp_path: Path) -> None:
+        handler = _make_library_handler(tmp_path)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_created(
+                FileCreatedEvent(str(tmp_path / "library" / "cover.jpg"))
+            )
+
+        mock_schedule.assert_not_called()
+
+    def test_fires_scan_on_audio_file_deleted(self, tmp_path: Path) -> None:
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_deleted(
+                FileDeletedEvent(str(tmp_path / "library" / "track.flac"))
+            )
+
+        mock_schedule.assert_called_once()
+
+    def test_fires_scan_on_audio_file_moved(self, tmp_path: Path) -> None:
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_moved(
+                FileMovedEvent(
+                    str(tmp_path / "elsewhere" / "track.mp3"),
+                    str(tmp_path / "library" / "track.mp3"),
+                )
+            )
+
+        mock_schedule.assert_called_once()
+
+    def test_fires_scan_on_directory_deleted(self, tmp_path: Path) -> None:
+        """Removing an entire album directory triggers a re-scan."""
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_deleted(DirDeletedEvent(str(tmp_path / "library" / "My Album")))
+
+        mock_schedule.assert_called_once()
+
+    def test_fires_scan_on_directory_moved_out(self, tmp_path: Path) -> None:
+        """Moving an entire album directory out of the library triggers a re-scan."""
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_moved(
+                DirMovedEvent(
+                    str(tmp_path / "library" / "My Album"),
+                    str(tmp_path / "elsewhere" / "My Album"),
+                )
+            )
+
+        mock_schedule.assert_called_once()
+
+    def test_debounces_rapid_events(self, tmp_path: Path) -> None:
+        """Multiple rapid events collapse into a single scan call."""
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+        lib = tmp_path / "library"
+
+        with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.05):
+            for i in range(5):
+                handler.on_created(FileCreatedEvent(str(lib / f"track{i}.mp3")))
+            import time
+
+            time.sleep(0.2)
+
+        on_scan.assert_called_once()
+
+    def test_cancel_pending_prevents_scan(self, tmp_path: Path) -> None:
+        """cancel_pending() stops the timer before it fires."""
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+        lib = tmp_path / "library"
+
+        with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.1):
+            handler.on_created(FileCreatedEvent(str(lib / "track.mp3")))
+            handler.cancel_pending()
+            import time
+
+            time.sleep(0.3)
+
+        on_scan.assert_not_called()
+
+
+class TestLibraryWatcher:
+    def test_stop_before_timer_fires_does_not_call_callback(
+        self, tmp_path: Path
+    ) -> None:
+        """Stopping the watcher before the debounce timer fires prevents the callback."""
+        on_change = MagicMock()
+        lib = tmp_path / "library"
+        lib.mkdir()
+        watcher = LibraryWatcher(lib, on_change)
+        watcher.start()
+
+        with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.2):
+            watcher._handler.on_created(FileCreatedEvent(str(lib / "track.mp3")))
+            watcher.stop()
+            import time
+
+            time.sleep(0.4)
+
+        on_change.assert_not_called()

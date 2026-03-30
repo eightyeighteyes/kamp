@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 from watchdog.events import (
+    DirDeletedEvent,
+    DirMovedEvent,
     FileCreatedEvent,
+    FileDeletedEvent,
+    FileMovedEvent,
     FileSystemEvent,
     FileSystemEventHandler,
     FileSystemMovedEvent,
@@ -283,3 +288,91 @@ class Watcher:
     def join(self) -> None:
         """Block until the observer thread exits (e.g. after stop())."""
         self._observer.join()
+
+
+class _LibraryHandler(FileSystemEventHandler):
+    """Debounced handler that fires a callback when audio files change in the library.
+
+    Unlike _StagingHandler (one timer per path), a single timer is sufficient
+    here because LibraryScanner.scan() always does a full recursive walk; there
+    is no benefit to tracking individual paths.
+
+    Events caused by an active ingest pipeline (files being moved into the
+    library) continuously reset the timer, so the scan cannot fire until 2 s
+    after the last change — satisfying AC#3 without cross-process coordination.
+    """
+
+    def __init__(self, library_root: Path, on_scan: Callable[[], None]) -> None:
+        super().__init__()
+        self._library_root = library_root
+        self._on_scan = on_scan
+        self._pending: threading.Timer | None = None
+        self._lock = threading.Lock()
+
+    def on_created(self, event: FileSystemEvent) -> None:
+        if isinstance(event, FileCreatedEvent) and self._is_audio(event.src_path):
+            self._schedule()
+
+    def on_deleted(self, event: FileSystemEvent) -> None:
+        # Directory deletions (e.g. entire album folder removed) are caught here
+        # in addition to individual audio file deletions.
+        if isinstance(event, (FileDeletedEvent, DirDeletedEvent)):
+            self._schedule()
+
+    def on_moved(self, event: FileSystemEvent) -> None:
+        # Catch both individual audio file moves and whole directory moves (e.g.
+        # album folder dragged out of the library).
+        if isinstance(event, DirMovedEvent):
+            self._schedule()
+        elif isinstance(event, FileMovedEvent) and (
+            self._is_audio(event.src_path) or self._is_audio(event.dest_path)
+        ):
+            self._schedule()
+
+    def _is_audio(self, path: bytes | str) -> bool:
+        return Path(os.fsdecode(path)).suffix.lower() in AUDIO_EXTENSIONS
+
+    def _schedule(self) -> None:
+        with self._lock:
+            if self._pending is not None:
+                self._pending.cancel()
+            self._pending = threading.Timer(_SETTLE_SECONDS, self._fire)
+            self._pending.start()
+        logger.debug("Library re-scan scheduled in %.1fs", _SETTLE_SECONDS)
+
+    def _fire(self) -> None:
+        with self._lock:
+            self._pending = None
+        logger.info("Library change detected — triggering re-scan")
+        try:
+            self._on_scan()
+        except Exception:
+            logger.exception("Unhandled error in library re-scan")
+
+    def cancel_pending(self) -> None:
+        """Cancel any pending debounce timer without firing the scan."""
+        with self._lock:
+            if self._pending is not None:
+                self._pending.cancel()
+                self._pending = None
+
+
+class LibraryWatcher:
+    """Watch the library directory and trigger a re-scan on audio file changes."""
+
+    def __init__(self, library_path: Path, on_change: Callable[[], None]) -> None:
+        self._library_path = library_path
+        self._observer = Observer()
+        self._handler = _LibraryHandler(library_path, on_change)
+
+    def start(self) -> None:
+        self._library_path.mkdir(parents=True, exist_ok=True)
+        self._observer.schedule(self._handler, str(self._library_path), recursive=True)
+        self._observer.start()
+        logger.info("Watching library directory: %s", self._library_path)
+
+    def stop(self) -> None:
+        self._handler.cancel_pending()
+        self._observer.stop()
+        self._observer.join()
+        logger.info("Library watcher stopped")

@@ -49,6 +49,7 @@ type PlayerStore = {
   setVolume: (volume: number) => Promise<void>
   setShuffle: (shuffle: boolean) => Promise<void>
   setRepeat: (repeat: boolean) => Promise<void>
+  refreshOpenAlbum: () => Promise<void>
   scanLibrary: () => Promise<void>
   setLibraryPath: (path: string) => Promise<void>
   applyServerState: (state: PlayerState) => void
@@ -108,6 +109,26 @@ export const useStore = create<PlayerStore>((set, get) => ({
       set((s) => ({ library: { ...s.library, albums, artists }, serverStatus: 'connected' }))
     } catch {
       set({ serverStatus: 'disconnected' })
+    }
+  },
+
+  refreshOpenAlbum: async () => {
+    // Force-reload the track list for the currently open album, bypassing the
+    // key guard in loadTracks. Called after background scans so additions and
+    // deletions are reflected immediately without the user having to navigate away.
+    const { selectedAlbum } = get().library
+    if (!selectedAlbum) return
+    try {
+      const tracks = await api.getTracksForAlbum(selectedAlbum.album_artist, selectedAlbum.album)
+      set((s) => ({
+        library: {
+          ...s.library,
+          tracks,
+          tracksAlbumKey: `${selectedAlbum.album_artist}\0${selectedAlbum.album}`
+        }
+      }))
+    } catch {
+      // Best-effort — stale track list is better than a broken UI.
     }
   },
 

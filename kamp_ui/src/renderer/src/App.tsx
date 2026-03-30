@@ -10,6 +10,7 @@ import { TransportBar } from './components/TransportBar'
 
 export default function App(): React.JSX.Element {
   const loadLibrary = useStore((s) => s.loadLibrary)
+  const refreshOpenAlbum = useStore((s) => s.refreshOpenAlbum)
   const loadUiState = useStore((s) => s.loadUiState)
   const applyServerState = useStore((s) => s.applyServerState)
   const setServerStatus = useStore((s) => s.setServerStatus)
@@ -51,6 +52,12 @@ export default function App(): React.JSX.Element {
           setServerStatus('connected')
           loadLibrary()
           loadUiState()
+        },
+        () => {
+          // Background scan completed — refresh album list then open track list.
+          // Sequential: loadLibrary and refreshOpenAlbum both spread library state,
+          // so running them concurrently risks one overwriting the other's update.
+          void loadLibrary().then(() => refreshOpenAlbum())
         }
       )
     }

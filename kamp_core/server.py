@@ -133,11 +133,22 @@ def create_app(
     # Mutable containers for runtime-updatable state.
     # library_path can be changed via POST /api/v1/config/library-path.
     # scan_progress is written by the scan thread and read by GET /api/v1/library/scan/progress.
+    # library_version is incremented by background scans; WebSocket connections
+    # detect the bump on the next ping and push a "library.changed" notification.
     _state: dict[str, Any] = {
         "library_path": library_path,
         "scan_progress": {"active": False, "current": 0, "total": 0},
         "ui_active_view": ui_active_view,
+        "library_version": 0,
     }
+
+    def _notify_library_changed() -> None:
+        """Increment the library version so connected WebSocket clients are notified."""
+        _state["library_version"] += 1
+
+    # Expose the notifier on app.state so the caller (__main__.py) can trigger
+    # it after background (watcher-driven) scans complete.
+    app.state.notify_library_changed = _notify_library_changed
 
     # Allow requests from the Electron renderer (Vite dev server and file://).
     # This server only binds to 127.0.0.1, so wildcard origins are safe.
@@ -335,15 +346,20 @@ def create_app(
         await ws.accept()
         # Push initial snapshot immediately on connect.
         await ws.send_json({"type": "player.state", **_state_snapshot().model_dump()})
+        last_library_version: int = _state["library_version"]
         try:
             while True:
                 # Each "ping" from the client triggers a fresh snapshot.
-                # This keeps the protocol simple for Phase 1; a push-based
-                # approach (asyncio task + event) can replace it later.
                 await ws.receive_text()
                 await ws.send_json(
                     {"type": "player.state", **_state_snapshot().model_dump()}
                 )
+                # Notify the client if a background scan updated the library
+                # since the last ping so it can refresh the album list.
+                current_version = _state["library_version"]
+                if current_version != last_library_version:
+                    last_library_version = current_version
+                    await ws.send_json({"type": "library.changed"})
         except Exception:
             pass
 

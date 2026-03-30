@@ -125,11 +125,14 @@ export const setRepeat = (repeat: boolean): Promise<unknown> =>
 // ---------------------------------------------------------------------------
 
 export type StateMessage = PlayerState & { type: 'player.state' }
+export type LibraryChangedMessage = { type: 'library.changed' }
+export type ServerMessage = StateMessage | LibraryChangedMessage
 
 export function connectStateStream(
   onState: (state: PlayerState) => void,
   onClose?: () => void,
-  onOpen?: () => void
+  onOpen?: () => void,
+  onLibraryChanged?: () => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 
@@ -137,8 +140,9 @@ export function connectStateStream(
 
   ws.onmessage = (event) => {
     try {
-      const msg = JSON.parse(event.data as string) as StateMessage
+      const msg = JSON.parse(event.data as string) as ServerMessage
       if (msg.type === 'player.state') onState(msg)
+      else if (msg.type === 'library.changed') onLibraryChanged?.()
     } catch {
       // malformed message — ignore
     }

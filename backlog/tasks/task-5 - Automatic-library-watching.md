@@ -1,10 +1,10 @@
 ---
 id: TASK-5
 title: Automatic library watching
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-29 02:57'
-updated_date: '2026-03-29 03:14'
+updated_date: '2026-03-29 20:59'
 labels:
   - feature
   - library

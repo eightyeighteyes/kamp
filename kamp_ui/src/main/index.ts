@@ -5,6 +5,7 @@ import { spawn, ChildProcess } from 'child_process'
 import * as http from 'http'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { theme } from '../shared/theme'
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -100,7 +101,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     // Match the app's dark background so the native window surface never
     // shows through as white gutters during resize or repaint.
-    backgroundColor: '#141414',
+    backgroundColor: theme.bg,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

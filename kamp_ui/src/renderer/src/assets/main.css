@@ -11,7 +11,8 @@
 }
 
 :root {
-  --bg: #141414;
+  /* --bg is set by main.tsx from shared/theme.ts so the main process can use
+     the same value for BrowserWindow.backgroundColor without a magic number. */
   --surface: #1e1e1e;
   --surface-hover: #2a2a2a;
   --border: #2e2e2e;

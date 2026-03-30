@@ -90,50 +90,6 @@ _KEY_ARTWORK = "MPMediaItemPropertyArtwork"
 # MPRemoteCommandHandlerStatus.success = 0
 _STATUS_SUCCESS = 0
 
-# Handler class is built lazily and cached so the ObjC class is only
-# registered once (re-defining the same ObjC class name raises at runtime).
-_HandlerClass: Any = None
-
-
-def _get_handler_class() -> Any:
-    """Return (building once) an NSObject subclass for target-action dispatch.
-
-    Uses addTarget:action: instead of addTargetWithHandler: to avoid the
-    PyObjC "block has no signature" error that arises when the MediaPlayer
-    framework's block type metadata is unavailable at runtime.
-    """
-    global _HandlerClass
-    if _HandlerClass is not None:
-        return _HandlerClass
-
-    import objc
-    from Foundation import NSObject
-
-    class _RemoteCommandHandler(NSObject):
-        """Receives MPRemoteCommand target-action callbacks."""
-
-        # Python callbacks stored as instance attributes after alloc/init.
-        _on_next: Any = None
-        _on_prev: Any = None
-
-        # objc.selector gives the method the correct ObjC type encoding:
-        # l = NSInteger (return), @ = id (self), : = SEL, @ = id (event)
-        def handleNext_(self, event: Any) -> int:
-            if self._on_next is not None:
-                self._on_next()
-            return _STATUS_SUCCESS
-
-        def handlePrev_(self, event: Any) -> int:
-            if self._on_prev is not None:
-                self._on_prev()
-            return _STATUS_SUCCESS
-
-        handleNext_ = objc.selector(handleNext_, signature=b"l@:@")
-        handlePrev_ = objc.selector(handlePrev_, signature=b"l@:@")
-
-    _HandlerClass = _RemoteCommandHandler
-    return _HandlerClass
-
 
 class CoreAudioMediaController(MediaController):
     """Integrates with the macOS Now Playing widget and media keys.
@@ -152,7 +108,8 @@ class CoreAudioMediaController(MediaController):
         self._on_prev = on_prev
         self._on_play_pause = on_play_pause
         # Typed Any because PyObjC classes have no type stubs.
-        self._cmd_handler: Any = None  # _RemoteCommandHandler NSObject instance
+        self._next_handler_token: Any = None
+        self._prev_handler_token: Any = None
         self._npc: Any = None  # MPNowPlayingInfoCenter instance
         self._rcc_shared: Any = None  # MPRemoteCommandCenter shared instance
 
@@ -172,19 +129,33 @@ class CoreAudioMediaController(MediaController):
         shared = RCC.sharedCommandCenter()
         self._rcc_shared = shared
 
-        # Build an NSObject-based handler and register via addTarget:action:.
-        # This avoids addTargetWithHandler: which requires block type metadata
-        # that the MediaPlayer framework doesn't expose to the ObjC runtime.
-        Handler = _get_handler_class()
-        self._cmd_handler = Handler.alloc().init()
-        self._cmd_handler._on_next = self._on_next
-        self._cmd_handler._on_prev = self._on_prev
+        # Build block callables with explicit type signatures so PyObjC knows
+        # how to bridge them.  The MediaPlayer framework cannot provide block
+        # type metadata at runtime, so we supply it via __block_signature__:
+        #   l = NSInteger (MPRemoteCommandHandlerStatus return value)
+        #   @ = id (the MPRemoteCommandEvent * argument)
+        on_next = self._on_next
+
+        def _next_block(event: Any) -> int:
+            on_next()
+            return _STATUS_SUCCESS
+
+        on_prev = self._on_prev
+
+        def _prev_block(event: Any) -> int:
+            on_prev()
+            return _STATUS_SUCCESS
+
+        _next_block.__block_signature__ = b"l@"  # type: ignore[attr-defined]
+        _prev_block.__block_signature__ = b"l@"  # type: ignore[attr-defined]
 
         shared.nextTrackCommand().setEnabled_(True)
         shared.previousTrackCommand().setEnabled_(True)
-        shared.nextTrackCommand().addTarget_action_(self._cmd_handler, b"handleNext:")
-        shared.previousTrackCommand().addTarget_action_(
-            self._cmd_handler, b"handlePrev:"
+        self._next_handler_token = shared.nextTrackCommand().addTargetWithHandler_(
+            _next_block
+        )
+        self._prev_handler_token = shared.previousTrackCommand().addTargetWithHandler_(
+            _prev_block
         )
 
         logger.debug("MediaController started")
@@ -241,10 +212,16 @@ class CoreAudioMediaController(MediaController):
             except Exception:
                 pass
 
-        if self._rcc_shared is not None and self._cmd_handler is not None:
+        if self._rcc_shared is not None:
             try:
-                self._rcc_shared.nextTrackCommand().removeTarget_(self._cmd_handler)
-                self._rcc_shared.previousTrackCommand().removeTarget_(self._cmd_handler)
+                if self._next_handler_token is not None:
+                    self._rcc_shared.nextTrackCommand().removeTarget_(
+                        self._next_handler_token
+                    )
+                if self._prev_handler_token is not None:
+                    self._rcc_shared.previousTrackCommand().removeTarget_(
+                        self._prev_handler_token
+                    )
             except Exception:
                 pass
 

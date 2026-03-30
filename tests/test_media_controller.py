@@ -70,43 +70,6 @@ class TestNullMediaController:
 # ---------------------------------------------------------------------------
 
 
-class _FakeHandler:
-    """Pure-Python stand-in for the lazily-built NSObject command handler.
-
-    Replaces the real _get_handler_class() result in tests so no actual
-    NSObject subclass (which requires a live PyObjC runtime) is created.
-    """
-
-    _on_next: object = None
-    _on_prev: object = None
-
-    @classmethod
-    def alloc(cls) -> "_FakeHandler":
-        return cls()
-
-    def init(self) -> "_FakeHandler":
-        return self
-
-    def handleNext_(self, event: object) -> int:
-        if self._on_next is not None:
-            self._on_next()  # type: ignore[operator]
-        return 0
-
-    def handlePrev_(self, event: object) -> int:
-        if self._on_prev is not None:
-            self._on_prev()  # type: ignore[operator]
-        return 0
-
-
-@pytest.fixture()
-def mock_handler_class(monkeypatch: pytest.MonkeyPatch) -> type:
-    """Patch _get_handler_class to return _FakeHandler (no NSObject needed)."""
-    import kamp_core.media_controller as _mc_mod
-
-    monkeypatch.setattr(_mc_mod, "_get_handler_class", lambda: _FakeHandler)
-    return _FakeHandler
-
-
 @pytest.fixture()
 def mock_objc(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Inject a mock objc module so no real framework is ever loaded."""
@@ -142,13 +105,19 @@ def _build_rcc_mock(mock_objc: MagicMock) -> MagicMock:
 
     Configures sharedCommandCenter() → shared, with .nextTrackCommand() and
     .previousTrackCommand() each returning a stable mock command object.
+    addTargetWithHandler_ returns unique token objects so tests can verify
+    removeTarget_ is called with the right token.
     """
     shared = MagicMock(name="shared_rcc")
     next_cmd = MagicMock(name="nextTrackCommand")
     prev_cmd = MagicMock(name="previousTrackCommand")
-    # Return the same command mock on every call so assertions match.
     shared.nextTrackCommand.return_value = next_cmd
     shared.previousTrackCommand.return_value = prev_cmd
+
+    _next_token = object()
+    _prev_token = object()
+    next_cmd.addTargetWithHandler_.return_value = _next_token
+    prev_cmd.addTargetWithHandler_.return_value = _prev_token
 
     RCC = MagicMock(name="MPRemoteCommandCenter")
     RCC.sharedCommandCenter.return_value = shared
@@ -166,7 +135,6 @@ def _build_rcc_mock(mock_objc: MagicMock) -> MagicMock:
     return shared
 
 
-@pytest.mark.usefixtures("mock_handler_class")
 class TestCoreAudioMediaController:
     def _make_mc(self) -> "CoreAudioMediaController":  # noqa: F821
         from kamp_core.media_controller import CoreAudioMediaController
@@ -198,14 +166,13 @@ class TestCoreAudioMediaController:
 
         shared.nextTrackCommand().setEnabled_.assert_called_with(True)
         shared.previousTrackCommand().setEnabled_.assert_called_with(True)
-        # Uses target-action (not blocks) to avoid PyObjC block-signature issue.
-        shared.nextTrackCommand().addTarget_action_.assert_called_once()
-        shared.previousTrackCommand().addTarget_action_.assert_called_once()
+        shared.nextTrackCommand().addTargetWithHandler_.assert_called_once()
+        shared.previousTrackCommand().addTargetWithHandler_.assert_called_once()
 
     def test_next_handler_calls_on_next(
         self, mock_objc: MagicMock, mock_appkit: MagicMock, mock_foundation: MagicMock
     ) -> None:
-        _build_rcc_mock(mock_objc)
+        shared = _build_rcc_mock(mock_objc)
         on_next = MagicMock()
         from kamp_core.media_controller import CoreAudioMediaController
 
@@ -214,8 +181,9 @@ class TestCoreAudioMediaController:
         )
         mc.start()
 
-        # Invoke the NSObject handler method directly.
-        result = mc._cmd_handler.handleNext_(None)
+        # Extract the block callable that was registered and invoke it.
+        block = shared.nextTrackCommand().addTargetWithHandler_.call_args[0][0]
+        result = block(None)
 
         on_next.assert_called_once()
         assert result == 0  # MPRemoteCommandHandlerStatusSuccess
@@ -223,7 +191,7 @@ class TestCoreAudioMediaController:
     def test_prev_handler_calls_on_prev(
         self, mock_objc: MagicMock, mock_appkit: MagicMock, mock_foundation: MagicMock
     ) -> None:
-        _build_rcc_mock(mock_objc)
+        shared = _build_rcc_mock(mock_objc)
         on_prev = MagicMock()
         from kamp_core.media_controller import CoreAudioMediaController
 
@@ -232,7 +200,8 @@ class TestCoreAudioMediaController:
         )
         mc.start()
 
-        result = mc._cmd_handler.handlePrev_(None)
+        block = shared.previousTrackCommand().addTargetWithHandler_.call_args[0][0]
+        result = block(None)
 
         on_prev.assert_called_once()
         assert result == 0
@@ -304,11 +273,12 @@ class TestCoreAudioMediaController:
         mc = self._make_mc()
         mc.start()
 
-        handler = mc._cmd_handler
+        next_token = mc._next_handler_token
+        prev_token = mc._prev_handler_token
         mc.stop()
 
-        shared.nextTrackCommand().removeTarget_.assert_called_with(handler)
-        shared.previousTrackCommand().removeTarget_.assert_called_with(handler)
+        shared.nextTrackCommand().removeTarget_.assert_called_with(next_token)
+        shared.previousTrackCommand().removeTarget_.assert_called_with(prev_token)
 
     def test_stop_clears_nowplaying_info(
         self, mock_objc: MagicMock, mock_appkit: MagicMock, mock_foundation: MagicMock

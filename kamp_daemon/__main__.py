@@ -521,7 +521,19 @@ def _cmd_server(
 
         _mc = NullMediaController()
 
-    _mc.start()
+    try:
+        _mc.start()
+    except Exception as exc:
+        # Now Playing integration is best-effort — don't crash the server.
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "MediaController failed to start (%s); Now Playing integration disabled.",
+            exc,
+        )
+        from kamp_core.media_controller import NullMediaController as _Null
+
+        _mc = _Null()
 
     # Advance the queue automatically at end-of-track; stop cleanly at the end.
     def _on_track_end() -> None:

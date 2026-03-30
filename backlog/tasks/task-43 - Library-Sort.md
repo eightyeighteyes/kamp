@@ -1,10 +1,10 @@
 ---
 id: TASK-43
 title: Library Sort
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-30 11:43'
-updated_date: '2026-03-30 11:45'
+updated_date: '2026-03-30 13:24'
 labels:
   - feature
   - library

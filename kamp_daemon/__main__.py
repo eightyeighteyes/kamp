@@ -494,7 +494,11 @@ def _cmd_server(
 
     # Advance the queue automatically at end-of-track; stop cleanly at the end.
     def _on_track_end() -> None:
+        finished = queue.current()
         track = queue.next()
+        # Record natural EOF so last_played sort stays accurate.
+        if finished is not None:
+            index.record_played(finished.file_path)
         if track:
             engine.play(track.file_path)
         else:

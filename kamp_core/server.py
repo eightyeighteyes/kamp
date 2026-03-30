@@ -179,7 +179,7 @@ def create_app(
     # -----------------------------------------------------------------------
 
     @app.get("/api/v1/albums", response_model=list[AlbumOut])
-    def get_albums() -> list[AlbumOut]:
+    def get_albums(sort: str = "album_artist") -> list[AlbumOut]:
         return [
             AlbumOut(
                 album_artist=a.album_artist,
@@ -188,7 +188,7 @@ def create_app(
                 track_count=a.track_count,
                 has_art=a.has_art,
             )
-            for a in index.albums()
+            for a in index.albums(sort=sort)
         ]
 
     @app.get("/api/v1/artists", response_model=list[str])

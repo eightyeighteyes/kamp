@@ -1,10 +1,10 @@
 ---
 id: TASK-43
 title: Library Sort
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 11:43'
-updated_date: '2026-03-30 11:45'
+updated_date: '2026-03-30 15:29'
 labels:
   - feature
   - library
@@ -12,7 +12,7 @@ labels:
 milestone: m-0
 dependencies: []
 priority: medium
-ordinal: 3750
+ordinal: 11000
 ---
 
 ## Description

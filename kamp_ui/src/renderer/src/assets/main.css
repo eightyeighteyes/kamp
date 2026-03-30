@@ -578,6 +578,49 @@ body,
 
 /* Album grid --------------------------------------------------------------- */
 
+.album-grid-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sort-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sort-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 2px;
+}
+
+.sort-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 10px;
+  transition: background 0.1s, color 0.1s;
+}
+
+.sort-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.sort-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .album-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));

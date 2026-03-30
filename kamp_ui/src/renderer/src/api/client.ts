@@ -68,7 +68,8 @@ async function get<T>(path: string): Promise<T> {
 // Library
 // ---------------------------------------------------------------------------
 
-export const getAlbums = (): Promise<Album[]> => get('/api/v1/albums')
+export const getAlbums = (sort = 'album_artist'): Promise<Album[]> =>
+  get(`/api/v1/albums?sort=${encodeURIComponent(sort)}`)
 
 // Returns the URL for an album's cover art; load it in an <img> src.
 // The server returns 404 when no art is embedded — handle with onError.

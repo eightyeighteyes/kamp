@@ -37,12 +37,14 @@ type PlayerStore = {
 
   configuredLibraryPath: string | null
   activeView: 'library' | 'now-playing'
+  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
   searchQuery: string
   searchResults: SearchResult | null
 
   // Actions
   setServerStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void
   setSearchQuery: (q: string) => void
+  setSortOrder: (sort: 'album_artist' | 'album' | 'date_added' | 'last_played') => Promise<void>
   setActiveView: (view: 'library' | 'now-playing') => Promise<void>
   loadLibrary: () => Promise<void>
   loadUiState: () => Promise<void>
@@ -90,10 +92,16 @@ export const useStore = create<PlayerStore>((set, get) => ({
   scanProgress: null,
   configuredLibraryPath: null,
   activeView: 'library',
+  sortOrder: 'album_artist',
   searchQuery: '',
   searchResults: null,
 
   setServerStatus: (status) => set({ serverStatus: status }),
+
+  setSortOrder: async (sort) => {
+    set({ sortOrder: sort })
+    await get().loadLibrary()
+  },
 
   setSearchQuery: async (q) => {
     set({ searchQuery: q })
@@ -134,7 +142,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   loadLibrary: async () => {
     try {
-      const [albums, artists] = await Promise.all([api.getAlbums(), api.getArtists()])
+      const sort = get().sortOrder
+      const [albums, artists] = await Promise.all([api.getAlbums(sort), api.getArtists()])
       set((s) => ({ library: { ...s.library, albums, artists }, serverStatus: 'connected' }))
     } catch {
       set({ serverStatus: 'disconnected' })

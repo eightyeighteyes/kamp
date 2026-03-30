@@ -123,7 +123,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 2
+        assert version == 3
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -846,8 +846,8 @@ class TestSearch:
         index.close()
         assert results == []
 
-    def test_v1_database_migrated_to_v2(self, tmp_path: Path) -> None:
-        """Existing v1 databases gain FTS support after migration."""
+    def test_v1_database_migrated_to_current(self, tmp_path: Path) -> None:
+        """Existing v1 databases are fully migrated (FTS + date columns) on open."""
         import sqlite3 as _sqlite3
 
         db_path = tmp_path / "library.db"
@@ -884,7 +884,7 @@ class TestSearch:
         conn.commit()
         conn.close()
 
-        # Opening with LibraryIndex should migrate v1 → v2.
+        # Opening with LibraryIndex should migrate v1 → current.
         index = LibraryIndex(db_path)
         results = index.search("ArtistA")
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
@@ -892,6 +892,243 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 2
+        assert version == 3
         assert len(results) == 1
         assert results[0].title == "Title"
+
+    def test_v2_database_migrated_to_v3(self, tmp_path: Path) -> None:
+        """Existing v2 databases gain date_added and last_played columns on open."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        # Build a v2-style database (has FTS but no date columns).
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (2)")
+        conn.execute("""
+            CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                artist TEXT NOT NULL DEFAULT '',
+                album_artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '',
+                year TEXT NOT NULL DEFAULT '',
+                track_number INTEGER NOT NULL DEFAULT 0,
+                disc_number INTEGER NOT NULL DEFAULT 1,
+                ext TEXT NOT NULL DEFAULT '',
+                embedded_art INTEGER NOT NULL DEFAULT 0,
+                mb_release_id TEXT NOT NULL DEFAULT '',
+                mb_recording_id TEXT NOT NULL DEFAULT ''
+            )
+            """)
+        conn.execute(
+            "INSERT INTO tracks VALUES (1, '/b.mp3', 'Song', 'BandB', 'BandB', "
+            "'AlbumB', '2010', 1, 1, 'mp3', 0, '', '')"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5("
+            "title, artist, album_artist, album, content=tracks, content_rowid=id)"
+        )
+        conn.execute(
+            "CREATE TABLE player_state ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "track_path TEXT NOT NULL, position REAL NOT NULL DEFAULT 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        # Opening with LibraryIndex should migrate v2 → v3.
+        index = LibraryIndex(db_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        # date_added and last_played columns must exist (no exception on select).
+        row = index._conn.execute(
+            "SELECT date_added, last_played FROM tracks WHERE id = 1"
+        ).fetchone()
+        index.close()
+
+        assert version == 3
+        assert row is not None
+        # date_added will be NULL since the file path is fake; that is expected.
+        assert row[0] is None
+        assert row[1] is None
+
+
+# ---------------------------------------------------------------------------
+# Sort and record_played
+# ---------------------------------------------------------------------------
+
+
+class TestAlbumsSort:
+    """Tests for LibraryIndex.albums(sort=...) ordering."""
+
+    def _make_index(self, tmp_path: Path) -> LibraryIndex:
+        """Return an index pre-populated with three albums by two artists."""
+        index = LibraryIndex(tmp_path / "library.db")
+        # Use real files so date_added is populated from ctime.
+        p1 = tmp_path / "a.mp3"
+        p2 = tmp_path / "b.mp3"
+        p3 = tmp_path / "c.mp3"
+        _make_mp3(
+            p1,
+            artist="Zappa",
+            album_artist="Zappa",
+            album="Hot Rats",
+            year="1969",
+            title="T1",
+        )
+        _make_mp3(
+            p2,
+            artist="Amon Tobin",
+            album_artist="Amon Tobin",
+            album="Foley Room",
+            year="2007",
+            title="T2",
+        )
+        _make_mp3(
+            p3,
+            artist="Zappa",
+            album_artist="Zappa",
+            album="Apostrophe",
+            year="1974",
+            title="T3",
+        )
+        index.upsert_many(
+            [
+                _sample_track(p1).__class__(
+                    file_path=p1,
+                    title="T1",
+                    artist="Zappa",
+                    album_artist="Zappa",
+                    album="Hot Rats",
+                    year="1969",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    date_added=1000.0,
+                ),
+                _sample_track(p2).__class__(
+                    file_path=p2,
+                    title="T2",
+                    artist="Amon Tobin",
+                    album_artist="Amon Tobin",
+                    album="Foley Room",
+                    year="2007",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    date_added=3000.0,
+                ),
+                _sample_track(p3).__class__(
+                    file_path=p3,
+                    title="T3",
+                    artist="Zappa",
+                    album_artist="Zappa",
+                    album="Apostrophe",
+                    year="1974",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    date_added=2000.0,
+                ),
+            ]
+        )
+        return index
+
+    def test_default_sort_is_album_artist(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        albums = index.albums()
+        index.close()
+        assert albums[0].album_artist == "Amon Tobin"
+        assert albums[1].album_artist == "Zappa"
+
+    def test_sort_by_album(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        albums = index.albums(sort="album")
+        index.close()
+        names = [a.album for a in albums]
+        assert names == ["Apostrophe", "Foley Room", "Hot Rats"]
+
+    def test_sort_by_date_added_newest_first(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        albums = index.albums(sort="date_added")
+        index.close()
+        # Foley Room: date_added=3000 → first
+        assert albums[0].album == "Foley Room"
+        # Apostrophe: date_added=2000 → second
+        assert albums[1].album == "Apostrophe"
+        # Hot Rats: date_added=1000 → last
+        assert albums[2].album == "Hot Rats"
+
+    def test_sort_by_last_played_newest_first(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        # Only record play for one album; it should sort to the top.
+        p3 = tmp_path / "c.mp3"
+        index.record_played(p3)  # Apostrophe played most recently
+        albums = index.albums(sort="last_played")
+        index.close()
+        assert albums[0].album == "Apostrophe"
+
+    def test_unknown_sort_key_falls_back_to_album_artist(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        albums = index.albums(sort="bogus")
+        index.close()
+        assert albums[0].album_artist == "Amon Tobin"
+
+
+class TestRecordPlayed:
+    """Tests for LibraryIndex.record_played()."""
+
+    def test_sets_last_played_timestamp(self, tmp_path: Path) -> None:
+        import time
+
+        index = LibraryIndex(tmp_path / "library.db")
+        p = tmp_path / "track.mp3"
+        _make_mp3(p, artist="A", album_artist="A", album="B", title="T")
+        index.upsert_many(
+            [
+                Track(
+                    file_path=p,
+                    title="T",
+                    artist="A",
+                    album_artist="A",
+                    album="B",
+                    year="",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                )
+            ]
+        )
+
+        before = time.time()
+        index.record_played(p)
+        after = time.time()
+
+        row = index._conn.execute(
+            "SELECT last_played FROM tracks WHERE file_path = ?", (str(p),)
+        ).fetchone()
+        index.close()
+
+        assert row is not None
+        assert before <= row[0] <= after
+
+    def test_record_played_unknown_path_is_noop(self, tmp_path: Path) -> None:
+        """Calling record_played for a path not in the index must not raise."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.record_played(tmp_path / "ghost.mp3")  # should not raise
+        index.close()

@@ -40,25 +40,55 @@ function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   )
 }
 
+type SortOrder = 'album_artist' | 'album' | 'date_added' | 'last_played'
+
+const SORT_LABELS: Record<SortOrder, string> = {
+  album_artist: 'Artist',
+  album: 'Album',
+  date_added: 'Date Added',
+  last_played: 'Last Played'
+}
+
+function SortControl(): React.JSX.Element {
+  const sortOrder = useStore((s) => s.sortOrder)
+  const setSortOrder = useStore((s) => s.setSortOrder)
+
+  return (
+    <div className="sort-control">
+      <span className="sort-label">Sort by</span>
+      {(Object.keys(SORT_LABELS) as SortOrder[]).map((key) => (
+        <button
+          key={key}
+          className={`sort-btn${sortOrder === key ? ' active' : ''}`}
+          onClick={() => setSortOrder(key)}
+        >
+          {SORT_LABELS[key]}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function AlbumGrid(): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
   const selectedArtist = useStore((s) => s.library.selectedArtist)
 
   const visible = selectedArtist ? albums.filter((a) => a.album_artist === selectedArtist) : albums
 
-  if (visible.length === 0) {
-    return (
-      <div className="album-grid-empty">
-        {albums.length === 0 ? 'No albums in library.' : 'No albums for this artist.'}
-      </div>
-    )
-  }
-
   return (
-    <div className="album-grid">
-      {visible.map((album) => (
-        <AlbumCard key={`${album.album_artist}\0${album.album}`} album={album} />
-      ))}
+    <div className="album-grid-container">
+      <SortControl />
+      {visible.length === 0 ? (
+        <div className="album-grid-empty">
+          {albums.length === 0 ? 'No albums in library.' : 'No albums for this artist.'}
+        </div>
+      ) : (
+        <div className="album-grid">
+          {visible.map((album) => (
+            <AlbumCard key={`${album.album_artist}\0${album.album}`} album={album} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

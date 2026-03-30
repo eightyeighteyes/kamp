@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     ext              TEXT    NOT NULL DEFAULT '',
     embedded_art     INTEGER NOT NULL DEFAULT 0,
     mb_release_id    TEXT    NOT NULL DEFAULT '',
-    mb_recording_id  TEXT    NOT NULL DEFAULT ''
+    mb_recording_id  TEXT    NOT NULL DEFAULT '',
+    date_added       REAL,    -- file birthtime/ctime at first scan (Unix timestamp)
+    last_played      REAL     -- Unix timestamp of last natural EOF; NULL until played
 );
 
 -- FTS5 virtual table for full-text search across track metadata.
@@ -60,6 +62,32 @@ CREATE TABLE IF NOT EXISTS player_state (
 
 # Characters that have special meaning in FTS5 MATCH expressions.
 _FTS_SPECIAL = re.compile(r'["*^()]')
+
+
+def _get_date_added(path: Path) -> float | None:
+    """Return the best available creation timestamp for *path*.
+
+    Prefers st_birthtime (macOS/BSD) over st_ctime (Linux inode-change time),
+    which is a closer approximation to "when the file first appeared".
+    Returns None on any OS error (e.g. file missing during concurrent scan).
+    """
+    try:
+        st = path.stat()
+        birthtime: float | None = getattr(st, "st_birthtime", None)
+        return birthtime if birthtime is not None else st.st_ctime
+    except OSError:
+        return None
+
+
+# Mapping from public sort key → SQL ORDER BY clause used in albums().
+# Keys are validated against this dict so no user input reaches the query.
+_SORT_CLAUSES: dict[str, str] = {
+    "album_artist": "album_artist COLLATE NOCASE, album COLLATE NOCASE",
+    "album": "album COLLATE NOCASE, album_artist COLLATE NOCASE",
+    # Newest first (largest timestamp); NULLs sort last in DESC.
+    "date_added": "MIN(date_added) DESC, album_artist COLLATE NOCASE",
+    "last_played": "MAX(last_played) DESC, album_artist COLLATE NOCASE",
+}
 
 
 def _make_fts_query(q: str) -> str:
@@ -91,6 +119,8 @@ class Track:
     mb_release_id: str
     mb_recording_id: str
     id: int = field(default=0, compare=False)
+    date_added: float | None = field(default=None, compare=False)
+    last_played: float | None = field(default=None, compare=False)
 
 
 @dataclass
@@ -172,6 +202,23 @@ class LibraryIndex:
             self._rebuild_fts()
             self._conn.execute("UPDATE schema_version SET version = 2")
             self._conn.commit()
+            version = 2
+
+        if version < 3:
+            # v2 → v3: date_added and last_played columns added.
+            self._conn.execute("ALTER TABLE tracks ADD COLUMN date_added REAL")
+            self._conn.execute("ALTER TABLE tracks ADD COLUMN last_played REAL")
+            # Backfill date_added from file system for tracks that still exist.
+            rows = self._conn.execute("SELECT id, file_path FROM tracks").fetchall()
+            for r in rows:
+                ts = _get_date_added(Path(r["file_path"]))
+                if ts is not None:
+                    self._conn.execute(
+                        "UPDATE tracks SET date_added = ? WHERE id = ?",
+                        (ts, r["id"]),
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 3")
+            self._conn.commit()
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -194,8 +241,8 @@ class LibraryIndex:
             INSERT INTO tracks
                 (file_path, title, artist, album_artist, album, year,
                  track_number, disc_number, ext, embedded_art,
-                 mb_release_id, mb_recording_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 mb_release_id, mb_recording_id, date_added)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path) DO UPDATE SET
                 title           = excluded.title,
                 artist          = excluded.artist,
@@ -208,6 +255,8 @@ class LibraryIndex:
                 embedded_art    = excluded.embedded_art,
                 mb_release_id   = excluded.mb_release_id,
                 mb_recording_id = excluded.mb_recording_id
+                -- date_added intentionally omitted: preserve original scan date on re-scan
+                -- last_played intentionally omitted: managed exclusively by record_played()
             """,
             [_track_to_params(t) for t in tracks],
         )
@@ -227,15 +276,35 @@ class LibraryIndex:
         rows = self._conn.execute("SELECT * FROM tracks").fetchall()
         return [_row_to_track(r) for r in rows]
 
-    def albums(self) -> list[AlbumInfo]:
-        """Return one AlbumInfo per (album_artist, album) pair, sorted."""
-        rows = self._conn.execute("""
+    def record_played(self, file_path: Path) -> None:
+        """Record the current time as last_played for the track at *file_path*.
+
+        Called when a track reaches natural end-of-file so that Last Played
+        sort order reflects actual listening history.
+        """
+        import time
+
+        self._conn.execute(
+            "UPDATE tracks SET last_played = ? WHERE file_path = ?",
+            (time.time(), str(file_path)),
+        )
+        self._conn.commit()
+
+    def albums(self, sort: str = "album_artist") -> list[AlbumInfo]:
+        """Return one AlbumInfo per (album_artist, album) pair.
+
+        *sort* must be one of: ``album_artist`` (default), ``album``,
+        ``date_added``, ``last_played``.  Unknown values fall back to
+        ``album_artist`` so callers never have to guard against bad input.
+        """
+        order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
+        rows = self._conn.execute(f"""
             SELECT album_artist, album, year, COUNT(*) AS track_count,
                    MAX(embedded_art) AS has_art
             FROM tracks
             GROUP BY album_artist, album
-            ORDER BY album_artist COLLATE NOCASE, album COLLATE NOCASE
-            """).fetchall()
+            ORDER BY {order_by}
+            """).fetchall()  # noqa: S608 — order_by is from a whitelist, not user input
         return [
             AlbumInfo(
                 album_artist=r["album_artist"],
@@ -333,7 +402,7 @@ class LibraryIndex:
 
 def _track_to_params(
     t: Track,
-) -> tuple[str, str, str, str, str, str, int, int, str, int, str, str]:
+) -> tuple[str, str, str, str, str, str, int, int, str, int, str, str, float | None]:
     return (
         str(t.file_path),
         t.title,
@@ -347,6 +416,7 @@ def _track_to_params(
         int(t.embedded_art),
         t.mb_release_id,
         t.mb_recording_id,
+        t.date_added,
     )
 
 
@@ -365,6 +435,8 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         embedded_art=bool(row["embedded_art"]),
         mb_release_id=row["mb_release_id"],
         mb_recording_id=row["mb_recording_id"],
+        date_added=row["date_added"],
+        last_played=row["last_played"],
     )
 
 
@@ -527,17 +599,25 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
 
 
 def _read_tags(path: Path) -> Track | None:
-    """Dispatch to the appropriate tag reader; return None on unrecognised format."""
+    """Dispatch to the appropriate tag reader; return None on unrecognised format.
+
+    Populates ``date_added`` from the file's birthtime/ctime so the library
+    scanner can persist when each track first appeared on disk.
+    """
     suffix = path.suffix.lower()
     try:
         if suffix == ".mp3":
-            return _read_mp3_tags(path)
-        if suffix == ".m4a":
-            return _read_m4a_tags(path)
-        if suffix == ".flac":
-            return _read_vorbis_tags(path, is_flac=True)
-        if suffix == ".ogg":
-            return _read_vorbis_tags(path, is_flac=False)
+            track = _read_mp3_tags(path)
+        elif suffix == ".m4a":
+            track = _read_m4a_tags(path)
+        elif suffix == ".flac":
+            track = _read_vorbis_tags(path, is_flac=True)
+        elif suffix == ".ogg":
+            track = _read_vorbis_tags(path, is_flac=False)
+        else:
+            return None
+        track.date_added = _get_date_added(path)
+        return track
     except Exception:
         logger.warning("Could not read tags from %s", path, exc_info=True)
     return None

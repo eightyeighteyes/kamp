@@ -4,7 +4,7 @@ title: 'bug: kamp UI can''t find server after computer sleeps'
 status: Done
 assignee: []
 created_date: '2026-03-29 02:44'
-updated_date: '2026-03-29 15:51'
+updated_date: '2026-03-30 15:29'
 labels:
   - bug
   - ui
@@ -12,7 +12,7 @@ labels:
 milestone: m-0
 dependencies: []
 priority: medium
-ordinal: 1000
+ordinal: 2000
 ---
 
 ## Description

@@ -167,12 +167,7 @@ app.whenReady().then(async () => {
     })
     globalShortcut.register('MediaPreviousTrack', () => {
       http
-        .request({
-          hostname: '127.0.0.1',
-          port: 8000,
-          path: '/api/v1/player/previous',
-          method: 'POST'
-        })
+        .request({ hostname: '127.0.0.1', port: 8000, path: '/api/v1/player/prev', method: 'POST' })
         .end()
     })
   }

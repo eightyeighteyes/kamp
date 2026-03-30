@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 class MediaController(ABC):
     @abstractmethod
-    def start(self) -> None: ...
+    def start(self) -> None: ...  # pragma: no cover
 
     @abstractmethod
     def update(
@@ -40,10 +40,10 @@ class MediaController(ABC):
         playing: bool,
         position: float,
         duration: float,
-    ) -> None: ...
+    ) -> None: ...  # pragma: no cover
 
     @abstractmethod
-    def stop(self) -> None: ...
+    def stop(self) -> None: ...  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +82,7 @@ _KEY_ALBUM = "MPMediaItemPropertyAlbumTitle"
 _KEY_DURATION = "MPMediaItemPropertyPlaybackDuration"
 _KEY_ELAPSED = "MPNowPlayingInfoPropertyElapsedPlaybackTime"
 _KEY_RATE = "MPNowPlayingInfoPropertyPlaybackRate"
+_KEY_ARTWORK = "MPMediaItemPropertyArtwork"
 
 
 class CoreAudioMediaController(MediaController):
@@ -125,23 +126,42 @@ class CoreAudioMediaController(MediaController):
             self._npc.setNowPlayingInfo_(None)
             return
 
-        self._npc.setNowPlayingInfo_(
-            {
-                _KEY_TITLE: track.title,
-                _KEY_ARTIST: track.artist,
-                _KEY_ALBUM: track.album,
-                _KEY_ELAPSED: position,
-                _KEY_DURATION: duration,
-                _KEY_RATE: 1.0 if playing else 0.0,
-            }
-        )
+        info: dict[str, object] = {
+            _KEY_TITLE: track.title,
+            _KEY_ARTIST: track.artist,
+            _KEY_ALBUM: track.album,
+            _KEY_ELAPSED: position,
+            _KEY_DURATION: duration,
+            _KEY_RATE: 1.0 if playing else 0.0,
+        }
+
+        # Artwork — best-effort; any failure is silently ignored.
+        # Not covered by unit tests: requires live PyObjC + real audio files.
+        try:  # pragma: no cover
+            import objc
+            from AppKit import NSData, NSImage
+
+            from kamp_core.library import extract_art
+
+            art_bytes = extract_art(track.file_path)
+            if art_bytes:
+                data = NSData.dataWithBytes_length_(art_bytes, len(art_bytes))
+                img = NSImage.alloc().initWithData_(data)
+                # initWithImage: is available on macOS and does not require a
+                # block, unlike initWithBoundsSize:requestHandler:.
+                MPMediaItemArtwork = objc.lookUpClass("MPMediaItemArtwork")
+                info[_KEY_ARTWORK] = MPMediaItemArtwork.alloc().initWithImage_(img)
+        except Exception:  # pragma: no cover
+            pass
+
+        self._npc.setNowPlayingInfo_(info)
 
     def stop(self) -> None:
         """Clear the Now Playing widget."""
         if self._npc is not None:
             try:
                 self._npc.setNowPlayingInfo_(None)
-            except Exception:
+            except Exception:  # pragma: no cover
                 pass
         logger.debug("MediaController stopped")
 

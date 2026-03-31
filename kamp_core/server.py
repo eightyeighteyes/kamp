@@ -113,6 +113,11 @@ class SearchOut(BaseModel):
     tracks: list[TrackOut]
 
 
+class QueueOut(BaseModel):
+    tracks: list[TrackOut]
+    position: int  # index of the currently playing track; -1 if empty
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -300,6 +305,11 @@ def create_app(
     @app.get("/api/v1/player/state", response_model=PlayerStateOut)
     def get_player_state() -> PlayerStateOut:
         return _state_snapshot()
+
+    @app.get("/api/v1/player/queue", response_model=QueueOut)
+    def get_queue() -> QueueOut:
+        tracks, pos = queue.queue_tracks()
+        return QueueOut(tracks=[TrackOut.from_track(t) for t in tracks], position=pos)
 
     @app.post("/api/v1/player/play")
     def play(req: PlayRequest) -> dict[str, Any]:

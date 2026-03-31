@@ -15,6 +15,8 @@ export function TransportBar(): React.JSX.Element {
   const prev = useStore((s) => s.prev)
   const seek = useStore((s) => s.seek)
   const setVolume = useStore((s) => s.setVolume)
+  const queueVisible = useStore((s) => s.queueVisible)
+  const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
 
   const { playing, position, duration, volume, current_track } = player
   return (
@@ -80,6 +82,14 @@ export function TransportBar(): React.JSX.Element {
         />
         <span className="volume-label">{volume}</span>
       </div>
+
+      <button
+        className={`transport-btn queue-toggle-btn${queueVisible ? ' active' : ''}`}
+        onClick={toggleQueuePanel}
+        title="Queue (Q)"
+      >
+        ☰
+      </button>
     </div>
   )
 }

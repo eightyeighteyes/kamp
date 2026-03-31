@@ -63,6 +63,7 @@ def mock_engine() -> MagicMock:
 def mock_queue() -> MagicMock:
     queue = MagicMock()
     queue.current.return_value = None
+    queue.queue_tracks.return_value = ([], -1)
     return queue
 
 
@@ -436,6 +437,43 @@ class TestPlayerControlEndpoints:
 # ---------------------------------------------------------------------------
 # WebSocket
 # ---------------------------------------------------------------------------
+
+
+class TestQueueEndpoint:
+    def test_empty_queue(self, client: TestClient) -> None:
+        response = client.get("/api/v1/player/queue")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["tracks"] == []
+        assert data["position"] == -1
+
+    def test_returns_tracks_with_position(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        ts = [_track(1), _track(2), _track(3)]
+        mock_queue.queue_tracks.return_value = (ts, 1)
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        data = c.get("/api/v1/player/queue").json()
+        assert len(data["tracks"]) == 3
+        assert data["position"] == 1
+        assert data["tracks"][1]["title"] == "Track 2"
+
+    def test_track_has_required_fields(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_queue.queue_tracks.return_value = ([_track(1)], 0)
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        track = c.get("/api/v1/player/queue").json()["tracks"][0]
+        assert set(track.keys()) >= {
+            "title",
+            "artist",
+            "album_artist",
+            "album",
+            "file_path",
+            "ext",
+        }
 
 
 class TestPlayerWebSocket:

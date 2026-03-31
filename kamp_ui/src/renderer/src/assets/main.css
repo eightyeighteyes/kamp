@@ -1165,3 +1165,134 @@ body,
 .artist-list li:active {
   opacity: 0.7;
 }
+
+/* Queue panel -------------------------------------------------------------- */
+
+.queue-panel {
+  width: 280px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.queue-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  height: 44px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.queue-panel-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+.queue-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.queue-close-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.queue-track-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  flex: 1;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.queue-track-row {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  padding: 6px 10px;
+  border-radius: 3px;
+  margin: 0 4px;
+  border-left: 3px solid transparent;
+  cursor: default;
+}
+
+.queue-track-row:hover {
+  background: var(--surface-hover);
+}
+
+.queue-track-row.current {
+  border-left-color: var(--accent);
+}
+
+.queue-track-row.played {
+  opacity: 0.4;
+}
+
+.queue-track-num {
+  grid-row: 1 / 3;
+  align-self: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-track-row.current .queue-track-num {
+  color: var(--accent);
+}
+
+.queue-track-title {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.queue-track-row.current .queue-track-title {
+  color: var(--accent);
+}
+
+.queue-track-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* Queue toggle button in transport bar */
+.queue-toggle-btn {
+  font-size: 15px;
+}
+
+.queue-toggle-btn.active {
+  color: var(--accent);
+}

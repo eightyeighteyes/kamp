@@ -76,6 +76,9 @@ class LibraryConfig:
 @dataclass
 class UiConfig:
     active_view: str = "library"  # "library" | "now-playing"
+    sort_order: str = (
+        "album_artist"  # "album_artist" | "album" | "date_added" | "last_played"
+    )
 
 
 @dataclass
@@ -229,7 +232,10 @@ class Config:
             )
 
         ui_raw = raw.get("ui", {})
-        ui = UiConfig(active_view=ui_raw.get("active_view", "library"))
+        ui = UiConfig(
+            active_view=ui_raw.get("active_view", "library"),
+            sort_order=ui_raw.get("sort_order", "album_artist"),
+        )
 
         return cls(
             paths=PathsConfig(
@@ -267,6 +273,7 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "bandcamp.format": str,
     "bandcamp.poll_interval_minutes": int,
     "ui.active_view": str,
+    "ui.sort_order": str,
 }
 
 # Keys whose values must come from a fixed set of choices.
@@ -275,6 +282,7 @@ _CONFIG_KEY_CHOICES: dict[str, frozenset[str]] = {
         {"mp3-v0", "mp3-320", "flac", "aac-hi", "vorbis", "alac", "wav"}
     ),
     "ui.active_view": frozenset({"library", "now-playing"}),
+    "ui.sort_order": frozenset({"album_artist", "album", "date_added", "last_played"}),
 }
 
 # Sections that must be explicitly added by the user (e.g. via 'kamp sync').
@@ -334,11 +342,18 @@ def config_set(path: Path, key: str, value: str) -> None:
     try:
         new_text = _replace_in_section(text, section, field, toml_value)
     except KeyError as exc:
-        if "not found in config" in str(exc) and section not in _OPTIONAL_SECTIONS:
+        msg = str(exc)
+        if "not found in config" in msg and section not in _OPTIONAL_SECTIONS:
             # Section is standard but absent (e.g. existing config predates this
             # section). Append it so the value is persisted now and replaced on
             # future writes once the section exists.
             path.write_text(text + f"\n[{section}]\n{field} = {toml_value}\n")
+            return
+        if "not found in" in msg and section not in _OPTIONAL_SECTIONS:
+            # Section exists but key is absent (e.g. config predates this field).
+            # Append the key inside the existing section.
+            new_text = _append_to_section(text, section, field, toml_value)
+            path.write_text(new_text)
             return
         raise
     path.write_text(new_text)
@@ -347,6 +362,20 @@ def config_set(path: Path, key: str, value: str) -> None:
 def _toml_escape(s: str) -> str:
     """Escape a string for embedding in a TOML double-quoted string."""
     return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _append_to_section(text: str, section: str, field: str, toml_value: str) -> str:
+    """Append *field = toml_value* at the end of *section* in raw TOML text."""
+    section_re = re.compile(r"^\[" + re.escape(section) + r"\]", re.MULTILINE)
+    section_match = section_re.search(text)
+    assert section_match  # caller guarantees the section exists
+    next_section_re = re.compile(r"^\[[\w-]+\]", re.MULTILINE)
+    next_match = next_section_re.search(text, section_match.end())
+    insert_pos = next_match.start() if next_match else len(text)
+    # Ensure there's a trailing newline before the new key
+    prefix = text[:insert_pos].rstrip("\n") + "\n"
+    suffix = text[insert_pos:]
+    return prefix + f"{field} = {toml_value}\n" + suffix
 
 
 def _replace_in_section(text: str, section: str, field: str, toml_value: str) -> str:

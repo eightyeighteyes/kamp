@@ -33,8 +33,9 @@ export default function App(): React.JSX.Element {
   const searchBarRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    loadLibrary()
-    loadUiState()
+    // Load UI state (sort order, active view) before loading the library so the
+    // library is fetched with the correct persisted sort order, not the default.
+    loadUiState().then(() => loadLibrary())
 
     // Connect WebSocket state stream. On close, retry with exponential backoff
     // (1 s, 2 s, 4 s … capped at 30 s). After 8 failed attempts we give up and
@@ -59,8 +60,7 @@ export default function App(): React.JSX.Element {
         () => {
           attempts = 0
           setServerStatus('connected')
-          loadLibrary()
-          loadUiState()
+          void loadUiState().then(() => loadLibrary())
           void loadQueue()
         },
         () => {

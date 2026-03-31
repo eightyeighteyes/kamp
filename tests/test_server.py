@@ -536,6 +536,74 @@ class TestQueueMutationEndpoints:
         assert resp.status_code == 400
 
 
+class TestAlbumQueueEndpoints:
+    def test_add_album_to_queue_calls_queue_method(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        ts = [_track(i) for i in range(3)]
+        mock_index.tracks_for_album.return_value = ts
+        resp = client.post(
+            "/api/v1/player/queue/add-album",
+            json={"album_artist": "Artist", "album": "Album"},
+        )
+        assert resp.status_code == 200
+        mock_queue.add_album_to_queue.assert_called_once_with(ts)
+
+    def test_add_album_to_queue_404_for_unknown_album(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = []
+        resp = client.post(
+            "/api/v1/player/queue/add-album",
+            json={"album_artist": "X", "album": "Y"},
+        )
+        assert resp.status_code == 404
+
+    def test_play_album_next_calls_queue_method(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        ts = [_track(i) for i in range(3)]
+        mock_index.tracks_for_album.return_value = ts
+        resp = client.post(
+            "/api/v1/player/queue/play-album-next",
+            json={"album_artist": "Artist", "album": "Album"},
+        )
+        assert resp.status_code == 200
+        mock_queue.play_album_next.assert_called_once_with(ts)
+
+    def test_play_album_next_404_for_unknown_album(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = []
+        resp = client.post(
+            "/api/v1/player/queue/play-album-next",
+            json={"album_artist": "X", "album": "Y"},
+        )
+        assert resp.status_code == 404
+
+    def test_insert_album_calls_queue_method(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        ts = [_track(i) for i in range(3)]
+        mock_index.tracks_for_album.return_value = ts
+        resp = client.post(
+            "/api/v1/player/queue/insert-album",
+            json={"album_artist": "Artist", "album": "Album", "index": 2},
+        )
+        assert resp.status_code == 200
+        mock_queue.insert_album_at.assert_called_once_with(ts, 2)
+
+    def test_insert_album_404_for_unknown_album(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = []
+        resp = client.post(
+            "/api/v1/player/queue/insert-album",
+            json={"album_artist": "X", "album": "Y", "index": 0},
+        )
+        assert resp.status_code == 404
+
+
 class TestPlayerWebSocket:
     def test_websocket_sends_initial_state(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

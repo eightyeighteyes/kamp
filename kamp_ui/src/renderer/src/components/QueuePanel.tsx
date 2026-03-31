@@ -7,6 +7,8 @@ export function QueuePanel(): React.JSX.Element {
   const moveQueueTrack = useStore((s) => s.moveQueueTrack)
   const addToQueue = useStore((s) => s.addToQueue)
   const insertIntoQueue = useStore((s) => s.insertIntoQueue)
+  const insertAlbumAt = useStore((s) => s.insertAlbumAt)
+  const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
   const activeRef = useRef<HTMLLIElement>(null)
 
   const tracks = queue?.tracks ?? []
@@ -21,11 +23,22 @@ export function QueuePanel(): React.JSX.Element {
     e.currentTarget.classList.remove('drag-over')
     const queueIdx = e.dataTransfer.getData('text/kamp-queue-idx')
     const trackPath = e.dataTransfer.getData('text/kamp-track-path')
+    const albumJson = e.dataTransfer.getData('text/kamp-album')
     if (queueIdx !== '') {
       const from = Number(queueIdx)
       if (from !== dropIdx) void moveQueueTrack(from, dropIdx)
     } else if (trackPath) {
       void insertIntoQueue(trackPath, dropIdx)
+    } else if (albumJson) {
+      try {
+        const { album_artist, album } = JSON.parse(albumJson) as {
+          album_artist: string
+          album: string
+        }
+        void insertAlbumAt(album_artist, album, dropIdx)
+      } catch {
+        // malformed drag data — ignore
+      }
     }
   }
 
@@ -43,7 +56,20 @@ export function QueuePanel(): React.JSX.Element {
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             const trackPath = e.dataTransfer.getData('text/kamp-track-path')
-            if (trackPath) void addToQueue(trackPath)
+            const albumJson = e.dataTransfer.getData('text/kamp-album')
+            if (trackPath) {
+              void addToQueue(trackPath)
+            } else if (albumJson) {
+              try {
+                const { album_artist, album } = JSON.parse(albumJson) as {
+                  album_artist: string
+                  album: string
+                }
+                void addAlbumToQueue(album_artist, album)
+              } catch {
+                // malformed drag data — ignore
+              }
+            }
           }}
         >
           No tracks in queue.

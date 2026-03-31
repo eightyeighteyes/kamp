@@ -66,6 +66,9 @@ type PlayerStore = {
   setVolume: (volume: number) => Promise<void>
   setShuffle: (shuffle: boolean) => Promise<void>
   setRepeat: (repeat: boolean) => Promise<void>
+  addAlbumToQueue: (albumArtist: string, album: string) => Promise<void>
+  playAlbumNext: (albumArtist: string, album: string) => Promise<void>
+  insertAlbumAt: (albumArtist: string, album: string, index: number) => Promise<void>
   addToQueue: (filePath: string) => Promise<void>
   insertIntoQueue: (filePath: string, index: number) => Promise<void>
   playNext: (filePath: string) => Promise<void>
@@ -266,6 +269,21 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   setRepeat: async (repeat) => {
     await api.setRepeat(repeat)
+  },
+
+  addAlbumToQueue: async (albumArtist, album) => {
+    await api.addAlbumToQueue(albumArtist, album)
+    void get().loadQueue()
+  },
+
+  playAlbumNext: async (albumArtist, album) => {
+    await api.playAlbumNext(albumArtist, album)
+    void get().loadQueue()
+  },
+
+  insertAlbumAt: async (albumArtist, album, index) => {
+    await api.insertAlbumAt(albumArtist, album, index)
+    void get().loadQueue()
   },
 
   addToQueue: async (filePath) => {

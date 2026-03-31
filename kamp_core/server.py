@@ -132,6 +132,17 @@ class InsertQueueRequest(BaseModel):
     index: int
 
 
+class AlbumQueueRequest(BaseModel):
+    album_artist: str
+    album: str
+
+
+class InsertAlbumQueueRequest(BaseModel):
+    album_artist: str
+    album: str
+    index: int
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -399,6 +410,30 @@ def create_app(
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.insert_at(track, req.index)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/add-album")
+    def queue_add_album(req: AlbumQueueRequest) -> dict[str, Any]:
+        tracks = index.tracks_for_album(req.album_artist, req.album)
+        if not tracks:
+            raise HTTPException(status_code=404, detail="Album not found")
+        queue.add_album_to_queue(tracks)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/play-album-next")
+    def queue_play_album_next(req: AlbumQueueRequest) -> dict[str, Any]:
+        tracks = index.tracks_for_album(req.album_artist, req.album)
+        if not tracks:
+            raise HTTPException(status_code=404, detail="Album not found")
+        queue.play_album_next(tracks)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/insert-album")
+    def queue_insert_album(req: InsertAlbumQueueRequest) -> dict[str, Any]:
+        tracks = index.tracks_for_album(req.album_artist, req.album)
+        if not tracks:
+            raise HTTPException(status_code=404, detail="Album not found")
+        queue.insert_album_at(tracks, req.index)
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/move")

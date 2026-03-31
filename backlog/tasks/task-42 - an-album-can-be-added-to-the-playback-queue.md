@@ -1,10 +1,10 @@
 ---
 id: TASK-42
 title: an album can be added to the playback queue
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-30 01:49'
-updated_date: '2026-03-31 03:25'
+updated_date: '2026-03-31 20:10'
 labels:
   - feature
   - ui
@@ -12,7 +12,7 @@ labels:
 milestone: m-8
 dependencies: []
 priority: high
-ordinal: 1750
+ordinal: 1000
 ---
 
 ## Description

@@ -165,6 +165,34 @@ class PlaybackQueue:
         elif insert_pos <= self._pos:
             self._pos += 1
 
+    def add_album_to_queue(self, tracks: list[Track]) -> None:
+        """Append all *tracks* to the end of the queue in order."""
+        for track in tracks:
+            self.add_to_queue(track)
+
+    def play_album_next(self, tracks: list[Track]) -> None:
+        """Insert all *tracks* immediately after the current position in order.
+
+        Each track is inserted at a successive offset so the album plays in
+        the correct sequence.
+        """
+        for offset, track in enumerate(tracks):
+            insert_at = (self._pos + 1 + offset) if self._pos >= 0 else offset
+            idx = len(self._tracks)
+            self._tracks.append(track)
+            self._order.insert(insert_at, idx)
+        if self._pos < 0 and tracks:
+            self._pos = 0
+
+    def insert_album_at(self, tracks: list[Track], display_idx: int) -> None:
+        """Insert all *tracks* starting at display position *display_idx* in order.
+
+        Adjusts *_pos* for each insertion so the currently playing track does
+        not change.
+        """
+        for offset, track in enumerate(tracks):
+            self.insert_at(track, display_idx + offset)
+
     def play_next(self, track: Track) -> None:
         """Insert *track* immediately after the current position.
 

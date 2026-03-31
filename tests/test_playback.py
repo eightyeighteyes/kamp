@@ -415,6 +415,75 @@ class TestPlaybackQueue:
         tracks, _ = q.queue_tracks()
         assert tracks[-1] == extra
 
+    # ------------------------------------------------------------------
+    # add_album_to_queue
+    # ------------------------------------------------------------------
+
+    def test_add_album_to_queue_appends_tracks_in_order(self) -> None:
+        q = PlaybackQueue()
+        album = [_track(i) for i in range(3)]
+        q.add_album_to_queue(album)
+        tracks, pos = q.queue_tracks()
+        assert tracks == album
+        assert pos == 0
+
+    def test_add_album_to_queue_onto_existing_queue(self) -> None:
+        q = PlaybackQueue()
+        existing = [_track(i) for i in range(2)]
+        album = [_track(10 + i) for i in range(3)]
+        q.load(existing)
+        q.add_album_to_queue(album)
+        tracks, _ = q.queue_tracks()
+        assert tracks[2:] == album
+
+    # ------------------------------------------------------------------
+    # play_album_next
+    # ------------------------------------------------------------------
+
+    def test_play_album_next_inserts_after_current_in_order(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)  # pos=0
+        album = [_track(10 + i) for i in range(3)]
+        q.play_album_next(album)
+        tracks, pos = q.queue_tracks()
+        assert pos == 0
+        assert tracks[1:4] == album  # album occupies positions 1-3
+        assert len(tracks) == 6
+
+    def test_play_album_next_on_empty_queue(self) -> None:
+        q = PlaybackQueue()
+        album = [_track(i) for i in range(3)]
+        q.play_album_next(album)
+        tracks, pos = q.queue_tracks()
+        assert tracks == album
+        assert pos == 0
+
+    # ------------------------------------------------------------------
+    # insert_album_at
+    # ------------------------------------------------------------------
+
+    def test_insert_album_at_places_tracks_at_position(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)
+        album = [_track(10 + i) for i in range(3)]
+        q.insert_album_at(album, 2)
+        tracks, _ = q.queue_tracks()
+        assert tracks[2:5] == album
+        assert len(tracks) == 7
+
+    def test_insert_album_at_adjusts_pos_when_inserted_before_current(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)
+        q.next()
+        q.next()  # pos=2
+        album = [_track(10 + i) for i in range(2)]
+        q.insert_album_at(album, 0)  # insert 2 tracks before current
+        _, pos = q.queue_tracks()
+        assert pos == 4  # shifted forward by 2
+
 
 # ---------------------------------------------------------------------------
 # MpvPlaybackEngine

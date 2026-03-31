@@ -135,6 +135,16 @@ export const setShuffle = (shuffle: boolean): Promise<unknown> =>
   post('/api/v1/player/shuffle', { shuffle })
 export const setRepeat = (repeat: boolean): Promise<unknown> =>
   post('/api/v1/player/repeat', { repeat })
+export const addAlbumToQueue = (albumArtist: string, album: string): Promise<unknown> =>
+  post('/api/v1/player/queue/add-album', { album_artist: albumArtist, album })
+export const playAlbumNext = (albumArtist: string, album: string): Promise<unknown> =>
+  post('/api/v1/player/queue/play-album-next', { album_artist: albumArtist, album })
+export const insertAlbumAt = (
+  albumArtist: string,
+  album: string,
+  index: number
+): Promise<unknown> =>
+  post('/api/v1/player/queue/insert-album', { album_artist: albumArtist, album, index })
 export const addToQueue = (filePath: string): Promise<unknown> =>
   post('/api/v1/player/queue/add', { file_path: filePath })
 export const insertIntoQueue = (filePath: string, index: number): Promise<unknown> =>

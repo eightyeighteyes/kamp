@@ -1,10 +1,10 @@
 ---
 id: TASK-41
 title: A track can be added to the playback queue
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-03-30 01:49'
-updated_date: '2026-03-31 17:11'
+updated_date: '2026-03-31 19:32'
 labels:
   - feature
   - ui
@@ -12,7 +12,7 @@ labels:
 milestone: m-8
 dependencies: []
 priority: high
-ordinal: 1500
+ordinal: 3000
 ---
 
 ## Description

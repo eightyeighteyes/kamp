@@ -11,6 +11,7 @@ import * as api from './api/client'
 import type {
   Album,
   PlayerState,
+  QueueState,
   ScanProgress,
   ScanResult,
   SearchResult,
@@ -40,9 +41,13 @@ type PlayerStore = {
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
   searchQuery: string
   searchResults: SearchResult | null
+  queueVisible: boolean
+  queue: QueueState | null
 
   // Actions
   setServerStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void
+  toggleQueuePanel: () => void
+  loadQueue: () => Promise<void>
   setSearchQuery: (q: string) => void
   setSortOrder: (sort: 'album_artist' | 'album' | 'date_added' | 'last_played') => Promise<void>
   setActiveView: (view: 'library' | 'now-playing') => Promise<void>
@@ -95,8 +100,21 @@ export const useStore = create<PlayerStore>((set, get) => ({
   sortOrder: 'album_artist',
   searchQuery: '',
   searchResults: null,
+  queueVisible: false,
+  queue: null,
 
   setServerStatus: (status) => set({ serverStatus: status }),
+
+  toggleQueuePanel: () => set((s) => ({ queueVisible: !s.queueVisible })),
+
+  loadQueue: async () => {
+    try {
+      const queue = await api.getQueue()
+      set({ queue })
+    } catch {
+      // Best-effort — stale or empty queue is fine.
+    }
+  },
 
   setSortOrder: async (sort) => {
     set({ sortOrder: sort })
@@ -189,10 +207,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   playAlbum: async (albumArtist, album, trackIndex = 0) => {
     await api.playAlbum(albumArtist, album, trackIndex)
+    void get().loadQueue()
   },
 
   playTrack: async (albumArtist, album, trackIndex) => {
     await api.playAlbum(albumArtist, album, trackIndex)
+    void get().loadQueue()
   },
 
   togglePlayPause: async () => {
@@ -210,10 +230,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   next: async () => {
     await api.nextTrack()
+    void get().loadQueue()
   },
 
   prev: async () => {
     await api.prevTrack()
+    void get().loadQueue()
   },
 
   seek: async (position) => {
@@ -227,6 +249,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   setShuffle: async (shuffle) => {
     await api.setShuffle(shuffle)
+    void get().loadQueue()
   },
 
   setRepeat: async (repeat) => {

@@ -91,6 +91,13 @@ export type SearchResult = {
 export const search = (q: string, sort = 'album_artist'): Promise<SearchResult> =>
   get(`/api/v1/search?q=${encodeURIComponent(q)}&sort=${encodeURIComponent(sort)}`)
 
+export type QueueState = {
+  tracks: Track[]
+  position: number
+}
+
+export const getQueue = (): Promise<QueueState> => get('/api/v1/player/queue')
+
 export const scanLibrary = (): Promise<ScanResult> => post('/api/v1/library/scan')
 
 export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>

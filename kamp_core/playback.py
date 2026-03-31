@@ -110,6 +110,15 @@ class PlaybackQueue:
     def set_repeat(self, repeat: bool) -> None:
         self._repeat = repeat
 
+    def queue_tracks(self) -> tuple[list[Track], int]:
+        """Return (tracks_in_playback_order, pos) for API serialisation.
+
+        Mirrors get_state() but returns Track objects rather than Paths so
+        the server can call TrackOut.from_track() without an extra lookup.
+        Returns ([], -1) when the queue is empty.
+        """
+        return [self._tracks[i] for i in self._order], self._pos
+
     def get_state(self) -> tuple[list[Path], int, bool, bool]:
         """Return (tracks_in_playback_order, pos, shuffle, repeat) for persistence.
 

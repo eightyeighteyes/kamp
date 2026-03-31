@@ -1,10 +1,10 @@
 ---
 id: TASK-40
 title: The Playback Queue is a panel that can be shown
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 01:49'
-updated_date: '2026-03-31 03:23'
+updated_date: '2026-03-31 17:09'
 labels:
   - feature
   - ui

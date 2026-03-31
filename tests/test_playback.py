@@ -162,6 +162,45 @@ class TestPlaybackQueue:
         q.set_shuffle(True)  # no tracks loaded — should not raise
         assert q.current() is None
 
+    def test_queue_tracks_empty(self) -> None:
+        tracks, pos = PlaybackQueue().queue_tracks()
+        assert tracks == []
+        assert pos == -1
+
+    def test_queue_tracks_returns_tracks_in_playback_order(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)
+        tracks, pos = q.queue_tracks()
+        assert tracks == ts
+        assert pos == 0
+
+    def test_queue_tracks_reflects_position_after_next(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)
+        q.next()
+        tracks, pos = q.queue_tracks()
+        assert tracks == ts
+        assert pos == 1
+
+    def test_queue_tracks_returns_shuffled_order(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(10)]
+        q.load(ts)
+        q.set_shuffle(True)
+        tracks, pos = q.queue_tracks()
+        assert set(t.file_path for t in tracks) == {t.file_path for t in ts}
+        assert pos == 0
+
+    def test_queue_tracks_after_empty_load(self) -> None:
+        q = PlaybackQueue()
+        q.load([_track(1)])
+        q.load([])
+        tracks, pos = q.queue_tracks()
+        assert tracks == []
+        assert pos == -1
+
     def test_get_state_returns_paths_in_playback_order(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]

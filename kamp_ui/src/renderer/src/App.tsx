@@ -9,6 +9,7 @@ import { SearchView } from './components/SearchView'
 import { SetupScreen } from './components/SetupScreen'
 import { TrackList } from './components/TrackList'
 import { TransportBar } from './components/TransportBar'
+import { QueuePanel } from './components/QueuePanel'
 
 export default function App(): React.JSX.Element {
   const loadLibrary = useStore((s) => s.loadLibrary)
@@ -26,6 +27,9 @@ export default function App(): React.JSX.Element {
   const prev = useStore((s) => s.prev)
   const searchQuery = useStore((s) => s.searchQuery)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
+  const queueVisible = useStore((s) => s.queueVisible)
+  const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
+  const loadQueue = useStore((s) => s.loadQueue)
   const searchBarRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -57,6 +61,7 @@ export default function App(): React.JSX.Element {
           setServerStatus('connected')
           loadLibrary()
           loadUiState()
+          void loadQueue()
         },
         () => {
           // Background scan completed — refresh album list then open track list.
@@ -110,11 +115,24 @@ export default function App(): React.JSX.Element {
         case 'L':
           void setActiveView(activeView === 'library' ? 'now-playing' : 'library')
           break
+        case 'q':
+        case 'Q':
+          toggleQueuePanel()
+          break
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [togglePlayPause, next, prev, setActiveView, activeView, searchQuery, setSearchQuery])
+  }, [
+    togglePlayPause,
+    next,
+    prev,
+    setActiveView,
+    activeView,
+    searchQuery,
+    setSearchQuery,
+    toggleQueuePanel
+  ])
 
   if (serverStatus === 'disconnected') {
     return (
@@ -167,6 +185,7 @@ export default function App(): React.JSX.Element {
             <AlbumGrid />
           )}
         </main>
+        {queueVisible && <QueuePanel />}
       </div>
       <TransportBar />
     </div>

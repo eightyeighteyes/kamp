@@ -4,7 +4,7 @@ title: window dimension states aren't serialized / deserialized on app reload
 status: Done
 assignee: []
 created_date: '2026-03-29 17:54'
-updated_date: '2026-03-30 01:33'
+updated_date: '2026-03-30 01:37'
 labels:
   - bug
   - electron
@@ -12,11 +12,7 @@ labels:
 milestone: m-0
 dependencies: []
 priority: low
-ordinal: 4750
+ordinal: 9000
 ---
 
-## Final Summary
 
-<!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added `loadWindowBounds()`/`saveWindowBounds()` in `src/main/index.ts` using Node `fs` + `app.getPath('userData')/window-state.json`. Bounds saved on every `moved`/`resized` event and restored on next launch, falling back to 900×670 if the file is absent.
-<!-- SECTION:FINAL_SUMMARY:END -->

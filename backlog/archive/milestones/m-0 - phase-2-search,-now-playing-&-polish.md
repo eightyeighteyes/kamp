@@ -1,6 +1,6 @@
 ---
 id: m-0
-title: "Phase 2: Search, Now Playing & Polish"
+title: "Search, Now Playing & Polish"
 ---
 
 ## Description

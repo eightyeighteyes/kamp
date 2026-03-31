@@ -1,10 +1,10 @@
 ---
 id: TASK-30
 title: 'Investigate: main process inflates ~50 MB when Bandcamp sync starts'
-status: Draft
+status: To Do
 assignee: []
 created_date: '2026-03-29 02:58'
-updated_date: '2026-03-29 17:47'
+updated_date: '2026-03-31 03:12'
 labels:
   - bug
   - performance

@@ -1,16 +1,17 @@
 ---
 id: TASK-34
 title: Allow user to verify tags before they are written
-status: Draft
+status: To Do
 assignee: []
 created_date: '2026-03-29 02:58'
-updated_date: '2026-03-29 17:49'
+updated_date: '2026-03-31 03:22'
 labels:
   - feature
   - ux
   - 'estimate: lp'
 milestone: m-7
 dependencies: []
+priority: medium
 ---
 
 ## Description

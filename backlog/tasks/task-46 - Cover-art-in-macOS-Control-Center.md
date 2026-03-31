@@ -4,11 +4,14 @@ title: Cover art in macOS Control Center
 status: To Do
 assignee: []
 created_date: '2026-03-30 23:14'
+updated_date: '2026-03-31 03:27'
 labels:
   - macos
   - now-playing
+milestone: m-9
 dependencies: []
 priority: low
+ordinal: 3000
 ---
 
 ## Description

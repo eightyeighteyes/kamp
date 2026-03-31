@@ -4,9 +4,15 @@ title: media queue needs to survive app restart
 status: To Do
 assignee: []
 created_date: '2026-03-30 23:18'
-labels: []
+updated_date: '2026-03-31 03:44'
+labels:
+  - feature
+  - backend
+  - 'estimate: single'
 milestone: m-8
 dependencies: []
+priority: high
+ordinal: 1000
 ---
 
 ## Description

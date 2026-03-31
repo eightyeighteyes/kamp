@@ -4,12 +4,15 @@ title: 'Media keys: next/prev track'
 status: To Do
 assignee: []
 created_date: '2026-03-30 23:47'
+updated_date: '2026-03-31 03:27'
 labels:
   - macos
   - media-keys
   - architecture
+milestone: m-9
 dependencies: []
 priority: medium
+ordinal: 1000
 ---
 
 ## Description

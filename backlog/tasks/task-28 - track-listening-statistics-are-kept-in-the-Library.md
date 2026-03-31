@@ -4,7 +4,7 @@ title: track listening statistics are kept in the Library
 status: To Do
 assignee: []
 created_date: '2026-03-29 17:29'
-updated_date: '2026-03-29 17:42'
+updated_date: '2026-03-31 03:21'
 labels:
   - feature
   - library
@@ -12,6 +12,7 @@ labels:
 milestone: m-5
 dependencies: []
 priority: medium
+ordinal: 3000
 ---
 
 ## Description

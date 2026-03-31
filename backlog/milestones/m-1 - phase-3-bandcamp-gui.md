@@ -1,6 +1,6 @@
 ---
 id: m-1
-title: "Phase 3: Bandcamp GUI"
+title: "Bandcamp GUI"
 ---
 
 ## Description

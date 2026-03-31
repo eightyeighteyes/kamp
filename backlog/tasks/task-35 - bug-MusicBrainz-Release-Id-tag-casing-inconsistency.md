@@ -1,10 +1,10 @@
 ---
 id: TASK-35
 title: 'bug: MusicBrainz Release Id tag casing inconsistency'
-status: Draft
+status: To Do
 assignee: []
 created_date: '2026-03-29 02:58'
-updated_date: '2026-03-29 17:49'
+updated_date: '2026-03-31 03:22'
 labels:
   - bug
   - musicbrainz
@@ -12,6 +12,7 @@ labels:
   - 'estimate: single'
 milestone: m-7
 dependencies: []
+priority: low
 ---
 
 ## Description

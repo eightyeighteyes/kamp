@@ -110,6 +110,29 @@ class PlaybackQueue:
     def set_repeat(self, repeat: bool) -> None:
         self._repeat = repeat
 
+    def get_state(self) -> tuple[list[Path], int, bool, bool]:
+        """Return (tracks_in_playback_order, pos, shuffle, repeat) for persistence.
+
+        Tracks are returned in the current playback order so the shuffle
+        sequence can be faithfully restored without re-shuffling.
+        """
+        ordered_paths = [self._tracks[i].file_path for i in self._order]
+        return ordered_paths, self._pos, self._shuffle, self._repeat
+
+    def restore(
+        self, tracks: list[Track], pos: int, shuffle: bool, repeat: bool
+    ) -> None:
+        """Restore queue from persisted state.
+
+        *tracks* must already be in playback order (as returned by get_state).
+        The order is taken as-is so shuffle sequences survive restarts.
+        """
+        self._tracks = list(tracks)
+        self._order = list(range(len(tracks)))
+        self._pos = pos if tracks else -1
+        self._shuffle = shuffle
+        self._repeat = repeat
+
     def _shuffled_order(self, anchor_idx: int) -> None:
         """Shuffle _order so anchor_idx appears first."""
         rest = [i for i in range(len(self._tracks)) if i != anchor_idx]

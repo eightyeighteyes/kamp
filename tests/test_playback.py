@@ -162,6 +162,59 @@ class TestPlaybackQueue:
         q.set_shuffle(True)  # no tracks loaded — should not raise
         assert q.current() is None
 
+    def test_get_state_returns_paths_in_playback_order(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        paths, pos, shuffle, repeat = q.get_state()
+        assert paths == [t.file_path for t in tracks]
+        assert pos == 0
+        assert shuffle is False
+        assert repeat is False
+
+    def test_get_state_bakes_in_shuffle_order(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks)
+        q.set_shuffle(True)
+        paths, pos, shuffle, repeat = q.get_state()
+        # All paths present, shuffle flag set, current track first
+        assert set(paths) == {t.file_path for t in tracks}
+        assert paths[0] == tracks[0].file_path  # current anchored at pos 0
+        assert shuffle is True
+        assert pos == 0
+
+    def test_get_state_empty_queue(self) -> None:
+        q = PlaybackQueue()
+        paths, pos, shuffle, repeat = q.get_state()
+        assert paths == []
+        assert pos == -1
+
+    def test_restore_sets_all_fields(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.restore(tracks, pos=2, shuffle=True, repeat=True)
+        assert q.current() == tracks[2]
+        paths, pos, shuffle, repeat = q.get_state()
+        assert pos == 2
+        assert shuffle is True
+        assert repeat is True
+
+    def test_restore_empty_list(self) -> None:
+        q = PlaybackQueue()
+        q.restore([], pos=0, shuffle=False, repeat=False)
+        assert q.current() is None
+        paths, pos, shuffle, repeat = q.get_state()
+        assert paths == []
+        assert pos == -1
+
+    def test_restore_then_next(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.restore(tracks, pos=0, shuffle=False, repeat=False)
+        nxt = q.next()
+        assert nxt == tracks[1]
+
 
 # ---------------------------------------------------------------------------
 # MpvPlaybackEngine

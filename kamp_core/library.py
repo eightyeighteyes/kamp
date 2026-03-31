@@ -58,6 +58,14 @@ CREATE TABLE IF NOT EXISTS player_state (
     track_path TEXT    NOT NULL,
     position   REAL    NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS queue_state (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),  -- single-row table
+    tracks  TEXT    NOT NULL,                    -- JSON array of file paths in playback order
+    pos     INTEGER NOT NULL DEFAULT -1,
+    shuffle INTEGER NOT NULL DEFAULT 0,
+    repeat  INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Characters that have special meaning in FTS5 MATCH expressions.
@@ -392,6 +400,44 @@ class LibraryIndex:
             "SELECT track_path, position FROM player_state WHERE id = 1"
         ).fetchone()
         return (Path(row["track_path"]), row["position"]) if row else None
+
+    def save_queue_state(
+        self, tracks: list[Path], pos: int, shuffle: bool, repeat: bool
+    ) -> None:
+        """Persist the full queue in playback order alongside pos and flags."""
+        import json
+
+        payload = json.dumps([str(p) for p in tracks])
+        self._conn.execute(
+            """
+            INSERT INTO queue_state (id, tracks, pos, shuffle, repeat)
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                tracks  = excluded.tracks,
+                pos     = excluded.pos,
+                shuffle = excluded.shuffle,
+                repeat  = excluded.repeat
+            """,
+            (payload, pos, int(shuffle), int(repeat)),
+        )
+        self._conn.commit()
+
+    def load_queue_state(self) -> "tuple[list[Path], int, bool, bool] | None":
+        """Return (tracks_in_playback_order, pos, shuffle, repeat) or None."""
+        import json
+
+        row = self._conn.execute(
+            "SELECT tracks, pos, shuffle, repeat FROM queue_state WHERE id = 1"
+        ).fetchone()
+        if not row:
+            return None
+        paths = [Path(p) for p in json.loads(row["tracks"])]
+        return paths, row["pos"], bool(row["shuffle"]), bool(row["repeat"])
+
+    def clear_queue_state(self) -> None:
+        """Remove the persisted queue state (e.g. after the queue is exhausted)."""
+        self._conn.execute("DELETE FROM queue_state WHERE id = 1")
+        self._conn.commit()
 
     def close(self) -> None:
         with self._all_conns_lock:

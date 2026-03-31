@@ -351,6 +351,52 @@ class TestLibraryIndex:
         assert path == tmp_path / "second.mp3"
         assert position == 99.0
 
+    def test_save_and_load_queue_state(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        tracks = [tmp_path / "a.mp3", tmp_path / "b.mp3", tmp_path / "c.mp3"]
+        index.save_queue_state(tracks, pos=1, shuffle=True, repeat=False)
+        result = index.load_queue_state()
+        index.close()
+
+        assert result is not None
+        paths, pos, shuffle, repeat = result
+        assert paths == tracks
+        assert pos == 1
+        assert shuffle is True
+        assert repeat is False
+
+    def test_load_queue_state_returns_none_when_absent(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = index.load_queue_state()
+        index.close()
+
+        assert result is None
+
+    def test_save_queue_state_overwrites_previous(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.save_queue_state([tmp_path / "a.mp3"], pos=0, shuffle=False, repeat=False)
+        index.save_queue_state(
+            [tmp_path / "b.mp3", tmp_path / "c.mp3"], pos=1, shuffle=True, repeat=True
+        )
+        result = index.load_queue_state()
+        index.close()
+
+        assert result is not None
+        paths, pos, shuffle, repeat = result
+        assert paths == [tmp_path / "b.mp3", tmp_path / "c.mp3"]
+        assert pos == 1
+        assert shuffle is True
+        assert repeat is True
+
+    def test_clear_queue_state(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.save_queue_state([tmp_path / "a.mp3"], pos=0, shuffle=False, repeat=False)
+        index.clear_queue_state()
+        result = index.load_queue_state()
+        index.close()
+
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # extract_art

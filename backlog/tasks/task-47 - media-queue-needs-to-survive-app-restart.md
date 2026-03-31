@@ -1,10 +1,10 @@
 ---
 id: TASK-47
 title: media queue needs to survive app restart
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 23:18'
-updated_date: '2026-03-31 03:44'
+updated_date: '2026-03-31 13:39'
 labels:
   - feature
   - backend

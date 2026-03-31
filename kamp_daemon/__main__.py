@@ -482,15 +482,38 @@ def _cmd_server(
     engine = MpvPlaybackEngine()
     queue: PlaybackQueue = PlaybackQueue()
 
-    # Restore the last session's track and position, paused, so the user can
+    # Restore the last session's queue and position, paused, so the user can
     # resume with a single press of play rather than hunting for the album again.
-    saved = index.load_player_state()
-    if saved:
-        saved_path, saved_pos = saved
+    # If queue state is available, reconstruct the full queue (including tracks
+    # before/after the current one) so playback continues naturally after restart.
+    saved_queue = index.load_queue_state()
+    saved_player = index.load_player_state()
+    if saved_queue and saved_player:
+        saved_paths, q_pos, q_shuffle, q_repeat = saved_queue
+        _, saved_position = saved_player
+        # Resolve paths → Track objects; silently drop tracks removed from library.
+        resolved = []
+        missing_before = 0
+        for i, p in enumerate(saved_paths):
+            t = index.get_track_by_path(p)
+            if t is not None:
+                resolved.append(t)
+            elif i <= q_pos:
+                # Track was before or at the current position — shift pos back.
+                missing_before += 1
+        restored_pos = max(0, q_pos - missing_before)
+        if resolved:
+            queue.restore(resolved, restored_pos, q_shuffle, q_repeat)
+            current = queue.current()
+            if current:
+                engine.load_paused(current.file_path, saved_position)
+    elif saved_player:
+        # Fallback: no queue state — restore single track (pre-TASK-47 behaviour).
+        saved_path, saved_position = saved_player
         track = index.get_track_by_path(saved_path)
         if track:
             queue.load([track], 0)
-            engine.load_paused(track.file_path, saved_pos)
+            engine.load_paused(track.file_path, saved_position)
 
     # Wire the macOS Now Playing widget.
     # make_media_controller() returns NullMediaController on non-macOS.
@@ -525,6 +548,7 @@ def _cmd_server(
             # Queue exhausted — clear saved state so restart starts fresh
             # rather than restoring the last track a few seconds from the end.
             index.clear_player_state()
+            index.clear_queue_state()
 
     engine.on_track_end = _on_track_end
 
@@ -550,6 +574,8 @@ def _cmd_server(
             if current:
                 if tick % 5 == 0:
                     index.save_player_state(current.file_path, engine.state.position)
+                    q_paths, q_pos, q_shuffle, q_repeat = queue.get_state()
+                    index.save_queue_state(q_paths, q_pos, q_shuffle, q_repeat)
                 if engine.state.playing:
                     _mc.update(
                         current,

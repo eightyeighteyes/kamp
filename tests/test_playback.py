@@ -254,6 +254,167 @@ class TestPlaybackQueue:
         nxt = q.next()
         assert nxt == tracks[1]
 
+    # ------------------------------------------------------------------
+    # add_to_queue
+    # ------------------------------------------------------------------
+
+    def test_add_to_queue_appends_track(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(2)]
+        q.load(ts)
+        extra = _track(99)
+        q.add_to_queue(extra)
+        tracks, pos = q.queue_tracks()
+        assert tracks[-1] == extra
+        assert len(tracks) == 3
+        assert pos == 0  # current position unchanged
+
+    def test_add_to_queue_on_empty_queue_sets_pos_to_zero(self) -> None:
+        q = PlaybackQueue()
+        extra = _track(1)
+        q.add_to_queue(extra)
+        tracks, pos = q.queue_tracks()
+        assert tracks == [extra]
+        assert pos == 0
+
+    # ------------------------------------------------------------------
+    # play_next
+    # ------------------------------------------------------------------
+
+    def test_play_next_inserts_after_current(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)  # pos=0
+        extra = _track(99)
+        q.play_next(extra)
+        tracks, pos = q.queue_tracks()
+        assert tracks[1] == extra
+        assert pos == 0  # still on first track
+
+    def test_play_next_on_empty_queue_sets_pos_to_zero(self) -> None:
+        q = PlaybackQueue()
+        extra = _track(1)
+        q.play_next(extra)
+        tracks, pos = q.queue_tracks()
+        assert tracks == [extra]
+        assert pos == 0
+
+    def test_play_next_removes_existing_occurrence_to_avoid_ghost(self) -> None:
+        # Reproduces the bug: album loaded, play_next on a track already in queue
+        # should not leave the original occurrence ("ghost") behind.
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)  # _order=[0,1,2,3], pos=0
+        q.play_next(ts[3])
+        tracks, _ = q.queue_tracks()
+        paths = [t.file_path for t in tracks]
+        assert paths.count(ts[3].file_path) == 1, "track should appear exactly once"
+
+    def test_play_next_sequential_calls_produce_correct_order(self) -> None:
+        # play_next(last) then play_next(second-to-last): expected order is
+        # [current, second-to-last, last] with no ghost duplicates.
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)  # pos=0, playing ts[0]
+        q.play_next(ts[3])
+        q.play_next(ts[2])
+        tracks, pos = q.queue_tracks()
+        assert pos == 0
+        assert tracks[1].file_path == ts[2].file_path
+        assert tracks[2].file_path == ts[3].file_path
+        assert len(tracks) == 4  # no ghost — same count as loaded
+
+    def test_play_next_from_middle_inserts_at_correct_position(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)
+        q.next()  # pos=1
+        extra = _track(99)
+        q.play_next(extra)
+        tracks, _ = q.queue_tracks()
+        assert tracks[2] == extra
+
+    # ------------------------------------------------------------------
+    # move
+    # ------------------------------------------------------------------
+
+    def test_move_shifts_order(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)
+        q.move(3, 1)  # move last to position 1
+        tracks, _ = q.queue_tracks()
+        assert tracks[1] == ts[3]
+
+    def test_move_noop_when_same_index(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)
+        q.move(1, 1)
+        tracks, pos = q.queue_tracks()
+        assert tracks == ts
+        assert pos == 0
+
+    def test_move_adjusts_pos_when_current_moves_forward(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)
+        q.next()  # pos=1
+        q.move(1, 3)  # move current track to end
+        _, pos = q.queue_tracks()
+        assert pos == 3
+
+    def test_move_adjusts_pos_when_item_moves_over_current(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)
+        q.next()
+        q.next()  # pos=2
+        q.move(0, 2)  # move item before current to current's position
+        _, pos = q.queue_tracks()
+        assert pos == 1  # current shifted back by one
+
+    def test_move_raises_on_out_of_range_index(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)
+        with pytest.raises(IndexError):
+            q.move(0, 10)
+
+    # ------------------------------------------------------------------
+    # insert_at
+    # ------------------------------------------------------------------
+
+    def test_insert_at_places_track_at_given_position(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)
+        extra = _track(99)
+        q.insert_at(extra, 1)
+        tracks, pos = q.queue_tracks()
+        assert tracks[1] == extra
+        assert len(tracks) == 4
+        assert pos == 0  # current position unchanged
+
+    def test_insert_at_before_current_shifts_pos(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)
+        q.next()  # pos=1
+        extra = _track(99)
+        q.insert_at(extra, 0)  # insert before current
+        _, pos = q.queue_tracks()
+        assert pos == 2  # current shifted forward by one
+
+    def test_insert_at_clamps_large_index(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)
+        extra = _track(99)
+        q.insert_at(extra, 100)  # beyond end — should append
+        tracks, _ = q.queue_tracks()
+        assert tracks[-1] == extra
+
 
 # ---------------------------------------------------------------------------
 # MpvPlaybackEngine

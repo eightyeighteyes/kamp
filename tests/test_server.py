@@ -476,6 +476,66 @@ class TestQueueEndpoint:
         }
 
 
+class TestQueueMutationEndpoints:
+    def test_add_to_queue_calls_queue_method(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t = _track(1)
+        mock_index.get_track_by_path.return_value = t
+        resp = client.post(
+            "/api/v1/player/queue/add", json={"file_path": str(t.file_path)}
+        )
+        assert resp.status_code == 200
+        mock_queue.add_to_queue.assert_called_once_with(t)
+
+    def test_add_to_queue_404_for_unknown_path(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_track_by_path.return_value = None
+        resp = client.post(
+            "/api/v1/player/queue/add", json={"file_path": "/no/such/file.mp3"}
+        )
+        assert resp.status_code == 404
+
+    def test_play_next_calls_queue_method(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t = _track(2)
+        mock_index.get_track_by_path.return_value = t
+        resp = client.post(
+            "/api/v1/player/queue/play-next", json={"file_path": str(t.file_path)}
+        )
+        assert resp.status_code == 200
+        mock_queue.play_next.assert_called_once_with(t)
+
+    def test_play_next_404_for_unknown_path(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_track_by_path.return_value = None
+        resp = client.post(
+            "/api/v1/player/queue/play-next", json={"file_path": "/no/such/file.mp3"}
+        )
+        assert resp.status_code == 404
+
+    def test_move_queue_calls_queue_method(
+        self, client: TestClient, mock_queue: MagicMock
+    ) -> None:
+        resp = client.post(
+            "/api/v1/player/queue/move", json={"from_index": 0, "to_index": 2}
+        )
+        assert resp.status_code == 200
+        mock_queue.move.assert_called_once_with(0, 2)
+
+    def test_move_queue_400_on_index_error(
+        self, client: TestClient, mock_queue: MagicMock
+    ) -> None:
+        mock_queue.move.side_effect = IndexError("Queue index out of range: 0, 99")
+        resp = client.post(
+            "/api/v1/player/queue/move", json={"from_index": 0, "to_index": 99}
+        )
+        assert resp.status_code == 400
+
+
 class TestPlayerWebSocket:
     def test_websocket_sends_initial_state(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

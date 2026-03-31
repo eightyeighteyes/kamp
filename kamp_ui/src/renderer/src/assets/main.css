@@ -1296,3 +1296,41 @@ body,
 .queue-toggle-btn.active {
   color: var(--accent);
 }
+
+/* Drag-to-reorder drop target indicator */
+.queue-track-row[draggable] {
+  cursor: grab;
+}
+
+.queue-track-row.drag-over {
+  border-top: 2px solid var(--accent);
+}
+
+/* Right-click context menu on track rows */
+.track-context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 0;
+  min-width: 160px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.track-context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.track-context-menu-item:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+}

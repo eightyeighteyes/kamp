@@ -66,6 +66,10 @@ type PlayerStore = {
   setVolume: (volume: number) => Promise<void>
   setShuffle: (shuffle: boolean) => Promise<void>
   setRepeat: (repeat: boolean) => Promise<void>
+  addToQueue: (filePath: string) => Promise<void>
+  insertIntoQueue: (filePath: string, index: number) => Promise<void>
+  playNext: (filePath: string) => Promise<void>
+  moveQueueTrack: (fromIndex: number, toIndex: number) => Promise<void>
   refreshOpenAlbum: () => Promise<void>
   scanLibrary: () => Promise<void>
   setLibraryPath: (path: string) => Promise<void>
@@ -158,7 +162,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
     }
   },
 
-  applyServerState: (state) => set({ player: state }),
+  applyServerState: (state) => {
+    const prevTrack = get().player.current_track
+    set({ player: state })
+    // When the track changes (e.g. auto-advance at end-of-track), the queue
+    // position has moved server-side — reload so the panel stays in sync.
+    if (state.current_track?.file_path !== prevTrack?.file_path) {
+      void get().loadQueue()
+    }
+  },
 
   loadLibrary: async () => {
     try {
@@ -254,6 +266,26 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   setRepeat: async (repeat) => {
     await api.setRepeat(repeat)
+  },
+
+  addToQueue: async (filePath) => {
+    await api.addToQueue(filePath)
+    void get().loadQueue()
+  },
+
+  insertIntoQueue: async (filePath, index) => {
+    await api.insertIntoQueue(filePath, index)
+    void get().loadQueue()
+  },
+
+  playNext: async (filePath) => {
+    await api.playNext(filePath)
+    void get().loadQueue()
+  },
+
+  moveQueueTrack: async (fromIndex, toIndex) => {
+    await api.moveQueueTrack(fromIndex, toIndex)
+    void get().loadQueue()
   },
 
   setLibraryPath: async (path) => {

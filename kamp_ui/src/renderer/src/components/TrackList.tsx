@@ -1,6 +1,8 @@
-import React from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { artUrl } from '../api/client'
+
+type ContextMenu = { x: number; y: number; filePath: string }
 
 export function TrackList(): React.JSX.Element | null {
   const album = useStore((s) => s.library.selectedAlbum)
@@ -10,6 +12,23 @@ export function TrackList(): React.JSX.Element | null {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const playTrack = useStore((s) => s.playTrack)
   const togglePlayPause = useStore((s) => s.togglePlayPause)
+  const addToQueue = useStore((s) => s.addToQueue)
+  const playNext = useStore((s) => s.playNext)
+
+  const [menu, setMenu] = useState<ContextMenu | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Dismiss the context menu on any click outside it.
+  useEffect(() => {
+    if (!menu) return
+    const handler = (e: MouseEvent): void => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenu(null)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [menu])
 
   if (!album) return null
 
@@ -64,6 +83,15 @@ export function TrackList(): React.JSX.Element | null {
                 if (isCurrent) togglePlayPause()
                 else playTrack(album.album_artist, album.album, i)
               }}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setMenu({ x: e.clientX, y: e.clientY, filePath: track.file_path })
+              }}
             >
               <span className="track-row-num">
                 {isCurrent ? (playing ? '▶' : '▐▐') : track.track_number}
@@ -74,6 +102,29 @@ export function TrackList(): React.JSX.Element | null {
           )
         })}
       </ol>
+
+      {menu && (
+        <div ref={menuRef} className="track-context-menu" style={{ top: menu.y, left: menu.x }}>
+          <button
+            className="track-context-menu-item"
+            onClick={() => {
+              void playNext(menu.filePath)
+              setMenu(null)
+            }}
+          >
+            ▶ Play Next
+          </button>
+          <button
+            className="track-context-menu-item"
+            onClick={() => {
+              void addToQueue(menu.filePath)
+              setMenu(null)
+            }}
+          >
+            + Add to Queue
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -118,6 +118,20 @@ class QueueOut(BaseModel):
     position: int  # index of the currently playing track; -1 if empty
 
 
+class AddToQueueRequest(BaseModel):
+    file_path: str
+
+
+class MoveQueueRequest(BaseModel):
+    from_index: int
+    to_index: int
+
+
+class InsertQueueRequest(BaseModel):
+    file_path: str
+    index: int
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -361,6 +375,38 @@ def create_app(
         track = queue.prev()
         if track:
             engine.play(track.file_path)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/add")
+    def queue_add(req: AddToQueueRequest) -> dict[str, Any]:
+        track = index.get_track_by_path(Path(req.file_path))
+        if track is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        queue.add_to_queue(track)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/play-next")
+    def queue_play_next(req: AddToQueueRequest) -> dict[str, Any]:
+        track = index.get_track_by_path(Path(req.file_path))
+        if track is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        queue.play_next(track)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/insert")
+    def queue_insert(req: InsertQueueRequest) -> dict[str, Any]:
+        track = index.get_track_by_path(Path(req.file_path))
+        if track is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        queue.insert_at(track, req.index)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/move")
+    def queue_move(req: MoveQueueRequest) -> dict[str, Any]:
+        try:
+            queue.move(req.from_index, req.to_index)
+        except IndexError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True}
 
     @app.post("/api/v1/player/shuffle")

@@ -142,6 +142,84 @@ class PlaybackQueue:
         self._shuffle = shuffle
         self._repeat = repeat
 
+    def add_to_queue(self, track: Track) -> None:
+        """Append *track* to the end of the queue."""
+        idx = len(self._tracks)
+        self._tracks.append(track)
+        self._order.append(idx)
+        if self._pos < 0:
+            self._pos = 0
+
+    def insert_at(self, track: Track, display_idx: int) -> None:
+        """Insert *track* at display position *display_idx* in the queue.
+
+        *display_idx* is clamped to [0, len(_order)] so out-of-range values
+        are safe.  Adjusts _pos if the insertion falls before it.
+        """
+        idx = len(self._tracks)
+        self._tracks.append(track)
+        insert_pos = max(0, min(display_idx, len(self._order)))
+        self._order.insert(insert_pos, idx)
+        if self._pos < 0:
+            self._pos = 0
+        elif insert_pos <= self._pos:
+            self._pos += 1
+
+    def play_next(self, track: Track) -> None:
+        """Insert *track* immediately after the current position.
+
+        If the queue is empty the track becomes the first (and current) item.
+        Any existing (non-current) occurrence of the same track is removed
+        first so the track never appears twice in the queue.
+        """
+        # Remove any existing non-current occurrence to avoid duplicates.
+        existing = next(
+            (
+                i
+                for i, ti in enumerate(self._order)
+                if i != self._pos and self._tracks[ti].file_path == track.file_path
+            ),
+            None,
+        )
+        if existing is not None:
+            self._order.pop(existing)
+            # Keep _pos consistent if we removed an entry before it.
+            if self._pos >= 0 and existing < self._pos:
+                self._pos -= 1
+
+        idx = len(self._tracks)
+        self._tracks.append(track)
+        insert_at = self._pos + 1 if self._pos >= 0 else 0
+        self._order.insert(insert_at, idx)
+        if self._pos < 0:
+            self._pos = 0
+
+    def move(self, from_idx: int, to_idx: int) -> None:
+        """Move the track at display position *from_idx* to *to_idx*.
+
+        Both indices are positions in the current playback order (i.e. into
+        ``_order``).  ``_pos`` is updated so the currently playing track does
+        not change.
+        """
+        if from_idx == to_idx:
+            return
+        n = len(self._order)
+        if not (0 <= from_idx < n and 0 <= to_idx < n):
+            raise IndexError(f"Queue index out of range: {from_idx}, {to_idx}")
+
+        item = self._order.pop(from_idx)
+        self._order.insert(to_idx, item)
+
+        # Adjust _pos so the same track remains current.
+        if self._pos < 0:
+            return
+        if from_idx == self._pos:
+            self._pos = to_idx
+        elif from_idx < self._pos <= to_idx:
+            self._pos -= 1
+        elif to_idx <= self._pos < from_idx:
+            self._pos += 1
+
     def _shuffled_order(self, anchor_idx: int) -> None:
         """Shuffle _order so anchor_idx appears first."""
         rest = [i for i in range(len(self._tracks)) if i != anchor_idx]

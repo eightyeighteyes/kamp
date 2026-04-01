@@ -1,17 +1,17 @@
 ---
 id: TASK-58
 title: filter state does not survive app restart
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-03-31 17:51'
-updated_date: '2026-03-31 23:05'
+updated_date: '2026-03-31 23:50'
 labels:
   - bug
   - 'estimate: single'
 milestone: m-8
 dependencies: []
 priority: low
-ordinal: 1000
+ordinal: 7000
 ---
 
 ## Description

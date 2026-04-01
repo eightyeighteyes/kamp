@@ -160,6 +160,7 @@ def create_app(
     library_path: Path | None = None,
     on_library_path_set: Callable[[Path], None] | None = None,
     ui_active_view: str = "library",
+    ui_sort_order: str = "album_artist",
     on_ui_state_set: Callable[[str, str], None] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
@@ -178,6 +179,7 @@ def create_app(
         "library_path": library_path,
         "scan_progress": {"active": False, "current": 0, "total": 0},
         "ui_active_view": ui_active_view,
+        "ui_sort_order": ui_sort_order,
         "library_version": 0,
     }
 
@@ -315,7 +317,10 @@ def create_app(
 
     @app.get("/api/v1/ui")
     def get_ui_state() -> dict[str, Any]:
-        return {"active_view": _state["ui_active_view"]}
+        return {
+            "active_view": _state["ui_active_view"],
+            "sort_order": _state["ui_sort_order"],
+        }
 
     @app.post("/api/v1/ui/active-view")
     def set_active_view(req: dict[str, Any]) -> dict[str, Any]:
@@ -325,6 +330,20 @@ def create_app(
         _state["ui_active_view"] = view
         if on_ui_state_set is not None:
             on_ui_state_set("ui.active_view", view)
+        return {"ok": True}
+
+    _VALID_SORT_ORDERS = frozenset(
+        {"album_artist", "album", "date_added", "last_played"}
+    )
+
+    @app.post("/api/v1/ui/sort-order")
+    def set_sort_order(req: dict[str, Any]) -> dict[str, Any]:
+        sort = req.get("sort_order", "album_artist")
+        if sort not in _VALID_SORT_ORDERS:
+            raise HTTPException(status_code=422, detail="Invalid sort order")
+        _state["ui_sort_order"] = sort
+        if on_ui_state_set is not None:
+            on_ui_state_set("ui.sort_order", sort)
         return {"ok": True}
 
     # -----------------------------------------------------------------------

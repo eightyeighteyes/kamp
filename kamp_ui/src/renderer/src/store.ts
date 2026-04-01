@@ -129,6 +129,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
     await get().loadLibrary()
     const q = get().searchQuery
     if (q.trim()) await get().setSearchQuery(q)
+    try {
+      await api.setSortOrderApi(sort)
+    } catch {
+      // Best-effort — preference is already applied locally.
+    }
   },
 
   setSearchQuery: async (q) => {
@@ -160,7 +165,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   loadUiState: async () => {
     try {
       const ui = await api.getUiState()
-      set({ activeView: ui.active_view })
+      set({ activeView: ui.active_view, sortOrder: ui.sort_order })
     } catch {
       // Server unreachable — keep default.
     }

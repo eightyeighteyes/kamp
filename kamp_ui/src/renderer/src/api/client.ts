@@ -103,11 +103,17 @@ export const scanLibrary = (): Promise<ScanResult> => post('/api/v1/library/scan
 export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
   post('/api/v1/config/library-path', { path })
 
-export type UiState = { active_view: 'library' | 'now-playing' }
+export type UiState = {
+  active_view: 'library' | 'now-playing'
+  sort_order: 'album_artist' | 'album' | 'date_added' | 'last_played'
+}
 
 export const getUiState = (): Promise<UiState> => get('/api/v1/ui')
 export const setActiveViewApi = (view: 'library' | 'now-playing'): Promise<{ ok: boolean }> =>
   post('/api/v1/ui/active-view', { view })
+export const setSortOrderApi = (
+  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
+): Promise<{ ok: boolean }> => post('/api/v1/ui/sort-order', { sort_order: sortOrder })
 
 export type ScanProgress = { active: boolean; current: number; total: number }
 

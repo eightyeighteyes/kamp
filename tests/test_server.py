@@ -840,3 +840,54 @@ class TestSearchEndpoint:
         data = res.json()
         assert [a["album"] for a in data["albums"]] == ["Amnesiac", "Kid A"]
         mock_index.albums.assert_called_once_with(sort="album")
+
+
+# ---------------------------------------------------------------------------
+# UI state endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestUiStateEndpoints:
+    def test_get_ui_state_defaults(self, client: TestClient) -> None:
+        resp = client.get("/api/v1/ui")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active_view"] == "library"
+        assert data["sort_order"] == "album_artist"
+
+    def test_get_ui_state_reflects_init_values(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            ui_active_view="now-playing",
+            ui_sort_order="last_played",
+        )
+        resp = TestClient(app).get("/api/v1/ui")
+        data = resp.json()
+        assert data["active_view"] == "now-playing"
+        assert data["sort_order"] == "last_played"
+
+    def test_set_sort_order_persists(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/ui/sort-order", json={"sort_order": "last_played"})
+        assert resp.status_code == 200
+        assert client.get("/api/v1/ui").json()["sort_order"] == "last_played"
+
+    def test_set_sort_order_invalid_returns_422(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/ui/sort-order", json={"sort_order": "bogus"})
+        assert resp.status_code == 422
+
+    def test_set_sort_order_calls_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        callback = MagicMock()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_ui_state_set=callback,
+        )
+        TestClient(app).post("/api/v1/ui/sort-order", json={"sort_order": "date_added"})
+        callback.assert_called_once_with("ui.sort_order", "date_added")

@@ -256,15 +256,27 @@ class TestConfigSet:
         loaded = Config.load(path)
         assert "new/staging" in str(loaded.paths.staging)
 
-    def test_set_field_missing_from_section_raises_key_error(
-        self, tmp_path: Path
-    ) -> None:
-        """config_set raises KeyError when the field isn't present in the section."""
-        # Craft a TOML where [artwork] exists but min_dimension is missing
+    def test_set_field_missing_from_section_appends_key(self, tmp_path: Path) -> None:
+        """config_set appends a missing key into an existing non-optional section.
+
+        This handles configs that predate a new field (e.g. ui.sort_order added
+        after the user's config was created).
+        """
         path = tmp_path / "config.toml"
         path.write_text("[artwork]\nmax_bytes = 1000000\n")
-        with pytest.raises(KeyError, match="min_dimension"):
-            config_set(path, "artwork.min_dimension", "500")
+        config_set(path, "artwork.min_dimension", "500")
+        assert "min_dimension = 500" in path.read_text()
+
+    def test_set_ui_sort_order_on_config_missing_the_key(self, tmp_path: Path) -> None:
+        """config_set appends ui.sort_order when [ui] exists but lacks the key."""
+        path = tmp_path / "config.toml"
+        # Simulate a config that has [ui] with only active_view (pre-TASK-58)
+        path.write_text('[ui]\nactive_view = "library"\n')
+        config_set(path, "ui.sort_order", "last_played")
+        loaded_text = path.read_text()
+        assert 'sort_order = "last_played"' in loaded_text
+        # active_view must be untouched
+        assert 'active_view = "library"' in loaded_text
 
     def test_set_does_not_clobber_same_fieldname_in_other_section(
         self, tmp_path: Path

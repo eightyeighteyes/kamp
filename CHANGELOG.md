@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0](https://github.com/eightyeighteyes/kamp/compare/v1.3.0...v1.4.0) (2026-04-01)
+
+
+### Features
+
+* add album to queue and play next (TASK-42) ([#133](https://github.com/eightyeighteyes/kamp/issues/133)) ([de460a3](https://github.com/eightyeighteyes/kamp/commit/de460a3c09ac6fd80b13bf5c53f62095b9e886ca))
+* add to queue, play next, and queue rearrangement (TASK-41, TASK-54) ([#132](https://github.com/eightyeighteyes/kamp/issues/132)) ([9b96ca9](https://github.com/eightyeighteyes/kamp/commit/9b96ca95ec7fc659f030dfd7e1156e0f35ec4953))
+* clear queue / clear remaining via context menu (TASK-57) ([#136](https://github.com/eightyeighteyes/kamp/issues/136)) ([939e1f9](https://github.com/eightyeighteyes/kamp/commit/939e1f92940b072e7403ce2db8b29d857e5c96e5))
+* collapsible queue panel (TASK-40) ([#131](https://github.com/eightyeighteyes/kamp/issues/131)) ([501962a](https://github.com/eightyeighteyes/kamp/commit/501962ac5ba5466a9d421b867e67439e1bf7f4af))
+* double-click queue track to skip to it (TASK-56) ([#134](https://github.com/eightyeighteyes/kamp/issues/134)) ([198fe13](https://github.com/eightyeighteyes/kamp/commit/198fe133aa926dd8cd66a6df7e48cd7ffc1e6beb))
+* lock current track in queue (not draggable) (TASK-59) ([#137](https://github.com/eightyeighteyes/kamp/issues/137)) ([12fd067](https://github.com/eightyeighteyes/kamp/commit/12fd067e8e82aa46d5d3c363af164950256f5be9))
+* persist playback queue across restarts (TASK-47) ([#129](https://github.com/eightyeighteyes/kamp/issues/129)) ([71e2444](https://github.com/eightyeighteyes/kamp/commit/71e24447f7ee10e9cea8c113bbb8b280802eaa5d))
+
+
+### Bug Fixes
+
+* persist queue panel visibility ([#139](https://github.com/eightyeighteyes/kamp/issues/139)) ([19313af](https://github.com/eightyeighteyes/kamp/commit/19313affabafadfe9b63b5e56d22b135f5a8079f))
+* persist sort order across app restarts (TASK-58) ([#135](https://github.com/eightyeighteyes/kamp/issues/135)) ([b03bf5a](https://github.com/eightyeighteyes/kamp/commit/b03bf5a778f540c4779dfd111cc84ee85c5e130a))
+
 ## [1.3.0](https://github.com/eightyeighteyes/kamp/compare/v1.2.0...v1.3.0) (2026-03-31)
 
 

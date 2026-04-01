@@ -161,6 +161,7 @@ def create_app(
     on_library_path_set: Callable[[Path], None] | None = None,
     ui_active_view: str = "library",
     ui_sort_order: str = "album_artist",
+    ui_queue_panel_open: int = 0,
     on_ui_state_set: Callable[[str, str], None] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
@@ -180,6 +181,7 @@ def create_app(
         "scan_progress": {"active": False, "current": 0, "total": 0},
         "ui_active_view": ui_active_view,
         "ui_sort_order": ui_sort_order,
+        "ui_queue_panel_open": ui_queue_panel_open,
         "library_version": 0,
     }
 
@@ -320,6 +322,7 @@ def create_app(
         return {
             "active_view": _state["ui_active_view"],
             "sort_order": _state["ui_sort_order"],
+            "queue_panel_open": bool(_state["ui_queue_panel_open"]),
         }
 
     @app.post("/api/v1/ui/active-view")
@@ -344,6 +347,15 @@ def create_app(
         _state["ui_sort_order"] = sort
         if on_ui_state_set is not None:
             on_ui_state_set("ui.sort_order", sort)
+        return {"ok": True}
+
+    @app.post("/api/v1/ui/queue-panel")
+    def set_queue_panel(req: dict[str, Any]) -> dict[str, Any]:
+        open_ = req.get("open", False)
+        value = 1 if open_ else 0
+        _state["ui_queue_panel_open"] = value
+        if on_ui_state_set is not None:
+            on_ui_state_set("ui.queue_panel_open", str(value))
         return {"ok": True}
 
     # -----------------------------------------------------------------------

@@ -79,6 +79,7 @@ class UiConfig:
     sort_order: str = (
         "album_artist"  # "album_artist" | "album" | "date_added" | "last_played"
     )
+    queue_panel_open: int = 0  # 0 = closed, 1 = open
 
 
 @dataclass
@@ -235,6 +236,7 @@ class Config:
         ui = UiConfig(
             active_view=ui_raw.get("active_view", "library"),
             sort_order=ui_raw.get("sort_order", "album_artist"),
+            queue_panel_open=int(ui_raw.get("queue_panel_open", 0)),
         )
 
         return cls(
@@ -274,6 +276,7 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "bandcamp.poll_interval_minutes": int,
     "ui.active_view": str,
     "ui.sort_order": str,
+    "ui.queue_panel_open": int,
 }
 
 # Keys whose values must come from a fixed set of choices.

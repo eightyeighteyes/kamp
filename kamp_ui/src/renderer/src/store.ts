@@ -115,7 +115,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   setServerStatus: (status) => set({ serverStatus: status }),
 
-  toggleQueuePanel: () => set((s) => ({ queueVisible: !s.queueVisible })),
+  toggleQueuePanel: () => {
+    const next = !get().queueVisible
+    set({ queueVisible: next })
+    void api.setQueuePanelApi(next)
+  },
 
   loadQueue: async () => {
     try {
@@ -167,7 +171,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
   loadUiState: async () => {
     try {
       const ui = await api.getUiState()
-      set({ activeView: ui.active_view, sortOrder: ui.sort_order })
+      set({
+        activeView: ui.active_view,
+        sortOrder: ui.sort_order,
+        queueVisible: ui.queue_panel_open
+      })
     } catch {
       // Server unreachable — keep default.
     }

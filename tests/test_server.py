@@ -868,6 +868,7 @@ class TestUiStateEndpoints:
         data = resp.json()
         assert data["active_view"] == "library"
         assert data["sort_order"] == "album_artist"
+        assert data["queue_panel_open"] is False
 
     def test_get_ui_state_reflects_init_values(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -878,11 +879,31 @@ class TestUiStateEndpoints:
             queue=mock_queue,
             ui_active_view="now-playing",
             ui_sort_order="last_played",
+            ui_queue_panel_open=1,
         )
         resp = TestClient(app).get("/api/v1/ui")
         data = resp.json()
         assert data["active_view"] == "now-playing"
         assert data["sort_order"] == "last_played"
+        assert data["queue_panel_open"] is True
+
+    def test_set_queue_panel_open_persists(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/ui/queue-panel", json={"open": True})
+        assert resp.status_code == 200
+        assert client.get("/api/v1/ui").json()["queue_panel_open"] is True
+
+    def test_set_queue_panel_calls_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        callback = MagicMock()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_ui_state_set=callback,
+        )
+        TestClient(app).post("/api/v1/ui/queue-panel", json={"open": True})
+        callback.assert_called_once_with("ui.queue_panel_open", "1")
 
     def test_set_sort_order_persists(self, client: TestClient) -> None:
         resp = client.post("/api/v1/ui/sort-order", json={"sort_order": "last_played"})

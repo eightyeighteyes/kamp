@@ -605,6 +605,7 @@ def _cmd_server(
         on_library_path_set=_on_library_path_set,
         ui_active_view=config.ui.active_view,
         ui_sort_order=config.ui.sort_order,
+        ui_queue_panel_open=config.ui.queue_panel_open,
         on_ui_state_set=_on_ui_state_set,
     )
 

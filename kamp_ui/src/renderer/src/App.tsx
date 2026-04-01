@@ -117,6 +117,8 @@ export default function App(): React.JSX.Element {
           break
         case 'q':
         case 'Q':
+          // Don't intercept Cmd+Q (macOS quit) or Ctrl+Q.
+          if (e.metaKey || e.ctrlKey) break
           toggleQueuePanel()
           break
       }

@@ -106,6 +106,7 @@ export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
 export type UiState = {
   active_view: 'library' | 'now-playing'
   sort_order: 'album_artist' | 'album' | 'date_added' | 'last_played'
+  queue_panel_open: boolean
 }
 
 export const getUiState = (): Promise<UiState> => get('/api/v1/ui')
@@ -114,6 +115,8 @@ export const setActiveViewApi = (view: 'library' | 'now-playing'): Promise<{ ok:
 export const setSortOrderApi = (
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
 ): Promise<{ ok: boolean }> => post('/api/v1/ui/sort-order', { sort_order: sortOrder })
+export const setQueuePanelApi = (open: boolean): Promise<{ ok: boolean }> =>
+  post('/api/v1/ui/queue-panel', { open })
 
 export type ScanProgress = { active: boolean; current: number; total: number }
 

@@ -411,6 +411,16 @@ def create_app(
             engine.play(track.file_path)
         return {"ok": True}
 
+    @app.post("/api/v1/player/queue/clear")
+    def queue_clear() -> dict[str, Any]:
+        queue.clear()
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/clear-remaining")
+    def queue_clear_remaining(req: SkipToRequest) -> dict[str, Any]:
+        queue.clear_remaining(req.position)
+        return {"ok": True}
+
     @app.post("/api/v1/player/queue/skip-to")
     def skip_to_position(req: SkipToRequest) -> dict[str, Any]:
         track = queue.skip_to(req.position)

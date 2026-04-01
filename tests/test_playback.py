@@ -124,6 +124,71 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         assert q.skip_to(0) is None
 
+    def test_clear_keeps_current_track(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=2)
+        q.clear()
+        ordered, pos = q.queue_tracks()
+        assert pos == 0
+        assert len(ordered) == 1
+        assert ordered[0] == tracks[2]
+
+    def test_clear_with_no_playing_track_empties_queue(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.next()
+        q.next()
+        q.next()  # exhausts queue, _pos → -1
+        q.clear()
+        assert q.current() is None
+        ordered, pos = q.queue_tracks()
+        assert ordered == []
+        assert pos == -1
+
+    def test_clear_empty_queue_is_noop(self) -> None:
+        q = PlaybackQueue()
+        q.clear()
+        assert q.current() is None
+
+    def test_clear_remaining_drops_tracks_after_given_position(self) -> None:
+        # T0 T1 T2* T3 T4 T5 T6 — playing T2, right-click T4 → T5 T6 removed
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(7)]
+        q.load(tracks, start_index=2)
+        q.clear_remaining(from_position=4)
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 5  # T0–T4 remain
+        assert ordered[pos] == tracks[2]  # current track unchanged
+        assert q.next() == tracks[3]
+        assert q.next() == tracks[4]
+        assert q.next() is None  # T5/T6 gone
+
+    def test_clear_remaining_from_current_position(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=1)
+        q.clear_remaining(from_position=1)
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 2  # tracks[0] and tracks[1]
+        assert ordered[pos] == tracks[1]
+        assert q.next() is None
+
+    def test_clear_remaining_at_last_track_is_noop(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks, start_index=2)
+        q.clear_remaining(from_position=2)
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 3
+        assert pos == 2
+
+    def test_clear_remaining_empty_queue_is_noop(self) -> None:
+        q = PlaybackQueue()
+        q.clear_remaining(from_position=0)
+        assert q.current() is None
+
     def test_shuffle_randomises_order(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(20)]

@@ -535,6 +535,20 @@ class TestQueueMutationEndpoints:
         )
         assert resp.status_code == 400
 
+    def test_clear_queue_calls_queue_method(
+        self, client: TestClient, mock_queue: MagicMock
+    ) -> None:
+        resp = client.post("/api/v1/player/queue/clear")
+        assert resp.status_code == 200
+        mock_queue.clear.assert_called_once()
+
+    def test_clear_remaining_calls_queue_method_with_position(
+        self, client: TestClient, mock_queue: MagicMock
+    ) -> None:
+        resp = client.post("/api/v1/player/queue/clear-remaining", json={"position": 4})
+        assert resp.status_code == 200
+        mock_queue.clear_remaining.assert_called_once_with(4)
+
     def test_skip_to_calls_engine_play(
         self, client: TestClient, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:

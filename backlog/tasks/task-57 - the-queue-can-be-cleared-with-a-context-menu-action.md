@@ -1,10 +1,10 @@
 ---
 id: TASK-57
 title: the queue can be cleared with a context menu action
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-31 17:44'
-updated_date: '2026-03-31 19:44'
+updated_date: '2026-04-01 00:26'
 labels:
   - feature
   - ui
@@ -12,6 +12,7 @@ labels:
 milestone: m-8
 dependencies: []
 priority: low
+ordinal: 8000
 ---
 
 ## Description

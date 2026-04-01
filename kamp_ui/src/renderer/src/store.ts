@@ -74,6 +74,8 @@ type PlayerStore = {
   playNext: (filePath: string) => Promise<void>
   moveQueueTrack: (fromIndex: number, toIndex: number) => Promise<void>
   skipToQueueTrack: (position: number) => Promise<void>
+  clearQueue: () => Promise<void>
+  clearRemainingQueue: (position: number) => Promise<void>
   refreshOpenAlbum: () => Promise<void>
   scanLibrary: () => Promise<void>
   setLibraryPath: (path: string) => Promise<void>
@@ -314,6 +316,16 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   skipToQueueTrack: async (position) => {
     await api.skipToQueueTrack(position)
+    void get().loadQueue()
+  },
+
+  clearQueue: async () => {
+    await api.clearQueue()
+    void get().loadQueue()
+  },
+
+  clearRemainingQueue: async (position) => {
+    await api.clearRemainingQueue(position)
     void get().loadQueue()
   },
 

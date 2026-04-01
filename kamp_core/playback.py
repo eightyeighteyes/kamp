@@ -99,6 +99,38 @@ class PlaybackQueue:
         self._pos = position
         return self.current()
 
+    def clear(self) -> None:
+        """Clear the queue, keeping the currently playing track (if any).
+
+        If no track is playing the queue is emptied entirely.
+        """
+        if self._pos < 0 or not self._tracks:
+            self._tracks = []
+            self._order = []
+            self._pos = -1
+            return
+        current = self._tracks[self._order[self._pos]]
+        self._tracks = [current]
+        self._order = [0]
+        self._pos = 0
+
+    def clear_remaining(self, from_position: int) -> None:
+        """Drop all tracks that come after *from_position* in the queue.
+
+        *from_position* is the 0-based display index of the track the user
+        right-clicked — everything after it is removed.  Has no effect if the
+        queue is empty or *from_position* is out of range.
+        """
+        if not self._order or from_position < 0 or from_position >= len(self._order):
+            return
+        kept = self._order[: from_position + 1]
+        kept_set = set(kept)
+        old_to_new = {old: new for new, old in enumerate(sorted(kept_set))}
+        self._tracks = [self._tracks[i] for i in sorted(kept_set)]
+        self._order = [old_to_new[i] for i in kept]
+        # Clamp _pos in case it pointed past the new end.
+        self._pos = min(self._pos, len(self._order) - 1)
+
     def set_shuffle(self, shuffle: bool) -> None:
         if shuffle == self._shuffle:
             return

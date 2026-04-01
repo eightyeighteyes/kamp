@@ -161,6 +161,9 @@ export const moveQueueTrack = (fromIndex: number, toIndex: number): Promise<unkn
   post('/api/v1/player/queue/move', { from_index: fromIndex, to_index: toIndex })
 export const skipToQueueTrack = (position: number): Promise<unknown> =>
   post('/api/v1/player/queue/skip-to', { position })
+export const clearQueue = (): Promise<unknown> => post('/api/v1/player/queue/clear', {})
+export const clearRemainingQueue = (position: number): Promise<unknown> =>
+  post('/api/v1/player/queue/clear-remaining', { position })
 
 // ---------------------------------------------------------------------------
 // WebSocket state stream

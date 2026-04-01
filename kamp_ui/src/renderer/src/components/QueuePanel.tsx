@@ -1,16 +1,22 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
+
+type ContextMenu = { x: number; y: number; trackIdx: number | null }
 
 export function QueuePanel(): React.JSX.Element {
   const queue = useStore((s) => s.queue)
   const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
   const moveQueueTrack = useStore((s) => s.moveQueueTrack)
   const skipToQueueTrack = useStore((s) => s.skipToQueueTrack)
+  const clearQueue = useStore((s) => s.clearQueue)
+  const clearRemainingQueue = useStore((s) => s.clearRemainingQueue)
   const addToQueue = useStore((s) => s.addToQueue)
   const insertIntoQueue = useStore((s) => s.insertIntoQueue)
   const insertAlbumAt = useStore((s) => s.insertAlbumAt)
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
   const activeRef = useRef<HTMLLIElement>(null)
+  const [menu, setMenu] = useState<ContextMenu | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   const tracks = queue?.tracks ?? []
   const position = queue?.position ?? -1
@@ -19,6 +25,18 @@ export function QueuePanel(): React.JSX.Element {
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'nearest' })
   }, [position])
+
+  // Dismiss context menu on click outside.
+  useEffect(() => {
+    if (!menu) return
+    const handler = (e: MouseEvent): void => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenu(null)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [menu])
 
   function handleDrop(e: React.DragEvent, dropIdx: number): void {
     e.currentTarget.classList.remove('drag-over')
@@ -76,10 +94,17 @@ export function QueuePanel(): React.JSX.Element {
           No tracks in queue.
         </div>
       ) : (
-        <ol className="queue-track-list">
+        <ol
+          className="queue-track-list"
+          onContextMenu={(e) => {
+            e.preventDefault()
+            setMenu({ x: e.clientX, y: e.clientY, trackIdx: null })
+          }}
+        >
           {tracks.map((track, idx) => {
             const isCurrent = idx === position
             const isPlayed = position >= 0 && idx < position
+            const isUnplayed = position >= 0 && idx > position
             return (
               <li
                 key={track.file_path}
@@ -99,6 +124,11 @@ export function QueuePanel(): React.JSX.Element {
                 }}
                 onDrop={(e) => handleDrop(e, idx)}
                 onDoubleClick={() => void skipToQueueTrack(idx)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setMenu({ x: e.clientX, y: e.clientY, trackIdx: isUnplayed ? idx : null })
+                }}
               >
                 <span className="queue-track-num">{idx + 1}</span>
                 <span className="queue-track-title">{track.title}</span>
@@ -107,6 +137,30 @@ export function QueuePanel(): React.JSX.Element {
             )
           })}
         </ol>
+      )}
+      {menu && (
+        <div ref={menuRef} className="track-context-menu" style={{ top: menu.y, left: menu.x }}>
+          <button
+            className="track-context-menu-item"
+            onClick={() => {
+              void clearQueue()
+              setMenu(null)
+            }}
+          >
+            Clear Queue
+          </button>
+          {menu.trackIdx !== null && (
+            <button
+              className="track-context-menu-item"
+              onClick={() => {
+                void clearRemainingQueue(menu.trackIdx as number)
+                setMenu(null)
+              }}
+            >
+              Clear Remaining
+            </button>
+          )}
+        </div>
       )}
     </aside>
   )

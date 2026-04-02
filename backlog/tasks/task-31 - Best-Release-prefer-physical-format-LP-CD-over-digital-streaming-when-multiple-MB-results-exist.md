@@ -3,15 +3,15 @@ id: TASK-31
 title: >-
   Best Release: prefer physical format (LP/CD) over digital/streaming when
   multiple MB results exist
-status: Draft
+status: To Do
 assignee: []
 created_date: '2026-03-29 02:58'
-updated_date: '2026-03-29 17:47'
+updated_date: '2026-04-02 23:18'
 labels:
   - feature
   - musicbrainz
   - 'estimate: side'
-milestone: m-5
+milestone: m-19
 dependencies: []
 ---
 

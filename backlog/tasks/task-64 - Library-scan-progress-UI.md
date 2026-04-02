@@ -1,15 +1,15 @@
 ---
 id: TASK-64
 title: Library scan progress UI
-status: Draft
+status: To Do
 assignee: []
 created_date: '2026-03-29 02:58'
-updated_date: '2026-03-29 03:02'
+updated_date: '2026-04-02 23:19'
 labels:
   - feature
   - ux
   - library
-milestone: m-0
+milestone: m-20
 dependencies: []
 ---
 

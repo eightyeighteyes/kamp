@@ -1,14 +1,14 @@
 ---
 id: TASK-62
 title: track favorite status is visible in the album track list
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-02 01:55'
-updated_date: '2026-04-02 22:57'
+updated_date: '2026-04-02 23:17'
 labels: []
 milestone: m-5
 dependencies: []
-ordinal: 1000
+ordinal: 5000
 ---
 
 ## Description

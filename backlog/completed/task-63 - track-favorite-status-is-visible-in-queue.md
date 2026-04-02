@@ -1,14 +1,14 @@
 ---
 id: TASK-63
 title: track favorite status is visible in queue
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-02 01:56'
-updated_date: '2026-04-02 22:57'
+updated_date: '2026-04-02 23:17'
 labels: []
 milestone: m-5
 dependencies: []
-ordinal: 2000
+ordinal: 6000
 ---
 
 ## Description

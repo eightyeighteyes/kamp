@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useLayoutEffect, useRef } from 'react'
 import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
@@ -31,6 +31,9 @@ export default function App(): React.JSX.Element {
   const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
   const loadQueue = useStore((s) => s.loadQueue)
   const searchBarRef = useRef<HTMLInputElement>(null)
+  const mainContentRef = useRef<HTMLElement>(null)
+  // Per-view scroll positions so switching library ↔ now-playing doesn't reset scroll.
+  const viewScrollRef = useRef<Partial<Record<string, number>>>({})
 
   useEffect(() => {
     // Load UI state (sort order, active view) before loading the library so the
@@ -136,6 +139,19 @@ export default function App(): React.JSX.Element {
     toggleQueuePanel
   ])
 
+  // Save the outgoing view's scroll position and restore the incoming view's,
+  // synchronously before paint so there's no visible jump.
+  const prevViewRef = useRef(activeView)
+  useLayoutEffect(() => {
+    const el = mainContentRef.current
+    if (!el) return
+    if (prevViewRef.current !== activeView) {
+      viewScrollRef.current[prevViewRef.current] = el.scrollTop
+      el.scrollTop = viewScrollRef.current[activeView] ?? 0
+      prevViewRef.current = activeView
+    }
+  }, [activeView])
+
   if (serverStatus === 'disconnected') {
     return (
       <div className="server-offline">
@@ -174,7 +190,7 @@ export default function App(): React.JSX.Element {
       )}
       <div className="app-body">
         {!showSetup && activeView === 'library' && !searchQuery && <ArtistPanel />}
-        <main className="main-content">
+        <main className="main-content" ref={mainContentRef}>
           {showSetup ? (
             <SetupScreen />
           ) : searchQuery ? (

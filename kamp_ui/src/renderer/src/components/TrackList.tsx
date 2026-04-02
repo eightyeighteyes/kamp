@@ -99,6 +99,9 @@ export function TrackList(): React.JSX.Element | null {
                 })
               }}
             >
+              <span className="track-row-fav" aria-hidden="true">
+                {track.favorite ? '♥' : ''}
+              </span>
               <span className="track-row-num">
                 {isCurrent ? (playing ? '▶' : '▐▐') : track.track_number}
               </span>

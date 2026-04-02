@@ -349,6 +349,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
         }
       }))
     }
+    // Patch any matching tracks in the queue so the indicator updates immediately.
+    set((s) => ({
+      queue: s.queue
+        ? {
+            ...s.queue,
+            tracks: s.queue.tracks.map((t) => (t.file_path === filePath ? { ...t, favorite } : t))
+          }
+        : s.queue
+    }))
     // Reload the open album track list so the heart in track rows updates.
     await get().refreshOpenAlbum()
   },

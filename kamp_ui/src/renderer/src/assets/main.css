@@ -997,7 +997,7 @@ body,
 
 .track-row {
   display: grid;
-  grid-template-columns: 32px 1fr auto;
+  grid-template-columns: 12px 32px 1fr auto;
   align-items: center;
   gap: 12px;
   padding: 8px 6px;
@@ -1011,6 +1011,12 @@ body,
 
 .track-row.current {
   color: var(--accent);
+}
+
+.track-row-fav {
+  font-size: 9px;
+  color: var(--error);
+  text-align: center;
 }
 
 .track-row-num {
@@ -1223,7 +1229,7 @@ body,
 
 .queue-track-row {
   display: grid;
-  grid-template-columns: 28px 1fr;
+  grid-template-columns: 12px 28px 1fr;
   grid-template-rows: auto auto;
   column-gap: 8px;
   padding: 6px 10px;
@@ -1243,6 +1249,14 @@ body,
 
 .queue-track-row.played {
   opacity: 0.4;
+}
+
+.queue-track-fav {
+  grid-row: 1 / 3;
+  align-self: center;
+  font-size: 9px;
+  color: var(--error);
+  text-align: center;
 }
 
 .queue-track-num {

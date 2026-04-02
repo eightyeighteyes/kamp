@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0](https://github.com/eightyeighteyes/kamp/compare/v1.4.0...v1.5.0) (2026-04-02)
+
+
+### Features
+
+* favorite indicator in track list and queue (TASK-62, TASK-63) ([#146](https://github.com/eightyeighteyes/kamp/issues/146)) ([7ed18e3](https://github.com/eightyeighteyes/kamp/commit/7ed18e38bc79d673528cc6bec7d28fa27ca76a39))
+* favorite tracks — heart toggle in transport + track list context menu (TASK-39) ([#140](https://github.com/eightyeighteyes/kamp/issues/140)) ([bd65a68](https://github.com/eightyeighteyes/kamp/commit/bd65a689c6a4652e152bcaab361690717cc9472d))
+* re-index tracks when file mtime changes (TASK-66) ([#145](https://github.com/eightyeighteyes/kamp/issues/145)) ([f3d6c91](https://github.com/eightyeighteyes/kamp/commit/f3d6c9169caf5d331b3d4afde8cd5c267ff2585c))
+* track play count (TASK-28) ([#143](https://github.com/eightyeighteyes/kamp/issues/143)) ([cc2d3e3](https://github.com/eightyeighteyes/kamp/commit/cc2d3e3e2a38ed9f324badadf90011be0c73faf6))
+
+
+### Bug Fixes
+
+* preserve album grid scroll position on back navigation (TASK-61) ([#144](https://github.com/eightyeighteyes/kamp/issues/144)) ([d6918fa](https://github.com/eightyeighteyes/kamp/commit/d6918faea90fe2df21224f00c33557ef1ac70ebb))
+
 ## [1.4.0](https://github.com/eightyeighteyes/kamp/compare/v1.3.0...v1.4.0) (2026-04-01)
 
 

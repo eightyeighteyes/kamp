@@ -1,13 +1,15 @@
 ---
 id: TASK-61
 title: preserve scroll range when clicking on an album page and then going back
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-02 01:39'
+updated_date: '2026-04-02 21:31'
 labels: []
 milestone: m-5
 dependencies: []
 priority: low
+ordinal: 3000
 ---
 
 ## Description

@@ -1,4 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+
+// Persists scroll position across AlbumGrid mount/unmount cycles (e.g. open
+// album → back). Module-level so it survives React unmounting the component.
+let savedScrollTop = 0
 import { useStore } from '../store'
 import { artUrl } from '../api/client'
 import type { Album } from '../api/client'
@@ -66,6 +70,18 @@ export function AlbumGrid(): React.JSX.Element {
 
   const [menu, setMenu] = useState<ContextMenu | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    const scroller = containerRef.current?.closest<HTMLElement>('.main-content')
+    // Restore scroll position synchronously before paint to avoid a visible
+    // jump to the top when navigating back from a track list.
+    if (scroller) scroller.scrollTop = savedScrollTop
+    return () => {
+      // Save scroll position when navigating into an album.
+      if (scroller) savedScrollTop = scroller.scrollTop
+    }
+  }, [])
 
   useEffect(() => {
     if (!menu) return
@@ -81,7 +97,7 @@ export function AlbumGrid(): React.JSX.Element {
   const visible = selectedArtist ? albums.filter((a) => a.album_artist === selectedArtist) : albums
 
   return (
-    <div className="album-grid-container">
+    <div className="album-grid-container" ref={containerRef}>
       <SortControl />
       {visible.length === 0 ? (
         <div className="album-grid-empty">

@@ -4,12 +4,12 @@ title: last.fm scrobble integration
 status: To Do
 assignee: []
 created_date: '2026-03-29 17:28'
-updated_date: '2026-03-31 03:21'
+updated_date: '2026-04-02 20:25'
 labels:
   - feature
   - integration
   - 'estimate: lp'
-milestone: m-5
+milestone: m-22
 dependencies: []
 priority: medium
 ordinal: 2000

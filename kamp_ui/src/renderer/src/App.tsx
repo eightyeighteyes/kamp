@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useLayoutEffect, useRef } from 'react'
 import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
@@ -31,6 +31,10 @@ export default function App(): React.JSX.Element {
   const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
   const loadQueue = useStore((s) => s.loadQueue)
   const searchBarRef = useRef<HTMLInputElement>(null)
+  const mainContentRef = useRef<HTMLElement>(null)
+  // Per-view scroll positions — kept current by a scroll listener so we never
+  // read a browser-clamped value when the outgoing view's content was taller.
+  const viewScrollRef = useRef<Partial<Record<string, number>>>({})
 
   useEffect(() => {
     // Load UI state (sort order, active view) before loading the library so the
@@ -136,6 +140,26 @@ export default function App(): React.JSX.Element {
     toggleQueuePanel
   ])
 
+  // Keep viewScrollRef continuously current so we always have the right value
+  // when switching views — reading scrollTop after a DOM update can give a
+  // browser-clamped value if the new content is shorter than the old.
+  useEffect(() => {
+    const el = mainContentRef.current
+    if (!el) return
+    const onScroll = (): void => {
+      viewScrollRef.current[activeView] = el.scrollTop
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [activeView])
+
+  // Restore the incoming view's scroll position synchronously before paint.
+  useLayoutEffect(() => {
+    const el = mainContentRef.current
+    if (!el) return
+    el.scrollTop = viewScrollRef.current[activeView] ?? 0
+  }, [activeView])
+
   if (serverStatus === 'disconnected') {
     return (
       <div className="server-offline">
@@ -174,7 +198,7 @@ export default function App(): React.JSX.Element {
       )}
       <div className="app-body">
         {!showSetup && activeView === 'library' && !searchQuery && <ArtistPanel />}
-        <main className="main-content">
+        <main className="main-content" ref={mainContentRef}>
           {showSetup ? (
             <SetupScreen />
           ) : searchQuery ? (

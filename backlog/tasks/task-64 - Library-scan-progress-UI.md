@@ -1,5 +1,5 @@
 ---
-id: DRAFT-6
+id: TASK-64
 title: Library scan progress UI
 status: Draft
 assignee: []

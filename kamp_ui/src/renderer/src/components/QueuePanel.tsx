@@ -131,6 +131,9 @@ export function QueuePanel(): React.JSX.Element {
                   setMenu({ x: e.clientX, y: e.clientY, trackIdx: isUnplayed ? idx : null })
                 }}
               >
+                <span className="queue-track-fav" aria-hidden="true">
+                  {track.favorite ? '♥' : ''}
+                </span>
                 <span className="queue-track-num">{idx + 1}</span>
                 <span className="queue-track-title">{track.title}</span>
                 <span className="queue-track-artist">{track.artist}</span>

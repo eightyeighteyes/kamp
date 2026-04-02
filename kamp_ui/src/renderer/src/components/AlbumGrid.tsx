@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 // Persists scroll position across AlbumGrid mount/unmount cycles (e.g. open
 // album → back). Module-level so it survives React unmounting the component.
@@ -72,9 +72,10 @@ export function AlbumGrid(): React.JSX.Element {
   const menuRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scroller = containerRef.current?.closest<HTMLElement>('.main-content')
-    // Restore scroll position from before the album was opened.
+    // Restore scroll position synchronously before paint to avoid a visible
+    // jump to the top when navigating back from a track list.
     if (scroller) scroller.scrollTop = savedScrollTop
     return () => {
       // Save scroll position when navigating into an album.

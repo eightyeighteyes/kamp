@@ -1,10 +1,10 @@
 ---
 id: TASK-66
 title: re-index tracks whose file mtime has changed since last scan
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-02 21:45'
-updated_date: '2026-04-02 21:46'
+updated_date: '2026-04-02 22:23'
 labels:
   - feature
   - library
@@ -12,6 +12,7 @@ labels:
 milestone: m-5
 dependencies: []
 priority: medium
+ordinal: 1000
 ---
 
 ## Description

@@ -106,6 +106,7 @@ class ScanResult(BaseModel):
     added: int
     removed: int
     unchanged: int
+    updated: int
 
 
 class LibraryPathRequest(BaseModel):
@@ -314,7 +315,10 @@ def create_app(
             _state["scan_progress"] = {"active": False, "current": 0, "total": 0}
 
         return ScanResult(
-            added=result.added, removed=result.removed, unchanged=result.unchanged
+            added=result.added,
+            removed=result.removed,
+            unchanged=result.unchanged,
+            updated=result.updated,
         )
 
     @app.get("/api/v1/library/scan/progress")

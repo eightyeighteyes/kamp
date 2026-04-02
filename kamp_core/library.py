@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     date_added       REAL,    -- file birthtime/ctime at first scan (Unix timestamp)
     last_played      REAL,    -- Unix timestamp of last natural EOF; NULL until played
     favorite         INTEGER NOT NULL DEFAULT 0,
-    play_count       INTEGER NOT NULL DEFAULT 0
+    play_count       INTEGER NOT NULL DEFAULT 0,
+    file_mtime       REAL     -- st_mtime at last scan; NULL until v6 migration backfill
 );
 
 -- FTS5 virtual table for full-text search across track metadata.
@@ -72,6 +73,14 @@ CREATE TABLE IF NOT EXISTS queue_state (
 
 # Characters that have special meaning in FTS5 MATCH expressions.
 _FTS_SPECIAL = re.compile(r'["*^()]')
+
+
+def _get_mtime(path: Path) -> float | None:
+    """Return st_mtime for *path*, or None on OS error."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
 
 
 def _get_date_added(path: Path) -> float | None:
@@ -133,6 +142,7 @@ class Track:
     last_played: float | None = field(default=None, compare=False)
     favorite: bool = field(default=False, compare=False)
     play_count: int = field(default=0, compare=False)
+    file_mtime: float | None = field(default=None, compare=False)
 
 
 @dataclass
@@ -153,6 +163,7 @@ class ScanResult:
     added: int
     removed: int
     unchanged: int
+    updated: int = 0
 
 
 class LibraryIndex:
@@ -249,6 +260,17 @@ class LibraryIndex:
             )
             self._conn.execute("UPDATE schema_version SET version = 5")
             self._conn.commit()
+            version = 5
+
+        if version < 6:
+            # v5 → v6: file_mtime column added.
+            # Intentionally left NULL for all existing rows so that the next
+            # scan treats every track as "changed" and re-reads its tags.
+            # This ensures tag edits made before the upgrade (e.g. adding cover
+            # art) are picked up on the first scan after migration.
+            self._conn.execute("ALTER TABLE tracks ADD COLUMN file_mtime REAL")
+            self._conn.execute("UPDATE schema_version SET version = 6")
+            self._conn.commit()
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -271,8 +293,8 @@ class LibraryIndex:
             INSERT INTO tracks
                 (file_path, title, artist, album_artist, album, year,
                  track_number, disc_number, ext, embedded_art,
-                 mb_release_id, mb_recording_id, date_added)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 mb_release_id, mb_recording_id, date_added, file_mtime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path) DO UPDATE SET
                 title           = excluded.title,
                 artist          = excluded.artist,
@@ -284,7 +306,8 @@ class LibraryIndex:
                 ext             = excluded.ext,
                 embedded_art    = excluded.embedded_art,
                 mb_release_id   = excluded.mb_release_id,
-                mb_recording_id = excluded.mb_recording_id
+                mb_recording_id = excluded.mb_recording_id,
+                file_mtime      = excluded.file_mtime
                 -- date_added intentionally omitted: preserve original scan date on re-scan
                 -- last_played intentionally omitted: managed exclusively by record_played()
             """,
@@ -377,6 +400,11 @@ class LibraryIndex:
         """Return the set of all file paths currently in the index."""
         rows = self._conn.execute("SELECT file_path FROM tracks").fetchall()
         return {Path(r["file_path"]) for r in rows}
+
+    def indexed_paths_with_mtime(self) -> dict[Path, float | None]:
+        """Return a mapping of indexed file paths to their stored file_mtime."""
+        rows = self._conn.execute("SELECT file_path, file_mtime FROM tracks").fetchall()
+        return {Path(r["file_path"]): r["file_mtime"] for r in rows}
 
     def get_track_by_path(self, path: Path) -> "Track | None":
         """Return the track for *path*, or None if not indexed."""
@@ -478,7 +506,7 @@ class LibraryIndex:
 
 def _track_to_params(
     t: Track,
-) -> tuple[str, str, str, str, str, str, int, int, str, int, str, str, float | None]:
+) -> tuple[str, str, str, str, str, str, int, int, str, int, str, str, float | None, float | None]:
     return (
         str(t.file_path),
         t.title,
@@ -493,6 +521,7 @@ def _track_to_params(
         t.mb_release_id,
         t.mb_recording_id,
         t.date_added,
+        t.file_mtime,
     )
 
 
@@ -515,6 +544,7 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         last_played=row["last_played"],
         favorite=bool(row["favorite"]),
         play_count=row["play_count"],
+        file_mtime=row["file_mtime"],
     )
 
 
@@ -695,6 +725,7 @@ def _read_tags(path: Path) -> Track | None:
         else:
             return None
         track.date_added = _get_date_added(path)
+        track.file_mtime = _get_mtime(path)
         return track
     except Exception:
         logger.warning("Could not read tags from %s", path, exc_info=True)
@@ -719,12 +750,14 @@ class LibraryScanner:
     ) -> ScanResult:
         """Scan *library_path* recursively and update the index.
 
-        Files already in the index are left untouched (unchanged).
-        New files are read and added. Index entries whose files no longer
-        exist on disk are removed.
+        New files are read and added. Files whose mtime has changed since the
+        last scan are re-read so tag edits (e.g. adding cover art) are picked
+        up automatically. Index entries whose files no longer exist on disk are
+        removed.
 
-        *on_progress*, if provided, is called after each new file's tags are
-        read with (current, total) where total = number of new files to index.
+        *on_progress*, if provided, is called after each processed file's tags
+        are read with (current, total) where total = number of files to index
+        (new + updated).
         """
         if not library_path.exists():
             return ScanResult(added=0, removed=0, unchanged=0)
@@ -734,28 +767,43 @@ class LibraryScanner:
             for p in library_path.rglob("*")
             if p.is_file() and p.suffix.lower() in _AUDIO_SUFFIXES
         }
-        in_index = self._index.indexed_paths()
+        indexed = self._index.indexed_paths_with_mtime()
+        in_index = set(indexed.keys())
 
-        # Read tags for all new files, then commit in one transaction.
         to_add = on_disk - in_index
-        total = len(to_add)
-        new_tracks: list[Track] = []
-        for current, path in enumerate(to_add, start=1):
+
+        # Re-read any existing file whose mtime differs from what was stored.
+        # A None stored mtime (pre-v6 rows) is treated as changed so they get
+        # backfilled on the first scan after the migration.
+        to_update: set[Path] = set()
+        for path in on_disk & in_index:
+            current_mtime = _get_mtime(path)
+            if current_mtime is None:
+                continue  # can't stat — leave it alone
+            if indexed[path] != current_mtime:
+                to_update.add(path)
+
+        to_process = to_add | to_update
+        total = len(to_process)
+        tracks_to_upsert: list[Track] = []
+        for current, path in enumerate(to_process, start=1):
             track = _read_tags(path)
             if track is not None:
-                new_tracks.append(track)
+                tracks_to_upsert.append(track)
             else:
                 logger.warning("Skipped unreadable file: %s", path)
             if on_progress is not None:
                 on_progress(current, total)
-        self._index.upsert_many(new_tracks)
-        added = len(new_tracks)
+        self._index.upsert_many(tracks_to_upsert)
+
+        added = len([t for t in tracks_to_upsert if t.file_path in to_add])
+        updated = len([t for t in tracks_to_upsert if t.file_path in to_update])
 
         removed = 0
         for path in in_index - on_disk:
             self._index.remove_track(path)
             removed += 1
 
-        unchanged = len(on_disk & in_index)
+        unchanged = len(on_disk & in_index) - len(to_update)
 
-        return ScanResult(added=added, removed=removed, unchanged=unchanged)
+        return ScanResult(added=added, removed=removed, unchanged=unchanged, updated=updated)

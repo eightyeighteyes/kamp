@@ -123,7 +123,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 5
+        assert version == 6
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -938,7 +938,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 5
+        assert version == 6
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -995,7 +995,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 5
+        assert version == 6
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1288,7 +1288,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 5
+        assert version == 6
         assert row is not None
         assert row[0] == 0
 
@@ -1401,6 +1401,189 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 5
+        assert version == 6
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
+
+
+# ---------------------------------------------------------------------------
+# Mtime-based re-indexing (TASK-66)
+# ---------------------------------------------------------------------------
+
+
+class TestMtimeReindex:
+    """Tests for LibraryScanner mtime change detection."""
+
+    def test_scan_stores_file_mtime_on_first_index(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        p = lib / "01.mp3"
+        _make_mp3(p, title="T")
+
+        index = LibraryIndex(tmp_path / "library.db")
+        LibraryScanner(index).scan(lib)
+        tracks = index.all_tracks()
+        index.close()
+
+        assert tracks[0].file_mtime == pytest.approx(p.stat().st_mtime, abs=1.0)
+
+    def test_scan_reindexes_file_when_mtime_changes(self, tmp_path: Path) -> None:
+        """Updating a file's mtime causes re-read on next scan."""
+        lib = tmp_path / "music"
+        lib.mkdir()
+        p = lib / "01.mp3"
+        _make_mp3(p, title="Original")
+
+        index = LibraryIndex(tmp_path / "library.db")
+        scanner = LibraryScanner(index)
+        scanner.scan(lib)
+
+        # Rewrite the file with a new title and bump mtime.
+        _make_mp3(p, title="Updated")
+        import os
+
+        os.utime(p, (p.stat().st_atime, p.stat().st_mtime + 1))
+
+        result = scanner.scan(lib)
+        tracks = index.all_tracks()
+        index.close()
+
+        assert result.updated == 1
+        assert result.added == 0
+        assert result.unchanged == 0
+        assert tracks[0].title == "Updated"
+
+    def test_scan_unchanged_count_excludes_updated_files(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        p1 = lib / "01.mp3"
+        p2 = lib / "02.mp3"
+        _make_mp3(p1, title="T1")
+        _make_mp3(p2, title="T2")
+
+        index = LibraryIndex(tmp_path / "library.db")
+        scanner = LibraryScanner(index)
+        scanner.scan(lib)
+
+        # Bump mtime on one file.
+        import os
+
+        os.utime(p1, (p1.stat().st_atime, p1.stat().st_mtime + 1))
+
+        result = scanner.scan(lib)
+        index.close()
+
+        assert result.updated == 1
+        assert result.unchanged == 1
+
+    def test_scan_updates_stored_mtime_after_reindex(self, tmp_path: Path) -> None:
+        """After re-indexing a changed file, its stored mtime matches the new value."""
+        lib = tmp_path / "music"
+        lib.mkdir()
+        p = lib / "01.mp3"
+        _make_mp3(p, title="T")
+
+        index = LibraryIndex(tmp_path / "library.db")
+        scanner = LibraryScanner(index)
+        scanner.scan(lib)
+
+        import os
+
+        new_mtime = p.stat().st_mtime + 1
+        os.utime(p, (p.stat().st_atime, new_mtime))
+        scanner.scan(lib)
+
+        tracks = index.all_tracks()
+        index.close()
+
+        assert tracks[0].file_mtime == pytest.approx(new_mtime, abs=0.001)
+
+    def test_null_mtime_in_db_causes_reindex_on_scan(self, tmp_path: Path) -> None:
+        """Tracks with NULL file_mtime (e.g. after v5→v6 migration) are always
+        re-read on the next scan so tag changes made before the upgrade are
+        picked up automatically."""
+        lib = tmp_path / "music"
+        lib.mkdir()
+        p = lib / "01.mp3"
+        _make_mp3(p, title="Original")
+
+        index = LibraryIndex(tmp_path / "library.db")
+        scanner = LibraryScanner(index)
+        scanner.scan(lib)
+
+        # Simulate the state right after a v5→v6 migration: file_mtime is NULL.
+        index._conn.execute(
+            "UPDATE tracks SET file_mtime = NULL WHERE file_path = ?", (str(p),)
+        )
+        index._conn.commit()
+
+        # Also update the file tags to simulate an edit made before the migration.
+        _make_mp3(p, title="Updated")
+
+        result = scanner.scan(lib)
+        tracks = index.all_tracks()
+        index.close()
+
+        assert result.updated == 1
+        assert tracks[0].title == "Updated"
+        assert tracks[0].file_mtime is not None  # mtime stored after re-read
+
+    def test_migration_v5_to_v6_adds_file_mtime_column(self, tmp_path: Path) -> None:
+        """Existing v5 databases gain the file_mtime column on open."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (5)")
+        conn.execute("""
+            CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                artist TEXT NOT NULL DEFAULT '',
+                album_artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '',
+                year TEXT NOT NULL DEFAULT '',
+                track_number INTEGER NOT NULL DEFAULT 0,
+                disc_number INTEGER NOT NULL DEFAULT 1,
+                ext TEXT NOT NULL DEFAULT '',
+                embedded_art INTEGER NOT NULL DEFAULT 0,
+                mb_release_id TEXT NOT NULL DEFAULT '',
+                mb_recording_id TEXT NOT NULL DEFAULT '',
+                date_added REAL,
+                last_played REAL,
+                favorite INTEGER NOT NULL DEFAULT 0,
+                play_count INTEGER NOT NULL DEFAULT 0
+            )
+            """)
+        conn.execute(
+            "INSERT INTO tracks VALUES (1, '/e.mp3', 'Song', 'Band', 'Band', "
+            "'Album', '2000', 1, 1, 'mp3', 0, '', '', NULL, NULL, 0, 0)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5("
+            "title, artist, album_artist, album, tokenize='unicode61')"
+        )
+        conn.execute(
+            "CREATE TABLE player_state ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "track_path TEXT NOT NULL, position REAL NOT NULL DEFAULT 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        row = index._conn.execute(
+            "SELECT file_mtime FROM tracks WHERE id = 1"
+        ).fetchone()
+        index.close()
+
+        assert version == 6
+        assert row is not None
+        # file_mtime is intentionally left NULL on migration so the next scan
+        # treats all existing tracks as changed and re-reads their tags.
+        assert row[0] is None

@@ -43,6 +43,7 @@ export type ScanResult = {
   added: number
   removed: number
   unchanged: number
+  updated: number
 }
 
 // Configurable base URL: defaults to localhost but can be overridden via

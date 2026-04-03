@@ -1,10 +1,10 @@
 ---
 id: TASK-52
 title: 'UI polish: remove title bar'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-31 03:17'
-updated_date: '2026-04-03 04:35'
+updated_date: '2026-04-03 11:57'
 labels:
   - feature
   - ui
@@ -13,7 +13,7 @@ labels:
 milestone: m-9
 dependencies: []
 priority: medium
-ordinal: 250
+ordinal: 2000
 ---
 
 ## Description

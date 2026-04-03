@@ -7,6 +7,10 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { theme } from '../shared/theme'
 
+// Set the app name before the app is ready so the macOS menu bar and all
+// default menu items ("About kamp", "Quit kamp") reflect the correct name.
+app.setName('kamp')
+
 // ---------------------------------------------------------------------------
 // Server lifecycle
 // ---------------------------------------------------------------------------
@@ -138,9 +142,6 @@ function createWindow(): void {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(async () => {
-  // Override the app name at runtime — in dev the binary is named "Electron";
-  // this sets the macOS menu bar name regardless of how the app was launched.
-  app.setName('kamp')
   electronApp.setAppUserModelId('com.kamp.app')
 
   // Default open or close DevTools by F12 in development

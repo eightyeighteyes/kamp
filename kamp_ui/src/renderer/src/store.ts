@@ -358,6 +358,17 @@ export const useStore = create<PlayerStore>((set, get) => ({
           }
         : s.queue
     }))
+    // Patch search results so the favorite glyph updates without a re-search.
+    set((s) => ({
+      searchResults: s.searchResults
+        ? {
+            ...s.searchResults,
+            tracks: s.searchResults.tracks.map((t) =>
+              t.file_path === filePath ? { ...t, favorite } : t
+            )
+          }
+        : s.searchResults
+    }))
     // Reload the open album track list so the heart in track rows updates.
     await get().refreshOpenAlbum()
   },

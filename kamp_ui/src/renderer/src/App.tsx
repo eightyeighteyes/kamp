@@ -184,13 +184,16 @@ export default function App(): React.JSX.Element {
 
   if (serverStatus === 'disconnected') {
     return (
-      <div className="server-offline">
-        <div className="server-offline-icon">⏻</div>
-        <div className="server-offline-title">kamp server is not running</div>
-        <div className="server-offline-hint">
-          Start it with <code>kamp server</code>
+      <>
+        <div className="server-offline">
+          <div className="server-offline-icon">⏻</div>
+          <div className="server-offline-title">kamp server is not running</div>
+          <div className="server-offline-hint">
+            Start it with <code>kamp server</code>
+          </div>
         </div>
-      </div>
+        {!splashGone && <SplashScreen hiding={splashHiding} />}
+      </>
     )
   }
 

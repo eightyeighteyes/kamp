@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
@@ -7,6 +7,7 @@ import { NowPlayingView } from './components/NowPlayingView'
 import { SearchBar } from './components/SearchBar'
 import { SearchView } from './components/SearchView'
 import { SetupScreen } from './components/SetupScreen'
+import { SplashScreen } from './components/SplashScreen'
 import { TrackList } from './components/TrackList'
 import { TransportBar } from './components/TransportBar'
 import { QueuePanel } from './components/QueuePanel'
@@ -35,6 +36,20 @@ export default function App(): React.JSX.Element {
   // Per-view scroll positions — kept current by a scroll listener so we never
   // read a browser-clamped value when the outgoing view's content was taller.
   const viewScrollRef = useRef<Partial<Record<string, number>>>({})
+
+  // Splash: shown while status is 'reconnecting' (initial load), then fades out.
+  const [splashHiding, setSplashHiding] = useState(false)
+  const [splashGone, setSplashGone] = useState(false)
+  const splashFadeStartedRef = useRef(false)
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | undefined
+    if (serverStatus !== 'reconnecting' && !splashFadeStartedRef.current) {
+      splashFadeStartedRef.current = true
+      setSplashHiding(true)
+      t = setTimeout(() => setSplashGone(true), 500)
+    }
+    return () => clearTimeout(t)
+  }, [serverStatus])
 
   useEffect(() => {
     // Load UI state (sort order, active view) before loading the library so the
@@ -214,6 +229,7 @@ export default function App(): React.JSX.Element {
         {queueVisible && <QueuePanel />}
       </div>
       <TransportBar />
+      {!splashGone && <SplashScreen hiding={splashHiding} />}
     </div>
   )
 }

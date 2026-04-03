@@ -79,6 +79,86 @@ body,
   font-family: monospace;
 }
 
+/* -------------------------------------------------------------------------
+   Splash screen — shown on initial load while the server connection is
+   being established. Uses literal #141414 (= --bg) in the SVG because
+   that colour is embedded in the SVG markup.
+   ------------------------------------------------------------------------- */
+
+.splash-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity 0.5s ease-out;
+  /* Prevent any interaction with the app below */
+  pointer-events: all;
+}
+
+.splash-hiding {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.splash-svg {
+  width: 260px;
+  height: auto;
+}
+
+/* The spinning record group — transform-origin uses SVG coordinates */
+.splash-record-spin {
+  transform-origin: 100px 100px;
+  animation: splash-spin 1.8s linear infinite;
+}
+
+@keyframes splash-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Stars — each twinkles at its own phase */
+.splash-deco {
+  animation: splash-twinkle 2.4s ease-in-out infinite;
+}
+.s1 { animation-delay: 0s; }
+.s2 { animation-delay: 0.8s; }
+.s3 { animation-delay: 1.6s; }
+.s4 { animation-delay: 0.4s; }
+
+@keyframes splash-twinkle {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Music notes — bob gently upward */
+.splash-note {
+  animation: splash-float 3s ease-in-out infinite;
+}
+.n1 { animation-delay: 0s; }
+.n2 { animation-delay: 1.5s; }
+
+@keyframes splash-float {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  50% {
+    transform: translateY(-7px);
+    opacity: 0.85;
+  }
+}
+
 /* Reconnecting banner — shown when connection drops but library is cached */
 .reconnecting-banner {
   background: var(--surface);

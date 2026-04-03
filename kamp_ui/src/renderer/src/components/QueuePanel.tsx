@@ -15,15 +15,25 @@ export function QueuePanel(): React.JSX.Element {
   const insertAlbumAt = useStore((s) => s.insertAlbumAt)
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
   const activeRef = useRef<HTMLLIElement>(null)
+  const listRef = useRef<HTMLOListElement>(null)
   const [menu, setMenu] = useState<ContextMenu | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
   const tracks = queue?.tracks ?? []
   const position = queue?.position ?? -1
 
-  // Scroll the active track into view whenever it changes.
+  // Scroll so that up to 5 history rows are visible above the current track.
+  // When position < 5 there is no scrolling needed — the top of the list is fine.
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: 'nearest' })
+    const list = listRef.current
+    const active = activeRef.current
+    if (!list || !active || position < 5) {
+      // For the first few tracks just ensure the active row is visible.
+      activeRef.current?.scrollIntoView({ block: 'nearest' })
+      return
+    }
+    const rowHeight = active.offsetHeight
+    list.scrollTo({ top: (position - 5) * rowHeight, behavior: 'smooth' })
   }, [position])
 
   // Dismiss context menu on click outside.
@@ -95,6 +105,7 @@ export function QueuePanel(): React.JSX.Element {
         </div>
       ) : (
         <ol
+          ref={listRef}
           className="queue-track-list"
           onContextMenu={(e) => {
             e.preventDefault()

@@ -75,6 +75,9 @@ function SearchTrackRow({
       onKeyDown={(e) => e.key === 'Enter' && handleClick()}
       onContextMenu={(e) => onContextMenu(e, track)}
     >
+      <span className="search-track-fav" aria-hidden="true">
+        {track.favorite ? '♥' : ''}
+      </span>
       <span className="search-track-title">{track.title}</span>
       <span className="search-track-meta">
         {track.artist} — {track.album}

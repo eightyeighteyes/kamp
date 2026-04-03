@@ -392,6 +392,14 @@ body,
   background: var(--surface-hover);
 }
 
+.search-track-fav {
+  width: 12px;
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--error);
+  text-align: center;
+}
+
 .search-track-title {
   font-size: 13px;
   white-space: nowrap;

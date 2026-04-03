@@ -6,6 +6,10 @@ export function NowPlayingView(): React.JSX.Element {
   const player = useStore((s) => s.player)
   const { current_track } = player
   const [artLoaded, setArtLoaded] = useState(false)
+  const albums = useStore((s) => s.library.albums)
+  const selectAlbum = useStore((s) => s.selectAlbum)
+  const selectArtist = useStore((s) => s.selectArtist)
+  const setActiveView = useStore((s) => s.setActiveView)
 
   if (!current_track) {
     return (
@@ -14,6 +18,22 @@ export function NowPlayingView(): React.JSX.Element {
         <div className="now-playing-empty-hint">Nothing playing</div>
       </div>
     )
+  }
+
+  function goToAlbum(): void {
+    if (!current_track) return
+    const album = albums.find(
+      (a) => a.album === current_track.album && a.album_artist === current_track.album_artist
+    )
+    if (!album) return
+    void setActiveView('library')
+    void selectAlbum(album)
+  }
+
+  function goToArtist(): void {
+    if (!current_track) return
+    void setActiveView('library')
+    selectArtist(current_track.album_artist)
   }
 
   return (
@@ -28,11 +48,13 @@ export function NowPlayingView(): React.JSX.Element {
       </div>
       <div className="now-playing-meta">
         <div className="now-playing-title">{current_track.title}</div>
-        <div className="now-playing-artist">{current_track.artist}</div>
-        <div className="now-playing-album">
+        <button className="now-playing-artist now-playing-link" onClick={goToArtist}>
+          {current_track.artist}
+        </button>
+        <button className="now-playing-album now-playing-link" onClick={goToAlbum}>
           {current_track.album}
           {current_track.year ? ` · ${current_track.year}` : ''}
-        </div>
+        </button>
       </div>
     </div>
   )

@@ -4,11 +4,12 @@ title: 'Cross-platform service installation (Linux systemd, Windows NSSM)'
 status: To Do
 assignee: []
 created_date: '2026-03-29 02:57'
-updated_date: '2026-03-29 03:13'
+updated_date: '2026-04-03 04:36'
 labels:
-  - platform
-  - infrastructure
-  - 'estimate: side'
+  - feature
+  - linux
+  - windows
+  - 'estimate: lp'
 milestone: m-4
 dependencies: []
 ---

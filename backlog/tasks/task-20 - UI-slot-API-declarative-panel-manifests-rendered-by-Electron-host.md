@@ -4,10 +4,10 @@ title: 'UI slot API: declarative panel manifests rendered by Electron host'
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:12'
+updated_date: '2026-04-03 04:37'
 labels:
   - feature
-  - extensions
-  - ui
+  - architecture
   - 'estimate: lp'
 milestone: m-2
 dependencies: []

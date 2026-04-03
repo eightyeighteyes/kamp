@@ -4,9 +4,14 @@ title: check album paths for album art
 status: To Do
 assignee: []
 created_date: '2026-04-02 22:48'
-labels: []
-milestone: m-11
+updated_date: '2026-04-03 05:30'
+labels:
+  - feature
+  - backend
+  - 'estimate: lp'
+milestone: m-19
 dependencies: []
+ordinal: 8000
 ---
 
 ## Description

@@ -4,9 +4,9 @@ title: Chocolatey packaging
 status: To Do
 assignee: []
 created_date: '2026-03-29 02:58'
-updated_date: '2026-03-29 03:05'
+updated_date: '2026-04-03 04:36'
 labels:
-  - platform
+  - chore
   - windows
   - packaging
   - 'estimate: side'

@@ -4,10 +4,9 @@ title: Windows CI (GitHub Actions windows-latest)
 status: To Do
 assignee: []
 created_date: '2026-03-29 02:57'
-updated_date: '2026-03-29 03:04'
+updated_date: '2026-04-03 04:36'
 labels:
-  - platform
-  - windows
+  - chore
   - ci
   - 'estimate: side'
 milestone: m-3

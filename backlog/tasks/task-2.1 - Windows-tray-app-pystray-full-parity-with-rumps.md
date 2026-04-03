@@ -4,11 +4,10 @@ title: 'Windows tray app (pystray, full parity with rumps)'
 status: To Do
 assignee: []
 created_date: '2026-03-29 02:57'
-updated_date: '2026-03-29 03:05'
+updated_date: '2026-04-03 04:36'
 labels:
-  - platform
+  - feature
   - windows
-  - tray
   - 'estimate: lp'
 milestone: m-3
 dependencies: []

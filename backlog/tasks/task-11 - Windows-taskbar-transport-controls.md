@@ -4,12 +4,12 @@ title: Windows taskbar transport controls
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:11'
-updated_date: '2026-03-29 03:15'
+updated_date: '2026-04-03 04:36'
 labels:
   - feature
   - windows
   - os-integration
-  - 'estimate: side'
+  - 'estimate: lp'
 milestone: m-3
 dependencies: []
 ordinal: 9000

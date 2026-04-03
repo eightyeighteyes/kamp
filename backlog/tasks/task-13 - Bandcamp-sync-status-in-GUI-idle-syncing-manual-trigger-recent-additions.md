@@ -4,10 +4,11 @@ title: 'Bandcamp sync status in GUI (idle/syncing, manual trigger, recent additi
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:11'
+updated_date: '2026-04-03 04:36'
 labels:
   - feature
-  - bandcamp
   - ui
+  - bandcamp
   - 'estimate: side'
 milestone: m-1
 dependencies: []

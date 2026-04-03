@@ -4,10 +4,10 @@ title: Allow user to verify tags before they are written
 status: To Do
 assignee: []
 created_date: '2026-03-29 02:58'
-updated_date: '2026-03-31 03:22'
+updated_date: '2026-04-03 04:36'
 labels:
   - feature
-  - ux
+  - ui
   - 'estimate: lp'
 milestone: m-7
 dependencies: []

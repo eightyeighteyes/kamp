@@ -4,8 +4,12 @@ title: 'UI polish: show a splash screen while loading the application'
 status: To Do
 assignee: []
 created_date: '2026-03-31 03:20'
-updated_date: '2026-03-31 03:27'
-labels: []
+updated_date: '2026-04-03 04:35'
+labels:
+  - feature
+  - ui
+  - electron
+  - 'estimate: single'
 milestone: m-9
 dependencies: []
 priority: medium

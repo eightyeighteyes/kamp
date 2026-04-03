@@ -4,10 +4,11 @@ title: Extension host and KampContext API
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:12'
+updated_date: '2026-04-03 04:36'
 labels:
   - feature
-  - extensions
-  - 'estimate: lp'
+  - architecture
+  - 'estimate: box set'
 milestone: m-2
 dependencies: []
 ---

@@ -4,7 +4,12 @@ title: A modal dialog is available for setting preferences
 status: To Do
 assignee: []
 created_date: '2026-04-02 20:24'
-labels: []
+updated_date: '2026-04-03 04:36'
+labels:
+  - feature
+  - ui
+  - electron
+  - 'estimate: lp'
 milestone: m-21
 dependencies: []
 ---

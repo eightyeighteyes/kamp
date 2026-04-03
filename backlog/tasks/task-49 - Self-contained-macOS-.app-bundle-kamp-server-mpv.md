@@ -4,11 +4,12 @@ title: Self-contained macOS .app bundle (kamp server + mpv)
 status: To Do
 assignee: []
 created_date: '2026-03-31 02:40'
-updated_date: '2026-03-31 03:27'
+updated_date: '2026-04-03 04:36'
 labels:
   - packaging
   - distribution
   - macos
+  - 'estimate: box set'
 milestone: m-9
 dependencies: []
 priority: medium

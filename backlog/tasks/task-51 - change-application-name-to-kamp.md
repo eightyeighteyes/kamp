@@ -4,8 +4,10 @@ title: change application name to kamp
 status: To Do
 assignee: []
 created_date: '2026-03-31 03:15'
-updated_date: '2026-03-31 03:27'
-labels: []
+updated_date: '2026-04-03 04:35'
+labels:
+  - chore
+  - 'estimate: single'
 milestone: m-9
 dependencies: []
 priority: low

@@ -4,11 +4,12 @@ title: 'Media keys: next/prev track'
 status: To Do
 assignee: []
 created_date: '2026-03-30 23:47'
-updated_date: '2026-03-31 03:27'
+updated_date: '2026-04-03 04:36'
 labels:
+  - feature
   - macos
-  - media-keys
-  - architecture
+  - os-integration
+  - 'estimate: 2xlp'
 milestone: m-9
 dependencies: []
 priority: medium

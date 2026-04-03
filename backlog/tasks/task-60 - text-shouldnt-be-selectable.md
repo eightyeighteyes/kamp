@@ -4,7 +4,11 @@ title: text shouldn't be selectable
 status: To Do
 assignee: []
 created_date: '2026-04-01 02:23'
-labels: []
+updated_date: '2026-04-03 04:35'
+labels:
+  - polish
+  - ui
+  - 'estimate: single'
 milestone: m-20
 dependencies: []
 ---

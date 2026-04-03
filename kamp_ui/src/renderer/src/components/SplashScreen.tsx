@@ -125,7 +125,7 @@ export function SplashScreen({ hiding }: { hiding: boolean }): React.JSX.Element
           - Headshell continues from bend to stylus at 170° on groove r=74 → (113, 173)
         */}
         <path
-          d="M 218 18 L 182 153 L 113 173"
+          d="M 218 18 Q 182 153 113 173"
           fill="none"
           stroke="#c4aa78"
           strokeWidth="2"

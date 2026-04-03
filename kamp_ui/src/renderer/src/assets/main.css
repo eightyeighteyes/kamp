@@ -1050,7 +1050,6 @@ body,
   padding: 7px 16px;
   border-radius: 20px;
   cursor: pointer;
-  margin-bottom: 0;
   transition: filter 0.15s;
 }
 
@@ -1063,9 +1062,12 @@ body,
 }
 
 .track-list-divider {
-  height: 1px;
-  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
   margin: 16px 28px 4px 28px;
+  padding-top: 10px;
 }
 
 .track-rows {

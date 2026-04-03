@@ -79,6 +79,9 @@ export function TrackList(): React.JSX.Element | null {
             </button>
           </h2>
           {album.year && <div className="track-list-album-year">{album.year}</div>}
+        </div>
+
+        <div className="track-list-divider">
           <button
             className="play-all-btn"
             onClick={() => playTrack(album.album_artist, album.album, 0)}
@@ -87,8 +90,6 @@ export function TrackList(): React.JSX.Element | null {
             Play All
           </button>
         </div>
-
-        <div className="track-list-divider" />
 
         <ol className="track-rows">
           {tracks.map((track, i) => {

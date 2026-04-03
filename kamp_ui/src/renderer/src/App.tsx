@@ -39,14 +39,14 @@ export default function App(): React.JSX.Element {
 
   // Splash: shown while reconnecting, then lingers 1s after connect so the
   // library fetch completes before the app is revealed, then fades out.
+  // No one-shot guard — the cleanup + re-run from React StrictMode is safe
+  // because the cleanup cancels the timer before the re-run restarts it.
   const [splashHiding, setSplashHiding] = useState(false)
   const [splashGone, setSplashGone] = useState(false)
-  const splashFadeStartedRef = useRef(false)
   const splashLingerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const splashFadeRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => {
-    if (serverStatus !== 'reconnecting' && !splashFadeStartedRef.current) {
-      splashFadeStartedRef.current = true
+    if (serverStatus !== 'reconnecting') {
       splashLingerRef.current = setTimeout(() => {
         setSplashHiding(true)
         splashFadeRef.current = setTimeout(() => setSplashGone(true), 500)

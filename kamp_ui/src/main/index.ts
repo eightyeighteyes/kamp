@@ -7,6 +7,10 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { theme } from '../shared/theme'
 
+// Set the app name before the app is ready so the macOS menu bar and all
+// default menu items ("About kamp", "Quit kamp") reflect the correct name.
+app.setName('kamp')
+
 // ---------------------------------------------------------------------------
 // Server lifecycle
 // ---------------------------------------------------------------------------
@@ -138,8 +142,7 @@ function createWindow(): void {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(async () => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId('com.kamp.app')
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.

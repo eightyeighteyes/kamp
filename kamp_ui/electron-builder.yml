@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: kamp_ui
+appId: com.kamp.app
+productName: kamp
 directories:
   buildResources: build
 files:
@@ -12,7 +12,7 @@ files:
 asarUnpack:
   - resources/**
 win:
-  executableName: kamp_ui
+  executableName: kamp
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

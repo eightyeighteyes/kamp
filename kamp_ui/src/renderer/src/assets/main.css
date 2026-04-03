@@ -177,8 +177,13 @@ body,
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   padding: 0 8px;
+  /* Left padding reserves space for macOS traffic lights (close/min/max).
+     On non-macOS this is just a little extra breathing room. */
+  padding-left: 76px;
   gap: 2px;
   flex-shrink: 0;
+  /* Make the nav bar the window drag region so the user can move the window. */
+  -webkit-app-region: drag;
 }
 
 .view-tabs button {
@@ -191,6 +196,8 @@ body,
   padding: 8px 12px;
   margin-bottom: -1px;
   transition: color 0.15s, border-color 0.15s;
+  /* Buttons must opt out of the drag region so clicks register. */
+  -webkit-app-region: no-drag;
 }
 
 .view-tabs button:hover {
@@ -215,6 +222,7 @@ body,
   padding: 3px 8px;
   width: 200px;
   transition: border-color 0.15s;
+  -webkit-app-region: no-drag;
 }
 
 .search-bar:focus-within {

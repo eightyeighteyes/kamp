@@ -185,16 +185,15 @@ export function QueuePanel(): React.JSX.Element {
               <button
                 className="track-context-menu-item"
                 onClick={() => {
-                  const found =
-                    albums.find(
-                      (a) => a.album_artist === menu.albumArtist && a.album === menu.album
-                    ) ?? {
-                      album_artist: menu.albumArtist!,
-                      album: menu.album!,
-                      year: '',
-                      track_count: 0,
-                      has_art: false
-                    }
+                  const found = albums.find(
+                    (a) => a.album_artist === menu.albumArtist && a.album === menu.album
+                  ) ?? {
+                    album_artist: menu.albumArtist!,
+                    album: menu.album!,
+                    year: '',
+                    track_count: 0,
+                    has_art: false
+                  }
                   void setActiveView('library')
                   void selectAlbum(found)
                   setMenu(null)

@@ -1,10 +1,10 @@
 ---
 id: TASK-60
 title: text shouldn't be selectable
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-01 02:23'
-updated_date: '2026-04-03 04:35'
+updated_date: '2026-04-03 12:58'
 labels:
   - polish
   - ui

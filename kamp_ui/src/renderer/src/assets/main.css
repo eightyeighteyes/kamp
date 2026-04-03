@@ -8,6 +8,16 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  /* Prevent text selection app-wide — this is a music player, not a document. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Restore text selection for actual input fields. */
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 :root {
@@ -1301,6 +1311,19 @@ body,
   font-size: 13px;
   color: var(--text-dim);
   opacity: 0.7;
+}
+
+.now-playing-link {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.now-playing-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .now-playing-empty {

@@ -976,13 +976,16 @@ body,
   border-color: rgba(255, 255, 255, 0.2);
 }
 
-/* Scrollable body — sits below the hero, holds identity + track rows */
+/* Scrollable body — sits below the hero, holds identity + track rows.
+   position + z-index needed to render above the hero's stacking context. */
 .track-list-body {
   flex: 1;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
   margin-top: -48px;
+  position: relative;
+  z-index: 1;
 }
 
 .track-list-identity {

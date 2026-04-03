@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
@@ -7,6 +7,7 @@ import { NowPlayingView } from './components/NowPlayingView'
 import { SearchBar } from './components/SearchBar'
 import { SearchView } from './components/SearchView'
 import { SetupScreen } from './components/SetupScreen'
+import { SplashScreen } from './components/SplashScreen'
 import { TrackList } from './components/TrackList'
 import { TransportBar } from './components/TransportBar'
 import { QueuePanel } from './components/QueuePanel'
@@ -35,6 +36,27 @@ export default function App(): React.JSX.Element {
   // Per-view scroll positions — kept current by a scroll listener so we never
   // read a browser-clamped value when the outgoing view's content was taller.
   const viewScrollRef = useRef<Partial<Record<string, number>>>({})
+
+  // Splash: shown while reconnecting, then lingers 1s after connect so the
+  // library fetch completes before the app is revealed, then fades out.
+  // No one-shot guard — the cleanup + re-run from React StrictMode is safe
+  // because the cleanup cancels the timer before the re-run restarts it.
+  const [splashHiding, setSplashHiding] = useState(false)
+  const [splashGone, setSplashGone] = useState(false)
+  const splashLingerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const splashFadeRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    if (serverStatus !== 'reconnecting') {
+      splashLingerRef.current = setTimeout(() => {
+        setSplashHiding(true)
+        splashFadeRef.current = setTimeout(() => setSplashGone(true), 500)
+      }, 1000)
+    }
+    return () => {
+      clearTimeout(splashLingerRef.current)
+      clearTimeout(splashFadeRef.current)
+    }
+  }, [serverStatus])
 
   useEffect(() => {
     // Load UI state (sort order, active view) before loading the library so the
@@ -162,13 +184,16 @@ export default function App(): React.JSX.Element {
 
   if (serverStatus === 'disconnected') {
     return (
-      <div className="server-offline">
-        <div className="server-offline-icon">⏻</div>
-        <div className="server-offline-title">kamp server is not running</div>
-        <div className="server-offline-hint">
-          Start it with <code>kamp server</code>
+      <>
+        <div className="server-offline">
+          <div className="server-offline-icon">⏻</div>
+          <div className="server-offline-title">kamp server is not running</div>
+          <div className="server-offline-hint">
+            Start it with <code>kamp server</code>
+          </div>
         </div>
-      </div>
+        {!splashGone && <SplashScreen hiding={splashHiding} />}
+      </>
     )
   }
 
@@ -214,6 +239,7 @@ export default function App(): React.JSX.Element {
         {queueVisible && <QueuePanel />}
       </div>
       <TransportBar />
+      {!splashGone && <SplashScreen hiding={splashHiding} />}
     </div>
   )
 }

@@ -1,10 +1,10 @@
 ---
 id: TASK-53
 title: 'UI polish: show a splash screen while loading the application'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-31 03:20'
-updated_date: '2026-04-03 04:35'
+updated_date: '2026-04-03 06:29'
 labels:
   - feature
   - ui
@@ -13,7 +13,7 @@ labels:
 milestone: m-9
 dependencies: []
 priority: medium
-ordinal: 125
+ordinal: 1000
 ---
 
 ## Description

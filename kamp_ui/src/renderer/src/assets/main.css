@@ -1533,11 +1533,11 @@ body,
 }
 
 .favorite-btn:hover {
-  color: #e06c75;
+  color: #7c87da;
 }
 
 .favorite-btn.active {
-  color: #e06c75;
+  color: #7c87da;
 }
 
 .favorite-btn.active:hover {

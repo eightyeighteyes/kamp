@@ -1,10 +1,10 @@
 ---
 id: TASK-81
 title: context menus are available in search results
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-03 16:36'
-updated_date: '2026-04-03 16:37'
+updated_date: '2026-04-04 17:26'
 labels:
   - 'estimate: side'
 milestone: m-20

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.0](https://github.com/eightyeighteyes/kamp/compare/v1.5.0...v1.6.0) (2026-04-04)
+
+
+### Features
+
+* album page glow-up (TASK-69) ([#147](https://github.com/eightyeighteyes/kamp/issues/147)) ([e658a87](https://github.com/eightyeighteyes/kamp/commit/e658a878def6d7c2f79fe6d399512fd41b51d814))
+* context menus in search results (TASK-81) ([#156](https://github.com/eightyeighteyes/kamp/issues/156)) ([996a78c](https://github.com/eightyeighteyes/kamp/commit/996a78c780722d574ab17fbebee065e3f00b1bf0))
+* no text selection, now playing links (TASK-60, TASK-76) ([#152](https://github.com/eightyeighteyes/kamp/issues/152)) ([eae0312](https://github.com/eightyeighteyes/kamp/commit/eae0312ec5e4f09353afd39d549dcfa2dacac23f))
+* remove native title bar, promote view-tabs to drag region (TASK-52) ([#150](https://github.com/eightyeighteyes/kamp/issues/150)) ([bf50c24](https://github.com/eightyeighteyes/kamp/commit/bf50c24266feb7614e5e18b83eaee340b4f995dc))
+* scroll queue to show 5 history rows above current track (TASK-77) ([#153](https://github.com/eightyeighteyes/kamp/issues/153)) ([c098c15](https://github.com/eightyeighteyes/kamp/commit/c098c15f86af041d1a2d4680d8a6cd95b1a2d979))
+* splash screen with spinning vinyl record (TASK-53) ([#149](https://github.com/eightyeighteyes/kamp/issues/149)) ([a677bea](https://github.com/eightyeighteyes/kamp/commit/a677bea313efd37b44c188f45866a25f177a0400))
+* SVG heart glyph in transport (TASK-68) ([#158](https://github.com/eightyeighteyes/kamp/issues/158)) ([ae52e2c](https://github.com/eightyeighteyes/kamp/commit/ae52e2cfd728beff90da8445d5316f8aec92ce19))
+* window bounds, context menu edge detection, queue navigation (TASK-78, TASK-79, TASK-80) ([#155](https://github.com/eightyeighteyes/kamp/issues/155)) ([593ed9f](https://github.com/eightyeighteyes/kamp/commit/593ed9f125d6eb4fd23c58417456531ea4caa655))
+
+
+### Bug Fixes
+
+* surface mpv startup errors and add poetry dev config ([#157](https://github.com/eightyeighteyes/kamp/issues/157)) ([e48afbf](https://github.com/eightyeighteyes/kamp/commit/e48afbfced85a2eb2314d990056a596d5269485a))
+
 ## [1.5.0](https://github.com/eightyeighteyes/kamp/compare/v1.4.0...v1.5.0) (2026-04-02)
 
 

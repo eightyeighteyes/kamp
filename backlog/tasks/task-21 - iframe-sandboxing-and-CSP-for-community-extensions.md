@@ -4,13 +4,14 @@ title: iframe sandboxing and CSP for community extensions
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-03 04:37'
+updated_date: '2026-04-05 16:32'
 labels:
   - feature
   - architecture
   - 'estimate: side'
 milestone: m-2
 dependencies: []
+ordinal: 10000
 ---
 
 ## Description
@@ -25,4 +26,5 @@ Render community (third-party) extensions in `<iframe sandbox="allow-scripts">` 
 - [ ] #2 Extensions communicate with the host only via postMessage (no direct DOM or API access)
 - [ ] #3 Strict CSP is enforced on the renderer window
 - [ ] #4 First-party extensions continue to work via contextBridge unaffected
+- [ ] #5 CSP connect-src is restricted to the kamp server origin only; frontend extensions that need external network access must proxy requests through KampAPI, not fetch directly
 <!-- AC:END -->

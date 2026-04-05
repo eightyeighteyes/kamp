@@ -4,13 +4,14 @@ title: Extension settings UI
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-03 04:37'
+updated_date: '2026-04-05 16:32'
 labels:
   - feature
   - ui
   - 'estimate: side'
 milestone: m-2
 dependencies: []
+ordinal: 11000
 ---
 
 ## Description

@@ -1,4 +1,4 @@
-"""Tests for KampContext structured data types."""
+"""Tests for KampGround structured data types."""
 
 from __future__ import annotations
 

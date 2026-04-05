@@ -8,7 +8,8 @@ import queue as _queue_module
 from typing import Any
 from unittest.mock import patch
 
-from kamp_daemon.ext.worker import _extension_worker, _drain_log_queue, invoke_extension
+from kamp_daemon.ext.context import KampGround
+from kamp_daemon.ext.worker import _drain_log_queue, _extension_worker, invoke_extension
 
 # ---------------------------------------------------------------------------
 # Concrete extension class used across tests
@@ -19,6 +20,9 @@ class _Recorder:
     """Records calls so tests can assert the method was invoked."""
 
     calls: list[tuple[Any, ...]] = []
+
+    def __init__(self, ctx: KampGround) -> None:
+        self._ctx = ctx
 
     def run(self, *args: Any) -> None:
         _Recorder.calls.append(args)
@@ -44,17 +48,17 @@ class _FakeProc:
 
 
 def _inline_worker(
-    cls: type, method_name: str, args: tuple[Any, ...]
+    cls: type, method_name: str, args: tuple[Any, ...], ctx: KampGround
 ) -> tuple[Any, Any, Any]:
     """Run _extension_worker synchronously in-process."""
     log_q: _queue_module.Queue[Any] = _queue_module.Queue()
     result_q: _queue_module.Queue[Any] = _queue_module.Queue()
-    _extension_worker(cls, method_name, args, log_q, result_q)
+    _extension_worker(cls, method_name, args, ctx, log_q, result_q)
     return _FakeProc(), log_q, result_q
 
 
 def _crash_worker(
-    cls: type, method_name: str, args: tuple[Any, ...]
+    cls: type, method_name: str, args: tuple[Any, ...], ctx: KampGround
 ) -> tuple[Any, Any, Any]:
     """Simulate a hard crash (non-zero exitcode, empty result_q)."""
     log_q: _queue_module.Queue[Any] = _queue_module.Queue()
@@ -124,7 +128,7 @@ def test_queue_handler_removed_after_worker() -> None:
 
     log_q: _queue_module.Queue[Any] = _queue_module.Queue()
     result_q: _queue_module.Queue[Any] = _queue_module.Queue()
-    _extension_worker(_Recorder, "run", (), log_q, result_q)
+    _extension_worker(_Recorder, "run", (), KampGround(), log_q, result_q)
 
     assert root.handlers == handlers_before
 
@@ -139,8 +143,7 @@ def test_no_reemission_loop_on_second_drain() -> None:
     log_q: _queue_module.Queue[Any] = _queue_module.Queue()
     result_q: _queue_module.Queue[Any] = _queue_module.Queue()
 
-    # Worker emits one log record internally during instantiation/call
-    _extension_worker(_Recorder, "run", ("x",), log_q, result_q)
+    _extension_worker(_Recorder, "run", ("x",), KampGround(), log_q, result_q)
 
     _drain_log_queue(log_q)  # first drain — clears the queue
     assert log_q.empty(), "Queue should be empty after first drain"
@@ -155,6 +158,9 @@ def test_log_records_replayed_in_parent() -> None:
     """Log records emitted by the worker are forwarded to the parent's handlers."""
 
     class _LoggingExtension:
+        def __init__(self, ctx: KampGround) -> None:
+            pass
+
         def run(self) -> None:
             logging.getLogger("kamp_daemon.ext.worker").info("hello from worker")
 

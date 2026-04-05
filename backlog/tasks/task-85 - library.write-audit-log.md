@@ -4,7 +4,7 @@ title: library.write audit log
 status: To Do
 assignee: []
 created_date: '2026-04-05 16:27'
-updated_date: '2026-04-05 16:32'
+updated_date: '2026-04-05 21:21'
 labels:
   - feature
   - security
@@ -20,20 +20,16 @@ ordinal: 4000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The `library.write` permission grants extensions the ability to modify library metadata. To bound the damage a malicious or buggy extension can cause, all writes must go through named atomic operations (`update_metadata`, `set_artwork`) and every write must be logged to an append-only audit table.
+Implement an append-only audit log for all `library.write` operations performed by extensions. Every mutation (`update_metadata`, `set_artwork`) is logged to a dedicated SQLite table with extension ID, operation name, old value, new value, and timestamp. The log enables rollback of any extension's changes.
 
-The audit table schema: `extension_id`, `operation`, `track_id`, `old_value` (JSON), `new_value` (JSON), `timestamp`. This enables rollback of all changes made by a given extension (e.g. if a user uninstalls a misbehaving tagger).
-
-No bulk deletes and no raw SQL access are permitted through the `library.write` permission. Extensions cannot drop tables, truncate, or issue arbitrary queries.
-
-Depends on: TASK-17 (KampContext API, which defines the library.write surface).
+Depends on: TASK-17 (KampGround API, which defines the library.write surface).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 library.write permission exposes only named mutations: update_metadata(track_id, fields) and set_artwork(track_id, bytes)
-- [ ] #2 Every write operation is appended to an audit table in SQLite with extension_id, operation, track_id, old_value, new_value, timestamp
-- [ ] #3 Audit table is append-only; extensions cannot delete or modify audit records
-- [ ] #4 A rollback operation exists to undo all library.write changes made by a given extension_id
-- [ ] #5 Attempts to issue raw SQL or call unlisted write operations via KampContext are rejected
+- [ ] #1 An audit_log table exists with columns: extension_id, operation, old_value, new_value, timestamp
+- [ ] #2 Every update_metadata and set_artwork call via KampGround is logged before the write is applied
+- [ ] #3 Audit log is append-only; no extension or host code may delete or update rows
+- [ ] #4 A rollback command exists that reverts all writes by a given extension_id
+- [ ] #5 Attempts to issue raw SQL or call unlisted write operations via KampGround are rejected
 <!-- AC:END -->

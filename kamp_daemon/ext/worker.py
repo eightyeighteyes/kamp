@@ -17,6 +17,8 @@ import multiprocessing
 import queue
 from typing import Any
 
+from .context import KampGround
+
 _logger = logging.getLogger(__name__)
 
 
@@ -29,13 +31,17 @@ def _extension_worker(
     cls: type,
     method_name: str,
     args: tuple[Any, ...],
+    ctx: KampGround,
     log_q: Any,
     result_q: Any,
 ) -> None:
-    """Subprocess entry point: instantiate *cls* and call *method_name*(*args).
+    """Subprocess entry point: instantiate cls(ctx) and call method_name(*args).
+
+    The KampGround context is passed to the extension constructor so extensions
+    can query library state and read playback state during their invocation.
 
     Logging is forwarded to the parent via log_q.  The QueueHandler is removed
-    in the finally block so that _replay_log_queue re-emission in tests does not
+    in the finally block so that _drain_log_queue re-emission in tests does not
     loop back through the root logger's handler (same invariant as pipeline.py).
     """
     root = logging.getLogger()
@@ -43,7 +49,7 @@ def _extension_worker(
     queue_handler = logging.handlers.QueueHandler(log_q)
     root.addHandler(queue_handler)
     try:
-        instance = cls()
+        instance = cls(ctx)
         getattr(instance, method_name)(*args)
         result_q.put(("ok", None))
     except Exception as exc:  # noqa: BLE001
@@ -61,18 +67,19 @@ def _spawn_extension_worker(
     cls: type,
     method_name: str,
     args: tuple[Any, ...],
+    ctx: KampGround,
 ) -> tuple[Any, Any, Any]:
     """Spawn an isolated subprocess running _extension_worker.
 
     Uses 'spawn' so the child starts with a clean interpreter.
     Returns (proc, log_q, result_q).
     """  # pragma: no cover
-    ctx = multiprocessing.get_context("spawn")
-    log_q: Any = ctx.Queue()
-    result_q: Any = ctx.Queue()
-    proc = ctx.Process(
+    mp_ctx = multiprocessing.get_context("spawn")
+    log_q: Any = mp_ctx.Queue()
+    result_q: Any = mp_ctx.Queue()
+    proc = mp_ctx.Process(
         target=_extension_worker,
-        args=(cls, method_name, args, log_q, result_q),
+        args=(cls, method_name, args, ctx, log_q, result_q),
     )
     proc.start()
     return proc, log_q, result_q
@@ -83,13 +90,30 @@ def _spawn_extension_worker(
 # ---------------------------------------------------------------------------
 
 
-def invoke_extension(cls: type, method_name: str, *args: Any) -> bool:
-    """Invoke cls().method_name(*args) in an isolated subprocess.
+def invoke_extension(
+    cls: type,
+    method_name: str,
+    *args: Any,
+    ctx: KampGround | None = None,
+) -> bool:
+    """Invoke cls(ctx).method_name(*args) in an isolated subprocess.
 
-    Returns True on success, False on any failure (exception or crash).  Never
-    raises — callers can unconditionally continue after a False return.
+    Args:
+        cls: Extension class to instantiate. Must accept a KampGround as its
+            sole constructor argument.
+        method_name: Name of the method to call on the instance.
+        *args: Positional arguments forwarded to the method.
+        ctx: KampGround context to pass to the extension constructor. A default
+            empty context is used if omitted.
+
+    Returns:
+        True on success, False on any failure (exception or crash). Never
+        raises — callers can unconditionally continue after a False return.
     """
-    proc, log_q, result_q = _spawn_extension_worker(cls, method_name, args)
+    if ctx is None:
+        ctx = KampGround()
+
+    proc, log_q, result_q = _spawn_extension_worker(cls, method_name, args, ctx)
 
     # Drain log_q while the subprocess runs to prevent the OS pipe from
     # filling and blocking the child (same pattern as pipeline.py).

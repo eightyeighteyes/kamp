@@ -4,6 +4,7 @@ title: Phase 1 first-party extension allow-list
 status: To Do
 assignee: []
 created_date: '2026-04-05 16:27'
+updated_date: '2026-04-05 16:32'
 labels:
   - feature
   - security
@@ -13,6 +14,7 @@ dependencies:
   - TASK-19
 documentation:
   - project/kampground-ideation.md
+ordinal: 8000
 ---
 
 ## Description

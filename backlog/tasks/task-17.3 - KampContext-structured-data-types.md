@@ -1,9 +1,11 @@
 ---
 id: TASK-17.3
 title: KampContext structured data types
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - Claude
 created_date: '2026-04-05 16:36'
+updated_date: '2026-04-05 20:12'
 labels:
   - feature
   - architecture

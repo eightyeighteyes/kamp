@@ -74,7 +74,7 @@ A future React Native mobile client calls the same API over the local network. N
 - Implement abstract base classes (`BaseTagger`, `BaseArtworkSource`, etc.)
 - Run inside existing spawn-context worker subprocesses — a crash quarantines the item, not the daemon
 
-**Invariant:** All built-in features are extensions. Bandcamp sync, MusicBrainz tagger, and artwork fetcher must be buildable using the public `KampContext` API. The SDK surface should be extracted from two real working extensions, not designed in the abstract first — otherwise the API will be wrong.
+**Invariant:** All built-in features are extensions. Bandcamp sync, MusicBrainz tagger, and artwork fetcher must be buildable using the public `KampGround` API. The SDK surface should be extracted from two real working extensions, not designed in the abstract first — otherwise the API will be wrong.
 
 **Hot reload:** watch extensions directory and reload on file change.
 
@@ -129,7 +129,7 @@ The daemon already does the work. Phase 3 surfaces it.
 
 | Component | Effort |
 |-----------|--------|
-| Extension host + `KampContext` API | LP |
+| Extension host + `KampGround` API | LP |
 | Refactor built-ins as extensions (validates API; if painful, stop and fix the API first) | LP |
 | `contextBridge` API + frontend panel registration system | LP |
 | UI slot API: declarative panel manifests rendered by Electron host | LP |

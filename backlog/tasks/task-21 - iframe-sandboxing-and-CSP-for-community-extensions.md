@@ -4,13 +4,14 @@ title: iframe sandboxing and CSP for community extensions
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-05 16:28'
+updated_date: '2026-04-05 16:32'
 labels:
   - feature
   - architecture
   - 'estimate: side'
 milestone: m-2
 dependencies: []
+ordinal: 10000
 ---
 
 ## Description

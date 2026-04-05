@@ -2,7 +2,7 @@
 
 ## What is possible with kampground?
 
-Ideally, anything that's supported by the database and the renderer — and that includes everything the built-in features do. Bandcamp sync, MusicBrainz tagging, and artwork fetching must all be buildable using the public `KampContext` API. This invariant keeps the SDK honest: the API surface is extracted from two real working extensions, not designed in the abstract first.
+Ideally, anything that's supported by the database and the renderer — and that includes everything the built-in features do. Bandcamp sync, MusicBrainz tagging, and artwork fetching must all be buildable using the public `KampGround` API. This invariant keeps the SDK honest: the API surface is extracted from two real working extensions, not designed in the abstract first.
 
 The extensions directory is watched; extensions reload on file change.
 
@@ -22,7 +22,7 @@ Every extension — frontend and backend — declares the permissions it needs i
 - `settings` — read and write the extension's own settings namespace
 
 **Backend permissions:**
-- `network.external` — make HTTP/HTTPS requests via `KampContext.fetch(url, method, body)`. The host makes the request; the extension never calls the network directly. The manifest must also declare an allowlist of permitted domains (`network.domains = ["api.discogs.com"]`); requests to unlisted domains are rejected.
+- `network.external` — make HTTP/HTTPS requests via `KampGround.fetch(url, method, body)`. The host makes the request; the extension never calls the network directly. The manifest must also declare an allowlist of permitted domains (`network.domains = ["api.discogs.com"]`); requests to unlisted domains are rejected.
 - `audio.read` — receive raw audio data for the track being processed (e.g. for fingerprinting); the host mediates the read, the extension never receives a file path
 - `library.write` — modify library metadata via a set of named atomic operations: `update_metadata(track_id, fields)`, `set_artwork(track_id, bytes)`. No bulk deletes, no raw SQL. Every write is logged to an append-only audit table (`extension_id`, `operation`, `old_value`, `new_value`, `timestamp`) enabling rollback of any extension's changes.
 

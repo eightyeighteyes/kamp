@@ -1,9 +1,11 @@
 ---
 id: TASK-17.3
 title: KampContext structured data types
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - Claude
 created_date: '2026-04-05 16:36'
+updated_date: '2026-04-05 20:14'
 labels:
   - feature
   - architecture
@@ -24,8 +26,28 @@ Initial types needed: `TrackMetadata`, `ArtworkQuery`, `ArtworkResult`. Addition
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 TrackMetadata, ArtworkQuery, and ArtworkResult are defined as typed dataclasses or similar
-- [ ] #2 All fields use Python primitive types or other KampContext types; no pathlib.Path, no SQLite connections, no internal daemon types
-- [ ] #3 Types are importable from a public kamp.extensions module
-- [ ] #4 Types are serialisable (can round-trip through the worker subprocess IPC boundary)
+- [x] #1 TrackMetadata, ArtworkQuery, and ArtworkResult are defined as typed dataclasses or similar
+- [x] #2 All fields use Python primitive types or other KampContext types; no pathlib.Path, no SQLite connections, no internal daemon types
+- [x] #3 Types are importable from a public kamp.extensions module
+- [x] #4 Types are serialisable (can round-trip through the worker subprocess IPC boundary)
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Implementation Plan
+
+1. `kamp_daemon/ext/types.py` — three @dataclass definitions:
+   - TrackMetadata: title, artist, album, album_artist, year (str), track_number (int), mbid (str)
+   - ArtworkQuery: mbid, release_group_mbid, album, artist (all str)
+   - ArtworkResult: image_bytes (bytes), mime_type (str)
+
+2. Update ABC signatures in `kamp_daemon/ext/abc.py` to match ideation doc:
+   - BaseTagger.tag(self, track: TrackMetadata) -> TrackMetadata
+   - BaseArtworkSource.fetch(self, query: ArtworkQuery) -> ArtworkResult | None
+   (previous stubs used wrong method names and list[str] args)
+
+3. Export types from `kamp_daemon/ext/__init__.py`
+
+4. `tests/test_extension_types.py` — field/type checks + pickle round-trip for all three types
+<!-- SECTION:PLAN:END -->

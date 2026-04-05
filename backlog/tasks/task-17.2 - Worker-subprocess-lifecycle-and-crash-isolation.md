@@ -1,7 +1,7 @@
 ---
 id: TASK-17.2
 title: Worker subprocess lifecycle and crash isolation
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-05 16:36'
 labels:

@@ -8,9 +8,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kamp_daemon.ext import (
+    ArtworkQuery,
+    ArtworkResult,
     BaseArtworkSource,
     BaseTagger,
     ExtensionRegistry,
+    TrackMetadata,
     discover_extensions,
 )
 from kamp_daemon.ext.discovery import _ENTRY_POINT_GROUP
@@ -21,13 +24,13 @@ from kamp_daemon.ext.discovery import _ENTRY_POINT_GROUP
 
 
 class GoodTagger(BaseTagger):
-    def tag(self, paths: list[str]) -> None:
-        pass
+    def tag(self, track: TrackMetadata) -> TrackMetadata:
+        return track
 
 
 class GoodArtworkSource(BaseArtworkSource):
-    def fetch_artwork(self, mbid: str, paths: list[str]) -> None:
-        pass
+    def fetch(self, query: ArtworkQuery) -> ArtworkResult | None:
+        return None
 
 
 class BadExtension:

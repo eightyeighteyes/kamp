@@ -1,11 +1,11 @@
 ---
 id: TASK-17.1
 title: Entry point discovery and ABC conformance validation
-status: In Progress
+status: Done
 assignee:
   - Claude
 created_date: '2026-04-05 16:36'
-updated_date: '2026-04-05 19:08'
+updated_date: '2026-04-05 19:26'
 labels:
   - feature
   - architecture
@@ -13,7 +13,7 @@ labels:
 milestone: m-2
 dependencies: []
 parent_task_id: TASK-17
-ordinal: 1100
+ordinal: 1000
 ---
 
 ## Description

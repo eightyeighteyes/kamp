@@ -17,6 +17,7 @@ from typing import Literal
 
 from .config import Config, _state_dir
 from .config_monitor import ConfigMonitor
+from .ext import ExtensionRegistry, discover_extensions
 from .syncer import Syncer
 from .watcher import Watcher
 
@@ -46,6 +47,7 @@ class DaemonCore:
         self._watcher: Watcher = Watcher(config)
         self._syncer: Syncer = Syncer(config)
         self._monitor: ConfigMonitor | None = None
+        self._extension_registry: ExtensionRegistry = ExtensionRegistry()
 
     # ------------------------------------------------------------------
     # Public properties
@@ -54,6 +56,11 @@ class DaemonCore:
     @property
     def state(self) -> DaemonState:
         return self._state
+
+    @property
+    def extension_registry(self) -> ExtensionRegistry:
+        """The extension registry populated at start()."""
+        return self._extension_registry
 
     @property
     def watcher(self) -> Watcher:
@@ -79,6 +86,7 @@ class DaemonCore:
 
         self._monitor = ConfigMonitor(self._config_path, _on_config_reload)
 
+        discover_extensions(self._extension_registry)
         self._watcher.start()
         self._syncer.start()
         self._monitor.start()

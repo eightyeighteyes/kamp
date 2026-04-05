@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.0](https://github.com/eightyeighteyes/kamp/compare/v1.6.0...v1.7.0) (2026-04-05)
+
+
+### Features
+
+* extension entry-point discovery and ABC conformance (TASK-17.1) ([#163](https://github.com/eightyeighteyes/kamp/issues/163)) ([973d6f0](https://github.com/eightyeighteyes/kamp/commit/973d6f0760b663d4a296fa28e8b22e94512d54da))
+* extension worker subprocess lifecycle and crash isolation (TASK-17.2) ([#164](https://github.com/eightyeighteyes/kamp/issues/164)) ([39a6a79](https://github.com/eightyeighteyes/kamp/commit/39a6a7907928b940a942530f8187a81b7243556d))
+* KampContext structured data types and corrected ABC signatures (TASK-17.3) ([#165](https://github.com/eightyeighteyes/kamp/issues/165)) ([0625812](https://github.com/eightyeighteyes/kamp/commit/0625812784995a36ab05715076a7fa307b84d590))
+* Preferences dialog (TASK-36) ([#161](https://github.com/eightyeighteyes/kamp/issues/161)) ([c0ee56d](https://github.com/eightyeighteyes/kamp/commit/c0ee56dc31060357452a491771de3fb927e8e260))
+
 ## [1.6.0](https://github.com/eightyeighteyes/kamp/compare/v1.5.0...v1.6.0) (2026-04-04)
 
 

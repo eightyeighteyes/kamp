@@ -4,13 +4,14 @@ title: contextBridge API and frontend panel registration system
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-03 04:36'
+updated_date: '2026-04-05 16:32'
 labels:
   - feature
   - architecture
   - 'estimate: lp'
 milestone: m-2
 dependencies: []
+ordinal: 6000
 ---
 
 ## Description

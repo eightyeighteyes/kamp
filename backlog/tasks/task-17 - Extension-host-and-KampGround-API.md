@@ -4,7 +4,7 @@ title: Extension host and KampGround API
 status: In Progress
 assignee: []
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-05 19:26'
+updated_date: '2026-04-05 21:21'
 labels:
   - feature
   - architecture
@@ -29,6 +29,6 @@ Per the architecture invariant: the SDK surface must be extracted from two real 
 - [ ] #3 API is documented with examples
 - [ ] #4 A crash in an extension worker does not take down the daemon
 - [ ] #5 Backend extensions receive and return structured data objects (TrackMetadata, ArtworkResult, etc.); no file paths are ever passed to extension code
-- [ ] #6 network.external capability is exposed only as KampContext.fetch(url, method, body) — the host makes the request; the extension never calls the network directly; declared network.domains allowlist is enforced per-request
-- [ ] #7 library.write capability is exposed only as named atomic mutations (update_metadata, set_artwork); no raw database access is possible through KampContext
+- [ ] #6 network.external capability is exposed only as KampGround.fetch(url, method, body) — the host makes the request; the extension never calls the network directly; declared network.domains allowlist is enforced per-request
+- [ ] #7 library.write capability is exposed only as named atomic mutations (update_metadata, set_artwork); no raw database access is possible through KampGround
 <!-- AC:END -->

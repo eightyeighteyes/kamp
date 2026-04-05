@@ -15,7 +15,6 @@ from kamp_daemon.ext import (
 )
 from kamp_daemon.ext.discovery import _ENTRY_POINT_GROUP
 
-
 # ---------------------------------------------------------------------------
 # Helpers — concrete extension classes for testing
 # ---------------------------------------------------------------------------
@@ -106,7 +105,10 @@ def test_multiple_extensions_registered_in_order():
 def test_non_abc_class_rejected(caplog):
     ep = _make_ep("bad", BadExtension, dist_name="bad-pkg")
     registry = ExtensionRegistry()
-    with _patch_eps(ep), pytest.raises(SystemExit, match="") if False else _patch_eps(ep):
+    with (
+        _patch_eps(ep),
+        pytest.raises(SystemExit, match="") if False else _patch_eps(ep),
+    ):
         pass
     # Re-run properly
     with _patch_eps(ep):

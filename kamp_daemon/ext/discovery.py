@@ -66,9 +66,7 @@ def _load_and_register(
         return
 
     # --- Must subclass a known ABC ---
-    matching_abc = next(
-        (abc for abc in _KNOWN_ABCS if issubclass(cls, abc)), None
-    )
+    matching_abc = next((abc for abc in _KNOWN_ABCS if issubclass(cls, abc)), None)
     if matching_abc is None:
         _logger.error(
             "Extension %r from package %r (%s) does not implement any known "

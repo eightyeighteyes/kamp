@@ -4,12 +4,12 @@ title: preferences panel
 status: To Do
 assignee: []
 created_date: '2026-03-29 14:01'
-updated_date: '2026-03-31 03:12'
+updated_date: '2026-04-05 16:37'
 labels:
   - feature
   - ui
   - 'estimate: side'
-milestone: m-2
+milestone: m-21
 dependencies: []
 ---
 

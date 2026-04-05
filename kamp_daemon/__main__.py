@@ -597,6 +597,27 @@ def _cmd_server(
     def _on_ui_state_set(key: str, value: str) -> None:
         _config_set(config_path, key, value)
 
+    def _on_config_set(key: str, value: str) -> None:
+        # Raises KeyError / ValueError on invalid key or value — server
+        # catches these and returns HTTP 422 to the client.
+        _config_set(config_path, key, value)
+
+    # Build the initial preference values dict from the loaded config.
+    # Bandcamp fields are None when the [bandcamp] section is absent.
+    _config_values: dict[str, object] = {
+        "paths.staging": str(config.paths.staging),
+        "paths.library": str(config.paths.library),
+        "musicbrainz.contact": config.musicbrainz.contact,
+        "artwork.min_dimension": config.artwork.min_dimension,
+        "artwork.max_bytes": config.artwork.max_bytes,
+        "library.path_template": config.library.path_template,
+        "bandcamp.username": config.bandcamp.username if config.bandcamp else None,
+        "bandcamp.format": config.bandcamp.format if config.bandcamp else None,
+        "bandcamp.poll_interval_minutes": (
+            config.bandcamp.poll_interval_minutes if config.bandcamp else None
+        ),
+    }
+
     app = create_app(
         index=index,
         engine=engine,
@@ -607,6 +628,8 @@ def _cmd_server(
         ui_sort_order=config.ui.sort_order,
         ui_queue_panel_open=config.ui.queue_panel_open,
         on_ui_state_set=_on_ui_state_set,
+        config_values=_config_values,
+        on_config_set=_on_config_set,
     )
 
     # Watch the library directory and re-scan when audio files are added or

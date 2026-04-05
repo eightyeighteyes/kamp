@@ -191,6 +191,10 @@ kamp status            # check if it's running
 kamp uninstall-service # remove it permanently
 ```
 
+### Preferences dialog (UI)
+
+Open the Preferences dialog from **kamp → Preferences** in the macOS menu bar, or with **Cmd+,** (macOS) / **Ctrl+,** (Linux/Windows). Changes take effect immediately — no Apply or OK button. Settings marked **↺ restart** require restarting the kamp server to take effect.
+
 ### View or update config from the command line
 
 ```bash

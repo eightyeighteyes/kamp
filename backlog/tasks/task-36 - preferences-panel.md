@@ -1,10 +1,10 @@
 ---
 id: TASK-36
 title: Preferences panel
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-29 14:01'
-updated_date: '2026-04-05 16:45'
+updated_date: '2026-04-05 16:56'
 labels:
   - feature
   - ui
@@ -45,3 +45,68 @@ Consult with UI Designer before implementation.
 - [ ] #10 Dialog background matches the queue panel background
 - [ ] #11 Dialog can be dismissed with the X button or Escape key
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Implementation Plan
+
+Estimate: LP (2 sides)
+
+### Backend (Python)
+
+1. **`kamp_core/server.py`** — Add `GET /api/v1/config` and `PATCH /api/v1/config`
+   - Add `config_values: dict[str, Any] | None` parameter (flat pref values, keyed by dot-notation)
+   - Add `on_config_set: Callable[[str, str], None] | None` parameter (raises KeyError/ValueError on bad input)
+   - Track config state in `_state["config"]`
+   - `GET /api/v1/config` → returns current values (paths/library/artwork/musicbrainz/bandcamp; not ui)
+   - `PATCH /api/v1/config` body `{key, value}` → validates via callback, updates `_state["config"]`, returns `{ok: true}` or 422
+   - Add `ConfigPatchRequest` Pydantic model
+
+2. **`kamp_daemon/__main__.py`** — Wire config values and callback
+   - Build `config_values` dict from Config object before calling `create_app()`
+   - Add `_on_config_set(key, value)` callback → calls `config_set(config_path, key, value)`, lets exceptions propagate
+
+3. **`tests/test_server.py`** — Add tests for new endpoints (red/green TDD)
+
+### Frontend (TypeScript/React)
+
+4. **`kamp_ui/src/renderer/src/api/client.ts`**
+   - Add `ConfigValues` type (flat dict)
+   - Add `getConfig()` → `GET /api/v1/config`
+   - Add `patchConfig(key, value)` → `PATCH /api/v1/config`
+
+5. **`kamp_ui/src/renderer/src/store.ts`**
+   - Add `configValues: ConfigValues | null`, `prefsOpen: boolean`
+   - Add `loadConfig()`, `setConfigValue(key, value)`, `openPrefs()`, `closePrefs()` actions
+
+6. **`kamp_ui/src/renderer/src/components/PreferencesDialog.tsx`** (new)
+   - Full dialog following UI Designer design spec
+   - Sections: Paths, Library, Artwork, MusicBrainz, Bandcamp (only if configured)
+   - Folder pickers via `window.api.openDirectory()` IPC
+   - Ephemeral ✓ confirmation per row (1500ms fade)
+   - Restart badges on: paths.staging, paths.library, musicbrainz.contact, bandcamp.poll_interval_minutes
+   - Dismiss with X button or Escape key
+
+7. **`kamp_ui/src/renderer/src/App.tsx`**
+   - Mount `<PreferencesDialog>` (when `prefsOpen`)
+   - Add `Cmd/Ctrl+,` keyboard shortcut → `openPrefs()`
+   - Listen for `open-preferences` IPC from main process
+
+8. **`kamp_ui/src/main/index.ts`**
+   - Set `applicationMenu` with App Name → Preferences (Cmd+,)
+   - On click: send `open-preferences` to focused window via IPC
+
+9. **`kamp_ui/src/preload/index.ts` + `index.d.ts`**
+   - Expose `onOpenPreferences(callback)` using `ipcRenderer.on`
+
+10. **`kamp_ui/src/renderer/src/assets/main.css`**
+    - Add prefs-* CSS from UI Designer
+
+### UI Designer design brief (key decisions)
+- Dialog: 520px wide, `background: var(--surface)`, `border-radius: 8px`
+- Overlay backdrop: `rgba(0,0,0,0.6)`
+- Controls: text/email inputs, number inputs (90px + unit label), textarea (monospace) for path_template, select for bandcamp.format, path-picker rows for folder paths
+- Save confirmation: inline `✓` in `--accent` that fades out after 1500ms
+- Restart badge: `↺ restart` pill next to label for paths.staging, paths.library, musicbrainz.contact, bandcamp.poll_interval_minutes
+<!-- SECTION:PLAN:END -->

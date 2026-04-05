@@ -985,3 +985,140 @@ class TestFavoriteEndpoint:
         )
         assert "play_count" in track
         assert track["play_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Config endpoints
+# ---------------------------------------------------------------------------
+
+_SAMPLE_CONFIG_VALUES = {
+    "paths.staging": "~/Music/staging",
+    "paths.library": "~/Music",
+    "musicbrainz.contact": "user@example.com",
+    "artwork.min_dimension": 1000,
+    "artwork.max_bytes": 1000000,
+    "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
+    "bandcamp.username": None,
+    "bandcamp.format": None,
+    "bandcamp.poll_interval_minutes": None,
+}
+
+
+class TestConfigEndpoints:
+    def test_get_config_returns_values(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values=_SAMPLE_CONFIG_VALUES,
+        )
+        response = TestClient(app).get("/api/v1/config")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["paths.staging"] == "~/Music/staging"
+        assert data["paths.library"] == "~/Music"
+        assert data["musicbrainz.contact"] == "user@example.com"
+        assert data["artwork.min_dimension"] == 1000
+        assert data["artwork.max_bytes"] == 1000000
+        assert data["library.path_template"].startswith("{album_artist}")
+        assert data["bandcamp.username"] is None
+
+    def test_get_config_returns_empty_dict_when_not_configured(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        response = TestClient(app).get("/api/v1/config")
+        assert response.status_code == 200
+        assert response.json() == {}
+
+    def test_patch_config_calls_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        received: list[tuple[str, str]] = []
+
+        def _on_config_set(key: str, value: str) -> None:
+            received.append((key, value))
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values=_SAMPLE_CONFIG_VALUES.copy(),
+            on_config_set=_on_config_set,
+        )
+        response = TestClient(app).patch(
+            "/api/v1/config", json={"key": "artwork.min_dimension", "value": "500"}
+        )
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+        assert received == [("artwork.min_dimension", "500")]
+
+    def test_patch_config_updates_in_memory_state(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values=_SAMPLE_CONFIG_VALUES.copy(),
+            on_config_set=lambda k, v: None,
+        )
+        c = TestClient(app)
+        c.patch("/api/v1/config", json={"key": "artwork.min_dimension", "value": "500"})
+        data = c.get("/api/v1/config").json()
+        assert data["artwork.min_dimension"] == 500
+
+    def test_patch_config_returns_422_on_invalid_key(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        def _on_config_set(key: str, value: str) -> None:
+            raise KeyError(f"Unknown config key {key!r}")
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values=_SAMPLE_CONFIG_VALUES.copy(),
+            on_config_set=_on_config_set,
+        )
+        response = TestClient(app).patch(
+            "/api/v1/config", json={"key": "nonexistent.key", "value": "foo"}
+        )
+        assert response.status_code == 422
+
+    def test_patch_config_returns_422_on_invalid_value(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        def _on_config_set(key: str, value: str) -> None:
+            raise ValueError(f"Invalid value {value!r}")
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values=_SAMPLE_CONFIG_VALUES.copy(),
+            on_config_set=_on_config_set,
+        )
+        response = TestClient(app).patch(
+            "/api/v1/config", json={"key": "bandcamp.format", "value": "invalid-fmt"}
+        )
+        assert response.status_code == 422
+
+    def test_patch_config_coerces_int_values_in_state(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Integer config values should be stored as ints after a PATCH."""
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values=_SAMPLE_CONFIG_VALUES.copy(),
+            on_config_set=lambda k, v: None,
+        )
+        c = TestClient(app)
+        c.patch("/api/v1/config", json={"key": "artwork.max_bytes", "value": "500000"})
+        data = c.get("/api/v1/config").json()
+        assert data["artwork.max_bytes"] == 500000
+        assert isinstance(data["artwork.max_bytes"], int)

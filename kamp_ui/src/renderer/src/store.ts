@@ -10,6 +10,7 @@ import { create } from 'zustand'
 import * as api from './api/client'
 import type {
   Album,
+  ConfigValues,
   PlayerState,
   QueueState,
   ScanProgress,
@@ -81,6 +82,14 @@ type PlayerStore = {
   scanLibrary: () => Promise<void>
   setLibraryPath: (path: string) => Promise<void>
   applyServerState: (state: PlayerState) => void
+
+  // Preferences
+  configValues: ConfigValues | null
+  prefsOpen: boolean
+  loadConfig: () => Promise<void>
+  setConfigValue: (key: string, value: string) => Promise<void>
+  openPrefs: () => void
+  closePrefs: () => void
 }
 
 const initialPlayer: PlayerState = {
@@ -113,6 +122,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
   searchResults: null,
   queueVisible: false,
   queue: null,
+  configValues: null,
+  prefsOpen: false,
 
   setServerStatus: (status) => set({ serverStatus: status }),
 
@@ -377,6 +388,25 @@ export const useStore = create<PlayerStore>((set, get) => ({
     await api.setLibraryPath(path)
     set({ configuredLibraryPath: path })
   },
+
+  loadConfig: async () => {
+    try {
+      const configValues = await api.getConfig()
+      set({ configValues })
+    } catch {
+      // Best-effort — preferences dialog will show empty fields.
+    }
+  },
+
+  setConfigValue: async (key, value) => {
+    await api.patchConfig(key, value)
+    set((s) => ({
+      configValues: s.configValues ? { ...s.configValues, [key]: value } : s.configValues
+    }))
+  },
+
+  openPrefs: () => set({ prefsOpen: true }),
+  closePrefs: () => set({ prefsOpen: false }),
 
   scanLibrary: async () => {
     set({ scanStatus: 'scanning', scanError: null, scanProgress: null })

@@ -5,6 +5,7 @@ declare global {
     electron: ElectronAPI
     api: {
       openDirectory: () => Promise<string | null>
+      onOpenPreferences: (callback: () => void) => () => void
     }
   }
 }

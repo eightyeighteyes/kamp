@@ -3,7 +3,13 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 // Custom APIs for renderer
 const api = {
-  openDirectory: (): Promise<string | null> => ipcRenderer.invoke('open-directory')
+  openDirectory: (): Promise<string | null> => ipcRenderer.invoke('open-directory'),
+  onOpenPreferences: (callback: () => void): (() => void) => {
+    const handler = (): void => callback()
+    ipcRenderer.on('open-preferences', handler)
+    // Return a cleanup function so the caller can unsubscribe.
+    return () => ipcRenderer.off('open-preferences', handler)
+  }
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

@@ -67,6 +67,26 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  if (!res.ok) {
+    // Prefer the server's detail message over the raw HTTP status text.
+    let message = `${res.status} ${res.statusText}`
+    try {
+      const json = (await res.json()) as { detail?: string }
+      if (json.detail) message = json.detail
+    } catch {
+      // JSON parse failed — fall back to the HTTP status message.
+    }
+    throw new Error(message)
+  }
+  return res.json() as Promise<T>
+}
+
 // ---------------------------------------------------------------------------
 // Library
 // ---------------------------------------------------------------------------
@@ -124,6 +144,23 @@ export const setQueuePanelApi = (open: boolean): Promise<{ ok: boolean }> =>
 export type ScanProgress = { active: boolean; current: number; total: number }
 
 export const getScanProgress = (): Promise<ScanProgress> => get('/api/v1/library/scan/progress')
+
+export type ConfigValues = {
+  'paths.staging': string | null
+  'paths.library': string | null
+  'musicbrainz.contact': string | null
+  'artwork.min_dimension': number | null
+  'artwork.max_bytes': number | null
+  'library.path_template': string | null
+  'bandcamp.username': string | null
+  'bandcamp.format': string | null
+  'bandcamp.poll_interval_minutes': number | null
+}
+
+export const getConfig = (): Promise<ConfigValues> => get('/api/v1/config')
+
+export const patchConfig = (key: string, value: string): Promise<{ ok: boolean }> =>
+  patch('/api/v1/config', { key, value })
 
 // ---------------------------------------------------------------------------
 // Player

@@ -4,6 +4,7 @@ import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
 import { AlbumGrid } from './components/AlbumGrid'
 import { NowPlayingView } from './components/NowPlayingView'
+import { PreferencesDialog } from './components/PreferencesDialog'
 import { SearchBar } from './components/SearchBar'
 import { SearchView } from './components/SearchView'
 import { SetupScreen } from './components/SetupScreen'
@@ -31,6 +32,7 @@ export default function App(): React.JSX.Element {
   const queueVisible = useStore((s) => s.queueVisible)
   const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
   const loadQueue = useStore((s) => s.loadQueue)
+  const openPrefs = useStore((s) => s.openPrefs)
   const searchBarRef = useRef<HTMLInputElement>(null)
   const mainContentRef = useRef<HTMLElement>(null)
   // Per-view scroll positions — kept current by a scroll listener so we never
@@ -114,6 +116,13 @@ export default function App(): React.JSX.Element {
         return
       }
 
+      // Cmd+, (mac) / Ctrl+, (win/linux) opens Preferences.
+      if (e.key === ',' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        openPrefs()
+        return
+      }
+
       // Escape clears search when the search bar is focused.
       if (e.key === 'Escape' && searchQuery) {
         void setSearchQuery('')
@@ -159,8 +168,17 @@ export default function App(): React.JSX.Element {
     activeView,
     searchQuery,
     setSearchQuery,
-    toggleQueuePanel
+    toggleQueuePanel,
+    openPrefs
   ])
+
+  // Listen for "open-preferences" IPC from the main process (sent when the
+  // user clicks App Name → Preferences in the native macOS menu bar).
+  useEffect(() => {
+    if (!window.api.onOpenPreferences) return
+    const cleanup = window.api.onOpenPreferences(openPrefs)
+    return cleanup
+  }, [openPrefs])
 
   // Keep viewScrollRef continuously current so we always have the right value
   // when switching views — reading scrollTop after a DOM update can give a
@@ -193,6 +211,7 @@ export default function App(): React.JSX.Element {
           </div>
         </div>
         {!splashGone && <SplashScreen hiding={splashHiding} />}
+        <PreferencesDialog />
       </>
     )
   }
@@ -240,6 +259,7 @@ export default function App(): React.JSX.Element {
       </div>
       <TransportBar />
       {!splashGone && <SplashScreen hiding={splashHiding} />}
+      <PreferencesDialog />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, globalShortcut } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, globalShortcut, Menu } from 'electron'
 import { join, resolve } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { spawn, ChildProcess } from 'child_process'
@@ -95,6 +95,67 @@ function saveWindowBounds(win: BrowserWindow): void {
   }
 }
 
+function buildAppMenu(): void {
+  // Build a minimal application menu that exposes Preferences (Cmd+,) under
+  // the app name menu on macOS, while preserving standard Edit and Window items.
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: app.name,
+      submenu: [
+        {
+          label: 'Preferences…',
+          accelerator: 'CmdOrCtrl+,',
+          click: () => {
+            // Send an IPC message to the focused renderer so it opens the dialog.
+            const win = BrowserWindow.getFocusedWindow()
+            win?.webContents.send('open-preferences')
+          }
+        },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: 'Window',
+      role: 'window',
+      submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }]
+    }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 function createWindow(): void {
   const bounds = loadWindowBounds()
 
@@ -145,6 +206,8 @@ function createWindow(): void {
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.kamp.app')
+
+  buildAppMenu()
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.

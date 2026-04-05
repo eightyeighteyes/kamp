@@ -157,6 +157,11 @@ class SkipToRequest(BaseModel):
     position: int
 
 
+class ConfigPatchRequest(BaseModel):
+    key: str
+    value: str
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -173,6 +178,8 @@ def create_app(
     ui_sort_order: str = "album_artist",
     ui_queue_panel_open: int = 0,
     on_ui_state_set: Callable[[str, str], None] | None = None,
+    config_values: dict[str, Any] | None = None,
+    on_config_set: Callable[[str, str], None] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -193,6 +200,7 @@ def create_app(
         "ui_sort_order": ui_sort_order,
         "ui_queue_panel_open": ui_queue_panel_open,
         "library_version": 0,
+        "config": dict(config_values) if config_values is not None else {},
     }
 
     def _notify_library_changed() -> None:
@@ -380,6 +388,32 @@ def create_app(
         _state["ui_queue_panel_open"] = value
         if on_ui_state_set is not None:
             on_ui_state_set("ui.queue_panel_open", str(value))
+        return {"ok": True}
+
+    # -----------------------------------------------------------------------
+    # Config (preferences)
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/v1/config")
+    def get_config() -> dict[str, Any]:
+        return cast(dict[str, Any], _state["config"])
+
+    # Integer config keys — values are coerced to int when stored so that
+    # GET /api/v1/config returns the correct JSON type (number, not string).
+    _INT_CONFIG_KEYS = frozenset(
+        {"artwork.min_dimension", "artwork.max_bytes", "bandcamp.poll_interval_minutes"}
+    )
+
+    @app.patch("/api/v1/config")
+    def patch_config(req: ConfigPatchRequest) -> dict[str, Any]:
+        if on_config_set is not None:
+            try:
+                on_config_set(req.key, req.value)
+            except (KeyError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Coerce to the correct Python type before caching in memory.
+        coerced: Any = int(req.value) if req.key in _INT_CONFIG_KEYS else req.value
+        _state["config"][req.key] = coerced
         return {"ok": True}
 
     # -----------------------------------------------------------------------

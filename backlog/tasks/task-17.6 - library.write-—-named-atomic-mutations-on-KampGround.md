@@ -1,17 +1,17 @@
 ---
 id: TASK-17.6
 title: library.write — named atomic mutations on KampGround
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-06 01:26'
-updated_date: '2026-04-06 01:41'
+updated_date: '2026-04-06 01:58'
 labels:
   - feature
   - 'estimate: side'
 milestone: m-2
 dependencies: []
 parent_task_id: TASK-17
-ordinal: 1600
+ordinal: 5200
 ---
 
 ## Description

@@ -1,10 +1,10 @@
 ---
 id: TASK-84
 title: Hash-pinning for installed extensions
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-05 16:27'
-updated_date: '2026-04-05 16:32'
+updated_date: '2026-04-06 11:37'
 labels:
   - feature
   - security

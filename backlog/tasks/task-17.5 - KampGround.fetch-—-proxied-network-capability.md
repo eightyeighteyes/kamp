@@ -1,10 +1,10 @@
 ---
 id: TASK-17.5
 title: KampGround.fetch() — proxied network capability
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-05 16:36'
-updated_date: '2026-04-06 01:04'
+updated_date: '2026-04-06 01:20'
 labels:
   - feature
   - security
@@ -12,7 +12,7 @@ labels:
 milestone: m-2
 dependencies: []
 parent_task_id: TASK-17
-ordinal: 1500
+ordinal: 4200
 ---
 
 ## Description

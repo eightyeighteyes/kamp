@@ -70,7 +70,7 @@ class UpdateMetadataMutation:
         fields: Mapping of field names to new values (str or int).
     """
 
-    mbid: str
+    mbid: str  # MusicBrainz recording ID (matches tracks.mb_recording_id in the DB)
     fields: dict[str, str | int]
 
 

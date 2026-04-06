@@ -36,6 +36,10 @@ httpx = "^0.28.1"
 [tool.poetry.scripts]
 kamp = "kamp_daemon.__main__:main"
 
+[tool.poetry.plugins."kamp.extensions"]
+kamp-musicbrainz-tagger = "kamp_daemon.ext.builtin.musicbrainz:KampMusicBrainzTagger"
+kamp-coverart-archive   = "kamp_daemon.ext.builtin.coverart:KampCoverArtArchive"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

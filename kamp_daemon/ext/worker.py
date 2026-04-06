@@ -50,6 +50,10 @@ def _extension_worker(
     root.addHandler(queue_handler)
     try:
         instance = cls(ctx)
+        # Return value is intentionally discarded: mutations queued on ctx
+        # are the only IPC channel back to the host.  Extensions that need
+        # to return richer results (e.g. pipeline-stage extensions) should
+        # run in-process instead of via invoke_extension().
         getattr(instance, method_name)(*args)
         # Include pending mutations so the host can apply library writes
         # after the worker exits — the subprocess never touches the DB.

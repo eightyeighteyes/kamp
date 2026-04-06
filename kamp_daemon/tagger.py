@@ -17,6 +17,8 @@ import mutagen.id3 as id3
 import mutagen.mp4
 import mutagen.oggvorbis
 
+from kamp_daemon.ext.types import TrackMetadata
+
 logger = logging.getLogger(__name__)
 
 # Matches iTunes-style edition suffixes in album names, e.g. "(Deluxe Edition)",
@@ -154,6 +156,317 @@ def read_release_mbids(path: Path) -> tuple[str, str]:
 
 def configure_musicbrainz(app_name: str, app_version: str, contact: str) -> None:
     musicbrainzngs.set_useragent(app_name, app_version, contact)
+
+
+def read_track_metadata_from_file(path: Path) -> TrackMetadata:
+    """Read basic track metadata from an audio file into a TrackMetadata object.
+
+    Used by the pipeline host to build the input for BaseTagger.tag_release()
+    before invoking an extension tagger.  Fields that cannot be read from the
+    file are left as empty strings / 0.
+
+    Args:
+        path: Path to the audio file.
+
+    Returns:
+        TrackMetadata populated from the file's existing tags.
+    """
+    artist = ""
+    title = ""
+    album = ""
+    album_artist = ""
+    year = ""
+    track_number = 0
+    suffix = path.suffix.lower()
+
+    try:
+        if suffix == ".mp3":
+            tags = id3.ID3(str(path))
+            artist = str(tags.get("TPE1")) if tags.get("TPE1") else ""
+            album_artist = str(tags.get("TPE2")) if tags.get("TPE2") else artist
+            album = str(tags.get("TALB")) if tags.get("TALB") else ""
+            title = str(tags.get("TIT2")) if tags.get("TIT2") else ""
+            year = str(tags.get("TDRC"))[:4] if tags.get("TDRC") else ""
+            trck = tags.get("TRCK")
+            if trck:
+                parts = str(trck).split("/")
+                track_number = int(parts[0]) if parts[0].isdigit() else 0
+        elif suffix == ".m4a":
+            audio = mutagen.mp4.MP4(str(path))
+            if audio.tags is not None:
+                t = audio.tags
+                art_v = t.get("\xa9ART")
+                artist = str(art_v[0]) if art_v else ""
+                aar_v = t.get("aART")
+                album_artist = str(aar_v[0]) if aar_v else artist
+                alb_v = t.get("\xa9alb")
+                album = str(alb_v[0]) if alb_v else ""
+                nam_v = t.get("\xa9nam")
+                title = str(nam_v[0]) if nam_v else ""
+                day_v = t.get("\xa9day")
+                year = str(day_v[0])[:4] if day_v else ""
+                trkn_v = t.get("trkn")
+                if trkn_v:
+                    track_number = trkn_v[0][0]  # type: ignore[index]
+        elif suffix == ".flac":
+            audio_f = mutagen.flac.FLAC(str(path))
+            if audio_f.tags is not None:
+                tf = audio_f.tags
+                art_v2 = tf.get("ARTIST")
+                artist = art_v2[0] if art_v2 else ""
+                aar_v2 = tf.get("ALBUMARTIST")
+                album_artist = aar_v2[0] if aar_v2 else artist
+                alb_v2 = tf.get("ALBUM")
+                album = alb_v2[0] if alb_v2 else ""
+                tit_v2 = tf.get("TITLE")
+                title = tit_v2[0] if tit_v2 else ""
+                yr_v2 = tf.get("DATE")
+                year = yr_v2[0][:4] if yr_v2 else ""
+                trck_v2 = tf.get("TRACKNUMBER")
+                if trck_v2:
+                    t_s = trck_v2[0].split("/")[0]
+                    track_number = int(t_s) if t_s.isdigit() else 0
+        elif suffix == ".ogg":
+            audio_o = mutagen.oggvorbis.OggVorbis(str(path))
+            if audio_o.tags is not None:
+                to = audio_o.tags
+                art_v3 = to.get("ARTIST")
+                artist = art_v3[0] if art_v3 else ""
+                aar_v3 = to.get("ALBUMARTIST")
+                album_artist = aar_v3[0] if aar_v3 else artist
+                alb_v3 = to.get("ALBUM")
+                album = alb_v3[0] if alb_v3 else ""
+                tit_v3 = to.get("TITLE")
+                title = tit_v3[0] if tit_v3 else ""
+                yr_v3 = to.get("DATE")
+                year = yr_v3[0][:4] if yr_v3 else ""
+                trck_v3 = to.get("TRACKNUMBER")
+                if trck_v3:
+                    t_s3 = trck_v3[0].split("/")[0]
+                    track_number = int(t_s3) if t_s3.isdigit() else 0
+    except Exception as exc:
+        logger.debug("Could not read tags from %s: %s", path, exc)
+
+    # Do not fall back to path.stem for title — an empty title causes the
+    # extension tagger to skip tier-1 recording search for this track and
+    # fall through to the album-level tier-2 search, which is the right
+    # behaviour when the file has no title tag at all.
+    return TrackMetadata(
+        title=title,
+        artist=artist,
+        album=album,
+        album_artist=album_artist or artist,
+        year=year,
+        track_number=track_number,
+        mbid="",
+    )
+
+
+def write_tags_from_track_metadata(
+    path: Path,
+    track: TrackMetadata,
+    total_tracks: int = 0,
+    disc_number: int = 1,
+    total_discs: int = 1,
+) -> None:
+    """Write core track metadata from a TrackMetadata object to an audio file.
+
+    Writes the fields available on TrackMetadata (title, artist, album,
+    album_artist, year, track_number, mbid/release_mbid/release_group_mbid).
+    Extended MusicBrainz fields (artist_sort, label, barcode, etc.) are not
+    written here — use tag_directory if those fields are needed.
+
+    Args:
+        path: Path to the audio file to update.
+        track: Enriched TrackMetadata returned by a BaseTagger.
+        total_tracks: Total track count in the release (for "N/M" tag format).
+        disc_number: Disc number (default 1).
+        total_discs: Total disc count (default 1).
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".mp3":
+        _write_mp3_tags_from_metadata(
+            path, track, total_tracks, disc_number, total_discs
+        )
+    elif suffix == ".m4a":
+        _write_m4a_tags_from_metadata(
+            path, track, total_tracks, disc_number, total_discs
+        )
+    elif suffix == ".flac":
+        _write_flac_tags_from_metadata(
+            path, track, total_tracks, disc_number, total_discs
+        )
+    elif suffix == ".ogg":
+        _write_ogg_tags_from_metadata(
+            path, track, total_tracks, disc_number, total_discs
+        )
+    else:
+        logger.warning("Unsupported format for tag writing: %s", path)
+
+
+def _write_mp3_tags_from_metadata(
+    path: Path,
+    track: TrackMetadata,
+    total_tracks: int,
+    disc_number: int,
+    total_discs: int,
+) -> None:
+    try:
+        tags = id3.ID3(str(path))
+    except Exception:
+        tags = id3.ID3()
+
+    tags["TPE1"] = id3.TPE1(encoding=3, text=track.artist)
+    tags["TPE2"] = id3.TPE2(encoding=3, text=track.album_artist)
+    tags["TALB"] = id3.TALB(encoding=3, text=track.album)
+    tags["TIT2"] = id3.TIT2(encoding=3, text=track.title)
+    if track.year:
+        tags["TDRC"] = id3.TDRC(encoding=3, text=track.year)
+
+    trck_str = (
+        f"{track.track_number}/{total_tracks}"
+        if total_tracks
+        else str(track.track_number)
+    )
+    tags["TRCK"] = id3.TRCK(encoding=3, text=trck_str)
+
+    tpos_str = f"{disc_number}/{total_discs}" if total_discs > 1 else str(disc_number)
+    tags["TPOS"] = id3.TPOS(encoding=3, text=tpos_str)
+
+    if track.release_mbid:
+        tags["TXXX:MusicBrainz Release Id"] = id3.TXXX(
+            encoding=3, desc="MusicBrainz Release Id", text=track.release_mbid
+        )
+    if track.release_group_mbid:
+        tags["TXXX:MusicBrainz Release Group Id"] = id3.TXXX(
+            encoding=3,
+            desc="MusicBrainz Release Group Id",
+            text=track.release_group_mbid,
+        )
+    if track.mbid:
+        tags["TXXX:MusicBrainz Recording Id"] = id3.TXXX(
+            encoding=3, desc="MusicBrainz Recording Id", text=track.mbid
+        )
+
+    tags.save(str(path))
+    logger.debug("Wrote metadata tags to MP3 %s", path)
+
+
+def _write_m4a_tags_from_metadata(
+    path: Path,
+    track: TrackMetadata,
+    total_tracks: int,
+    disc_number: int,
+    total_discs: int,
+) -> None:
+    audio = mutagen.mp4.MP4(str(path))
+    if audio.tags is None:
+        audio.add_tags()
+    assert audio.tags is not None
+
+    audio.tags["\xa9nam"] = [track.title]
+    audio.tags["\xa9ART"] = [track.artist]
+    audio.tags["aART"] = [track.album_artist]
+    audio.tags["\xa9alb"] = [track.album]
+    if track.year:
+        audio.tags["\xa9day"] = [track.year]
+
+    audio.tags["trkn"] = [(track.track_number, total_tracks)]
+    audio.tags["disk"] = [(disc_number, total_discs)]
+
+    for key, value in [
+        ("----:com.apple.iTunes:MusicBrainz Release Id", track.release_mbid),
+        (
+            "----:com.apple.iTunes:MusicBrainz Release Group Id",
+            track.release_group_mbid,
+        ),
+        ("----:com.apple.iTunes:MusicBrainz Track Id", track.mbid),
+    ]:
+        if value:
+            audio.tags[key] = [mutagen.mp4.MP4FreeForm(value.encode())]
+
+    audio.save()
+    logger.debug("Wrote metadata tags to M4A %s", path)
+
+
+def _write_flac_tags_from_metadata(
+    path: Path,
+    track: TrackMetadata,
+    total_tracks: int,
+    disc_number: int,
+    total_discs: int,
+) -> None:
+    audio = mutagen.flac.FLAC(str(path))
+    if audio.tags is None:
+        audio.add_tags()
+    assert audio.tags is not None
+
+    audio.tags["TITLE"] = [track.title]
+    audio.tags["ARTIST"] = [track.artist]
+    audio.tags["ALBUMARTIST"] = [track.album_artist]
+    audio.tags["ALBUM"] = [track.album]
+    if track.year:
+        audio.tags["DATE"] = [track.year]
+
+    trck_str = (
+        f"{track.track_number}/{total_tracks}"
+        if total_tracks
+        else str(track.track_number)
+    )
+    audio.tags["TRACKNUMBER"] = [trck_str]
+    audio.tags["DISCNUMBER"] = [
+        f"{disc_number}/{total_discs}" if total_discs > 1 else str(disc_number)
+    ]
+
+    if track.release_mbid:
+        audio.tags["MUSICBRAINZ_ALBUMID"] = [track.release_mbid]
+    if track.release_group_mbid:
+        audio.tags["MUSICBRAINZ_RELEASEGROUPID"] = [track.release_group_mbid]
+    if track.mbid:
+        audio.tags["MUSICBRAINZ_TRACKID"] = [track.mbid]
+
+    audio.save()
+    logger.debug("Wrote metadata tags to FLAC %s", path)
+
+
+def _write_ogg_tags_from_metadata(
+    path: Path,
+    track: TrackMetadata,
+    total_tracks: int,
+    disc_number: int,
+    total_discs: int,
+) -> None:
+    audio = mutagen.oggvorbis.OggVorbis(str(path))
+    if audio.tags is None:
+        audio.add_tags()
+    assert audio.tags is not None
+
+    audio.tags["TITLE"] = [track.title]
+    audio.tags["ARTIST"] = [track.artist]
+    audio.tags["ALBUMARTIST"] = [track.album_artist]
+    audio.tags["ALBUM"] = [track.album]
+    if track.year:
+        audio.tags["DATE"] = [track.year]
+
+    trck_str = (
+        f"{track.track_number}/{total_tracks}"
+        if total_tracks
+        else str(track.track_number)
+    )
+    audio.tags["TRACKNUMBER"] = [trck_str]
+    audio.tags["DISCNUMBER"] = [
+        f"{disc_number}/{total_discs}" if total_discs > 1 else str(disc_number)
+    ]
+
+    if track.release_mbid:
+        audio.tags["MUSICBRAINZ_ALBUMID"] = [track.release_mbid]
+    if track.release_group_mbid:
+        audio.tags["MUSICBRAINZ_RELEASEGROUPID"] = [track.release_group_mbid]
+    if track.mbid:
+        audio.tags["MUSICBRAINZ_TRACKID"] = [track.mbid]
+
+    audio.save()
+    logger.debug("Wrote metadata tags to OGG %s", path)
 
 
 def _lookup_release_by_acoustid(
@@ -475,6 +788,76 @@ def _lookup_release_by_recordings(audio_files: list[Path]) -> ReleaseInfo:
         includes=["artists", "recordings", "release-groups", "labels"],
     )
     return _parse_release(detail["release"])
+
+
+def lookup_release_from_tracks(
+    tracks: list[tuple[str, str, str]],
+) -> ReleaseInfo:
+    """Look up a MusicBrainz release from (artist, title, album) tuples.
+
+    Equivalent to the tier-1 + tier-2 path in tag_directory, but accepts
+    pre-parsed metadata instead of reading from audio files.  Does not
+    perform AcoustID fingerprinting (tier-0) since that requires audio data.
+
+    Used by KampMusicBrainzTagger (the extension wrapper) which receives
+    TrackMetadata objects and has no access to the underlying audio files.
+
+    Args:
+        tracks: Sequence of (artist, title, album) strings, one per track.
+
+    Returns:
+        ReleaseInfo resolved from MusicBrainz.
+
+    Raises:
+        TaggingError: If no release can be found.
+    """
+    if not tracks:
+        raise TaggingError("No tracks provided for MusicBrainz lookup")
+
+    # Tier 1: per-track recording search — vote on release MBID across all tracks
+    votes: Counter[str] = Counter()
+    for artist, title, album in tracks:
+        if not title:
+            logger.debug("Skipping per-track vote: no title in provided metadata")
+            continue
+        result = _mb_call(
+            musicbrainzngs.search_recordings,
+            recording=title,
+            artist=artist,
+            release=album,
+            limit=3,
+        )
+        recordings = result.get("recording-list", [])
+        if not recordings:
+            continue
+        top = recordings[0]
+        for rel in top.get("release-list", []):
+            rel_id = rel.get("id", "")
+            if rel_id:
+                votes[rel_id] += 1
+
+    if votes:
+        winning_mbid = votes.most_common(1)[0][0]
+        logger.debug(
+            "lookup_release_from_tracks: winning release=%s (votes=%s)",
+            winning_mbid,
+            dict(votes.most_common(5)),
+        )
+        detail = _mb_call(
+            musicbrainzngs.get_release_by_id,
+            winning_mbid,
+            includes=["artists", "recordings", "release-groups", "labels"],
+        )
+        return _parse_release(detail["release"])
+
+    # Tier 2: album-level artist + album search using first track's data
+    artist, _, album = tracks[0]
+    logger.debug(
+        "No per-track votes; falling back to album-level search: artist=%r album=%r",
+        artist,
+        album,
+    )
+    return _search_release(artist, album)
 
 
 def _mb_call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:

@@ -24,7 +24,13 @@ class TrackMetadata:
     album_artist: str
     year: str
     track_number: int
-    mbid: str  # MusicBrainz release MBID
+    mbid: str  # MusicBrainz recording MBID (per-track; used by update_metadata)
+    release_mbid: str = (
+        ""  # MusicBrainz release MBID (album-level; used by ArtworkQuery)
+    )
+    release_group_mbid: str = (
+        ""  # MusicBrainz release-group MBID; Cover Art Archive fallback
+    )
 
 
 @dataclass
@@ -33,12 +39,19 @@ class ArtworkQuery:
 
     Provides enough context for an artwork source to locate the correct
     image without receiving any file path or internal database handle.
+
+    ``min_dimension`` and ``max_bytes`` express the caller's quality floor:
+    the source should only return images that are at least *min_dimension* ×
+    *min_dimension* pixels and at most *max_bytes* in size (resizing if
+    necessary).  0 means "no constraint" — sources may ignore unset bounds.
     """
 
     mbid: str  # MusicBrainz release MBID
     release_group_mbid: str
     album: str
     artist: str
+    min_dimension: int = 0  # minimum pixel width/height; 0 = unconstrained
+    max_bytes: int = 0  # maximum image size in bytes; 0 = unconstrained
 
 
 @dataclass

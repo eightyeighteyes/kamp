@@ -1,10 +1,10 @@
 ---
 id: TASK-83
 title: Import-time execution probe for backend extensions
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-05 16:27'
-updated_date: '2026-04-06 11:08'
+updated_date: '2026-04-06 11:26'
 labels:
   - feature
   - security
@@ -14,7 +14,7 @@ dependencies:
   - TASK-17
 documentation:
   - project/kampground-ideation.md
-ordinal: 2000
+ordinal: 8000
 ---
 
 ## Description

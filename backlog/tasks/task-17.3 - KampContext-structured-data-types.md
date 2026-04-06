@@ -5,7 +5,7 @@ status: Done
 assignee:
   - Claude
 created_date: '2026-04-05 16:36'
-updated_date: '2026-04-05 21:38'
+updated_date: '2026-04-06 11:26'
 labels:
   - feature
   - architecture
@@ -13,7 +13,7 @@ labels:
 milestone: m-2
 dependencies: []
 parent_task_id: TASK-17
-ordinal: 2200
+ordinal: 4000
 ---
 
 ## Description

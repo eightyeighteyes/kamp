@@ -1,4 +1,10 @@
-"""Orchestrate the ingest pipeline: extract → tag → artwork → move."""
+"""Orchestrate the ingest pipeline: extract → tag → artwork → move.
+
+Extension wrappers (KampMusicBrainzTagger, KampCoverArtArchive) are invoked
+in-process here rather than via invoke_extension() because the outer
+pipeline.py subprocess is already the isolation boundary and return values
+need to flow directly back to the host.
+"""
 
 from __future__ import annotations
 
@@ -8,11 +14,21 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from .artwork import ArtworkError, fetch_and_embed
+from .artwork import ArtworkError, _detect_mime, _embed, find_local_artwork
 from .config import Config
+from .ext.builtin.coverart import KampCoverArtArchive
+from .ext.builtin.musicbrainz import KampMusicBrainzTagger
+from .ext.context import KampGround, PlaybackSnapshot
+from .ext.types import ArtworkQuery, ArtworkResult
 from .extractor import ExtractionError, extract, find_audio_files
 from .mover import MoveError, move_to_library
-from .tagger import TaggingError, is_tagged, read_release_mbids, tag_directory
+from .tagger import (
+    TaggingError,
+    is_tagged,
+    read_release_mbids,
+    read_track_metadata_from_file,
+    write_tags_from_track_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +114,11 @@ def run(
             _quarantine(directory, config.paths.staging)
             return
 
+        # Build a shared KampGround context for this pipeline invocation.
+        # library_tracks is empty because the pipeline acts on staging files
+        # (not yet in the library); playback snapshot is a default.
+        ctx = KampGround(playback=PlaybackSnapshot(), library_tracks=[])
+
         # --- 2. Tag -----------------------------------------------------------
         # Skip the MusicBrainz lookup (and tag writes) when every file already has
         # an MBID — the most expensive operation in the pipeline.  If even one file
@@ -112,20 +133,30 @@ def run(
             try:
                 if _TEST_INJECT["tagging"] in directory.name:
                     raise TaggingError("Injected by test-notify --type tagging")
-                release = tag_directory(directory, audio_files)
+                # Build TrackMetadata from existing file tags, invoke the tagger
+                # extension in-process, then write enriched metadata back to files.
+                tracks = [read_track_metadata_from_file(f) for f in audio_files]
+                tagger = KampMusicBrainzTagger(ctx)
+                enriched = tagger.tag_release(tracks)
+                total = len(audio_files)
+                for audio_file, track in zip(audio_files, enriched):
+                    write_tags_from_track_metadata(
+                        audio_file, track, total_tracks=total
+                    )
             except TaggingError as exc:
                 logger.error("Tagging failed: %s", exc)
                 _notify(notify_callback, "Tagging failed", path.name)
                 _quarantine(directory, config.paths.staging)
                 return
-            mbid, rg_mbid = release.mbid, release.release_group_mbid
-            title = release.title
+            # Use the first enriched track to carry release-level IDs forward.
+            mbid = enriched[0].release_mbid if enriched else ""
+            rg_mbid = enriched[0].release_group_mbid if enriched else ""
+            title = enriched[0].album if enriched else directory.name
 
         # --- 3. Artwork -------------------------------------------------------
         # Always run: even if art is already embedded, a higher-quality image may
         # be available (e.g. a bundled cover.jpg in the ZIP that beats the art the
-        # original files shipped with).  fetch_and_embed handles the local-first
-        # fallback and is cheap when no network call is needed.
+        # original files shipped with).
         if stage_callback:
             stage_callback("Updating artwork")
         try:
@@ -135,13 +166,14 @@ def run(
                 # Skip network artwork fetch when testing the move stage so it
                 # doesn't raise its own ArtworkError before we reach the move
                 # injection point.
-                fetch_and_embed(
-                    mbid=mbid,
+                _fetch_and_embed_via_extension(
+                    ctx=ctx,
                     audio_files=audio_files,
-                    min_dimension=config.artwork.min_dimension,
-                    max_bytes=config.artwork.max_bytes,
+                    release_mbid=mbid,
                     release_group_mbid=rg_mbid,
                     directory=directory,
+                    min_dimension=config.artwork.min_dimension,
+                    max_bytes=config.artwork.max_bytes,
                 )
         except ArtworkError as exc:
             # Artwork failure is non-fatal: log and continue.
@@ -177,6 +209,79 @@ def run(
         # quarantine, or unexpected error.
         if stage_callback:
             stage_callback("")
+
+
+def _fetch_and_embed_via_extension(
+    ctx: KampGround,
+    audio_files: list[Path],
+    release_mbid: str,
+    release_group_mbid: str,
+    directory: Path,
+    min_dimension: int,
+    max_bytes: int,
+) -> None:
+    """Fetch cover art via KampCoverArtArchive extension and embed in audio files.
+
+    Checks *directory* for a bundled image first (local-first; host responsibility
+    because it requires file path access).  If no qualifying local image is found,
+    delegates to KampCoverArtArchive to fetch from the MusicBrainz Cover Art Archive.
+    Embedding is performed by the host — the extension only returns image bytes.
+    """
+    from .artwork import _load_local_artwork, has_embedded_art
+
+    image_bytes: bytes | None = None
+    mime_type = "image/jpeg"
+
+    # Local-first: check for a bundled cover image in the staging directory.
+    local = find_local_artwork(directory)
+    if local is not None:
+        image_bytes = _load_local_artwork(local, min_dimension, max_bytes)
+        if image_bytes is not None:
+            logger.info("Using bundled artwork from %s", local)
+            mime_type = _detect_mime(image_bytes)
+
+    if image_bytes is None:
+        # Skip the Cover Art Archive network call when all files already have
+        # qualifying embedded art — cheaper to keep what we have.
+        if audio_files and all(
+            has_embedded_art(f, min_dimension, max_bytes) for f in audio_files
+        ):
+            logger.info(
+                "All %d file(s) have qualifying embedded art — skipping Cover Art Archive fetch",
+                len(audio_files),
+            )
+            return
+
+        query = ArtworkQuery(
+            mbid=release_mbid,
+            release_group_mbid=release_group_mbid,
+            album="",
+            artist="",
+            min_dimension=min_dimension,
+            max_bytes=max_bytes,
+        )
+        result: ArtworkResult | None = KampCoverArtArchive(ctx).fetch(query)
+        if result is not None:
+            image_bytes = result.image_bytes
+            mime_type = result.mime_type
+
+    if image_bytes is None:
+        logger.warning(
+            "No qualifying cover art found for release %s "
+            "(min %dpx, max %d bytes) — skipping artwork",
+            release_mbid,
+            min_dimension,
+            max_bytes,
+        )
+        return
+
+    logger.info(
+        "Embedding cover art (%d bytes) into %d file(s)",
+        len(image_bytes),
+        len(audio_files),
+    )
+    for audio_file in audio_files:
+        _embed(audio_file, image_bytes)
 
 
 def _quarantine(item: Path, staging_root: Path) -> None:

@@ -9,6 +9,7 @@ import mutagen.id3 as id3
 import mutagen.mp4
 import pytest
 
+from kamp_daemon.ext.types import TrackMetadata
 from kamp_daemon.tagger import (
     ReleaseInfo,
     TaggingError,
@@ -21,12 +22,15 @@ from kamp_daemon.tagger import (
     _search_release,
     _write_acoustid_id,
     _write_flac_tags,
+    _write_m4a_tags,
     _write_ogg_tags,
     _write_tags,
     configure_musicbrainz,
     is_tagged,
     read_release_mbids,
+    read_track_metadata_from_file,
     tag_directory,
+    write_tags_from_track_metadata,
 )
 
 # ---------------------------------------------------------------------------
@@ -531,6 +535,102 @@ class TestReadExistingMetadata:
                 tag_directory(album_dir, [mp3])
 
         mock_search.assert_not_called()
+
+
+class TestWriteM4aTags:
+    """Unit tests for _write_m4a_tags with optional field coverage."""
+
+    def _full_release(self) -> ReleaseInfo:
+        return ReleaseInfo(
+            mbid="rel-abc",
+            release_group_mbid="rg-abc",
+            title="Full Album",
+            artist="Full Artist",
+            album_artist="Full Album Artist",
+            year="2023",
+            tracks={
+                "1-1": TrackInfo(
+                    number=1,
+                    disc=1,
+                    title="Track One",
+                    recording_mbid="rec-1",
+                    total_tracks=5,
+                )
+            },
+            artist_sort="Artist, Full",
+            album_artist_sort="Album Artist, Full",
+            artists=["Full Artist", "Featured Artist"],
+            artist_mbids=["art-1", "art-2"],
+            album_artist_mbid="aa-mbid",
+            label="Test Label",
+            catalog_number="CAT-001",
+            barcode="012345678901",
+            asin="B0EXAMPLE",
+            release_type="Album",
+            release_status="Official",
+            release_country="US",
+            original_date="2022-11-01",
+            script="Latn",
+            total_discs=2,
+        )
+
+    def test_writes_all_optional_fields(self, tmp_path: Path) -> None:
+        """_write_m4a_tags writes all optional extended fields when they are set."""
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        tags: dict[str, object] = {}
+        mock_audio = MagicMock()
+        mock_audio.tags = tags
+
+        track = TrackInfo(
+            number=1, disc=1, title="Track One", recording_mbid="rec-1", total_tracks=5
+        )
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
+            _write_m4a_tags(m4a, self._full_release(), track)
+
+        assert tags["soar"] == ["Artist, Full"]
+        assert tags["soaa"] == ["Album Artist, Full"]
+        assert "----:com.apple.iTunes:ARTISTS" in tags
+        assert "----:com.apple.iTunes:MusicBrainz Artist Id" in tags
+        assert "----:com.apple.iTunes:MusicBrainz Album Artist Id" in tags
+        assert "----:com.apple.iTunes:MusicBrainz Release Group Id" in tags
+        assert "----:com.apple.iTunes:MusicBrainz Album Type" in tags
+        assert "----:com.apple.iTunes:MusicBrainz Album Status" in tags
+        assert "----:com.apple.iTunes:MusicBrainz Album Release Country" in tags
+        assert "----:com.apple.iTunes:ORIGINALDATE" in tags
+        assert "----:com.apple.iTunes:LABEL" in tags
+        assert "----:com.apple.iTunes:CATALOGNUMBER" in tags
+        assert "----:com.apple.iTunes:BARCODE" in tags
+        assert "----:com.apple.iTunes:ASIN" in tags
+        assert "----:com.apple.iTunes:SCRIPT" in tags
+        assert "----:com.apple.iTunes:MusicBrainz Track Id" in tags
+
+    def test_skips_empty_optional_fields(self, tmp_path: Path) -> None:
+        """_write_m4a_tags skips optional fields when they are empty/falsy."""
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        tags: dict[str, object] = {}
+        mock_audio = MagicMock()
+        mock_audio.tags = tags
+
+        # Minimal release — all optional fields left at their defaults (empty)
+        minimal_release = ReleaseInfo(
+            mbid="rel-min",
+            release_group_mbid="",
+            title="Minimal Album",
+            artist="Min Artist",
+            album_artist="Min Artist",
+            year="2020",
+            tracks={},
+        )
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
+            _write_m4a_tags(m4a, minimal_release, track=None)
+
+        assert "soar" not in tags
+        assert "soaa" not in tags
+        assert "----:com.apple.iTunes:ARTISTS" not in tags
+        assert "----:com.apple.iTunes:MusicBrainz Release Group Id" not in tags
+        assert "----:com.apple.iTunes:MusicBrainz Album Type" not in tags
 
 
 class TestTagDirectoryM4a:
@@ -1547,3 +1647,426 @@ class TestWriteAcoustidId:
         with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_mp4):
             _write_acoustid_id(m4a, "fp-uuid-7")
         mock_mp4.save.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# read_track_metadata_from_file
+# ---------------------------------------------------------------------------
+
+
+class TestReadTrackMetadataFromFile:
+    def test_reads_mp3_tags(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TPE1"] = id3.TPE1(encoding=3, text="Artist")
+        tags["TPE2"] = id3.TPE2(encoding=3, text="Album Artist")
+        tags["TALB"] = id3.TALB(encoding=3, text="Album")
+        tags["TIT2"] = id3.TIT2(encoding=3, text="Track Title")
+        tags["TDRC"] = id3.TDRC(encoding=3, text="2021")
+        tags["TRCK"] = id3.TRCK(encoding=3, text="3/10")
+        tags.save(str(mp3))
+
+        tm = read_track_metadata_from_file(mp3)
+
+        assert tm.artist == "Artist"
+        assert tm.album_artist == "Album Artist"
+        assert tm.album == "Album"
+        assert tm.title == "Track Title"
+        assert tm.year == "2021"
+        assert tm.track_number == 3
+
+    def test_mp3_missing_title_returns_empty(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TPE1"] = id3.TPE1(encoding=3, text="Artist")
+        tags.save(str(mp3))
+
+        tm = read_track_metadata_from_file(mp3)
+
+        assert tm.title == ""
+
+    def test_mp3_album_artist_falls_back_to_artist(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "02.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TPE1"] = id3.TPE1(encoding=3, text="Solo Artist")
+        tags.save(str(mp3))
+
+        tm = read_track_metadata_from_file(mp3)
+
+        assert tm.album_artist == "Solo Artist"
+
+    def test_m4a_reads_tags(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {
+            "\xa9ART": ["M4A Artist"],
+            "aART": ["M4A Album Artist"],
+            "\xa9alb": ["M4A Album"],
+            "\xa9nam": ["M4A Title"],
+            "\xa9day": ["2022"],
+            "trkn": [(2, 8)],
+        }
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
+            tm = read_track_metadata_from_file(m4a)
+
+        assert tm.artist == "M4A Artist"
+        assert tm.album_artist == "M4A Album Artist"
+        assert tm.album == "M4A Album"
+        assert tm.title == "M4A Title"
+        assert tm.year == "2022"
+        assert tm.track_number == 2
+
+    def test_m4a_no_tags_returns_empty(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = None
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
+            tm = read_track_metadata_from_file(m4a)
+
+        assert tm.title == ""
+        assert tm.artist == ""
+
+    def test_flac_reads_tags(self, tmp_path: Path) -> None:
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {
+            "ARTIST": ["FLAC Artist"],
+            "ALBUMARTIST": ["FLAC Album Artist"],
+            "ALBUM": ["FLAC Album"],
+            "TITLE": ["FLAC Title"],
+            "DATE": ["2019"],
+            "TRACKNUMBER": ["4/12"],
+        }
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
+            tm = read_track_metadata_from_file(flac)
+
+        assert tm.artist == "FLAC Artist"
+        assert tm.album == "FLAC Album"
+        assert tm.title == "FLAC Title"
+        assert tm.year == "2019"
+        assert tm.track_number == 4
+
+    def test_ogg_reads_tags(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = {
+            "ARTIST": ["OGG Artist"],
+            "ALBUMARTIST": ["OGG Album Artist"],
+            "ALBUM": ["OGG Album"],
+            "TITLE": ["OGG Title"],
+            "DATE": ["2018"],
+            "TRACKNUMBER": ["5"],
+        }
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            tm = read_track_metadata_from_file(ogg)
+
+        assert tm.title == "OGG Title"
+        assert tm.track_number == 5
+
+    def test_unreadable_file_returns_empty(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "bad.mp3"
+        mp3.write_bytes(b"not an mp3")
+
+        tm = read_track_metadata_from_file(mp3)
+
+        assert tm.title == ""
+        assert tm.artist == ""
+
+    def test_m4a_no_trkn_tag_returns_zero(self, tmp_path: Path) -> None:
+        """M4A without a trkn tag returns track_number=0."""
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {"\xa9ART": ["Artist"]}  # no "trkn" key
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
+            tm = read_track_metadata_from_file(m4a)
+
+        assert tm.track_number == 0
+
+    def test_flac_no_tags_returns_empty(self, tmp_path: Path) -> None:
+        """FLAC with audio.tags=None returns all-empty TrackMetadata."""
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = None
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
+            tm = read_track_metadata_from_file(flac)
+
+        assert tm.title == ""
+        assert tm.artist == ""
+
+    def test_flac_no_tracknumber_returns_zero(self, tmp_path: Path) -> None:
+        """FLAC without a TRACKNUMBER tag returns track_number=0."""
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {"ARTIST": ["Artist"], "TITLE": ["Title"]}  # no TRACKNUMBER
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
+            tm = read_track_metadata_from_file(flac)
+
+        assert tm.track_number == 0
+
+    def test_ogg_no_tags_returns_empty(self, tmp_path: Path) -> None:
+        """OGG with audio.tags=None returns all-empty TrackMetadata."""
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = None
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            tm = read_track_metadata_from_file(ogg)
+
+        assert tm.title == ""
+        assert tm.artist == ""
+
+    def test_ogg_no_tracknumber_returns_zero(self, tmp_path: Path) -> None:
+        """OGG without a TRACKNUMBER tag returns track_number=0."""
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = {"ARTIST": ["Artist"], "TITLE": ["Title"]}  # no TRACKNUMBER
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            tm = read_track_metadata_from_file(ogg)
+
+        assert tm.track_number == 0
+
+    def test_unknown_extension_returns_empty(self, tmp_path: Path) -> None:
+        """An unrecognized extension (e.g. .wav) returns all-empty TrackMetadata."""
+        wav = tmp_path / "track.wav"
+        wav.write_bytes(b"\x00" * 8)
+
+        tm = read_track_metadata_from_file(wav)
+
+        assert tm.title == ""
+        assert tm.artist == ""
+
+
+# ---------------------------------------------------------------------------
+# write_tags_from_track_metadata
+# ---------------------------------------------------------------------------
+
+
+def _make_track(**kwargs: object) -> TrackMetadata:
+    defaults: dict[str, object] = dict(
+        title="Title",
+        artist="Artist",
+        album="Album",
+        album_artist="Artist",
+        year="2023",
+        track_number=1,
+        mbid="rec-mbid",
+        release_mbid="rel-mbid",
+        release_group_mbid="rg-mbid",
+    )
+    defaults.update(kwargs)
+    return TrackMetadata(**defaults)  # type: ignore[arg-type]
+
+
+class TestWriteTagsFromTrackMetadata:
+    def test_writes_mp3(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        write_tags_from_track_metadata(mp3, _make_track(), total_tracks=5)
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TIT2"]) == "Title"
+        assert str(tags["TPE1"]) == "Artist"
+        assert str(tags["TALB"]) == "Album"
+        assert str(tags["TRCK"]) == "1/5"
+        assert "TXXX:MusicBrainz Release Id" in tags
+        assert "TXXX:MusicBrainz Recording Id" in tags
+
+    def test_writes_mp3_no_year(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+        write_tags_from_track_metadata(mp3, _make_track(year=""), total_tracks=1)
+        tags = id3.ID3(str(mp3))
+        assert "TDRC" not in tags
+
+    def test_writes_m4a(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
+            write_tags_from_track_metadata(m4a, _make_track(), total_tracks=4)
+
+        assert mock_audio.save.called
+        assert mock_audio.tags["\xa9nam"] == ["Title"]
+        assert mock_audio.tags["trkn"] == [(1, 4)]
+
+    def test_writes_flac(self, tmp_path: Path) -> None:
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
+            write_tags_from_track_metadata(flac, _make_track(), total_tracks=3)
+
+        assert mock_audio.save.called
+        assert mock_audio.tags["TITLE"] == ["Title"]
+        assert mock_audio.tags["TRACKNUMBER"] == ["1/3"]
+
+    def test_writes_flac_tags_is_none_calls_add_tags(self, tmp_path: Path) -> None:
+        """When FLAC audio.tags is None, add_tags() is called before writing."""
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = None
+        new_tags: dict[str, object] = {}
+
+        def _add_tags() -> None:
+            mock_audio.tags = new_tags
+
+        mock_audio.add_tags.side_effect = _add_tags
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
+            write_tags_from_track_metadata(flac, _make_track(), total_tracks=1)
+
+        mock_audio.add_tags.assert_called_once()
+        assert mock_audio.save.called
+
+    def test_writes_ogg(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            write_tags_from_track_metadata(ogg, _make_track(), total_tracks=6)
+
+        assert mock_audio.save.called
+        assert mock_audio.tags["TITLE"] == ["Title"]
+        assert mock_audio.tags["MUSICBRAINZ_ALBUMID"] == ["rel-mbid"]
+
+    def test_writes_ogg_tags_is_none_calls_add_tags(self, tmp_path: Path) -> None:
+        """When OGG audio.tags is None, add_tags() is called before writing."""
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = None
+        new_tags: dict[str, object] = {}
+
+        def _add_tags() -> None:
+            mock_audio.tags = new_tags
+
+        mock_audio.add_tags.side_effect = _add_tags
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            write_tags_from_track_metadata(ogg, _make_track(), total_tracks=1)
+
+        mock_audio.add_tags.assert_called_once()
+        assert mock_audio.save.called
+
+    def test_unsupported_format_logs_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        wav = tmp_path / "track.wav"
+        wav.write_bytes(b"\x00" * 8)
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kamp_daemon.tagger"):
+            write_tags_from_track_metadata(wav, _make_track())
+
+        assert any("Unsupported format" in r.message for r in caplog.records)
+
+    def test_writes_mp3_empty_mbids(self, tmp_path: Path) -> None:
+        """When mbid fields are empty, the corresponding TXXX frames are not written."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+        track = _make_track(mbid="", release_mbid="", release_group_mbid="")
+
+        write_tags_from_track_metadata(mp3, track, total_tracks=1)
+
+        tags = id3.ID3(str(mp3))
+        assert "TXXX:MusicBrainz Release Id" not in tags
+        assert "TXXX:MusicBrainz Recording Id" not in tags
+
+    def test_writes_mp3_multi_disc(self, tmp_path: Path) -> None:
+        """Disc number is included in TPOS when total_discs > 1."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        write_tags_from_track_metadata(
+            mp3, _make_track(), total_tracks=5, disc_number=2, total_discs=3
+        )
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TPOS"]) == "2/3"
+
+    def test_writes_m4a_empty_mbids_and_no_year(self, tmp_path: Path) -> None:
+        """Empty mbids are skipped; missing year tag is not written."""
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        track = _make_track(mbid="", release_mbid="", release_group_mbid="", year="")
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
+            write_tags_from_track_metadata(m4a, track, total_tracks=4)
+
+        assert "\xa9day" not in mock_audio.tags
+
+    def test_writes_m4a_tags_is_none_calls_add_tags(self, tmp_path: Path) -> None:
+        """When audio.tags is None, add_tags() is called and tags dict is used after."""
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        # Simulate add_tags() populating tags
+        mock_audio.tags = None
+        new_tags: dict[str, object] = {}
+
+        def _add_tags() -> None:
+            mock_audio.tags = new_tags
+
+        mock_audio.add_tags.side_effect = _add_tags
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
+            write_tags_from_track_metadata(m4a, _make_track(), total_tracks=1)
+
+        mock_audio.add_tags.assert_called_once()
+        assert mock_audio.save.called
+
+    def test_writes_flac_empty_mbids_and_no_year(self, tmp_path: Path) -> None:
+        """Empty mbids and missing year are not written for FLAC."""
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        track = _make_track(mbid="", release_mbid="", release_group_mbid="", year="")
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
+            write_tags_from_track_metadata(flac, track, total_tracks=3)
+
+        assert "DATE" not in mock_audio.tags
+        assert "MUSICBRAINZ_ALBUMID" not in mock_audio.tags
+
+    def test_writes_ogg_empty_mbids_and_no_year(self, tmp_path: Path) -> None:
+        """Empty mbids and missing year are not written for OGG."""
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        track = _make_track(mbid="", release_mbid="", release_group_mbid="", year="")
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            write_tags_from_track_metadata(ogg, track, total_tracks=6)
+
+        assert "DATE" not in mock_audio.tags
+        assert "MUSICBRAINZ_ALBUMID" not in mock_audio.tags

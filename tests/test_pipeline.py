@@ -16,9 +16,12 @@ from kamp_daemon.config import (
     PathsConfig,
 )
 from kamp_daemon.artwork import ArtworkError
+from kamp_daemon.ext.builtin.coverart import KampCoverArtArchive
+from kamp_daemon.ext.builtin.musicbrainz import KampMusicBrainzTagger
+from kamp_daemon.ext.context import KampGround, PlaybackSnapshot
+from kamp_daemon.ext.types import ArtworkResult, TrackMetadata
 from kamp_daemon.mover import MoveError
-from kamp_daemon.pipeline_impl import _quarantine, run
-from kamp_daemon.tagger import ReleaseInfo, TrackInfo
+from kamp_daemon.pipeline_impl import _fetch_and_embed_via_extension, _quarantine, run
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -48,18 +51,19 @@ def _make_zip(path: Path, tracks: list[str]) -> Path:
     return path
 
 
-MOCK_RELEASE = ReleaseInfo(
-    mbid="release-abc",
-    release_group_mbid="rg-abc",
-    title="Great Album",
-    artist="Cool Artist",
-    album_artist="Cool Artist",
-    year="2020",
-    tracks={
-        "1-1": TrackInfo(number=1, disc=1, title="First Track"),
-        "1-2": TrackInfo(number=2, disc=1, title="Second Track"),
-    },
-)
+MOCK_TRACKS = [
+    TrackMetadata(
+        title="First Track",
+        artist="Cool Artist",
+        album="Great Album",
+        album_artist="Cool Artist",
+        year="2020",
+        track_number=1,
+        mbid="",
+        release_mbid="release-abc",
+        release_group_mbid="rg-abc",
+    )
+]
 
 MB_SEARCH_RESULT: dict[str, Any] = {
     "release-list": [
@@ -192,7 +196,7 @@ class TestPipelineRun:
             patch("musicbrainzngs.search_releases", return_value=MB_SEARCH_RESULT),
             patch("musicbrainzngs.get_release_by_id", return_value=MB_RELEASE_DETAIL),
             patch(
-                "kamp_daemon.pipeline_impl.fetch_and_embed",
+                "kamp_daemon.pipeline_impl._fetch_and_embed_via_extension",
                 side_effect=ArtworkError("no art"),
             ),
         ):
@@ -216,8 +220,10 @@ class TestPipelineRun:
         tags.save(str(mp3))
 
         with (
-            patch("kamp_daemon.pipeline_impl.tag_directory", return_value=MOCK_RELEASE),
-            patch("kamp_daemon.pipeline_impl.fetch_and_embed"),
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MOCK_TRACKS
+            ),
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
             patch(
                 "kamp_daemon.pipeline_impl.move_to_library",
                 side_effect=MoveError("disk full"),
@@ -276,8 +282,10 @@ class TestOnDirectoryCallback:
         claimed: list[Path] = []
 
         with (
-            patch("kamp_daemon.pipeline_impl.tag_directory", return_value=MOCK_RELEASE),
-            patch("kamp_daemon.pipeline_impl.fetch_and_embed"),
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MOCK_TRACKS
+            ),
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
             patch(
                 "kamp_daemon.pipeline_impl.move_to_library",
                 return_value=[],
@@ -331,8 +339,10 @@ class TestSkipAlreadyTagged:
                 "kamp_daemon.pipeline_impl.read_release_mbids",
                 return_value=("rel-abc", "rg-abc"),
             ),
-            patch("kamp_daemon.pipeline_impl.tag_directory") as mock_tag,
-            patch("kamp_daemon.pipeline_impl.fetch_and_embed") as mock_art,
+            patch.object(KampMusicBrainzTagger, "tag_release") as mock_tag,
+            patch(
+                "kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"
+            ) as mock_art,
             patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[mp3]),
         ):
             run(album_dir, config)
@@ -348,10 +358,12 @@ class TestSkipAlreadyTagged:
 
         with (
             patch("kamp_daemon.pipeline_impl.is_tagged", return_value=False),
-            patch(
-                "kamp_daemon.pipeline_impl.tag_directory", return_value=MOCK_RELEASE
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MOCK_TRACKS
             ) as mock_tag,
-            patch("kamp_daemon.pipeline_impl.fetch_and_embed") as mock_art,
+            patch(
+                "kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"
+            ) as mock_art,
             patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[mp3]),
         ):
             run(album_dir, config)
@@ -383,10 +395,10 @@ class TestSkipAlreadyTagged:
                 "kamp_daemon.pipeline_impl.is_tagged",
                 side_effect=is_tagged_side_effect,
             ),
-            patch(
-                "kamp_daemon.pipeline_impl.tag_directory", return_value=MOCK_RELEASE
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MOCK_TRACKS
             ) as mock_tag,
-            patch("kamp_daemon.pipeline_impl.fetch_and_embed"),
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
             patch(
                 "kamp_daemon.pipeline_impl.move_to_library",
                 return_value=[mp3_a, mp3_b],
@@ -418,8 +430,10 @@ class TestStageCallback:
         calls: list[str] = []
 
         with (
-            patch("kamp_daemon.pipeline_impl.tag_directory", return_value=MOCK_RELEASE),
-            patch("kamp_daemon.pipeline_impl.fetch_and_embed"),
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MOCK_TRACKS
+            ),
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
             patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[]),
         ):
             run(album_dir, config, stage_callback=calls.append)
@@ -450,3 +464,166 @@ class TestStageCallback:
             run(album_dir, config, stage_callback=calls.append)
 
         assert calls[-1] == ""
+
+
+# ---------------------------------------------------------------------------
+# _fetch_and_embed_via_extension
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAndEmbedViaExtension:
+    """Unit tests for the _fetch_and_embed_via_extension helper."""
+
+    def _ctx(self) -> KampGround:
+        return KampGround(playback=PlaybackSnapshot(), library_tracks=[])
+
+    def test_uses_local_artwork_when_found(self, tmp_path: Path) -> None:
+        """When a qualifying local image is found, it is embedded without a network call."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+        image_data = b"\xff\xd8\xff" + b"\x00" * 100  # minimal JPEG header
+
+        with (
+            patch(
+                "kamp_daemon.pipeline_impl.find_local_artwork",
+                return_value=tmp_path / "cover.jpg",
+            ),
+            patch(
+                "kamp_daemon.artwork._load_local_artwork",
+                return_value=image_data,
+            ),
+            patch("kamp_daemon.pipeline_impl._embed") as mock_embed,
+            patch.object(KampCoverArtArchive, "fetch") as mock_fetch,
+        ):
+            _fetch_and_embed_via_extension(
+                ctx=self._ctx(),
+                audio_files=[mp3],
+                release_mbid="rel-1",
+                release_group_mbid="rg-1",
+                directory=tmp_path,
+                min_dimension=500,
+                max_bytes=5_000_000,
+            )
+
+        mock_embed.assert_called_once_with(mp3, image_data)
+        mock_fetch.assert_not_called()
+
+    def test_skips_fetch_when_all_have_embedded_art(self, tmp_path: Path) -> None:
+        """When all files already have qualifying embedded art, the Archive is not queried."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        with (
+            patch("kamp_daemon.pipeline_impl.find_local_artwork", return_value=None),
+            patch("kamp_daemon.artwork.has_embedded_art", return_value=True),
+            patch.object(KampCoverArtArchive, "fetch") as mock_fetch,
+            patch("kamp_daemon.pipeline_impl._embed") as mock_embed,
+        ):
+            _fetch_and_embed_via_extension(
+                ctx=self._ctx(),
+                audio_files=[mp3],
+                release_mbid="rel-1",
+                release_group_mbid="rg-1",
+                directory=tmp_path,
+                min_dimension=500,
+                max_bytes=5_000_000,
+            )
+
+        mock_fetch.assert_not_called()
+        mock_embed.assert_not_called()
+
+    def test_embeds_artwork_from_cover_art_archive(self, tmp_path: Path) -> None:
+        """Cover Art Archive result is embedded when no local art is available."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+        image_data = b"\xff\xd8\xff" + b"\x00" * 200
+
+        with (
+            patch("kamp_daemon.pipeline_impl.find_local_artwork", return_value=None),
+            patch("kamp_daemon.artwork.has_embedded_art", return_value=False),
+            patch.object(
+                KampCoverArtArchive,
+                "fetch",
+                return_value=ArtworkResult(
+                    image_bytes=image_data, mime_type="image/jpeg"
+                ),
+            ),
+            patch("kamp_daemon.pipeline_impl._embed") as mock_embed,
+        ):
+            _fetch_and_embed_via_extension(
+                ctx=self._ctx(),
+                audio_files=[mp3],
+                release_mbid="rel-1",
+                release_group_mbid="rg-1",
+                directory=tmp_path,
+                min_dimension=500,
+                max_bytes=5_000_000,
+            )
+
+        mock_embed.assert_called_once_with(mp3, image_data)
+
+    def test_no_art_anywhere_skips_embed(self, tmp_path: Path) -> None:
+        """When no art is found anywhere, embed is never called."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        with (
+            patch("kamp_daemon.pipeline_impl.find_local_artwork", return_value=None),
+            patch("kamp_daemon.artwork.has_embedded_art", return_value=False),
+            patch.object(KampCoverArtArchive, "fetch", return_value=None),
+            patch("kamp_daemon.pipeline_impl._embed") as mock_embed,
+        ):
+            _fetch_and_embed_via_extension(
+                ctx=self._ctx(),
+                audio_files=[mp3],
+                release_mbid="rel-1",
+                release_group_mbid="rg-1",
+                directory=tmp_path,
+                min_dimension=500,
+                max_bytes=5_000_000,
+            )
+
+        mock_embed.assert_not_called()
+
+    def test_local_artwork_fails_quality_check_falls_back_to_archive(
+        self, tmp_path: Path
+    ) -> None:
+        """When local artwork exists but _load_local_artwork returns None (quality fail),
+        the pipeline falls through to the Cover Art Archive."""
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+        image_data = b"\xff\xd8\xff" + b"\x00" * 100
+
+        with (
+            patch(
+                "kamp_daemon.pipeline_impl.find_local_artwork",
+                return_value=tmp_path / "cover.jpg",
+            ),
+            # Returns None — local art doesn't meet quality threshold
+            patch("kamp_daemon.artwork._load_local_artwork", return_value=None),
+            patch("kamp_daemon.artwork.has_embedded_art", return_value=False),
+            patch.object(
+                KampCoverArtArchive,
+                "fetch",
+                return_value=ArtworkResult(
+                    image_bytes=image_data, mime_type="image/jpeg"
+                ),
+            ),
+            patch("kamp_daemon.pipeline_impl._embed") as mock_embed,
+        ):
+            _fetch_and_embed_via_extension(
+                ctx=self._ctx(),
+                audio_files=[mp3],
+                release_mbid="rel-1",
+                release_group_mbid="rg-1",
+                directory=tmp_path,
+                min_dimension=500,
+                max_bytes=5_000_000,
+            )
+
+        mock_embed.assert_called_once_with(mp3, image_data)

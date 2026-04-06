@@ -18,12 +18,28 @@ from kamp_daemon.config import (
     MusicBrainzConfig,
     PathsConfig,
 )
+from kamp_daemon.ext.builtin.musicbrainz import KampMusicBrainzTagger
+from kamp_daemon.ext.types import TrackMetadata
 from kamp_daemon.pipeline import (
     _NOTIFY_SENTINEL,
     _handle_stage_msg,
     run_in_subprocess,
 )
 from kamp_daemon.syncer import Syncer
+
+_MOCK_TRACKS = [
+    TrackMetadata(
+        title="Test Track",
+        artist="Test Artist",
+        album="Test Album",
+        album_artist="Test Artist",
+        year="2020",
+        track_number=1,
+        mbid="",
+        release_mbid="mbid-1",
+        release_group_mbid="rg-1",
+    )
+]
 
 
 def _make_config(tmp_path: Path) -> Config:
@@ -183,11 +199,6 @@ class TestPipelineImplNotifications:
         path, config = self._run(tmp_path)
         received: list[tuple[str, str, str]] = []
 
-        release = MagicMock()
-        release.mbid = "mbid-1"
-        release.release_group_mbid = "rg-1"
-        release.title = "Test Album"
-
         with patch("kamp_daemon.pipeline._spawn_worker", side_effect=_inline_worker):
             with patch("musicbrainzngs.set_useragent"):
                 with patch("kamp_daemon.pipeline_impl.extract", return_value=path):
@@ -198,8 +209,9 @@ class TestPipelineImplNotifications:
                         with patch(
                             "kamp_daemon.pipeline_impl.is_tagged", return_value=False
                         ):
-                            with patch(
-                                "kamp_daemon.pipeline_impl.tag_directory",
+                            with patch.object(
+                                KampMusicBrainzTagger,
+                                "tag_release",
                                 side_effect=TaggingError("no match"),
                             ):
                                 run_in_subprocess(
@@ -219,11 +231,6 @@ class TestPipelineImplNotifications:
         path, config = self._run(tmp_path)
         received: list[tuple[str, str, str]] = []
 
-        release = MagicMock()
-        release.mbid = "mbid-1"
-        release.release_group_mbid = "rg-1"
-        release.title = "Test Album"
-
         with patch("kamp_daemon.pipeline._spawn_worker", side_effect=_inline_worker):
             with patch("musicbrainzngs.set_useragent"):
                 with patch("kamp_daemon.pipeline_impl.extract", return_value=path):
@@ -234,12 +241,13 @@ class TestPipelineImplNotifications:
                         with patch(
                             "kamp_daemon.pipeline_impl.is_tagged", return_value=False
                         ):
-                            with patch(
-                                "kamp_daemon.pipeline_impl.tag_directory",
-                                return_value=release,
+                            with patch.object(
+                                KampMusicBrainzTagger,
+                                "tag_release",
+                                return_value=_MOCK_TRACKS,
                             ):
                                 with patch(
-                                    "kamp_daemon.pipeline_impl.fetch_and_embed",
+                                    "kamp_daemon.pipeline_impl._fetch_and_embed_via_extension",
                                     side_effect=ArtworkError("no image"),
                                 ):
                                     with patch(
@@ -264,11 +272,6 @@ class TestPipelineImplNotifications:
         path, config = self._run(tmp_path)
         received: list[tuple[str, str, str]] = []
 
-        release = MagicMock()
-        release.mbid = "mbid-1"
-        release.release_group_mbid = "rg-1"
-        release.title = "Test Album"
-
         with patch("kamp_daemon.pipeline._spawn_worker", side_effect=_inline_worker):
             with patch("musicbrainzngs.set_useragent"):
                 with patch("kamp_daemon.pipeline_impl.extract", return_value=path):
@@ -279,11 +282,14 @@ class TestPipelineImplNotifications:
                         with patch(
                             "kamp_daemon.pipeline_impl.is_tagged", return_value=False
                         ):
-                            with patch(
-                                "kamp_daemon.pipeline_impl.tag_directory",
-                                return_value=release,
+                            with patch.object(
+                                KampMusicBrainzTagger,
+                                "tag_release",
+                                return_value=_MOCK_TRACKS,
                             ):
-                                with patch("kamp_daemon.pipeline_impl.fetch_and_embed"):
+                                with patch(
+                                    "kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"
+                                ):
                                     with patch(
                                         "kamp_daemon.pipeline_impl.move_to_library",
                                         side_effect=MoveError("no dest"),
@@ -303,11 +309,6 @@ class TestPipelineImplNotifications:
         path, config = self._run(tmp_path)
         received: list[tuple[str, str, str]] = []
 
-        release = MagicMock()
-        release.mbid = "mbid-1"
-        release.release_group_mbid = "rg-1"
-        release.title = "Test Album"
-
         with patch("kamp_daemon.pipeline._spawn_worker", side_effect=_inline_worker):
             with patch("musicbrainzngs.set_useragent"):
                 with patch("kamp_daemon.pipeline_impl.extract", return_value=path):
@@ -318,11 +319,14 @@ class TestPipelineImplNotifications:
                         with patch(
                             "kamp_daemon.pipeline_impl.is_tagged", return_value=False
                         ):
-                            with patch(
-                                "kamp_daemon.pipeline_impl.tag_directory",
-                                return_value=release,
+                            with patch.object(
+                                KampMusicBrainzTagger,
+                                "tag_release",
+                                return_value=_MOCK_TRACKS,
                             ):
-                                with patch("kamp_daemon.pipeline_impl.fetch_and_embed"):
+                                with patch(
+                                    "kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"
+                                ):
                                     with patch(
                                         "kamp_daemon.pipeline_impl.move_to_library",
                                         return_value=[],

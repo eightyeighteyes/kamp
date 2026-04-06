@@ -4,6 +4,7 @@ title: Extension invocation policy — wire tagger/artwork extensions into the p
 status: To Do
 assignee: []
 created_date: '2026-04-06 12:54'
+updated_date: '2026-04-06 18:43'
 labels:
   - feature
   - design
@@ -12,6 +13,7 @@ milestone: m-2
 dependencies:
   - TASK-85
   - TASK-17
+ordinal: 14000
 ---
 
 ## Description

@@ -1,10 +1,10 @@
 ---
 id: TASK-18
 title: Refactor built-in features as extensions (validate KampGround API)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-06 13:47'
+updated_date: '2026-04-06 18:42'
 labels:
   - chore
   - architecture
@@ -12,7 +12,7 @@ labels:
 milestone: m-2
 dependencies:
   - TASK-17
-ordinal: 5000
+ordinal: 11000
 ---
 
 ## Description

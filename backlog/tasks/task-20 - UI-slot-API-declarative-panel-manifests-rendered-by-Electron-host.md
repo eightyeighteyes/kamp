@@ -1,10 +1,10 @@
 ---
 id: TASK-20
 title: 'UI slot API: declarative panel manifests rendered by Electron host'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-05 16:32'
+updated_date: '2026-04-06 21:02'
 labels:
   - feature
   - architecture

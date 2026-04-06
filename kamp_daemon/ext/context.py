@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from .types import TrackMetadata
+from .types import ArtworkResult, TrackMetadata
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,42 @@ class FetchResponse:
 
 
 @dataclass
+class UpdateMetadataMutation:
+    """A queued request to update track metadata fields in the library.
+
+    Collected during extension execution and applied by the host after the
+    worker completes — the worker subprocess never writes to the database.
+
+    Args:
+        mbid: MusicBrainz recording ID identifying the track to update.
+        fields: Mapping of field names to new values (str or int).
+    """
+
+    mbid: str
+    fields: dict[str, str | int]
+
+
+@dataclass
+class SetArtworkMutation:
+    """A queued request to write artwork for a track in the library.
+
+    Collected during extension execution and applied by the host after the
+    worker completes — the worker subprocess never writes to the database.
+
+    Args:
+        mbid: MusicBrainz recording ID identifying the track to update.
+        artwork: ArtworkResult containing image bytes and MIME type.
+    """
+
+    mbid: str
+    artwork: ArtworkResult
+
+
+# Union type for all mutation variants.
+Mutation = UpdateMetadataMutation | SetArtworkMutation
+
+
+@dataclass
 class KampGround:
     """Host API surface passed to backend extension constructors.
 
@@ -82,6 +118,12 @@ class KampGround:
     # Not exposed directly — use subscribe() instead.
     _callbacks: dict[str, list[Callable[[], None]]] = field(
         default_factory=dict, repr=False, compare=False
+    )
+    # Mutations queued by the extension during its run; applied by the host
+    # after the worker completes. Not exposed directly — use update_metadata()
+    # and set_artwork() instead.
+    _pending_mutations: list[Mutation] = field(
+        default_factory=list, repr=False, compare=False
     )
 
     # ------------------------------------------------------------------
@@ -165,6 +207,55 @@ class KampGround:
                 headers=dict(resp.headers),
                 body=resp.read(),
             )
+
+    # ------------------------------------------------------------------
+    # Library writes
+    # ------------------------------------------------------------------
+
+    @property
+    def pending_mutations(self) -> list[Mutation]:
+        """Read-only view of mutations queued so far.
+
+        Consumed by the host after the worker exits — extension code should
+        not call this directly.
+        """
+        return list(self._pending_mutations)
+
+    def update_metadata(self, mbid: str, fields: dict[str, str | int]) -> None:
+        """Queue a metadata update to be applied by the host.
+
+        The host applies this mutation to the library database after the
+        worker subprocess exits. Extensions must not write to the database
+        directly — all library writes go through this method.
+
+        Args:
+            mbid: MusicBrainz recording ID of the track to update.
+            fields: Mapping of field names to new values. Allowed keys match
+                TrackMetadata field names (e.g. ``"title"``, ``"artist"``).
+
+        Example::
+
+            ctx.update_metadata(track.mbid, {"title": "Alright", "year": "2015"})
+        """
+        self._pending_mutations.append(UpdateMetadataMutation(mbid=mbid, fields=fields))
+
+    def set_artwork(self, mbid: str, artwork: ArtworkResult) -> None:
+        """Queue an artwork write to be applied by the host.
+
+        The host applies this mutation to the library database after the
+        worker subprocess exits. Extensions must not write to the database
+        directly — all library writes go through this method.
+
+        Args:
+            mbid: MusicBrainz recording ID of the track to update.
+            artwork: ArtworkResult containing image bytes and MIME type.
+
+        Example::
+
+            result = ctx.fetch("https://coverartarchive.org/...")
+            ctx.set_artwork(track.mbid, ArtworkResult(result.body, "image/jpeg"))
+        """
+        self._pending_mutations.append(SetArtworkMutation(mbid=mbid, artwork=artwork))
 
     # ------------------------------------------------------------------
     # Events

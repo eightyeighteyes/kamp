@@ -14,6 +14,7 @@ from .probe import probe_extension
 from .registry import ExtensionRegistry
 from .types import ArtworkQuery, ArtworkResult, TrackMetadata
 from .worker import invoke_extension
+from .write_log import apply_mutations
 
 __all__ = [
     "ArtworkQuery",
@@ -29,6 +30,7 @@ __all__ = [
     "TrackMetadata",
     "UpdateMetadataMutation",
     "discover_extensions",
+    "apply_mutations",
     "invoke_extension",
     "probe_extension",
 ]

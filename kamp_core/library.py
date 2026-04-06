@@ -706,16 +706,18 @@ class LibraryIndex:
 # Track fields that extensions are permitted to write via apply_metadata_update.
 # Excludes internal columns (embedded_art, play_count, last_played, etc.) so
 # extensions cannot corrupt playback state or override quality signals.
-_WRITABLE_TRACK_FIELDS: frozenset[str] = frozenset({
-    "title",
-    "artist",
-    "album_artist",
-    "album",
-    "year",
-    "track_number",
-    "disc_number",
-    "mb_release_id",
-})
+_WRITABLE_TRACK_FIELDS: frozenset[str] = frozenset(
+    {
+        "title",
+        "artist",
+        "album_artist",
+        "album",
+        "year",
+        "track_number",
+        "disc_number",
+        "mb_release_id",
+    }
+)
 
 
 def _track_to_params(

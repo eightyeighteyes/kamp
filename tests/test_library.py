@@ -123,7 +123,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 6
+        assert version == 7
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -938,7 +938,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 6
+        assert version == 7
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -995,7 +995,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 6
+        assert version == 7
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1288,7 +1288,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 6
+        assert version == 7
         assert row is not None
         assert row[0] == 0
 
@@ -1401,7 +1401,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 6
+        assert version == 7
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -1582,7 +1582,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 6
+        assert version == 7
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.

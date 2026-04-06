@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
 import threading
+import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -69,6 +71,34 @@ CREATE TABLE IF NOT EXISTS queue_state (
     shuffle INTEGER NOT NULL DEFAULT 0,
     repeat  INTEGER NOT NULL DEFAULT 0
 );
+
+-- Append-only audit trail for all library.write mutations issued by extensions.
+-- track_mbid is the MusicBrainz recording ID of the affected track.
+-- old_value / new_value are JSON-encoded field dicts so arbitrary mutation
+-- payloads can be captured without schema changes.
+CREATE TABLE IF NOT EXISTS extension_audit_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    extension_id TEXT    NOT NULL,
+    track_mbid   TEXT    NOT NULL DEFAULT '',
+    operation    TEXT    NOT NULL,
+    old_value    TEXT    NOT NULL DEFAULT '',
+    new_value    TEXT    NOT NULL DEFAULT '',
+    timestamp    REAL    NOT NULL
+);
+
+-- Enforce append-only invariant at the DB level so no code path can silently
+-- erase the audit trail.
+CREATE TRIGGER IF NOT EXISTS _audit_log_no_delete
+BEFORE DELETE ON extension_audit_log
+BEGIN
+    SELECT RAISE(ABORT, 'extension_audit_log is append-only: DELETE is not permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS _audit_log_no_update
+BEFORE UPDATE ON extension_audit_log
+BEGIN
+    SELECT RAISE(ABORT, 'extension_audit_log is append-only: UPDATE is not permitted');
+END;
 """
 
 # Characters that have special meaning in FTS5 MATCH expressions.
@@ -270,6 +300,14 @@ class LibraryIndex:
             # art) are picked up on the first scan after migration.
             self._conn.execute("ALTER TABLE tracks ADD COLUMN file_mtime REAL")
             self._conn.execute("UPDATE schema_version SET version = 6")
+            self._conn.commit()
+            version = 6
+
+        if version < 7:
+            # v6 → v7: extension_audit_log table and append-only triggers added.
+            # The table and triggers are created by _DDL via executescript at the
+            # top of _migrate, so we only need to bump the version here.
+            self._conn.execute("UPDATE schema_version SET version = 7")
             self._conn.commit()
 
     def _rebuild_fts(self) -> None:
@@ -502,6 +540,184 @@ class LibraryIndex:
             for conn in self._all_conns:
                 conn.close()
             self._all_conns.clear()
+
+    # ------------------------------------------------------------------
+    # Extension library writes + audit log
+    # ------------------------------------------------------------------
+
+    def apply_metadata_update(
+        self,
+        extension_id: str,
+        mbid: str,
+        fields: dict[str, str | int],
+    ) -> None:
+        """Log and apply a metadata update mutation from an extension.
+
+        Reads the current field values before writing so the audit log
+        captures a meaningful old_value. Only fields in
+        _WRITABLE_TRACK_FIELDS are applied; others are silently discarded
+        so extensions cannot touch internal columns (e.g. embedded_art,
+        play_count).
+
+        The audit entry is written in the same transaction as the UPDATE
+        so the log is always consistent with the applied state (AC #2).
+        """
+        row = self._conn.execute(
+            "SELECT * FROM tracks WHERE mb_recording_id = ?", (mbid,)
+        ).fetchone()
+        old_fields: dict[str, Any] = {}
+        if row:
+            for k in fields:
+                if k in row.keys():
+                    old_fields[k] = row[k]
+
+        # Write audit entry before the mutation (AC #2).
+        self._conn.execute(
+            """
+            INSERT INTO extension_audit_log
+                (extension_id, track_mbid, operation, old_value, new_value, timestamp)
+            VALUES (?, ?, 'update_metadata', ?, ?, ?)
+            """,
+            (
+                extension_id,
+                mbid,
+                json.dumps(old_fields),
+                json.dumps(dict(fields)),
+                _time.time(),
+            ),
+        )
+
+        # Apply only the safe, known-writable fields.
+        safe = {k: v for k, v in fields.items() if k in _WRITABLE_TRACK_FIELDS}
+        if row and safe:
+            set_clause = ", ".join(f"{k} = ?" for k in safe)
+            params: list[Any] = [*safe.values(), mbid]
+            self._conn.execute(
+                f"UPDATE tracks SET {set_clause} WHERE mb_recording_id = ?",  # noqa: S608
+                params,
+            )
+        self._conn.commit()
+
+    def apply_set_artwork(
+        self,
+        extension_id: str,
+        mbid: str,
+        mime_type: str,
+    ) -> None:
+        """Log and apply a set_artwork mutation from an extension.
+
+        Records the old embedded_art flag in the audit log, then marks
+        the track as having embedded art. The mime_type is stored in
+        new_value for informational purposes.
+
+        The audit entry is written in the same transaction as the UPDATE
+        (AC #2).
+        """
+        row = self._conn.execute(
+            "SELECT embedded_art FROM tracks WHERE mb_recording_id = ?", (mbid,)
+        ).fetchone()
+        old_embedded_art: bool | None = bool(row["embedded_art"]) if row else None
+
+        self._conn.execute(
+            """
+            INSERT INTO extension_audit_log
+                (extension_id, track_mbid, operation, old_value, new_value, timestamp)
+            VALUES (?, ?, 'set_artwork', ?, ?, ?)
+            """,
+            (
+                extension_id,
+                mbid,
+                json.dumps({"embedded_art": old_embedded_art}),
+                json.dumps({"mime_type": mime_type}),
+                _time.time(),
+            ),
+        )
+        if row:
+            self._conn.execute(
+                "UPDATE tracks SET embedded_art = 1 WHERE mb_recording_id = ?",
+                (mbid,),
+            )
+        self._conn.commit()
+
+    def rollback_extension(self, extension_id: str) -> int:
+        """Revert all library writes performed by *extension_id*.
+
+        Reads the audit log for the given extension and reverses each
+        entry in reverse-chronological order (newest write undone first)
+        so the final state matches the pre-extension library state.
+
+        Returns the number of mutations reverted.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT track_mbid, operation, old_value
+            FROM extension_audit_log
+            WHERE extension_id = ?
+            ORDER BY timestamp DESC, id DESC
+            """,
+            (extension_id,),
+        ).fetchall()
+
+        reverted = 0
+        for row in rows:
+            op = row["operation"]
+            mbid = row["track_mbid"]
+            old: dict[str, Any] = json.loads(row["old_value"])
+
+            if op == "update_metadata":
+                safe = {k: v for k, v in old.items() if k in _WRITABLE_TRACK_FIELDS}
+                if safe:
+                    set_clause = ", ".join(f"{k} = ?" for k in safe)
+                    params = [*safe.values(), mbid]
+                    self._conn.execute(
+                        f"UPDATE tracks SET {set_clause} WHERE mb_recording_id = ?",  # noqa: S608
+                        params,
+                    )
+            elif op == "set_artwork":
+                embedded_art = old.get("embedded_art")
+                if embedded_art is not None:
+                    self._conn.execute(
+                        "UPDATE tracks SET embedded_art = ? WHERE mb_recording_id = ?",
+                        (int(embedded_art), mbid),
+                    )
+            reverted += 1
+
+        self._conn.commit()
+        return reverted
+
+    def audit_log_for(self, extension_id: str) -> list[dict[str, Any]]:
+        """Return all audit log rows for *extension_id* in ascending order.
+
+        Primarily useful for inspection and testing.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT id, extension_id, track_mbid, operation,
+                   old_value, new_value, timestamp
+            FROM extension_audit_log
+            WHERE extension_id = ?
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (extension_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# Track fields that extensions are permitted to write via apply_metadata_update.
+# Excludes internal columns (embedded_art, play_count, last_played, etc.) so
+# extensions cannot corrupt playback state or override quality signals.
+_WRITABLE_TRACK_FIELDS: frozenset[str] = frozenset(
+    {
+        "title",
+        "artist",
+        "album_artist",
+        "album",
+        "year",
+        "track_number",
+        "disc_number",
+        "mb_release_id",
+    }
+)
 
 
 def _track_to_params(

@@ -191,6 +191,16 @@ def main() -> None:
         help="Which error type to simulate.",
     )
 
+    # rollback subcommand
+    rollback_parser = subparsers.add_parser(
+        "rollback",
+        help="Revert all library writes performed by a given extension.",
+    )
+    rollback_parser.add_argument(
+        "extension_id",
+        help="Extension package name whose writes should be reverted.",
+    )
+
     # config subcommand
     config_parser = subparsers.add_parser(
         "config",
@@ -243,6 +253,11 @@ def main() -> None:
         return
     if command == "status":
         _cmd_status()
+        return
+
+    # rollback bypasses the daemon lifecycle — it only needs the library DB.
+    if command == "rollback":
+        _cmd_rollback(args.extension_id)
         return
 
     # Config commands bypass daemon lifecycle (no musicbrainzngs setup needed).
@@ -335,6 +350,18 @@ def _cmd_config(
             sys.exit(1)
     else:
         config_parser.print_help()
+
+
+def _cmd_rollback(extension_id: str) -> None:
+    from kamp_core.library import LibraryIndex
+
+    db_path = _state_dir() / "library.db"
+    library = LibraryIndex(db_path)
+    try:
+        count = library.rollback_extension(extension_id)
+    finally:
+        library.close()
+    print(f"Reverted {count} mutation(s) for extension '{extension_id}'.")
 
 
 def _cmd_logout() -> None:

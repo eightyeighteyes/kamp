@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import pickle
+from http.client import HTTPMessage
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from kamp_daemon.ext.context import KampGround, PlaybackSnapshot
+import pytest
+
+from kamp_daemon.ext.context import FetchResponse, KampGround, PlaybackSnapshot
 from kamp_daemon.ext.types import ArtworkQuery, TrackMetadata
 from kamp_daemon.ext.worker import invoke_extension
 
@@ -219,3 +223,87 @@ def test_default_context_used_when_omitted() -> None:
     with patch("kamp_daemon.ext.worker._spawn_extension_worker", side_effect=_inline):
         result = invoke_extension(_NullExt, "run")  # no ctx kwarg
     assert result is True
+
+
+# ---------------------------------------------------------------------------
+# AC #1 / AC #2 / AC #3 — KampGround.fetch()
+# ---------------------------------------------------------------------------
+
+
+def _make_urlopen_mock(
+    status: int = 200,
+    headers: dict[str, str] | None = None,
+    body: bytes = b"",
+) -> MagicMock:
+    """Build a context-manager mock that urlopen returns."""
+    msg = HTTPMessage()
+    for k, v in (headers or {}).items():
+        msg[k] = v
+    resp = MagicMock()
+    resp.status = status
+    resp.headers = msg
+    resp.read.return_value = body
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def test_fetch_allowed_domain_returns_fetch_response() -> None:
+    ctx = KampGround(allowed_domains=frozenset(["example.com"]))
+    mock_resp = _make_urlopen_mock(status=200, body=b"hello")
+    with patch("kamp_daemon.ext.context.urlopen", return_value=mock_resp):
+        result = ctx.fetch("https://example.com/api")
+    assert isinstance(result, FetchResponse)
+    assert result.status_code == 200
+    assert result.body == b"hello"
+
+
+def test_fetch_disallowed_domain_raises_permission_error() -> None:
+    ctx = KampGround(allowed_domains=frozenset(["safe.example.com"]))
+    with pytest.raises(PermissionError, match="evil.com"):
+        ctx.fetch("https://evil.com/steal")
+
+
+def test_fetch_empty_allowlist_blocks_all_domains() -> None:
+    ctx = KampGround()  # allowed_domains defaults to frozenset()
+    with pytest.raises(PermissionError):
+        ctx.fetch("https://example.com/api")
+
+
+def test_fetch_forwards_method_and_body() -> None:
+    ctx = KampGround(allowed_domains=frozenset(["api.example.com"]))
+    mock_resp = _make_urlopen_mock(body=b"{}")
+    captured: list[Any] = []
+
+    def _capture(req: Any) -> Any:
+        captured.append(req)
+        return mock_resp
+
+    with patch("kamp_daemon.ext.context.urlopen", side_effect=_capture):
+        ctx.fetch("https://api.example.com/data", method="POST", body=b'{"x":1}')
+
+    assert len(captured) == 1
+    req = captured[0]
+    assert req.method == "POST"
+    assert req.data == b'{"x":1}'
+
+
+def test_fetch_response_headers_populated() -> None:
+    ctx = KampGround(allowed_domains=frozenset(["cdn.example.com"]))
+    mock_resp = _make_urlopen_mock(
+        headers={"Content-Type": "application/json"}, body=b"[]"
+    )
+    with patch("kamp_daemon.ext.context.urlopen", return_value=mock_resp):
+        result = ctx.fetch("https://cdn.example.com/feed")
+    assert "Content-Type" in result.headers
+
+
+def test_fetch_response_pickles() -> None:
+    resp = FetchResponse(
+        status_code=200,
+        headers={"Content-Type": "text/plain"},
+        body=b"data",
+    )
+    restored = pickle.loads(pickle.dumps(resp))
+    assert restored.status_code == 200
+    assert restored.body == b"data"

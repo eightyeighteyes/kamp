@@ -4,7 +4,7 @@ title: Import-time execution probe for backend extensions
 status: In Progress
 assignee: []
 created_date: '2026-04-05 16:27'
-updated_date: '2026-04-06 02:46'
+updated_date: '2026-04-06 11:08'
 labels:
   - feature
   - security
@@ -31,8 +31,8 @@ Depends on: TASK-17 (extension host, which is where this probe hooks in at load 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A backend extension whose module-level code calls open(), socket, subprocess, or os.system is rejected at load time with a clear error
-- [ ] #2 A legitimate extension that only defines classes and reads package metadata loads without error
-- [ ] #3 The probe runs in an isolated subprocess — the daemon process is unaffected by any module-level side effects during probing
-- [ ] #4 Rejection error includes the extension package name and the stubbed symbol that was called
+- [x] #1 A backend extension whose module-level code calls open(), socket, subprocess, or os.system is rejected at load time with a clear error
+- [x] #2 A legitimate extension that only defines classes and reads package metadata loads without error
+- [x] #3 The probe runs in an isolated subprocess — the daemon process is unaffected by any module-level side effects during probing
+- [x] #4 Rejection error includes the extension package name and the stubbed symbol that was called
 <!-- AC:END -->

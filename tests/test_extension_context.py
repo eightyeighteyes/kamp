@@ -10,8 +10,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kamp_daemon.ext.context import FetchResponse, KampGround, PlaybackSnapshot
-from kamp_daemon.ext.types import ArtworkQuery, TrackMetadata
+from kamp_daemon.ext.context import (
+    FetchResponse,
+    KampGround,
+    PlaybackSnapshot,
+    SetArtworkMutation,
+    UpdateMetadataMutation,
+)
+from kamp_daemon.ext.types import ArtworkQuery, ArtworkResult, TrackMetadata
 from kamp_daemon.ext.worker import invoke_extension
 
 # ---------------------------------------------------------------------------
@@ -222,7 +228,7 @@ def test_default_context_used_when_omitted() -> None:
 
     with patch("kamp_daemon.ext.worker._spawn_extension_worker", side_effect=_inline):
         result = invoke_extension(_NullExt, "run")  # no ctx kwarg
-    assert result is True
+    assert result is not False
 
 
 # ---------------------------------------------------------------------------
@@ -307,3 +313,67 @@ def test_fetch_response_pickles() -> None:
     restored = pickle.loads(pickle.dumps(resp))
     assert restored.status_code == 200
     assert restored.body == b"data"
+
+
+# ---------------------------------------------------------------------------
+# AC #1 / AC #2 / AC #3 / AC #4 — library.write mutations
+# ---------------------------------------------------------------------------
+
+
+def _make_artwork() -> ArtworkResult:
+    return ArtworkResult(image_bytes=b"\xff\xd8\xff", mime_type="image/jpeg")
+
+
+def test_pending_mutations_empty_by_default() -> None:
+    ctx = KampGround()
+    assert ctx.pending_mutations == []
+
+
+def test_update_metadata_queues_mutation() -> None:
+    ctx = KampGround()
+    ctx.update_metadata("mbid-1", {"title": "Alright", "year": 2015})
+    muts = ctx.pending_mutations
+    assert len(muts) == 1
+    assert isinstance(muts[0], UpdateMetadataMutation)
+    assert muts[0].mbid == "mbid-1"
+    assert muts[0].fields == {"title": "Alright", "year": 2015}
+
+
+def test_set_artwork_queues_mutation() -> None:
+    ctx = KampGround()
+    art = _make_artwork()
+    ctx.set_artwork("mbid-2", art)
+    muts = ctx.pending_mutations
+    assert len(muts) == 1
+    assert isinstance(muts[0], SetArtworkMutation)
+    assert muts[0].mbid == "mbid-2"
+    assert muts[0].artwork is art
+
+
+def test_multiple_mutations_queued_in_order() -> None:
+    ctx = KampGround()
+    ctx.update_metadata("mbid-1", {"title": "A"})
+    ctx.set_artwork("mbid-2", _make_artwork())
+    ctx.update_metadata("mbid-3", {"year": 2020})
+    muts = ctx.pending_mutations
+    assert len(muts) == 3
+    assert isinstance(muts[0], UpdateMetadataMutation)
+    assert isinstance(muts[1], SetArtworkMutation)
+    assert isinstance(muts[2], UpdateMetadataMutation)
+
+
+def test_pending_mutations_returns_copy() -> None:
+    """Mutating the returned list must not affect the internal queue."""
+    ctx = KampGround()
+    ctx.update_metadata("mbid-1", {"title": "A"})
+    copy = ctx.pending_mutations
+    copy.clear()
+    assert len(ctx.pending_mutations) == 1
+
+
+def test_mutations_pickle_cleanly() -> None:
+    m1 = UpdateMetadataMutation(mbid="mbid-1", fields={"title": "Alright"})
+    m2 = SetArtworkMutation(mbid="mbid-2", artwork=_make_artwork())
+    for m in (m1, m2):
+        restored = pickle.loads(pickle.dumps(m))
+        assert restored.mbid == m.mbid

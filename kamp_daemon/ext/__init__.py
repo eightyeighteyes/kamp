@@ -1,7 +1,14 @@
 """kamp extension host — public symbols."""
 
 from .abc import BaseArtworkSource, BaseTagger
-from .context import FetchResponse, KampGround, PlaybackSnapshot
+from .context import (
+    FetchResponse,
+    KampGround,
+    Mutation,
+    PlaybackSnapshot,
+    SetArtworkMutation,
+    UpdateMetadataMutation,
+)
 from .discovery import discover_extensions
 from .registry import ExtensionRegistry
 from .types import ArtworkQuery, ArtworkResult, TrackMetadata
@@ -15,8 +22,11 @@ __all__ = [
     "ExtensionRegistry",
     "FetchResponse",
     "KampGround",
+    "Mutation",
     "PlaybackSnapshot",
+    "SetArtworkMutation",
     "TrackMetadata",
+    "UpdateMetadataMutation",
     "discover_extensions",
     "invoke_extension",
 ]

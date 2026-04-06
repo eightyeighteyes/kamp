@@ -15,9 +15,9 @@ import logging
 import logging.handlers
 import multiprocessing
 import queue
-from typing import Any
+from typing import Any, Literal, cast
 
-from .context import KampGround
+from .context import KampGround, Mutation
 
 _logger = logging.getLogger(__name__)
 
@@ -51,7 +51,9 @@ def _extension_worker(
     try:
         instance = cls(ctx)
         getattr(instance, method_name)(*args)
-        result_q.put(("ok", None))
+        # Include pending mutations so the host can apply library writes
+        # after the worker exits — the subprocess never touches the DB.
+        result_q.put(("ok", ctx.pending_mutations))
     except Exception as exc:  # noqa: BLE001
         result_q.put(("error", str(exc)))
     finally:
@@ -95,7 +97,7 @@ def invoke_extension(
     method_name: str,
     *args: Any,
     ctx: KampGround | None = None,
-) -> bool:
+) -> list[Mutation] | Literal[False]:
     """Invoke cls(ctx).method_name(*args) in an isolated subprocess.
 
     Args:
@@ -107,8 +109,12 @@ def invoke_extension(
             empty context is used if omitted.
 
     Returns:
-        True on success, False on any failure (exception or crash). Never
-        raises — callers can unconditionally continue after a False return.
+        List of Mutation objects queued by the extension (may be empty) on
+        success. False on any failure (exception or crash). Never raises —
+        callers can unconditionally continue after a False return.
+
+        Check for failure with ``result is False``; an empty list means
+        success with no library writes queued.
     """
     if ctx is None:
         ctx = KampGround()
@@ -153,7 +159,8 @@ def invoke_extension(
         )
         return False
 
-    return True
+    # value is list[Mutation] from the worker's result_q payload
+    return cast(list[Mutation], value)
 
 
 def _drain_log_queue(log_q: Any) -> None:

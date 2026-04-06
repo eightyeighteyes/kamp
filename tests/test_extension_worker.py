@@ -8,7 +8,7 @@ import queue as _queue_module
 from typing import Any
 from unittest.mock import patch
 
-from kamp_daemon.ext.context import KampGround
+from kamp_daemon.ext.context import KampGround, UpdateMetadataMutation
 from kamp_daemon.ext.worker import _drain_log_queue, _extension_worker, invoke_extension
 
 # ---------------------------------------------------------------------------
@@ -71,13 +71,14 @@ def _crash_worker(
 # ---------------------------------------------------------------------------
 
 
-def test_success_returns_true() -> None:
+def test_success_returns_mutations_list() -> None:
     _Recorder.calls = []
     with patch(
         "kamp_daemon.ext.worker._spawn_extension_worker", side_effect=_inline_worker
     ):
         result = invoke_extension(_Recorder, "run", "a", "b")
-    assert result is True
+    assert result is not False
+    assert isinstance(result, list)
     assert _Recorder.calls == [("a", "b")]
 
 
@@ -179,3 +180,32 @@ def test_log_records_replayed_in_parent() -> None:
         target.removeHandler(handler)
 
     assert any("hello from worker" in r.getMessage() for r in records)
+
+
+# ---------------------------------------------------------------------------
+# AC #3 — mutations returned to host via result queue
+# ---------------------------------------------------------------------------
+
+
+def test_mutations_returned_by_invoke_extension() -> None:
+    """Mutations queued during the worker run are returned to the caller."""
+
+    class _MutatingExt:
+        def __init__(self, ctx: KampGround) -> None:
+            self._ctx = ctx
+
+        def run(self) -> None:
+            self._ctx.update_metadata("mbid-1", {"title": "Alright"})
+            self._ctx.update_metadata("mbid-2", {"year": 2015})
+
+    with patch(
+        "kamp_daemon.ext.worker._spawn_extension_worker", side_effect=_inline_worker
+    ):
+        result = invoke_extension(_MutatingExt, "run")
+
+    assert result is not False
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert all(isinstance(m, UpdateMetadataMutation) for m in result)
+    assert result[0].mbid == "mbid-1"
+    assert result[1].mbid == "mbid-2"

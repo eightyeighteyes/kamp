@@ -255,7 +255,10 @@ def _make_urlopen_mock(
 
 
 def test_fetch_allowed_domain_returns_fetch_response() -> None:
-    ctx = KampGround(allowed_domains=frozenset(["example.com"]))
+    ctx = KampGround(
+        permissions=frozenset(["network.fetch"]),
+        allowed_domains=frozenset(["example.com"]),
+    )
     mock_resp = _make_urlopen_mock(status=200, body=b"hello")
     with patch("kamp_daemon.ext.context.urlopen", return_value=mock_resp):
         result = ctx.fetch("https://example.com/api")
@@ -265,19 +268,33 @@ def test_fetch_allowed_domain_returns_fetch_response() -> None:
 
 
 def test_fetch_disallowed_domain_raises_permission_error() -> None:
-    ctx = KampGround(allowed_domains=frozenset(["safe.example.com"]))
+    ctx = KampGround(
+        permissions=frozenset(["network.fetch"]),
+        allowed_domains=frozenset(["safe.example.com"]),
+    )
     with pytest.raises(PermissionError, match="evil.com"):
         ctx.fetch("https://evil.com/steal")
 
 
 def test_fetch_empty_allowlist_blocks_all_domains() -> None:
-    ctx = KampGround()  # allowed_domains defaults to frozenset()
+    # network.fetch declared but no domains → domain check blocks request
+    ctx = KampGround(permissions=frozenset(["network.fetch"]))
     with pytest.raises(PermissionError):
         ctx.fetch("https://example.com/api")
 
 
+def test_fetch_without_permission_raises_permission_error() -> None:
+    """fetch() raises PermissionError when network.fetch not declared."""
+    ctx = KampGround(allowed_domains=frozenset(["example.com"]))  # no permissions
+    with pytest.raises(PermissionError, match="network.fetch"):
+        ctx.fetch("https://example.com/api")
+
+
 def test_fetch_forwards_method_and_body() -> None:
-    ctx = KampGround(allowed_domains=frozenset(["api.example.com"]))
+    ctx = KampGround(
+        permissions=frozenset(["network.fetch"]),
+        allowed_domains=frozenset(["api.example.com"]),
+    )
     mock_resp = _make_urlopen_mock(body=b"{}")
     captured: list[Any] = []
 
@@ -295,7 +312,10 @@ def test_fetch_forwards_method_and_body() -> None:
 
 
 def test_fetch_response_headers_populated() -> None:
-    ctx = KampGround(allowed_domains=frozenset(["cdn.example.com"]))
+    ctx = KampGround(
+        permissions=frozenset(["network.fetch"]),
+        allowed_domains=frozenset(["cdn.example.com"]),
+    )
     mock_resp = _make_urlopen_mock(
         headers={"Content-Type": "application/json"}, body=b"[]"
     )
@@ -324,13 +344,16 @@ def _make_artwork() -> ArtworkResult:
     return ArtworkResult(image_bytes=b"\xff\xd8\xff", mime_type="image/jpeg")
 
 
+_WRITE_PERMS = frozenset(["library.write"])
+
+
 def test_pending_mutations_empty_by_default() -> None:
     ctx = KampGround()
     assert ctx.pending_mutations == []
 
 
 def test_update_metadata_queues_mutation() -> None:
-    ctx = KampGround()
+    ctx = KampGround(permissions=_WRITE_PERMS)
     ctx.update_metadata("mbid-1", {"title": "Alright", "year": 2015})
     muts = ctx.pending_mutations
     assert len(muts) == 1
@@ -339,8 +362,14 @@ def test_update_metadata_queues_mutation() -> None:
     assert muts[0].fields == {"title": "Alright", "year": 2015}
 
 
+def test_update_metadata_without_permission_raises() -> None:
+    ctx = KampGround()  # no permissions
+    with pytest.raises(PermissionError, match="library.write"):
+        ctx.update_metadata("mbid-1", {"title": "Alright"})
+
+
 def test_set_artwork_queues_mutation() -> None:
-    ctx = KampGround()
+    ctx = KampGround(permissions=_WRITE_PERMS)
     art = _make_artwork()
     ctx.set_artwork("mbid-2", art)
     muts = ctx.pending_mutations
@@ -350,8 +379,14 @@ def test_set_artwork_queues_mutation() -> None:
     assert muts[0].artwork is art
 
 
+def test_set_artwork_without_permission_raises() -> None:
+    ctx = KampGround()  # no permissions
+    with pytest.raises(PermissionError, match="library.write"):
+        ctx.set_artwork("mbid-2", _make_artwork())
+
+
 def test_multiple_mutations_queued_in_order() -> None:
-    ctx = KampGround()
+    ctx = KampGround(permissions=_WRITE_PERMS)
     ctx.update_metadata("mbid-1", {"title": "A"})
     ctx.set_artwork("mbid-2", _make_artwork())
     ctx.update_metadata("mbid-3", {"year": 2020})
@@ -364,7 +399,7 @@ def test_multiple_mutations_queued_in_order() -> None:
 
 def test_pending_mutations_returns_copy() -> None:
     """Mutating the returned list must not affect the internal queue."""
-    ctx = KampGround()
+    ctx = KampGround(permissions=_WRITE_PERMS)
     ctx.update_metadata("mbid-1", {"title": "A"})
     copy = ctx.pending_mutations
     copy.clear()
@@ -388,7 +423,7 @@ def test_stage_queues_stage_mutation() -> None:
     """ctx.stage() queues a StageMutation with the given filename and content."""
     from kamp_daemon.ext.context import StageMutation
 
-    ctx = KampGround()
+    ctx = KampGround(permissions=_WRITE_PERMS)
     ctx.stage("artist-album.zip", b"\x50\x4b\x03\x04")  # minimal ZIP magic
 
     mutations = ctx.pending_mutations
@@ -398,9 +433,16 @@ def test_stage_queues_stage_mutation() -> None:
     assert mutations[0].content == b"\x50\x4b\x03\x04"
 
 
+def test_stage_without_permission_raises() -> None:
+    """ctx.stage() raises PermissionError when library.write not declared."""
+    ctx = KampGround()  # no permissions
+    with pytest.raises(PermissionError, match="library.write"):
+        ctx.stage("album.zip", b"")
+
+
 def test_stage_rejects_path_separators() -> None:
     """ctx.stage() raises ValueError if the filename contains a path separator."""
-    ctx = KampGround()
+    ctx = KampGround(permissions=_WRITE_PERMS)
     with pytest.raises(ValueError, match="path separator"):
         ctx.stage("subdir/evil.zip", b"")
     with pytest.raises(ValueError, match="path separator"):
@@ -421,7 +463,7 @@ def test_stage_and_update_metadata_coexist() -> None:
     """Multiple mutation types can be queued in the same ctx."""
     from kamp_daemon.ext.context import StageMutation
 
-    ctx = KampGround()
+    ctx = KampGround(permissions=_WRITE_PERMS)
     ctx.update_metadata("rec-1", {"title": "New Title"})
     ctx.stage("download.zip", b"zip-bytes")
 

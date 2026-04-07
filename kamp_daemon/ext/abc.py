@@ -33,7 +33,19 @@ class BaseSyncer(ABC):
     ---------------
     ``sync_once`` and ``mark_synced`` are optional capabilities.  Override
     them to support manual sync triggers (e.g. a "Sync now" menu item).
+
+    Permissions
+    -----------
+    Declare required KampGround capabilities as class attributes.  The host
+    reads these at discovery time — no extra packaging or config file needed::
+
+        class MyDiscogsSyncer(BaseSyncer):
+            kampground_permissions = ["network.fetch", "library.write"]
+            kampground_network_domains = ["api.discogs.com"]
     """
+
+    kampground_permissions: list[str] = []
+    kampground_network_domains: list[str] = []
 
     @abstractmethod
     def start(self) -> None:
@@ -85,7 +97,18 @@ class BaseTagger(ABC):
     one API round-trip, override ``tag_release`` instead of ``tag``.  The
     default ``tag_release`` implementation simply calls ``tag`` once per
     track; per-track taggers need not override it.
+
+    Permissions
+    -----------
+    Declare required KampGround capabilities as class attributes::
+
+        class MyTagger(BaseTagger):
+            kampground_permissions = ["network.fetch"]
+            kampground_network_domains = ["api.example.com"]
     """
+
+    kampground_permissions: list[str] = []
+    kampground_network_domains: list[str] = []
 
     @abstractmethod
     def tag(self, track: TrackMetadata) -> TrackMetadata:
@@ -116,7 +139,18 @@ class BaseArtworkSource(ABC):
     Receives an ArtworkQuery and returns an ArtworkResult, or None if no
     qualifying art could be found.  The host embeds the result — the source
     never touches audio files directly.
+
+    Permissions
+    -----------
+    Declare required KampGround capabilities as class attributes::
+
+        class MyArtSource(BaseArtworkSource):
+            kampground_permissions = ["network.fetch"]
+            kampground_network_domains = ["img.example.com"]
     """
+
+    kampground_permissions: list[str] = []
+    kampground_network_domains: list[str] = []
 
     @abstractmethod
     def fetch(self, query: ArtworkQuery) -> ArtworkResult | None:

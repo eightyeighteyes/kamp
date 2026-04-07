@@ -5,5 +5,8 @@
   "keywords": ["kamp-extension"],
   "displayName": "Stats",
   "main": "index.js",
-  "type": "module"
+  "type": "module",
+  "kamp": {
+    "permissions": []
+  }
 }

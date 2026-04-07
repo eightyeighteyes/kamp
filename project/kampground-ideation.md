@@ -18,15 +18,15 @@ Every extension — frontend and backend — declares the permissions it needs i
 - `library.read` — query albums, tracks, and metadata
 - `player.read` — observe playback state (current track, position, queue)
 - `player.control` — issue playback commands (play, pause, seek, skip)
-- `network.external` — fetch from external URLs (proxied through `KampAPI` in Phase 2 sandbox)
+- `network.fetch` — fetch from external URLs (proxied through `KampAPI` in Phase 2 sandbox)
 - `settings` — read and write the extension's own settings namespace
 
 **Backend permissions:**
-- `network.external` — make HTTP/HTTPS requests via `KampGround.fetch(url, method, body)`. The host makes the request; the extension never calls the network directly. The manifest must also declare an allowlist of permitted domains (`network.domains = ["api.discogs.com"]`); requests to unlisted domains are rejected.
+- `network.fetch` — make HTTP/HTTPS requests via `KampGround.fetch(url, method, body)`. The host makes the request; the extension never calls the network directly. The manifest must also declare an allowlist of permitted domains (`network.domains = ["api.discogs.com"]`); requests to unlisted domains are rejected.
 - `audio.read` — receive raw audio data for the track being processed (e.g. for fingerprinting); the host mediates the read, the extension never receives a file path
 - `library.write` — modify library metadata via a set of named atomic operations: `update_metadata(track_id, fields)`, `set_artwork(track_id, bytes)`. No bulk deletes, no raw SQL. Every write is logged to an append-only audit table (`extension_id`, `operation`, `old_value`, `new_value`, `timestamp`) enabling rollback of any extension's changes.
 
-Permissions are shown to the user on install and can be reviewed at any time. The combination of `library.read` + `network.external` triggers elevated install-time language: *"This extension can read your music library and send data to external servers."* This applies to both frontend and backend extensions — scrobblers are a legitimate use case, but users should understand what they're approving.
+Permissions are shown to the user on install and can be reviewed at any time. The combination of `library.read` + `network.fetch` triggers elevated install-time language: *"This extension can read your music library and send data to external servers."* This applies to both frontend and backend extensions — scrobblers are a legitimate use case, but users should understand what they're approving.
 
 ### Backend: structured data contracts as the primary defense
 
@@ -104,7 +104,7 @@ Extensions declare their required permissions in a `[tool.kampground]` table in 
 
 ```toml
 [tool.kampground]
-permissions = ["network.external"]
+permissions = ["network.fetch"]
 ```
 
 Extensions are discovered via Python entry points:

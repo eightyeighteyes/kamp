@@ -198,10 +198,11 @@ def test_mutations_returned_by_invoke_extension() -> None:
             self._ctx.update_metadata("mbid-1", {"title": "Alright"})
             self._ctx.update_metadata("mbid-2", {"year": 2015})
 
+    ctx = KampGround(permissions=frozenset(["library.write"]))
     with patch(
         "kamp_daemon.ext.worker._spawn_extension_worker", side_effect=_inline_worker
     ):
-        result = invoke_extension(_MutatingExt, "run")
+        result = invoke_extension(_MutatingExt, "run", ctx=ctx)
 
     assert result is not False
     assert isinstance(result, list)

@@ -248,13 +248,23 @@ export default function App(): React.JSX.Element {
             continue
           }
 
-          // Phase 1: extension is on the allow-list; pass full KampAPI.
+          // Phase 1: extension is on the allow-list; pass a permission-scoped KampAPI.
+          // Panels and serverUrl are always available (they are the extension ABC contract).
+          // Future capabilities (library.read, player.read, etc.) will be gated here.
+          const pset = new Set(ext.permissions)
+          const scopedAPI = {
+            serverUrl: window.KampAPI.serverUrl,
+            panels: window.KampAPI.panels,
+            extensions: window.KampAPI.extensions,
+            // Placeholder gates for declared capabilities — expand as the API grows.
+            _permissions: pset
+          }
           const blob = new Blob([ext.code], { type: 'text/javascript' })
           const blobUrl = URL.createObjectURL(blob)
           try {
             const mod = await import(/* @vite-ignore */ blobUrl)
             if (typeof mod.register === 'function') {
-              mod.register(window.KampAPI)
+              mod.register(scopedAPI)
             }
           } catch (err) {
             console.error(`[kamp] failed to load extension "${ext.id}":`, err)

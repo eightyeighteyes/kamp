@@ -14,6 +14,7 @@ import inspect
 import logging
 
 from .abc import BaseArtworkSource, BaseTagger
+from .permissions import extract_permissions
 from .pins import verify_or_pin
 from .probe import probe_extension
 from .registry import ExtensionRegistry
@@ -109,13 +110,32 @@ def _load_and_register(
         )
         return
 
+    # --- Extract permissions ---
+    # Read kampground_permissions / kampground_network_domains class attributes.
+    # These are defined on the ABC base classes with empty-list defaults, so
+    # extensions that need no capabilities require no explicit declaration.
+    permissions = extract_permissions(cls)
+    # Warn when an extension can both read library data (via ctx.search) and
+    # contact external servers — a combination that could exfiltrate metadata.
+    if (
+        "library.write" in permissions.permissions
+        and "network.fetch" in permissions.permissions
+    ):
+        _logger.warning(
+            "Extension %r from package %r declares both library.write and "
+            "network.fetch — review this extension carefully before granting access.",
+            ep.name,
+            dist_name,
+        )
+
     # --- Register ---
-    registry.register(cls)
+    registry.register(cls, permissions)
     _logger.info(
-        "Registered extension %r from package %r as %s",
+        "Registered extension %r from package %r as %s (permissions: %s)",
         ep.name,
         dist_name,
         matching_abc.__name__,
+        sorted(permissions.permissions) if permissions.permissions else "none",
     )
 
 

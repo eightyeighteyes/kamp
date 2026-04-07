@@ -124,6 +124,10 @@ class KampGround:
     Args:
         playback: Snapshot of playback state when the worker was spawned.
         library_tracks: Snapshot of library tracks relevant to this invocation.
+        permissions: Capability strings declared by this extension in its
+            ``[tool.kampground]`` manifest section.  Methods that require a
+            capability raise ``PermissionError`` when the corresponding string
+            is absent (e.g. ``"network.fetch"``, ``"library.write"``).
         allowed_domains: Hostnames the extension may contact via fetch(). Set
             by the host from the extension manifest's ``network.domains`` list.
             An empty frozenset (the default) means no network access.
@@ -131,6 +135,7 @@ class KampGround:
 
     playback: PlaybackSnapshot = field(default_factory=PlaybackSnapshot)
     library_tracks: list[TrackMetadata] = field(default_factory=list)
+    permissions: frozenset[str] = field(default_factory=frozenset)
     allowed_domains: frozenset[str] = field(default_factory=frozenset)
     # Event callbacks stored by event name; host fires them before invocations.
     # Not exposed directly — use subscribe() instead.
@@ -190,11 +195,20 @@ class KampGround:
     ) -> FetchResponse:
         """Make an HTTP request on behalf of the extension.
 
-        This is the sole sanctioned network interface for extensions. Extensions
-        must declare the domains they need under ``network.domains`` in their
-        manifest; the host populates ``allowed_domains`` from that declaration
-        before spawning the worker. Extensions should not call network libraries
-        directly — only fetch() enforces the domain allowlist.
+        This is the proxied network interface for extensions.  Declaring
+        ``network.fetch`` scopes access to this method and routes requests
+        through a host-audited, domain-checked channel.
+
+        **Scope of enforcement:** ``network.fetch`` is an *API gate*, not a
+        network sandbox.  Extensions that call ``requests``, ``urllib``, or
+        other network libraries directly bypass this permission entirely.
+        ``library.write`` is the only permission that provides a hard security
+        boundary today.  A subprocess-level sandbox (seccomp/sandbox-exec) is
+        tracked separately and would make this a true gate.
+
+        Extensions must declare the domains they need under
+        ``kampground_network_domains`` on their class; the host populates
+        ``allowed_domains`` from that declaration before spawning the worker.
 
         Args:
             url: Absolute HTTP/HTTPS URL to request.
@@ -205,13 +219,20 @@ class KampGround:
             FetchResponse with status_code, headers, and body.
 
         Raises:
-            PermissionError: If the URL's hostname is not in allowed_domains.
+            PermissionError: If ``network.fetch`` is not in this
+                extension's declared permissions, or if the URL's hostname is
+                not in ``allowed_domains``.
 
         Example::
 
             resp = ctx.fetch("https://musicbrainz.org/ws/2/release/123")
             data = resp.body
         """
+        if "network.fetch" not in self.permissions:
+            raise PermissionError(
+                "network.fetch permission not declared. "
+                "Add it to kampground_permissions on your extension class."
+            )
         hostname = urlparse(url).hostname or ""
         if hostname not in self.allowed_domains:
             raise PermissionError(
@@ -251,10 +272,19 @@ class KampGround:
             fields: Mapping of field names to new values. Allowed keys match
                 TrackMetadata field names (e.g. ``"title"``, ``"artist"``).
 
+        Raises:
+            PermissionError: If ``library.write`` is not in this extension's
+                declared permissions.
+
         Example::
 
             ctx.update_metadata(track.mbid, {"title": "Alright", "year": "2015"})
         """
+        if "library.write" not in self.permissions:
+            raise PermissionError(
+                "library.write permission not declared. "
+                "Add it to kampground_permissions on your extension class."
+            )
         self._pending_mutations.append(UpdateMetadataMutation(mbid=mbid, fields=fields))
 
     def set_artwork(self, mbid: str, artwork: ArtworkResult) -> None:
@@ -268,11 +298,20 @@ class KampGround:
             mbid: MusicBrainz recording ID of the track to update.
             artwork: ArtworkResult containing image bytes and MIME type.
 
+        Raises:
+            PermissionError: If ``library.write`` is not in this extension's
+                declared permissions.
+
         Example::
 
             result = ctx.fetch("https://coverartarchive.org/...")
             ctx.set_artwork(track.mbid, ArtworkResult(result.body, "image/jpeg"))
         """
+        if "library.write" not in self.permissions:
+            raise PermissionError(
+                "library.write permission not declared. "
+                "Add it to kampground_permissions on your extension class."
+            )
         self._pending_mutations.append(SetArtworkMutation(mbid=mbid, artwork=artwork))
 
     def stage(self, filename: str, content: bytes) -> None:
@@ -291,12 +330,19 @@ class KampGround:
             content: Raw bytes to write (e.g. a downloaded ZIP archive).
 
         Raises:
+            PermissionError: If ``library.write`` is not in this extension's
+                declared permissions.
             ValueError: If *filename* contains a path separator.
 
         Example::
 
             ctx.stage("artist-album.zip", zip_bytes)
         """
+        if "library.write" not in self.permissions:
+            raise PermissionError(
+                "library.write permission not declared. "
+                "Add it to kampground_permissions on your extension class."
+            )
         if "/" in filename or "\\" in filename:
             raise ValueError(
                 f"stage() filename must be a base name with no path separators; "

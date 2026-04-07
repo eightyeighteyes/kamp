@@ -49,6 +49,9 @@ class KampBandcampSyncer(BaseSyncer):
     alongside third-party extensions.
     """
 
+    # stage() deposits downloaded archives into the staging directory.
+    kampground_permissions = ["library.write"]
+
     def __init__(self, ctx: KampGround) -> None:
         # Lazy import: probe runs at module import time; keep the module-level
         # clean so the probe does not fire on bandcamp/playwright side-effects.

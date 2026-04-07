@@ -10,6 +10,7 @@ from .context import (
     UpdateMetadataMutation,
 )
 from .discovery import discover_extensions
+from .permissions import ExtensionPermissions, extract_permissions
 from .probe import probe_extension
 from .registry import ExtensionRegistry
 from .types import ArtworkQuery, ArtworkResult, TrackMetadata
@@ -21,6 +22,7 @@ __all__ = [
     "ArtworkResult",
     "BaseArtworkSource",
     "BaseTagger",
+    "ExtensionPermissions",
     "ExtensionRegistry",
     "FetchResponse",
     "KampGround",
@@ -31,6 +33,7 @@ __all__ = [
     "UpdateMetadataMutation",
     "discover_extensions",
     "apply_mutations",
+    "extract_permissions",
     "invoke_extension",
     "probe_extension",
 ]

@@ -50,6 +50,14 @@ export type ExtensionInfo = {
    *   2 – Community: keyword present but not on the allow-list; rendered in a sandboxed iframe.
    */
   phase: 1 | 2
+  /**
+   * Capabilities declared by this extension in its package.json `kamp.permissions` array.
+   * The host scopes the KampAPI it passes to the extension's `register()` function based
+   * on this list.  Extensions that access an undeclared capability receive an error.
+   *
+   * Known values: "library.read", "player.read", "player.control", "network.fetch", "settings"
+   */
+  permissions: string[]
 }
 
 /** The full shape of window.KampAPI. */

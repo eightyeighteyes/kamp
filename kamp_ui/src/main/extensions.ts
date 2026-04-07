@@ -44,6 +44,7 @@ function scanDir(dir: string): ExtensionInfo[] {
         displayName?: string
         keywords?: string[]
         main?: string
+        kamp?: { permissions?: string[] }
       }
 
       if (!Array.isArray(pkg.keywords) || !pkg.keywords.includes('kamp-extension')) continue
@@ -61,11 +62,25 @@ function scanDir(dir: string): ExtensionInfo[] {
       // everything else is Phase 2 (community / sandboxed).
       const phase: 1 | 2 = FIRST_PARTY_IDS.has(id) ? 1 : 2
 
+      const permissions: string[] = Array.isArray(pkg.kamp?.permissions)
+        ? (pkg.kamp.permissions as string[]).filter((p) => typeof p === 'string')
+        : []
+
+      // Warn when an extension combines library.read and network.fetch —
+      // this pairing can exfiltrate library metadata to an external server.
+      if (permissions.includes('library.read') && permissions.includes('network.fetch')) {
+        console.warn(
+          `[kamp] extension "${id}" declares both library.read and network.fetch. ` +
+            'Review this extension carefully — it can read your library and contact external servers.'
+        )
+      }
+
       results.push({
         id,
         name: pkg.displayName ?? pkg.name ?? entry.name,
         code,
-        phase
+        phase,
+        permissions
       })
     } catch {
       // Skip packages with malformed package.json.

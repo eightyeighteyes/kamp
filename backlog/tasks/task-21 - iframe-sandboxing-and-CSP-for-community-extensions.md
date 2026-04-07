@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - Claude
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-07 12:31'
+updated_date: '2026-04-07 12:36'
 labels:
   - feature
   - architecture
@@ -23,11 +23,11 @@ Render community (third-party) extensions in `<iframe sandbox="allow-scripts">` 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Community extensions render in sandboxed iframes
-- [ ] #2 Extensions communicate with the host only via postMessage (no direct DOM or API access)
-- [ ] #3 Strict CSP is enforced on the renderer window
-- [ ] #4 First-party extensions continue to work via contextBridge unaffected
-- [ ] #5 CSP connect-src is restricted to the kamp server origin only; frontend extensions that need external network access must proxy requests through KampAPI, not fetch directly
+- [x] #1 Community extensions render in sandboxed iframes
+- [x] #2 Extensions communicate with the host only via postMessage (no direct DOM or API access)
+- [x] #3 Strict CSP is enforced on the renderer window
+- [x] #4 First-party extensions continue to work via contextBridge unaffected
+- [x] #5 CSP connect-src is restricted to the kamp server origin only; frontend extensions that need external network access must proxy requests through KampAPI, not fetch directly
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -63,3 +63,9 @@ connect-src is pinned to the exact kamp server origin (no wildcard port).
 
 Phase 1 code path, preload, extensions.ts, and index.html CSP are untouched.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation complete. New file: SandboxedExtensionLoader.tsx. Modified: App.tsx (phase2Extensions state, SandboxedExtensionLoader render). Type-check and lint pass clean. Key decisions: iframe-move pattern (no reload on tab switch), safeJson escaping for code injection safety, </script> split with string concatenation to satisfy no-useless-escape.
+<!-- SECTION:NOTES:END -->

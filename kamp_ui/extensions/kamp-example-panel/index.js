@@ -14,6 +14,7 @@ export function register(api) {
   api.panels.register({
     id: 'kamp-example-panel.stats',
     title: 'Stats',
+    defaultSlot: 'main',
 
     render(container) {
       container.style.cssText = 'padding: 20px; font-family: monospace; font-size: 13px;'

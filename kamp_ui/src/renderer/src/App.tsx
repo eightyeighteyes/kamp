@@ -2,18 +2,70 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
-import { AlbumGrid } from './components/AlbumGrid'
 import { ExtensionPanel } from './components/ExtensionPanel'
+import { LibraryView } from './components/LibraryView'
 import { NowPlayingView } from './components/NowPlayingView'
+import { PanelPicker } from './components/PanelPicker'
 import { PreferencesDialog } from './components/PreferencesDialog'
+import { QueuePanel } from './components/QueuePanel'
 import { SearchBar } from './components/SearchBar'
 import { SearchView } from './components/SearchView'
 import { SetupScreen } from './components/SetupScreen'
 import { SplashScreen } from './components/SplashScreen'
-import { TrackList } from './components/TrackList'
 import { TransportBar } from './components/TransportBar'
-import { QueuePanel } from './components/QueuePanel'
-import { useRegisteredPanels } from './hooks/useRegisteredPanels'
+import { registerBuiltInPanel, usePanelLayout } from './hooks/usePanelLayout'
+import type { UnifiedPanel } from './hooks/usePanelLayout'
+
+// ---------------------------------------------------------------------------
+// Register built-in panels before the component mounts.
+// Each call is idempotent — safe across HMR and React StrictMode re-runs.
+// ---------------------------------------------------------------------------
+registerBuiltInPanel({
+  id: 'kamp.library',
+  title: 'Library',
+  defaultSlot: 'main',
+  compatibleSlots: ['main'],
+  component: LibraryView
+})
+registerBuiltInPanel({
+  id: 'kamp.now-playing',
+  title: 'Now Playing',
+  defaultSlot: 'main',
+  compatibleSlots: ['main'],
+  component: NowPlayingView
+})
+registerBuiltInPanel({
+  id: 'kamp.artist-list',
+  title: 'Artists',
+  defaultSlot: 'left',
+  compatibleSlots: ['left', 'right'],
+  component: ArtistPanel
+})
+registerBuiltInPanel({
+  id: 'kamp.queue',
+  title: 'Queue',
+  defaultSlot: 'right',
+  compatibleSlots: ['left', 'right'],
+  component: QueuePanel
+})
+registerBuiltInPanel({
+  id: 'kamp.transport',
+  title: 'Transport',
+  defaultSlot: 'bottom',
+  compatibleSlots: ['bottom'],
+  component: TransportBar
+})
+
+// ---------------------------------------------------------------------------
+// SlotPanel: renders a single panel regardless of whether it is a built-in
+// React component or an extension DOM renderer.
+// ---------------------------------------------------------------------------
+function SlotPanel({ panel }: { panel: UnifiedPanel }): React.JSX.Element {
+  if (panel.kind === 'builtin') {
+    return <panel.component />
+  }
+  return <ExtensionPanel panel={panel} />
+}
 
 export default function App(): React.JSX.Element {
   const loadLibrary = useStore((s) => s.loadLibrary)
@@ -23,7 +75,6 @@ export default function App(): React.JSX.Element {
   const setServerStatus = useStore((s) => s.setServerStatus)
   const serverStatus = useStore((s) => s.serverStatus)
   const hasAlbums = useStore((s) => s.library.albums.length > 0)
-  const selectedAlbum = useStore((s) => s.library.selectedAlbum)
   const activeView = useStore((s) => s.activeView)
   const setActiveView = useStore((s) => s.setActiveView)
   const togglePlayPause = useStore((s) => s.togglePlayPause)
@@ -31,23 +82,28 @@ export default function App(): React.JSX.Element {
   const prev = useStore((s) => s.prev)
   const searchQuery = useStore((s) => s.searchQuery)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
+  const loadQueue = useStore((s) => s.loadQueue)
   const queueVisible = useStore((s) => s.queueVisible)
   const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
-  const loadQueue = useStore((s) => s.loadQueue)
+  const artistPanelVisible = useStore((s) => s.artistPanelVisible)
+  const toggleArtistPanel = useStore((s) => s.toggleArtistPanel)
   const openPrefs = useStore((s) => s.openPrefs)
-  const extensionPanels = useRegisteredPanels()
+
+  const layout = usePanelLayout()
+
   // Active extension panel id, or null when a built-in view is showing.
   const [activeExtPanel, setActiveExtPanel] = useState<string | null>(null)
+
   const searchBarRef = useRef<HTMLInputElement>(null)
   const mainContentRef = useRef<HTMLElement>(null)
+
   // Per-view scroll positions — kept current by a scroll listener so we never
   // read a browser-clamped value when the outgoing view's content was taller.
+  // Key: active main panel id (built-in view name or extension panel id).
   const viewScrollRef = useRef<Partial<Record<string, number>>>({})
 
   // Splash: shown while reconnecting, then lingers 1s after connect so the
   // library fetch completes before the app is revealed, then fades out.
-  // No one-shot guard — the cleanup + re-run from React StrictMode is safe
-  // because the cleanup cancels the timer before the re-run restarts it.
   const [splashHiding, setSplashHiding] = useState(false)
   const [splashGone, setSplashGone] = useState(false)
   const splashLingerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -66,14 +122,8 @@ export default function App(): React.JSX.Element {
   }, [serverStatus])
 
   useEffect(() => {
-    // Load UI state (sort order, active view) before loading the library so the
-    // library is fetched with the correct persisted sort order, not the default.
     loadUiState().then(() => loadLibrary())
 
-    // Connect WebSocket state stream. On close, retry with exponential backoff
-    // (1 s, 2 s, 4 s … capped at 30 s). After 8 failed attempts we give up and
-    // show the offline screen. Attempts reset to 0 on every successful open so
-    // that a sleep/wake cycle always gets a fresh run of retries.
     let attempts = 0
     const MAX_ATTEMPTS = 8
 
@@ -97,9 +147,6 @@ export default function App(): React.JSX.Element {
           void loadQueue()
         },
         () => {
-          // Background scan completed — refresh album list then open track list.
-          // Sequential: loadLibrary and refreshOpenAlbum both spread library state,
-          // so running them concurrently risks one overwriting the other's update.
           void loadLibrary().then(() => refreshOpenAlbum())
         }
       )
@@ -109,11 +156,9 @@ export default function App(): React.JSX.Element {
     return disconnect
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Global keyboard shortcuts — skip when focus is inside a text input,
-  // except for Cmd/Ctrl+K which focuses the search bar from anywhere.
+  // Global keyboard shortcuts
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
-      // Cmd+K (mac) / Ctrl+K (win/linux) focuses the search bar.
       if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
         searchBarRef.current?.focus()
@@ -121,14 +166,12 @@ export default function App(): React.JSX.Element {
         return
       }
 
-      // Cmd+, (mac) / Ctrl+, (win/linux) opens Preferences.
       if (e.key === ',' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
         openPrefs()
         return
       }
 
-      // Escape clears search when the search bar is focused.
       if (e.key === 'Escape' && searchQuery) {
         void setSearchQuery('')
         searchBarRef.current?.blur()
@@ -154,12 +197,17 @@ export default function App(): React.JSX.Element {
         case 'l':
         case 'L':
           void setActiveView(activeView === 'library' ? 'now-playing' : 'library')
+          setActiveExtPanel(null)
           break
         case 'q':
         case 'Q':
           // Don't intercept Cmd+Q (macOS quit) or Ctrl+Q.
           if (e.metaKey || e.ctrlKey) break
           toggleQueuePanel()
+          break
+        case 'a':
+        case 'A':
+          toggleArtistPanel()
           break
       }
     }
@@ -174,29 +222,22 @@ export default function App(): React.JSX.Element {
     searchQuery,
     setSearchQuery,
     toggleQueuePanel,
+    toggleArtistPanel,
     openPrefs
   ])
 
-  // Listen for "open-preferences" IPC from the main process (sent when the
-  // user clicks App Name → Preferences in the native macOS menu bar).
   useEffect(() => {
     if (!window.api.onOpenPreferences) return
     const cleanup = window.api.onOpenPreferences(openPrefs)
     return cleanup
   }, [openPrefs])
 
-  // Discover and load frontend extensions. Each extension entry point is a
-  // plain ES module that exports a `register(api)` function. Extensions call
-  // window.KampAPI.panels.register() to contribute panels; the
-  // useRegisteredPanels hook above picks up the resulting CustomEvents.
+  // Discover and load frontend extensions.
   useEffect(() => {
     async function loadExtensions(): Promise<void> {
       try {
         const extensions = await window.KampAPI.extensions.getAll()
         for (const ext of extensions) {
-          // Create a Blob URL so the renderer can import ES module code
-          // supplied by the main process — file:// imports are blocked by
-          // Chromium when the page is served from an http:// origin (dev mode).
           const blob = new Blob([ext.code], { type: 'text/javascript' })
           const blobUrl = URL.createObjectURL(blob)
           try {
@@ -217,25 +258,23 @@ export default function App(): React.JSX.Element {
     void loadExtensions()
   }, [])
 
-  // Keep viewScrollRef continuously current so we always have the right value
-  // when switching views — reading scrollTop after a DOM update can give a
-  // browser-clamped value if the new content is shorter than the old.
+  // Track scroll position for the active main panel key (built-in name or ext ID).
+  const activeMainKey = activeExtPanel ?? activeView
   useEffect(() => {
     const el = mainContentRef.current
     if (!el) return
     const onScroll = (): void => {
-      viewScrollRef.current[activeView] = el.scrollTop
+      viewScrollRef.current[activeMainKey] = el.scrollTop
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [activeView])
+  }, [activeMainKey])
 
-  // Restore the incoming view's scroll position synchronously before paint.
   useLayoutEffect(() => {
     const el = mainContentRef.current
     if (!el) return
-    el.scrollTop = viewScrollRef.current[activeView] ?? 0
-  }, [activeView])
+    el.scrollTop = viewScrollRef.current[activeMainKey] ?? 0
+  }, [activeMainKey])
 
   if (serverStatus === 'disconnected') {
     return (
@@ -255,6 +294,56 @@ export default function App(): React.JSX.Element {
 
   const showSetup = serverStatus === 'connected' && !hasAlbums
 
+  // Panels to show as tabs in the main area nav bar.
+  const mainPanels = layout.panelsInSlot('main')
+
+  // Determine whether a given main-slot panel tab is active.
+  const isActiveMain = (panel: UnifiedPanel): boolean => {
+    if (activeExtPanel) return panel.id === activeExtPanel
+    if (panel.kind === 'builtin' && panel.id === 'kamp.library') return activeView === 'library'
+    if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing')
+      return activeView === 'now-playing'
+    return false
+  }
+
+  // Activate a main-slot panel tab.
+  const activateMain = (panel: UnifiedPanel): void => {
+    if (panel.kind === 'builtin' && panel.id === 'kamp.library') {
+      void setActiveView('library')
+      setActiveExtPanel(null)
+    } else if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing') {
+      void setActiveView('now-playing')
+      setActiveExtPanel(null)
+    } else if (panel.kind === 'extension') {
+      setActiveExtPanel(panel.id)
+    }
+  }
+
+  // Determine what to render in the main content area.
+  function renderMainContent(): React.JSX.Element {
+    if (showSetup) return <SetupScreen />
+    if (searchQuery) return <SearchView />
+    if (activeExtPanel) {
+      const extPanel = mainPanels.find((p) => p.id === activeExtPanel)
+      if (extPanel && extPanel.kind === 'extension') return <ExtensionPanel panel={extPanel} />
+    }
+    if (activeView === 'now-playing') return <NowPlayingView />
+    return <LibraryView />
+  }
+
+  // Panels for each sidebar/bottom slot (first assigned panel wins).
+  // Panel-specific visibility: each panel's toggle is independent of its slot.
+  const isPanelVisible = (p: UnifiedPanel | undefined): boolean => {
+    if (!p) return false
+    if (p.id === 'kamp.queue') return queueVisible
+    if (p.id === 'kamp.artist-list') return artistPanelVisible
+    return true
+  }
+
+  const leftPanel = layout.panelsInSlot('left')[0]
+  const rightPanel = layout.panelsInSlot('right')[0]
+  const bottomPanel = layout.panelsInSlot('bottom')[0]
+
   return (
     <div className="app">
       {serverStatus === 'reconnecting' && (
@@ -262,58 +351,27 @@ export default function App(): React.JSX.Element {
       )}
       {!showSetup && (
         <nav className="view-tabs">
-          <button
-            className={activeView === 'library' && !activeExtPanel ? 'active' : ''}
-            onClick={() => {
-              void setActiveView('library')
-              setActiveExtPanel(null)
-            }}
-          >
-            Library
-          </button>
-          <button
-            className={activeView === 'now-playing' && !activeExtPanel ? 'active' : ''}
-            onClick={() => {
-              void setActiveView('now-playing')
-              setActiveExtPanel(null)
-            }}
-          >
-            Now Playing
-          </button>
-          {extensionPanels.map((panel) => (
+          {mainPanels.map((panel) => (
             <button
               key={panel.id}
-              className={activeExtPanel === panel.id ? 'active' : ''}
-              onClick={() => setActiveExtPanel(panel.id)}
+              className={isActiveMain(panel) && !searchQuery ? 'active' : ''}
+              onClick={() => activateMain(panel)}
             >
               {panel.title}
             </button>
           ))}
           <SearchBar ref={searchBarRef} />
+          <PanelPicker layout={layout} />
         </nav>
       )}
       <div className="app-body">
-        {!showSetup && activeView === 'library' && !searchQuery && !activeExtPanel && (
-          <ArtistPanel />
-        )}
+        {!showSetup && isPanelVisible(leftPanel) && <SlotPanel panel={leftPanel!} />}
         <main className="main-content" ref={mainContentRef}>
-          {showSetup ? (
-            <SetupScreen />
-          ) : activeExtPanel ? (
-            <ExtensionPanel panel={extensionPanels.find((p) => p.id === activeExtPanel)!} />
-          ) : searchQuery ? (
-            <SearchView />
-          ) : activeView === 'now-playing' ? (
-            <NowPlayingView />
-          ) : selectedAlbum ? (
-            <TrackList />
-          ) : (
-            <AlbumGrid />
-          )}
+          {renderMainContent()}
         </main>
-        {queueVisible && <QueuePanel />}
+        {!showSetup && isPanelVisible(rightPanel) && <SlotPanel panel={rightPanel!} />}
       </div>
-      <TransportBar />
+      {bottomPanel && <SlotPanel panel={bottomPanel} />}
       {!splashGone && <SplashScreen hiding={splashHiding} />}
       <PreferencesDialog />
     </div>

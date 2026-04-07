@@ -43,11 +43,13 @@ type PlayerStore = {
   searchQuery: string
   searchResults: SearchResult | null
   queueVisible: boolean
+  artistPanelVisible: boolean
   queue: QueueState | null
 
   // Actions
   setServerStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void
   toggleQueuePanel: () => void
+  toggleArtistPanel: () => void
   loadQueue: () => Promise<void>
   setSearchQuery: (q: string) => void
   setSortOrder: (sort: 'album_artist' | 'album' | 'date_added' | 'last_played') => Promise<void>
@@ -121,6 +123,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
   searchQuery: '',
   searchResults: null,
   queueVisible: false,
+  // Client-only persistence — no backend endpoint needed for this toggle.
+  artistPanelVisible: localStorage.getItem('kamp:artist-panel-visible') !== 'false',
   queue: null,
   configValues: null,
   prefsOpen: false,
@@ -131,6 +135,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const next = !get().queueVisible
     set({ queueVisible: next })
     void api.setQueuePanelApi(next)
+  },
+
+  toggleArtistPanel: () => {
+    const next = !get().artistPanelVisible
+    set({ artistPanelVisible: next })
+    localStorage.setItem('kamp:artist-panel-visible', String(next))
   },
 
   loadQueue: async () => {

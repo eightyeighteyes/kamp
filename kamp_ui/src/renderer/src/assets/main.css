@@ -276,6 +276,122 @@ body,
   color: var(--text);
 }
 
+/* Panel picker ------------------------------------------------------------- */
+
+.panel-picker-anchor {
+  position: relative;
+  flex-shrink: 0;
+  margin-left: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.panel-picker-trigger {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+
+.panel-picker-trigger:hover,
+.panel-picker-trigger.active {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.panel-picker-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 200;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  min-width: 280px;
+  padding-bottom: 6px;
+}
+
+.panel-picker-header {
+  padding: 10px 14px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.panel-picker-legend {
+  display: flex;
+  gap: 12px;
+  padding: 4px 14px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.panel-picker-row {
+  display: flex;
+  align-items: center;
+  padding: 4px 14px;
+  gap: 8px;
+}
+
+.panel-picker-row:hover {
+  background: var(--hover);
+}
+
+.panel-picker-name {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-picker-controls {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.panel-picker-slot-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 5px;
+  line-height: 1;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.panel-picker-slot-btn:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.panel-picker-slot-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.panel-picker-slot-btn.disabled,
+.panel-picker-slot-btn:disabled {
+  color: var(--text-dim);
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
 /* Search results ----------------------------------------------------------- */
 
 .search-view {

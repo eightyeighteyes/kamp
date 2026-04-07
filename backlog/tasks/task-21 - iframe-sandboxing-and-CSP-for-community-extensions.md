@@ -1,18 +1,18 @@
 ---
 id: TASK-21
 title: iframe sandboxing and CSP for community extensions
-status: In Progress
+status: Done
 assignee:
   - Claude
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-07 12:36'
+updated_date: '2026-04-07 12:39'
 labels:
   - feature
   - architecture
   - 'estimate: side'
 milestone: m-2
 dependencies: []
-ordinal: 1000
+ordinal: 17000
 ---
 
 ## Description

@@ -238,6 +238,17 @@ export default function App(): React.JSX.Element {
       try {
         const extensions = await window.KampAPI.extensions.getAll()
         for (const ext of extensions) {
+          if (ext.phase === 2) {
+            // Phase 2 (community) extensions are not yet sandboxed. Log and skip
+            // rather than granting contextBridge access to an un-vetted package.
+            console.warn(
+              `[kamp] extension "${ext.id}" is not on the first-party allow-list; ` +
+                'Phase 2 sandboxed-iframe support is not yet implemented — skipping.'
+            )
+            continue
+          }
+
+          // Phase 1: extension is on the allow-list; pass full KampAPI.
           const blob = new Blob([ext.code], { type: 'text/javascript' })
           const blobUrl = URL.createObjectURL(blob)
           try {

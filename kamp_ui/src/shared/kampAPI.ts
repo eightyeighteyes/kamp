@@ -44,6 +44,12 @@ export type ExtensionInfo = {
   name: string
   /** Source code of the extension's entry point, read by the main process. */
   code: string
+  /**
+   * Security phase that governs how this extension is loaded:
+   *   1 – First-party: on the kamp allow-list; receives full contextBridge (KampAPI) access.
+   *   2 – Community: keyword present but not on the allow-list; rendered in a sandboxed iframe.
+   */
+  phase: 1 | 2
 }
 
 /** The full shape of window.KampAPI. */

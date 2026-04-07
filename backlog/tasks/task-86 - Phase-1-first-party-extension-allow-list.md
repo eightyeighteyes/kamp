@@ -1,10 +1,10 @@
 ---
 id: TASK-86
 title: Phase 1 first-party extension allow-list
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-05 16:27'
-updated_date: '2026-04-05 16:32'
+updated_date: '2026-04-07 02:53'
 labels:
   - feature
   - security
@@ -14,7 +14,7 @@ dependencies:
   - TASK-19
 documentation:
   - project/kampground-ideation.md
-ordinal: 8000
+ordinal: 15000
 ---
 
 ## Description

@@ -7,12 +7,25 @@
  *
  * A package qualifies when its package.json has "kamp-extension" in `keywords`
  * and its declared entry point (`main`) exists on disk.
+ *
+ * Security phases:
+ *   Phase 1 – First-party: must appear in first-party-allowlist.json AND carry
+ *             the keyword. Receives full contextBridge (KampAPI) access.
+ *   Phase 2 – Community: keyword present but not on the allow-list. Rendered
+ *             in a sandboxed iframe with no contextBridge access.
+ *
+ * The allow-list is the mechanism that prevents arbitrary npm packages from
+ * claiming the keyword and escalating into contextBridge access.
  */
 
 import { app } from 'electron'
 import { readdirSync, readFileSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import type { ExtensionInfo } from '../shared/kampAPI'
+import allowlistData from './first-party-allowlist.json'
+
+// Set of package names approved for Phase 1 (contextBridge) access.
+const FIRST_PARTY_IDS = new Set<string>(allowlistData.extensions)
 
 function scanDir(dir: string): ExtensionInfo[] {
   if (!existsSync(dir)) return []
@@ -43,10 +56,16 @@ function scanDir(dir: string): ExtensionInfo[] {
       // renderer never needs a file:// import — it loads via a Blob URL instead.
       const code = readFileSync(entryPath, 'utf8')
 
+      const id = pkg.name ?? entry.name
+      // Phase 1 requires the package to be explicitly on the allow-list;
+      // everything else is Phase 2 (community / sandboxed).
+      const phase: 1 | 2 = FIRST_PARTY_IDS.has(id) ? 1 : 2
+
       results.push({
-        id: pkg.name ?? entry.name,
+        id,
         name: pkg.displayName ?? pkg.name ?? entry.name,
-        code
+        code,
+        phase
       })
     } catch {
       // Skip packages with malformed package.json.

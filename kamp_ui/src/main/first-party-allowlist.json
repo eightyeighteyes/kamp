@@ -1,0 +1,4 @@
+{
+  "$comment": "First-party extension allow-list. Only packages listed here AND carrying the 'kamp-extension' npm keyword are granted Phase 1 (contextBridge) access. Any package with the keyword but absent from this list is treated as a Phase 2 community extension (sandboxed iframe). Add entries as '<npm-package-name>' strings. This file is shipped with the app and is version-controlled; changes require a new app release.",
+  "extensions": ["kamp-example-panel"]
+}

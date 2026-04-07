@@ -1,0 +1,12 @@
+{
+  "name": "kamp-groover",
+  "version": "1.0.0",
+  "description": "Community extension — displays album art with a continuously rotating color palette.",
+  "keywords": ["kamp-extension"],
+  "displayName": "Groover",
+  "main": "index.js",
+  "type": "module",
+  "kamp": {
+    "permissions": ["player.read"]
+  }
+}

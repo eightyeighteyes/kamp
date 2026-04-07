@@ -1,10 +1,10 @@
 ---
 id: TASK-82
 title: Declarative permissions system for extensions
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-05 16:27'
-updated_date: '2026-04-05 21:21'
+updated_date: '2026-04-07 03:05'
 labels:
   - feature
   - security

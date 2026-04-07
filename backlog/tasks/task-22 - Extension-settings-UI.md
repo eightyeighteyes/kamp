@@ -4,7 +4,7 @@ title: Extension settings UI
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-05 16:32'
+updated_date: '2026-04-07 12:52'
 labels:
   - feature
   - ui
@@ -26,4 +26,5 @@ Add a settings UI where users can view installed extensions, enable/disable them
 - [ ] #2 User can enable/disable extensions from the UI
 - [ ] #3 Per-extension settings are rendered from the extension's declared schema
 - [ ] #4 Settings changes take effect without requiring an app restart
+- [ ] #5 First load of a community extension shows a permission prompt listing its declared permissions; the extension only loads after explicit user approval
 <!-- AC:END -->

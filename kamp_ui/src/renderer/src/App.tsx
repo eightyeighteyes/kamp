@@ -13,8 +13,10 @@ import { SearchView } from './components/SearchView'
 import { SetupScreen } from './components/SetupScreen'
 import { SplashScreen } from './components/SplashScreen'
 import { TransportBar } from './components/TransportBar'
+import { SandboxedExtensionLoader } from './components/SandboxedExtensionLoader'
 import { registerBuiltInPanel, usePanelLayout } from './hooks/usePanelLayout'
 import type { UnifiedPanel } from './hooks/usePanelLayout'
+import type { ExtensionInfo } from '../../shared/kampAPI'
 
 // ---------------------------------------------------------------------------
 // Register built-in panels before the component mounts.
@@ -93,6 +95,8 @@ export default function App(): React.JSX.Element {
 
   // Active extension panel id, or null when a built-in view is showing.
   const [activeExtPanel, setActiveExtPanel] = useState<string | null>(null)
+  // Phase 2 (community) extensions to render in sandboxed iframes.
+  const [phase2Extensions, setPhase2Extensions] = useState<ExtensionInfo[]>([])
 
   const searchBarRef = useRef<HTMLInputElement>(null)
   const mainContentRef = useRef<HTMLElement>(null)
@@ -237,14 +241,12 @@ export default function App(): React.JSX.Element {
     async function loadExtensions(): Promise<void> {
       try {
         const extensions = await window.KampAPI.extensions.getAll()
+        const phase2: ExtensionInfo[] = []
         for (const ext of extensions) {
           if (ext.phase === 2) {
-            // Phase 2 (community) extensions are not yet sandboxed. Log and skip
-            // rather than granting contextBridge access to an un-vetted package.
-            console.warn(
-              `[kamp] extension "${ext.id}" is not on the first-party allow-list; ` +
-                'Phase 2 sandboxed-iframe support is not yet implemented — skipping.'
-            )
+            // Phase 2 (community) extensions: collected and passed to
+            // SandboxedExtensionLoader, which renders them in isolated iframes.
+            phase2.push(ext)
             continue
           }
 
@@ -272,6 +274,7 @@ export default function App(): React.JSX.Element {
             URL.revokeObjectURL(blobUrl)
           }
         }
+        setPhase2Extensions(phase2)
       } catch (err) {
         console.error('[kamp] extension discovery failed:', err)
       }
@@ -395,6 +398,8 @@ export default function App(): React.JSX.Element {
       {bottomPanel && <SlotPanel panel={bottomPanel} />}
       {!splashGone && <SplashScreen hiding={splashHiding} />}
       <PreferencesDialog />
+      {/* Phase 2 iframes live here in a hidden holding area until their panel tab is activated */}
+      <SandboxedExtensionLoader extensions={phase2Extensions} />
     </div>
   )
 }

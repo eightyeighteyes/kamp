@@ -16,99 +16,56 @@ export function register(api) {
     defaultSlot: 'main',
 
     render(container) {
-      // -----------------------------------------------------------------------
-      // DOM
-      // -----------------------------------------------------------------------
+      // Clear any leftover DOM from a previous mount cycle (React StrictMode
+      // fires useEffect twice: mount → cleanup → remount, sending panel-mount
+      // twice; without this, two sets of elements accumulate in document.body).
+      container.innerHTML = ''
+
+      // Fill the container exactly as Now Playing does — column, centered,
+      // with the art growing to fill available space while staying square.
       container.style.cssText = `
-        margin: 0; padding: 0;
+        margin: 0; padding: 16px;
         width: 100%; height: 100%;
         background: #0a0a0a;
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: center;
         overflow: hidden;
-        font-family: 'DM Sans', system-ui, sans-serif;
       `
 
       const artWrap = document.createElement('div')
       artWrap.style.cssText = `
         position: relative;
-        width: min(60vw, 60vh, 400px);
-        height: min(60vw, 60vh, 400px);
-        border-radius: 12px;
+        flex: 1;
+        min-height: 0;
+        aspect-ratio: 1;
+        max-width: 100%;
+        border-radius: 8px;
+        background: #111;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         overflow: hidden;
-        box-shadow: 0 0 80px 20px rgba(120, 80, 255, 0.25);
       `
-
-      const img = document.createElement('img')
-      img.style.cssText = `
-        width: 100%; height: 100%;
-        object-fit: cover;
-        display: block;
-        transition: opacity 0.4s;
-      `
-      img.setAttribute('crossorigin', 'anonymous')
 
       const placeholder = document.createElement('div')
       placeholder.style.cssText = `
-        position: absolute; inset: 0;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 72px; color: #333;
-        background: #111;
+        font-size: 72px; opacity: 0.15; color: #fff;
       `
       placeholder.textContent = '♪'
 
+      const img = document.createElement('img')
+      img.style.cssText = `
+        position: absolute; inset: 0;
+        width: 100%; height: 100%;
+        object-fit: cover;
+        opacity: 0;
+        transition: opacity 0.2s;
+      `
+
       artWrap.appendChild(placeholder)
       artWrap.appendChild(img)
-
-      const meta = document.createElement('div')
-      meta.style.cssText = `
-        margin-top: 28px;
-        text-align: center;
-        max-width: min(60vw, 400px);
-      `
-
-      const titleEl = document.createElement('div')
-      titleEl.style.cssText = `
-        font-size: 17px; font-weight: 600;
-        color: #fff;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        margin-bottom: 6px;
-      `
-
-      const artistEl = document.createElement('div')
-      artistEl.style.cssText = `
-        font-size: 13px; color: #888;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      `
-
-      const speedWrap = document.createElement('div')
-      speedWrap.style.cssText = `
-        margin-top: 20px;
-        display: flex; align-items: center; gap: 10px;
-      `
-      const speedLabel = document.createElement('label')
-      speedLabel.style.cssText = `font-size: 11px; color: #555;`
-      speedLabel.textContent = 'Speed'
-      const speedSlider = document.createElement('input')
-      speedSlider.type = 'range'
-      speedSlider.min = '0.1'
-      speedSlider.max = '3'
-      speedSlider.step = '0.1'
-      speedSlider.value = '0.6'
-      speedSlider.style.cssText = `
-        width: 100px; accent-color: #7c5cbf; cursor: pointer;
-      `
-      speedWrap.appendChild(speedLabel)
-      speedWrap.appendChild(speedSlider)
-
-      meta.appendChild(titleEl)
-      meta.appendChild(artistEl)
-      meta.appendChild(speedWrap)
-
       container.appendChild(artWrap)
-      container.appendChild(meta)
 
       // -----------------------------------------------------------------------
       // Hue rotation animation
@@ -119,9 +76,7 @@ export function register(api) {
 
       function animate(ts) {
         if (lastTs !== null) {
-          const delta = ts - lastTs
-          // degrees per ms, controlled by speed slider
-          hue = (hue + delta * 0.036 * parseFloat(speedSlider.value)) % 360
+          hue = (hue + (ts - lastTs) * 0.022) % 360
         }
         lastTs = ts
         img.style.filter = `hue-rotate(${hue.toFixed(1)}deg) saturate(1.4) brightness(0.95)`
@@ -143,17 +98,12 @@ export function register(api) {
           const track = state.current_track
 
           if (!track) {
-            titleEl.textContent = 'Nothing playing'
-            artistEl.textContent = ''
             img.style.opacity = '0'
             currentArtKey = null
             return
           }
 
-          titleEl.textContent = track.title ?? ''
-          artistEl.textContent = [track.artist, track.album].filter(Boolean).join(' · ')
-
-          // Reload art only when the track changes.
+          // Reload art only when the album changes.
           const artKey = `${track.album_artist}||${track.album}`
           if (artKey !== currentArtKey) {
             currentArtKey = artKey

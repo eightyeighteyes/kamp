@@ -78,9 +78,9 @@ class TestLinuxMinimalSubprocessBlocked:
             pytest.skip(
                 "libseccomp unavailable or filter failed to load — seccomp restriction skipped"
             )
-        # The process may be killed by SIGSYS (seccomp kills it), which means
-        # the subprocess.run() above raises SubprocessError, or the child
-        # process exits non-zero.  Either way, "EXEC_SUCCEEDED" must not appear.
+        # seccomp returns EPERM for execve/execveat; subprocess.run() raises
+        # PermissionError which the except block catches and prints EXEC_BLOCKED.
+        # Either way, "EXEC_SUCCEEDED" must not appear.
         assert (
             "EXEC_SUCCEEDED" not in output
         ), f"Expected execve to be blocked under minimal sandbox, got: {output!r}"

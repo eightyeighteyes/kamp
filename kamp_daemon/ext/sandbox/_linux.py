@@ -66,7 +66,12 @@ def _landlock_available() -> bool:
 
 # libseccomp action constants
 _SCMP_ACT_ALLOW = 0x7FFF0000
-_SCMP_ACT_KILL_PROCESS = 0x80000000
+# SCMP_ACT_ERRNO(EPERM): return EPERM to the caller instead of killing the
+# process.  KILL_PROCESS (0x80000000) requires the container to have
+# CAP_SYS_ADMIN or an unconfined seccomp policy — GitHub Actions runners
+# restrict this.  ERRNO(EPERM) works universally and causes subprocess.run()
+# to raise PermissionError, which is equally observable in tests.
+_SCMP_ACT_ERRNO_EPERM = 0x00050001  # 0x00050000 | EPERM(1)
 
 # x86-64 syscall numbers for process execution.
 # glibc >= 2.24 uses execveat(AT_FDCWD, ...) rather than execve, so both
@@ -132,7 +137,7 @@ def _apply_seccomp_block_execve() -> None:
 
     try:
         for nr in (_NR_EXECVE, _NR_EXECVEAT):
-            ret = lib.seccomp_rule_add(ctx, _SCMP_ACT_KILL_PROCESS, nr, 0)
+            ret = lib.seccomp_rule_add(ctx, _SCMP_ACT_ERRNO_EPERM, nr, 0)
             if ret != 0:
                 _logger.warning(
                     "kamp sandbox: seccomp_rule_add failed for syscall %d (%d) — "

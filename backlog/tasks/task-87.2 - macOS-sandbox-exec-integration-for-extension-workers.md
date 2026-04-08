@@ -1,7 +1,7 @@
 ---
 id: TASK-87.2
 title: macOS sandbox-exec integration for extension workers
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-05 16:37'
 updated_date: '2026-04-08 18:09'

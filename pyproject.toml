@@ -55,6 +55,12 @@ omit = [
     "kamp_daemon/__main__.py",
     "kamp_daemon/bandcamp.py",
     "kamp_daemon/menu_bar.py",
+    # Platform-specific sandbox implementations are tested via subprocess
+    # integration tests (tests/test_extension_sandbox_*.py) that run in
+    # separate processes — pytest-cov cannot measure coverage inside those
+    # subprocesses.  Omit to keep the coverage threshold meaningful.
+    "kamp_daemon/ext/sandbox/_macos.py",
+    "kamp_daemon/ext/sandbox/_linux.py",
 ]
 
 [tool.coverage.report]

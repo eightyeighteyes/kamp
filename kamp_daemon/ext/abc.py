@@ -42,10 +42,19 @@ class BaseSyncer(ABC):
         class MyDiscogsSyncer(BaseSyncer):
             kampground_permissions = ["network.fetch", "library.write"]
             kampground_network_domains = ["api.discogs.com"]
+
+    Sandbox tier
+    ------------
+    ``_sandbox_tier`` controls which OS-level sandbox profile is applied when
+    this extension runs via ``invoke_extension()``.  Override with
+    ``"syncer"`` for extensions that need filesystem writes or subprocess
+    spawning (e.g. Playwright-based syncers).  See
+    ``kamp_daemon/ext/sandbox/__init__.py`` for available tiers.
     """
 
     kampground_permissions: list[str] = []
     kampground_network_domains: list[str] = []
+    _sandbox_tier: str = "minimal"
 
     @abstractmethod
     def start(self) -> None:
@@ -105,10 +114,16 @@ class BaseTagger(ABC):
         class MyTagger(BaseTagger):
             kampground_permissions = ["network.fetch"]
             kampground_network_domains = ["api.example.com"]
+
+    Sandbox tier
+    ------------
+    Default ``"minimal"``: network only, no filesystem writes, no subprocess
+    spawn.  Override if the tagger requires broader capabilities.
     """
 
     kampground_permissions: list[str] = []
     kampground_network_domains: list[str] = []
+    _sandbox_tier: str = "minimal"
 
     @abstractmethod
     def tag(self, track: TrackMetadata) -> TrackMetadata:
@@ -147,10 +162,16 @@ class BaseArtworkSource(ABC):
         class MyArtSource(BaseArtworkSource):
             kampground_permissions = ["network.fetch"]
             kampground_network_domains = ["img.example.com"]
+
+    Sandbox tier
+    ------------
+    Default ``"minimal"``: network only, no filesystem writes, no subprocess
+    spawn.  Override if the source requires broader capabilities.
     """
 
     kampground_permissions: list[str] = []
     kampground_network_domains: list[str] = []
+    _sandbox_tier: str = "minimal"
 
     @abstractmethod
     def fetch(self, query: ArtworkQuery) -> ArtworkResult | None:

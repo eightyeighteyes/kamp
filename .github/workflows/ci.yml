@@ -32,6 +32,26 @@ jobs:
       - name: Run tests
         run: poetry run pytest
 
+  sandbox-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Run macOS sandbox tests
+        run: poetry run pytest tests/test_extension_sandbox_macos.py tests/test_extension_sandbox_common.py -v --no-cov
+
   ui:
     runs-on: ubuntu-latest
 

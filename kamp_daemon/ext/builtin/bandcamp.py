@@ -51,6 +51,9 @@ class KampBandcampSyncer(BaseSyncer):
 
     # stage() deposits downloaded archives into the staging directory.
     kampground_permissions = ["library.write"]
+    # Needs filesystem writes (session/state files, /tmp) and subprocess spawn
+    # (Playwright launches Chromium).  See project/sandbox-profiles.md.
+    _sandbox_tier = "syncer"
 
     def __init__(self, ctx: KampGround) -> None:
         # Lazy import: probe runs at module import time; keep the module-level

@@ -15,9 +15,11 @@ import logging
 import logging.handlers
 import multiprocessing
 import queue
+from collections.abc import Callable
 from typing import Any, Literal, cast
 
 from .context import KampGround, Mutation
+from .sandbox import TIER_MINIMAL, get_initializer
 
 _logger = logging.getLogger(__name__)
 
@@ -77,15 +79,27 @@ def _spawn_extension_worker(
 ) -> tuple[Any, Any, Any]:
     """Spawn an isolated subprocess running _extension_worker.
 
-    Uses 'spawn' so the child starts with a clean interpreter.
+    Uses 'spawn' so the child starts with a clean interpreter.  A sandbox
+    initializer (platform-specific seccomp/landlock on Linux,
+    sandbox_init on macOS) is applied in the child process before extension
+    code loads.  The tier is determined by the extension class's
+    ``_sandbox_tier`` attribute (default: TIER_MINIMAL).
+
     Returns (proc, log_q, result_q).
     """  # pragma: no cover
+    tier: str = getattr(cls, "_sandbox_tier", TIER_MINIMAL)
+    initializer: Callable[[], None] | None = get_initializer(tier)
+
     mp_ctx = multiprocessing.get_context("spawn")
     log_q: Any = mp_ctx.Queue()
     result_q: Any = mp_ctx.Queue()
-    proc = mp_ctx.Process(
+    proc = mp_ctx.Process(  # type: ignore[call-arg]
         target=_extension_worker,
         args=(cls, method_name, args, ctx, log_q, result_q),
+        # initializer=None is explicitly supported by multiprocessing — no
+        # sandbox is applied when the platform is unsupported or the tier
+        # has no registered initializer for this platform.
+        initializer=initializer,
     )
     proc.start()
     return proc, log_q, result_q

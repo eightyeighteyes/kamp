@@ -4,7 +4,7 @@ title: Extension invocation policy — wire tagger/artwork extensions into the p
 status: In Progress
 assignee: []
 created_date: '2026-04-06 12:54'
-updated_date: '2026-04-08 20:15'
+updated_date: '2026-04-08 20:20'
 labels:
   - feature
   - design
@@ -44,9 +44,9 @@ The invocation policy must therefore guarantee that extensions are not offered t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Registered tagger extensions are invoked at ingest time for new tracks entering the library
-- [ ] #2 Each track is offered to each extension at most once per ingest event — no redundant mutations on re-scan
-- [ ] #3 The host uses the audit log or equivalent mechanism to enforce the single-invocation guarantee, not extension skip logic (extension skip logic is unreliable and not under our control)
-- [ ] #4 Registered artwork-source extensions are invoked under the same policy as taggers
-- [ ] #5 The invocation policy is documented in a comment at the call site explaining why re-scan invocation is explicitly excluded
+- [x] #1 Registered tagger extensions are invoked at ingest time for new tracks entering the library
+- [x] #2 Each track is offered to each extension at most once per ingest event — no redundant mutations on re-scan
+- [x] #3 The host uses the audit log or equivalent mechanism to enforce the single-invocation guarantee, not extension skip logic (extension skip logic is unreliable and not under our control)
+- [x] #4 Registered artwork-source extensions are invoked under the same policy as taggers
+- [x] #5 The invocation policy is documented in a comment at the call site explaining why re-scan invocation is explicitly excluded
 <!-- AC:END -->

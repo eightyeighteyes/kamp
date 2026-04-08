@@ -95,6 +95,26 @@ def _apply_seccomp_block_execve() -> None:
         )
         return
 
+    # Set explicit restype/argtypes before any call.  Without restype,
+    # ctypes defaults to c_int (32-bit) — on 64-bit Linux scmp_filter_ctx
+    # is a pointer (8 bytes) so the upper 32 bits are silently truncated,
+    # producing a garbage pointer.  Passing that garbage to seccomp_load()
+    # installs a malformed BPF filter whose default action becomes
+    # KILL_PROCESS rather than ALLOW, killing the process on every syscall.
+    lib.seccomp_init.restype = ctypes.c_void_p
+    lib.seccomp_init.argtypes = [ctypes.c_uint32]
+    lib.seccomp_rule_add.restype = ctypes.c_int
+    lib.seccomp_rule_add.argtypes = [
+        ctypes.c_void_p,  # ctx
+        ctypes.c_uint32,  # action
+        ctypes.c_int,  # syscall
+        ctypes.c_uint,  # arg_cnt
+    ]
+    lib.seccomp_load.restype = ctypes.c_int
+    lib.seccomp_load.argtypes = [ctypes.c_void_p]
+    lib.seccomp_release.restype = None
+    lib.seccomp_release.argtypes = [ctypes.c_void_p]
+
     # Build a default-ALLOW filter and add a KILL rule for execve.
     # This allows all syscalls except execve, which is sufficient to prevent
     # subprocess spawning.  A full allowlist will be derived from empirical

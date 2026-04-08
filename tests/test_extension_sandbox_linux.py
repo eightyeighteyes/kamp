@@ -238,25 +238,46 @@ class TestLinuxSyncerLandlockWriteAllowed:
         ), f"Expected /tmp write to be allowed under syncer sandbox, got: {output!r}"
 
     def test_write_to_kamp_state_dir_is_allowed(self) -> None:
-        """Syncer tier allows writes to ~/.local/share/kamp/."""
-        code = textwrap.dedent("""\
-            import os
-            from pathlib import Path
-            state_dir = Path.home() / ".local" / "share" / "kamp"
-            state_dir.mkdir(parents=True, exist_ok=True)
-            path = state_dir / "kamp_sandbox_syncer_test_87.txt"
-            try:
-                path.write_text("syncer test")
-                print("WRITE_SUCCEEDED")
-            except (PermissionError, OSError) as e:
-                print(f"WRITE_BLOCKED: {e}")
-            finally:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-        """)
-        output = _run_in_sandbox("syncer", code)
+        """Syncer tier allows writes to ~/.local/share/kamp/.
+
+        The state directory must exist before the sandbox is applied because:
+        1. landlock rules are only added for paths that exist at ruleset
+           creation time (non-existent paths are skipped in _apply_landlock).
+        2. Creating parent directories inside the sandbox would require write
+           access to paths not yet in the ruleset.
+
+        The script therefore creates the directory before init() so that
+        _apply_landlock can register it as an allowed write path.
+        """
+        # Build the script manually so the mkdir runs before sandbox init.
+        script = (
+            "from pathlib import Path\n"
+            "state_dir = Path.home() / '.local' / 'share' / 'kamp'\n"
+            "state_dir.mkdir(parents=True, exist_ok=True)\n"
+            "from kamp_daemon.ext.sandbox._linux import get_initializer\n"
+            "init = get_initializer('syncer')\n"
+            "init()\n"
+            "path = state_dir / 'kamp_sandbox_syncer_test_87.txt'\n"
+            "try:\n"
+            "    path.write_text('syncer test')\n"
+            "    print('WRITE_SUCCEEDED')\n"
+            "except (PermissionError, OSError) as e:\n"
+            "    print(f'WRITE_BLOCKED: {e}')\n"
+            "finally:\n"
+            "    try:\n"
+            "        path.unlink()\n"
+            "    except OSError:\n"
+            "        pass\n"
+        )
+        import subprocess as _sp
+
+        result = _sp.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = result.stdout + result.stderr
         if (
             "landlock_create_ruleset failed" in output
             or "landlock_restrict_self failed" in output

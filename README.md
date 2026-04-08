@@ -407,6 +407,52 @@ export function register(api) {
 
 An example first-party extension lives in `kamp_ui/extensions/kamp-example-panel/`.
 
+### Backend extensions
+
+The daemon supports Python backend extensions for custom tagging and artwork sources. Extensions are Python packages that declare an entry point in the `kamp.extensions` group.
+
+**How it works:**
+
+1. On server startup, the daemon calls `discover_extensions()` which loads all installed packages that declare a `kamp.extensions` entry point.
+2. Each class is validated against `BaseTagger` or `BaseArtworkSource` ABC conformance.
+3. At ingest time, after a staging item is processed and new tracks are indexed by `LibraryScanner`, the host invokes registered extensions on each new track.
+4. The host enforces a single-invocation guarantee: each extension is offered each track at most once, using the `extension_audit_log` table to detect prior runs. Re-scans never trigger re-invocation.
+
+**Invocation policy:**
+- Tagger extensions run first (in registration order), then artwork sources.
+- Tracks without a resolved `mb_recording_id` are skipped.
+- A failed extension (crash, exception, or invalid mutation) is logged and skipped; remaining extensions and tracks continue normally.
+- Extensions cannot be re-processed automatically on version update; use `kamp rollback <extension_id>` to revert mutations and allow re-processing on the next ingest.
+
+**Writing a backend tagger:**
+
+```python
+# pyproject.toml
+[project.entry-points."kamp.extensions"]
+my_tagger = "my_package:MyTagger"
+
+# my_package/__init__.py
+from kamp_daemon.ext import BaseTagger
+from kamp_daemon.ext.types import TrackMetadata
+
+class MyTagger(BaseTagger):
+    kampground_permissions = ["network.fetch"]
+    kampground_network_domains = ["api.example.com"]
+
+    def tag(self, track: TrackMetadata) -> TrackMetadata:
+        # Enrich track metadata, then queue the result via KampGround:
+        self._ctx.library.update_metadata(track.mbid, {"title": track.title.strip()})
+        return track
+```
+
+**Audit log and rollback:**
+
+Every mutation is logged to `extension_audit_log`. To revert all changes by an extension:
+
+```bash
+kamp rollback <extension_id>   # e.g. kamp rollback my_package.MyTagger
+```
+
 ---
 
 *Built by [Claude Sonnet 4.6](https://www.anthropic.com/claude) (claude-sonnet-4-6) — Anthropic's AI assistant.*

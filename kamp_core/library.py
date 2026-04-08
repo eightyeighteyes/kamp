@@ -194,6 +194,7 @@ class ScanResult:
     removed: int
     unchanged: int
     updated: int = 0
+    new_tracks: list[Track] = field(default_factory=list)
 
 
 class LibraryIndex:
@@ -685,6 +686,19 @@ class LibraryIndex:
         self._conn.commit()
         return reverted
 
+    def has_been_processed_by(self, extension_id: str, mb_recording_id: str) -> bool:
+        """Return True if *extension_id* has a prior audit log entry for *mb_recording_id*.
+
+        Used by the invocation policy to enforce the single-invocation guarantee:
+        the host checks this before offering a track to an extension so that
+        re-scan events do not trigger redundant mutations.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM extension_audit_log WHERE extension_id = ? AND track_mbid = ? LIMIT 1",
+            (extension_id, mb_recording_id),
+        ).fetchone()
+        return row is not None
+
     def audit_log_for(self, extension_id: str) -> list[dict[str, Any]]:
         """Return all audit log rows for *extension_id* in ascending order.
 
@@ -1027,7 +1041,8 @@ class LibraryScanner:
                 on_progress(current, total)
         self._index.upsert_many(tracks_to_upsert)
 
-        added = len([t for t in tracks_to_upsert if t.file_path in to_add])
+        newly_added = [t for t in tracks_to_upsert if t.file_path in to_add]
+        added = len(newly_added)
         updated = len([t for t in tracks_to_upsert if t.file_path in to_update])
 
         removed = 0
@@ -1038,5 +1053,9 @@ class LibraryScanner:
         unchanged = len(on_disk & in_index) - len(to_update)
 
         return ScanResult(
-            added=added, removed=removed, unchanged=unchanged, updated=updated
+            added=added,
+            removed=removed,
+            unchanged=unchanged,
+            updated=updated,
+            new_tracks=newly_added,
         )

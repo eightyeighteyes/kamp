@@ -661,12 +661,28 @@ def _cmd_server(
 
     # Watch the library directory and re-scan when audio files are added or
     # removed, so the UI stays current without requiring a manual scan trigger.
+    from kamp_daemon.ext import (
+        ExtensionRegistry,
+        discover_extensions,
+        invoke_extensions_for_new_tracks,
+    )
     from kamp_daemon.watcher import LibraryWatcher
+
+    _extension_registry = ExtensionRegistry()
+    discover_extensions(_extension_registry)
 
     def _on_library_change() -> None:
         from kamp_core.library import LibraryScanner
 
-        LibraryScanner(index).scan(lib_path)
+        result = LibraryScanner(index).scan(lib_path)
+        # Offer newly ingested tracks to registered extensions.  Re-scan tracks
+        # (to_update) are excluded — only ScanResult.new_tracks (to_add) are
+        # passed.  The invoker enforces the single-invocation guarantee via the
+        # audit log so extensions never see the same track twice.
+        if result.new_tracks:
+            invoke_extensions_for_new_tracks(
+                _extension_registry, result.new_tracks, index
+            )
         # Bump the server's library version so connected WebSocket clients
         # receive a "library.changed" push and reload the album list.
         app.state.notify_library_changed()

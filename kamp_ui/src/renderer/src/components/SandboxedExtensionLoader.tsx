@@ -64,8 +64,7 @@ function handleSdkCall(
 
   switch (msg.method) {
     case 'player.getState':
-      window.KampAPI.player!
-        .getState()
+      window.KampAPI.player!.getState()
         .then((result: PlayerState) => respond(result))
         .catch((err: unknown) => respond(undefined, String(err)))
       break
@@ -217,9 +216,10 @@ export function SandboxedExtensionLoader({ extensions }: Props): null {
       cleanupRefs.current.set(ext.id, cleanup)
     }
 
+    const refs = cleanupRefs.current
     return () => {
-      cleanupRefs.current.forEach((fn) => fn())
-      cleanupRefs.current.clear()
+      refs.forEach((fn) => fn())
+      refs.clear()
     }
   }, [extensions])
 

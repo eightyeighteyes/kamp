@@ -7,7 +7,7 @@
  */
 
 import { ipcRenderer } from 'electron'
-import type { KampAPI, PanelManifest } from '../shared/kampAPI'
+import type { KampAPI, PanelManifest, ExtensionInstallResult } from '../shared/kampAPI'
 
 const panelRegistry: PanelManifest[] = []
 // Callbacks registered by the renderer via panels.onRegister().
@@ -38,6 +38,12 @@ export function buildKampAPI(): KampAPI {
     extensions: {
       getAll() {
         return ipcRenderer.invoke('kamp:get-extensions')
+      },
+      install(source: 'npm' | 'local', nameOrPath: string): Promise<ExtensionInstallResult> {
+        return ipcRenderer.invoke('kamp:install-extension', source, nameOrPath)
+      },
+      uninstall(id: string): Promise<ExtensionInstallResult> {
+        return ipcRenderer.invoke('kamp:uninstall-extension', id)
       }
     }
   }

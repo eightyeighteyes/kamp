@@ -79,7 +79,16 @@ export type ExtensionInfo = {
    * The host renders a settings form from this schema in the Extensions preferences panel.
    */
   settings?: ExtensionSettingSchema[]
+  /**
+   * Where this extension was discovered:
+   *   'bundled'  – shipped inside the app's `extensions/` directory; cannot be removed via the UI.
+   *   'npm'      – user-installed into `node_modules/`; can be uninstalled via the UI.
+   */
+  installedFrom: 'bundled' | 'npm'
 }
+
+/** Result returned by extension install/uninstall operations. */
+export type ExtensionInstallResult = { ok: true; id: string } | { ok: false; error: string }
 
 /** The full shape of window.KampAPI. */
 export type KampAPI = {
@@ -104,6 +113,10 @@ export type KampAPI = {
   extensions: {
     /** Ask the main process to discover installed kamp-extension packages. */
     getAll: () => Promise<ExtensionInfo[]>
+    /** Install a community extension by npm package name or local directory path. */
+    install: (source: 'npm' | 'local', nameOrPath: string) => Promise<ExtensionInstallResult>
+    /** Uninstall a community extension by its package id. */
+    uninstall: (id: string) => Promise<ExtensionInstallResult>
   }
 
   /**

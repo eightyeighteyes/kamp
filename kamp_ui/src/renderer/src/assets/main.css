@@ -2122,6 +2122,80 @@ body,
   color: var(--text-dim);
 }
 
+/* ---- Extension install form ---- */
+
+.prefs-ext-install-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.prefs-ext-install-row .prefs-input {
+  flex: 1;
+}
+
+.prefs-ext-install-or {
+  padding: 6px 0;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+/* Indeterminate progress bar for npm install (no granular progress available). */
+.prefs-ext-install-progress {
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.prefs-ext-install-progress::after {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: var(--accent);
+  animation: prefs-ext-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes prefs-ext-slide {
+  0%   { transform: translateX(-200%); }
+  100% { transform: translateX(350%); }
+}
+
+/* Destructive variant of prefs-choose-btn (used for the Remove confirmation). */
+.prefs-choose-btn--destructive {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.prefs-choose-btn--destructive:hover {
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Newly installed extension highlight — fades from accent tint to transparent over 5s. */
+.prefs-ext-highlight {
+  animation: prefs-ext-highlight-fade 5s ease-out forwards;
+}
+
+@keyframes prefs-ext-highlight-fade {
+  0%   { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+  100% { background: transparent; }
+}
+
+/* Inline remove confirmation layout. */
+.prefs-ext-remove-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 /* ---- Extension permission prompt ---- */
 
 .ext-perm-dialog {

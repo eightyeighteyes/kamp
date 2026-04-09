@@ -104,6 +104,8 @@ export default function App(): React.JSX.Element {
   const [phase2Extensions, setPhase2Extensions] = useState<ExtensionInfo[]>([])
   // Queue of Phase 2 extensions awaiting permission approval — shown one at a time.
   const [permissionQueue, setPermissionQueue] = useState<ExtensionInfo[]>([])
+  // Incrementing counter — bump to re-run extension discovery after install/uninstall.
+  const [extensionGeneration, setExtensionGeneration] = useState(0)
 
   const searchBarRef = useRef<HTMLInputElement>(null)
   const mainContentRef = useRef<HTMLElement>(null)
@@ -318,7 +320,15 @@ export default function App(): React.JSX.Element {
       }
     }
     void loadExtensions()
-  }, [disabledIds]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [disabledIds, extensionGeneration]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Bump the generation counter to re-run extension discovery after install/uninstall.
+  // id is provided by the install callback but not needed here — discovery re-runs for all.
+  const refreshExtensions = (/* id */): void => setExtensionGeneration((g) => g + 1)
+
+  // After uninstall the panel registry in the preload (which has no unregister API) still
+  // holds the removed extension's panel. A renderer reload is the cleanest way to reset it.
+  const reloadAfterUninstall = (): void => window.location.reload()
 
   // Re-queue a previously-denied Phase 2 extension for the permission prompt.
   const handleReviewDenied = (id: string): void => {
@@ -376,6 +386,8 @@ export default function App(): React.JSX.Element {
           extensions={allExtensions}
           extState={extState}
           onReviewDenied={handleReviewDenied}
+          onInstalled={refreshExtensions}
+          onUninstalled={reloadAfterUninstall}
         />
       </>
     )
@@ -466,6 +478,8 @@ export default function App(): React.JSX.Element {
         extensions={allExtensions}
         extState={extState}
         onReviewDenied={handleReviewDenied}
+        onInstalled={refreshExtensions}
+        onUninstalled={reloadAfterUninstall}
       />
       {/* Permission prompt: shown for Phase 2 extensions awaiting user approval. */}
       {permissionQueue[0] && (

@@ -361,7 +361,7 @@ The Electron UI supports frontend extensions — npm packages that contribute pa
 
 **Managing extensions:**
 
-Open **Preferences → Extensions** (Cmd+,) to view all installed extensions, enable/disable them, and configure per-extension settings.
+Open **Preferences → Extensions** (Cmd+,) to view all installed extensions, enable/disable them, and configure per-extension settings. Community extensions can be installed by npm package name or by choosing a local directory. Installed extensions persist across app restarts. Removing an extension unloads it immediately and clears its stored permissions and settings.
 
 **Writing an extension:**
 

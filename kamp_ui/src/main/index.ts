@@ -6,7 +6,8 @@ import * as http from 'http'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { theme } from '../shared/theme'
-import { discoverExtensions } from './extensions'
+import { discoverExtensions, installExtension, uninstallExtension } from './extensions'
+import { readManifest } from './communityManifest'
 
 // Set the app name before the app is ready so the macOS menu bar and all
 // default menu items ("About kamp", "Quit kamp") reflect the correct name.
@@ -222,6 +223,12 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('kamp:get-extensions', () => discoverExtensions())
 
+  ipcMain.handle('kamp:install-extension', (_event, source: 'npm' | 'local', nameOrPath: string) =>
+    installExtension(source, nameOrPath)
+  )
+
+  ipcMain.handle('kamp:uninstall-extension', (_event, id: string) => uninstallExtension(id))
+
   ipcMain.handle('open-directory', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory'],
@@ -243,6 +250,27 @@ app.whenReady().then(async () => {
       http
         .request({ hostname: '127.0.0.1', port: 8000, path: '/api/v1/player/prev', method: 'POST' })
         .end()
+    })
+  }
+
+  // Reinstall community extensions from the manifest. This ensures they are
+  // present in node_modules in packaged builds where node_modules may not
+  // survive between launches. Already-installed packages are a fast no-op.
+  const manifest = readManifest()
+  if (manifest.length > 0) {
+    const results = await Promise.allSettled(
+      manifest.map((entry) =>
+        entry.source === 'local'
+          ? installExtension('local', entry.path)
+          : installExtension('npm', entry.name)
+      )
+    )
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled' && !r.value.ok) {
+        console.warn(`[kamp] failed to reinstall extension "${manifest[i].name}": ${r.value.error}`)
+      } else if (r.status === 'rejected') {
+        console.warn(`[kamp] failed to reinstall extension "${manifest[i].name}":`, r.reason)
+      }
     })
   }
 

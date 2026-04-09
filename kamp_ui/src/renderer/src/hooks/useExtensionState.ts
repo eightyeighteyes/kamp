@@ -56,6 +56,8 @@ export type ExtensionStateHook = {
    * will be shown again on next load.
    */
   resetDenied: (id: string) => void
+  /** Remove all stored state (approved, denied, disabled, settings) for an extension. */
+  clearExtensionState: (id: string) => void
 
   /**
    * Read the stored value for a setting key belonging to `extId`,
@@ -122,6 +124,35 @@ export function useExtensionState(): ExtensionStateHook {
     })
   }, [])
 
+  const clearExtensionState = useCallback((id: string) => {
+    setApprovedIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      saveSet('kamp:ext:approved', next)
+      return next
+    })
+    setDeniedIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      saveSet('kamp:ext:denied', next)
+      return next
+    })
+    setDisabledIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      saveSet('kamp:ext:disabled', next)
+      return next
+    })
+    // Remove all per-setting keys for this extension.
+    const prefix = `kamp:ext:setting:${id}:`
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith(prefix))
+      .forEach((k) => localStorage.removeItem(k))
+  }, [])
+
   const getSettingValue = useCallback((extId: string, key: string): unknown => {
     try {
       const raw = localStorage.getItem(settingKey(extId, key))
@@ -145,6 +176,7 @@ export function useExtensionState(): ExtensionStateHook {
     approve,
     deny,
     resetDenied,
+    clearExtensionState,
     getSettingValue,
     setSettingValue
   }

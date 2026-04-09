@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import type { ExtensionInfo, ExtensionSettingSchema } from '../../../shared/kampAPI'
 import type { ExtensionStateHook } from '../hooks/useExtensionState'
+import { useExtensionInstall } from '../hooks/useExtensionInstall'
 
 // Keys whose values must be integers — sent as strings over the wire but
 // stored as numbers in the config.
@@ -359,23 +360,169 @@ function ExtensionSettingField({
   )
 }
 
+// ---------------------------------------------------------------------------
+// InstallForm
+// ---------------------------------------------------------------------------
+
+function InstallForm({ onInstalled }: { onInstalled: (id: string) => void }): React.JSX.Element {
+  const { npmStatus, localStatus, installByName, installByPath } = useExtensionInstall()
+  const [npmInput, setNpmInput] = useState('')
+  const [localPath, setLocalPath] = useState<string | null>(null)
+
+  const npmBusy = npmStatus.status === 'installing'
+  const localBusy = localStatus.status === 'installing'
+
+  const handleNpmInstall = useCallback(() => {
+    void installByName(npmInput, (id) => {
+      setNpmInput('')
+      onInstalled(id)
+    })
+  }, [npmInput, installByName, onInstalled])
+
+  const handleChooseDir = useCallback(async () => {
+    const chosen = await window.api.openDirectory()
+    if (!chosen) return
+    setLocalPath(chosen)
+    void installByPath(chosen, (id) => {
+      setLocalPath(null)
+      onInstalled(id)
+    })
+  }, [installByPath, onInstalled])
+
+  return (
+    <div className="prefs-section">
+      <div className="prefs-section-label">Add Extension</div>
+
+      {/* npm package name */}
+      <div className="prefs-row">
+        <div className="prefs-row-header">
+          <span className="prefs-label">Package name</span>
+        </div>
+        <div className="prefs-ext-install-row">
+          <input
+            className="prefs-input"
+            type="text"
+            placeholder="kamp-ext-..."
+            value={npmInput}
+            onChange={(e) => {
+              setNpmInput(e.target.value)
+              // Clear stale error when the user edits the field.
+              if (npmStatus.status === 'error') setNpmInput(e.target.value)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleNpmInstall()
+            }}
+            disabled={npmBusy}
+          />
+          <button
+            className="prefs-choose-btn"
+            disabled={npmBusy || !npmInput.trim()}
+            onClick={handleNpmInstall}
+          >
+            {npmBusy ? 'Installing…' : 'Install'}
+          </button>
+        </div>
+        {npmStatus.status === 'installing' && <div className="prefs-ext-install-progress" />}
+        {npmStatus.status === 'error' && (
+          <p className="prefs-hint" style={{ color: 'var(--error)' }}>
+            {npmStatus.message}
+          </p>
+        )}
+        {npmStatus.status === 'idle' && (
+          <p className="prefs-hint">Installs from the npm registry.</p>
+        )}
+      </div>
+
+      {/* Divider */}
+      <div className="prefs-ext-install-or">or</div>
+
+      {/* Local directory */}
+      <div className="prefs-row">
+        <div className="prefs-row-header">
+          <span className="prefs-label">Local path</span>
+        </div>
+        <div className="prefs-path-display">
+          <span className="prefs-path-text">
+            {localPath ?? <span style={{ opacity: 0.4 }}>(not set)</span>}
+          </span>
+          <button
+            className="prefs-choose-btn"
+            onClick={() => void handleChooseDir()}
+            disabled={localBusy}
+          >
+            {localBusy ? 'Installing…' : 'Choose…'}
+          </button>
+        </div>
+        {localStatus.status === 'installing' && <div className="prefs-ext-install-progress" />}
+        {localStatus.status === 'error' && (
+          <p className="prefs-hint" style={{ color: 'var(--error)' }}>
+            {localStatus.message}
+          </p>
+        )}
+        {localStatus.status === 'idle' && (
+          <p className="prefs-hint">Choose a directory containing a package.json.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ExtensionRow (with uninstall for community extensions)
+// ---------------------------------------------------------------------------
+
 function ExtensionRow({
   ext,
   extState,
-  onReviewDenied
+  onReviewDenied,
+  onUninstall,
+  highlight
 }: {
   ext: ExtensionInfo
   extState: ExtensionStateHook
   onReviewDenied: (id: string) => void
+  onUninstall: (id: string) => void
+  highlight: boolean
 }): React.JSX.Element {
   // A Phase 2 extension that was denied is not running — treat toggle as off.
   const isDenied = ext.phase === 2 && extState.deniedIds.has(ext.id)
   const enabled = !isDenied && !extState.disabledIds.has(ext.id)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
   const hasSettings = ext.settings && ext.settings.length > 0
 
+  // Close confirmation on Escape.
+  useEffect(() => {
+    if (!confirmingRemove) return
+    const handler = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setConfirmingRemove(false)
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [confirmingRemove])
+
+  if (confirmingRemove) {
+    return (
+      <div className="prefs-row prefs-ext-remove-confirm">
+        <span className="prefs-label">Remove {ext.name}?</span>
+        <p className="prefs-hint">The extension will be unloaded and deleted.</p>
+        <div className="prefs-ext-meta">
+          <button
+            className="prefs-choose-btn prefs-choose-btn--destructive"
+            onClick={() => onUninstall(ext.id)}
+          >
+            Remove
+          </button>
+          <button className="prefs-ext-configure-btn" onClick={() => setConfirmingRemove(false)}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="prefs-row">
+    <div className={`prefs-row${highlight ? ' prefs-ext-highlight' : ''}`}>
       <div className="prefs-row-header">
         <span className="prefs-label">{ext.name}</span>
         <div className="prefs-ext-meta">
@@ -402,6 +549,12 @@ function ExtensionRow({
               {drawerOpen ? 'Done' : 'Configure...'}
             </button>
           )}
+          {/* User-installed community extensions can be removed; bundled ones cannot. */}
+          {ext.phase === 2 && ext.installedFrom === 'npm' && (
+            <button className="prefs-ext-configure-btn" onClick={() => setConfirmingRemove(true)}>
+              Remove
+            </button>
+          )}
         </div>
         <ExtensionToggle enabled={enabled} onChange={() => extState.toggleEnabled(ext.id)} />
       </div>
@@ -420,27 +573,41 @@ function ExtensionRow({
 function ExtensionsPanel({
   extensions,
   extState,
-  onReviewDenied
+  onReviewDenied,
+  onInstalled,
+  onUninstall,
+  highlightExtId
 }: {
   extensions: ExtensionInfo[]
   extState: ExtensionStateHook
   onReviewDenied: (id: string) => void
+  onInstalled: (id: string) => void
+  onUninstall: (id: string) => void
+  highlightExtId: string | null
 }): React.JSX.Element {
-  if (extensions.length === 0) {
-    return (
-      <div className="prefs-section">
-        <p className="prefs-ext-empty">No extensions installed.</p>
-      </div>
-    )
-  }
-
   return (
-    <div className="prefs-section">
-      <div className="prefs-section-label">Installed</div>
-      {extensions.map((ext) => (
-        <ExtensionRow key={ext.id} ext={ext} extState={extState} onReviewDenied={onReviewDenied} />
-      ))}
-    </div>
+    <>
+      {extensions.length === 0 ? (
+        <div className="prefs-section">
+          <p className="prefs-ext-empty">No extensions installed.</p>
+        </div>
+      ) : (
+        <div className="prefs-section">
+          <div className="prefs-section-label">Installed</div>
+          {extensions.map((ext) => (
+            <ExtensionRow
+              key={ext.id}
+              ext={ext}
+              extState={extState}
+              onReviewDenied={onReviewDenied}
+              onUninstall={onUninstall}
+              highlight={ext.id === highlightExtId}
+            />
+          ))}
+        </div>
+      )}
+      <InstallForm onInstalled={onInstalled} />
+    </>
   )
 }
 
@@ -451,11 +618,15 @@ function ExtensionsPanel({
 export function PreferencesDialog({
   extensions,
   extState,
-  onReviewDenied
+  onReviewDenied,
+  onInstalled,
+  onUninstalled
 }: {
   extensions: ExtensionInfo[]
   extState: ExtensionStateHook
   onReviewDenied: (id: string) => void
+  onInstalled: (id: string) => void
+  onUninstalled: () => void
 }): React.JSX.Element | null {
   const prefsOpen = useStore((s) => s.prefsOpen)
   const closePrefs = useStore((s) => s.closePrefs)
@@ -467,6 +638,33 @@ export function PreferencesDialog({
   const scanProgress = useStore((s) => s.scanProgress)
 
   const [activeTab, setActiveTab] = useState<'general' | 'extensions'>('general')
+  const [highlightExtId, setHighlightExtId] = useState<string | null>(null)
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  const handleInstalled = useCallback(
+    (id: string) => {
+      onInstalled(id)
+      setActiveTab('extensions')
+      clearTimeout(highlightTimerRef.current)
+      setHighlightExtId(id)
+      // Clear after animation completes (5s fade + small buffer).
+      highlightTimerRef.current = setTimeout(() => setHighlightExtId(null), 5500)
+    },
+    [onInstalled]
+  )
+
+  useEffect(() => () => clearTimeout(highlightTimerRef.current), [])
+
+  const { uninstall } = useExtensionInstall()
+  const handleUninstall = useCallback(
+    (id: string) => {
+      void uninstall(id, () => {
+        extState.clearExtensionState(id)
+        onUninstalled()
+      })
+    },
+    [uninstall, extState, onUninstalled]
+  )
 
   // Load config the first time the dialog opens.
   useEffect(() => {
@@ -679,6 +877,9 @@ export function PreferencesDialog({
               extensions={extensions}
               extState={extState}
               onReviewDenied={onReviewDenied}
+              onInstalled={handleInstalled}
+              onUninstall={handleUninstall}
+              highlightExtId={highlightExtId}
             />
           )}
         </div>

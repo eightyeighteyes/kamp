@@ -3,10 +3,10 @@ id: TASK-97
 title: >-
   Frontend extension SDK — wrap REST API so extensions don't call fetch()
   directly
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-09 01:18'
-updated_date: '2026-04-09 01:38'
+updated_date: '2026-04-09 02:21'
 labels: []
 milestone: m-2
 dependencies: []
@@ -51,13 +51,46 @@ When the Bandcamp frontend extension is scoped, decide between options 1 and 2 b
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `KampSDK` type defined in `kamp_ui/src/shared/kampAPI.ts` with at minimum `player.getState()` and `library.getAlbumArt()`
-- [ ] #2 SDK implementation wired into the preload and passed to first-party extensions via `register(api)`
-- [ ] #3 Sandbox shim updated to pass the SDK into community extensions (serialised or proxied via postMessage)
-- [ ] #4 `kamp-groover` example updated to use SDK methods instead of raw fetch
-- [ ] #5 `api.serverUrl` removed from `KampAPI` type and all call sites
-- [ ] #6 Developer Guide updated to show SDK usage; raw fetch removed from examples
+- [x] #1 #1 `KampSDK` type defined in `kamp_ui/src/shared/kampAPI.ts` with at minimum `player.getState()` and `library.getAlbumArt()`
+- [x] #2 #2 SDK implementation wired into the preload and passed to first-party extensions via `register(api)`
+- [x] #3 #3 Sandbox shim updated to pass the SDK into community extensions (serialised or proxied via postMessage)
+- [x] #4 #4 `kamp-groover` example updated to use SDK methods instead of raw fetch
+- [x] #5 #5 `api.serverUrl` removed from `KampAPI` type and all call sites
+- [x] #6 #6 Developer Guide updated to show SDK usage; raw fetch removed from examples
 <!-- SECTION:DESCRIPTION:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Implementation Plan
+
+### Step 1 — Types (shared/kampAPI.ts)
+- Add `Track` and `PlayerState` TS types mirroring server response shapes
+- Add `player.getState()` and `library.getAlbumArtUrl()` namespaces to `KampAPI`
+- Remove `serverUrl` from `KampAPI`
+
+### Step 2 — Preload (preload/kampAPI.ts)
+- Implement `player.getState()` (fetch + JSON parse) using server URL internally
+- Implement `library.getAlbumArtUrl()` (URL construction) using server URL internally
+- Remove `serverUrl` from the returned object
+
+### Step 3 — Phase 1 wiring (App.tsx)
+- Replace `serverUrl: window.KampAPI.serverUrl` in scopedAPI with `player` and `library` namespaces
+
+### Step 4 — Sandbox shim + loader (SandboxedExtensionLoader.tsx + index.html)
+- Add postMessage RPC helper (`sdkCall`) to the shim: posts `kamp:sdk-call`, awaits `kamp:sdk-response`
+- Build SDK object in the shim from these proxied calls
+- Handle `kamp:sdk-call` messages in SandboxedExtensionLoader, dispatch to real SDK, reply with `kamp:sdk-response`
+- Recompute shim SHA-256 hash and update index.html script-src
+
+### Step 5 — Update extensions
+- kamp-example-panel/index.js: use api.player.getState()
+- extensions/kamp-groover/index.js: use api.player.getState() and api.library.getAlbumArtUrl()
+
+### Step 6 — Docs
+- Update Extension Developer Guide: replace raw-fetch examples with SDK calls, remove api.serverUrl
+<!-- SECTION:PLAN:END -->
+
 <!-- AC:END -->
+
 <!-- AC:END -->

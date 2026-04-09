@@ -284,12 +284,14 @@ export default function App(): React.JSX.Element {
           }
 
           // Phase 1: on the allow-list; pass a permission-scoped KampAPI.
+          // Each SDK namespace is only present when the extension declared the
+          // corresponding permission — undeclared capabilities are simply absent.
           const pset = new Set(ext.permissions)
           const scopedAPI = {
-            serverUrl: window.KampAPI.serverUrl,
             panels: window.KampAPI.panels,
             extensions: window.KampAPI.extensions,
-            // settings API: only present when the extension declared the 'settings' permission.
+            ...(pset.has('player.read') ? { player: window.KampAPI.player } : {}),
+            ...(pset.has('library.read') ? { library: window.KampAPI.library } : {}),
             ...(pset.has('settings')
               ? {
                   settings: {

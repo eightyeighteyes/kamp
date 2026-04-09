@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { ExtensionInfo, SlotId } from '../../../shared/kampAPI'
+import type { ExtensionInfo, SlotId, PlayerState } from '../../../shared/kampAPI'
 
 /**
  * Static shim injected into every community extension iframe via srcdoc.
@@ -8,23 +8,25 @@ import type { ExtensionInfo, SlotId } from '../../../shared/kampAPI'
  * listed in index.html's script-src CSP, satisfying Chromium's rule that
  * srcdoc iframes inherit the parent document's CSP.
  *
- * Extension code and metadata arrive via postMessage (kamp:init) sent after
- * the iframe's onLoad fires. The shim dynamically imports the extension code
- * as a blob: URL and calls register(). The extension's panels.register() call
- * sends kamp:register-panel back to the host, which registers a real panel
- * whose render() creates a fresh iframe on each tab activation.
+ * Extension code and permissions arrive via postMessage (kamp:init) after
+ * the iframe's onLoad fires. The shim builds a permission-scoped SDK object
+ * and passes it to the extension's register() function.
  *
- * Hash (index.html script-src): sha256-fXNWd+rx+M3h78bhaTFeSztcM/uSwO0hPDuYKsxUtKQ=
- * If you change SANDBOX_SHIM, recompute the hash and update index.html.
+ * SDK methods available to the shim:
+ *   player.getState()        — async, proxied via kamp:sdk-call / kamp:sdk-response
+ *   library.getAlbumArtUrl() — sync, constructs URL against the hardcoded server origin
+ *
+ * Hash (index.html script-src): sha256-IyJ04Rbq6eUCOWHuijxWFlP4mGP9HCsnZhyJK2DWdSg=
+ * If you change SANDBOX_SHIM, recompute the hash and update index.html:
+ *   node -e "const s='<paste shim>';console.log('sha256-'+require('crypto').createHash('sha256').update(s,'utf8').digest('base64'))"
  *
  * NOTE: sandboxed iframes without allow-same-origin reload when moved in the
  * DOM, so we do NOT use a holding-area/move strategy. Each panel mount creates
  * a fresh iframe; state is lost on tab switch.
  */
 // prettier-ignore
-// If you change this string, recompute the hash and update index.html script-src:
-//   node -e "const s='<paste shim>';console.log('sha256-'+require('crypto').createHash('sha256').update(s,'utf8').digest('base64'))"
-const SANDBOX_SHIM = `(function(){var r={},c={},pending=null;window.addEventListener('message',function(e){if(e.source!==window.parent)return;var m=e.data;if(!m||typeof m.type!=='string')return;if(m.type==='kamp:init'){var id=m.id,su=m.serverUrl;var K={serverUrl:su,panels:{register:function(p){if(!p||typeof p.id!=='string')return;r[p.id]=p.render;window.parent.postMessage({type:'kamp:register-panel',extensionId:id,manifest:{id:p.id,title:p.title,defaultSlot:p.defaultSlot,compatibleSlots:p.compatibleSlots}},'*');if(pending===p.id&&typeof r[p.id]==='function'){c[p.id]=r[p.id](document.body);pending=null}}}};var b=new Blob([m.code],{type:'text/javascript'});var u=URL.createObjectURL(b);import(u).then(function(mod){if(typeof mod.register==='function')mod.register(K)}).catch(function(err){console.error('[kamp sandbox '+id+']',err)}).finally(function(){URL.revokeObjectURL(u)})}else if(m.type==='kamp:panel-mount'&&m.panelId){if(typeof r[m.panelId]==='function'){c[m.panelId]=r[m.panelId](document.body)}else{pending=m.panelId}}else if(m.type==='kamp:panel-unmount'&&m.panelId){var fn=c[m.panelId];if(typeof fn==='function')fn();delete c[m.panelId];if(pending===m.panelId)pending=null}})})();`
+// If you change this string, recompute the hash and update index.html script-src (see comment above).
+const SANDBOX_SHIM = `(function(){var SERVER="http://127.0.0.1:8000",r={},c={},pending=null,reqs={},rid=0;function rpc(method,args){return new Promise(function(resolve,reject){var id=++rid;reqs[id]={resolve:resolve,reject:reject};window.parent.postMessage({type:"kamp:sdk-call",id:id,method:method,args:args},"*")})}window.addEventListener("message",function(e){if(e.source!==window.parent)return;var m=e.data;if(!m||typeof m.type!=="string")return;if(m.type==="kamp:init"){var id=m.id,perms=m.permissions||[];var K={panels:{register:function(p){if(!p||typeof p.id!=="string")return;r[p.id]=p.render;window.parent.postMessage({type:"kamp:register-panel",extensionId:id,manifest:{id:p.id,title:p.title,defaultSlot:p.defaultSlot,compatibleSlots:p.compatibleSlots}},"*");if(pending===p.id&&typeof r[p.id]==="function"){c[p.id]=r[p.id](document.body);pending=null}}}};if(perms.indexOf("player.read")!==-1){K.player={getState:function(){return rpc("player.getState",[])}}}if(perms.indexOf("library.read")!==-1){K.library={getAlbumArtUrl:function(aa,a){return SERVER+"/api/v1/album-art?album_artist="+encodeURIComponent(aa)+"&album="+encodeURIComponent(a)}}}var b=new Blob([m.code],{type:"text/javascript"});var u=URL.createObjectURL(b);import(u).then(function(mod){if(typeof mod.register==="function")mod.register(K)}).catch(function(err){console.error("[kamp sandbox "+id+"]",err)}).finally(function(){URL.revokeObjectURL(u)})}else if(m.type==="kamp:sdk-response"){var req=reqs[m.id];if(!req)return;delete reqs[m.id];if(m.error)req.reject(new Error(m.error));else req.resolve(m.result)}else if(m.type==="kamp:panel-mount"&&m.panelId){if(typeof r[m.panelId]==="function"){c[m.panelId]=r[m.panelId](document.body)}else{pending=m.panelId}}else if(m.type==="kamp:panel-unmount"&&m.panelId){var fn=c[m.panelId];if(typeof fn==="function")fn();delete c[m.panelId];if(pending===m.panelId)pending=null}})})();`
 
 const SANDBOX_SRCDOC =
   `<!doctype html>
@@ -40,6 +42,36 @@ const SANDBOX_SRCDOC =
   `/script>
 </body>
 </html>`
+
+/**
+ * Handles kamp:sdk-call messages from sandboxed extension iframes.
+ *
+ * Extensions call SDK methods (e.g. api.player.getState()) which post a
+ * kamp:sdk-call message. This handler dispatches to the real KampAPI
+ * implementation and posts a kamp:sdk-response back to the source iframe.
+ */
+function handleSdkCall(
+  event: MessageEvent<{ type: string; id: number; method: string; args: unknown[] }>
+): void {
+  const msg = event.data
+  if (!msg || msg.type !== 'kamp:sdk-call') return
+  const source = event.source as WindowProxy | null
+  if (!source) return
+
+  const respond = (result?: unknown, error?: string): void => {
+    source.postMessage({ type: 'kamp:sdk-response', id: msg.id, result, error }, '*')
+  }
+
+  switch (msg.method) {
+    case 'player.getState':
+      window.KampAPI.player!.getState()
+        .then((result: PlayerState) => respond(result))
+        .catch((err: unknown) => respond(undefined, String(err)))
+      break
+    default:
+      respond(undefined, `Unknown SDK method: ${msg.method}`)
+  }
+}
 
 /**
  * Creates a discovery iframe for an extension: loads the shim, sends kamp:init,
@@ -86,7 +118,7 @@ function createDiscoveryIframe(
     'load',
     () => {
       iframe.contentWindow?.postMessage(
-        { type: 'kamp:init', id: ext.id, serverUrl: window.KampAPI.serverUrl, code: ext.code },
+        { type: 'kamp:init', id: ext.id, permissions: ext.permissions, code: ext.code },
         '*'
       )
     },
@@ -120,10 +152,19 @@ interface Props {
  *
  * State is lost on tab switch — the holding-area/move strategy was abandoned
  * because Chromium reloads sandboxed cross-origin iframes on DOM move.
+ *
+ * SDK calls (kamp:sdk-call) from any active iframe are handled by a single
+ * global listener registered for the lifetime of this component.
  */
 export function SandboxedExtensionLoader({ extensions }: Props): null {
   // Track cleanup functions for in-flight discovery iframes.
   const cleanupRefs = useRef<Map<string, () => void>>(new Map())
+
+  // Global handler for SDK method proxying from all active extension iframes.
+  useEffect(() => {
+    window.addEventListener('message', handleSdkCall)
+    return () => window.removeEventListener('message', handleSdkCall)
+  }, [])
 
   useEffect(() => {
     for (const ext of extensions) {
@@ -152,7 +193,7 @@ export function SandboxedExtensionLoader({ extensions }: Props): null {
                   {
                     type: 'kamp:init',
                     id: ext.id,
-                    serverUrl: window.KampAPI.serverUrl,
+                    permissions: ext.permissions,
                     code: ext.code
                   },
                   '*'
@@ -175,9 +216,10 @@ export function SandboxedExtensionLoader({ extensions }: Props): null {
       cleanupRefs.current.set(ext.id, cleanup)
     }
 
+    const refs = cleanupRefs.current
     return () => {
-      cleanupRefs.current.forEach((fn) => fn())
-      cleanupRefs.current.clear()
+      refs.forEach((fn) => fn())
+      refs.clear()
     }
   }, [extensions])
 

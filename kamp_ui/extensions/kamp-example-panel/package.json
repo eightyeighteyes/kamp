@@ -7,6 +7,6 @@
   "main": "index.js",
   "type": "module",
   "kamp": {
-    "permissions": []
+    "permissions": ["player.read"]
   }
 }

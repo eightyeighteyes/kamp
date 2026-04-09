@@ -96,8 +96,11 @@ def has_embedded_art(path: Path, min_dimension: int, max_bytes: int) -> bool:
 def find_local_artwork(directory: Path) -> Path | None:
     """Return the best image file found directly in *directory*, or None.
 
-    Prefers filenames whose stem contains a recognised art keyword
-    (cover, folder, artwork, front) in that priority order.  Falls back to
+    Prefers filenames whose stem matches a recognised art keyword
+    (cover, folder, artwork, front) in that priority order.  Within each
+    keyword, an exact stem match (e.g. "cover.jpg") beats a substring match
+    (e.g. "_Back-Cover.jpg") so that the front cover is not displaced by a
+    back-cover file that happens to contain the same keyword.  Falls back to
     the alphabetically first image if no keyword matches.
     """
     candidates: list[Path] = []
@@ -106,6 +109,11 @@ def find_local_artwork(directory: Path) -> Path | None:
     if not candidates:
         return None
     for hint in _PREFERRED_ART_NAMES:
+        # Exact stem match first (cover.jpg before _Back-Cover.jpg).
+        for p in sorted(candidates):
+            if p.stem.lower() == hint:
+                return p
+        # Substring match as fallback within this hint.
         for p in sorted(candidates):
             if hint in p.stem.lower():
                 return p

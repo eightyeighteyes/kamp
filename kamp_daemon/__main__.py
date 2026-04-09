@@ -33,6 +33,7 @@ from .syncer import Syncer
 # Stable Homebrew binary locations (Apple Silicon, then Intel). Checked in order
 # before falling back to PATH, to avoid pyenv shims shadowing the Homebrew install.
 _HOMEBREW_KAMP_PATHS = ["/opt/homebrew/bin/kamp", "/usr/local/bin/kamp"]
+_HOMEBREW_MPV_PATHS = ["/opt/homebrew/bin/mpv", "/usr/local/bin/mpv"]
 
 _SERVICE_LABEL = "com.kamp"
 _PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{_SERVICE_LABEL}.plist"
@@ -587,7 +588,9 @@ def _cmd_daemon(
     db_path = _state_dir() / "library.db"
 
     index = LibraryIndex(db_path)
-    engine = MpvPlaybackEngine()
+    # Resolve the full mpv path before creating the engine so launchd-managed
+    # instances (which run with a minimal PATH) can find the Homebrew binary.
+    engine = MpvPlaybackEngine(mpv_bin=_resolve_mpv_binary())
     queue: PlaybackQueue = PlaybackQueue()
 
     # Restore the last session's queue and position, paused, so the user can
@@ -1052,6 +1055,19 @@ def _resolve_kamp_binary() -> str:
             "Fix: pip uninstall kamp && pyenv rehash, then re-run install-service."
         )
     return found or sys.argv[0]
+
+
+def _resolve_mpv_binary() -> str:
+    """Return the absolute path to the mpv binary.
+
+    launchd runs with a minimal PATH that excludes Homebrew, so 'mpv' alone
+    would not be found even when brew install mpv has been run. Check the
+    stable Homebrew locations first, then fall back to PATH.
+    """
+    for path in _HOMEBREW_MPV_PATHS:
+        if Path(path).exists():
+            return path
+    return shutil.which("mpv") or "mpv"
 
 
 def _cmd_install_service(config_path: Path, menu_bar: bool = False) -> None:

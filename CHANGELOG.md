@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.8.0](https://github.com/eightyeighteyes/kamp/compare/v1.7.0...v1.8.0) (2026-04-09)
+
+
+### Features
+
+* Last.fm scrobble integration (TASK-27) ([#189](https://github.com/eightyeighteyes/kamp/issues/189)) ([0d226c0](https://github.com/eightyeighteyes/kamp/commit/0d226c0a17cd7e2d382a203f7397f32690629f68))
+* server-push player events — track.changed and play_state.changed WebSocket notifications (TASK-115) ([#186](https://github.com/eightyeighteyes/kamp/issues/186)) ([6f3311b](https://github.com/eightyeighteyes/kamp/commit/6f3311b1f645127273a629896a637a17f5288027))
+
 ## [1.7.0](https://github.com/eightyeighteyes/kamp/compare/v1.6.0...v1.7.0) (2026-04-09)
 
 

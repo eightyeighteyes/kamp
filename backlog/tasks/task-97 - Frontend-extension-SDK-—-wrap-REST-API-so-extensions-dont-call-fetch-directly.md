@@ -6,10 +6,11 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-04-09 01:18'
-updated_date: '2026-04-09 02:21'
+updated_date: '2026-04-09 13:27'
 labels: []
 milestone: m-2
 dependencies: []
+ordinal: 23000
 ---
 
 ## Description
@@ -51,12 +52,12 @@ When the Bandcamp frontend extension is scoped, decide between options 1 and 2 b
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [x] #1 #1 `KampSDK` type defined in `kamp_ui/src/shared/kampAPI.ts` with at minimum `player.getState()` and `library.getAlbumArt()`
-- [x] #2 #2 SDK implementation wired into the preload and passed to first-party extensions via `register(api)`
-- [x] #3 #3 Sandbox shim updated to pass the SDK into community extensions (serialised or proxied via postMessage)
-- [x] #4 #4 `kamp-groover` example updated to use SDK methods instead of raw fetch
-- [x] #5 #5 `api.serverUrl` removed from `KampAPI` type and all call sites
-- [x] #6 #6 Developer Guide updated to show SDK usage; raw fetch removed from examples
+- [x] #1 #1 #1 `KampSDK` type defined in `kamp_ui/src/shared/kampAPI.ts` with at minimum `player.getState()` and `library.getAlbumArt()`
+- [x] #2 #2 #2 SDK implementation wired into the preload and passed to first-party extensions via `register(api)`
+- [x] #3 #3 #3 Sandbox shim updated to pass the SDK into community extensions (serialised or proxied via postMessage)
+- [x] #4 #4 #4 `kamp-groover` example updated to use SDK methods instead of raw fetch
+- [x] #5 #5 #5 `api.serverUrl` removed from `KampAPI` type and all call sites
+- [x] #6 #6 #6 Developer Guide updated to show SDK usage; raw fetch removed from examples
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Implementation Plan
@@ -90,6 +91,8 @@ When the Bandcamp frontend extension is scoped, decide between options 1 and 2 b
 ### Step 6 — Docs
 - Update Extension Developer Guide: replace raw-fetch examples with SDK calls, remove api.serverUrl
 <!-- SECTION:PLAN:END -->
+
+<!-- AC:END -->
 
 <!-- AC:END -->
 

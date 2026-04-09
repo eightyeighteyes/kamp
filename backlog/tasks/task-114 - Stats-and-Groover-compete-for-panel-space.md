@@ -1,12 +1,14 @@
 ---
 id: TASK-114
 title: Stats and Groover compete for panel space
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-09 12:15'
+updated_date: '2026-04-09 13:27'
 labels: []
 milestone: m-2
 dependencies: []
+ordinal: 24000
 ---
 
 ## Description

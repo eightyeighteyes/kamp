@@ -501,7 +501,7 @@ version = "1.0.9"
 description = "A minimal low-level HTTP client."
 optional = false
 python-versions = ">=3.8"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "httpcore-1.0.9-py3-none-any.whl", hash = "sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55"},
     {file = "httpcore-1.0.9.tar.gz", hash = "sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8"},
@@ -576,7 +576,7 @@ version = "0.28.1"
 description = "The next generation HTTP client."
 optional = false
 python-versions = ">=3.8"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad"},
     {file = "httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc"},
@@ -1204,6 +1204,24 @@ files = [
 
 [package.extras]
 windows-terminal = ["colorama (>=0.4.6)"]
+
+[[package]]
+name = "pylast"
+version = "7.0.2"
+description = "A Python interface to Last.fm and Libre.fm"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "pylast-7.0.2-py3-none-any.whl", hash = "sha256:c995e078670b3a8e3116a31b17d1f0d89c4d020407f6967ee9ffab2aeecd9de7"},
+    {file = "pylast-7.0.2.tar.gz", hash = "sha256:825e2b5d9144c5491d9c353511169a1595813e6a1ad203faf7525cd2d1d1828e"},
+]
+
+[package.dependencies]
+httpx = ">=0.26"
+
+[package.extras]
+tests = ["flaky", "pytest (>=9)", "pytest-cov", "pytest-random-order", "pytest-recording", "pyyaml"]
 
 [[package]]
 name = "pyobjc-core"
@@ -2030,4 +2048,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "d8241ab8274444ee7e7d817b932c716787424a2757b241e8b31d88f988658f3c"
+content-hash = "35f3d2820a76a5eaded6a8f64e3d594c17f4dd1180301771713dfe8dd7fb9fc5"

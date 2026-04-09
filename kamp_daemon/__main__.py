@@ -499,6 +499,7 @@ def _cmd_server(
 
     from kamp_core.library import LibraryIndex
     from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
+    from kamp_core.scrobbler import Scrobbler, authenticate as _lastfm_authenticate
     from kamp_core.server import create_app
     from kamp_daemon.config import config_set as _config_set
 
@@ -589,6 +590,36 @@ def _cmd_server(
 
     engine.on_file_loaded = _on_file_loaded
 
+    # Set up Last.fm scrobbler.  The ref is a mutable box so the connect /
+    # disconnect endpoints can replace the scrobbler at runtime without
+    # re-wiring engine callbacks.
+    _scrobbler_ref: list[Scrobbler | None] = [
+        Scrobbler(config.lastfm.session_key) if config.lastfm else None
+    ]
+
+    # Scrobble BEFORE the queue advances so queue.current() still holds the
+    # finishing track.  Wrap the callback that was just set above.
+    _orig_on_track_end = engine.on_track_end
+
+    def _on_track_end_scrobble() -> None:
+        if _scrobbler_ref[0] is not None:
+            _scrobbler_ref[0].on_track_ended(queue.current())
+        if _orig_on_track_end is not None:
+            _orig_on_track_end()
+
+    engine.on_track_end = _on_track_end_scrobble
+
+    # Notify scrobbler when a new file is loaded (resets per-play-instance state).
+    _orig_on_file_loaded = engine.on_file_loaded
+
+    def _on_file_loaded_scrobble() -> None:
+        if _orig_on_file_loaded is not None:
+            _orig_on_file_loaded()
+        if _scrobbler_ref[0] is not None:
+            _scrobbler_ref[0].on_track_changed(queue.current())
+
+    engine.on_file_loaded = _on_file_loaded_scrobble
+
     # Persist current track and position every 5 s so restarts can resume;
     # also push position to the Now Playing widget at ~1 Hz.
     def _state_saver() -> None:
@@ -598,6 +629,8 @@ def _cmd_server(
         while True:
             time.sleep(1)
             current = queue.current()
+            if _scrobbler_ref[0] is not None:
+                _scrobbler_ref[0].tick(current, engine.state.playing)
             if current:
                 if tick % 5 == 0:
                     index.save_player_state(current.file_path, engine.state.position)
@@ -629,8 +662,26 @@ def _cmd_server(
         # catches these and returns HTTP 422 to the client.
         _config_set(config_path, key, value)
 
+    def _on_lastfm_connect(username: str, password: str) -> None:
+        session_key = _lastfm_authenticate(username, password)
+        # Append [lastfm] section if absent — config_set raises for missing optional sections.
+        text = config_path.read_text()
+        if "[lastfm]" not in text:
+            with open(config_path, "a") as f:
+                f.write(
+                    f'\n[lastfm]\nusername = "{username}"\nsession_key = "{session_key}"\n'
+                )
+        else:
+            _config_set(config_path, "lastfm.username", username)
+            _config_set(config_path, "lastfm.session_key", session_key)
+        _scrobbler_ref[0] = Scrobbler(session_key)
+
+    def _on_lastfm_disconnect() -> None:
+        _config_set(config_path, "lastfm.session_key", "")
+        _scrobbler_ref[0] = None
+
     # Build the initial preference values dict from the loaded config.
-    # Bandcamp fields are None when the [bandcamp] section is absent.
+    # Bandcamp and Last.fm fields are None when the section is absent.
     _config_values: dict[str, object] = {
         "paths.staging": str(config.paths.staging),
         "paths.library": str(config.paths.library),
@@ -643,6 +694,7 @@ def _cmd_server(
         "bandcamp.poll_interval_minutes": (
             config.bandcamp.poll_interval_minutes if config.bandcamp else None
         ),
+        "lastfm.username": config.lastfm.username if config.lastfm else None,
     }
 
     app = create_app(
@@ -657,6 +709,8 @@ def _cmd_server(
         on_ui_state_set=_on_ui_state_set,
         config_values=_config_values,
         on_config_set=_on_config_set,
+        on_lastfm_connect=_on_lastfm_connect,
+        on_lastfm_disconnect=_on_lastfm_disconnect,
     )
 
     # Wrap the existing on_track_end callback to also push track.changed events.

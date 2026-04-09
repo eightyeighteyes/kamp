@@ -1189,3 +1189,112 @@ class TestConfigEndpoints:
         data = c.get("/api/v1/config").json()
         assert data["artwork.max_bytes"] == 500000
         assert isinstance(data["artwork.max_bytes"], int)
+
+
+class TestLastfmEndpoints:
+    def test_connect_calls_callback_and_returns_ok(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        received: list[tuple[str, str]] = []
+
+        def _on_connect(username: str, password: str) -> None:
+            received.append((username, password))
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_lastfm_connect=_on_connect,
+        )
+        response = TestClient(app).post(
+            "/api/v1/lastfm/connect",
+            json={"username": "alice", "password": "secret"},
+        )
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert response.json()["username"] == "alice"
+        assert received == [("alice", "secret")]
+
+    def test_connect_updates_config_state(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_lastfm_connect=lambda u, p: None,
+        )
+        c = TestClient(app)
+        c.post("/api/v1/lastfm/connect", json={"username": "alice", "password": "x"})
+        data = c.get("/api/v1/config").json()
+        assert data["lastfm.username"] == "alice"
+
+    def test_connect_returns_422_when_callback_raises(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        def _on_connect(username: str, password: str) -> None:
+            raise Exception("Invalid credentials")
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_lastfm_connect=_on_connect,
+        )
+        response = TestClient(app).post(
+            "/api/v1/lastfm/connect",
+            json={"username": "alice", "password": "wrong"},
+        )
+        assert response.status_code == 422
+
+    def test_connect_returns_503_when_no_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        response = TestClient(app).post(
+            "/api/v1/lastfm/connect",
+            json={"username": "alice", "password": "x"},
+        )
+        assert response.status_code == 503
+
+    def test_disconnect_calls_callback_and_returns_ok(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        called: list[bool] = []
+
+        def _on_disconnect() -> None:
+            called.append(True)
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_lastfm_disconnect=_on_disconnect,
+        )
+        response = TestClient(app).delete("/api/v1/lastfm/connect")
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+        assert called == [True]
+
+    def test_disconnect_clears_lastfm_username_in_config(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"lastfm.username": "alice"},
+            on_lastfm_connect=lambda u, p: None,
+            on_lastfm_disconnect=lambda: None,
+        )
+        c = TestClient(app)
+        c.delete("/api/v1/lastfm/connect")
+        data = c.get("/api/v1/config").json()
+        assert data["lastfm.username"] is None
+
+    def test_disconnect_returns_503_when_no_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        response = TestClient(app).delete("/api/v1/lastfm/connect")
+        assert response.status_code == 503

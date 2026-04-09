@@ -83,6 +83,12 @@ class UiConfig:
 
 
 @dataclass
+class LastfmConfig:
+    username: str
+    session_key: str  # obtained via auth.getMobileSession; password never stored
+
+
+@dataclass
 class BandcampConfig:
     username: str
     cookie_file: Path | None  # if set, bypasses interactive login
@@ -106,6 +112,7 @@ class Config:
     artwork: ArtworkConfig
     library: LibraryConfig
     bandcamp: BandcampConfig | None = None
+    lastfm: LastfmConfig | None = None
     ui: UiConfig = None  # type: ignore[assignment]  # set in __post_init__
 
     def __post_init__(self) -> None:
@@ -232,6 +239,14 @@ class Config:
                 poll_interval_minutes=int(bc_raw.get("poll_interval_minutes", 0)),
             )
 
+        lf_raw = raw.get("lastfm")
+        lastfm: LastfmConfig | None = None
+        if lf_raw and lf_raw.get("session_key"):
+            lastfm = LastfmConfig(
+                username=lf_raw.get("username", ""),
+                session_key=lf_raw["session_key"],
+            )
+
         ui_raw = raw.get("ui", {})
         ui = UiConfig(
             active_view=ui_raw.get("active_view", "library"),
@@ -253,6 +268,7 @@ class Config:
                 path_template=lib["path_template"],
             ),
             bandcamp=bandcamp,
+            lastfm=lastfm,
             ui=ui,
         )
 
@@ -274,6 +290,8 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "bandcamp.cookie_file": str,
     "bandcamp.format": str,
     "bandcamp.poll_interval_minutes": int,
+    "lastfm.username": str,
+    "lastfm.session_key": str,
     "ui.active_view": str,
     "ui.sort_order": str,
     "ui.queue_panel_open": int,
@@ -290,7 +308,7 @@ _CONFIG_KEY_CHOICES: dict[str, frozenset[str]] = {
 
 # Sections that must be explicitly added by the user (e.g. via 'kamp sync').
 # Attempting to write a key into one of these when the section is absent raises.
-_OPTIONAL_SECTIONS: frozenset[str] = frozenset({"bandcamp"})
+_OPTIONAL_SECTIONS: frozenset[str] = frozenset({"bandcamp", "lastfm"})
 
 
 def config_show(path: Path) -> str:

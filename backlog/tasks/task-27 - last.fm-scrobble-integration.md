@@ -1,10 +1,10 @@
 ---
 id: TASK-27
 title: last.fm scrobble integration
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-29 17:28'
-updated_date: '2026-04-09 14:18'
+updated_date: '2026-04-09 15:25'
 labels:
   - feature
   - integration

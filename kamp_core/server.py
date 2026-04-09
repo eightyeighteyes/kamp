@@ -164,6 +164,11 @@ class ConfigPatchRequest(BaseModel):
     value: str
 
 
+class LastfmConnectRequest(BaseModel):
+    username: str
+    password: str
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -182,6 +187,8 @@ def create_app(
     on_ui_state_set: Callable[[str, str], None] | None = None,
     config_values: dict[str, Any] | None = None,
     on_config_set: Callable[[str, str], None] | None = None,
+    on_lastfm_connect: Callable[[str, str], None] | None = None,
+    on_lastfm_disconnect: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -444,6 +451,29 @@ def create_app(
         # Coerce to the correct Python type before caching in memory.
         coerced: Any = int(req.value) if req.key in _INT_CONFIG_KEYS else req.value
         _state["config"][req.key] = coerced
+        return {"ok": True}
+
+    # -----------------------------------------------------------------------
+    # Last.fm connect / disconnect
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/v1/lastfm/connect")
+    def post_lastfm_connect(req: LastfmConnectRequest) -> dict[str, Any]:
+        if on_lastfm_connect is None:
+            raise HTTPException(status_code=503, detail="Last.fm not configured")
+        try:
+            on_lastfm_connect(req.username, req.password)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _state["config"]["lastfm.username"] = req.username
+        return {"ok": True, "username": req.username}
+
+    @app.delete("/api/v1/lastfm/connect")
+    def delete_lastfm_connect() -> dict[str, Any]:
+        if on_lastfm_disconnect is None:
+            raise HTTPException(status_code=503, detail="Last.fm not configured")
+        on_lastfm_disconnect()
+        _state["config"]["lastfm.username"] = None
         return {"ok": True}
 
     # -----------------------------------------------------------------------

@@ -7,7 +7,9 @@
  */
 
 import { ipcRenderer } from 'electron'
-import type { KampAPI, PanelManifest, ExtensionInstallResult } from '../shared/kampAPI'
+import type { KampAPI, PanelManifest, ExtensionInstallResult, PlayerState } from '../shared/kampAPI'
+
+const SERVER_URL = 'http://127.0.0.1:8000'
 
 const panelRegistry: PanelManifest[] = []
 // Callbacks registered by the renderer via panels.onRegister().
@@ -16,8 +18,6 @@ const registerCallbacks = new Set<(manifest: PanelManifest) => void>()
 
 export function buildKampAPI(): KampAPI {
   return {
-    serverUrl: 'http://127.0.0.1:8000',
-
     panels: {
       register(manifest: PanelManifest): void {
         // Idempotent: skip duplicate registrations (e.g. React StrictMode re-runs).
@@ -44,6 +44,24 @@ export function buildKampAPI(): KampAPI {
       },
       uninstall(id: string): Promise<ExtensionInstallResult> {
         return ipcRenderer.invoke('kamp:uninstall-extension', id)
+      }
+    },
+
+    player: {
+      async getState(): Promise<PlayerState> {
+        const res = await fetch(`${SERVER_URL}/api/v1/player/state`)
+        if (!res.ok) throw new Error(`player.getState failed: ${res.status}`)
+        return res.json() as Promise<PlayerState>
+      }
+    },
+
+    library: {
+      getAlbumArtUrl(albumArtist: string, album: string): string {
+        return (
+          `${SERVER_URL}/api/v1/album-art` +
+          `?album_artist=${encodeURIComponent(albumArtist)}` +
+          `&album=${encodeURIComponent(album)}`
+        )
       }
     }
   }

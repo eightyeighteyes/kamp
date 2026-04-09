@@ -21,10 +21,7 @@ export function register(api) {
 
       async function refresh() {
         try {
-          const res = await fetch(`${api.serverUrl}/api/v1/player/state`)
-          /** @type {{ playing: boolean, position: number, duration: number, volume: number, current_track: object | null }} */
-          const state = await res.json()
-
+          const state = await api.player.getState()
           const track = state.current_track
           container.innerHTML = track
             ? `<div style="color:#fff;font-size:14px;font-weight:bold;margin-bottom:12px">Now Playing</div>
@@ -35,7 +32,7 @@ export function register(api) {
                  <tr><td style="padding:3px 12px 3px 0;color:#888">Year</td><td>${esc(track.year)}</td></tr>
                  <tr><td style="padding:3px 12px 3px 0;color:#888">Plays</td><td>${track.play_count}</td></tr>
                  <tr><td style="padding:3px 12px 3px 0;color:#888">Position</td><td>${fmt(state.position)} / ${fmt(state.duration)}</td></tr>
-                 <tr><td style="padding:3px 12px 3px 0;color:#888">Volume</td><td>${Math.round(state.volume * 100)}%</td></tr>
+                 <tr><td style="padding:3px 12px 3px 0;color:#888">Volume</td><td>${Math.round(state.volume)}%</td></tr>
                </table>`
             : `<div style="color:#888">Nothing playing</div>`
         } catch {

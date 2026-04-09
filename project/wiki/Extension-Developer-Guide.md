@@ -11,7 +11,7 @@ kamp supports two independent extension layers: **backend extensions** (Python, 
    - [package.json manifest](#packagejson-manifest)
    - [The `register(api)` entry point](#the-registerapi-entry-point)
    - [Panels API](#panels-api)
-   - [Fetching data from the kamp server](#fetching-data-from-the-kamp-server)
+   - [SDK Reference](#sdk-reference)
    - [Settings](#settings)
    - [Sandbox constraints](#sandbox-constraints)
    - [Complete example](#complete-example-frontend)
@@ -37,7 +37,7 @@ kamp supports two independent extension layers: **backend extensions** (Python, 
 | Install trigger | `kamp-extension` keyword in `package.json` | `kamp.extensions` entry point group |
 | Discovery | Electron main process scans `node_modules` | `importlib.metadata.entry_points` |
 | Runs in | Sandboxed `<iframe>` | Isolated subprocess (spawn) |
-| Access to kamp server | HTTP fetch to `api.serverUrl` | `KampGround` context object |
+| Access to kamp server | SDK methods (`api.player`, `api.library`) | `KampGround` context object |
 | Writes to library | No | Via `KampGround.update_metadata()` / `set_artwork()` |
 
 ---
@@ -78,15 +78,15 @@ A frontend extension is any npm package whose `package.json` contains `"kamp-ext
 - `keywords` must include `"kamp-extension"`
 - `main` points to the extension's entry point (must export a `register` function)
 
-**`kamp.permissions`** — declare what kamp APIs you need. Known values:
+**`kamp.permissions`** — declare which SDK namespaces you need. The host only passes namespaces the extension has declared; undeclared ones are simply absent from `api`. Known values:
 
-| Permission | Grants |
+| Permission | SDK namespace granted |
 |---|---|
-| `player.read` | Access to `/api/v1/player/state` |
-| `library.read` | Access to `/api/v1/library/*` |
-| `player.control` | Access to playback control endpoints |
-| `network.fetch` | Arbitrary HTTP fetch (community extensions; sandbox default allows kamp server only) |
-| `settings` | Read/write user-configured settings via `api.settings` |
+| `player.read` | `api.player` |
+| `library.read` | `api.library` |
+| `player.control` | `api.player` (control methods) |
+| `network.fetch` | Arbitrary HTTP fetch (community extensions; sandbox CSP limits to kamp server origin) |
+| `settings` | `api.settings` |
 
 **`kamp.settings`** — declares a settings schema. kamp renders a form from this in the Extensions preferences panel. Each entry:
 
@@ -110,11 +110,14 @@ Your `main` file must export a named `register` function. kamp calls it once wit
 ```js
 // index.js
 export function register(api) {
-  // api.serverUrl  — base URL of the kamp HTTP server
-  // api.panels     — panel registration API
-  // api.settings   — settings access (only when 'settings' permission declared)
+  // api.panels    — panel registration API (always present)
+  // api.player    — player state (only when 'player.read' declared)
+  // api.library   — library access (only when 'library.read' declared)
+  // api.settings  — settings access (only when 'settings' declared)
 }
 ```
+
+Extensions never receive a raw server URL — all server communication goes through the SDK namespaces.
 
 ---
 
@@ -147,31 +150,166 @@ api.panels.register({
 
 ---
 
-### Fetching data from the kamp server
+### SDK Reference
 
-Use `api.serverUrl` as the base URL. Do not hard-code `localhost:8000`.
+The SDK namespaces passed to `register(api)` are scoped to the permissions declared in `kamp.permissions`. A namespace that wasn't declared is simply absent — accessing it will throw a TypeError at runtime.
+
+---
+
+#### `api.panels` — always present
+
+##### `api.panels.register(manifest)`
+
+Registers a panel tab in the kamp UI. Must be called inside `register()`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `manifest.id` | `string` | Globally unique panel ID. Prefix with your package name, e.g. `"kamp-my-ext.view"`. |
+| `manifest.title` | `string` | Label shown on the tab. |
+| `manifest.defaultSlot` | `'main' \| 'left' \| 'right' \| 'bottom'` | Where the panel appears by default. |
+| `manifest.compatibleSlots` | `SlotId[]` _(optional)_ | Slots the user can move this panel to. Omit to allow all slots. |
+| `manifest.render` | `(container: HTMLElement) => () => void` | Called each time the panel tab is shown. Must return a cleanup function. |
+
+**`render(container)`** — receives a fresh `HTMLElement` every time the tab is activated. Returns a zero-argument cleanup function called when the tab is hidden or the panel unmounts. kamp creates a new iframe on each mount; DOM state does not persist across tab switches. Keep any state you need in variables captured by the closure.
 
 ```js
-const res = await fetch(`${api.serverUrl}/api/v1/player/state`)
-const state = await res.json()
+api.panels.register({
+  id: 'kamp-my-ext.view',
+  title: 'My View',
+  defaultSlot: 'main',
+  render(container) {
+    container.textContent = 'Hello'
+    return () => { container.textContent = '' }
+  }
+})
 ```
 
-The sandbox CSP allows `connect-src http://127.0.0.1:8000` and `img-src http://127.0.0.1:8000`. Requests to any other origin are blocked by the browser.
+---
+
+#### `api.player` — requires `"player.read"`
+
+##### `api.player.getState()`
+
+Fetches the current playback state from the kamp server.
+
+**Returns:** `Promise<PlayerState>`
+
+```ts
+type PlayerState = {
+  playing: boolean       // true when audio is actively playing
+  position: number       // playback position in seconds
+  duration: number       // total track duration in seconds
+  volume: number         // volume level, 0–100
+  current_track: Track | null  // null when the queue is empty
+}
+
+type Track = {
+  title: string
+  artist: string
+  album_artist: string
+  album: string
+  year: string
+  track_number: number
+  disc_number: number
+  file_path: string
+  ext: string            // file extension, e.g. "flac", "mp3"
+  embedded_art: boolean  // true when the file has embedded cover art
+  mb_release_id: string  // MusicBrainz release MBID (empty string if unknown)
+  mb_recording_id: string
+  favorite: boolean
+  play_count: number
+}
+```
+
+```js
+const state = await api.player.getState()
+if (state.current_track) {
+  console.log(`${state.current_track.artist} — ${state.current_track.title}`)
+  console.log(`${state.position.toFixed(0)}s / ${state.duration.toFixed(0)}s`)
+}
+```
+
+Throws if the kamp server is unreachable. Wrap in `try/catch` and degrade gracefully.
+
+---
+
+#### `api.library` — requires `"library.read"`
+
+##### `api.library.getAlbumArtUrl(albumArtist, album)`
+
+Returns a URL for an album's embedded cover art. The URL can be used directly as an `<img src>` — no fetch required.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `albumArtist` | `string` | Album artist name, as returned by `api.player.getState()`. |
+| `album` | `string` | Album title, as returned by `api.player.getState()`. |
+
+**Returns:** `string` — an absolute URL to the cover art endpoint.
+
+The URL resolves to a `404` response if the album has no embedded art (`track.embedded_art === false`). Handle `img.onerror` to show a placeholder in that case.
+
+```js
+const track = state.current_track
+if (track) {
+  const url = api.library.getAlbumArtUrl(track.album_artist, track.album)
+  img.onload = () => { img.style.opacity = '1' }
+  img.onerror = () => { img.style.opacity = '0' }  // no art available
+  img.src = url
+}
+```
+
+---
+
+#### `api.settings` — requires `"settings"`
+
+##### `api.settings.get(key)`
+
+Reads a persisted setting value for this extension.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `key` | `string` | Setting key, matching a `key` in the `kamp.settings` schema. |
+
+**Returns:** `unknown` — the stored value, or `undefined` if the user has not yet set it. Cast to the expected type or use a default:
+
+```js
+const interval = (api.settings.get('refreshInterval') ?? 5)
+```
+
+##### `api.settings.set(key, value)`
+
+Persists a setting value for this extension across sessions.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `key` | `string` | Setting key. |
+| `value` | `unknown` | Value to persist. Should match the type declared in the settings schema. |
+
+```js
+api.settings.set('refreshInterval', 10)
+```
 
 ---
 
 ### Settings
 
-When you declare `"settings"` in `kamp.permissions`, `api.settings` is available:
+Declare a settings schema in `kamp.settings` (see [package.json manifest](#packagejson-manifest)) and access values via `api.settings`. Settings are rendered as a form in the Extensions preferences panel and persisted by the host across sessions.
 
 ```js
 export function register(api) {
-  const interval = api.settings?.get('refreshInterval') ?? 5
-  api.settings?.set('refreshInterval', 10)
+  const interval = (api.settings.get('refreshInterval') ?? 5)
+
+  api.panels.register({
+    id: 'kamp-my-ext.view',
+    title: 'My View',
+    defaultSlot: 'main',
+    render(container) {
+      const timer = setInterval(() => refresh(), interval * 1000)
+      return () => clearInterval(timer)
+    }
+  })
 }
 ```
-
-Settings are persisted by the host across sessions.
 
 ---
 
@@ -180,7 +318,7 @@ Settings are persisted by the host across sessions.
 Community (non-bundled) extensions run inside a sandboxed `<iframe>` with `sandbox="allow-scripts"`. Constraints:
 
 - **No `allow-same-origin`** — the iframe is cross-origin. You cannot access `window.parent`, `localStorage`, IndexedDB, or cookies.
-- **No `contextBridge` access** — `window.KampAPI` is not available inside the iframe. Use `fetch()` to the kamp server instead.
+- **No `contextBridge` access** — `window.KampAPI` is not available inside the iframe. Use `api.player`, `api.library`, etc. instead; the SDK proxies calls through the host via postMessage.
 - **No external network** — the CSP limits `connect-src` to the kamp server origin (`http://127.0.0.1:8000`). Requests to other origins are blocked.
 - **No subframes** — `allow-popups` and `allow-top-navigation` are not granted.
 - **State resets on tab switch** — kamp creates a fresh iframe on each panel activation; the previous iframe is torn down.
@@ -222,8 +360,7 @@ export function register(api) {
 
       async function poll() {
         try {
-          const res = await fetch(`${api.serverUrl}/api/v1/player/state`)
-          const state = await res.json()
+          const state = await api.player.getState()
           const track = state.current_track
           el.textContent = track
             ? `${track.artist} — ${track.title}`
@@ -544,8 +681,8 @@ acme-metadata-tagger = "my_tagger.tagger:AcmeMetadataTagger"
 
 | Can | Cannot |
 |---|---|
-| Add panels to any layout slot | Access `window.KampAPI` (community extensions only; sandboxed) |
-| Fetch data from the kamp HTTP server | Contact external origins (blocked by iframe CSP) |
+| Add panels to any layout slot | Access `window.KampAPI` directly (community extensions only; sandboxed) |
+| Call `api.player`, `api.library` etc. via the SDK | Contact external origins (blocked by iframe CSP) |
 | Use any browser API (DOM, Canvas, WebGL, `requestAnimationFrame`, etc.) | Access `localStorage`, cookies, or IndexedDB |
 | Render HTML/CSS/JS freely | Spawn popups or navigate the parent frame |
 | Read/write declared settings | Write to the kamp library directly |

@@ -90,14 +90,39 @@ export type ExtensionInfo = {
 /** Result returned by extension install/uninstall operations. */
 export type ExtensionInstallResult = { ok: true; id: string } | { ok: false; error: string }
 
+// ---------------------------------------------------------------------------
+// SDK types — returned by api.player.*, api.library.* etc.
+// ---------------------------------------------------------------------------
+
+/** A single track as returned by the SDK. Mirrors the server's TrackOut shape. */
+export type Track = {
+  title: string
+  artist: string
+  album_artist: string
+  album: string
+  year: string
+  track_number: number
+  disc_number: number
+  file_path: string
+  ext: string
+  embedded_art: boolean
+  mb_release_id: string
+  mb_recording_id: string
+  favorite: boolean
+  play_count: number
+}
+
+/** Current playback state. Mirrors the server's PlayerStateOut shape. */
+export type PlayerState = {
+  playing: boolean
+  position: number
+  duration: number
+  volume: number
+  current_track: Track | null
+}
+
 /** The full shape of window.KampAPI. */
 export type KampAPI = {
-  /**
-   * Base URL of the kamp HTTP server.
-   * Extensions should use this rather than hard-coding localhost:8000.
-   */
-  serverUrl: string
-
   panels: {
     /** Register a panel contributed by an extension. */
     register: (manifest: PanelManifest) => void
@@ -117,6 +142,26 @@ export type KampAPI = {
     install: (source: 'npm' | 'local', nameOrPath: string) => Promise<ExtensionInstallResult>
     /** Uninstall a community extension by its package id. */
     uninstall: (id: string) => Promise<ExtensionInstallResult>
+  }
+
+  /**
+   * Player state access. Only present when the extension declares `"player.read"`.
+   */
+  player?: {
+    /** Fetch the current playback state from the kamp server. */
+    getState: () => Promise<PlayerState>
+  }
+
+  /**
+   * Library access. Only present when the extension declares `"library.read"`.
+   */
+  library?: {
+    /**
+     * Return the URL for an album's cover art.
+     * The URL can be used directly as an `<img src>` — no fetch needed.
+     * Returns null if the album has no embedded art.
+     */
+    getAlbumArtUrl: (albumArtist: string, album: string) => string
   }
 
   /**

@@ -6,7 +6,7 @@
  *
  * This is a Phase 2 (community) extension: it is NOT on the first-party
  * allow-list and loads inside a sandboxed iframe with no contextBridge access.
- * All server communication goes through fetch() to the kamp server origin.
+ * All server communication goes through the SDK methods passed to register().
  */
 
 export function register(api) {
@@ -92,9 +92,7 @@ export function register(api) {
 
       async function poll() {
         try {
-          const res = await fetch(`${api.serverUrl}/api/v1/player/state`)
-          if (!res.ok) throw new Error(res.status)
-          const state = await res.json()
+          const state = await api.player.getState()
           const track = state.current_track
 
           if (!track) {
@@ -107,10 +105,7 @@ export function register(api) {
           const artKey = `${track.album_artist}||${track.album}`
           if (artKey !== currentArtKey) {
             currentArtKey = artKey
-            const url =
-              `${api.serverUrl}/api/v1/album-art` +
-              `?album_artist=${encodeURIComponent(track.album_artist)}` +
-              `&album=${encodeURIComponent(track.album)}`
+            const url = api.library.getAlbumArtUrl(track.album_artist, track.album)
             img.style.opacity = '0'
             img.onload = () => { img.style.opacity = '1' }
             img.onerror = () => { img.style.opacity = '0' }

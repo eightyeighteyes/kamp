@@ -48,6 +48,9 @@ When the goal is a runtime property (memory released, latency reduced), write a 
 ## macOS system integration
 Budget at least a Side for any feature touching osacompile, Spotlight registration, or macOS app bundles. Corporate MDM/EDR (Falcon, Jamf) can silently block registration in ways that are hard to diagnose.
 
+## Bundling binaries in the .app
+**Never copy the Homebrew node binary into the app bundle.** Homebrew node links against Homebrew-specific dylibs (`libnode.dylib`, `llhttp`, `libuv`, `ada-url`, `simdjson`, `brotli`, `c-ares`) that are absent on clean machines. Always download from nodejs.org — the official tarball's `bin/node` only links against macOS system libraries (`CoreFoundation`, `libSystem`, `libc++`). Same caution applies to any Homebrew binary: run `otool -L <binary>` and verify all deps are under `/usr/lib/` or `/System/`.
+
 ## Sandboxed iframes (community extensions)
 
 - **srcdoc iframes inherit the parent document's CSP** — even if the srcdoc has its own `<meta http-equiv=Content-Security-Policy>`, the parent's CSP overrides script-src. To allow an inline script, hash-whitelist it in the parent CSP (`'sha256-...'` in `src/renderer/index.html`). Recompute the hash every time the shim changes: `node -e "const s='...';console.log('sha256-'+require('crypto').createHash('sha256').update(s,'utf8').digest('base64'))"`.

@@ -30,3 +30,11 @@ htmlcov/
 
 # Claude
 .claude/*.json
+
+# App bundle build artifacts (generated; not committed)
+kamp_ui/resources/kamp/
+kamp_ui/resources/mpv
+kamp_ui/resources/node
+kamp_ui/resources/npm/
+kamp_ui/resources/icon_1024.png
+kamp_ui/dist/

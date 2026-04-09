@@ -28,7 +28,6 @@ import musicbrainzngs
 
 from .config import DEFAULT_CONFIG_PATH, Config, _state_dir, config_set, config_show
 from .daemon_core import DaemonCore, _PID_PATH
-from .syncer import Syncer
 
 # Stable Homebrew binary locations (Apple Silicon, then Intel). Checked in order
 # before falling back to PATH, to avoid pyenv shims shadowing the Homebrew install.
@@ -531,6 +530,8 @@ def _cmd_server(
 
 
 def _cmd_sync(config: Config, config_path: Path, download_all: bool = False) -> None:
+    from .syncer import Syncer  # lazy — keeps playwright out of the .app bundle
+
     if config.bandcamp is None:
         if sys.stdin.isatty():
             config = Config.bandcamp_setup(config_path)
@@ -1061,10 +1062,13 @@ def _resolve_kamp_binary() -> str:
 def _resolve_mpv_binary() -> str:
     """Return the absolute path to the mpv binary.
 
-    launchd runs with a minimal PATH that excludes Homebrew, so 'mpv' alone
-    would not be found even when brew install mpv has been run. Check the
-    stable Homebrew locations first, then fall back to PATH.
+    The .app bundle sets KAMP_MPV_BIN to the bundled binary path; check that
+    first. For launchd (which runs with a minimal PATH that excludes Homebrew),
+    fall back to the stable Homebrew install locations, then PATH.
     """
+    env_path = os.environ.get("KAMP_MPV_BIN")
+    if env_path and Path(env_path).exists():
+        return env_path
     for path in _HOMEBREW_MPV_PATHS:
         if Path(path).exists():
             return path

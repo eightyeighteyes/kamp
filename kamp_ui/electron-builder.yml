@@ -1,5 +1,5 @@
 appId: com.kamp.app
-productName: kamp
+productName: Kamp
 directories:
   buildResources: build
 files:
@@ -9,9 +9,43 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  # Exclude binary build artifacts — handled by extraResources (copied directly
+  # to Contents/Resources/ outside the ASAR, no double-packing).
+  - '!resources/kamp/**'
+  - '!resources/mpv'
+  - '!resources/node'
+  - '!resources/npm/**'
+  - '!resources/icon_1024.png'
+  # Explicitly include compiled JS (electron-vite output) so it is packed into
+  # the ASAR. Without this, the positive 'extensions/**' pattern below changes
+  # electron-builder's default glob behavior and out/ is not included.
+  - 'out/**'
   - 'extensions/**'
 asarUnpack:
   - resources/**
+extraResources:
+  # PyInstaller onedir bundle → Contents/Resources/kamp/
+  - from: resources/kamp
+    to: kamp
+    filter:
+      - '**/*'
+  # Standalone mpv binary → Contents/Resources/mpv
+  - from: resources/mpv
+    to: mpv
+  # Node.js binary + npm CLI — required for extension install/uninstall in the
+  # packaged app where the user may not have Node.js on their machine.
+  - from: resources/node
+    to: node
+  - from: resources/npm
+    to: npm
+    filter:
+      - '**/*'
+  # npm's own bundled node_modules — copied as a separate entry so app-builder
+  # does not strip it (app-builder excludes node_modules from **/* by default).
+  - from: resources/npm/node_modules
+    to: npm/node_modules
+    filter:
+      - '**/*'
 win:
   executableName: kamp
 nsis:
@@ -20,6 +54,8 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  target:
+    - dmg
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.

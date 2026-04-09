@@ -3,10 +3,10 @@ id: TASK-115
 title: >-
   Server-push player events — proactive WebSocket notifications on track change
   and play state
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-09 13:01'
-updated_date: '2026-04-09 13:42'
+updated_date: '2026-04-09 14:13'
 labels: []
 milestone: m-22
 dependencies: []

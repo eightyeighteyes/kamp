@@ -1,17 +1,17 @@
 ---
 id: TASK-23
 title: Extension developer documentation
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-03-29 03:12'
-updated_date: '2026-04-09 00:58'
+updated_date: '2026-04-09 01:53'
 labels:
   - docs
   - 'estimate: side'
 milestone: m-2
 dependencies:
   - TASK-18
-ordinal: 13000
+ordinal: 22000
 ---
 
 ## Description

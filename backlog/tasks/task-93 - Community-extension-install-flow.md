@@ -1,16 +1,17 @@
 ---
 id: TASK-93
 title: Community extension install flow
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-07 12:52'
-updated_date: '2026-04-08 20:45'
+updated_date: '2026-04-09 00:54'
 labels:
   - feature
   - ui
 milestone: m-2
 dependencies:
   - TASK-22
+ordinal: 21000
 ---
 
 ## Description

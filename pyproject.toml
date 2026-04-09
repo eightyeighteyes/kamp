@@ -33,6 +33,7 @@ black = ">=24.0"
 types-requests = ">=2.31"
 types-Pillow = ">=10.0"
 httpx = "^0.28.1"
+pyinstaller = {version = ">=6.0", python = ">=3.11,<3.15"}
 
 [tool.poetry.scripts]
 kamp = "kamp_daemon.__main__:main"

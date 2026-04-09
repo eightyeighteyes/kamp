@@ -114,10 +114,41 @@ function scanDir(dir: string, installedFrom: ExtensionInfo['installedFrom']): Ex
   return results
 }
 
+/**
+ * Directory used as the npm --prefix for extension installs.
+ *
+ * In the packaged .app, app.getAppPath() returns the read-only .asar archive —
+ * npm cannot write there. Use userData instead so extensions are installed to a
+ * writable, user-specific location that persists between launches.
+ * In dev, the app directory is writable so we keep the existing behaviour.
+ */
+function npmPrefixDir(): string {
+  return app.isPackaged ? app.getPath('userData') : app.getAppPath()
+}
+
+/**
+ * Return [nodeBin, npmCli] for the bundled Node.js+npm when running from the
+ * packaged .app (where the user may not have Node/npm installed). Falls back to
+ * the system 'npm' in dev mode.
+ */
+function bundledNodeAndNpm(): [string, string] | null {
+  if (!app.isPackaged) return null
+  const node = join(process.resourcesPath, 'node')
+  const npmCli = join(process.resourcesPath, 'npm', 'bin', 'npm-cli.js')
+  if (existsSync(node) && existsSync(npmCli)) return [node, npmCli]
+  return null
+}
+
 // Wrap execFile in a promise for async IPC handlers (avoids blocking the main process).
 function runNpm(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile('npm', args, { timeout: 60_000 }, (err) => {
+    const bundled = bundledNodeAndNpm()
+    // In the packaged app: invoke the bundled node binary running npm-cli.js.
+    // In dev: fall back to the system npm on PATH.
+    const [cmd, cmdArgs] = bundled
+      ? [bundled[0], [bundled[1], ...args]]
+      : ['npm', args]
+    execFile(cmd, cmdArgs, { timeout: 60_000 }, (err) => {
       if (err) reject(err)
       else resolve()
     })
@@ -148,8 +179,8 @@ async function _installExtension(
   source: 'npm' | 'local',
   nameOrPath: string
 ): Promise<ExtensionInstallResult> {
-  const appPath = app.getAppPath()
-  console.log(`[kamp] installExtension source=${source} arg=${nameOrPath} appPath=${appPath}`)
+  const prefixDir = npmPrefixDir()
+  console.log(`[kamp] installExtension source=${source} arg=${nameOrPath} prefix=${prefixDir}`)
 
   if (source === 'local') {
     const pkgJsonPath = join(nameOrPath, 'package.json')
@@ -182,12 +213,12 @@ async function _installExtension(
     //   dependency-tree resolution against the host app's lockfile, which hangs)
     // --no-audit: skip network audit request
     // --ignore-scripts: don't run postinstall/prepare scripts from the extension
-    console.log(`[kamp] running npm install ${installArg} --prefix ${appPath}`)
+    console.log(`[kamp] running npm install ${installArg} --prefix ${prefixDir}`)
     await runNpm([
       'install',
       installArg,
       '--prefix',
-      appPath,
+      prefixDir,
       '--no-save',
       '--no-audit',
       '--ignore-scripts'
@@ -238,10 +269,8 @@ export async function uninstallExtension(id: string): Promise<ExtensionInstallRe
     return { ok: false, error: 'Cannot uninstall a first-party extension.' }
   }
 
-  const appPath = app.getAppPath()
-
   try {
-    await runNpm(['uninstall', id, '--prefix', appPath])
+    await runNpm(['uninstall', id, '--prefix', npmPrefixDir()])
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return { ok: false, error: `Uninstall failed: ${msg}` }
@@ -254,11 +283,12 @@ export async function uninstallExtension(id: string): Promise<ExtensionInstallRe
 }
 
 export function discoverExtensions(): ExtensionInfo[] {
-  const appPath = app.getAppPath()
-  // First-party extensions ship alongside the app.
-  const builtinDir = join(appPath, 'extensions')
-  // Installed npm extensions live in node_modules.
-  const nodeModulesDir = join(appPath, 'node_modules')
+  // First-party extensions ship alongside the app (readable from ASAR).
+  const builtinDir = join(app.getAppPath(), 'extensions')
+  // Installed npm extensions live under the npm prefix dir's node_modules.
+  // In the packaged app this is userData/node_modules (writable); in dev it
+  // is the app directory's node_modules.
+  const nodeModulesDir = join(npmPrefixDir(), 'node_modules')
 
   return [...scanDir(builtinDir, 'bundled'), ...scanDir(nodeModulesDir, 'npm')]
 }

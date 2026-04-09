@@ -328,6 +328,7 @@ class MpvPlaybackEngine:
         self.state = PlaybackState()
         self.on_track_end: Callable[[], None] | None = None
         self.on_file_loaded: Callable[[], None] | None = None
+        self.on_play_state_changed: Callable[[], None] | None = None
         self._mpv_bin = mpv_bin
         self._proc: subprocess.Popen[bytes] | None = None
         self._sock: socket.socket | None = None
@@ -501,7 +502,11 @@ class MpvPlaybackEngine:
             elif prop == "duration" and isinstance(data, (int, float)):
                 self.state.duration = float(data)
             elif prop == "pause" and isinstance(data, bool):
-                self.state.playing = not data
+                new_playing = not data
+                changed = new_playing != self.state.playing
+                self.state.playing = new_playing
+                if changed and self.on_play_state_changed is not None:
+                    self.on_play_state_changed()
 
         elif name == "file-loaded":
             if self.on_file_loaded is not None:

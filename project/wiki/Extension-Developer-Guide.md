@@ -233,6 +233,63 @@ Throws if the kamp server is unreachable. Wrap in `try/catch` and degrade gracef
 
 ---
 
+##### `api.player.onTrackChange(callback)`
+
+Subscribe to track-change events. The callback fires whenever the current track transitions: a new track starts playing, the queue is exhausted, or playback stops.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `callback` | `(state: PlayerState) => void` | Called with the full player state at the moment of the transition. |
+
+**Returns:** `() => void` — an unsubscribe function. Call it from your `render` cleanup to avoid memory leaks.
+
+```js
+render(container) {
+  // ...
+
+  const unsub = api.player.onTrackChange((state) => {
+    const track = state.current_track
+    if (track) {
+      container.querySelector('#now-playing').textContent =
+        `${track.artist} — ${track.title}`
+    }
+  })
+
+  // Seed with current state on first mount.
+  api.player.getState().then((state) => { /* same update */ }).catch(() => {})
+
+  return () => unsub()  // cancel subscription on unmount
+}
+```
+
+> **Tip:** Always call `api.player.getState()` once on mount to initialize your UI with the current state, then use `onTrackChange` for subsequent updates. Push events are only sent on *transitions* — the initial state is not replayed when a new subscriber registers.
+
+---
+
+##### `api.player.onPlayStateChange(callback)`
+
+Subscribe to play/pause state changes. The callback fires whenever playback starts or pauses.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `callback` | `(state: PlayerState) => void` | Called with the full player state at the moment of the change. |
+
+**Returns:** `() => void` — an unsubscribe function.
+
+```js
+render(container) {
+  const indicator = container.querySelector('#play-indicator')
+
+  const unsub = api.player.onPlayStateChange((state) => {
+    indicator.textContent = state.playing ? '▶' : '⏸'
+  })
+
+  return () => unsub()
+}
+```
+
+---
+
 #### `api.library` — requires `"library.read"`
 
 ##### `api.library.getAlbumArtUrl(albumArtist, album)`

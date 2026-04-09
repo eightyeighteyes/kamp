@@ -150,6 +150,17 @@ export type KampAPI = {
   player?: {
     /** Fetch the current playback state from the kamp server. */
     getState: () => Promise<PlayerState>
+    /**
+     * Subscribe to track-change events. The callback fires whenever the
+     * current track transitions (new track started, queue exhausted, or
+     * playback stopped). Returns an unsubscribe function.
+     */
+    onTrackChange: (callback: (state: PlayerState) => void) => () => void
+    /**
+     * Subscribe to play-state events. The callback fires whenever playback
+     * starts or pauses. Returns an unsubscribe function.
+     */
+    onPlayStateChange: (callback: (state: PlayerState) => void) => () => void
   }
 
   /**

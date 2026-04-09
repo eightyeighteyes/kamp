@@ -13,10 +13,12 @@ import type { ExtensionInfo, SlotId, PlayerState } from '../../../shared/kampAPI
  * and passes it to the extension's register() function.
  *
  * SDK methods available to the shim:
- *   player.getState()        — async, proxied via kamp:sdk-call / kamp:sdk-response
- *   library.getAlbumArtUrl() — sync, constructs URL against the hardcoded server origin
+ *   player.getState()          — async, proxied via kamp:sdk-call / kamp:sdk-response
+ *   player.onTrackChange(cb)   — subscription, proxied via kamp:sdk-subscribe / kamp:sdk-event
+ *   player.onPlayStateChange(cb) — subscription, same pattern
+ *   library.getAlbumArtUrl()   — sync, constructs URL against the hardcoded server origin
  *
- * Hash (index.html script-src): sha256-IyJ04Rbq6eUCOWHuijxWFlP4mGP9HCsnZhyJK2DWdSg=
+ * Hash (index.html script-src): sha256-pZ2P3MM/ZsmuxQcGlYScwK38Sz5eE+wn9o/rNUV96gA=
  * If you change SANDBOX_SHIM, recompute the hash and update index.html:
  *   node -e "const s='<paste shim>';console.log('sha256-'+require('crypto').createHash('sha256').update(s,'utf8').digest('base64'))"
  *
@@ -26,7 +28,7 @@ import type { ExtensionInfo, SlotId, PlayerState } from '../../../shared/kampAPI
  */
 // prettier-ignore
 // If you change this string, recompute the hash and update index.html script-src (see comment above).
-const SANDBOX_SHIM = `(function(){var SERVER="http://127.0.0.1:8000",r={},c={},pending=null,reqs={},rid=0;function rpc(method,args){return new Promise(function(resolve,reject){var id=++rid;reqs[id]={resolve:resolve,reject:reject};window.parent.postMessage({type:"kamp:sdk-call",id:id,method:method,args:args},"*")})}window.addEventListener("message",function(e){if(e.source!==window.parent)return;var m=e.data;if(!m||typeof m.type!=="string")return;if(m.type==="kamp:init"){var id=m.id,perms=m.permissions||[];var K={panels:{register:function(p){if(!p||typeof p.id!=="string")return;r[p.id]=p.render;window.parent.postMessage({type:"kamp:register-panel",extensionId:id,manifest:{id:p.id,title:p.title,defaultSlot:p.defaultSlot,compatibleSlots:p.compatibleSlots}},"*");if(pending===p.id&&typeof r[p.id]==="function"){c[p.id]=r[p.id](document.body);pending=null}}}};if(perms.indexOf("player.read")!==-1){K.player={getState:function(){return rpc("player.getState",[])}}}if(perms.indexOf("library.read")!==-1){K.library={getAlbumArtUrl:function(aa,a){return SERVER+"/api/v1/album-art?album_artist="+encodeURIComponent(aa)+"&album="+encodeURIComponent(a)}}}var b=new Blob([m.code],{type:"text/javascript"});var u=URL.createObjectURL(b);import(u).then(function(mod){if(typeof mod.register==="function")mod.register(K)}).catch(function(err){console.error("[kamp sandbox "+id+"]",err)}).finally(function(){URL.revokeObjectURL(u)})}else if(m.type==="kamp:sdk-response"){var req=reqs[m.id];if(!req)return;delete reqs[m.id];if(m.error)req.reject(new Error(m.error));else req.resolve(m.result)}else if(m.type==="kamp:panel-mount"&&m.panelId){if(typeof r[m.panelId]==="function"){c[m.panelId]=r[m.panelId](document.body)}else{pending=m.panelId}}else if(m.type==="kamp:panel-unmount"&&m.panelId){var fn=c[m.panelId];if(typeof fn==="function")fn();delete c[m.panelId];if(pending===m.panelId)pending=null}})})();`
+const SANDBOX_SHIM = `(function(){var SERVER="http://127.0.0.1:8000",r={},c={},pending=null,reqs={},rid=0,subs={},sid=0;function rpc(method,args){return new Promise(function(resolve,reject){var id=++rid;reqs[id]={resolve:resolve,reject:reject};window.parent.postMessage({type:"kamp:sdk-call",id:id,method:method,args:args},"*")})}function subscribe(event,cb){var id=++sid;subs[id]={event:event,cb:cb};window.parent.postMessage({type:"kamp:sdk-subscribe",subId:id,event:event},"*");return function(){delete subs[id];window.parent.postMessage({type:"kamp:sdk-unsubscribe",subId:id},"*")}}window.addEventListener("message",function(e){if(e.source!==window.parent)return;var m=e.data;if(!m||typeof m.type!=="string")return;if(m.type==="kamp:init"){var id=m.id,perms=m.permissions||[];var K={panels:{register:function(p){if(!p||typeof p.id!=="string")return;r[p.id]=p.render;window.parent.postMessage({type:"kamp:register-panel",extensionId:id,manifest:{id:p.id,title:p.title,defaultSlot:p.defaultSlot,compatibleSlots:p.compatibleSlots}},"*");if(pending===p.id&&typeof r[p.id]==="function"){c[p.id]=r[p.id](document.body);pending=null}}}};if(perms.indexOf("player.read")!==-1){K.player={getState:function(){return rpc("player.getState",[])},onTrackChange:function(cb){return subscribe("track.changed",cb)},onPlayStateChange:function(cb){return subscribe("play_state.changed",cb)}}}if(perms.indexOf("library.read")!==-1){K.library={getAlbumArtUrl:function(aa,a){return SERVER+"/api/v1/album-art?album_artist="+encodeURIComponent(aa)+"&album="+encodeURIComponent(a)}}}var b=new Blob([m.code],{type:"text/javascript"});var u=URL.createObjectURL(b);import(u).then(function(mod){if(typeof mod.register==="function")mod.register(K)}).catch(function(err){console.error("[kamp sandbox "+id+"]",err)}).finally(function(){URL.revokeObjectURL(u)})}else if(m.type==="kamp:sdk-response"){var req=reqs[m.id];if(!req)return;delete reqs[m.id];if(m.error)req.reject(new Error(m.error));else req.resolve(m.result)}else if(m.type==="kamp:sdk-event"){Object.keys(subs).forEach(function(k){if(subs[k].event===m.event)subs[k].cb(m.payload)})}else if(m.type==="kamp:panel-mount"&&m.panelId){if(typeof r[m.panelId]==="function"){c[m.panelId]=r[m.panelId](document.body)}else{pending=m.panelId}}else if(m.type==="kamp:panel-unmount"&&m.panelId){var fn=c[m.panelId];if(typeof fn==="function")fn();delete c[m.panelId];if(pending===m.panelId)pending=null}})})();`
 
 const SANDBOX_SRCDOC =
   `<!doctype html>
@@ -42,6 +44,28 @@ const SANDBOX_SRCDOC =
   `/script>
 </body>
 </html>`
+
+// Tracks active subscriptions from sandboxed iframes.
+// Key: `${sourceWindow}-${subId}` (we use a Map keyed by [source, subId]).
+// Value: the unsubscribe function returned by window.KampAPI.player.on*
+const _activeSubscriptions = new Map<string, () => void>()
+
+function _subKey(source: WindowProxy, subId: number): string {
+  // Use a combination of object identity (via WeakMap index) and subId.
+  // Since we can't stringify a WindowProxy, we use a numeric id instead.
+  return `${_getSourceId(source)}_${subId}`
+}
+
+const _sourceIds = new WeakMap<WindowProxy, number>()
+let _nextSourceId = 0
+function _getSourceId(source: WindowProxy): number {
+  let id = _sourceIds.get(source)
+  if (id === undefined) {
+    id = _nextSourceId++
+    _sourceIds.set(source, id)
+  }
+  return id
+}
 
 /**
  * Handles kamp:sdk-call messages from sandboxed extension iframes.
@@ -70,6 +94,50 @@ function handleSdkCall(
       break
     default:
       respond(undefined, `Unknown SDK method: ${msg.method}`)
+  }
+}
+
+/**
+ * Handles kamp:sdk-subscribe and kamp:sdk-unsubscribe messages from sandboxed iframes.
+ *
+ * When an extension calls api.player.onTrackChange(cb) or api.player.onPlayStateChange(cb),
+ * the shim posts kamp:sdk-subscribe. This handler registers the real subscription on the
+ * host KampAPI and posts kamp:sdk-event back to the iframe whenever the event fires.
+ *
+ * kamp:sdk-unsubscribe cancels the subscription.
+ */
+function handleSdkSubscribe(
+  event: MessageEvent<{ type: string; subId: number; event: string }>
+): void {
+  const msg = event.data
+  if (!msg || (msg.type !== 'kamp:sdk-subscribe' && msg.type !== 'kamp:sdk-unsubscribe')) return
+  const source = event.source as WindowProxy | null
+  if (!source) return
+
+  const key = _subKey(source, msg.subId)
+
+  if (msg.type === 'kamp:sdk-unsubscribe') {
+    const unsub = _activeSubscriptions.get(key)
+    if (unsub) {
+      unsub()
+      _activeSubscriptions.delete(key)
+    }
+    return
+  }
+
+  // kamp:sdk-subscribe
+  const dispatch = (state: PlayerState): void => {
+    source.postMessage({ type: 'kamp:sdk-event', event: msg.event, payload: state }, '*')
+  }
+
+  let unsub: (() => void) | undefined
+  if (msg.event === 'track.changed') {
+    unsub = window.KampAPI.player!.onTrackChange(dispatch)
+  } else if (msg.event === 'play_state.changed') {
+    unsub = window.KampAPI.player!.onPlayStateChange(dispatch)
+  }
+  if (unsub) {
+    _activeSubscriptions.set(key, unsub)
   }
 }
 
@@ -160,10 +228,14 @@ export function SandboxedExtensionLoader({ extensions }: Props): null {
   // Track cleanup functions for in-flight discovery iframes.
   const cleanupRefs = useRef<Map<string, () => void>>(new Map())
 
-  // Global handler for SDK method proxying from all active extension iframes.
+  // Global handlers for SDK method proxying and subscriptions from all active extension iframes.
   useEffect(() => {
     window.addEventListener('message', handleSdkCall)
-    return () => window.removeEventListener('message', handleSdkCall)
+    window.addEventListener('message', handleSdkSubscribe)
+    return () => {
+      window.removeEventListener('message', handleSdkCall)
+      window.removeEventListener('message', handleSdkSubscribe)
+    }
   }, [])
 
   useEffect(() => {

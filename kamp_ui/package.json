@@ -8,6 +8,7 @@
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
+    "shim-hash": "node -e \"const fs=require('fs'),crypto=require('crypto');const src=fs.readFileSync('src/renderer/src/components/SandboxedExtensionLoader.tsx','utf8');const m=src.match(/const SANDBOX_SHIM = \\`([\\s\\S]*?)\\`/);if(!m)throw new Error('SANDBOX_SHIM not found');const hash=crypto.createHash('sha256').update(m[1],'utf8').digest('base64');console.log('sha256-'+hash)\"",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",

@@ -49,17 +49,17 @@ async function startServer(): Promise<void> {
     return
   }
 
-  // detached: true puts the server in its own process group so that
-  // stopServer() can kill the group (server + uvicorn + mpv) all at once.
-  serverProcess = spawn(binary, ['server'], {
+  // detached: true puts the daemon in its own process group so that
+  // stopServer() can kill the group (daemon + mpv) all at once.
+  serverProcess = spawn(binary, ['daemon'], {
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
-  serverProcess.stdout?.on('data', (d) => console.log('[kamp server]', String(d).trimEnd()))
-  serverProcess.stderr?.on('data', (d) => console.error('[kamp server]', String(d).trimEnd()))
+  serverProcess.stdout?.on('data', (d) => console.log('[kamp daemon]', String(d).trimEnd()))
+  serverProcess.stderr?.on('data', (d) => console.error('[kamp daemon]', String(d).trimEnd()))
   serverProcess.on('exit', (code) => {
-    console.log(`[kamp server] exited (${code})`)
+    console.log(`[kamp daemon] exited (${code})`)
     serverProcess = null
   })
 }

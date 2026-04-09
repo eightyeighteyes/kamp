@@ -6,9 +6,11 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-04-09 13:01'
+updated_date: '2026-04-09 13:02'
 labels: []
 milestone: m-22
 dependencies: []
+priority: high
 ---
 
 ## Description
@@ -51,11 +53,12 @@ Fan out events to community (sandboxed) extensions via a new `kamp:sdk-event` po
 - Multiple extensions polling independently creates unnecessary load and timing inconsistency — a single server-push fan-out is strictly better.
 
 ## Acceptance Criteria
-
-- [ ] #1 Server emits `track.changed` WebSocket event when `current_track` transitions
-- [ ] #2 Server emits `play_state.changed` WebSocket event when `playing` flips
-- [ ] #3 `api.player.onTrackChange(cb)` and `api.player.onPlayStateChange(cb)` added to SDK; both return an unsubscribe function
-- [ ] #4 Sandboxed extensions receive events via `kamp:sdk-event` postMessage
-- [ ] #5 Groover updated to use `onTrackChange` instead of polling
-- [ ] #6 Extension Developer Guide updated with subscription API docs
+<!-- AC:BEGIN -->
+- [ ] #1 #1 Server emits `track.changed` WebSocket event when `current_track` transitions
+- [ ] #2 #2 Server emits `play_state.changed` WebSocket event when `playing` flips
+- [ ] #3 #3 `api.player.onTrackChange(cb)` and `api.player.onPlayStateChange(cb)` added to SDK; both return an unsubscribe function
+- [ ] #4 #4 Sandboxed extensions receive events via `kamp:sdk-event` postMessage
+- [ ] #5 #5 Groover updated to use `onTrackChange` instead of polling
+- [ ] #6 #6 Extension Developer Guide updated with subscription API docs
 <!-- SECTION:DESCRIPTION:END -->
+<!-- AC:END -->

@@ -7,6 +7,7 @@ import pytest
 from kamp_daemon.config import (
     DEFAULT_CONFIG_CONTENT,
     Config,
+    LastfmConfig,
     config_set,
     config_show,
 )
@@ -312,3 +313,75 @@ class TestConfigSet:
         path.write_text(_TOML_WITH_BANDCAMP)
         with pytest.raises(ValueError, match="mp3-v0"):
             config_set(path, "bandcamp.format", "bad")
+
+    def test_set_lastfm_key_on_missing_section_raises(self, tmp_path: Path) -> None:
+        """config_set raises when [lastfm] section is absent (optional section)."""
+        path = tmp_path / "config.toml"
+        path.write_text(DEFAULT_CONFIG_CONTENT)
+        with pytest.raises(KeyError):
+            config_set(path, "lastfm.session_key", "abc123")
+
+
+_TOML_WITH_LASTFM = """\
+[paths]
+staging = "~/Music/staging"
+library = "~/Music"
+
+[musicbrainz]
+contact = "user@example.com"
+
+[artwork]
+min_dimension = 1000
+max_bytes = 1000000
+
+[library]
+path_template = "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
+
+[lastfm]
+username = "myuser"
+session_key = "abc123sessionkey"
+"""
+
+
+class TestLastfmConfig:
+    def test_load_parses_lastfm_section(self, tmp_path: Path) -> None:
+        """Config.load() populates lastfm when the [lastfm] section is present."""
+        path = tmp_path / "config.toml"
+        path.write_text(_TOML_WITH_LASTFM)
+        config = Config.load(path)
+        assert config.lastfm is not None
+        assert isinstance(config.lastfm, LastfmConfig)
+        assert config.lastfm.username == "myuser"
+        assert config.lastfm.session_key == "abc123sessionkey"
+
+    def test_load_lastfm_none_when_section_absent(self, tmp_path: Path) -> None:
+        """Config.load() returns lastfm=None when [lastfm] section is missing."""
+        path = tmp_path / "config.toml"
+        path.write_text(DEFAULT_CONFIG_CONTENT)
+        config = Config.load(path)
+        assert config.lastfm is None
+
+    def test_load_lastfm_none_when_session_key_empty(self, tmp_path: Path) -> None:
+        """Config.load() returns lastfm=None when session_key is empty string."""
+        path = tmp_path / "config.toml"
+        path.write_text(
+            _TOML_WITH_LASTFM.replace(
+                'session_key = "abc123sessionkey"', 'session_key = ""'
+            )
+        )
+        config = Config.load(path)
+        assert config.lastfm is None
+
+    def test_config_set_lastfm_username(self, tmp_path: Path) -> None:
+        """config_set can update lastfm.username when [lastfm] section exists."""
+        path = tmp_path / "config.toml"
+        path.write_text(_TOML_WITH_LASTFM)
+        config_set(path, "lastfm.username", "newuser")
+        assert 'username = "newuser"' in path.read_text()
+
+    def test_config_set_lastfm_session_key(self, tmp_path: Path) -> None:
+        """config_set can update lastfm.session_key when [lastfm] section exists."""
+        path = tmp_path / "config.toml"
+        path.write_text(_TOML_WITH_LASTFM)
+        config_set(path, "lastfm.session_key", "newkey")
+        assert 'session_key = "newkey"' in path.read_text()

@@ -1,10 +1,10 @@
 ---
 id: TASK-27
 title: last.fm scrobble integration
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-29 17:28'
-updated_date: '2026-04-02 20:25'
+updated_date: '2026-04-09 17:00'
 labels:
   - feature
   - integration
@@ -18,9 +18,9 @@ ordinal: 2000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-A user can supply their last.fm API key so listening data can be "scrobbled"
+A user can supply their last.fm credentials so listening data can be "scrobbled"
 
-A user has a quick link to creating or retrieving their last.fm API key.
+A user's last.fm credentials are secure.
 
 A song is scrobbled after 30 seconds of listening to it, or when the track finishes (whichever comes first).
 

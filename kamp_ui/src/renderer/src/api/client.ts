@@ -67,6 +67,21 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, { method: 'DELETE' })
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`
+    try {
+      const json = (await res.json()) as { detail?: string }
+      if (json.detail) message = json.detail
+    } catch {
+      // JSON parse failed — fall back to the HTTP status message.
+    }
+    throw new Error(message)
+  }
+  return res.json() as Promise<T>
+}
+
 async function patch<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: 'PATCH',
@@ -155,12 +170,22 @@ export type ConfigValues = {
   'bandcamp.username': string | null
   'bandcamp.format': string | null
   'bandcamp.poll_interval_minutes': number | null
+  'lastfm.username': string | null
 }
 
 export const getConfig = (): Promise<ConfigValues> => get('/api/v1/config')
 
 export const patchConfig = (key: string, value: string): Promise<{ ok: boolean }> =>
   patch('/api/v1/config', { key, value })
+
+export const connectLastfm = (
+  username: string,
+  password: string
+): Promise<{ ok: boolean; username: string }> =>
+  post('/api/v1/lastfm/connect', { username, password })
+
+export const disconnectLastfm = (): Promise<{ ok: boolean }> =>
+  del('/api/v1/lastfm/connect')
 
 // ---------------------------------------------------------------------------
 // Player

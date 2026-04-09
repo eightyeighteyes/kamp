@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import type { ExtensionInfo, ExtensionSettingSchema } from '../../../shared/kampAPI'
 import type { ExtensionStateHook } from '../hooks/useExtensionState'
 import { useExtensionInstall } from '../hooks/useExtensionInstall'
+import { connectLastfm, disconnectLastfm } from '../api/client'
 
 // Keys whose values must be integers — sent as strings over the wire but
 // stored as numbers in the config.
@@ -612,6 +613,119 @@ function ExtensionsPanel({
 }
 
 // ---------------------------------------------------------------------------
+// Last.fm connect section
+// ---------------------------------------------------------------------------
+
+function LastfmSection({
+  connectedUsername,
+  onConnected,
+  onDisconnected
+}: {
+  connectedUsername: string | null
+  onConnected: () => void
+  onDisconnected: () => void
+}): React.JSX.Element {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const handleConnect = async (): Promise<void> => {
+    if (!username || !password) {
+      setError('Username and password are required.')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await connectLastfm(username, password)
+      setPassword('')
+      onConnected()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Connection failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDisconnect = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    try {
+      await disconnectLastfm()
+      onDisconnected()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Disconnect failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="prefs-section">
+      <div className="prefs-section-label">Last.fm</div>
+      {connectedUsername ? (
+        <div className="prefs-row">
+          <div className="prefs-row-header">
+            <span className="prefs-label">Status</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 13 }}>
+              Connected as <strong>{connectedUsername}</strong>
+            </span>
+            <button
+              className="prefs-choose-btn prefs-choose-btn--destructive"
+              onClick={() => void handleDisconnect()}
+              disabled={busy}
+            >
+              Disconnect
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="prefs-row">
+            <div className="prefs-row-header">
+              <span className="prefs-label">Username</span>
+            </div>
+            <input
+              className="prefs-input"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+            />
+          </div>
+          <div className="prefs-row">
+            <div className="prefs-row-header">
+              <span className="prefs-label">Password</span>
+            </div>
+            <input
+              className="prefs-input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              onKeyDown={(e) => e.key === 'Enter' && void handleConnect()}
+            />
+          </div>
+          {error && <p className="prefs-hint" style={{ color: 'var(--error)' }}>{error}</p>}
+          <div className="prefs-row" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <button
+              className="prefs-choose-btn"
+              onClick={() => void handleConnect()}
+              disabled={busy}
+            >
+              {busy ? 'Connecting…' : 'Connect'}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main dialog
 // ---------------------------------------------------------------------------
 
@@ -867,6 +981,13 @@ export function PreferencesDialog({
                       />
                     </div>
                   )}
+
+                  {/* LAST.FM */}
+                  <LastfmSection
+                    connectedUsername={configValues?.['lastfm.username'] ?? null}
+                    onConnected={() => void loadConfig()}
+                    onDisconnected={() => void loadConfig()}
+                  />
                 </>
               )}
             </>

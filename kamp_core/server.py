@@ -12,7 +12,9 @@ WebSocket:  /api/v1/ws   — client sends "ping", server replies with a
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 
@@ -203,13 +205,41 @@ def create_app(
         "config": dict(config_values) if config_values is not None else {},
     }
 
+    # Active WebSocket queues — one asyncio.Queue per connected client.
+    # Events are broadcast to all queues so push notifications wake every client.
+    _ws_queues: set[asyncio.Queue[dict[str, Any]]] = set()
+    # The running event loop, captured on first WS connection (thread-safe puts
+    # need call_soon_threadsafe, which requires the loop reference).
+    _event_loop: asyncio.AbstractEventLoop | None = None
+
+    def _broadcast(event: dict[str, Any]) -> None:
+        """Thread-safe: enqueue *event* for every connected WebSocket client."""
+        if _event_loop is None:
+            return
+        for q in list(_ws_queues):
+            _event_loop.call_soon_threadsafe(q.put_nowait, event)
+
     def _notify_library_changed() -> None:
         """Increment the library version so connected WebSocket clients are notified."""
         _state["library_version"] += 1
 
-    # Expose the notifier on app.state so the caller (__main__.py) can trigger
-    # it after background (watcher-driven) scans complete.
+    def _notify_track_changed() -> None:
+        """Broadcast a track.changed push event to all connected WebSocket clients."""
+        _broadcast({"type": "track.changed", **_state_snapshot().model_dump()})
+
+    def _notify_play_state_changed() -> None:
+        """Broadcast a play_state.changed push event to all connected WebSocket clients."""
+        _broadcast({"type": "play_state.changed", **_state_snapshot().model_dump()})
+
+    # Expose notifiers on app.state so the daemon can wire them into engine
+    # callbacks (e.g. on_track_end, on_play_state_changed).
     app.state.notify_library_changed = _notify_library_changed
+    app.state.notify_track_changed = _notify_track_changed
+    app.state.notify_play_state_changed = _notify_play_state_changed
+
+    # Wire play-state change callback directly — the engine fires it from its
+    # background reader thread whenever mpv's pause property flips.
+    engine.on_play_state_changed = _notify_play_state_changed
 
     # Allow requests from the Electron renderer (Vite dev server and file://).
     # This server only binds to 127.0.0.1, so wildcard origins are safe.
@@ -438,6 +468,7 @@ def create_app(
         current = queue.current()
         if current:
             engine.play(current.file_path)
+        _notify_track_changed()
         return {"ok": True}
 
     @app.post("/api/v1/player/pause")
@@ -453,6 +484,7 @@ def create_app(
     @app.post("/api/v1/player/stop")
     def stop() -> dict[str, Any]:
         engine.stop()
+        _notify_track_changed()
         return {"ok": True}
 
     @app.post("/api/v1/player/seek")
@@ -472,6 +504,7 @@ def create_app(
             engine.play(track.file_path)
         else:
             engine.stop()
+        _notify_track_changed()
         return {"ok": True}
 
     @app.post("/api/v1/player/prev")
@@ -479,6 +512,7 @@ def create_app(
         track = queue.prev()
         if track:
             engine.play(track.file_path)
+        _notify_track_changed()
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/clear")
@@ -496,6 +530,7 @@ def create_app(
         track = queue.skip_to(req.position)
         if track:
             engine.play(track.file_path)
+        _notify_track_changed()
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/add")
@@ -570,24 +605,47 @@ def create_app(
 
     @app.websocket("/api/v1/ws")
     async def websocket_endpoint(ws: WebSocket) -> None:
+        nonlocal _event_loop
+        _event_loop = asyncio.get_running_loop()
+        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        _ws_queues.add(q)
+
         await ws.accept()
         # Push initial snapshot immediately on connect.
         await ws.send_json({"type": "player.state", **_state_snapshot().model_dump()})
         last_library_version: int = _state["library_version"]
         try:
             while True:
-                # Each "ping" from the client triggers a fresh snapshot.
-                await ws.receive_text()
-                await ws.send_json(
-                    {"type": "player.state", **_state_snapshot().model_dump()}
+                # Await either a client ping or a server-push event — whichever
+                # arrives first.  Both paths may fire in the same iteration if a
+                # push event arrives while a ping is also pending.
+                recv_task = asyncio.create_task(ws.receive_text())
+                push_task = asyncio.create_task(q.get())
+                done, pending = await asyncio.wait(
+                    {recv_task, push_task}, return_when=asyncio.FIRST_COMPLETED
                 )
-                # Notify the client if a background scan updated the library
-                # since the last ping so it can refresh the album list.
-                current_version = _state["library_version"]
-                if current_version != last_library_version:
-                    last_library_version = current_version
-                    await ws.send_json({"type": "library.changed"})
+                for t in pending:
+                    t.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await t
+
+                if push_task in done:
+                    await ws.send_json(push_task.result())
+
+                if recv_task in done:
+                    # Each "ping" from the client triggers a fresh snapshot.
+                    await ws.send_json(
+                        {"type": "player.state", **_state_snapshot().model_dump()}
+                    )
+                    # Notify the client if a background scan updated the library
+                    # since the last ping so it can refresh the album list.
+                    current_version = _state["library_version"]
+                    if current_version != last_library_version:
+                        last_library_version = current_version
+                        await ws.send_json({"type": "library.changed"})
         except Exception:
             pass
+        finally:
+            _ws_queues.discard(q)
 
     return app

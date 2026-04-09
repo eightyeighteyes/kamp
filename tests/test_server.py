@@ -666,6 +666,73 @@ class TestPlayerWebSocket:
         assert msg["playing"] is True
         assert msg["position"] == pytest.approx(5.0)
 
+    def test_websocket_push_track_changed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """notify_track_changed() proactively pushes a track.changed message."""
+        mock_engine.state = PlaybackState()
+        mock_queue.current.return_value = _track(1)
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # consume initial player.state
+            mock_queue.current.return_value = _track(2)
+            app.state.notify_track_changed()
+            msg = ws.receive_json()
+        assert msg["type"] == "track.changed"
+        assert msg["current_track"]["title"] == "Track 2"
+
+    def test_websocket_push_play_state_changed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """notify_play_state_changed() proactively pushes a play_state.changed message."""
+        mock_engine.state = PlaybackState(playing=False)
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # consume initial player.state
+            mock_engine.state = PlaybackState(playing=True)
+            app.state.notify_play_state_changed()
+            msg = ws.receive_json()
+        assert msg["type"] == "play_state.changed"
+        assert msg["playing"] is True
+
+    def test_websocket_engine_on_play_state_changed_wired(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """create_app wires engine.on_play_state_changed to the broadcast notifier."""
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        assert mock_engine.on_play_state_changed is not None
+        assert callable(mock_engine.on_play_state_changed)
+
+    def test_play_endpoint_fires_track_changed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """POST /api/v1/player/play broadcasts a track.changed event."""
+        mock_index.tracks_for_album.return_value = [_track(1)]
+        mock_queue.current.return_value = _track(1)
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # consume initial player.state
+            c.post("/api/v1/player/play", json={"album_artist": "A", "album": "B"})
+            msg = ws.receive_json()
+        assert msg["type"] == "track.changed"
+
+    def test_next_endpoint_fires_track_changed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """POST /api/v1/player/next broadcasts a track.changed event."""
+        mock_queue.next.return_value = _track(2)
+        mock_queue.current.return_value = _track(2)
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # consume initial player.state
+            c.post("/api/v1/player/next")
+            msg = ws.receive_json()
+        assert msg["type"] == "track.changed"
+
 
 # ---------------------------------------------------------------------------
 # Config: set library path

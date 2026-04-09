@@ -659,6 +659,17 @@ def _cmd_server(
         on_config_set=_on_config_set,
     )
 
+    # Wrap the existing on_track_end callback to also push track.changed events.
+    # Done here (after app creation) so app.state is guaranteed to be available.
+    _original_on_track_end = engine.on_track_end
+
+    def _on_track_end_notify() -> None:
+        if _original_on_track_end is not None:
+            _original_on_track_end()
+        app.state.notify_track_changed()
+
+    engine.on_track_end = _on_track_end_notify
+
     # Watch the library directory and re-scan when audio files are added or
     # removed, so the UI stays current without requiring a manual scan trigger.
     from kamp_daemon.ext import (

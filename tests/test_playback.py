@@ -716,6 +716,39 @@ class TestMpvPlaybackEngine:
         )
         assert engine.state.playing is False
 
+    def test_on_play_state_changed_fires_when_pause_flips(self) -> None:
+        engine, _ = _make_engine()
+        callback = MagicMock()
+        engine.on_play_state_changed = callback
+        # Start paused (default), then unpause.
+        engine._handle_event(
+            {"event": "property-change", "name": "pause", "data": False}
+        )
+        callback.assert_called_once()
+
+    def test_on_play_state_changed_not_fired_when_pause_unchanged(self) -> None:
+        """Callback must not fire when the pause state does not actually change."""
+        engine, _ = _make_engine()
+        callback = MagicMock()
+        engine.on_play_state_changed = callback
+        # Initial state is playing=False (paused). Sending pause=True is a no-op.
+        engine._handle_event(
+            {"event": "property-change", "name": "pause", "data": True}
+        )
+        callback.assert_not_called()
+
+    def test_on_play_state_changed_fires_on_each_flip(self) -> None:
+        engine, _ = _make_engine()
+        callback = MagicMock()
+        engine.on_play_state_changed = callback
+        engine._handle_event(
+            {"event": "property-change", "name": "pause", "data": False}
+        )  # paused→playing
+        engine._handle_event(
+            {"event": "property-change", "name": "pause", "data": True}
+        )  # playing→paused
+        assert callback.call_count == 2
+
     def test_initial_state(self) -> None:
         engine, _ = _make_engine()
         assert engine.state == PlaybackState(

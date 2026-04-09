@@ -87,45 +87,39 @@ export function register(api) {
       rafId = requestAnimationFrame(animate)
 
       // -----------------------------------------------------------------------
-      // Player state polling
+      // Track-change subscription (replaces polling)
       // -----------------------------------------------------------------------
       let currentArtKey = null
 
-      async function poll() {
-        try {
-          const state = await api.player.getState()
-          const track = state.current_track
-
-          if (!track) {
-            img.style.opacity = '0'
-            currentArtKey = null
-            return
-          }
-
-          // Reload art only when the album changes.
-          const artKey = `${track.album_artist}||${track.album}`
-          if (artKey !== currentArtKey) {
-            currentArtKey = artKey
-            const url = api.library.getAlbumArtUrl(track.album_artist, track.album)
-            img.style.opacity = '0'
-            img.onload = () => { img.style.opacity = '1' }
-            img.onerror = () => { img.style.opacity = '0' }
-            img.src = url
-          }
-        } catch {
-          // Server unreachable — leave last state visible.
+      function updateArt(state) {
+        const track = state.current_track
+        if (!track) {
+          img.style.opacity = '0'
+          currentArtKey = null
+          return
+        }
+        // Reload art only when the album changes.
+        const artKey = `${track.album_artist}||${track.album}`
+        if (artKey !== currentArtKey) {
+          currentArtKey = artKey
+          const url = api.library.getAlbumArtUrl(track.album_artist, track.album)
+          img.style.opacity = '0'
+          img.onload = () => { img.style.opacity = '1' }
+          img.onerror = () => { img.style.opacity = '0' }
+          img.src = url
         }
       }
 
-      void poll()
-      const pollInterval = setInterval(() => void poll(), 2000)
+      // Seed with current state, then subscribe for push updates.
+      api.player.getState().then(updateArt).catch(() => {})
+      const unsubTrack = api.player.onTrackChange(updateArt)
 
       // -----------------------------------------------------------------------
       // Cleanup
       // -----------------------------------------------------------------------
       return () => {
         cancelAnimationFrame(rafId)
-        clearInterval(pollInterval)
+        unsubTrack()
       }
     }
   })

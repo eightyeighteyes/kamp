@@ -21,7 +21,12 @@ from kamp_daemon.ext.builtin.musicbrainz import KampMusicBrainzTagger
 from kamp_daemon.ext.context import KampGround, PlaybackSnapshot
 from kamp_daemon.ext.types import ArtworkResult, TrackMetadata
 from kamp_daemon.mover import MoveError
-from kamp_daemon.pipeline_impl import _fetch_and_embed_via_extension, _quarantine, run
+from kamp_daemon.pipeline_impl import (
+    _fetch_and_embed_via_extension,
+    _mb_tags_conflict,
+    _quarantine,
+    run,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -464,6 +469,207 @@ class TestStageCallback:
             run(album_dir, config, stage_callback=calls.append)
 
         assert calls[-1] == ""
+
+
+# ---------------------------------------------------------------------------
+# _mb_tags_conflict
+# ---------------------------------------------------------------------------
+
+
+class TestMbTagsConflict:
+    """Unit tests for the _mb_tags_conflict helper."""
+
+    def _track(self, artist: str = "", album: str = "") -> TrackMetadata:
+        return TrackMetadata(
+            title="T",
+            artist=artist,
+            album=album,
+            album_artist=artist,
+            year="2024",
+            track_number=1,
+            mbid="",
+        )
+
+    def test_no_conflict_when_tags_match(self) -> None:
+        orig = [self._track(artist="Artist", album="Album")]
+        enr = [self._track(artist="Artist", album="Album")]
+        assert not _mb_tags_conflict(orig, enr)
+
+    def test_artist_mismatch_is_conflict(self) -> None:
+        orig = [self._track(artist="Real Artist", album="Album")]
+        enr = [self._track(artist="Wrong Artist", album="Album")]
+        assert _mb_tags_conflict(orig, enr)
+
+    def test_album_mismatch_is_conflict(self) -> None:
+        orig = [self._track(artist="Artist", album="Real Album")]
+        enr = [self._track(artist="Artist", album="Wrong Album")]
+        assert _mb_tags_conflict(orig, enr)
+
+    def test_comparison_is_case_insensitive(self) -> None:
+        orig = [self._track(artist="cool artist", album="great album")]
+        enr = [self._track(artist="Cool Artist", album="Great Album")]
+        assert not _mb_tags_conflict(orig, enr)
+
+    def test_no_conflict_when_original_artist_empty(self) -> None:
+        """Empty original tags can't conflict — MB is just filling them in."""
+        orig = [self._track(artist="", album="Album")]
+        enr = [self._track(artist="Any Artist", album="Album")]
+        assert not _mb_tags_conflict(orig, enr)
+
+    def test_no_conflict_when_original_album_empty(self) -> None:
+        orig = [self._track(artist="Artist", album="")]
+        enr = [self._track(artist="Artist", album="Any Album")]
+        assert not _mb_tags_conflict(orig, enr)
+
+    def test_no_conflict_on_empty_lists(self) -> None:
+        assert not _mb_tags_conflict([], [])
+
+
+# ---------------------------------------------------------------------------
+# MusicBrainz conflict fallback behaviour in pipeline run()
+# ---------------------------------------------------------------------------
+
+
+def _make_conflict_config(tmp_path: Path, trust: bool) -> Config:
+    return Config(
+        paths=PathsConfig(
+            staging=tmp_path / "staging",
+            library=tmp_path / "library",
+        ),
+        musicbrainz=MusicBrainzConfig(
+            contact="test@example.com",
+            trust_musicbrainz_when_tags_conflict=trust,
+        ),
+        artwork=ArtworkConfig(min_dimension=1000, max_bytes=5_000_000),
+        library=LibraryConfig(
+            path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
+        ),
+    )
+
+
+def _make_mp3_with_tags(path: Path, artist: str, album: str) -> None:
+    """Write a fake MP3 with ID3 artist/album tags."""
+    path.write_bytes(b"\xff\xfb" * 64)
+    tags = id3.ID3()
+    tags["TPE1"] = id3.TPE1(encoding=3, text=artist)
+    tags["TALB"] = id3.TALB(encoding=3, text=album)
+    tags.save(str(path))
+
+
+MB_CONFLICTING_TRACKS = [
+    TrackMetadata(
+        title="MB Track",
+        artist="MB Artist",  # differs from file tags ("File Artist")
+        album="MB Album",  # differs from file tags ("File Album")
+        album_artist="MB Artist",
+        year="2024",
+        track_number=1,
+        mbid="rec-123",
+        release_mbid="rel-123",
+        release_group_mbid="rg-123",
+    )
+]
+
+
+class TestMbConflictFallback:
+    """When trust=False and MB returns mismatched tags, ID3 writes are skipped."""
+
+    def _setup_album(self, config: Config) -> tuple[Path, Path]:
+        config.paths.staging.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        album_dir = config.paths.staging / "file-album"
+        album_dir.mkdir()
+        mp3 = album_dir / "01.mp3"
+        _make_mp3_with_tags(mp3, artist="File Artist", album="File Album")
+        return album_dir, mp3
+
+    def test_skips_id3_write_on_conflict_when_not_trusted(self, tmp_path: Path) -> None:
+        """When trust=False and tags conflict, write_tags_from_track_metadata is not called."""
+        config = _make_conflict_config(tmp_path, trust=False)
+        album_dir, mp3 = self._setup_album(config)
+
+        with (
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MB_CONFLICTING_TRACKS
+            ),
+            patch(
+                "kamp_daemon.pipeline_impl.write_tags_from_track_metadata"
+            ) as mock_write,
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
+            patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[mp3]),
+        ):
+            run(album_dir, config)
+
+        mock_write.assert_not_called()
+
+    def test_artwork_still_runs_on_conflict_when_not_trusted(
+        self, tmp_path: Path
+    ) -> None:
+        """Artwork step always runs even when ID3 tags are skipped due to conflict."""
+        config = _make_conflict_config(tmp_path, trust=False)
+        album_dir, mp3 = self._setup_album(config)
+
+        with (
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MB_CONFLICTING_TRACKS
+            ),
+            patch("kamp_daemon.pipeline_impl.write_tags_from_track_metadata"),
+            patch(
+                "kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"
+            ) as mock_art,
+            patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[mp3]),
+        ):
+            run(album_dir, config)
+
+        mock_art.assert_called_once()
+        # MBIDs must be empty — we don't trust the conflicting lookup result
+        call_kwargs = mock_art.call_args
+        assert call_kwargs.kwargs["release_mbid"] == ""
+        assert call_kwargs.kwargs["release_group_mbid"] == ""
+
+    def test_writes_id3_when_trusted_despite_conflict(self, tmp_path: Path) -> None:
+        """When trust=True (default), MB tags are written even if they differ."""
+        config = _make_conflict_config(tmp_path, trust=True)
+        album_dir, mp3 = self._setup_album(config)
+
+        with (
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MB_CONFLICTING_TRACKS
+            ),
+            patch(
+                "kamp_daemon.pipeline_impl.write_tags_from_track_metadata"
+            ) as mock_write,
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
+            patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[mp3]),
+        ):
+            run(album_dir, config)
+
+        mock_write.assert_called_once()
+
+    def test_writes_id3_when_no_conflict(self, tmp_path: Path) -> None:
+        """When tags agree with MB, ID3 is written normally even with trust=False."""
+        config = _make_conflict_config(tmp_path, trust=False)
+        config.paths.staging.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        album_dir = config.paths.staging / "mb-album"
+        album_dir.mkdir()
+        mp3 = album_dir / "01.mp3"
+        # File tags match the MB result
+        _make_mp3_with_tags(mp3, artist="MB Artist", album="MB Album")
+
+        with (
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MB_CONFLICTING_TRACKS
+            ),
+            patch(
+                "kamp_daemon.pipeline_impl.write_tags_from_track_metadata"
+            ) as mock_write,
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
+            patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[mp3]),
+        ):
+            run(album_dir, config)
+
+        mock_write.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

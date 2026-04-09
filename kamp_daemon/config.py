@@ -37,6 +37,7 @@ library = "~/Music"
 
 [musicbrainz]
 contact = "user@example.com"  # Update with your contact email
+# trust-musicbrainz-when-tags-conflict = true  # set to false to skip ID3 tags on artist/album mismatch
 
 [artwork]
 min_dimension = 1000   # minimum width and height in pixels
@@ -60,6 +61,9 @@ class PathsConfig:
 @dataclass
 class MusicBrainzConfig:
     contact: str
+    # When False: if MB returns artist/album that differs from existing file tags,
+    # log a warning and skip writing ID3 tags (proceed to artwork only).
+    trust_musicbrainz_when_tags_conflict: bool = True
 
 
 @dataclass
@@ -259,7 +263,12 @@ class Config:
                 staging=Path(p["staging"]).expanduser(),
                 library=Path(p["library"]).expanduser(),
             ),
-            musicbrainz=MusicBrainzConfig(contact=mb["contact"]),
+            musicbrainz=MusicBrainzConfig(
+                contact=mb["contact"],
+                trust_musicbrainz_when_tags_conflict=bool(
+                    mb.get("trust-musicbrainz-when-tags-conflict", True)
+                ),
+            ),
             artwork=ArtworkConfig(
                 min_dimension=int(art["min_dimension"]),
                 max_bytes=int(art["max_bytes"]),
@@ -283,6 +292,7 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "paths.staging": str,
     "paths.library": str,
     "musicbrainz.contact": str,
+    "musicbrainz.trust-musicbrainz-when-tags-conflict": bool,
     "artwork.min_dimension": int,
     "artwork.max_bytes": int,
     "library.path_template": str,
@@ -342,7 +352,11 @@ def config_set(path: Path, key: str, value: str) -> None:
         raise KeyError(f"Unknown config key {key!r}. Valid keys: {valid}")
 
     target_type = _CONFIG_KEY_TYPES[key]
-    if target_type == int:
+    if target_type == bool:
+        if value.lower() not in ("true", "false"):
+            raise ValueError(f"Key {key!r} requires true or false, got {value!r}")
+        toml_value = value.lower()  # unquoted TOML boolean
+    elif target_type == int:
         try:
             int_value = int(value)
         except ValueError:

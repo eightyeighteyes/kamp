@@ -440,6 +440,8 @@ def create_app(
     _INT_CONFIG_KEYS = frozenset(
         {"artwork.min_dimension", "artwork.max_bytes", "bandcamp.poll_interval_minutes"}
     )
+    # Boolean config keys — stored as Python bool so JSON serialises as true/false.
+    _BOOL_CONFIG_KEYS = frozenset({"musicbrainz.trust-musicbrainz-when-tags-conflict"})
 
     @app.patch("/api/v1/config")
     def patch_config(req: ConfigPatchRequest) -> dict[str, Any]:
@@ -449,7 +451,12 @@ def create_app(
             except (KeyError, ValueError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         # Coerce to the correct Python type before caching in memory.
-        coerced: Any = int(req.value) if req.key in _INT_CONFIG_KEYS else req.value
+        if req.key in _INT_CONFIG_KEYS:
+            coerced: Any = int(req.value)
+        elif req.key in _BOOL_CONFIG_KEYS:
+            coerced = req.value.lower() == "true"
+        else:
+            coerced = req.value
         _state["config"][req.key] = coerced
         return {"ok": True}
 

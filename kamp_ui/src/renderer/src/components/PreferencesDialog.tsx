@@ -224,6 +224,51 @@ function SelectRow({
   )
 }
 
+// A boolean toggle row for on/off config settings.
+function BoolRow({
+  label,
+  configKey,
+  hint,
+  initialValue,
+  onSave
+}: {
+  label: string
+  configKey: string
+  hint?: string
+  initialValue: boolean
+  onSave: (key: string, value: string) => Promise<void>
+}): React.JSX.Element {
+  const [checked, setChecked] = useState(initialValue)
+  const [saved, setSaved] = useState(false)
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  const handleChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const value = e.target.checked
+      setChecked(value)
+      await onSave(configKey, String(value))
+      setSaved(true)
+      clearTimeout(savedTimerRef.current)
+      savedTimerRef.current = setTimeout(() => setSaved(false), 1500)
+    },
+    [configKey, onSave]
+  )
+
+  return (
+    <div className="prefs-row">
+      <div className="prefs-row-header">
+        <span className="prefs-label">{label}</span>
+        <SavedCheck visible={saved} />
+        <label className="prefs-toggle" aria-label={label}>
+          <input type="checkbox" checked={checked} onChange={(e) => void handleChange(e)} />
+          <span className="prefs-toggle-track" />
+        </label>
+      </div>
+      {hint && <p className="prefs-hint">{hint}</p>}
+    </div>
+  )
+}
+
 // A textarea row (used for path_template).
 function TextareaRow({
   label,
@@ -949,6 +994,15 @@ export function PreferencesDialog({
                       type="email"
                       initialValue={str('musicbrainz.contact')}
                       hint="Sent in MusicBrainz User-Agent; required by their policy."
+                      onSave={handleSave}
+                    />
+                    <BoolRow
+                      label="Trust MusicBrainz when tags conflict"
+                      configKey="musicbrainz.trust-musicbrainz-when-tags-conflict"
+                      hint="When off, if MusicBrainz returns a different artist or album than the file's existing tags, the ID3 tags are left unchanged and only artwork is updated."
+                      initialValue={
+                        configValues?.['musicbrainz.trust-musicbrainz-when-tags-conflict'] ?? true
+                      }
                       onSave={handleSave}
                     />
                   </div>

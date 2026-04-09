@@ -1,9 +1,10 @@
 ---
 id: TASK-88
 title: auto-tagging should fall back to existing artist/album tags
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-06 02:33'
+updated_date: '2026-04-09 19:44'
 labels: []
 milestone: m-6
 dependencies: []

@@ -1,9 +1,10 @@
 ---
 id: TASK-89
 title: cover.jpg/.png should be preferred in local artwork files
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-06 02:38'
+updated_date: '2026-04-09 19:43'
 labels: []
 milestone: m-6
 dependencies: []

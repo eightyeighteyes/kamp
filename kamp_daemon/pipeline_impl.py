@@ -19,7 +19,7 @@ from .config import Config
 from .ext.builtin.coverart import KampCoverArtArchive
 from .ext.builtin.musicbrainz import KampMusicBrainzTagger
 from .ext.context import KampGround, PlaybackSnapshot
-from .ext.types import ArtworkQuery, ArtworkResult
+from .ext.types import ArtworkQuery, ArtworkResult, TrackMetadata
 from .extractor import ExtractionError, extract, find_audio_files
 from .mover import MoveError, move_to_library
 from .tagger import (
@@ -138,20 +138,40 @@ def run(
                 tracks = [read_track_metadata_from_file(f) for f in audio_files]
                 tagger = KampMusicBrainzTagger(ctx)
                 enriched = tagger.tag_release(tracks)
-                total = len(audio_files)
-                for audio_file, track in zip(audio_files, enriched):
-                    write_tags_from_track_metadata(
-                        audio_file, track, total_tracks=total
+                if (
+                    not config.musicbrainz.trust_musicbrainz_when_tags_conflict
+                    and _mb_tags_conflict(tracks, enriched)
+                ):
+                    # MB returned different artist/album than the existing file
+                    # tags — likely a mis-match for a release not yet in the DB.
+                    # Keep the existing tags; proceed to artwork with no MBID.
+                    first = tracks[0] if tracks else None
+                    logger.warning(
+                        "MusicBrainz tags conflict with existing file tags "
+                        "(existing: %r / %r, MB: %r / %r) — skipping ID3 write",
+                        first.artist if first else "",
+                        first.album if first else "",
+                        enriched[0].artist if enriched else "",
+                        enriched[0].album if enriched else "",
                     )
+                    mbid = ""
+                    rg_mbid = ""
+                    title = first.album if first else directory.name
+                else:
+                    total = len(audio_files)
+                    for audio_file, track in zip(audio_files, enriched):
+                        write_tags_from_track_metadata(
+                            audio_file, track, total_tracks=total
+                        )
+                    # Use the first enriched track to carry release-level IDs forward.
+                    mbid = enriched[0].release_mbid if enriched else ""
+                    rg_mbid = enriched[0].release_group_mbid if enriched else ""
+                    title = enriched[0].album if enriched else directory.name
             except TaggingError as exc:
                 logger.error("Tagging failed: %s", exc)
                 _notify(notify_callback, "Tagging failed", path.name)
                 _quarantine(directory, config.paths.staging)
                 return
-            # Use the first enriched track to carry release-level IDs forward.
-            mbid = enriched[0].release_mbid if enriched else ""
-            rg_mbid = enriched[0].release_group_mbid if enriched else ""
-            title = enriched[0].album if enriched else directory.name
 
         # --- 3. Artwork -------------------------------------------------------
         # Always run: even if art is already embedded, a higher-quality image may
@@ -282,6 +302,31 @@ def _fetch_and_embed_via_extension(
     )
     for audio_file in audio_files:
         _embed(audio_file, image_bytes)
+
+
+def _mb_tags_conflict(
+    original: list[TrackMetadata],
+    enriched: list[TrackMetadata],
+) -> bool:
+    """Return True if MB-enriched artist or album differs from existing file tags.
+
+    Only flags a conflict when the file already has non-empty artist/album tags
+    — files with no tags at all can't conflict, only be filled in.
+    Comparison is case-insensitive and whitespace-normalised.
+    """
+    if not original or not enriched:
+        return False
+    orig = original[0]
+    enr = enriched[0]
+
+    def _norm(s: str) -> str:
+        return s.strip().lower()
+
+    if orig.artist and enr.artist and _norm(orig.artist) != _norm(enr.artist):
+        return True
+    if orig.album and enr.album and _norm(orig.album) != _norm(enr.album):
+        return True
+    return False
 
 
 def _quarantine(item: Path, staging_root: Path) -> None:

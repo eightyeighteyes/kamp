@@ -164,6 +164,7 @@ export type ConfigValues = {
   'paths.staging': string | null
   'paths.library': string | null
   'musicbrainz.contact': string | null
+  'musicbrainz.trust-musicbrainz-when-tags-conflict': boolean | null
   'artwork.min_dimension': number | null
   'artwork.max_bytes': number | null
   'library.path_template': string | null

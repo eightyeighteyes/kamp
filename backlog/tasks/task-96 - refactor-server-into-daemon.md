@@ -1,10 +1,10 @@
 ---
 id: TASK-96
 title: refactor server into daemon
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-08 18:27'
-updated_date: '2026-04-09 17:44'
+updated_date: '2026-04-09 19:43'
 labels: []
 milestone: m-6
 dependencies: []

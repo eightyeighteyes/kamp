@@ -767,6 +767,7 @@ def _cmd_daemon(
         "paths.staging": str(config.paths.staging),
         "paths.library": str(config.paths.library),
         "musicbrainz.contact": config.musicbrainz.contact,
+        "musicbrainz.trust-musicbrainz-when-tags-conflict": config.musicbrainz.trust_musicbrainz_when_tags_conflict,
         "artwork.min_dimension": config.artwork.min_dimension,
         "artwork.max_bytes": config.artwork.max_bytes,
         "library.path_template": config.library.path_template,

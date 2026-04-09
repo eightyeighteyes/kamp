@@ -1,7 +1,7 @@
 ---
 id: TASK-114
 title: Stats and Groover compete for panel space
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-09 12:15'
 labels: []

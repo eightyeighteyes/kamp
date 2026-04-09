@@ -388,6 +388,28 @@ class TestLocalArtwork:
         assert mock_get.called
 
 
+class TestFindLocalArtworkCoverPriority:
+    def test_exact_cover_stem_beats_back_cover(self, tmp_path: Path) -> None:
+        """cover.jpg is preferred over a file that merely contains 'cover' in its name."""
+        # _Back-Cover.jpg sorts before cover.jpg alphabetically, so a naive
+        # substring search returns the wrong file.
+        (tmp_path / "_Back-Cover.jpg").write_bytes(_make_jpeg(1200, 1200))
+        (tmp_path / "cover.jpg").write_bytes(_make_jpeg(1200, 1200))
+
+        result = find_local_artwork(tmp_path)
+        assert result is not None
+        assert result.name == "cover.jpg"
+
+    def test_exact_cover_stem_beats_front_cover(self, tmp_path: Path) -> None:
+        """cover.jpg wins over Front-Cover.jpg even though both match the hint."""
+        (tmp_path / "Front-Cover.jpg").write_bytes(_make_jpeg(1200, 1200))
+        (tmp_path / "cover.jpg").write_bytes(_make_jpeg(1200, 1200))
+
+        result = find_local_artwork(tmp_path)
+        assert result is not None
+        assert result.name == "cover.jpg"
+
+
 class TestFindLocalArtworkFallback:
     def test_returns_first_alphabetically_when_no_preferred_name(
         self, tmp_path: Path

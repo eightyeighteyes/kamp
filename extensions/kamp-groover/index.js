@@ -14,6 +14,7 @@ export function register(api) {
     id: 'kamp-groover.visualizer',
     title: 'Groover',
     defaultSlot: 'main',
+    compatibleSlots: ['main'],
 
     render(container) {
       // Clear any leftover DOM from a previous mount cycle (React StrictMode

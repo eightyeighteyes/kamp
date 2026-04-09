@@ -428,7 +428,11 @@ export default function App(): React.JSX.Element {
     if (searchQuery) return <SearchView />
     if (activeExtPanel) {
       const extPanel = mainPanels.find((p) => p.id === activeExtPanel)
-      if (extPanel && extPanel.kind === 'extension') return <ExtensionPanel panel={extPanel} />
+      // key=panel.id forces a fresh component+DOM node on panel switch so the
+      // previous extension's container is never reused (and its lingering DOM
+      // never bleeds into the incoming panel).
+      if (extPanel && extPanel.kind === 'extension')
+        return <ExtensionPanel key={extPanel.id} panel={extPanel} />
     }
     if (activeView === 'now-playing') return <NowPlayingView />
     return <LibraryView />

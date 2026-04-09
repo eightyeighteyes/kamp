@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.0](https://github.com/eightyeighteyes/kamp/compare/v1.6.0...v1.7.0) (2026-04-09)
+
+
+### Features
+
+* BaseSyncer ABC, ctx.stage(), and KampBandcampSyncer wrapper (TASK-18.1) ([#173](https://github.com/eightyeighteyes/kamp/issues/173)) ([d2489ec](https://github.com/eightyeighteyes/kamp/commit/d2489ec548b16ef1aba9ad7e8e306a4b5388f1aa))
+* community extension install/uninstall flow (TASK-93) ([#182](https://github.com/eightyeighteyes/kamp/issues/182)) ([89b2d17](https://github.com/eightyeighteyes/kamp/commit/89b2d170e2aa4b8c9d406e837f90f45aa0fc5e69))
+* contextBridge API and frontend panel registration system (TASK-19) ([#174](https://github.com/eightyeighteyes/kamp/issues/174)) ([4f10484](https://github.com/eightyeighteyes/kamp/commit/4f10484e17a16ddecb3d695f71ba158a64972ec2))
+* declarative permissions system for extensions (TASK-82) ([#177](https://github.com/eightyeighteyes/kamp/issues/177)) ([67d02ba](https://github.com/eightyeighteyes/kamp/commit/67d02bac9642bfe4502bfcd2315f017ebb40e3cc))
+* extension entry-point discovery and ABC conformance (TASK-17.1) ([#163](https://github.com/eightyeighteyes/kamp/issues/163)) ([973d6f0](https://github.com/eightyeighteyes/kamp/commit/973d6f0760b663d4a296fa28e8b22e94512d54da))
+* extension invocation policy — wire tagger/artwork extensions into the pipeline (TASK-90) ([#181](https://github.com/eightyeighteyes/kamp/issues/181)) ([f08261d](https://github.com/eightyeighteyes/kamp/commit/f08261d920a2909b0566aeaf6ef27d67858baec2))
+* extension settings UI (TASK-22) ([#179](https://github.com/eightyeighteyes/kamp/issues/179)) ([c286c3e](https://github.com/eightyeighteyes/kamp/commit/c286c3e092f23ebd8347683a89789420bbe796f4))
+* extension worker subprocess lifecycle and crash isolation (TASK-17.2) ([#164](https://github.com/eightyeighteyes/kamp/issues/164)) ([39a6a79](https://github.com/eightyeighteyes/kamp/commit/39a6a7907928b940a942530f8187a81b7243556d))
+* frontend extension SDK — api.player/api.library replace raw fetch (TASK-97) ([#184](https://github.com/eightyeighteyes/kamp/issues/184)) ([cbc98e2](https://github.com/eightyeighteyes/kamp/commit/cbc98e2dd0939fa70b4495ed9160ca9f2b4c3589))
+* hash-pinning for installed extensions (TASK-84) ([#170](https://github.com/eightyeighteyes/kamp/issues/170)) ([22ef278](https://github.com/eightyeighteyes/kamp/commit/22ef27839549b03156fe9ee5f525c7c812b0ad44))
+* iframe sandboxing for community (Phase 2) extensions (TASK-21) ([#178](https://github.com/eightyeighteyes/kamp/issues/178)) ([51a7737](https://github.com/eightyeighteyes/kamp/commit/51a7737334332d6286bda308b1b74a9d7844e95a))
+* import-time execution probe for backend extensions (TASK-83) ([#169](https://github.com/eightyeighteyes/kamp/issues/169)) ([0250344](https://github.com/eightyeighteyes/kamp/commit/0250344309085ffb705f03eee0a179cf62b629e1))
+* KampContext structured data types and corrected ABC signatures (TASK-17.3) ([#165](https://github.com/eightyeighteyes/kamp/issues/165)) ([0625812](https://github.com/eightyeighteyes/kamp/commit/0625812784995a36ab05715076a7fa307b84d590))
+* KampGround API — context, playback snapshot, and event subscription (TASK-17.4) ([#166](https://github.com/eightyeighteyes/kamp/issues/166)) ([9f8884f](https://github.com/eightyeighteyes/kamp/commit/9f8884fe884c681ef53a8c46c58bc0867947f0d1))
+* KampGround.fetch() — proxied network capability (TASK-17.5) ([#167](https://github.com/eightyeighteyes/kamp/issues/167)) ([91efcad](https://github.com/eightyeighteyes/kamp/commit/91efcad689b265cc9abd56b8d44d4df027742b32))
+* library.write — named atomic mutations on KampGround (TASK-17.6) ([#168](https://github.com/eightyeighteyes/kamp/issues/168)) ([b7b26d1](https://github.com/eightyeighteyes/kamp/commit/b7b26d1335309c2171edec1a928ef960b1a19adc))
+* library.write audit log (TASK-85) ([#171](https://github.com/eightyeighteyes/kamp/issues/171)) ([954f45a](https://github.com/eightyeighteyes/kamp/commit/954f45ace1b5dcc5c734a5fe6a85219d75b3c050))
+* OS-level extension sandboxing — macOS sandbox_init + Linux landlock/seccomp (TASK-87) ([#180](https://github.com/eightyeighteyes/kamp/issues/180)) ([91c686e](https://github.com/eightyeighteyes/kamp/commit/91c686ebd0b2dbe2ce8f4265b0cd597ab3e1dfd1))
+* Phase 1 first-party extension allow-list (TASK-86) ([#176](https://github.com/eightyeighteyes/kamp/issues/176)) ([2816c5f](https://github.com/eightyeighteyes/kamp/commit/2816c5f32b461a2ea7e59a94ddae502c67ddf812))
+* Preferences dialog (TASK-36) ([#161](https://github.com/eightyeighteyes/kamp/issues/161)) ([c0ee56d](https://github.com/eightyeighteyes/kamp/commit/c0ee56dc31060357452a491771de3fb927e8e260))
+* refactor MusicBrainz tagger and artwork fetcher as built-in extensions (TASK-18) ([#172](https://github.com/eightyeighteyes/kamp/issues/172)) ([84b2178](https://github.com/eightyeighteyes/kamp/commit/84b2178e8ac237452e447d1a3f2bec12df021675))
+* UI slot API — declarative panel manifests (TASK-20) ([#175](https://github.com/eightyeighteyes/kamp/issues/175)) ([604b101](https://github.com/eightyeighteyes/kamp/commit/604b10155448fe320e6e8947f8d85d6e3cd5f3d8))
+
+
+### Bug Fixes
+
+* isolate main-panel extension containers with React key (TASK-114) ([#185](https://github.com/eightyeighteyes/kamp/issues/185)) ([9f5363d](https://github.com/eightyeighteyes/kamp/commit/9f5363d402dea6a9c1b6c43fbd5464da0ecfd79b))
+
 ## [1.6.0](https://github.com/eightyeighteyes/kamp/compare/v1.5.0...v1.6.0) (2026-04-04)
 
 

@@ -156,20 +156,34 @@ jobs:
                 --force --sign "$IDENTITY" \
                 --options runtime --timestamp \
                 {}
-          echo "→ Signing Python framework binaries..."
-          # Python.framework in a PyInstaller bundle has a non-standard structure
-          # that makes codesign report "bundle format is ambiguous" when given the
-          # framework root or the top-level Python symlink/hardlink.
-          # --identifier forces codesign to treat each path as a plain Mach-O
-          # binary rather than auto-detecting it as a framework bundle.
+          echo "→ Signing Python binaries..."
+          # Python.framework/Versions/3.11/Python: sign in place — no ambiguity
+          # because the immediate parent is a versioned directory, not a .framework root.
           codesign --force --sign "$IDENTITY" --options runtime --timestamp \
             kamp_ui/resources/kamp/_internal/Python.framework/Versions/3.11/Python
-          codesign --force --sign "$IDENTITY" --options runtime --timestamp \
-            --identifier "org.python.python" \
-            kamp_ui/resources/kamp/_internal/Python.framework/Python
-          codesign --force --sign "$IDENTITY" --options runtime --timestamp \
-            --identifier "org.python.python" \
-            kamp_ui/resources/kamp/_internal/Python.framework/Versions/Current/Python
+
+          # Python.framework/Python and Versions/Current/Python cause codesign to
+          # report "bundle format is ambiguous" when signed in place — codesign
+          # auto-detects the .framework parent directory and refuses to sign the
+          # binary as a plain Mach-O. Workaround: copy out of the .framework
+          # context, sign the copy (no framework detection), copy back.
+          # --identifier is set explicitly so the signature is stable regardless
+          # of the temp file name.
+          for PY_PATH in \
+            "kamp_ui/resources/kamp/_internal/Python.framework/Python" \
+            "kamp_ui/resources/kamp/_internal/Python.framework/Versions/Current/Python"; do
+            if [ -f "$PY_PATH" ]; then
+              TMP=$(mktemp)
+              cp "$PY_PATH" "$TMP"
+              codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+                --identifier "org.python.python" "$TMP"
+              cp "$TMP" "$PY_PATH"
+              rm "$TMP"
+              echo "  signed: $PY_PATH"
+            fi
+          done
+
+          echo "→ Signing standalone kamp Python binary..."
           codesign --force --sign "$IDENTITY" --options runtime --timestamp \
             kamp_ui/resources/kamp/_internal/Python
           echo "→ Signing main executables..."

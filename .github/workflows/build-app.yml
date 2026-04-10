@@ -94,12 +94,12 @@ jobs:
       - name: Build DMG
         env:
           # Code signing — uncomment and add secrets when a Developer ID cert is available:
-          # CSC_LINK: ${{ secrets.CSC_LINK }}               # base64-encoded .p12
-          # CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }} # .p12 password
-          # Notarization (enable notarize.teamId in electron-builder.yml first):
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}               # base64-encoded .p12
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }} # .p12 password
+          Notarization (enable notarize.teamId in electron-builder.yml first):
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           DEBUG: electron-builder
         # --universal produces a single DMG containing a fat binary that runs
         # natively on both Apple Silicon (arm64) and Intel (x64) Macs.

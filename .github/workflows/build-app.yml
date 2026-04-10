@@ -65,7 +65,9 @@ jobs:
           echo "→ $(file kamp_ui/resources/mpv)"
 
       - name: Bundle Node.js + npm for extension installs
-        run: bash scripts/fetch_node.sh --arch arm64
+        # Universal binary (lipo arm64 + x64) so extension install works on
+        # both Apple Silicon and Intel Macs.
+        run: bash scripts/fetch_node.sh --arch universal
 
       - name: Install librsvg for SVG rendering
         run: brew install librsvg
@@ -99,7 +101,9 @@ jobs:
           # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           DEBUG: electron-builder
-        run: npm run build:mac
+        # --universal produces a single DMG containing a fat binary that runs
+        # natively on both Apple Silicon (arm64) and Intel (x64) Macs.
+        run: npm run build:mac -- --universal
         working-directory: kamp_ui
 
       - name: Verify DMG contents

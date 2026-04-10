@@ -9,16 +9,16 @@ permissions:
   contents: write
 
 jobs:
-  build-mac-app:
+  build-bundle:
     strategy:
       matrix:
         include:
           - arch: arm64
             runner: macos-latest   # Apple Silicon (arm64)
           - arch: x64
-            runner: macos-15-intel
+            runner: macos-15-intel # Intel (x64)
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -86,6 +86,42 @@ jobs:
       - name: Generate icon.icns
         run: bash scripts/make_icns.sh kamp_ui/resources/icon_1024.png
 
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.arch }}
+          path: kamp_ui/resources/
+          retention-days: 1
+
+  sign-and-package:
+    needs: build-bundle
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    # 90 min: pre-sign (~3-5 min) + electron-builder signing (~5 min) + notarization (up to 60+ min)
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bundle-${{ matrix.arch }}
+          path: kamp_ui/resources/
+
+      - name: Restore execute permissions
+        # upload-artifact strips Unix execute bits; restore them before signing.
+        run: |
+          chmod +x kamp_ui/resources/kamp/kamp \
+                   kamp_ui/resources/mpv \
+                   kamp_ui/resources/node
+
       - name: Import signing certificate
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -106,19 +142,21 @@ jobs:
 
       - name: Pre-sign PyInstaller bundle and native resources
         # Sign all Mach-O binaries in parallel before electron-builder runs.
-        # electron-builder then uses signIgnore to skip these already-signed files
-        # and only signs the outer .app shell — cutting signing time from ~45 min
-        # to ~2 min. Safe for single-arch builds because nothing rewrites the
-        # Mach-O files after this point (no @electron/universal merge step).
+        # electron-builder uses signIgnore to skip these already-signed files
+        # and only signs the outer .app shell — cutting total signing time from
+        # ~40 min (serial) to ~3-5 min (parallel). Safe for single-arch builds
+        # because nothing rewrites the Mach-O files after this point.
         run: |
           IDENTITY="Developer ID Application"
+          echo "→ Files to sign: $(find kamp_ui/resources/kamp -type f \( -name "*.so" -o -name "*.dylib" \) | wc -l)"
           echo "→ Signing .so and .dylib files (parallel)..."
+          START=$(date +%s)
           find kamp_ui/resources/kamp -type f \( -name "*.so" -o -name "*.dylib" \) \
             | xargs -P8 -I{} codesign \
                 --force --sign "$IDENTITY" \
                 --options runtime --timestamp \
                 {}
-          echo "→ Signing framework binaries (no extension)..."
+          echo "→ Signing framework Python binary..."
           find kamp_ui/resources/kamp -type f -name "Python" \
             | xargs -I{} codesign \
                 --force --sign "$IDENTITY" \
@@ -130,7 +168,8 @@ jobs:
             kamp_ui/resources/kamp/kamp \
             kamp_ui/resources/mpv \
             kamp_ui/resources/node
-          echo "→ Pre-signing complete"
+          END=$(date +%s)
+          echo "→ Pre-signing done in $((END-START))s"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

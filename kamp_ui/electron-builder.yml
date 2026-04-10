@@ -57,11 +57,15 @@ mac:
   target:
     - dmg
   entitlementsInherit: build/entitlements.mac.plist
-  # PyInstaller .so/.dylib files and mpv are arm64-only (built on the arm64 CI
-  # runner). @electron/universal sees them as "identical in both builds" and
-  # would error without this. x64ArchFiles tells the merger to pass them through
-  # as-is; Intel Macs run them transparently via Rosetta 2.
-  x64ArchFiles: "Contents/Resources/{kamp/**,mpv}"
+  # All extraResources (PyInstaller bundle, mpv, node, npm) land in
+  # Contents/Resources/ and are arm64-only or already-universal. Tell
+  # @electron/universal to pass everything under Resources/ through as-is
+  # rather than attempting to lipo them. The files that actually need lipo
+  # (the Electron binary and its frameworks) live in Contents/MacOS/ and
+  # Contents/Frameworks/, not here. minimatch's ** does not cross dot-prefixed
+  # directories by default, so a broad Resources/** is more reliable than
+  # trying to enumerate kamp/_internal/PIL/.dylibs/ etc. explicitly.
+  x64ArchFiles: "Contents/Resources/**"
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
     - NSMicrophoneUsageDescription: Application requests access to the device's microphone.

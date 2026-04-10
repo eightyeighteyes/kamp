@@ -16,7 +16,7 @@ jobs:
           - arch: arm64
             runner: macos-latest   # Apple Silicon (arm64)
           - arch: x64
-            runner: macos-13       # Last Intel runner on GitHub Actions
+            runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
 

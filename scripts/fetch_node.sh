@@ -8,7 +8,10 @@
 # libSystem, libc++) — safe to bundle in Kamp.app without additional dylibs.
 # Homebrew node links against Homebrew-specific dylibs and must NOT be used.
 #
-# Usage: bash scripts/fetch_node.sh [--version 20.18.3] [--arch arm64|x64]
+# Usage: bash scripts/fetch_node.sh [--version 20.18.3] [--arch arm64|x64|universal]
+#
+# --arch universal downloads both arm64 and x64 and lipo-merges the node binary
+# so the bundled node runs on both Apple Silicon and Intel Macs.
 
 set -euo pipefail
 
@@ -31,27 +34,50 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-TARBALL="node-v${NODE_VERSION}-darwin-${ARCH}.tar.gz"
-URL="https://nodejs.org/dist/v${NODE_VERSION}/${TARBALL}"
-STRIP_PREFIX="node-v${NODE_VERSION}-darwin-${ARCH}"
-TMPDIR=$(mktemp -d)
+fetch_arch() {
+  local arch="$1" tmpdir="$2"
+  local tarball="node-v${NODE_VERSION}-darwin-${arch}.tar.gz"
+  local strip_prefix="node-v${NODE_VERSION}-darwin-${arch}"
 
-echo "→ Downloading Node.js ${NODE_VERSION} (${ARCH}) from nodejs.org..."
-curl -fsSL --progress-bar "$URL" -o "$TMPDIR/$TARBALL"
+  echo "→ Downloading Node.js ${NODE_VERSION} (${arch}) from nodejs.org..."
+  curl -fsSL --progress-bar "https://nodejs.org/dist/v${NODE_VERSION}/${tarball}" \
+    -o "$tmpdir/$tarball"
 
-echo "→ Extracting node binary..."
-tar xzf "$TMPDIR/$TARBALL" -C "$TMPDIR" \
-  "${STRIP_PREFIX}/bin/node" \
-  "${STRIP_PREFIX}/lib/node_modules/npm"
+  echo "→ Extracting (${arch})..."
+  tar xzf "$tmpdir/$tarball" -C "$tmpdir" \
+    "${strip_prefix}/bin/node" \
+    "${strip_prefix}/lib/node_modules/npm"
+}
 
 mkdir -p kamp_ui/resources
-cp "$TMPDIR/${STRIP_PREFIX}/bin/node" kamp_ui/resources/node
-chmod +x kamp_ui/resources/node
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
 
-rm -rf kamp_ui/resources/npm
-cp -r "$TMPDIR/${STRIP_PREFIX}/lib/node_modules/npm" kamp_ui/resources/npm
+if [[ "$ARCH" == "universal" ]]; then
+  fetch_arch "arm64" "$TMPDIR"
+  fetch_arch "x64" "$TMPDIR"
 
-rm -rf "$TMPDIR"
+  echo "→ Creating universal node binary with lipo..."
+  lipo -create \
+    "$TMPDIR/node-v${NODE_VERSION}-darwin-arm64/bin/node" \
+    "$TMPDIR/node-v${NODE_VERSION}-darwin-x64/bin/node" \
+    -output kamp_ui/resources/node
+  chmod +x kamp_ui/resources/node
+
+  # npm is pure JS — both arch tarballs ship identical npm; use arm64's copy
+  rm -rf kamp_ui/resources/npm
+  cp -r "$TMPDIR/node-v${NODE_VERSION}-darwin-arm64/lib/node_modules/npm" \
+    kamp_ui/resources/npm
+else
+  fetch_arch "$ARCH" "$TMPDIR"
+
+  cp "$TMPDIR/node-v${NODE_VERSION}-darwin-${ARCH}/bin/node" kamp_ui/resources/node
+  chmod +x kamp_ui/resources/node
+
+  rm -rf kamp_ui/resources/npm
+  cp -r "$TMPDIR/node-v${NODE_VERSION}-darwin-${ARCH}/lib/node_modules/npm" \
+    kamp_ui/resources/npm
+fi
 
 echo "→ node: $(file kamp_ui/resources/node)"
 echo "→ npm-cli: kamp_ui/resources/npm/bin/npm-cli.js"

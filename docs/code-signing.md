@@ -129,8 +129,7 @@ under the `mac:` section:
 ```yaml
 mac:
   hardenedRuntime: true
-  notarize:
-    teamId: "YOUR_TEAM_ID"   # replace with your actual Team ID
+  notarize: true
 ```
 
 ---

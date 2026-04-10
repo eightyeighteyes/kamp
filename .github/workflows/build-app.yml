@@ -11,7 +11,7 @@ permissions:
 jobs:
   build-mac-app:
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -65,9 +65,7 @@ jobs:
           echo "→ $(file kamp_ui/resources/mpv)"
 
       - name: Bundle Node.js + npm for extension installs
-        # Universal binary (lipo arm64 + x64) so extension install works on
-        # both Apple Silicon and Intel Macs.
-        run: bash scripts/fetch_node.sh --arch universal
+        run: bash scripts/fetch_node.sh --arch arm64
 
       - name: Install librsvg for SVG rendering
         run: brew install librsvg
@@ -91,57 +89,6 @@ jobs:
         run: npm ci
         working-directory: kamp_ui
 
-      - name: Import signing certificate
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          # Decode the .p12 into a temporary keychain so codesign can find it.
-          CERT_PATH="$RUNNER_TEMP/cert.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          echo "$CSC_LINK" | base64 --decode -o "$CERT_PATH"
-          security create-keychain -p "" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CSC_KEY_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
-          security set-key-partition-list -S apple-tool:,apple: -k "" "$KEYCHAIN_PATH"
-          # Resolve the identity name for the pre-signing step below.
-          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-          echo "→ Signing identity: $IDENTITY"
-
-      - name: Pre-sign PyInstaller bundle and mpv
-        # electron-builder signs every file in the bundle serially, which takes
-        # ~1 hour for the PyInstaller _internal/ tree. Pre-signing in parallel
-        # (xargs -P8) with --timestamp reduces this to a few minutes by batching
-        # the timestamp server round-trips. electron-builder then only has to
-        # re-sign the outer .app shell.
-        run: |
-          IDENTITY="$SIGNING_IDENTITY"
-          sign_file() {
-            codesign --sign "$IDENTITY" --timestamp --options runtime \
-              --force "$1" 2>/dev/null || true
-          }
-          export -f sign_file
-          export IDENTITY
-
-          # Sign all Mach-O binaries inside the PyInstaller bundle in parallel.
-          find kamp_ui/resources/kamp -type f \( -name "*.so" -o -name "*.dylib" -o -perm +0111 \) \
-            | xargs -P8 -I{} bash -c 'sign_file "$@"' _ {}
-
-          # Sign the main kamp executable last (after its dependencies).
-          codesign --sign "$IDENTITY" --timestamp --options runtime \
-            --force kamp_ui/resources/kamp/kamp
-
-          # Sign mpv.
-          codesign --sign "$IDENTITY" --timestamp --options runtime \
-            --force kamp_ui/resources/mpv
-
-          echo "→ Pre-signing complete"
-
       - name: Build DMG
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -150,9 +97,12 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           DEBUG: electron-builder
-        # --universal produces a single DMG containing a fat binary that runs
-        # natively on both Apple Silicon (arm64) and Intel (x64) Macs.
-        run: npm run build:mac -- --universal
+        # arm64 only — runs natively on Apple Silicon, transparently via Rosetta 2
+        # on Intel. Universal builds double the signing workload (two copies of
+        # every .so/.dylib, each requiring a timestamp server round-trip) causing
+        # 30-60 min hangs on the PyInstaller bundle. Rosetta 2 is silent and
+        # seamless for users.
+        run: npm run build:mac -- --arm64
         working-directory: kamp_ui
 
       - name: Verify DMG contents

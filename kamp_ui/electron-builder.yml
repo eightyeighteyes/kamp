@@ -74,8 +74,7 @@ mac:
     - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   hardenedRuntime: true
-  notarize:
-    teamId: "X6K4L8ZMLS"
+  notarize: true
 dmg:
   artifactName: ${name}-${version}.${ext}
 linux:

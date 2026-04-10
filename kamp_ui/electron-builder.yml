@@ -58,7 +58,7 @@ mac:
     - dmg
   entitlementsInherit: build/entitlements.mac.plist
   hardenedRuntime: true
-  notarize: false # temporarily disabled for signing pipeline validation
+  notarize: true
   # Resources are pre-signed in parallel before electron-builder runs.
   # Skip re-signing them here — electron-builder only signs the outer .app shell.
   signIgnore:

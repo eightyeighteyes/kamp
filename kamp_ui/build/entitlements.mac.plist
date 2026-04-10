@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required for Electron's V8 JIT engine -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- Required for PyInstaller bootloader (executes generated native code) -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Allow bundled .dylibs (Python runtime, mpv) that are not signed with
+         the app's Developer ID — needed until all binaries are pre-signed -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- User selects their music library folder via the directory picker -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <!-- Outbound requests: MusicBrainz, Last.fm, AcoustID lookups -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

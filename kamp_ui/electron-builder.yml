@@ -60,9 +60,15 @@ mac:
   hardenedRuntime: true
   notarize: true
   # Resources are pre-signed in parallel before electron-builder runs.
-  # Skip re-signing them here — electron-builder only signs the outer .app shell.
+  # signIgnore skips already-signed files so electron-builder only handles
+  # the outer .app shell + Python.framework (which can't be pre-signed due
+  # to its non-standard PyInstaller structure).
   signIgnore:
-    - "Contents/Resources/kamp"
+    # Skip everything in _internal/ EXCEPT Python.framework — pre-signed above.
+    # Python.framework is excluded from this pattern so electron-builder signs
+    # it using its own framework-aware signing logic.
+    - "Contents/Resources/kamp/_internal/(?!Python\\.framework)"
+    - "Contents/Resources/kamp/kamp"
     - "Contents/Resources/mpv"
     - "Contents/Resources/node"
   extendInfo:

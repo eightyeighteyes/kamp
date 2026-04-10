@@ -156,22 +156,14 @@ jobs:
                 --force --sign "$IDENTITY" \
                 --options runtime --timestamp \
                 {}
-          echo "→ Signing Python binaries (individual files)..."
-          # PyInstaller's Python.framework is non-standard (incomplete Info.plist)
-          # so codesign rejects it as a bundle with "format is ambiguous". Sign
-          # each Mach-O binary inside the framework individually instead.
-          # Python.framework/Python and Versions/Current/Python are separate
-          # hard-linked copies in PyInstaller bundles, not symlinks — each needs
-          # its own codesign call.
-          for py_bin in \
-            kamp_ui/resources/kamp/_internal/Python.framework/Versions/3.11/Python \
-            kamp_ui/resources/kamp/_internal/Python.framework/Python \
-            kamp_ui/resources/kamp/_internal/Python.framework/Versions/Current/Python \
-            kamp_ui/resources/kamp/_internal/Python; do
-            if [ -f "$py_bin" ]; then
-              codesign --force --sign "$IDENTITY" --options runtime --timestamp "$py_bin"
-            fi
-          done
+          echo "→ Signing standalone Python binary..."
+          # Only sign _internal/Python (the top-level kamp executable launcher).
+          # Python.framework is intentionally NOT pre-signed here — its non-standard
+          # PyInstaller structure causes codesign to fail with "bundle format is
+          # ambiguous". electron-builder handles Python.framework via its own
+          # framework-aware signing path (signIgnore excludes Python.framework).
+          codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+            kamp_ui/resources/kamp/_internal/Python
           echo "→ Signing main executables..."
           codesign --force --sign "$IDENTITY" \
             --options runtime --timestamp \

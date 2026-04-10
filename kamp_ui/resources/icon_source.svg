@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Kamp app icon source — static render of the vinyl record from SplashScreen.tsx.
+  viewBox 200×200: record centered at (100,100) r=86, ~12px margin on each side.
+  macOS clips to a squircle automatically; the dark background fills the corners.
+  Generate icon.icns:
+    brew install librsvg
+    rsvg-convert -w 1024 -h 1024 icon_source.svg -o icon_1024.png
+    bash scripts/make_icns.sh icon_1024.png
+-->
+<svg
+  viewBox="0 0 200 200"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <!-- Background — fills squircle corners after macOS clips -->
+  <rect width="200" height="200" fill="#141414" />
+
+  <!-- Record body -->
+  <circle cx="100" cy="100" r="86" fill="#1c1a16" stroke="#c4aa78" stroke-width="1.5" />
+
+  <!-- Pressed grooves — subtle concentric rings -->
+  <circle cx="100" cy="100" r="78" fill="none" stroke="#2a2620" stroke-width="0.8" />
+  <circle cx="100" cy="100" r="70" fill="none" stroke="#2a2620" stroke-width="0.8" />
+  <circle cx="100" cy="100" r="62" fill="none" stroke="#2a2620" stroke-width="0.8" />
+  <circle cx="100" cy="100" r="54" fill="none" stroke="#2a2620" stroke-width="0.8" />
+  <circle cx="100" cy="100" r="46" fill="none" stroke="#2a2620" stroke-width="0.8" />
+  <circle cx="100" cy="100" r="38" fill="none" stroke="#2a2620" stroke-width="0.8" />
+  <circle cx="100" cy="100" r="32" fill="none" stroke="#2a2620" stroke-width="0.8" />
+
+  <!-- Center label -->
+  <circle cx="100" cy="100" r="26" fill="#bf7a20" />
+  <circle cx="100" cy="100" r="26" fill="none" stroke="#8a5515" stroke-width="1" />
+  <circle cx="100" cy="100" r="22.5" fill="none" stroke="#8a5515" stroke-width="0.6" stroke-dasharray="2.5 2" />
+
+  <!-- Label text -->
+  <text
+    x="100"
+    y="97"
+    text-anchor="middle"
+    fill="#1c1a16"
+    font-size="9"
+    font-weight="700"
+    letter-spacing="2.5"
+    font-family="sans-serif"
+  >KAMP</text>
+  <text
+    x="100"
+    y="108"
+    text-anchor="middle"
+    fill="#1c1a16"
+    font-size="4.8"
+    letter-spacing="1.5"
+    font-family="sans-serif"
+  >HI · FI</text>
+
+  <!-- Centre spindle hole -->
+  <circle cx="100" cy="100" r="3.5" fill="#141414" />
+</svg>

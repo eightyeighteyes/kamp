@@ -10,8 +10,8 @@ import { discoverExtensions, installExtension, uninstallExtension } from './exte
 import { readManifest } from './communityManifest'
 
 // Set the app name before the app is ready so the macOS menu bar and all
-// default menu items ("About kamp", "Quit kamp") reflect the correct name.
-app.setName('kamp')
+// default menu items ("About Kamp", "Quit Kamp") reflect the correct name.
+app.setName('Kamp')
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -20,7 +20,15 @@ app.setName('kamp')
 let serverProcess: ChildProcess | null = null
 
 function findKampBinary(): string | null {
-  // app.getAppPath() returns the kamp_ui directory; .venv lives one level up (repo root)
+  if (app.isPackaged) {
+    // Inside Kamp.app, electron-builder places extraResources directly under
+    // Contents/Resources/. The PyInstaller onedir bundle's executable is at
+    // Resources/kamp/kamp.
+    const bundled = join(process.resourcesPath, 'kamp', 'kamp')
+    if (existsSync(bundled)) return bundled
+  }
+  // Dev fallback: app.getAppPath() returns the kamp_ui directory;
+  // .venv lives one level up (repo root).
   const venvBin = resolve(app.getAppPath(), '../.venv/bin/kamp')
   if (existsSync(venvBin)) return venvBin
   return null
@@ -49,11 +57,16 @@ async function startServer(): Promise<void> {
     return
   }
 
+  // When running from the .app bundle, point the server at the bundled mpv
+  // binary so it works on machines without Homebrew or mpv in PATH.
+  const mpvBin = app.isPackaged ? join(process.resourcesPath, 'mpv') : undefined
+
   // detached: true puts the daemon in its own process group so that
   // stopServer() can kill the group (daemon + mpv) all at once.
   serverProcess = spawn(binary, ['daemon'], {
     detached: true,
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: mpvBin ? { ...process.env, KAMP_MPV_BIN: mpvBin } : process.env
   })
 
   serverProcess.stdout?.on('data', (d) => console.log('[kamp daemon]', String(d).trimEnd()))

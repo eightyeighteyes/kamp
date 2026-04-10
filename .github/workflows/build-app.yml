@@ -10,8 +10,15 @@ permissions:
 
 jobs:
   build-mac-app:
-    runs-on: macos-latest
-    timeout-minutes: 90
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest   # Apple Silicon (arm64)
+          - arch: x64
+            runner: macos-13       # Last Intel runner on GitHub Actions
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -65,9 +72,8 @@ jobs:
           echo "→ $(file kamp_ui/resources/mpv)"
 
       - name: Bundle Node.js + npm for extension installs
-        # Universal binary (lipo arm64 + x64) so extension install works on
-        # both Apple Silicon and Intel Macs.
-        run: bash scripts/fetch_node.sh --arch universal
+        # Each runner fetches a native node binary for its own architecture.
+        run: bash scripts/fetch_node.sh --arch ${{ matrix.arch }}
 
       - name: Install librsvg for SVG rendering
         run: brew install librsvg
@@ -91,52 +97,6 @@ jobs:
         run: npm ci
         working-directory: kamp_ui
 
-      - name: Import signing certificate
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          CERT_PATH="$RUNNER_TEMP/cert.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          echo "$CSC_LINK" | base64 --decode -o "$CERT_PATH"
-          security create-keychain -p "" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CSC_KEY_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
-          security set-key-partition-list -S apple-tool:,apple: -k "" "$KEYCHAIN_PATH"
-          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-          echo "→ Signing identity: $IDENTITY"
-
-      - name: Pre-sign PyInstaller bundle and mpv in parallel
-        # electron-builder signs every .so/.dylib serially — on the PyInstaller
-        # bundle this takes ~1 hour per arch slice (worse for universal builds).
-        # Pre-signing with xargs -P8 batches timestamp server round-trips and
-        # finishes in a few minutes. electron-builder is then told to skip
-        # Contents/Resources/** via signIgnore, so it only signs the Electron
-        # binaries in Contents/MacOS/ and Contents/Frameworks/.
-        run: |
-          IDENTITY="$SIGNING_IDENTITY"
-
-          # Sign all Mach-O files inside the PyInstaller bundle in parallel.
-          # --deep is intentionally avoided: it signs in wrong order and misses
-          # dot-prefixed dirs. Instead we find + sign leaf files first, then
-          # sign the root executable last so its seal covers everything inside.
-          find kamp_ui/resources/kamp/_internal -type f \( -name "*.so" -o -name "*.dylib" \) -print0 \
-            | xargs -0 -P8 -I{} codesign --sign "$IDENTITY" --timestamp --options runtime --force "{}"
-
-          codesign --sign "$IDENTITY" --timestamp --options runtime --force \
-            kamp_ui/resources/kamp/kamp
-
-          codesign --sign "$IDENTITY" --timestamp --options runtime --force \
-            kamp_ui/resources/mpv
-
-          echo "→ Pre-signing complete"
-          codesign -dv kamp_ui/resources/kamp/kamp 2>&1 | grep -E "Identifier|TeamIdentifier|Signature"
-
       - name: Build DMG
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -145,11 +105,9 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           DEBUG: electron-builder
-        # --universal produces a fat binary that runs natively on both Apple
-        # Silicon (arm64) and Intel (x64). signIgnore in electron-builder.yml
-        # prevents electron-builder from re-signing the already-signed
-        # Contents/Resources/ tree, making the signing step fast.
-        run: npm run build:mac -- --universal
+        # Single-arch build — electron-builder signs the whole bundle natively
+        # with no pre-signing, signIgnore, or x64ArchFiles workarounds needed.
+        run: npm run build:mac -- --${{ matrix.arch }}
         working-directory: kamp_ui
 
       - name: Verify DMG contents
@@ -160,7 +118,7 @@ jobs:
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kamp-${{ github.ref_name }}-mac
+          name: Kamp-${{ github.ref_name }}-mac-${{ matrix.arch }}
           path: kamp_ui/dist/*.dmg
           retention-days: 30
 

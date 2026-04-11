@@ -146,6 +146,13 @@ jobs:
         # and only signs the outer .app shell — cutting total signing time from
         # ~40 min (serial) to ~3-5 min (parallel). Safe for single-arch builds
         # because nothing rewrites the Mach-O files after this point.
+        #
+        # Python.framework/Versions/3.11/Python is a Mach-O dylib (libpython).
+        # Signing Python.framework as a bundle is unreliable with PyInstaller's
+        # non-standard layout — the bundle sign completes in ~0.1s (suspiciously
+        # fast) and notarization still rejects Versions/3.11/Python as unsigned.
+        # Instead, sign the binary directly with --identifier to give it its own
+        # embedded Developer ID signature that notarization can verify.
         run: |
           IDENTITY="Developer ID Application"
           echo "→ Files to sign: $(find kamp_ui/resources/kamp -type f \( -name "*.so" -o -name "*.dylib" \) | wc -l)"
@@ -156,49 +163,13 @@ jobs:
                 --force --sign "$IDENTITY" \
                 --options runtime --timestamp \
                 {}
-          echo "→ Fixing Python.framework structure..."
-          # PyInstaller copies the Python.framework binaries as regular files
-          # instead of symlinks. codesign requires a proper framework layout
-          # (symlinks + Info.plist) to sign without "bundle format is ambiguous".
-          # Restore the standard symlink structure and create Info.plist so that
-          # codesign can classify and sign the framework correctly.
-          FWDIR=kamp_ui/resources/kamp/_internal/Python.framework
-          VERSION=3.11
-
-          # Create the Info.plist that codesign needs to classify this as a framework
-          mkdir -p "$FWDIR/Versions/$VERSION/Resources"
-          printf '%s\n' \
-            '<?xml version="1.0" encoding="UTF-8"?>' \
-            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-            '<plist version="1.0"><dict>' \
-            '  <key>CFBundleIdentifier</key><string>org.python.python</string>' \
-            '  <key>CFBundleName</key><string>Python</string>' \
-            '  <key>CFBundleVersion</key><string>3.11.0</string>' \
-            '  <key>CFBundlePackageType</key><string>FMWK</string>' \
-            '</dict></plist>' \
-            > "$FWDIR/Versions/$VERSION/Resources/Info.plist"
-
-          # Replace any regular-file copies with proper symlinks
-          if [ ! -L "$FWDIR/Versions/Current" ]; then
-            rm -rf "$FWDIR/Versions/Current"
-            ln -s "$VERSION" "$FWDIR/Versions/Current"
-            echo "  Restored Versions/Current -> $VERSION symlink"
-          fi
-          if [ ! -L "$FWDIR/Python" ]; then
-            rm -f "$FWDIR/Python"
-            ln -s "Versions/Current/Python" "$FWDIR/Python"
-            echo "  Restored Python -> Versions/Current/Python symlink"
-          fi
-          if [ ! -L "$FWDIR/Resources" ]; then
-            rm -rf "$FWDIR/Resources"
-            ln -s "Versions/Current/Resources" "$FWDIR/Resources"
-            echo "  Restored Resources symlink"
-          fi
-
-          echo "→ Signing Python.framework as a proper bundle..."
-          codesign --force --sign "$IDENTITY" --options runtime --timestamp \
-            "$FWDIR"
-
+          echo "→ Signing Python.framework/Versions/3.11/Python directly..."
+          codesign --force --sign "$IDENTITY" \
+            --options runtime --timestamp \
+            --identifier "org.python.python" \
+            kamp_ui/resources/kamp/_internal/Python.framework/Versions/3.11/Python
+          echo "→ Verifying Python.framework/Versions/3.11/Python signature..."
+          codesign -dv kamp_ui/resources/kamp/_internal/Python.framework/Versions/3.11/Python 2>&1 || echo "WARNING: verification failed"
           echo "→ Signing standalone kamp Python binary..."
           codesign --force --sign "$IDENTITY" --options runtime --timestamp \
             kamp_ui/resources/kamp/_internal/Python

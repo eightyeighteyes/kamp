@@ -167,22 +167,16 @@ jobs:
 
           # Create the Info.plist that codesign needs to classify this as a framework
           mkdir -p "$FWDIR/Versions/$VERSION/Resources"
-          cat > "$FWDIR/Versions/$VERSION/Resources/Info.plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleIdentifier</key>
-  <string>org.python.python</string>
-  <key>CFBundleName</key>
-  <string>Python</string>
-  <key>CFBundleVersion</key>
-  <string>3.11.0</string>
-  <key>CFBundlePackageType</key>
-  <string>FMWK</string>
-</dict>
-</plist>
-PLIST
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0"><dict>' \
+            '  <key>CFBundleIdentifier</key><string>org.python.python</string>' \
+            '  <key>CFBundleName</key><string>Python</string>' \
+            '  <key>CFBundleVersion</key><string>3.11.0</string>' \
+            '  <key>CFBundlePackageType</key><string>FMWK</string>' \
+            '</dict></plist>' \
+            > "$FWDIR/Versions/$VERSION/Resources/Info.plist"
 
           # Replace any regular-file copies with proper symlinks
           if [ ! -L "$FWDIR/Versions/Current" ]; then

@@ -8,6 +8,7 @@
 # it the worker arguments ("from multiprocessing.resource_tracker import ...")
 # fall through to argparse and produce "invalid choice" errors.
 import multiprocessing
+
 multiprocessing.freeze_support()
 
 from kamp_daemon.__main__ import main

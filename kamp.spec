@@ -59,7 +59,7 @@ excludes = [
     "playwright.sync_api",
     "playwright._impl",
     "kamp_daemon.syncer",
-    "kamp_daemon.bandcamp",
+    "kamp_daemon.ext.builtin.bandcamp",  # requires syncer + Playwright
     # dev / test tooling — never needed at runtime
     "pytest",
     "black",

@@ -18,9 +18,39 @@ from typing import Literal
 from .config import Config, _state_dir
 from .config_monitor import ConfigMonitor
 from .ext import ExtensionRegistry, discover_extensions
-from .ext.builtin.bandcamp import KampBandcampSyncer
 from .ext.context import KampGround, PlaybackSnapshot
 from .watcher import Watcher
+
+try:
+    from .ext.builtin.bandcamp import KampBandcampSyncer
+except ModuleNotFoundError:
+    # kamp_daemon.syncer (+ Playwright) are excluded from the .app bundle.
+    # Provide a no-op stub so DaemonCore's lifecycle calls work — Bandcamp
+    # sync is simply unavailable in the bundled app.
+    from .ext.abc import BaseSyncer
+
+    class KampBandcampSyncer(BaseSyncer):  # type: ignore[no-redef]
+        def __init__(self, ctx: object) -> None:
+            pass
+
+        def _configure(self, config: object) -> None:
+            pass
+
+        def reload(self, config: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        def pause(self) -> None:
+            pass
+
+        def resume(self) -> None:
+            pass
+
 
 _PID_PATH: Path = _state_dir() / "daemon.pid"
 

@@ -9,8 +9,15 @@ permissions:
   contents: write
 
 jobs:
-  build-mac-app:
-    runs-on: macos-latest
+  build-bundle:
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest   # Apple Silicon (arm64)
+          - arch: x64
+            runner: macos-15-intel # Intel (x64)
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
 
     steps:
@@ -65,9 +72,8 @@ jobs:
           echo "→ $(file kamp_ui/resources/mpv)"
 
       - name: Bundle Node.js + npm for extension installs
-        # Universal binary (lipo arm64 + x64) so extension install works on
-        # both Apple Silicon and Intel Macs.
-        run: bash scripts/fetch_node.sh --arch universal
+        # Each runner fetches a native node binary for its own architecture.
+        run: bash scripts/fetch_node.sh --arch ${{ matrix.arch }}
 
       - name: Install librsvg for SVG rendering
         run: brew install librsvg
@@ -80,6 +86,132 @@ jobs:
       - name: Generate icon.icns
         run: bash scripts/make_icns.sh kamp_ui/resources/icon_1024.png
 
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.arch }}
+          path: kamp_ui/resources/
+          retention-days: 1
+
+  sign-and-package:
+    needs: build-bundle
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    # 90 min: pre-sign (~3-5 min) + electron-builder signing (~5 min) + notarization (up to 60+ min)
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bundle-${{ matrix.arch }}
+          path: kamp_ui/resources/
+
+      - name: Restore execute permissions
+        # upload-artifact strips Unix execute bits; restore them before signing.
+        run: |
+          chmod +x kamp_ui/resources/kamp/kamp \
+                   kamp_ui/resources/mpv \
+                   kamp_ui/resources/node
+
+      - name: Import signing certificate
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          echo "$CSC_LINK" | base64 --decode > /tmp/cert.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PASS=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security import /tmp/cert.p12 -P "$CSC_KEY_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          rm /tmp/cert.p12
+
+      - name: Pre-sign PyInstaller bundle and native resources
+        # Sign all Mach-O binaries in parallel before electron-builder runs.
+        # electron-builder uses signIgnore to skip these already-signed files
+        # and only signs the outer .app shell — cutting total signing time from
+        # ~40 min (serial) to ~3-5 min (parallel). Safe for single-arch builds
+        # because nothing rewrites the Mach-O files after this point.
+        #
+        # PyInstaller's Python.framework has multiple regular-file copies of the
+        # Python Mach-O dylib: Versions/3.11/Python, Versions/Current/Python,
+        # and Python at the framework root. All carry PyInstaller's ad-hoc
+        # signature, which notarization rejects.
+        #
+        # The root copy (Python.framework/Python) triggers codesign's "bundle
+        # format is ambiguous" error when signed in place — codesign sees the
+        # .framework parent directory and treats the path as a framework bundle.
+        # Sign it via a temp copy at a neutral path to avoid the context check.
+        run: |
+          IDENTITY="Developer ID Application"
+          echo "→ Files to sign: $(find kamp_ui/resources/kamp -type f \( -name "*.so" -o -name "*.dylib" \) | wc -l)"
+          echo "→ Signing .so and .dylib files (parallel)..."
+          START=$(date +%s)
+          find kamp_ui/resources/kamp -type f \( -name "*.so" -o -name "*.dylib" \) \
+            | xargs -P8 -I{} codesign \
+                --force --sign "$IDENTITY" \
+                --options runtime --timestamp \
+                {}
+          echo "→ Signing Python.framework/Versions/*/Python copies..."
+          find kamp_ui/resources/kamp/_internal/Python.framework/Versions \
+            -type f -name "Python" \
+            | xargs -I{} codesign --force --sign "$IDENTITY" \
+                --options runtime --timestamp \
+                --identifier "org.python.python" \
+                {}
+          echo "→ Replacing Python.framework/Python (root) with symlink..."
+          # The root Python regular file cannot be signed: codesign sees the
+          # .framework context and creates a broken signature ("bundle format is
+          # ambiguous"). Replacing it with a symlink matches the standard
+          # Python.framework layout; notarization follows the symlink to the
+          # already-signed Versions/3.11/Python and accepts the signature.
+          FWROOT=kamp_ui/resources/kamp/_internal/Python.framework
+          rm "$FWROOT/Python"
+          ln -s "Versions/3.11/Python" "$FWROOT/Python"
+          echo "→ Python.framework/Python → Versions/3.11/Python (symlink)"
+          echo "→ Signing standalone kamp Python binary..."
+          codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+            kamp_ui/resources/kamp/_internal/Python
+          echo "→ Signing kamp binary (with entitlements for PyObjC/libffi)..."
+          codesign --force --sign "$IDENTITY" \
+            --options runtime --timestamp \
+            --entitlements kamp_ui/build/entitlements.mac.plist \
+            kamp_ui/resources/kamp/kamp
+          echo "→ Signing mpv and node (with entitlements)..."
+          # mpv needs disable-library-validation (links against unsigned Homebrew dylibs).
+          # node needs allow-jit (V8 allocates executable pages via mprotect).
+          codesign --force --sign "$IDENTITY" \
+            --options runtime --timestamp \
+            --entitlements kamp_ui/build/entitlements.mac.plist \
+            kamp_ui/resources/mpv \
+            kamp_ui/resources/node
+          END=$(date +%s)
+          echo "→ Pre-signing done in $((END-START))s"
+
+      - name: Cache electron-builder binaries
+        # electron-builder downloads dmgbuild and other native helpers on first run.
+        # Caching avoids transient network failures and speeds up subsequent builds.
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/electron-builder
+          key: electron-builder-cache-${{ matrix.arch }}-${{ hashFiles('kamp_ui/package-lock.json') }}
+          restore-keys: |
+            electron-builder-cache-${{ matrix.arch }}-
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -91,52 +223,6 @@ jobs:
         run: npm ci
         working-directory: kamp_ui
 
-      - name: Import signing certificate
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          CERT_PATH="$RUNNER_TEMP/cert.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
-          echo "$CSC_LINK" | base64 --decode -o "$CERT_PATH"
-          security create-keychain -p "" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CSC_KEY_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
-          security set-key-partition-list -S apple-tool:,apple: -k "" "$KEYCHAIN_PATH"
-          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-          echo "→ Signing identity: $IDENTITY"
-
-      - name: Pre-sign PyInstaller bundle and mpv in parallel
-        # electron-builder signs every .so/.dylib serially — on the PyInstaller
-        # bundle this takes ~1 hour per arch slice (worse for universal builds).
-        # Pre-signing with xargs -P8 batches timestamp server round-trips and
-        # finishes in a few minutes. electron-builder is then told to skip
-        # Contents/Resources/** via signIgnore, so it only signs the Electron
-        # binaries in Contents/MacOS/ and Contents/Frameworks/.
-        run: |
-          IDENTITY="$SIGNING_IDENTITY"
-
-          # Sign all Mach-O files inside the PyInstaller bundle in parallel.
-          # --deep is intentionally avoided: it signs in wrong order and misses
-          # dot-prefixed dirs. Instead we find + sign leaf files first, then
-          # sign the root executable last so its seal covers everything inside.
-          find kamp_ui/resources/kamp/_internal -type f \( -name "*.so" -o -name "*.dylib" \) -print0 \
-            | xargs -0 -P8 -I{} codesign --sign "$IDENTITY" --timestamp --options runtime --force "{}"
-
-          codesign --sign "$IDENTITY" --timestamp --options runtime --force \
-            kamp_ui/resources/kamp/kamp
-
-          codesign --sign "$IDENTITY" --timestamp --options runtime --force \
-            kamp_ui/resources/mpv
-
-          echo "→ Pre-signing complete"
-          codesign -dv kamp_ui/resources/kamp/kamp 2>&1 | grep -E "Identifier|TeamIdentifier|Signature"
-
       - name: Build DMG
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -145,11 +231,7 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           DEBUG: electron-builder
-        # --universal produces a fat binary that runs natively on both Apple
-        # Silicon (arm64) and Intel (x64). signIgnore in electron-builder.yml
-        # prevents electron-builder from re-signing the already-signed
-        # Contents/Resources/ tree, making the signing step fast.
-        run: npm run build:mac -- --universal
+        run: npm run build:mac -- --${{ matrix.arch }}
         working-directory: kamp_ui
 
       - name: Verify DMG contents
@@ -160,7 +242,7 @@ jobs:
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kamp-${{ github.ref_name }}-mac
+          name: Kamp-${{ github.ref_name }}-mac-${{ matrix.arch }}
           path: kamp_ui/dist/*.dmg
           retention-days: 30
 

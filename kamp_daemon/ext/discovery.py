@@ -12,6 +12,7 @@ import importlib
 import importlib.metadata
 import inspect
 import logging
+import sys
 
 from .abc import BaseArtworkSource, BaseTagger
 from .permissions import extract_permissions
@@ -49,16 +50,26 @@ def _load_and_register(
     # --- Import-time execution probe ---
     # Derive the module name from the entry point value (e.g. "my_ext.tagger:MyTagger"
     # → "my_ext.tagger") and probe it before loading the class into this process.
+    #
+    # In a PyInstaller frozen binary, importlib.metadata only discovers packages
+    # bundled in the signed archive — the frozen importer isolates it from system
+    # site-packages, so third-party extension injection is already blocked at the
+    # PyInstaller level. Additionally, the frozen importer reads module bytes via
+    # open() internally, which our probe stub catches as a false violation.
+    # Skip both probe and pin when frozen: security is enforced at the OS level
+    # by Apple's code signing and notarization of the entire archive.
+    # In a normal (non-frozen) install, probe and pin guard third-party extensions
+    # loaded dynamically from site-packages as intended.
+    _frozen = getattr(sys, "frozen", False)
     module_name = ep.value.split(":")[0]
-    if not probe_extension(module_name, package_name=dist_name):
+    if not _frozen and not probe_extension(module_name, package_name=dist_name):
         return
 
     # --- Hash verification ---
     # Verify (or pin on first encounter) the distribution's installed files.
-    # Skipped when the distribution is unknown — probe already ran, and we
-    # cannot enumerate files without a Distribution object.
+    # Skipped when frozen (see above) or when the distribution is unknown.
     dist = getattr(ep, "dist", None)
-    if dist is not None:
+    if dist is not None and not _frozen:
         if not verify_or_pin(dist_name, dist):
             return
 

@@ -57,31 +57,23 @@ mac:
   target:
     - dmg
   entitlementsInherit: build/entitlements.mac.plist
-  # Skip re-signing files under Contents/Resources/ — the PyInstaller bundle,
-  # mpv, node, and npm are pre-signed in CI before electron-builder runs.
-  # electron-builder only needs to sign the Electron binaries in
-  # Contents/MacOS/ and Contents/Frameworks/. This reduces signing time from
-  # ~1 hour to ~2 minutes on the PyInstaller bundle.
-  # Skip re-signing files under Contents/Resources/ — the PyInstaller bundle,
-  # mpv, node, and npm are pre-signed in CI before electron-builder runs.
-  # electron-builder only needs to sign the Electron binaries in
-  # Contents/MacOS/ and Contents/Frameworks/. This reduces signing time from
-  # ~1 hour to ~2 minutes on the PyInstaller bundle.
+  hardenedRuntime: true
+  notarize: true
+  # All kamp resources are pre-signed in parallel before electron-builder runs.
+  # signIgnore skips them so electron-builder only signs the outer .app shell.
+  # Python.framework binaries are pre-signed with --identifier to bypass the
+  # "bundle format is ambiguous" error from the non-standard PyInstaller layout.
   signIgnore:
-    - "Contents/Resources/"
-  # PyInstaller .so/.dylib files and mpv are arm64-only (built on the arm64 CI
-  # runner). minimatch's ** does not cross dot-prefixed directories, so the
-  # brace alternatives cover normal paths, dot items, and files inside dot dirs.
-  x64ArchFiles: "Contents/Resources/{**,**/.*,**/.*/**}"
+    - "Contents/Resources/kamp"
+    - "Contents/Resources/mpv"
+    - "Contents/Resources/node"
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
     - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
     - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
-  hardenedRuntime: true
-  notarize: true
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-${arch}.${ext}
 linux:
   target:
     - AppImage

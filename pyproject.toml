@@ -17,7 +17,6 @@ musicbrainzngs = ">=0.7"
 mutagen = ">=1.47"
 requests = ">=2.31"
 Pillow = ">=10.0"
-playwright = ">=1.44"
 rumps = {version = ">=0.4", markers = "sys_platform == 'darwin'"}
 setproctitle = ">=1.3"
 fastapi = "^0.135.2"
@@ -55,7 +54,6 @@ branch = true
 source = ["kamp_daemon", "kamp_core"]
 omit = [
     "kamp_daemon/__main__.py",
-    "kamp_daemon/bandcamp.py",
     "kamp_daemon/menu_bar.py",
     # Platform-specific sandbox implementations are tested via subprocess
     # integration tests (tests/test_extension_sandbox_*.py) that run in
@@ -118,16 +116,3 @@ module = ["kamp_core.media_controller"]
 ignore_missing_imports = true
 disable_error_code = ["import-untyped", "misc"]
 
-[[tool.mypy.overrides]]
-# playwright ships no type stubs
-module = [
-    "playwright",
-    "playwright.*",
-    "kamp_daemon.bandcamp",
-    "kamp_daemon.syncer",
-]
-ignore_missing_imports = true
-disable_error_code = [
-    "import-untyped", "no-untyped-call", "attr-defined",
-    "unused-ignore", "var-annotated", "type-arg", "no-any-return",
-]

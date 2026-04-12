@@ -50,16 +50,11 @@ hidden_imports = [
 ]
 
 # ---------------------------------------------------------------------------
-# Excludes — Playwright + Bandcamp sync are out of scope for the .app bundle.
-# kamp_daemon.syncer is now imported lazily inside _cmd_sync() so it won't
-# be pulled in by static analysis, but list it here as belt-and-suspenders.
+# Excludes — dev/test tooling and unused GUI toolkits only.
+# kamp_daemon.syncer and kamp_daemon.ext.builtin.bandcamp are now included
+# because Bandcamp sync uses plain requests (no Playwright/Chromium required).
 # ---------------------------------------------------------------------------
 excludes = [
-    "playwright",
-    "playwright.sync_api",
-    "playwright._impl",
-    "kamp_daemon.syncer",
-    "kamp_daemon.ext.builtin.bandcamp",  # requires syncer + Playwright
     # dev / test tooling — never needed at runtime
     "pytest",
     "black",

@@ -20,10 +20,9 @@ logger = logging.getLogger(__name__)
 # Subprocess worker functions
 #
 # These run inside an isolated child process spawned by _spawn_worker.
-# Playwright and the bandcamp module are imported only inside the
-# subprocess — when the process exits the OS reclaims all of their
-# memory, which the parent process's pymalloc allocator would not
-# release even after sys.modules eviction.
+# The bandcamp module is imported only inside the subprocess — process
+# isolation provides a clean memory slate and prevents any leaked state
+# (open sockets, caches) from affecting the parent daemon.
 # ------------------------------------------------------------------
 
 
@@ -93,9 +92,8 @@ def _spawn_worker(  # pragma: no cover
     status_q: Any = ctx.Queue()
     log_q: Any = ctx.Queue()
     result_q: Any = ctx.Queue()
-    # Not daemon=True: daemon subprocesses on macOS can have localhost networking
-    # issues that break Playwright's Node.js ↔ Chromium DevTools Protocol channel.
-    # The parent cleans up via proc.join() and the process terminates naturally.
+    # Not daemon=True: the parent cleans up via proc.join() so the subprocess
+    # terminates naturally rather than being killed when the parent exits.
     proc = ctx.Process(target=target, args=(*args, status_q, log_q, result_q))
     proc.start()
     return proc, status_q, log_q, result_q
@@ -200,8 +198,7 @@ class Syncer:
     def sync_once(self, *, skip_auto_mark: bool = False) -> None:
         """Download any new purchases in an isolated subprocess.
 
-        Playwright and bandcamp modules are loaded only inside the child
-        process; when it exits the OS reclaims all of their memory.
+        The bandcamp module is loaded only inside the child process.
         Log records emitted inside the subprocess are replayed into the
         parent's log stream after the process exits.
 

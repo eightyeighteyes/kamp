@@ -3,10 +3,10 @@ id: TASK-125
 title: >-
   move musicbrainz, last.fm and bandcamp session features to 'Services' section
   of preferences
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-13 01:59'
-updated_date: '2026-04-13 02:09'
+updated_date: '2026-04-13 22:28'
 labels: []
 milestone: m-9
 dependencies: []
@@ -28,10 +28,10 @@ The preferences page is getting long. Move MusicBrainz, Last.fm, and Bandcamp se
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A 'Services' tab exists between General and Extensions in Preferences
-- [ ] #2 Bandcamp, Last.fm, and MusicBrainz settings appear only under Services, not under General
-- [ ] #3 General tab is uncluttered (Paths + library settings only)
-- [ ] #4 No regression in save/load behaviour for any moved setting
+- [x] #1 A 'Services' tab exists between General and Extensions in Preferences
+- [x] #2 Bandcamp, Last.fm, and MusicBrainz settings appear only under Services, not under General
+- [x] #3 General tab is uncluttered (Paths + library settings only)
+- [x] #4 No regression in save/load behaviour for any moved setting
 <!-- AC:END -->
 
 ## Implementation Notes

@@ -840,7 +840,7 @@ export function PreferencesDialog({
   const scanStatus = useStore((s) => s.scanStatus)
   const scanProgress = useStore((s) => s.scanProgress)
 
-  const [activeTab, setActiveTab] = useState<'general' | 'extensions'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions'>('general')
   const [highlightExtId, setHighlightExtId] = useState<string | null>(null)
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
@@ -888,8 +888,8 @@ export function PreferencesDialog({
 
   if (!prefsOpen) return null
 
-  // Show a loading placeholder while config is being fetched (General tab only).
-  const generalLoading = configValues === null && activeTab === 'general'
+  // Show a loading placeholder while config is being fetched (General/Services tabs).
+  const configLoading = configValues === null && (activeTab === 'general' || activeTab === 'services')
 
   const hasBandcamp = configValues !== null && configValues['bandcamp.username'] !== null
 
@@ -932,6 +932,14 @@ export function PreferencesDialog({
           </button>
           <button
             role="tab"
+            aria-selected={activeTab === 'services'}
+            className={`prefs-tab${activeTab === 'services' ? ' prefs-tab--active' : ''}`}
+            onClick={() => setActiveTab('services')}
+          >
+            Services
+          </button>
+          <button
+            role="tab"
             aria-selected={activeTab === 'extensions'}
             className={`prefs-tab${activeTab === 'extensions' ? ' prefs-tab--active' : ''}`}
             onClick={() => setActiveTab('extensions')}
@@ -944,7 +952,7 @@ export function PreferencesDialog({
         <div className="prefs-body" role="tabpanel">
           {activeTab === 'general' && (
             <>
-              {generalLoading ? null : (
+              {configLoading ? null : (
                 <>
                   {/* PATHS */}
                   <div className="prefs-section">
@@ -1025,21 +1033,15 @@ export function PreferencesDialog({
                       onSave={handleSave}
                     />
                   </div>
+                </>
+              )}
+            </>
+          )}
 
-                  {/* MUSICBRAINZ */}
-                  <div className="prefs-section">
-                    <div className="prefs-section-label">MusicBrainz</div>
-                    <BoolRow
-                      label="Trust MusicBrainz when tags conflict"
-                      configKey="musicbrainz.trust-musicbrainz-when-tags-conflict"
-                      hint="When off, if MusicBrainz returns a different artist or album than the file's existing tags, the ID3 tags are left unchanged and only artwork is updated."
-                      initialValue={
-                        configValues?.['musicbrainz.trust-musicbrainz-when-tags-conflict'] ?? true
-                      }
-                      onSave={handleSave}
-                    />
-                  </div>
-
+          {activeTab === 'services' && (
+            <>
+              {configLoading ? null : (
+                <>
                   {/* BANDCAMP — only when the section is configured */}
                   {hasBandcamp && (
                     <div className="prefs-section">
@@ -1076,6 +1078,20 @@ export function PreferencesDialog({
                     onConnected={() => void loadConfig()}
                     onDisconnected={() => void loadConfig()}
                   />
+
+                  {/* MUSICBRAINZ */}
+                  <div className="prefs-section">
+                    <div className="prefs-section-label">MusicBrainz</div>
+                    <BoolRow
+                      label="Trust MusicBrainz when tags conflict"
+                      configKey="musicbrainz.trust-musicbrainz-when-tags-conflict"
+                      hint="When off, if MusicBrainz returns a different artist or album than the file's existing tags, the ID3 tags are left unchanged and only artwork is updated."
+                      initialValue={
+                        configValues?.['musicbrainz.trust-musicbrainz-when-tags-conflict'] ?? true
+                      }
+                      onSave={handleSave}
+                    />
+                  </div>
                 </>
               )}
             </>

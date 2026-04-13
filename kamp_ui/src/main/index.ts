@@ -170,6 +170,21 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Bandcamp HTTP proxy relay
+// ---------------------------------------------------------------------------
+// bandcamp.py in the PyInstaller bundle cannot reach bandcamp.com directly
+// because PyInstaller's OpenSSL has a different TLS fingerprint that Cloudflare
+// flags.  The server broadcasts a "bandcamp.proxy-fetch" WebSocket event; the
+// preload receives it and calls ipcRenderer.invoke("bandcamp:proxy-fetch"),
+// which is handled here.  net.fetch uses session.defaultSession so Chromium's
+// TLS stack (real browser fingerprint, cf_clearance cookie) handles the request.
+
+// net.fetch accepts a `session` option at runtime (Chromium extension) but the
+// Electron TypeScript type only exposes the base RequestInit.  Cast via unknown
+// so we can pass the defaultSession without disabling the whole call site.
+type NetFetchOptions = Parameters<typeof net.fetch>[1] & { session?: Electron.Session }
+
 type WindowBounds = { x: number; y: number; width: number; height: number }
 
 function loadWindowBounds(): WindowBounds {
@@ -318,6 +333,39 @@ app.whenReady().then(async () => {
   ipcMain.handle('kamp:get-extensions', () => discoverExtensions())
 
   ipcMain.handle('bandcamp:begin-login', () => openBandcampLogin())
+
+  ipcMain.handle(
+    'bandcamp:proxy-fetch',
+    async (
+      _event,
+      req: { id: string; url: string; method: string; headers: Record<string, string>; body: string | null }
+    ) => {
+      let status = 502
+      let body = 'net.fetch error'
+      let contentType = 'text/plain'
+
+      try {
+        const opts: NetFetchOptions = {
+          method: req.method,
+          headers: req.headers as HeadersInit,
+          body: req.body ?? undefined,
+          session: session.defaultSession
+        }
+        const fetchResp = await net.fetch(req.url, opts as Parameters<typeof net.fetch>[1])
+        status = fetchResp.status
+        body = await fetchResp.text()
+        contentType = fetchResp.headers.get('content-type') ?? 'text/html'
+      } catch (err) {
+        body = String(err)
+      }
+
+      await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/fetch-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: req.id, status, body, content_type: contentType })
+      })
+    }
+  )
 
   ipcMain.handle('kamp:install-extension', (_event, source: 'npm' | 'local', nameOrPath: string) =>
     installExtension(source, nameOrPath)

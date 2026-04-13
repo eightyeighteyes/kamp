@@ -3,13 +3,15 @@ id: TASK-127
 title: >-
   Route Bandcamp HTTP requests through Electron's net module to bypass
   Cloudflare TLS fingerprinting
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-13 11:17'
+updated_date: '2026-04-13 11:42'
 labels:
   - bandcamp
   - electron
   - networking
+milestone: m-9
 dependencies: []
 priority: high
 ---

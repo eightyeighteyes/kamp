@@ -1298,3 +1298,89 @@ class TestLastfmEndpoints:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         response = TestClient(app).delete("/api/v1/lastfm/connect")
         assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Bandcamp proxy endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestBandcampProxyEndpoints:
+    """Tests for the proxy-fetch / fetch-result relay."""
+
+    def test_fetch_result_returns_404_for_unknown_id(self, client: TestClient) -> None:
+        response = client.post(
+            "/api/v1/bandcamp/fetch-result",
+            json={
+                "id": "nonexistent",
+                "status": 200,
+                "body": "x",
+                "content_type": "text/plain",
+            },
+        )
+        assert response.status_code == 404
+
+    def test_proxy_roundtrip_broadcasts_and_delivers_result(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """proxy-fetch broadcasts the request over the WS push channel and blocks.
+
+        The WS broadcast carries the req_id that Electron uses to call fetch-result,
+        which unblocks proxy-fetch and returns the net.fetch result to the daemon.
+
+        All requests use the same TestClient so they share one event loop portal:
+        proxy-fetch's asyncio.Event.wait() yields, the portal handles fetch-result,
+        the event is set, and proxy-fetch completes.
+        """
+        import threading
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        proxy_response: dict = {}
+
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # discard initial player.state
+
+            # Post proxy-fetch from a background thread — it will block until
+            # fetch-result is called.  Using the same TestClient so both requests
+            # run in the same anyio event loop portal.
+            t = threading.Thread(
+                target=lambda: proxy_response.update(
+                    c.post(
+                        "/api/v1/bandcamp/proxy-fetch",
+                        json={
+                            "url": "https://bandcamp.com/api/fan/2/collection_summary",
+                            "method": "GET",
+                            "headers": {"User-Agent": "test"},
+                            "body": None,
+                        },
+                    ).json()
+                )
+            )
+            t.start()
+
+            # The WS broadcast carries the req_id — Electron uses this to post back.
+            msg = ws.receive_json()
+            assert msg["type"] == "bandcamp.proxy-fetch"
+            assert msg["url"] == "https://bandcamp.com/api/fan/2/collection_summary"
+            assert msg["method"] == "GET"
+            req_id = msg["id"]
+            assert req_id
+
+            # Simulate Electron posting the net.fetch result.
+            result_r = c.post(
+                "/api/v1/bandcamp/fetch-result",
+                json={
+                    "id": req_id,
+                    "status": 200,
+                    "body": '{"fan_id": 42}',
+                    "content_type": "application/json",
+                },
+            )
+            assert result_r.status_code == 200
+
+            t.join(timeout=5)
+
+        assert proxy_response["status"] == 200
+        assert proxy_response["body"] == '{"fan_id": 42}'
+        assert proxy_response["content_type"] == "application/json"

@@ -41,6 +41,15 @@ function ensurePushWs(): void {
         ipcRenderer.invoke('bandcamp:begin-login').catch((err: unknown) => {
           console.error('[kamp] bandcamp:begin-login failed:', err)
         })
+      } else if (msg.type === 'bandcamp.proxy-fetch') {
+        // Relay a bandcamp.com HTTP request through Electron's net module so
+        // Chromium's TLS stack (real browser fingerprint) is used instead of
+        // PyInstaller's bundled OpenSSL, which Cloudflare flags.
+        // Main executes net.fetch with session.defaultSession (holds cf_clearance)
+        // and POSTs the result back to /api/v1/bandcamp/fetch-result.
+        ipcRenderer.invoke('bandcamp:proxy-fetch', msg).catch((err: unknown) => {
+          console.error('[kamp] bandcamp:proxy-fetch failed:', err)
+        })
       }
     } catch {
       // Ignore malformed messages

@@ -1141,3 +1141,140 @@ class TestSyncStatusCallback:
         assert len(statuses) == 2
         assert any("Band A" in s for s in statuses)
         assert any("Band B" in s for s in statuses)
+
+
+# ---------------------------------------------------------------------------
+# _is_frozen / _ProxySession
+# ---------------------------------------------------------------------------
+
+
+class TestIsFrozen:
+    def test_returns_false_in_normal_interpreter(self) -> None:
+        from kamp_daemon.bandcamp import _is_frozen
+
+        assert _is_frozen() is False
+
+    def test_returns_true_when_sys_frozen_is_set(self) -> None:
+        import sys
+
+        from kamp_daemon.bandcamp import _is_frozen
+
+        with patch.object(sys, "frozen", True, create=True):
+            assert _is_frozen() is True
+
+
+class TestMakeRequestsSessionFrozen:
+    def test_returns_proxy_session_when_frozen(self, tmp_path: Path) -> None:
+        import sys
+
+        from kamp_daemon.bandcamp import _ProxySession, _make_requests_session
+
+        session_file = tmp_path / "session.json"
+        session_file.write_text('{"cookies": []}')
+
+        with patch.object(sys, "frozen", True, create=True):
+            sess = _make_requests_session(session_file)
+
+        assert isinstance(sess, _ProxySession)
+
+    def test_returns_requests_session_when_not_frozen(self, tmp_path: Path) -> None:
+        import requests
+
+        from kamp_daemon.bandcamp import _make_requests_session
+
+        session_file = tmp_path / "session.json"
+        session_file.write_text('{"cookies": []}')
+
+        sess = _make_requests_session(session_file)
+        assert isinstance(sess, requests.Session)
+
+
+class TestProxySession:
+    """Unit tests for _ProxySession — mock the proxy-fetch HTTP endpoint."""
+
+    def _make_proxy_response(
+        self, status: int, body: str, content_type: str = "application/json"
+    ) -> MagicMock:
+        """Build a mock for the requests.post() call inside _ProxySession._fetch."""
+        m = MagicMock()
+        m.raise_for_status.return_value = None
+        m.json.return_value = {
+            "status": status,
+            "body": body,
+            "content_type": content_type,
+        }
+        return m
+
+    def test_get_calls_proxy_fetch_endpoint(self) -> None:
+        from kamp_daemon.bandcamp import _PROXY_FETCH_URL, _ProxySession
+
+        sess = _ProxySession()
+        mock_post = self._make_proxy_response(200, '{"fan_id": 7}')
+
+        with patch(
+            "kamp_daemon.bandcamp._requests.post", return_value=mock_post
+        ) as patched:
+            resp = sess.get(
+                "https://bandcamp.com/api/fan/2/collection_summary", timeout=20
+            )
+
+        patched.assert_called_once()
+        call_kwargs = patched.call_args
+        assert call_kwargs[0][0] == _PROXY_FETCH_URL
+        payload = call_kwargs[1]["json"]
+        assert payload["url"] == "https://bandcamp.com/api/fan/2/collection_summary"
+        assert payload["method"] == "GET"
+        assert payload["body"] is None
+
+        assert resp.status_code == 200
+        assert resp.json() == {"fan_id": 7}
+        assert resp.ok is True
+
+    def test_post_sends_json_body(self) -> None:
+        from kamp_daemon.bandcamp import _ProxySession
+
+        sess = _ProxySession()
+        mock_post = self._make_proxy_response(200, '{"items": []}')
+
+        with patch(
+            "kamp_daemon.bandcamp._requests.post", return_value=mock_post
+        ) as patched:
+            sess.post(
+                "https://bandcamp.com/api/fancollection/1/collection_items",
+                json={"fan_id": 99, "count": 20},
+                timeout=30,
+            )
+
+        payload = patched.call_args[1]["json"]
+        assert payload["method"] == "POST"
+        assert '"fan_id": 99' in payload["body"]
+        assert payload["headers"]["Content-Type"] == "application/json"
+
+    def test_raise_for_status_on_error_response(self) -> None:
+        import requests
+
+        from kamp_daemon.bandcamp import _ProxySession
+
+        sess = _ProxySession()
+        mock_post = self._make_proxy_response(403, "Forbidden", "text/html")
+
+        with patch("kamp_daemon.bandcamp._requests.post", return_value=mock_post):
+            resp = sess.get("https://bandcamp.com/something")
+
+        assert resp.ok is False
+        with pytest.raises(requests.HTTPError):
+            resp.raise_for_status()
+
+    def test_user_agent_header_is_forwarded(self) -> None:
+        from kamp_daemon.bandcamp import _UA, _ProxySession
+
+        sess = _ProxySession()
+        mock_post = self._make_proxy_response(200, "{}")
+
+        with patch(
+            "kamp_daemon.bandcamp._requests.post", return_value=mock_post
+        ) as patched:
+            sess.get("https://bandcamp.com/u/")
+
+        payload = patched.call_args[1]["json"]
+        assert payload["headers"]["User-Agent"] == _UA

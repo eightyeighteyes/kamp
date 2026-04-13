@@ -17,7 +17,6 @@ const INT_KEYS = new Set([
 const RESTART_KEYS = new Set([
   'paths.staging',
   'paths.library',
-  'musicbrainz.contact',
   'bandcamp.poll_interval_minutes'
 ])
 
@@ -906,10 +905,7 @@ export function PreferencesDialog({
       if (value.trim() === '' || !Number.isInteger(n) || n < 0)
         throw new Error('Enter a whole number (0 or greater).')
     }
-    if (key === 'musicbrainz.contact') {
-      if (!value.includes('@') || value.trim() === '')
-        throw new Error('Enter a valid email address.')
-    }
+
     await setConfigValue(key, value)
   }
 
@@ -1033,14 +1029,6 @@ export function PreferencesDialog({
                   {/* MUSICBRAINZ */}
                   <div className="prefs-section">
                     <div className="prefs-section-label">MusicBrainz</div>
-                    <InputRow
-                      label="Contact email"
-                      configKey="musicbrainz.contact"
-                      type="email"
-                      initialValue={str('musicbrainz.contact')}
-                      hint="Sent in MusicBrainz User-Agent; required by their policy."
-                      onSave={handleSave}
-                    />
                     <BoolRow
                       label="Trust MusicBrainz when tags conflict"
                       configKey="musicbrainz.trust-musicbrainz-when-tags-conflict"

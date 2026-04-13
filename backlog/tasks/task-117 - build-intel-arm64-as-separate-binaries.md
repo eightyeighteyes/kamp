@@ -4,7 +4,7 @@ title: build intel & arm64 as separate binaries
 status: Done
 assignee: []
 created_date: '2026-04-10 13:39'
-updated_date: '2026-04-12 22:03'
+updated_date: '2026-04-13 22:22'
 labels:
   - chore
   - ci
@@ -12,6 +12,7 @@ labels:
 milestone: m-9
 dependencies: []
 priority: medium
+ordinal: 3500
 ---
 
 ## Acceptance Criteria

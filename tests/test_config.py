@@ -18,22 +18,22 @@ class TestFirstRunSetup:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """first_run_setup writes a TOML file at the given path."""
-        inputs = iter(["~/staging", "~/music", "me@example.com"])
+        inputs = iter(["~/staging", "~/music"])
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
         path = tmp_path / "config.toml"
         Config.first_run_setup(path)
         assert path.exists()
-        assert "me@example.com" in path.read_text()
+        assert "staging" in path.read_text()
 
     def test_returns_config_with_user_values(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Returned Config reflects the prompted values."""
-        inputs = iter(["~/staging", "~/lib", "test@test.com"])
+        inputs = iter(["~/staging", "~/lib"])
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
         config = Config.first_run_setup(tmp_path / "config.toml")
-        assert config.musicbrainz.contact == "test@test.com"
         assert "staging" in str(config.paths.staging)
+        assert "lib" in str(config.paths.library)
 
     def test_blank_input_uses_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -41,7 +41,6 @@ class TestFirstRunSetup:
         """Pressing Enter at a prompt accepts the shown default."""
         monkeypatch.setattr("builtins.input", lambda _: "")
         config = Config.first_run_setup(tmp_path / "config.toml")
-        assert config.musicbrainz.contact == "user@example.com"
         assert config.paths.staging == Path("~/Music/staging").expanduser()
         assert config.paths.library == Path("~/Music").expanduser()
 
@@ -49,13 +48,13 @@ class TestFirstRunSetup:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The written TOML file can be loaded back by Config.load()."""
-        inputs = iter(["~/staging", "~/music", "me@example.com"])
+        inputs = iter(["~/staging", "~/music"])
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
         path = tmp_path / "config.toml"
         Config.first_run_setup(path)
         # Round-trip: load should succeed without error
         loaded = Config.load(path)
-        assert loaded.musicbrainz.contact == "me@example.com"
+        assert "staging" in str(loaded.paths.staging)
 
     def test_creates_parent_directories(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -71,9 +70,9 @@ def _base_config(tmp_path: Path) -> Path:
     """Write a minimal valid config (without [bandcamp]) and return its path."""
     path = tmp_path / "config.toml"
     path.write_text(
-        DEFAULT_CONFIG_CONTENT.replace('"~/Music/staging"', '"/staging"')
-        .replace('"~/Music"', '"/library"')
-        .replace('"user@example.com"', '"me@example.com"')
+        DEFAULT_CONFIG_CONTENT.replace('"~/Music/staging"', '"/staging"').replace(
+            '"~/Music"', '"/library"'
+        )
     )
     return path
 
@@ -184,9 +183,8 @@ class TestConfigSet:
     def test_set_string_key_updates_value(self, tmp_path: Path) -> None:
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
-        config_set(path, "musicbrainz.contact", "new@example.com")
-        assert "new@example.com" in path.read_text()
-        assert "user@example.com" not in path.read_text()
+        config_set(path, "paths.staging", "~/new/staging")
+        assert "~/new/staging" in path.read_text()
 
     def test_set_int_key_updates_value(self, tmp_path: Path) -> None:
         path = tmp_path / "config.toml"
@@ -198,16 +196,15 @@ class TestConfigSet:
     def test_set_preserves_other_keys(self, tmp_path: Path) -> None:
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
-        config_set(path, "musicbrainz.contact", "new@example.com")
+        config_set(path, "paths.staging", "~/new/staging")
         text = path.read_text()
-        assert "staging" in text
         assert "library" in text
         assert "path_template" in text
 
     def test_set_preserves_comments(self, tmp_path: Path) -> None:
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
-        config_set(path, "musicbrainz.contact", "new@example.com")
+        config_set(path, "paths.staging", "~/new/staging")
         # Comments on other lines must survive
         assert "# Available variables" in path.read_text()
 
@@ -245,9 +242,9 @@ class TestConfigSet:
         """Config.load() succeeds and reflects the new value after config_set."""
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
-        config_set(path, "musicbrainz.contact", "round@trip.com")
+        config_set(path, "paths.staging", "~/round/trip")
         loaded = Config.load(path)
-        assert loaded.musicbrainz.contact == "round@trip.com"
+        assert "round/trip" in str(loaded.paths.staging)
 
     def test_set_path_value_round_trips(self, tmp_path: Path) -> None:
         """A path set via config_set is written as a string and loaded back correctly."""
@@ -385,3 +382,12 @@ class TestLastfmConfig:
         path.write_text(_TOML_WITH_LASTFM)
         config_set(path, "lastfm.session_key", "newkey")
         assert 'session_key = "newkey"' in path.read_text()
+
+
+class TestLegacyConfig:
+    def test_load_succeeds_with_legacy_contact_key(self, tmp_path: Path) -> None:
+        """Existing config.toml files with musicbrainz.contact load without error."""
+        path = tmp_path / "config.toml"
+        path.write_text(_TOML_WITH_BANDCAMP)  # _TOML_WITH_BANDCAMP has contact = "..."
+        config = Config.load(path)
+        assert config.musicbrainz is not None

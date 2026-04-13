@@ -22,7 +22,7 @@ from kamp_daemon.syncer import NeedsLoginError, Syncer, logout
 def _make_config(tmp_path: Path, poll_interval: int = 0) -> Config:
     return Config(
         paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
-        musicbrainz=MusicBrainzConfig(contact="t@t.com"),
+        musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(
             path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
@@ -39,7 +39,7 @@ def _make_config(tmp_path: Path, poll_interval: int = 0) -> Config:
 def _make_config_no_bandcamp(tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
-        musicbrainz=MusicBrainzConfig(contact="t@t.com"),
+        musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(
             path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
@@ -160,9 +160,9 @@ class TestReload:
         """reload() replaces the stored config."""
         syncer = Syncer(_make_config(tmp_path, poll_interval=0))
         new_config = _make_config(tmp_path, poll_interval=0)
-        new_config.musicbrainz.contact = "new@example.com"
+        new_config.musicbrainz.trust_musicbrainz_when_tags_conflict = False
         syncer.reload(new_config)
-        assert syncer._config.musicbrainz.contact == "new@example.com"
+        assert syncer._config.musicbrainz.trust_musicbrainz_when_tags_conflict is False
 
     def test_reload_changed_interval_no_existing_thread(self, tmp_path: Path) -> None:
         """reload() with interval change when no thread was running starts one."""

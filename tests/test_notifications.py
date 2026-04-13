@@ -45,7 +45,7 @@ _MOCK_TRACKS = [
 def _make_config(tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
-        musicbrainz=MusicBrainzConfig(contact="t@t.com"),
+        musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(
             path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"

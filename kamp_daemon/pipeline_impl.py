@@ -144,7 +144,8 @@ def run(
                 ):
                     # MB returned different artist/album than the existing file
                     # tags — likely a mis-match for a release not yet in the DB.
-                    # Keep the existing tags; proceed to artwork with no MBID.
+                    # Keep the existing ID3 tags but still use the MB MBID for
+                    # artwork: the MBID is valid even if the name strings differ.
                     first = tracks[0] if tracks else None
                     logger.warning(
                         "MusicBrainz tags conflict with existing file tags "
@@ -154,8 +155,8 @@ def run(
                         enriched[0].artist if enriched else "",
                         enriched[0].album if enriched else "",
                     )
-                    mbid = ""
-                    rg_mbid = ""
+                    mbid = enriched[0].release_mbid if enriched else ""
+                    rg_mbid = enriched[0].release_group_mbid if enriched else ""
                     title = first.album if first else directory.name
                 else:
                     total = len(audio_files)

@@ -4,7 +4,7 @@ title: 'Spike: Bandcamp download link scraping without full Playwright bundle'
 status: Done
 assignee: []
 created_date: '2026-03-31 02:46'
-updated_date: '2026-04-13 01:55'
+updated_date: '2026-04-13 22:22'
 labels:
   - spike
   - bandcamp
@@ -12,6 +12,7 @@ labels:
 milestone: m-9
 dependencies: []
 priority: low
+ordinal: 1500
 ---
 
 ## Description

@@ -699,6 +699,25 @@ class LibraryIndex:
         ).fetchone()
         return row is not None
 
+    def mark_processed_by(self, extension_id: str, mb_recording_id: str) -> None:
+        """Record that *extension_id* has processed *mb_recording_id*.
+
+        Writes a sentinel audit log entry so that has_been_processed_by()
+        returns True and the post-scan invoker skips this track.  Used by
+        the pipeline to mark built-in extensions (MusicBrainz tagger,
+        Cover Art Archive) that run in-process during ingest — their results
+        would otherwise be redundantly re-fetched on every library re-scan.
+        """
+        self._conn.execute(
+            """
+            INSERT INTO extension_audit_log
+                (extension_id, track_mbid, operation, old_value, new_value, timestamp)
+            VALUES (?, ?, 'pipeline', '{}', '{}', ?)
+            """,
+            (extension_id, mb_recording_id, _time.time()),
+        )
+        self._conn.commit()
+
     def audit_log_for(self, extension_id: str) -> list[dict[str, Any]]:
         """Return all audit log rows for *extension_id* in ascending order.
 

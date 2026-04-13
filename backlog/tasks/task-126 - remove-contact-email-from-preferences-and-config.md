@@ -1,14 +1,15 @@
 ---
 id: TASK-126
 title: remove 'contact email' from preferences and config
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-13 02:06'
-updated_date: '2026-04-13 02:10'
+updated_date: '2026-04-13 22:22'
 labels: []
 milestone: m-9
 dependencies: []
 priority: medium
+ordinal: 4500
 ---
 
 ## Description

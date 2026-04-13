@@ -1061,7 +1061,6 @@ class TestFavoriteEndpoint:
 _SAMPLE_CONFIG_VALUES = {
     "paths.staging": "~/Music/staging",
     "paths.library": "~/Music",
-    "musicbrainz.contact": "user@example.com",
     "artwork.min_dimension": 1000,
     "artwork.max_bytes": 1000000,
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
@@ -1086,7 +1085,6 @@ class TestConfigEndpoints:
         data = response.json()
         assert data["paths.staging"] == "~/Music/staging"
         assert data["paths.library"] == "~/Music"
-        assert data["musicbrainz.contact"] == "user@example.com"
         assert data["artwork.min_dimension"] == 1000
         assert data["artwork.max_bytes"] == 1000000
         assert data["library.path_template"].startswith("{album_artist}")

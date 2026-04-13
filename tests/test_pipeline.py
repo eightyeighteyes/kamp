@@ -40,7 +40,7 @@ def config(tmp_path: Path) -> Config:
             staging=tmp_path / "staging",
             library=tmp_path / "library",
         ),
-        musicbrainz=MusicBrainzConfig(contact="test@example.com"),
+        musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=5_000_000),
         library=LibraryConfig(
             path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
@@ -537,7 +537,6 @@ def _make_conflict_config(tmp_path: Path, trust: bool) -> Config:
             library=tmp_path / "library",
         ),
         musicbrainz=MusicBrainzConfig(
-            contact="test@example.com",
             trust_musicbrainz_when_tags_conflict=trust,
         ),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=5_000_000),
@@ -622,10 +621,11 @@ class TestMbConflictFallback:
             run(album_dir, config)
 
         mock_art.assert_called_once()
-        # MBIDs must be empty — we don't trust the conflicting lookup result
+        # MBIDs come from the enriched tracks even on conflict — artwork fetch
+        # needs a valid MBID; only ID3 tag writes are skipped.
         call_kwargs = mock_art.call_args
-        assert call_kwargs.kwargs["release_mbid"] == ""
-        assert call_kwargs.kwargs["release_group_mbid"] == ""
+        assert call_kwargs.kwargs["release_mbid"] == "rel-123"
+        assert call_kwargs.kwargs["release_group_mbid"] == "rg-123"
 
     def test_writes_id3_when_trusted_despite_conflict(self, tmp_path: Path) -> None:
         """When trust=True (default), MB tags are written even if they differ."""

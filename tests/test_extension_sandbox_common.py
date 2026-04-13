@@ -154,10 +154,10 @@ class TestSpawnWorkerInitializer:
 
     def test_minimal_tier_passes_initializer(self) -> None:
         kwargs = self._capture_process_kwargs(_TaggerMinimal)
-        # On supported platforms the initializer is a callable; on unsupported
-        # platforms (Windows) it is None.  Both are valid values for the
-        # multiprocessing.Process `initializer` parameter.
-        initializer = kwargs.get("initializer")
+        # The initializer is passed as the last element of args (not a kwarg)
+        # because multiprocessing.Process does not support an `initializer`
+        # parameter — that is a Pool-only feature.
+        initializer = kwargs["args"][-1]
         if sys.platform in ("darwin", "linux"):
             assert callable(
                 initializer
@@ -167,7 +167,7 @@ class TestSpawnWorkerInitializer:
 
     def test_syncer_tier_passes_initializer(self) -> None:
         kwargs = self._capture_process_kwargs(_TaggerSyncer)
-        initializer = kwargs.get("initializer")
+        initializer = kwargs["args"][-1]
         if sys.platform in ("darwin", "linux"):
             # Syncer initializer must be a different callable from minimal.
             assert callable(initializer)
@@ -179,7 +179,7 @@ class TestSpawnWorkerInitializer:
             pytest.skip("initializers are None on unsupported platforms")
         kwargs_min = self._capture_process_kwargs(_TaggerMinimal)
         kwargs_syn = self._capture_process_kwargs(_TaggerSyncer)
-        assert kwargs_min["initializer"] is not kwargs_syn["initializer"]
+        assert kwargs_min["args"][-1] is not kwargs_syn["args"][-1]
 
     def test_class_without_sandbox_tier_defaults_to_minimal(self) -> None:
         """A class that doesn't declare _sandbox_tier gets TIER_MINIMAL."""
@@ -192,4 +192,4 @@ class TestSpawnWorkerInitializer:
         assert _NoTierTagger._sandbox_tier == TIER_MINIMAL
         kwargs = self._capture_process_kwargs(_NoTierTagger)
         if sys.platform in ("darwin", "linux"):
-            assert callable(kwargs.get("initializer"))
+            assert callable(kwargs["args"][-1])

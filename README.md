@@ -50,7 +50,6 @@ Bandcamp purchase
 ## Requirements
 
 - Python 3.11+
-- A [MusicBrainz](https://musicbrainz.org) contact email (required by their API policy — used only in the `User-Agent` header)
 - For Bandcamp auto-download: a Bandcamp account
 
 ### Python dependencies
@@ -112,9 +111,7 @@ staging = "~/Music/staging"   # drop ZIPs here; kamp watches this directory
 library = "~/Music"           # finished files land here
 
 [musicbrainz]
-app_name = "kamp"
-app_version = "0.1.0"
-contact = "you@example.com"   # required by MusicBrainz API policy
+# trust-musicbrainz-when-tags-conflict = true
 
 [artwork]
 min_dimension = 1000          # minimum cover art width and height in pixels
@@ -200,7 +197,6 @@ Open the Preferences dialog from **kamp → Preferences** in the macOS menu bar,
 ```bash
 kamp config show
 kamp config set paths.staging ~/Downloads/staging
-kamp config set musicbrainz.contact me@example.com
 kamp config set artwork.min_dimension 500
 ```
 

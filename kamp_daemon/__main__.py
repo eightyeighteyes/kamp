@@ -306,18 +306,19 @@ def main() -> None:
             # by Config.load(); print guidance and exit.
             print(
                 f"Config file created at {args.config}. "
-                "Edit it with your staging/library paths and contact email, "
+                "Edit it with your staging/library paths, "
                 "then re-run kamp.",
                 file=sys.stderr,
             )
             sys.exit(1)
 
-    # app_name and app_version are not user-configurable — hardcoded here so the
-    # User-Agent we send to MusicBrainz always accurately identifies the software.
+    # app_name, app_version, and contact are not user-configurable — hardcoded
+    # here so the User-Agent we send to MusicBrainz always accurately identifies
+    # the software and provides a stable contact address.
     musicbrainzngs.set_useragent(
         "kamp",
         _get_version(),
-        config.musicbrainz.contact,
+        "tedd.e.terry+kamp@gmail.com",
     )
 
     if command == "server":
@@ -456,7 +457,7 @@ def _cmd_test_notify(notify_type: str) -> None:
 
         cfg = Config(
             paths=PathsConfig(staging=staging, library=library),
-            musicbrainz=MusicBrainzConfig(contact="test@example.com"),
+            musicbrainz=MusicBrainzConfig(),
             artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
             library=LibraryConfig(
                 path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
@@ -787,7 +788,6 @@ def _cmd_daemon(
     _config_values: dict[str, object] = {
         "paths.staging": str(config.paths.staging),
         "paths.library": str(config.paths.library),
-        "musicbrainz.contact": config.musicbrainz.contact,
         "musicbrainz.trust-musicbrainz-when-tags-conflict": config.musicbrainz.trust_musicbrainz_when_tags_conflict,
         "artwork.min_dimension": config.artwork.min_dimension,
         "artwork.max_bytes": config.artwork.max_bytes,
@@ -849,6 +849,20 @@ def _cmd_daemon(
         # passed.  The invoker enforces the single-invocation guarantee via the
         # audit log so extensions never see the same track twice.
         if result.new_tracks:
+            # The built-in tagger and artwork source already ran in-process
+            # during the pipeline subprocess.  Mark them as processed for every
+            # new track so the post-scan invoker does not re-run them.
+            _BUILTIN_EXTENSION_IDS = (
+                "kamp_daemon.ext.builtin.musicbrainz.KampMusicBrainzTagger",
+                "kamp_daemon.ext.builtin.coverart.KampCoverArtArchive",
+            )
+            for track in result.new_tracks:
+                if track.mb_recording_id:
+                    for ext_id in _BUILTIN_EXTENSION_IDS:
+                        if not index.has_been_processed_by(
+                            ext_id, track.mb_recording_id
+                        ):
+                            index.mark_processed_by(ext_id, track.mb_recording_id)
             invoke_extensions_for_new_tracks(
                 _extension_registry, result.new_tracks, index
             )

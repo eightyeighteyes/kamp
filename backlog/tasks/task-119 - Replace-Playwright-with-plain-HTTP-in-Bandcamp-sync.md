@@ -4,11 +4,12 @@ title: Replace Playwright with plain HTTP in Bandcamp sync
 status: Done
 assignee: []
 created_date: '2026-04-12 22:35'
-updated_date: '2026-04-13 01:55'
+updated_date: '2026-04-13 22:22'
 labels: []
 milestone: m-9
 dependencies: []
 priority: high
+ordinal: 2500
 ---
 
 ## Description

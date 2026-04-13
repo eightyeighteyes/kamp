@@ -36,7 +36,6 @@ staging = "~/Music/staging"
 library = "~/Music"
 
 [musicbrainz]
-contact = "user@example.com"  # Update with your contact email
 # trust-musicbrainz-when-tags-conflict = true  # set to false to skip ID3 tags on artist/album mismatch
 
 [artwork]
@@ -60,7 +59,6 @@ class PathsConfig:
 
 @dataclass
 class MusicBrainzConfig:
-    contact: str
     # When False: if MB returns artist/album that differs from existing file tags,
     # log a warning and skip writing ID3 tags (proceed to artwork only).
     trust_musicbrainz_when_tags_conflict: bool = True
@@ -141,14 +139,10 @@ class Config:
         library = Path(
             _prompt("Library directory (finished files land here)", "~/Music")
         ).expanduser()
-        contact = _prompt(
-            "Your email (sent in MusicBrainz User-Agent; required by their policy)",
-            "user@example.com",
-        )
 
         config = cls(
             paths=PathsConfig(staging=staging, library=library),
-            musicbrainz=MusicBrainzConfig(contact=contact),
+            musicbrainz=MusicBrainzConfig(),
             artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
             library=LibraryConfig(
                 path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
@@ -160,11 +154,9 @@ class Config:
         # retains its comments and familiar structure rather than being
         # machine-generated.  Order matters: staging is a prefix of library, so
         # replace the longer string first.
-        toml_content = (
-            DEFAULT_CONFIG_CONTENT.replace('"~/Music/staging"', f'"{staging}"')
-            .replace('"~/Music"', f'"{library}"')
-            .replace('"user@example.com"', f'"{contact}"')
-        )
+        toml_content = DEFAULT_CONFIG_CONTENT.replace(
+            '"~/Music/staging"', f'"{staging}"'
+        ).replace('"~/Music"', f'"{library}"')
         path.write_text(toml_content)
         print(f"\nConfiguration saved to {path}\n")
         return config
@@ -220,7 +212,7 @@ class Config:
             path.write_text(DEFAULT_CONFIG_CONTENT)
             raise FileNotFoundError(
                 f"Config file created at {path}. "
-                "Please edit it with your staging/library paths and contact email, "
+                "Please edit it with your staging/library paths, "
                 "then re-run kamp."
             )
 
@@ -264,7 +256,6 @@ class Config:
                 library=Path(p["library"]).expanduser(),
             ),
             musicbrainz=MusicBrainzConfig(
-                contact=mb["contact"],
                 trust_musicbrainz_when_tags_conflict=bool(
                     mb.get("trust-musicbrainz-when-tags-conflict", True)
                 ),
@@ -291,7 +282,6 @@ class Config:
 _CONFIG_KEY_TYPES: dict[str, type] = {
     "paths.staging": str,
     "paths.library": str,
-    "musicbrainz.contact": str,
     "musicbrainz.trust-musicbrainz-when-tags-conflict": bool,
     "artwork.min_dimension": int,
     "artwork.max_bytes": int,

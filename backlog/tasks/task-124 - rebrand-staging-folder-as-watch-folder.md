@@ -1,14 +1,15 @@
 ---
 id: TASK-124
 title: rebrand "staging folder" as "watch folder"
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-13 01:54'
-updated_date: '2026-04-13 23:02'
+updated_date: '2026-04-13 23:33'
 labels: []
 milestone: m-9
 dependencies: []
 priority: medium
+ordinal: 8500
 ---
 
 ## Description

@@ -245,6 +245,17 @@ def main() -> None:
         # PIL.TiffImagePlugin emits per-tag DEBUG lines when decoding TIFF/JPEG EXIF
         # data, which floods the log during every artwork embed.
         logging.getLogger("PIL.TiffImagePlugin").setLevel(logging.WARNING)
+        # The Bandcamp proxy relay (proxy-fetch / fetch-result) emits one access log
+        # line per Bandcamp API call, flooding sync logs with internal housekeeping.
+        # These are already visible as daemon log entries; suppress the uvicorn noise.
+        _relay_paths = ("/api/v1/bandcamp/proxy-fetch", "/api/v1/bandcamp/fetch-result")
+
+        class _RelayFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                msg = record.getMessage()
+                return not any(p in msg for p in _relay_paths)
+
+        logging.getLogger("uvicorn.access").addFilter(_RelayFilter())
 
     # Default to daemon when no subcommand given
     command = args.command or "daemon"

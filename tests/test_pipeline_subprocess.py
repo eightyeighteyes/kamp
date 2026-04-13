@@ -22,7 +22,7 @@ from kamp_daemon.pipeline import _DIR_SENTINEL, _handle_stage_msg, run_in_subpro
 def _make_config(tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
-        musicbrainz=MusicBrainzConfig(contact="t@t.com"),
+        musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(
             path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
@@ -137,7 +137,7 @@ class TestRunInSubprocess:
         mock_run.assert_called_once()
 
     def test_worker_calls_set_useragent(self, tmp_path: Path) -> None:
-        """_pipeline_worker calls musicbrainzngs.set_useragent with the config contact."""
+        """_pipeline_worker calls musicbrainzngs.set_useragent with the hardcoded contact."""
         with (
             patch("kamp_daemon.pipeline_impl.run"),
             patch("musicbrainzngs.set_useragent") as mock_ua,
@@ -147,7 +147,7 @@ class TestRunInSubprocess:
 
         mock_ua.assert_called_once()
         _, _, contact = mock_ua.call_args.args
-        assert contact == "t@t.com"
+        assert contact == "tedd.e.terry+kamp@gmail.com"
 
     def test_worker_exception_propagates(self, tmp_path: Path) -> None:
         """Exceptions raised in the worker are re-raised by run_in_subprocess()."""

@@ -36,6 +36,7 @@ def _extension_worker(
     ctx: KampGround,
     log_q: Any,
     result_q: Any,
+    initializer: Callable[[], None] | None = None,
 ) -> None:
     """Subprocess entry point: instantiate cls(ctx) and call method_name(*args).
 
@@ -45,7 +46,22 @@ def _extension_worker(
     Logging is forwarded to the parent via log_q.  The QueueHandler is removed
     in the finally block so that _drain_log_queue re-emission in tests does not
     loop back through the root logger's handler (same invariant as pipeline.py).
+
+    The sandbox initializer (if any) runs first, before extension code loads.
     """
+    if initializer is not None:
+        initializer()
+    # Spawn-mode subprocesses start with a clean interpreter — re-apply global
+    # state that was set in the parent.  See CLAUDE.md "Subprocess isolation".
+    import importlib.metadata
+
+    import musicbrainzngs
+
+    musicbrainzngs.set_useragent(
+        "kamp",
+        importlib.metadata.version("kamp"),
+        "tedd.e.terry+kamp@gmail.com",
+    )
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
     queue_handler = logging.handlers.QueueHandler(log_q)
@@ -93,13 +109,12 @@ def _spawn_extension_worker(
     mp_ctx = multiprocessing.get_context("spawn")
     log_q: Any = mp_ctx.Queue()
     result_q: Any = mp_ctx.Queue()
-    proc = mp_ctx.Process(  # type: ignore[call-arg]
+    # Pass the sandbox initializer as a regular arg so the worker calls it
+    # before extension code loads.  multiprocessing.Process does not accept
+    # an initializer kwarg (unlike Pool); the initializer runs inside the child.
+    proc = mp_ctx.Process(
         target=_extension_worker,
-        args=(cls, method_name, args, ctx, log_q, result_q),
-        # initializer=None is explicitly supported by multiprocessing — no
-        # sandbox is applied when the platform is unsupported or the tier
-        # has no registered initializer for this platform.
-        initializer=initializer,
+        args=(cls, method_name, args, ctx, log_q, result_q, initializer),
     )
     proc.start()
     return proc, log_q, result_q

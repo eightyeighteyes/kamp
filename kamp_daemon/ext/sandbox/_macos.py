@@ -28,6 +28,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import sys
+import sysconfig
 from collections.abc import Callable
 from pathlib import Path
 
@@ -56,6 +57,10 @@ _MINIMAL_PROFILE_TEMPLATE = """\
 
 ;; Python venv and standard library (dynamic imports after sandbox_init)
 (allow file-read* (subpath "{venv}"))
+;; Python stdlib — may be outside the venv (e.g. pyenv, system Python)
+(allow file-read* (subpath "{stdlib}"))
+;; kamp_daemon package (may be outside venv in editable/dev installs)
+(allow file-read* (subpath "{kamp_pkg}"))
 (allow file-read* (subpath "/usr/lib"))
 (allow file-read* (subpath "/usr/local/lib"))
 (allow file-read* (subpath "/opt/homebrew"))
@@ -93,12 +98,11 @@ _MINIMAL_PROFILE_TEMPLATE = """\
 ;; Signals to self only
 (allow signal (target self))
 
-;; Network: DNS (UDP 53) and outbound HTTPS/HTTP
+;; Network: allow all outbound.
 ;; Domain-level allow-listing is enforced by KampGround.fetch() at the API
-;; layer; the sandbox allows outbound TCP to prevent double-gating.
-(allow network-outbound (remote udp "*:53"))
-(allow network-outbound (remote tcp "*:80"))
-(allow network-outbound (remote tcp "*:443"))
+;; layer — the sandbox does not double-gate at the address/port level.
+;; Includes DNS (mDNSResponder Unix socket) and any ports libraries need.
+(allow network-outbound)
 
 ;; Deny subprocess execution — prevents extensions spawning child processes
 (deny process-exec*)
@@ -110,6 +114,10 @@ _SYNCER_PROFILE_TEMPLATE = """\
 
 ;; Python venv and standard library
 (allow file-read* (subpath "{venv}"))
+;; Python stdlib — may be outside the venv (e.g. pyenv, system Python)
+(allow file-read* (subpath "{stdlib}"))
+;; kamp_daemon package (may be outside venv in editable/dev installs)
+(allow file-read* (subpath "{kamp_pkg}"))
 (allow file-read* (subpath "/usr/lib"))
 (allow file-read* (subpath "/usr/local/lib"))
 (allow file-read* (subpath "/opt/homebrew"))
@@ -143,10 +151,8 @@ _SYNCER_PROFILE_TEMPLATE = """\
 (allow ipc-posix-shm)
 (allow signal (target self))
 
-;; Network (Bandcamp APIs + bcbits.com CDN + DNS)
-(allow network-outbound (remote udp "*:53"))
-(allow network-outbound (remote tcp "*:80"))
-(allow network-outbound (remote tcp "*:443"))
+;; Network: allow all outbound (see minimal profile for rationale).
+(allow network-outbound)
 
 ;; Writable paths: kamp state directory + temporary files
 ;; Staging path is not encoded in the profile — Playwright writes downloads
@@ -165,8 +171,13 @@ _SYNCER_PROFILE_TEMPLATE = """\
 """
 
 
-def _render(template: str, venv: str, home: str) -> str:
-    return template.replace("{venv}", venv).replace("{home}", home)
+def _render(template: str, venv: str, stdlib: str, home: str, kamp_pkg: str) -> str:
+    return (
+        template.replace("{venv}", venv)
+        .replace("{stdlib}", stdlib)
+        .replace("{home}", home)
+        .replace("{kamp_pkg}", kamp_pkg)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -217,12 +228,28 @@ def _apply_sandbox(profile: str) -> None:
 # they must be defined at module level — not as closures or lambdas.
 
 
+def _kamp_pkg_dir() -> str:
+    """Return the directory containing the kamp_daemon package.
+
+    In a normal (non-editable) install this is inside sys.prefix; in an
+    editable/dev install it is the project source tree.  Including it
+    explicitly ensures the sandbox allows lazy imports of kamp_daemon submodules
+    in both cases.
+    """
+    # __file__ is .../kamp_daemon/ext/sandbox/_macos.py
+    return str(Path(__file__).parent.parent.parent.parent)
+
+
 def _init_minimal() -> None:  # pragma: no cover
     """Process initializer: apply minimal sandbox profile."""
     profile = _render(
         _MINIMAL_PROFILE_TEMPLATE,
         venv=sys.prefix,
+        # sysconfig.get_path('stdlib') gives the real stdlib root regardless
+        # of whether Python is managed by pyenv, Homebrew, or the system.
+        stdlib=sysconfig.get_path("stdlib"),
         home=str(Path.home()),
+        kamp_pkg=_kamp_pkg_dir(),
     )
     _apply_sandbox(profile)
 
@@ -232,7 +259,9 @@ def _init_syncer() -> None:  # pragma: no cover
     profile = _render(
         _SYNCER_PROFILE_TEMPLATE,
         venv=sys.prefix,
+        stdlib=sysconfig.get_path("stdlib"),
         home=str(Path.home()),
+        kamp_pkg=_kamp_pkg_dir(),
     )
     _apply_sandbox(profile)
 

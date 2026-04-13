@@ -67,7 +67,7 @@ def _pipeline_worker(
         musicbrainzngs.set_useragent(
             "kamp",
             importlib.metadata.version("kamp"),
-            config.musicbrainz.contact,
+            "tedd.e.terry+kamp@gmail.com",
         )
 
         run(

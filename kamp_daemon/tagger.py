@@ -196,13 +196,17 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
             if audio.tags is not None:
                 t = audio.tags
                 art_v = t.get("\xa9ART")
-                artist = str(art_v[0]) if art_v else ""
+                # Fall back to sort-artist tag (soar) — some iTunes Store
+                # purchases omit ©ART and only ship sort-order atoms.
+                artist = str(art_v[0]) if art_v else str((t.get("soar") or [""])[0])
                 aar_v = t.get("aART")
                 album_artist = str(aar_v[0]) if aar_v else artist
                 alb_v = t.get("\xa9alb")
-                album = str(alb_v[0]) if alb_v else ""
+                # Fall back to sort-album tag (soal).
+                album = str(alb_v[0]) if alb_v else str((t.get("soal") or [""])[0])
                 nam_v = t.get("\xa9nam")
-                title = str(nam_v[0]) if nam_v else ""
+                # Fall back to sort-name tag (sonm).
+                title = str(nam_v[0]) if nam_v else str((t.get("sonm") or [""])[0])
                 day_v = t.get("\xa9day")
                 year = str(day_v[0])[:4] if day_v else ""
                 trkn_v = t.get("trkn")

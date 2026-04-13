@@ -10,6 +10,11 @@ const api = {
     ipcRenderer.on('open-preferences', handler)
     // Return a cleanup function so the caller can unsubscribe.
     return () => ipcRenderer.off('open-preferences', handler)
+  },
+  bandcamp: {
+    /** Open the Bandcamp login BrowserWindow. Resolves when login succeeds or the window is closed. */
+    beginLogin: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('bandcamp:begin-login')
   }
 }
 

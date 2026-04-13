@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, globalShortcut, Menu } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, globalShortcut, Menu, session, net } from 'electron'
 import { join, resolve } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { spawn, ChildProcess } from 'child_process'
@@ -87,6 +87,87 @@ function stopServer(): void {
     }
     serverProcess = null
   }
+}
+
+// ---------------------------------------------------------------------------
+// Bandcamp login via BrowserWindow
+// ---------------------------------------------------------------------------
+
+type BandcampLoginResult = { ok: true } | { ok: false; error: string }
+
+/**
+ * Open a BrowserWindow pointing at bandcamp.com/login.  Poll the default
+ * session's cookie jar once per second; when ``js_logged_in=1`` appears,
+ * collect all .bandcamp.com cookies, format them as a Playwright
+ * storage_state payload, and POST to the Python daemon's login-complete
+ * endpoint so it can persist bandcamp_session.json.
+ *
+ * Returns { ok: true } on success or { ok: false, error } if the user closes
+ * the window without completing login or if the HTTP call fails.
+ */
+async function openBandcampLogin(): Promise<BandcampLoginResult> {
+  return new Promise((resolve) => {
+    const loginWin = new BrowserWindow({
+      width: 820,
+      height: 720,
+      title: 'Log in to Bandcamp',
+      // No preload — this is a plain browser tab, not a Kamp UI window.
+      webPreferences: { sandbox: true }
+    })
+
+    loginWin.loadURL('https://bandcamp.com/login')
+
+    let settled = false
+    // Mutable ref — clearInterval needs to see the id assigned below.
+    const poll = { timer: undefined as ReturnType<typeof setInterval> | undefined }
+
+    const settle = async (result: BandcampLoginResult): Promise<void> => {
+      if (settled) return
+      settled = true
+      clearInterval(poll.timer)
+      if (!loginWin.isDestroyed()) loginWin.destroy()
+      resolve(result)
+    }
+
+    const sendLoginComplete = async (): Promise<void> => {
+      const cookies = await session.defaultSession.cookies.get({ url: 'https://bandcamp.com' })
+      const payload = {
+        cookies: cookies.map((c) => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain ?? '.bandcamp.com',
+          path: c.path ?? '/',
+          expires: c.expirationDate ?? -1,
+          httpOnly: c.httpOnly ?? false,
+          secure: c.secure ?? false,
+          sameSite: c.sameSite ?? 'Lax'
+        })),
+        origins: []
+      }
+      try {
+        const res = await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/login-complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+        if (!res.ok) throw new Error(`login-complete returned ${res.status}`)
+        await settle({ ok: true })
+      } catch (err) {
+        await settle({ ok: false, error: String(err) })
+      }
+    }
+
+    poll.timer = setInterval(async () => {
+      if (settled) return
+      const cookies = await session.defaultSession.cookies.get({ url: 'https://bandcamp.com' })
+      const loggedIn = cookies.some((c) => c.name === 'js_logged_in' && c.value === '1')
+      if (loggedIn) await sendLoginComplete()
+    }, 1000)
+
+    loginWin.on('closed', () => {
+      void settle({ ok: false, error: 'Login window closed before completing sign-in.' })
+    })
+  })
 }
 
 type WindowBounds = { x: number; y: number; width: number; height: number }
@@ -235,6 +316,8 @@ app.whenReady().then(async () => {
   ipcMain.on('ping', () => console.log('pong'))
 
   ipcMain.handle('kamp:get-extensions', () => discoverExtensions())
+
+  ipcMain.handle('bandcamp:begin-login', () => openBandcampLogin())
 
   ipcMain.handle('kamp:install-extension', (_event, source: 'npm' | 'local', nameOrPath: string) =>
     installExtension(source, nameOrPath)

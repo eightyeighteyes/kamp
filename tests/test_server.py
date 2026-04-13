@@ -1298,3 +1298,134 @@ class TestLastfmEndpoints:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         response = TestClient(app).delete("/api/v1/lastfm/connect")
         assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Bandcamp proxy endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestBandcampProxyEndpoints:
+    """Tests for the proxy-fetch / pending-fetch / fetch-result relay."""
+
+    def test_pending_fetch_returns_204_when_nothing_queued(
+        self, client: TestClient
+    ) -> None:
+        response = client.get("/api/v1/bandcamp/pending-fetch")
+        assert response.status_code == 204
+
+    def test_fetch_result_returns_404_for_unknown_id(self, client: TestClient) -> None:
+        response = client.post(
+            "/api/v1/bandcamp/fetch-result",
+            json={
+                "id": "nonexistent",
+                "status": 200,
+                "body": "x",
+                "content_type": "text/plain",
+            },
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_proxy_roundtrip_delivers_result(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """proxy-fetch blocks, pending-fetch exposes the request, fetch-result unblocks it.
+
+        Uses httpx.AsyncClient so both requests share the same asyncio event loop:
+        proxy-fetch awaits asyncio.Event.wait() (yields control) while the main
+        coroutine calls pending-fetch and fetch-result as normal awaits.
+        """
+        import asyncio
+
+        import httpx
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Start proxy-fetch as a concurrent task; it will block until we
+            # deliver a result via fetch-result.
+            fetch_task = asyncio.create_task(
+                client.post(
+                    "/api/v1/bandcamp/proxy-fetch",
+                    json={
+                        "url": "https://bandcamp.com/api/fan/2/collection_summary",
+                        "method": "GET",
+                        "headers": {"User-Agent": "test"},
+                        "body": None,
+                    },
+                )
+            )
+
+            # Yield so the task registers the pending request before we poll.
+            await asyncio.sleep(0.05)
+
+            pending_r = await client.get("/api/v1/bandcamp/pending-fetch")
+            assert pending_r.status_code == 200
+            pending = pending_r.json()
+            assert pending["url"] == "https://bandcamp.com/api/fan/2/collection_summary"
+            assert pending["method"] == "GET"
+            req_id = pending["id"]
+            assert req_id
+
+            result_r = await client.post(
+                "/api/v1/bandcamp/fetch-result",
+                json={
+                    "id": req_id,
+                    "status": 200,
+                    "body": '{"fan_id": 42}',
+                    "content_type": "application/json",
+                },
+            )
+            assert result_r.status_code == 200
+            assert result_r.json() == {"ok": True}
+
+            proxy_r = await fetch_task
+            assert proxy_r.status_code == 200
+            data = proxy_r.json()
+            assert data["status"] == 200
+            assert data["body"] == '{"fan_id": 42}'
+            assert data["content_type"] == "application/json"
+
+    @pytest.mark.anyio
+    async def test_pending_fetch_is_present_while_proxy_fetch_waits(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """pending-fetch returns the queued entry while proxy-fetch is blocking."""
+        import asyncio
+
+        import httpx
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            fetch_task = asyncio.create_task(
+                client.post(
+                    "/api/v1/bandcamp/proxy-fetch",
+                    json={"url": "https://bandcamp.com/u/", "method": "GET"},
+                )
+            )
+            await asyncio.sleep(0.05)
+
+            r = await client.get("/api/v1/bandcamp/pending-fetch")
+            assert r.status_code == 200
+            assert r.json()["url"] == "https://bandcamp.com/u/"
+
+            # Deliver a result to unblock the task cleanly.
+            req_id = r.json()["id"]
+            await client.post(
+                "/api/v1/bandcamp/fetch-result",
+                json={
+                    "id": req_id,
+                    "status": 200,
+                    "body": "<html/>",
+                    "content_type": "text/html",
+                },
+            )
+            await fetch_task

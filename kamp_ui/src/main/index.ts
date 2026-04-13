@@ -170,6 +170,68 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Bandcamp HTTP proxy relay
+// ---------------------------------------------------------------------------
+// bandcamp.py in the PyInstaller bundle cannot reach bandcamp.com directly
+// because PyInstaller's OpenSSL has a different TLS fingerprint that Cloudflare
+// flags.  Instead, the Python subprocess POSTs to /api/v1/bandcamp/proxy-fetch,
+// which blocks until Electron picks up the request here, executes it via
+// net.fetch (Chromium's network stack, real browser fingerprint, cf_clearance
+// cookie already in session.defaultSession), and POSTs the result back.
+
+// net.fetch accepts a `session` option at runtime (Chromium extension) but the
+// Electron TypeScript type only exposes the base RequestInit.  Cast via unknown
+// so we can pass the defaultSession without disabling the whole call site.
+type NetFetchOptions = Parameters<typeof net.fetch>[1] & { session?: Electron.Session }
+
+let bandcampProxyPollTimer: ReturnType<typeof setInterval> | undefined
+
+async function handlePendingBandcampFetch(): Promise<void> {
+  try {
+    const pendingResp = await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/pending-fetch')
+    if (pendingResp.status === 204) return // nothing queued
+    if (!pendingResp.ok) return
+
+    const pending = (await pendingResp.json()) as {
+      id: string
+      url: string
+      method: string
+      headers: Record<string, string>
+      body: string | null
+    }
+
+    let status = 502
+    let body = 'net.fetch error'
+    let contentType = 'text/plain'
+
+    try {
+      // Use session.defaultSession so Chromium's TLS stack (real browser
+      // fingerprint) handles the request and the cf_clearance cookie is sent.
+      const opts: NetFetchOptions = {
+        method: pending.method,
+        headers: pending.headers as HeadersInit,
+        body: pending.body ?? undefined,
+        session: session.defaultSession
+      }
+      const fetchResp = await net.fetch(pending.url, opts as Parameters<typeof net.fetch>[1])
+      status = fetchResp.status
+      body = await fetchResp.text()
+      contentType = fetchResp.headers.get('content-type') ?? 'text/html'
+    } catch (err) {
+      body = String(err)
+    }
+
+    await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/fetch-result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: pending.id, status, body, content_type: contentType })
+    })
+  } catch {
+    // Swallow errors — server may not be up yet during startup
+  }
+}
+
 type WindowBounds = { x: number; y: number; width: number; height: number }
 
 function loadWindowBounds(): WindowBounds {
@@ -374,6 +436,14 @@ app.whenReady().then(async () => {
   // existing reconnect loop handles the brief gap while the server starts up.
   await startServer()
 
+  // Poll for pending Bandcamp proxy-fetch requests every 200 ms.  The Python
+  // daemon subprocess posts a request and blocks; we pick it up here, execute
+  // it via net.fetch (Chromium TLS stack, real browser fingerprint), and post
+  // the result back so the daemon can continue.
+  bandcampProxyPollTimer = setInterval(() => {
+    void handlePendingBandcampFetch()
+  }, 200)
+
   createWindow()
 
   app.on('activate', function () {
@@ -393,7 +463,10 @@ app.on('window-all-closed', () => {
 })
 
 // Unregister global shortcuts before quitting — they persist for the process lifetime otherwise.
-app.on('will-quit', () => globalShortcut.unregisterAll())
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  if (bandcampProxyPollTimer !== undefined) clearInterval(bandcampProxyPollTimer)
+})
 
 // Kill the server we launched when the app exits.
 // `will-quit` handles graceful quit; `process.on('exit')` is the synchronous

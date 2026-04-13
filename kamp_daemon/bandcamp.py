@@ -30,10 +30,11 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 import requests as _requests
 
@@ -51,6 +52,106 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+
+# URL of the kamp server's Bandcamp HTTP proxy relay endpoint.
+_PROXY_FETCH_URL = "http://127.0.0.1:8000/api/v1/bandcamp/proxy-fetch"
+
+
+def _is_frozen() -> bool:
+    """Return True when running inside a PyInstaller bundle.
+
+    PyInstaller sets sys.frozen = True in the bundled executable.  We use this
+    to switch from direct requests (dev) to the Electron proxy relay (built app)
+    so that bandcamp.com traffic goes through Chromium's TLS stack instead of
+    PyInstaller's bundled OpenSSL, which Cloudflare flags.
+    """
+    return bool(getattr(sys, "frozen", False))
+
+
+class _ProxyResponse:
+    """Minimal requests.Response lookalike backed by a proxy-fetch result.
+
+    Returned by _ProxySession so call sites in bandcamp.py work without
+    modification regardless of whether we are in dev or bundled mode.
+    """
+
+    def __init__(self, status_code: int, text: str, content_type: str) -> None:
+        self.status_code = status_code
+        self.text = text
+        self.content_type = content_type
+        self.ok = 200 <= status_code < 300
+
+    def json(self) -> Any:
+        return json.loads(self.text)
+
+    def raise_for_status(self) -> None:
+        if not self.ok:
+            raise _requests.HTTPError(f"HTTP {self.status_code}")
+
+
+class _ProxySession:
+    """Drop-in replacement for requests.Session that routes via Electron's net module.
+
+    Used when running inside the PyInstaller bundle, where the bundled OpenSSL
+    has a different TLS fingerprint (JA3/JA4) that Cloudflare flags for
+    bandcamp.com requests.  Requests are forwarded to the local kamp server's
+    proxy-fetch endpoint; Electron picks them up, executes them via net.fetch
+    (Chromium network stack, which holds cf_clearance), and posts results back.
+
+    Only GET and POST are needed by bandcamp.py.  The ``stream`` and
+    ``allow_redirects`` kwargs accepted by requests.Session are silently
+    consumed — Electron follows redirects automatically.
+    """
+
+    def __init__(self) -> None:
+        self.headers: dict[str, str] = {"User-Agent": _UA}
+        # cookies is not used — Electron's session.defaultSession holds them.
+        self.cookies: Any = None
+
+    def _fetch(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json: Any = None,
+        timeout: int | float = 30,
+        **_kwargs: Any,
+    ) -> _ProxyResponse:
+        req_headers = dict(self.headers)
+        if headers:
+            req_headers.update(headers)
+        body: str | None = None
+        if json is not None:
+            req_headers["Content-Type"] = "application/json"
+            body = _json_dumps(json)
+
+        proxy_timeout = float(timeout) + 5  # outer > inner so server surfaces 504
+        resp = _requests.post(
+            _PROXY_FETCH_URL,
+            json={"url": url, "method": method, "headers": req_headers, "body": body},
+            timeout=proxy_timeout,
+        )
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+        return _ProxyResponse(
+            status_code=data["status"],
+            text=data["body"],
+            content_type=data.get("content_type", "text/html"),
+        )
+
+    def get(self, url: str, **kwargs: Any) -> _ProxyResponse:
+        return self._fetch("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> _ProxyResponse:
+        return self._fetch("POST", url, **kwargs)
+
+
+# Alias json.dumps to avoid shadowing in _ProxySession._fetch
+_json_dumps = json.dumps
+
+# Union type accepted by all internal helpers that take an HTTP session.
+_AnySession = Union[_requests.Session, "_ProxySession"]
 
 
 class CookieError(Exception):
@@ -207,8 +308,21 @@ def _ensure_session(bc_config: BandcampConfig) -> Path:
     )
 
 
-def _make_requests_session(session_file: Path) -> _requests.Session:
-    """Build a requests.Session authenticated with cookies from *session_file*."""
+def _make_requests_session(
+    session_file: Path,
+) -> Union[_requests.Session, _ProxySession]:
+    """Build an HTTP session authenticated with cookies from *session_file*.
+
+    In the PyInstaller bundle (``sys.frozen`` is True), returns a ``_ProxySession``
+    that routes all requests through the local kamp server, which forwards them
+    via Electron's net module (Chromium TLS, real browser fingerprint).  In dev,
+    returns a normal ``requests.Session`` with the cookies loaded directly.
+    """
+    if _is_frozen():
+        # Electron's session.defaultSession already holds the Bandcamp cookies
+        # (set during the interactive login flow).  No need to load them here.
+        return _ProxySession()
+
     state = json.loads(session_file.read_text())
     session = _requests.Session()
     session.headers["User-Agent"] = _UA
@@ -321,7 +435,7 @@ def _session_from_cookie_file(cookie_file: Path) -> Path:
 _COLLECTION_SUMMARY_URL = "https://bandcamp.com/api/fan/2/collection_summary"
 
 
-def _get_fan_id(session: _requests.Session) -> int:
+def _get_fan_id(session: _AnySession) -> int:
     """Return the numeric fan_id for the authenticated session.
 
     Uses the authenticated collection_summary API endpoint rather than scraping
@@ -364,7 +478,7 @@ def _extract_pagedata(html: str, url: str) -> dict[str, Any]:
     return result
 
 
-def _fetch_collection(fan_id: int, session: _requests.Session) -> list[dict[str, Any]]:
+def _fetch_collection(fan_id: int, session: _AnySession) -> list[dict[str, Any]]:
     """Fetch all collection items (visible + hidden), deduplicated by sale_item_id."""
     seen: set[int] = set()
     items: list[dict[str, Any]] = []
@@ -377,9 +491,7 @@ def _fetch_collection(fan_id: int, session: _requests.Session) -> list[dict[str,
     return items
 
 
-def _paginate(
-    endpoint: str, fan_id: int, session: _requests.Session
-) -> list[dict[str, Any]]:
+def _paginate(endpoint: str, fan_id: int, session: _AnySession) -> list[dict[str, Any]]:
     """POST paginated requests to *endpoint* and return all items."""
     items: list[dict[str, Any]] = []
     older_than_token = f"{int(time.time())}:0:a::"
@@ -428,7 +540,7 @@ def _paginate(
 def _get_download_links(
     username: str,
     item_ids: set[int],
-    session: _requests.Session,
+    session: _AnySession,
 ) -> dict[int, str]:
     """GET the fan collection page and parse download-page URLs from HTML.
 
@@ -456,7 +568,7 @@ def _get_download_links(
 # ---------------------------------------------------------------------------
 
 
-def _get_cdn_url(redownload_url: str, fmt: str, session: _requests.Session) -> str:
+def _get_cdn_url(redownload_url: str, fmt: str, session: _AnySession) -> str:
     """GET the download page and extract the pre-signed CDN URL for *fmt*.
 
     Bandcamp embeds ``download_items[0].downloads[enc].url`` in the pagedata
@@ -505,7 +617,7 @@ def _download_item(
     item: dict[str, Any],
     bc_config: BandcampConfig,
     staging_dir: Path,
-    session: _requests.Session,
+    session: _AnySession,
 ) -> Path:
     band_name: str = item.get("band_name", "Unknown Artist")
     item_title: str = item.get("item_title", "Unknown Album")
@@ -523,7 +635,16 @@ def _download_item(
 
     logger.info("Downloading %r by %r…", item_title, band_name)
     cdn_url = _get_cdn_url(redownload_url, bc_config.format, session)
-    _download_file(cdn_url, dest, session)
+
+    # CDN download URLs (popplers5.bandcamp.com) are pre-signed and do not
+    # require Bandcamp session cookies, so a plain requests.Session is fine
+    # even in frozen mode.  Streaming the large ZIP through the Electron proxy
+    # relay would buffer the entire file in memory; using requests directly
+    # avoids that.  If Cloudflare proves to be an issue on the CDN subdomain,
+    # see TASK-127 AC #3.
+    dl_session = _requests.Session()
+    dl_session.headers["User-Agent"] = _UA
+    _download_file(cdn_url, dest, dl_session)
     return dest
 
 

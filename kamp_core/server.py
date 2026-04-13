@@ -13,6 +13,8 @@ WebSocket:  /api/v1/ws   — client sends "ping", server replies with a
 from __future__ import annotations
 
 import asyncio
+import json as _json
+import uuid as _uuid
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -174,6 +176,20 @@ class BandcampCookiePayload(BaseModel):
     origins: list[dict[str, Any]] = []
 
 
+class BandcampProxyFetchRequest(BaseModel):
+    url: str
+    method: str = "GET"
+    headers: dict[str, str] = {}
+    body: str | None = None
+
+
+class BandcampProxyFetchResult(BaseModel):
+    id: str
+    status: int
+    body: str
+    content_type: str = "text/html"
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -216,6 +232,9 @@ def create_app(
         "ui_queue_panel_open": ui_queue_panel_open,
         "library_version": 0,
         "config": dict(config_values) if config_values is not None else {},
+        # Pending proxy-fetch requests from the Python daemon subprocess.
+        # id → {"id", "url", "method", "headers", "body", "event", "result"}
+        "bandcamp_proxy_requests": {},
     }
 
     # Active WebSocket queues — one asyncio.Queue per connected client.
@@ -675,6 +694,85 @@ def create_app(
     @app.post("/api/v1/player/repeat")
     def set_repeat(req: RepeatRequest) -> dict[str, Any]:
         queue.set_repeat(req.repeat)
+        return {"ok": True}
+
+    # -----------------------------------------------------------------------
+    # Bandcamp HTTP proxy (bypasses PyInstaller OpenSSL TLS fingerprinting)
+    # -----------------------------------------------------------------------
+    # The Python daemon subprocess cannot reach bandcamp.com directly in the
+    # built .app because PyInstaller's OpenSSL has a different TLS fingerprint
+    # (JA3/JA4) that Cloudflare flags.  These three endpoints implement a
+    # request/response relay via Electron's net module (Chromium network stack),
+    # which has a real browser fingerprint and holds the cf_clearance cookie.
+    #
+    # Flow:
+    #   1. daemon → POST /proxy-fetch (blocks until result arrives)
+    #   2. Electron polls GET /pending-fetch (every ~200 ms)
+    #   3. Electron executes net.fetch, POSTs result to /fetch-result
+    #   4. /proxy-fetch unblocks and returns the result to the daemon
+
+    @app.post("/api/v1/bandcamp/proxy-fetch")
+    async def bandcamp_proxy_fetch(req: BandcampProxyFetchRequest) -> dict[str, Any]:
+        req_id = str(_uuid.uuid4())
+        event: asyncio.Event = asyncio.Event()
+        _state["bandcamp_proxy_requests"][req_id] = {
+            "id": req_id,
+            "url": req.url,
+            "method": req.method,
+            "headers": req.headers,
+            "body": req.body,
+            "event": event,
+            "result": None,
+        }
+        try:
+            await asyncio.wait_for(event.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            _state["bandcamp_proxy_requests"].pop(req_id, None)
+            raise HTTPException(
+                status_code=504,
+                detail="Proxy fetch timed out — Electron did not respond",
+            )
+        entry = _state["bandcamp_proxy_requests"].pop(req_id, None)
+        if entry is None or entry["result"] is None:
+            raise HTTPException(
+                status_code=502, detail="Proxy fetch returned no result"
+            )
+        return cast(dict[str, Any], entry["result"])
+
+    @app.get("/api/v1/bandcamp/pending-fetch")
+    async def bandcamp_pending_fetch() -> Response:
+        """Return the first queued proxy-fetch request (200) or nothing (204).
+
+        Electron polls this endpoint every ~200 ms.  When a request is found the
+        caller should execute it via net.fetch and POST the result to /fetch-result.
+        """
+        pending: dict[str, Any] = _state["bandcamp_proxy_requests"]
+        for entry in pending.values():
+            if entry["result"] is None and not entry["event"].is_set():
+                payload = {
+                    "id": entry["id"],
+                    "url": entry["url"],
+                    "method": entry["method"],
+                    "headers": entry["headers"],
+                    "body": entry["body"],
+                }
+                return Response(
+                    content=_json.dumps(payload), media_type="application/json"
+                )
+        return Response(status_code=204)
+
+    @app.post("/api/v1/bandcamp/fetch-result")
+    async def bandcamp_fetch_result(req: BandcampProxyFetchResult) -> dict[str, Any]:
+        """Receive the net.fetch result from Electron and unblock the waiting proxy-fetch."""
+        entry = _state["bandcamp_proxy_requests"].get(req.id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="No pending fetch with that ID")
+        entry["result"] = {
+            "status": req.status,
+            "body": req.body,
+            "content_type": req.content_type,
+        }
+        entry["event"].set()
         return {"ok": True}
 
     # -----------------------------------------------------------------------

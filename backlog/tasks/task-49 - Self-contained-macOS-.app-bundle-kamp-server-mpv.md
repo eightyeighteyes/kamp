@@ -1,11 +1,11 @@
 ---
 id: TASK-49
 title: Self-contained macOS .app bundle (kamp server + mpv)
-status: In Progress
+status: Done
 assignee:
   - Claude
 created_date: '2026-03-31 02:40'
-updated_date: '2026-04-09 22:51'
+updated_date: '2026-04-13 01:55'
 labels:
   - packaging
   - distribution

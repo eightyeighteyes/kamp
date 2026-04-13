@@ -1,9 +1,10 @@
 ---
 id: TASK-119
 title: Replace Playwright with plain HTTP in Bandcamp sync
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-12 22:35'
+updated_date: '2026-04-13 01:55'
 labels: []
 milestone: m-9
 dependencies: []

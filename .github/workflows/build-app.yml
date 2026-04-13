@@ -239,10 +239,18 @@ jobs:
           DMG=$(ls kamp_ui/dist/*.dmg | head -1)
           echo "→ DMG: $DMG ($(du -sh "$DMG" | cut -f1))"
 
+      - name: Compute artifact name
+        id: artifact
+        # Artifact names cannot contain / : < > | * ? \ — replace / with -
+        run: |
+          safe="${{ github.ref_name }}"
+          safe="${safe//\//-}"
+          echo "name=Kamp-${safe}-mac-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Kamp-${{ github.ref_name }}-mac-${{ matrix.arch }}
+          name: ${{ steps.artifact.outputs.name }}
           path: kamp_ui/dist/*.dmg
           retention-days: 30
 

@@ -66,6 +66,11 @@ If the same sub-problem fails twice in a row, stop and check in before attemptin
 
 **Concrete example (TASK-9 media keys):** next/prev media keys failed six times across multiple sessions because each attempt looked like a fixable bug. The real constraint — `MPRemoteCommandCenter` requires a CFRunLoop on the main thread; asyncio/uvicorn does not run one — was architectural and unfixable by implementation tweaks. Stopping after the second failure, diagnosing the root cause, and creating a task would have saved a full week of token spend. When a sub-problem fails twice: write up what was tried, name the constraint, create a backlog task, and move on.
 
+## Cloudflare TLS fingerprinting in the built app
+PyInstaller bundles its own OpenSSL, which has a different JA3/JA4 TLS fingerprint than a real browser. Cloudflare detects this and serves JS challenge pages (HTTP 200, ~3 KB HTML) instead of the expected response — **even for authenticated JSON API endpoints**, not just HTML page loads. This only manifests in the built `.app`; in dev the system Python uses macOS SecureTransport or a different OpenSSL version that Cloudflare doesn't flag.
+
+The only reliable fix for any `bandcamp.com` request in the built app is to route it through Electron's `net` module (Chromium's network stack), which has a real browser TLS fingerprint and already holds the `cf_clearance` cookie. See TASK-127. Do not attempt to fix this by changing User-Agent, tweaking cipher suites, or using a different requests library — the check is at the TLS layer before HTTP headers are read.
+
 ## macOS CFRunLoop constraint
 Any macOS API that dispatches callbacks on the main GCD queue (`dispatch_get_main_queue()`) will not work in the kamp Python server process. The main thread runs asyncio/uvicorn, which does not pump a CFRunLoop. Affected APIs include: `MPRemoteCommandCenter`, `NSDistributedNotificationCenter`, `NSTimer`, and any delegate/target-action pattern that assumes an AppKit main loop. Features requiring these APIs must live in the Electron main process (which has a real CFRunLoop) or in a dedicated helper subprocess.
 

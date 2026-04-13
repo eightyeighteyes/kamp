@@ -1,14 +1,26 @@
 """Bandcamp collection sync and purchase downloader.
 
 Uses the unofficial fancollection API (reverse-engineered from Bandcamp's web app)
-and a Playwright-managed browser session for authentication. All endpoints are
-undocumented and may change without notice.
+and plain HTTP requests for all operations.  All API endpoints are undocumented
+and may change without notice.
 
-Excluded from coverage (see pyproject.toml [tool.coverage.run] omit list) because
-all meaningful code paths require a live Playwright-managed Chromium instance and
-real Bandcamp credentials. There is no practical way to stub the browser session
-at a granularity that would produce reliable unit tests; correctness is verified
-through manual QA against a real account.
+Authentication
+--------------
+Login is handled externally: the kamp Electron app opens a BrowserWindow for the
+user to authenticate, writes the resulting cookies to ``bandcamp_session.json`` in
+the kamp state directory, and the daemon picks them up here.  ``_ensure_session``
+reads that file; it no longer launches a browser itself.  If no valid session exists,
+``NeedsLoginError`` is raised and the caller is responsible for triggering the Electron
+login flow (e.g. via the menu bar "Login" item).
+
+Download URL discovery
+----------------------
+Bandcamp pre-generates signed CDN download URLs for every format and embeds them as
+JSON in the ``<div id="pagedata">`` blob on the download page.  We read:
+
+    ``pagedata["download_items"][0]["downloads"][enc]["url"]``
+
+to obtain the direct download URL without any JavaScript execution.
 """
 
 from __future__ import annotations
@@ -18,13 +30,12 @@ import json
 import logging
 import os
 import re
-import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import sync_playwright
+import requests as _requests
 
 from .config import BandcampConfig, _state_dir
 
@@ -34,17 +45,12 @@ _COLLECTION_URL = "https://bandcamp.com/api/fancollection/1/collection_items"
 _HIDDEN_URL = "https://bandcamp.com/api/fancollection/1/hidden_items"
 _COLLECTION_PAGE_BATCH = 20
 
-# Maps our config format strings to the text shown on Bandcamp's download page.
-_FORMAT_LABELS: dict[str, str] = {
-    "mp3-v0": "MP3 V0",
-    "mp3-320": "MP3 320",
-    "flac": "FLAC",
-    "aac-hi": "AAC",
-    "vorbis": "Ogg Vorbis",
-    "alac": "ALAC",
-    "wav": "WAV",
-    "aiff-lossless": "AIFF",
-}
+# Realistic browser User-Agent — Bandcamp rejects obvious bot strings.
+_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 class CookieError(Exception):
@@ -53,6 +59,13 @@ class CookieError(Exception):
 
 class BandcampAPIError(Exception):
     pass
+
+
+class NeedsLoginError(Exception):
+    """Raised when no valid Bandcamp session exists.
+
+    The caller should trigger the Electron BrowserWindow login flow and retry.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -70,20 +83,9 @@ def mark_collection_synced(
     without downloading anything.  Returns the number of items marked.
     """
     session_file = _ensure_session(bc_config)
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(storage_state=str(session_file))
-        page = context.new_page()
-        page.goto(
-            f"https://bandcamp.com/{bc_config.username}",
-            wait_until="domcontentloaded",
-            timeout=30_000,
-        )
-        fan_id = _get_fan_id_from_page(page, bc_config.username)
-        collection = _fetch_collection(page, fan_id)
-        context.close()
-        browser.close()
+    session = _make_requests_session(session_file)
+    fan_id = _get_fan_id(session)
+    collection = _fetch_collection(fan_id, session)
 
     state = _load_state(state_file)
     newly_marked = 0
@@ -114,38 +116,24 @@ def sync_new_purchases(
     Returns a list of paths to the downloaded ZIP files.
     """
     session_file = _ensure_session(bc_config)
+    session = _make_requests_session(session_file)
+    fan_id = _get_fan_id(session)
+    logger.info("Fetched fan_id=%s for user %r", fan_id, bc_config.username)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(storage_state=str(session_file))
-        page = context.new_page()
-        page.goto(
-            f"https://bandcamp.com/{bc_config.username}",
-            wait_until="domcontentloaded",
-            timeout=30_000,
-        )
-        fan_id = _get_fan_id_from_page(page, bc_config.username)
-        logger.info("Fetched fan_id=%s for user %r", fan_id, bc_config.username)
-        state = _load_state(state_file)
-        collection = _fetch_collection(page, fan_id)
+    state = _load_state(state_file)
+    collection = _fetch_collection(fan_id, session)
 
-        new_items = [
-            item for item in collection if str(item["sale_item_id"]) not in state
-        ]
+    new_items = [item for item in collection if str(item["sale_item_id"]) not in state]
 
-        if not new_items:
-            context.close()
-            browser.close()
-            logger.info("No new purchases to download.")
-            return []
+    if not new_items:
+        logger.info("No new purchases to download.")
+        return []
 
-        logger.info("%d new purchase(s) to download.", len(new_items))
+    logger.info("%d new purchase(s) to download.", len(new_items))
 
-        # Scrape download-page URLs from the collection page DOM.
-        new_item_ids = {item["sale_item_id"] for item in new_items}
-        download_links = _get_download_links(page, bc_config.username, new_item_ids)
-        context.close()
-        browser.close()
+    # Scrape download-page URLs from the collection page HTML.
+    new_item_ids = {item["sale_item_id"] for item in new_items}
+    download_links = _get_download_links(bc_config.username, new_item_ids, session)
 
     staging_dir.mkdir(parents=True, exist_ok=True)
 
@@ -167,7 +155,7 @@ def sync_new_purchases(
                 status_callback(
                     f"{item.get('item_title', '?')} by {item.get('band_name', '?')}"
                 )
-            path = _download_item(item, bc_config, staging_dir, session_file)
+            path = _download_item(item, bc_config, staging_dir, session)
             downloaded.append(path)
             state[str(item["sale_item_id"])] = time.time()
             _save_state(state_file, state)
@@ -193,11 +181,12 @@ def _session_file() -> Path:
 
 
 def _ensure_session(bc_config: BandcampConfig) -> Path:
-    """Return a valid Playwright storage_state file path.
+    """Return a valid session file path.
 
     If ``cookie_file`` is configured, synthesize a session from it (escape hatch
-    for users managing cookies manually). Otherwise, check for a saved Playwright
-    session and validate it; if absent or expired, run the interactive login flow.
+    for users managing cookies manually).  Otherwise, check for a saved session
+    and validate it; if absent or expired, raise ``NeedsLoginError`` so the caller
+    can trigger the Electron BrowserWindow login flow.
     """
     if bc_config.cookie_file:
         return _session_from_cookie_file(bc_config.cookie_file)
@@ -207,13 +196,30 @@ def _ensure_session(bc_config: BandcampConfig) -> Path:
         return sf
 
     if sf.exists():
-        logger.info("Bandcamp session expired — opening browser to re-authenticate.")
+        logger.info("Bandcamp session expired — login required.")
         sf.unlink()
     else:
-        logger.info("No Bandcamp session found — opening browser to log in.")
+        logger.info("No Bandcamp session found — login required.")
 
-    _run_interactive_login(sf)
-    return sf
+    raise NeedsLoginError(
+        "No valid Bandcamp session. "
+        "Click Login in the kamp menu bar to authenticate."
+    )
+
+
+def _make_requests_session(session_file: Path) -> _requests.Session:
+    """Build a requests.Session authenticated with cookies from *session_file*."""
+    state = json.loads(session_file.read_text())
+    session = _requests.Session()
+    session.headers["User-Agent"] = _UA
+    for cookie in state.get("cookies", []):
+        session.cookies.set(
+            cookie["name"],
+            cookie["value"],
+            domain=cookie.get("domain", ".bandcamp.com"),
+            path=cookie.get("path", "/"),
+        )
+    return session
 
 
 def _validate_session(session_file: Path) -> bool:
@@ -236,7 +242,7 @@ def _validate_session(session_file: Path) -> bool:
     def _cookie_valid(c: dict[str, Any]) -> bool:
         if c.get("name") != "js_logged_in" or c.get("value") != "1":
             return False
-        expires = c.get("expires", -1)
+        expires: float = float(c.get("expires", -1))
         return (
             expires < 0 or expires > now
         )  # expires < 0 means session cookie (never expires)
@@ -247,10 +253,8 @@ def _validate_session(session_file: Path) -> bool:
 
     # Step 2: confirm with an authenticated API endpoint.
     try:
-        import requests as std_requests
-
         cookie_dict = {c["name"]: c["value"] for c in cookies}
-        resp = std_requests.get(
+        resp = _requests.get(
             "https://bandcamp.com/api/fan/2/collection_summary",
             cookies=cookie_dict,
             timeout=10,
@@ -264,40 +268,10 @@ def _validate_session(session_file: Path) -> bool:
     return True
 
 
-def _run_interactive_login(session_file: Path) -> None:
-    """Open a headed Playwright browser for the user to log in, then save the session."""
-    print(
-        "\n[kamp] Opening browser — please log in to Bandcamp.\n"
-        "The window will close automatically once login is detected.\n"
-    )
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        context = browser.new_context()
-        page = context.new_page()
-        page.goto(
-            "https://bandcamp.com/login", wait_until="domcontentloaded", timeout=30_000
-        )
-
-        # Wait until Bandcamp redirects away from the login page (login completed).
-        page.wait_for_url(
-            lambda url: "bandcamp.com" in url and "login" not in url,
-            timeout=300_000,  # 5 minutes for the user to complete login
-        )
-
-        session_file.parent.mkdir(parents=True, exist_ok=True)
-        state = context.storage_state()
-        session_file.write_text(json.dumps(state))
-        os.chmod(session_file, 0o600)
-        logger.info("Session saved to %s", session_file)
-        context.close()
-        browser.close()
-
-
 def _session_from_cookie_file(cookie_file: Path) -> Path:
-    """Build a synthetic Playwright storage_state from a Netscape cookies.txt file.
+    """Build a synthetic session JSON from a Netscape cookies.txt file.
 
-    Returns a temp file path. This is the escape hatch for users who manage
+    Returns a temp file path.  This is the escape hatch for users who manage
     cookies manually rather than using the interactive login flow.
     """
     import tempfile
@@ -344,26 +318,58 @@ def _session_from_cookie_file(cookie_file: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _get_fan_id_from_page(page: Any, username: str) -> int:
-    url = f"https://bandcamp.com/{username}"
-    blob = _extract_pagedata(page.content(), url)
-    fan_id: int = blob["fan_data"]["fan_id"]
+_COLLECTION_SUMMARY_URL = "https://bandcamp.com/api/fan/2/collection_summary"
+
+
+def _get_fan_id(session: _requests.Session) -> int:
+    """Return the numeric fan_id for the authenticated session.
+
+    Uses the authenticated collection_summary API endpoint rather than scraping
+    the profile page HTML.  The profile page is served behind Cloudflare's bot
+    detection and returns a JS challenge to non-browser TLS fingerprints; the
+    API endpoint is not subject to the same check because it requires valid
+    session cookies to return a 200.
+    """
+    resp = session.get(_COLLECTION_SUMMARY_URL, timeout=20, allow_redirects=False)
+    if resp.status_code in (401, 403, 302):
+        raise NeedsLoginError(
+            f"Bandcamp session rejected ({resp.status_code}) — please log in again."
+        )
+    resp.raise_for_status()
+    try:
+        data: dict[str, Any] = resp.json()
+    except Exception as exc:
+        logger.error(
+            "_get_fan_id: JSON decode failed — status=%s response_head=%r",
+            resp.status_code,
+            resp.text[:500],
+        )
+        raise BandcampAPIError(f"collection_summary returned non-JSON: {exc}") from exc
+    fan_id: int = data["fan_id"]
     return fan_id
 
 
 def _extract_pagedata(html: str, url: str) -> dict[str, Any]:
     match = re.search(r'id="pagedata"[^>]*data-blob="([^"]+)"', html)
     if not match:
+        # Log the start of the response to diagnose bot-detection pages or
+        # unexpected redirects on download pages.
+        logger.error(
+            "_extract_pagedata: no pagedata in %s — response head: %r",
+            url,
+            html[:500],
+        )
         raise BandcampAPIError(f"Could not find pagedata blob in {url}")
-    return json.loads(html_lib.unescape(match.group(1)))
+    result: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
+    return result
 
 
-def _fetch_collection(page: Any, fan_id: int) -> list[dict[str, Any]]:
+def _fetch_collection(fan_id: int, session: _requests.Session) -> list[dict[str, Any]]:
     """Fetch all collection items (visible + hidden), deduplicated by sale_item_id."""
     seen: set[int] = set()
     items: list[dict[str, Any]] = []
     for endpoint in (_COLLECTION_URL, _HIDDEN_URL):
-        for item in _paginate(page, endpoint, fan_id):
+        for item in _paginate(endpoint, fan_id, session):
             item_id: int = item["sale_item_id"]
             if item_id not in seen:
                 seen.add(item_id)
@@ -371,55 +377,10 @@ def _fetch_collection(page: Any, fan_id: int) -> list[dict[str, Any]]:
     return items
 
 
-def _get_download_links(
-    page: Any,
-    username: str,
-    item_ids: set[int],
-) -> dict[int, str]:
-    """Navigate to the fan collection page and scrape download-page URLs for *item_ids*.
-
-    Scrolls incrementally until all requested IDs are found or the page is
-    exhausted.  Returns a dict mapping sale_item_id → download-page URL.
-    Items absent from the page (e.g. hidden or removed) are omitted.
-    """
-    page.goto(
-        f"https://bandcamp.com/{username}/",
-        wait_until="networkidle",
-        timeout=30_000,
-    )
-    found: dict[int, str] = {}
-    prev_height = 0
-
-    while True:
-        links: dict[int, str] = page.evaluate("""() => {
-                const out = {};
-                document.querySelectorAll(
-                    'a[href*="bandcamp.com/download?"][href*="sitem_id="]'
-                ).forEach(a => {
-                    const m = a.href.match(/sitem_id=(\\d+)/);
-                    if (m) out[parseInt(m[1])] = a.href;
-                });
-                return out;
-            }""")
-        for raw_id, url in links.items():
-            iid = int(raw_id)
-            if iid in item_ids:
-                found[iid] = url
-
-        if set(found.keys()) >= item_ids:
-            break  # found every item we need
-
-        height: int = page.evaluate("() => document.body.scrollHeight")
-        if height == prev_height:
-            break  # bottom reached, no more items will load
-        prev_height = height
-        page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(1500)
-
-    return found
-
-
-def _paginate(page: Any, endpoint: str, fan_id: int) -> list[dict[str, Any]]:
+def _paginate(
+    endpoint: str, fan_id: int, session: _requests.Session
+) -> list[dict[str, Any]]:
+    """POST paginated requests to *endpoint* and return all items."""
     items: list[dict[str, Any]] = []
     older_than_token = f"{int(time.time())}:0:a::"
 
@@ -429,32 +390,23 @@ def _paginate(page: Any, endpoint: str, fan_id: int) -> list[dict[str, Any]]:
             "count": _COLLECTION_PAGE_BATCH,
             "older_than_token": older_than_token,
         }
-        result: dict[str, Any] = page.evaluate(
-            """async ([url, body]) => {
-                const r = await fetch(url, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(body)
-                });
-                if (r.status === 401 || r.status === 403 || r.status === 302) {
-                    return {__auth_error: true, status: r.status};
-                }
-                if (!r.ok) {
-                    const preview = (await r.text()).slice(0, 200);
-                    throw new Error(`HTTP ${r.status} from ${url}: ${preview}`);
-                }
-                return await r.json();
-            }""",
-            [endpoint, payload],
+        resp = session.post(
+            endpoint,
+            json=payload,
+            timeout=30,
+            headers={"Content-Type": "application/json"},
         )
 
-        if result.get("__auth_error"):
-            # Session expired mid-sync — clear it so the next run triggers re-login.
+        if resp.status_code in (401, 403, 302):
+            # Session expired mid-sync — clear so the next run triggers re-login.
             _session_file().unlink(missing_ok=True)
             raise BandcampAPIError(
-                f"Bandcamp session expired (HTTP {result.get('status')}) — "
-                "session cleared. Run 'kamp sync' to re-authenticate."
+                f"Bandcamp session expired (HTTP {resp.status_code}) — "
+                "session cleared. Click Login in the kamp menu bar to re-authenticate."
             )
+        resp.raise_for_status()
+
+        result: dict[str, Any] = resp.json()
 
         if result.get("error"):
             raise BandcampAPIError(
@@ -473,16 +425,87 @@ def _paginate(page: Any, endpoint: str, fan_id: int) -> list[dict[str, Any]]:
     return items
 
 
+def _get_download_links(
+    username: str,
+    item_ids: set[int],
+    session: _requests.Session,
+) -> dict[int, str]:
+    """GET the fan collection page and parse download-page URLs from HTML.
+
+    Returns a dict mapping sale_item_id → redownload_url.  Items not found
+    in the HTML (hidden or recently purchased) are omitted from the result.
+    """
+    url = f"https://bandcamp.com/{username}/"
+    resp = session.get(url, timeout=30)
+    resp.raise_for_status()
+
+    # Match: <a href="https://...bandcamp.com/download?...sitem_id=NNN...">
+    pattern = re.compile(
+        r'href="(https://[^"]*bandcamp\.com/download\?[^"]*sitem_id=(\d+)[^"]*)"'
+    )
+    found: dict[int, str] = {}
+    for match in pattern.finditer(resp.text):
+        sid = int(match.group(2))
+        if sid in item_ids:
+            found[sid] = html_lib.unescape(match.group(1))
+    return found
+
+
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
+
+
+def _get_cdn_url(redownload_url: str, fmt: str, session: _requests.Session) -> str:
+    """GET the download page and extract the pre-signed CDN URL for *fmt*.
+
+    Bandcamp embeds ``download_items[0].downloads[enc].url`` in the pagedata
+    JSON blob on the download page — all format URLs are server-generated and
+    require no JavaScript execution to obtain.
+
+    Raises ``BandcampAPIError`` if the item is not ready or *fmt* is absent.
+    """
+    resp = session.get(redownload_url, timeout=30)
+    resp.raise_for_status()
+
+    blob = _extract_pagedata(resp.text, redownload_url)
+
+    # download_items is the canonical key; digital_items is a fallback seen
+    # in some page variants.
+    items: list[dict[str, Any]] = (
+        blob.get("download_items") or blob.get("digital_items") or []
+    )
+    if not items:
+        raise BandcampAPIError(
+            f"No download_items found in pagedata for {redownload_url}"
+        )
+
+    item = items[0]
+    downloads: dict[str, Any] = item.get("downloads") or {}
+
+    if not downloads:
+        # Item is still being transcoded (recently purchased).
+        raise BandcampAPIError(
+            f"Item {item.get('sale_id')} ({item.get('title')!r}) has no download "
+            "URLs yet — it may still be processing.  Try again later."
+        )
+
+    fmt_data = downloads.get(fmt)
+    if not fmt_data:
+        available = ", ".join(downloads.keys())
+        raise BandcampAPIError(
+            f"Format {fmt!r} not available. Available formats: {available}"
+        )
+
+    cdn_url: str = fmt_data["url"]
+    return cdn_url
 
 
 def _download_item(
     item: dict[str, Any],
     bc_config: BandcampConfig,
     staging_dir: Path,
-    session_file: Path,
+    session: _requests.Session,
 ) -> Path:
     band_name: str = item.get("band_name", "Unknown Artist")
     item_title: str = item.get("item_title", "Unknown Album")
@@ -499,81 +522,22 @@ def _download_item(
     dest = staging_dir / f"{safe_name}.zip"
 
     logger.info("Downloading %r by %r…", item_title, band_name)
-    _browser_download(redownload_url, bc_config.format, session_file, dest)
+    cdn_url = _get_cdn_url(redownload_url, bc_config.format, session)
+    _download_file(cdn_url, dest, session)
     return dest
 
 
-def _browser_download(
-    redownload_url: str,
-    fmt: str,
-    session_file: Path,
+def _download_file(
+    cdn_url: str,
     dest: Path,
+    session: _requests.Session,
 ) -> None:
-    """Navigate the Bandcamp download page via headless browser and save the ZIP.
-
-    The download page presents a ``<select>`` for format choice and a Knockout.js-
-    bound ``<a>`` link that becomes visible once the server generates the CDN URL.
-    """
-    fmt_label = _FORMAT_LABELS.get(fmt, fmt.upper())
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            storage_state=str(session_file),
-            accept_downloads=True,
-        )
-        page = context.new_page()
-
-        logger.debug("Browser: download page %s", redownload_url)
-        page.goto(redownload_url, wait_until="domcontentloaded", timeout=30_000)
-
-        # Select the desired format from the <select> dropdown (if present).
-        # Options contain the file size too (e.g. "MP3 V0 - 80.5MB"), so match
-        # by checking whether the option text starts with our format label.
-        if page.query_selector("select"):
-            page.evaluate(
-                """([label]) => {
-                    const sel = document.querySelector('select');
-                    if (!sel) return;
-                    const upper = label.toUpperCase();
-                    for (const opt of sel.options) {
-                        if (opt.text.toUpperCase().includes(upper)) {
-                            opt.selected = true;
-                            sel.dispatchEvent(new Event('change', { bubbles: true }));
-                            break;
-                        }
-                    }
-                }""",
-                [fmt_label],
-            )
-
-        # Wait for the Knockout binding to resolve and the CDN link to appear.
-        download_link = page.wait_for_selector(
-            'a[href*="bcbits.com/download"]',
-            state="visible",
-            timeout=15_000,
-        )
-        if download_link is None:
-            context.close()
-            browser.close()
-            raise BandcampAPIError(
-                f"Download link for format {fmt!r} ({fmt_label!r}) "
-                f"never became ready on {redownload_url}"
-            )
-
-        with page.expect_download() as dl_info:
-            download_link.click()
-        download = dl_info.value
-
-        temp_path = download.path()
-        if temp_path is None:
-            context.close()
-            browser.close()
-            raise BandcampAPIError(f"Download did not complete for {redownload_url}")
-
-        shutil.move(str(temp_path), str(dest))
-        context.close()
-        browser.close()
+    """Stream *cdn_url* to *dest*, following redirects."""
+    with session.get(cdn_url, stream=True, timeout=300, allow_redirects=True) as resp:
+        resp.raise_for_status()
+        with open(dest, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                fh.write(chunk)
 
 
 # ---------------------------------------------------------------------------

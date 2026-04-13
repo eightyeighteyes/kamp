@@ -18,7 +18,8 @@ const panelRegistry: PanelManifest[] = []
 const registerCallbacks = new Set<(manifest: PanelManifest) => void>()
 
 // Push-event subscribers. Populated by onTrackChange / onPlayStateChange.
-// A single shared WebSocket is lazily created and fans out to all subscribers.
+// A single shared WebSocket is eagerly created so system-level events like
+// bandcamp.needs-login are received even before renderer components subscribe.
 const trackChangeCallbacks = new Set<(state: PlayerState) => void>()
 const playStateChangeCallbacks = new Set<(state: PlayerState) => void>()
 let _pushWs: WebSocket | null = null
@@ -33,21 +34,29 @@ function ensurePushWs(): void {
         trackChangeCallbacks.forEach((cb) => cb(msg))
       } else if (msg.type === 'play_state.changed') {
         playStateChangeCallbacks.forEach((cb) => cb(msg))
+      } else if (msg.type === 'bandcamp.needs-login') {
+        // Triggered by the Python daemon (via menu bar or sync failure) when no
+        // valid session exists.  Route directly to the Electron main process
+        // which opens a BrowserWindow — no renderer component needs to be mounted.
+        ipcRenderer.invoke('bandcamp:begin-login').catch((err: unknown) => {
+          console.error('[kamp] bandcamp:begin-login failed:', err)
+        })
       }
     } catch {
       // Ignore malformed messages
     }
   })
   ws.addEventListener('close', () => {
-    // Reconnect after a short delay so subscribers survive server restarts.
-    setTimeout(() => {
-      if (trackChangeCallbacks.size > 0 || playStateChangeCallbacks.size > 0) {
-        ensurePushWs()
-      }
-    }, 2000)
+    // Always reconnect: the system-event listener must stay live regardless of
+    // whether any renderer components have subscribed to player events.
+    setTimeout(ensurePushWs, 2000)
   })
   _pushWs = ws
 }
+
+// Establish the connection eagerly so bandcamp.needs-login (and future
+// system-level push events) are received as soon as the preload runs.
+ensurePushWs()
 
 export function buildKampAPI(): KampAPI {
   return {

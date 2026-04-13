@@ -13,6 +13,11 @@ from typing import Any
 
 from .config import BandcampConfig, Config, _state_dir
 
+
+class NeedsLoginError(Exception):
+    """No valid Bandcamp session — user must log in before syncing."""
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,7 +57,12 @@ def _sync_worker(
         )
         result_q.put(("ok", paths))
     except Exception as exc:  # noqa: BLE001
-        result_q.put(("error", str(exc)))
+        # NeedsLoginError is identified by class name so the parent process
+        # does not need to import bandcamp to handle the login-needed case.
+        if type(exc).__name__ == "NeedsLoginError":
+            result_q.put(("needs_login", str(exc)))
+        else:
+            result_q.put(("error", str(exc)))
 
 
 def _mark_synced_worker(
@@ -266,6 +276,11 @@ class Syncer:
         except queue.Empty:  # pragma: no cover
             raise RuntimeError("Sync subprocess exited without returning a result")
 
+        if status == "needs_login":
+            if self.status_callback is not None:
+                self.status_callback("")
+            raise NeedsLoginError(value)
+
         if status == "error":
             raise RuntimeError(f"Bandcamp sync failed: {value}")
 
@@ -323,6 +338,16 @@ class Syncer:
         while not self._stop_event.is_set():
             try:
                 self.sync_once()
+            except NeedsLoginError:
+                # No session — surface via status callback and stop polling.
+                # The user must log in (via menu bar or Preferences) before
+                # automatic syncing can resume.
+                logger.warning(
+                    "Bandcamp sync paused: no valid session. Log in to resume."
+                )
+                if self.status_callback is not None:
+                    self.status_callback("Login required")
+                break
             except Exception as exc:
                 logger.exception("Unhandled error during Bandcamp sync")
                 if self.error_callback is not None:

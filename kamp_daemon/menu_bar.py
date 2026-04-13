@@ -24,6 +24,7 @@ if platform.system() != "Darwin":
 import rumps  # noqa: E402 — guarded above
 
 from .daemon_core import DaemonCore, _PID_PATH
+from .syncer import NeedsLoginError
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,11 @@ class MenuBarApp(rumps.App):
         def _run() -> None:
             try:
                 syncer.sync_once()
+            except NeedsLoginError:
+                # No session — open the Bandcamp login window instead of
+                # logging a traceback.  _on_login POSTs to begin-login which
+                # triggers the Electron BrowserWindow via WebSocket push.
+                self._on_login(None)
             except Exception:
                 logger.exception("Unhandled error during manual Bandcamp sync")
             finally:

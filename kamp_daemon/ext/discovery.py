@@ -14,7 +14,7 @@ import inspect
 import logging
 import sys
 
-from .abc import BaseArtworkSource, BaseTagger
+from .abc import BaseArtworkSource, BaseSyncer, BaseTagger
 from .permissions import extract_permissions
 from .pins import verify_or_pin
 from .probe import probe_extension
@@ -23,7 +23,7 @@ from .registry import ExtensionRegistry
 _logger = logging.getLogger(__name__)
 
 _ENTRY_POINT_GROUP = "kamp.extensions"
-_KNOWN_ABCS: tuple[type, ...] = (BaseTagger, BaseArtworkSource)
+_KNOWN_ABCS: tuple[type, ...] = (BaseTagger, BaseArtworkSource, BaseSyncer)
 
 
 def discover_extensions(registry: ExtensionRegistry) -> None:

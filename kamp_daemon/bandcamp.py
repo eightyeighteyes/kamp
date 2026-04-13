@@ -84,7 +84,7 @@ def mark_collection_synced(
     """
     session_file = _ensure_session(bc_config)
     session = _make_requests_session(session_file)
-    fan_id = _get_fan_id(bc_config.username, session)
+    fan_id = _get_fan_id(session)
     collection = _fetch_collection(fan_id, session)
 
     state = _load_state(state_file)
@@ -117,7 +117,7 @@ def sync_new_purchases(
     """
     session_file = _ensure_session(bc_config)
     session = _make_requests_session(session_file)
-    fan_id = _get_fan_id(bc_config.username, session)
+    fan_id = _get_fan_id(session)
     logger.info("Fetched fan_id=%s for user %r", fan_id, bc_config.username)
 
     state = _load_state(state_file)
@@ -318,27 +318,34 @@ def _session_from_cookie_file(cookie_file: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _get_fan_id(username: str, session: _requests.Session) -> int:
-    """GET the user's Bandcamp profile page and extract fan_id from pagedata JSON."""
-    url = f"https://bandcamp.com/{username}"
-    resp = session.get(url, timeout=20)
-    logger.debug(
-        "_get_fan_id: status=%s url=%s content-length=%d",
-        resp.status_code,
-        resp.url,
-        len(resp.text),
-    )
+_COLLECTION_SUMMARY_URL = "https://bandcamp.com/api/fan/2/collection_summary"
+
+
+def _get_fan_id(session: _requests.Session) -> int:
+    """Return the numeric fan_id for the authenticated session.
+
+    Uses the authenticated collection_summary API endpoint rather than scraping
+    the profile page HTML.  The profile page is served behind Cloudflare's bot
+    detection and returns a JS challenge to non-browser TLS fingerprints; the
+    API endpoint is not subject to the same check because it requires valid
+    session cookies to return a 200.
+    """
+    resp = session.get(_COLLECTION_SUMMARY_URL, timeout=20, allow_redirects=False)
+    if resp.status_code in (401, 403, 302):
+        raise NeedsLoginError(
+            f"Bandcamp session rejected ({resp.status_code}) — please log in again."
+        )
     resp.raise_for_status()
-    blob = _extract_pagedata(resp.text, url)
-    fan_id: int = blob["fan_data"]["fan_id"]
+    data: dict[str, Any] = resp.json()
+    fan_id: int = data["fan_id"]
     return fan_id
 
 
 def _extract_pagedata(html: str, url: str) -> dict[str, Any]:
     match = re.search(r'id="pagedata"[^>]*data-blob="([^"]+)"', html)
     if not match:
-        # Log the start of the response so we can diagnose bot-detection pages,
-        # Cloudflare challenges, or unexpected redirects.
+        # Log the start of the response to diagnose bot-detection pages or
+        # unexpected redirects on download pages.
         logger.error(
             "_extract_pagedata: no pagedata in %s — response head: %r",
             url,

@@ -53,10 +53,6 @@ def _make_pagedata_html(blob: dict[str, Any]) -> str:
     return f'<div id="pagedata" data-blob="{encoded}"></div>'
 
 
-def _profile_html(fan_id: int = 12345) -> str:
-    return _make_pagedata_html({"fan_data": {"fan_id": fan_id}})
-
-
 def _collection_response(
     items: list[dict[str, Any]], last_token: str = ""
 ) -> dict[str, Any]:
@@ -146,11 +142,6 @@ def _make_requests_mock(
     """Build a mock requests.Session that serves collection + download-page responses."""
     session = MagicMock()
 
-    profile_resp = MagicMock()
-    profile_resp.text = _profile_html(fan_id)
-    profile_resp.status_code = 200
-    profile_resp.raise_for_status = MagicMock()
-
     collection_resp = MagicMock()
     collection_resp.status_code = 200
     collection_resp.json.return_value = _collection_response(items)
@@ -170,6 +161,8 @@ def _make_requests_mock(
         if "api/fan/2" in url:
             r = MagicMock()
             r.status_code = 200
+            r.json.return_value = {"fan_id": fan_id, "collection_summary": {}}
+            r.raise_for_status = MagicMock()
             return r
         if "/download?" in url:
             # Download page for an individual item
@@ -185,7 +178,7 @@ def _make_requests_mock(
             r.status_code = 200
             r.raise_for_status = MagicMock()
             return r
-        return collection_page_resp if url.endswith("/") else profile_resp
+        return collection_page_resp
 
     def post_side_effect(url: str, **kwargs: Any) -> MagicMock:
         return hidden_resp if "hidden_items" in url else collection_resp
@@ -309,22 +302,30 @@ class TestExtractPagedata:
 
 
 class TestGetFanId:
-    def test_extracts_fan_id_from_profile_page(self) -> None:
+    def test_returns_fan_id_from_collection_summary(self) -> None:
         session = MagicMock()
         resp = MagicMock()
-        resp.text = _profile_html(fan_id=42)
+        resp.status_code = 200
+        resp.json.return_value = {"fan_id": 42, "collection_summary": {}}
         resp.raise_for_status = MagicMock()
         session.get.return_value = resp
-        assert _get_fan_id("testuser", session) == 42
+        assert _get_fan_id(session) == 42
 
-    def test_raises_when_pagedata_missing_fan_data(self) -> None:
+    def test_raises_needs_login_on_401(self) -> None:
         session = MagicMock()
         resp = MagicMock()
-        resp.text = _make_pagedata_html({"other_key": {}})
-        resp.raise_for_status = MagicMock()
+        resp.status_code = 401
         session.get.return_value = resp
-        with pytest.raises(KeyError):
-            _get_fan_id("testuser", session)
+        with pytest.raises(NeedsLoginError):
+            _get_fan_id(session)
+
+    def test_raises_needs_login_on_302(self) -> None:
+        session = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 302
+        session.get.return_value = resp
+        with pytest.raises(NeedsLoginError):
+            _get_fan_id(session)
 
 
 # ---------------------------------------------------------------------------
@@ -598,9 +599,10 @@ class TestSyncNewPurchases:
         # Build a mock session where item 1 is absent from the collection page.
         mock_session = MagicMock()
 
-        profile_resp = MagicMock()
-        profile_resp.text = _profile_html()
-        profile_resp.raise_for_status = MagicMock()
+        summary_resp = MagicMock()
+        summary_resp.status_code = 200
+        summary_resp.json.return_value = {"fan_id": 12345, "collection_summary": {}}
+        summary_resp.raise_for_status = MagicMock()
 
         collection_resp = MagicMock()
         collection_resp.status_code = 200
@@ -618,9 +620,11 @@ class TestSyncNewPurchases:
         coll_page_resp.raise_for_status = MagicMock()
 
         def get_side_effect(url: str, **kwargs: Any) -> MagicMock:
+            if "api/fan/2" in url:
+                return summary_resp
             if url.endswith("/"):
                 return coll_page_resp
-            return profile_resp
+            return coll_page_resp
 
         mock_session.get.side_effect = get_side_effect
         mock_session.post.side_effect = lambda url, **kw: (

@@ -762,6 +762,15 @@ def _cmd_daemon(
         _config_set(config_path, "lastfm.session_key", "")
         _scrobbler_ref[0] = None
 
+    def _on_bandcamp_login_complete(payload: dict[str, object]) -> None:
+        import json as _json
+
+        state_dir = _state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        session_file = state_dir / "bandcamp_session.json"
+        session_file.write_text(_json.dumps(payload))
+        _logger.info("Bandcamp session saved from Electron login flow.")
+
     # Build the initial preference values dict from the loaded config.
     # Bandcamp and Last.fm fields are None when the section is absent.
     _config_values: dict[str, object] = {
@@ -794,6 +803,7 @@ def _cmd_daemon(
         on_config_set=_on_config_set,
         on_lastfm_connect=_on_lastfm_connect,
         on_lastfm_disconnect=_on_lastfm_disconnect,
+        on_bandcamp_login_complete=_on_bandcamp_login_complete,
     )
 
     # Wrap the existing on_track_end callback to also push track.changed events.

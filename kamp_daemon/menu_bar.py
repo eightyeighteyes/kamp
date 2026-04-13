@@ -14,6 +14,7 @@ import platform
 import signal
 import subprocess
 import threading
+import urllib.request
 
 _logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ if platform.system() != "Darwin":
 import rumps  # noqa: E402 — guarded above
 
 from .daemon_core import DaemonCore, _PID_PATH
+from .syncer import NeedsLoginError
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,7 @@ class MenuBarApp(rumps.App):
         self._toggle_item = rumps.MenuItem("Stop", callback=self._on_toggle)
         self._sync_item = rumps.MenuItem("Bandcamp Sync", callback=self._on_sync)
         self._status_item = rumps.MenuItem("Status: Idle")
+        self._login_item = rumps.MenuItem("Bandcamp Login", callback=self._on_login)
         self._logout_item = rumps.MenuItem("Bandcamp Logout", callback=self._on_logout)
 
         # Build the Download Format submenu.
@@ -122,6 +125,7 @@ class MenuBarApp(rumps.App):
             None,  # separator
             self._sync_item,
             self._status_item,
+            self._login_item,
             self._logout_item,
             self._format_menu,
             self._interval_menu,
@@ -166,12 +170,35 @@ class MenuBarApp(rumps.App):
         def _run() -> None:
             try:
                 syncer.sync_once()
+            except NeedsLoginError:
+                # No session — open the Bandcamp login window instead of
+                # logging a traceback.  _on_login POSTs to begin-login which
+                # triggers the Electron BrowserWindow via WebSocket push.
+                self._on_login(None)
             except Exception:
                 logger.exception("Unhandled error during manual Bandcamp sync")
             finally:
                 self._sync_in_progress = False
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _on_login(self, sender: rumps.MenuItem) -> None:
+        """Signal the Electron UI to open a Bandcamp login BrowserWindow.
+
+        POSTs to the kamp HTTP server's begin-login endpoint, which broadcasts
+        a ``bandcamp.needs-login`` WebSocket push.  The Electron renderer
+        receives this push and invokes the ``bandcamp:begin-login`` IPC handler
+        in the Electron main process, which opens the actual BrowserWindow.
+        """
+        try:
+            req = urllib.request.Request(
+                "http://127.0.0.1:8000/api/v1/bandcamp/begin-login",
+                data=b"",
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=3)  # noqa: S310
+        except Exception as exc:
+            _logger.warning("Bandcamp begin-login request failed: %s", exc)
 
     def _on_logout(self, sender: rumps.MenuItem) -> None:
         from .syncer import logout
@@ -381,7 +408,8 @@ class MenuBarApp(rumps.App):
         bc = self._core._config.bandcamp
         has_bandcamp = bc is not None
         sync_available = has_bandcamp and not self._sync_in_progress
-        # Logout is disabled mid-sync to avoid deleting the session while it's in use.
+        # Login/Logout are disabled mid-sync to avoid touching the session while it's in use.
+        login_available = has_bandcamp and not self._sync_in_progress
         logout_available = has_bandcamp and not self._sync_in_progress
         current_fmt = bc.format if bc is not None else None
 
@@ -389,6 +417,11 @@ class MenuBarApp(rumps.App):
             self._sync_item.set_callback(self._on_sync)
         else:
             self._sync_item.set_callback(None)
+
+        if login_available:
+            self._login_item.set_callback(self._on_login)
+        else:
+            self._login_item.set_callback(None)
 
         if logout_available:
             self._logout_item.set_callback(self._on_logout)
@@ -402,6 +435,7 @@ class MenuBarApp(rumps.App):
         try:
             self._sync_item._menuitem.setEnabled_(sync_available)
             self._status_item._menuitem.setEnabled_(has_bandcamp)
+            self._login_item._menuitem.setEnabled_(login_available)
             self._logout_item._menuitem.setEnabled_(logout_available)
             self._format_menu._menuitem.setEnabled_(has_bandcamp)
             self._interval_menu._menuitem.setEnabled_(has_bandcamp)

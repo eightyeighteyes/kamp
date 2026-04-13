@@ -658,6 +658,51 @@ function ExtensionsPanel({
 }
 
 // ---------------------------------------------------------------------------
+// Bandcamp login row
+// ---------------------------------------------------------------------------
+
+function BandcampLoginRow(): React.JSX.Element {
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleLogin = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    setStatus('Opening Bandcamp login window…')
+    try {
+      const result = await window.api.bandcamp.beginLogin()
+      if (result.ok) {
+        setStatus('Logged in. Sync will use the new session.')
+      } else {
+        setStatus(null)
+        setError(result.error ?? 'Login cancelled.')
+      }
+    } catch (e) {
+      setStatus(null)
+      setError(e instanceof Error ? e.message : 'Login failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="prefs-row">
+      <div className="prefs-row-header">
+        <span className="prefs-label">Session</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button className="prefs-choose-btn" onClick={() => void handleLogin()} disabled={busy}>
+          {busy ? 'Waiting…' : 'Connect to Bandcamp'}
+        </button>
+        {status && <span style={{ fontSize: 12 }}>{status}</span>}
+      </div>
+      {error && <p className="prefs-hint" style={{ color: 'var(--error)' }}>{error}</p>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Last.fm connect section
 // ---------------------------------------------------------------------------
 
@@ -1033,6 +1078,7 @@ export function PreferencesDialog({
                         hint="0 = manual only"
                         onSave={handleSave}
                       />
+                      <BandcampLoginRow />
                     </div>
                   )}
 

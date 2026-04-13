@@ -1,15 +1,15 @@
 ---
 id: TASK-50
 title: 'Spike: Bandcamp download link scraping without full Playwright bundle'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-31 02:46'
-updated_date: '2026-04-03 04:36'
+updated_date: '2026-04-13 01:55'
 labels:
   - spike
   - bandcamp
   - 'estimate: side'
-milestone: m-1
+milestone: m-9
 dependencies: []
 priority: low
 ---

@@ -7,6 +7,9 @@ declare global {
     api: {
       openDirectory: () => Promise<string | null>
       onOpenPreferences: (callback: () => void) => () => void
+      bandcamp: {
+        beginLogin: () => Promise<{ ok: boolean; error?: string }>
+      }
     }
     KampAPI: KampAPI
   }

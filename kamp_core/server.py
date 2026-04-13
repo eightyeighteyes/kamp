@@ -169,6 +169,11 @@ class LastfmConnectRequest(BaseModel):
     password: str
 
 
+class BandcampCookiePayload(BaseModel):
+    cookies: list[dict[str, Any]]
+    origins: list[dict[str, Any]] = []
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -189,6 +194,7 @@ def create_app(
     on_config_set: Callable[[str, str], None] | None = None,
     on_lastfm_connect: Callable[[str, str], None] | None = None,
     on_lastfm_disconnect: Callable[[], None] | None = None,
+    on_bandcamp_login_complete: Callable[[dict[str, Any]], None] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -481,6 +487,41 @@ def create_app(
             raise HTTPException(status_code=503, detail="Last.fm not configured")
         on_lastfm_disconnect()
         _state["config"]["lastfm.username"] = None
+        return {"ok": True}
+
+    # -----------------------------------------------------------------------
+    # Bandcamp login
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/v1/bandcamp/begin-login")
+    def bandcamp_begin_login() -> dict[str, Any]:
+        """Signal the Electron renderer to open the Bandcamp login BrowserWindow.
+
+        Broadcasts a ``bandcamp.needs-login`` WebSocket push so the Electron
+        renderer (which is subscribed to the push stream) can invoke the
+        ``bandcamp:begin-login`` IPC handler in the Electron main process.
+        Called by the macOS menu bar Login item and (eventually) the renderer's
+        "Connect" button directly via the IPC path without hitting this endpoint.
+        """
+        _broadcast({"type": "bandcamp.needs-login"})
+        return {"ok": True}
+
+    @app.post("/api/v1/bandcamp/login-complete")
+    def bandcamp_login_complete(req: BandcampCookiePayload) -> dict[str, Any]:
+        """Receive cookies collected by the Electron BrowserWindow and persist them.
+
+        Called by the Electron main process after the user successfully logs in.
+        The payload is written to ``bandcamp_session.json`` in the same Playwright
+        storage_state format that ``_validate_session`` and ``_make_requests_session``
+        already read — no changes to the sync path are required.
+        """
+        if on_bandcamp_login_complete is None:
+            raise HTTPException(status_code=503, detail="Bandcamp login not configured")
+        try:
+            on_bandcamp_login_complete({"cookies": req.cookies, "origins": req.origins})
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _broadcast({"type": "bandcamp.login-complete"})
         return {"ok": True}
 
     # -----------------------------------------------------------------------

@@ -16,7 +16,7 @@ from kamp_daemon.config import (
     MusicBrainzConfig,
     PathsConfig,
 )
-from kamp_daemon.syncer import Syncer, logout
+from kamp_daemon.syncer import NeedsLoginError, Syncer, logout
 
 
 def _make_config(tmp_path: Path, poll_interval: int = 0) -> Config:
@@ -338,6 +338,78 @@ class TestWorkerExceptions:
                     syncer = Syncer(_make_config(tmp_path))
                     with pytest.raises(RuntimeError, match="auth error"):
                         syncer.mark_synced()
+
+    def test_needs_login_error_propagates(self, tmp_path: Path) -> None:
+        """NeedsLoginError raised in the worker is re-raised by sync_once()."""
+
+        class _FakeNeedsLogin(Exception):
+            pass
+
+        _FakeNeedsLogin.__name__ = "NeedsLoginError"
+
+        (tmp_path / "bandcamp_state.json").write_text("{}")
+        with patch(
+            "kamp_daemon.bandcamp.sync_new_purchases",
+            side_effect=_FakeNeedsLogin("no session"),
+        ):
+            with patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker):
+                with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                    syncer = Syncer(_make_config(tmp_path))
+                    with pytest.raises(NeedsLoginError, match="no session"):
+                        syncer.sync_once()
+
+    def test_needs_login_clears_status_callback(self, tmp_path: Path) -> None:
+        """sync_once() clears the status display when NeedsLoginError is raised."""
+
+        class _FakeNeedsLogin(Exception):
+            pass
+
+        _FakeNeedsLogin.__name__ = "NeedsLoginError"
+
+        statuses: list[str] = []
+        (tmp_path / "bandcamp_state.json").write_text("{}")
+        with patch(
+            "kamp_daemon.bandcamp.sync_new_purchases",
+            side_effect=_FakeNeedsLogin("no session"),
+        ):
+            with patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker):
+                with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                    syncer = Syncer(_make_config(tmp_path))
+                    syncer.status_callback = statuses.append
+                    with pytest.raises(NeedsLoginError):
+                        syncer.sync_once()
+        # The final status update must clear the display (empty string).
+        assert statuses[-1] == ""
+
+    def test_run_stops_polling_on_needs_login(self, tmp_path: Path) -> None:
+        """_run() stops the polling loop when NeedsLoginError is raised."""
+        call_count = 0
+
+        def _needs_login_worker(
+            target: Any, args: tuple[Any, ...]
+        ) -> tuple[Any, Any, Any, Any]:
+            nonlocal call_count
+            call_count += 1
+            status_q: _queue_module.Queue[str] = _queue_module.Queue()
+            log_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q.put(("needs_login", "no session"))
+            return _FakeProc(), status_q, log_q, result_q
+
+        (tmp_path / "bandcamp_state.json").write_text("{}")
+        with patch(
+            "kamp_daemon.syncer._spawn_worker",
+            side_effect=_needs_login_worker,
+        ):
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path, poll_interval=60))
+                syncer.start()
+                import time
+
+                time.sleep(0.1)
+                syncer.stop()
+        # The loop must have broken after the first NeedsLoginError — not retried.
+        assert call_count == 1
 
     def test_run_logs_exception_and_continues(self, tmp_path: Path) -> None:
         """_run() catches sync_once() failures and keeps polling."""

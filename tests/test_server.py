@@ -1396,6 +1396,62 @@ class TestBandcampStatus:
 
 
 # ---------------------------------------------------------------------------
+# Bandcamp session-cookies endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestBandcampSessionCookies:
+    """Tests for GET /api/v1/bandcamp/session-cookies."""
+
+    def test_returns_empty_list_when_no_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        response = TestClient(app).get("/api/v1/bandcamp/session-cookies")
+        assert response.status_code == 200
+        assert response.json() == {"cookies": []}
+
+    def test_returns_empty_list_when_session_is_none(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: None,
+        )
+        response = TestClient(app).get("/api/v1/bandcamp/session-cookies")
+        assert response.status_code == 200
+        assert response.json() == {"cookies": []}
+
+    def test_returns_cookies_from_session(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        cookies = [
+            {
+                "name": "js_logged_in",
+                "value": "1",
+                "domain": ".bandcamp.com",
+                "path": "/",
+                "expires": -1,
+                "httpOnly": False,
+                "secure": True,
+                "sameSite": "lax",
+            }
+        ]
+        session = {"cookies": cookies, "username": "johndoe"}
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: session,
+        )
+        response = TestClient(app).get("/api/v1/bandcamp/session-cookies")
+        assert response.status_code == 200
+        assert response.json() == {"cookies": cookies}
+
+
+# ---------------------------------------------------------------------------
 # Bandcamp proxy endpoints
 # ---------------------------------------------------------------------------
 

@@ -351,6 +351,50 @@ app.whenReady().then(async () => {
       _event,
       req: { id: string; url: string; method: string; headers: Record<string, string>; body: string | null }
     ) => {
+      // In the PyInstaller bundle, cookies are stored in library.db rather than
+      // in session.defaultSession (they are cleared after login to avoid plaintext
+      // storage on disk).  net.fetch relies on the session cookie jar, so we
+      // reload them here before every proxy request and remove them afterward.
+      type StoredCookie = {
+        name: string
+        value: string
+        domain: string
+        path: string
+        expires: number
+        httpOnly: boolean
+        secure: boolean
+        sameSite: string
+      }
+      const injectedNames: string[] = []
+      try {
+        const cookieResp = await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/session-cookies')
+        if (cookieResp.ok) {
+          const { cookies } = (await cookieResp.json()) as { cookies: StoredCookie[] }
+          for (const c of cookies) {
+            const sameSite = (['lax', 'strict', 'no_restriction', 'unspecified'] as const).includes(
+              c.sameSite?.toLowerCase() as never
+            )
+              ? (c.sameSite.toLowerCase() as 'unspecified' | 'no_restriction' | 'lax' | 'strict')
+              : 'unspecified'
+            await session.defaultSession.cookies.set({
+              url: `https://${c.domain.replace(/^\./, '')}`,
+              name: c.name,
+              value: c.value,
+              domain: c.domain,
+              path: c.path,
+              secure: c.secure,
+              httpOnly: c.httpOnly,
+              expirationDate: c.expires > 0 ? c.expires : undefined,
+              sameSite
+            })
+            injectedNames.push(c.name)
+          }
+        }
+      } catch {
+        // Non-fatal: if injection fails, proceed without cookies.
+        // In dev (non-frozen) this handler is never called by the Python side.
+      }
+
       let status = 502
       let body = 'net.fetch error'
       let contentType = 'text/plain'
@@ -368,6 +412,11 @@ app.whenReady().then(async () => {
         contentType = fetchResp.headers.get('content-type') ?? 'text/html'
       } catch (err) {
         body = String(err)
+      }
+
+      // Remove injected cookies so they don't linger in the session store between syncs.
+      for (const name of injectedNames) {
+        await session.defaultSession.cookies.remove('https://bandcamp.com', name)
       }
 
       await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/fetch-result', {

@@ -566,6 +566,22 @@ def create_app(
             return {"connected": False, "username": None}
         return {"connected": True, "username": session.get("username")}
 
+    @app.get("/api/v1/bandcamp/session-cookies")
+    def get_bandcamp_session_cookies() -> dict[str, Any]:
+        """Return the raw cookie list from the stored Bandcamp session.
+
+        Used by the Electron main process to reload cookies into
+        ``session.defaultSession`` before each proxy-fetch request so that
+        ``net.fetch`` carries valid credentials in the PyInstaller bundle.
+        Returns an empty list when no session is stored.
+        """
+        if get_bandcamp_session is None:
+            return {"cookies": []}
+        session_data = get_bandcamp_session()
+        if session_data is None:
+            return {"cookies": []}
+        return {"cookies": session_data.get("cookies", [])}
+
     @app.delete("/api/v1/bandcamp/connect")
     def delete_bandcamp_connect() -> dict[str, Any]:
         """Disconnect the Bandcamp session (clear session from DB)."""

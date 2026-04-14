@@ -3,9 +3,10 @@ id: TASK-129
 title: >-
   fix: reload Bandcamp cookies from DB into Electron session before each
   proxy-fetch sync
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-14 01:54'
+updated_date: '2026-04-14 03:09'
 labels: []
 milestone: m-1
 dependencies:

@@ -352,8 +352,8 @@ The Electron UI supports frontend extensions — npm packages that contribute pa
 1. The main process scans `kamp_ui/extensions/` (first-party) and `node_modules/` (installed) for packages with `"kamp-extension"` in their `keywords`.
 2. Each extension's entry point is an ES module that exports a `register(api)` function.
 3. Extensions are classified into two security phases:
-   - **Phase 1 (first-party):** listed in `kamp_ui/src/main/first-party-allowlist.json`; runs directly in the renderer with full `KampAPI` access.
-   - **Phase 2 (community):** not on the allowlist; runs in a sandboxed `<iframe sandbox="allow-scripts">` with no access to the host DOM, localStorage, or contextBridge. Network access is restricted to the local kamp server. On first load, the user is shown a permission prompt listing the extension's declared capabilities.
+   - **Phase 1 (first-party):** listed in `kamp_ui/src/main/first-party-allowlist.json`; runs directly in the renderer with full `KampAPI` access. Reserved for kamp team extensions.
+   - **Phase 2 (community):** all extensions installed by users; runs in a sandboxed `<iframe sandbox="allow-scripts">` with no access to the host DOM, localStorage, or contextBridge. Network access is restricted to the local kamp server. On first load, the user is shown a permission prompt listing the extension's declared capabilities.
 
 **Managing extensions:**
 
@@ -401,7 +401,9 @@ export function register(api) {
 | `network.fetch` | Make requests to external servers |
 | `settings` | Read and write per-extension settings via `api.settings` |
 
-An example first-party extension lives in `kamp_ui/extensions/kamp-example-panel/`.
+Two reference extensions live in `extensions/` at the repo root:
+- **[kamp-example-panel](extensions/kamp-example-panel/)** — minimal boilerplate; start here when building your first extension.
+- **[kamp-groover](extensions/kamp-groover/)** — a complete community extension with annotated SDK usage covering `player.read`, `library.read`, subscriptions, and cleanup. Also available on npm: `npm install kamp-groover`.
 
 ### Backend extensions
 

@@ -21,6 +21,12 @@ files:
   # electron-builder's default glob behavior and out/ is not included.
   - 'out/**'
   - 'extensions/**'
+  # Groover is a dev tool / optional npm add-on; it distributes via npm, not
+  # in the app bundle. This exclusion is belt-and-suspenders: Groover lives at
+  # the repo root (../extensions/kamp-groover), outside this build context, so
+  # it is already absent from the ASAR. The pattern guards against accidental
+  # inclusion if the directory is ever moved into kamp_ui/extensions/.
+  - '!extensions/kamp-groover/**'
 asarUnpack:
   - resources/**
 extraResources:

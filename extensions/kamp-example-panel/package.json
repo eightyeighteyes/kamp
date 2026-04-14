@@ -1,7 +1,7 @@
 {
   "name": "kamp-example-panel",
   "version": "1.0.0",
-  "description": "Example first-party kamp extension — demonstrates panel registration via window.KampAPI.",
+  "description": "Minimal starter template for a kamp community extension — demonstrates panel registration and the player.read SDK.",
   "keywords": ["kamp-extension"],
   "displayName": "Stats",
   "main": "index.js",

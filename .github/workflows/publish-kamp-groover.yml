@@ -1,0 +1,25 @@
+name: Publish kamp-groover to npm
+
+# Manual trigger only. Workflow: bump version in extensions/kamp-groover/package.json,
+# commit to main, then run this workflow. npm rejects duplicate versions, so we
+# don't auto-publish on push — explicit control is safer.
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # id-token: write is required for the npm Trusted Publisher (OIDC) flow —
+    # GitHub mints a short-lived token that npm accepts without a stored secret.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish kamp-groover
+        run: npm publish --provenance
+        working-directory: extensions/kamp-groover

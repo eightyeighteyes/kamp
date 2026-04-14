@@ -1,14 +1,18 @@
 /**
- * kamp-example-panel
+ * kamp-example-panel — minimal starter template
  *
- * A first-party extension demonstrating the KampAPI panel registration system.
- * This module is a plain ES module — it has no access to Node.js, Electron, or
- * ipcRenderer. All interaction with the app happens through the `api` argument.
+ * Copy this as the starting point for your own kamp community extension.
+ * This is a plain ES module: no Node.js, no Electron, no ipcRenderer.
+ * All interaction with the host app happens through the `api` argument
+ * passed to register(). See kamp-groover for a more complete example.
  */
 
 /**
- * Called by the host once KampAPI is ready.
- * @param {import('../../src/shared/kampAPI').KampAPI} api
+ * register() is the extension entry point. The host calls it once, passing
+ * a permission-scoped API object. Declare your panels here; do not kick off
+ * long-running work before panels.register() is called.
+ *
+ * @param {object} api - SDK object scoped to your declared permissions
  */
 export function register(api) {
   api.panels.register({

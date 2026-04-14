@@ -2,11 +2,26 @@
   "name": "kamp-groover",
   "version": "1.0.0",
   "description": "Community extension — displays album art with a continuously rotating color palette.",
-  "keywords": ["kamp-extension"],
+  "keywords": [
+    "kamp-extension"
+  ],
   "displayName": "Groover",
   "main": "index.js",
   "type": "module",
+  "author": "Tedd Terry",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eightyeighteyes/kamp.git",
+    "directory": "extensions/kamp-groover"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "kamp": {
-    "permissions": ["player.read", "library.read"]
+    "permissions": [
+      "player.read",
+      "library.read"
+    ]
   }
 }

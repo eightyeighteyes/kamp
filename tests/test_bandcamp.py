@@ -22,7 +22,7 @@ from kamp_daemon.bandcamp import (
     _fetch_collection,
     _get_cdn_url,
     _get_download_links,
-    _get_fan_id,
+    _get_fan_info,
     _load_state,
     _make_requests_session,
     _paginate,
@@ -280,19 +280,36 @@ class TestExtractPagedata:
 
 
 # ---------------------------------------------------------------------------
-# _get_fan_id
+# _get_fan_info
 # ---------------------------------------------------------------------------
 
 
-class TestGetFanId:
-    def test_returns_fan_id_from_collection_summary(self) -> None:
+class TestGetFanInfo:
+    def test_returns_fan_id_and_username_from_collection_summary(self) -> None:
+        session = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "fan_id": 42,
+            "username": "testuser",
+            "collection_summary": {},
+        }
+        resp.raise_for_status = MagicMock()
+        session.get.return_value = resp
+        fan_id, username = _get_fan_info(session)
+        assert fan_id == 42
+        assert username == "testuser"
+
+    def test_returns_empty_username_when_absent(self) -> None:
         session = MagicMock()
         resp = MagicMock()
         resp.status_code = 200
         resp.json.return_value = {"fan_id": 42, "collection_summary": {}}
         resp.raise_for_status = MagicMock()
         session.get.return_value = resp
-        assert _get_fan_id(session) == 42
+        fan_id, username = _get_fan_info(session)
+        assert fan_id == 42
+        assert username == ""
 
     def test_raises_needs_login_on_401(self) -> None:
         session = MagicMock()
@@ -300,7 +317,7 @@ class TestGetFanId:
         resp.status_code = 401
         session.get.return_value = resp
         with pytest.raises(NeedsLoginError):
-            _get_fan_id(session)
+            _get_fan_info(session)
 
     def test_raises_needs_login_on_302(self) -> None:
         session = MagicMock()
@@ -308,7 +325,7 @@ class TestGetFanId:
         resp.status_code = 302
         session.get.return_value = resp
         with pytest.raises(NeedsLoginError):
-            _get_fan_id(session)
+            _get_fan_info(session)
 
 
 # ---------------------------------------------------------------------------

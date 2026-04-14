@@ -188,6 +188,12 @@ export const connectLastfm = (
 export const disconnectLastfm = (): Promise<{ ok: boolean }> =>
   del('/api/v1/lastfm/connect')
 
+export const getBandcampStatus = (): Promise<{ connected: boolean; username: string | null }> =>
+  get('/api/v1/bandcamp/status')
+
+export const disconnectBandcamp = (): Promise<{ ok: boolean }> =>
+  del('/api/v1/bandcamp/connect')
+
 // ---------------------------------------------------------------------------
 // Player
 // ---------------------------------------------------------------------------

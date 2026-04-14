@@ -11,6 +11,7 @@ Syncer, Config, etc.).
 from __future__ import annotations
 
 import argparse
+from typing import Any
 import asyncio
 import importlib.metadata
 import logging
@@ -793,11 +794,35 @@ def _cmd_daemon(
 
     def _on_bandcamp_login_complete(payload: dict[str, object]) -> None:
         # Persist cookies to DB so they are never written to plaintext on disk.
-        index.set_session("bandcamp", dict(payload))
+        session_data: dict[str, Any] = dict(payload)
+        index.set_session("bandcamp", session_data)
         _logger.info("Bandcamp session saved to database from Electron login flow.")
+        # Immediately fetch username from the Bandcamp API so the UI can show
+        # "Connected as {username}" without waiting for the first sync.
+        # Wrapped in try/except — a network failure here should not fail the login.
+        try:
+            from .bandcamp import _get_fan_info, _make_requests_session
+
+            bc_session = _make_requests_session(session_data)
+            _fan_id, username = _get_fan_info(bc_session)
+            if username:
+                session_data["username"] = username
+                index.set_session("bandcamp", session_data)
+                _logger.info("Bandcamp username %r stored in session.", username)
+        except Exception as exc:
+            _logger.warning("Could not fetch Bandcamp username after login: %s", exc)
+
+    def _on_bandcamp_disconnect() -> None:
+        index.clear_session("bandcamp")
 
     # Build the initial preference values dict from the loaded config.
     # Bandcamp and Last.fm fields are None when the section is absent.
+    # For bandcamp.username, prefer the value stored in the session (extracted
+    # automatically after login) over any value in config.toml.
+    _bc_session = index.get_session("bandcamp") if config.bandcamp else None
+    _bc_username: str | None = (
+        _bc_session.get("username") if _bc_session else None
+    ) or (config.bandcamp.username if config.bandcamp else None)
     _config_values: dict[str, object] = {
         "paths.watch_folder": str(config.paths.watch_folder),
         "paths.library": str(config.paths.library),
@@ -805,7 +830,7 @@ def _cmd_daemon(
         "artwork.min_dimension": config.artwork.min_dimension,
         "artwork.max_bytes": config.artwork.max_bytes,
         "library.path_template": config.library.path_template,
-        "bandcamp.username": config.bandcamp.username if config.bandcamp else None,
+        "bandcamp.username": _bc_username,
         "bandcamp.format": config.bandcamp.format if config.bandcamp else None,
         "bandcamp.poll_interval_minutes": (
             config.bandcamp.poll_interval_minutes if config.bandcamp else None
@@ -828,6 +853,8 @@ def _cmd_daemon(
         on_lastfm_connect=_on_lastfm_connect,
         on_lastfm_disconnect=_on_lastfm_disconnect,
         on_bandcamp_login_complete=_on_bandcamp_login_complete,
+        get_bandcamp_session=lambda: index.get_session("bandcamp"),
+        on_bandcamp_disconnect=_on_bandcamp_disconnect,
     )
 
     # Wrap the existing on_track_end callback to also push track.changed events.

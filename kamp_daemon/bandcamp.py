@@ -188,7 +188,8 @@ def mark_collection_synced(
     """
     session_data = _ensure_session(bc_config, index)
     session = _make_requests_session(session_data)
-    fan_id = _get_fan_id(session)
+    fan_id, username = _get_fan_info(session)
+    _store_username_in_session(username, session_data, index)
     collection = _fetch_collection(fan_id, session, index)
 
     state = _load_state(state_file)
@@ -222,8 +223,12 @@ def sync_new_purchases(
     """
     session_data = _ensure_session(bc_config, index)
     session = _make_requests_session(session_data)
-    fan_id = _get_fan_id(session)
-    logger.info("Fetched fan_id=%s for user %r", fan_id, bc_config.username)
+    fan_id, username = _get_fan_info(session)
+    _store_username_in_session(username, session_data, index)
+    # Use config username as fallback if API didn't return one.
+    if not username:
+        username = bc_config.username or ""
+    logger.info("Fetched fan_id=%s for user %r", fan_id, username)
 
     state = _load_state(state_file)
     collection = _fetch_collection(fan_id, session, index)
@@ -238,7 +243,7 @@ def sync_new_purchases(
 
     # Scrape download-page URLs from the collection page HTML.
     new_item_ids = {item["sale_item_id"] for item in new_items}
-    download_links = _get_download_links(bc_config.username, new_item_ids, session)
+    download_links = _get_download_links(username, new_item_ids, session)
 
     watch_dir.mkdir(parents=True, exist_ok=True)
 
@@ -423,8 +428,8 @@ def _session_from_cookie_file(cookie_file: Path) -> dict[str, Any]:
 _COLLECTION_SUMMARY_URL = "https://bandcamp.com/api/fan/2/collection_summary"
 
 
-def _get_fan_id(session: _AnySession) -> int:
-    """Return the numeric fan_id for the authenticated session.
+def _get_fan_info(session: _AnySession) -> tuple[int, str]:
+    """Return (fan_id, username) for the authenticated session.
 
     Uses the authenticated collection_summary API endpoint rather than scraping
     the profile page HTML.  The profile page is served behind Cloudflare's bot
@@ -442,13 +447,28 @@ def _get_fan_id(session: _AnySession) -> int:
         data: dict[str, Any] = resp.json()
     except Exception as exc:
         logger.error(
-            "_get_fan_id: JSON decode failed — status=%s response_head=%r",
+            "_get_fan_info: JSON decode failed — status=%s response_head=%r",
             resp.status_code,
             resp.text[:500],
         )
         raise BandcampAPIError(f"collection_summary returned non-JSON: {exc}") from exc
     fan_id: int = data["fan_id"]
-    return fan_id
+    username: str = data.get("username", "")
+    return fan_id, username
+
+
+def _store_username_in_session(
+    username: str,
+    session_data: dict[str, Any],
+    index: "LibraryIndex",
+) -> None:
+    """Persist *username* into the stored session row if it has changed.
+
+    No-op when *username* is empty or already matches the stored value.
+    """
+    if username and session_data.get("username") != username:
+        session_data["username"] = username
+        index.set_session("bandcamp", session_data)
 
 
 def _extract_pagedata(html: str, url: str) -> dict[str, Any]:

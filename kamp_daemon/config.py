@@ -92,7 +92,7 @@ class LastfmConfig:
 
 @dataclass
 class BandcampConfig:
-    username: str
+    username: str | None  # extracted from session after login; optional in config
     cookie_file: Path | None  # if set, bypasses interactive login
     format: str  # e.g. "mp3-v0", "mp3-320", "flac"
     poll_interval_minutes: int  # 0 = manual only
@@ -173,13 +173,6 @@ class Config:
         print("\nNo Bandcamp section found in config. Let's set it up.")
         print(f"(Adding [bandcamp] to {path})\n")
 
-        # username is required — loop until non-empty
-        username = ""
-        while not username:
-            username = _prompt("Bandcamp username", "")
-            if not username:
-                print("  Username is required.")
-
         cookie_file_str = _prompt(
             "Cookie file path (leave blank to use interactive login)", ""
         )
@@ -187,10 +180,10 @@ class Config:
         poll_str = _prompt("Poll interval in minutes (0 = manual sync only)", "0")
         poll_interval = int(poll_str) if poll_str.isdigit() else 0
 
-        # Build the TOML snippet — omit cookie_file when not provided
+        # Build the TOML snippet — omit cookie_file when not provided;
+        # username is omitted because it is extracted automatically after login.
         lines = [
             "\n[bandcamp]",
-            f'username = "{username}"',
         ]
         if cookie_file_str:
             lines.append(f'cookie_file = "{cookie_file_str}"')
@@ -234,7 +227,7 @@ class Config:
         if bc_raw:
             cf = bc_raw.get("cookie_file")
             bandcamp = BandcampConfig(
-                username=bc_raw["username"],
+                username=bc_raw.get("username"),
                 cookie_file=Path(cf).expanduser() if cf else None,
                 format=bc_raw.get("format", "mp3-v0"),
                 poll_interval_minutes=int(bc_raw.get("poll_interval_minutes", 0)),

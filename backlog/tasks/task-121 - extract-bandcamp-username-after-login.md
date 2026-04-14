@@ -1,10 +1,10 @@
 ---
 id: TASK-121
 title: extract bandcamp username after login
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-13 01:49'
-updated_date: '2026-04-13 02:09'
+updated_date: '2026-04-14 02:11'
 labels: []
 milestone: m-1
 dependencies: []

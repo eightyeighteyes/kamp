@@ -212,6 +212,8 @@ def create_app(
     on_lastfm_connect: Callable[[str, str], None] | None = None,
     on_lastfm_disconnect: Callable[[], None] | None = None,
     on_bandcamp_login_complete: Callable[[dict[str, Any]], None] | None = None,
+    get_bandcamp_session: Callable[[], dict[str, Any] | None] | None = None,
+    on_bandcamp_disconnect: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -531,9 +533,9 @@ def create_app(
         """Receive cookies collected by the Electron BrowserWindow and persist them.
 
         Called by the Electron main process after the user successfully logs in.
-        The payload is written to ``bandcamp_session.json`` in the same Playwright
-        storage_state format that ``_validate_session`` and ``_make_requests_session``
-        already read — no changes to the sync path are required.
+        The callback also attempts to fetch the Bandcamp username and store it
+        in the session; if successful, _state["config"]["bandcamp.username"] is
+        updated so GET /config immediately reflects the connected account.
         """
         if on_bandcamp_login_complete is None:
             raise HTTPException(status_code=503, detail="Bandcamp login not configured")
@@ -541,7 +543,39 @@ def create_app(
             on_bandcamp_login_complete({"cookies": req.cookies, "origins": req.origins})
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Read username back from session (populated by the callback when
+        # the API call succeeds) and surface it in the config state.
+        if get_bandcamp_session is not None:
+            session = get_bandcamp_session()
+            if session:
+                _state["config"]["bandcamp.username"] = session.get("username")
         _broadcast({"type": "bandcamp.login-complete"})
+        return {"ok": True}
+
+    @app.get("/api/v1/bandcamp/status")
+    def get_bandcamp_status() -> dict[str, Any]:
+        """Return the current Bandcamp session status.
+
+        ``connected`` is True when a session exists in the DB.
+        ``username`` is the Bandcamp username extracted after login, or None.
+        """
+        if get_bandcamp_session is None:
+            return {"connected": False, "username": None}
+        session = get_bandcamp_session()
+        if session is None:
+            return {"connected": False, "username": None}
+        return {"connected": True, "username": session.get("username")}
+
+    @app.delete("/api/v1/bandcamp/connect")
+    def delete_bandcamp_connect() -> dict[str, Any]:
+        """Disconnect the Bandcamp session (clear session from DB)."""
+        if on_bandcamp_disconnect is None:
+            raise HTTPException(
+                status_code=503, detail="Bandcamp disconnect not configured"
+            )
+        on_bandcamp_disconnect()
+        _state["config"]["bandcamp.username"] = None
+        _broadcast({"type": "bandcamp.disconnected"})
         return {"ok": True}
 
     # -----------------------------------------------------------------------

@@ -1299,6 +1299,103 @@ class TestLastfmEndpoints:
 
 
 # ---------------------------------------------------------------------------
+# Bandcamp session status / disconnect
+# ---------------------------------------------------------------------------
+
+
+class TestBandcampStatus:
+    def test_status_returns_disconnected_when_no_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        response = TestClient(app).get("/api/v1/bandcamp/status")
+        assert response.status_code == 200
+        assert response.json() == {"connected": False, "username": None}
+
+    def test_status_returns_connected_with_username(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        session = {"cookies": [], "username": "johndoe"}
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: session,
+        )
+        response = TestClient(app).get("/api/v1/bandcamp/status")
+        assert response.status_code == 200
+        assert response.json() == {"connected": True, "username": "johndoe"}
+
+    def test_status_returns_connected_without_username(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        session: dict = {"cookies": []}
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: session,
+        )
+        response = TestClient(app).get("/api/v1/bandcamp/status")
+        assert response.status_code == 200
+        assert response.json() == {"connected": True, "username": None}
+
+    def test_status_returns_disconnected_when_session_is_none(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: None,
+        )
+        response = TestClient(app).get("/api/v1/bandcamp/status")
+        assert response.status_code == 200
+        assert response.json() == {"connected": False, "username": None}
+
+    def test_disconnect_calls_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        called: list[bool] = []
+
+        def _on_disconnect() -> None:
+            called.append(True)
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_bandcamp_disconnect=_on_disconnect,
+        )
+        response = TestClient(app).delete("/api/v1/bandcamp/connect")
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+        assert called == [True]
+
+    def test_disconnect_returns_503_when_no_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        response = TestClient(app).delete("/api/v1/bandcamp/connect")
+        assert response.status_code == 503
+
+    def test_disconnect_clears_bandcamp_username_in_config(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"bandcamp.username": "johndoe"},
+            on_bandcamp_disconnect=lambda: None,
+        )
+        c = TestClient(app)
+        c.delete("/api/v1/bandcamp/connect")
+        data = c.get("/api/v1/config").json()
+        assert data["bandcamp.username"] is None
+
+
+# ---------------------------------------------------------------------------
 # Bandcamp proxy endpoints
 # ---------------------------------------------------------------------------
 

@@ -1396,6 +1396,62 @@ class TestBandcampStatus:
 
 
 # ---------------------------------------------------------------------------
+# Bandcamp session-cookies endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestBandcampSessionCookies:
+    """Tests for GET /api/v1/bandcamp/session-cookies."""
+
+    def test_returns_empty_list_when_no_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        response = TestClient(app).get("/api/v1/bandcamp/session-cookies")
+        assert response.status_code == 200
+        assert response.json() == {"cookies": []}
+
+    def test_returns_empty_list_when_session_is_none(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: None,
+        )
+        response = TestClient(app).get("/api/v1/bandcamp/session-cookies")
+        assert response.status_code == 200
+        assert response.json() == {"cookies": []}
+
+    def test_returns_cookies_from_session(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        cookies = [
+            {
+                "name": "js_logged_in",
+                "value": "1",
+                "domain": ".bandcamp.com",
+                "path": "/",
+                "expires": -1,
+                "httpOnly": False,
+                "secure": True,
+                "sameSite": "lax",
+            }
+        ]
+        session = {"cookies": cookies, "username": "johndoe"}
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: session,
+        )
+        response = TestClient(app).get("/api/v1/bandcamp/session-cookies")
+        assert response.status_code == 200
+        assert response.json() == {"cookies": cookies}
+
+
+# ---------------------------------------------------------------------------
 # Bandcamp proxy endpoints
 # ---------------------------------------------------------------------------
 
@@ -1461,6 +1517,8 @@ class TestBandcampProxyEndpoints:
             assert msg["method"] == "GET"
             req_id = msg["id"]
             assert req_id
+            # No session configured — cookies list should be empty.
+            assert msg["cookies"] == []
 
             # Simulate Electron posting the net.fetch result.
             result_r = c.post(
@@ -1479,3 +1537,163 @@ class TestBandcampProxyEndpoints:
         assert proxy_response["status"] == 200
         assert proxy_response["body"] == '{"fan_id": 42}'
         assert proxy_response["content_type"] == "application/json"
+
+    def test_proxy_broadcast_includes_session_cookies(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Cookies from the stored session are embedded in the proxy-fetch broadcast."""
+        import threading
+
+        cookies = [{"name": "js_logged_in", "value": "1", "domain": ".bandcamp.com"}]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: {"cookies": cookies, "username": "johndoe"},
+        )
+        c = TestClient(app)
+        broadcast: dict = {}
+
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # discard initial player.state
+
+            t = threading.Thread(
+                target=lambda: c.post(
+                    "/api/v1/bandcamp/proxy-fetch",
+                    json={
+                        "url": "https://bandcamp.com/api/test",
+                        "method": "GET",
+                        "headers": {},
+                        "body": None,
+                    },
+                )
+            )
+            t.start()
+
+            broadcast.update(ws.receive_json())
+            req_id = broadcast["id"]
+
+            c.post(
+                "/api/v1/bandcamp/fetch-result",
+                json={
+                    "id": req_id,
+                    "status": 200,
+                    "body": "ok",
+                    "content_type": "text/plain",
+                },
+            )
+            t.join(timeout=5)
+
+        assert broadcast["cookies"] == cookies
+
+    def test_late_joining_client_receives_pending_proxy_fetch(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """A WS client that connects after proxy-fetch is posted still gets the event.
+
+        This is the startup-race fix: the daemon may fire proxy requests before
+        the Electron preload has established its WS connection.
+        """
+        import threading
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        proxy_response: dict = {}
+
+        # POST proxy-fetch with NO WS client connected yet.
+        t = threading.Thread(
+            target=lambda: proxy_response.update(
+                c.post(
+                    "/api/v1/bandcamp/proxy-fetch",
+                    json={
+                        "url": "https://bandcamp.com/api/fan/2/collection_summary",
+                        "method": "GET",
+                        "headers": {},
+                        "body": None,
+                    },
+                ).json()
+            )
+        )
+        t.start()
+
+        # Give the thread a moment to register the request server-side.
+        import time
+
+        time.sleep(0.05)
+
+        # Now the WS client connects — it should receive the pending event on connect.
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # discard player.state
+            msg = ws.receive_json()  # should be the replayed proxy-fetch
+            assert msg["type"] == "bandcamp.proxy-fetch"
+            req_id = msg["id"]
+
+            c.post(
+                "/api/v1/bandcamp/fetch-result",
+                json={
+                    "id": req_id,
+                    "status": 200,
+                    "body": "ok",
+                    "content_type": "text/plain",
+                },
+            )
+            t.join(timeout=5)
+
+        assert proxy_response["status"] == 200
+
+    def test_fetch_result_removes_from_pending(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Answering a proxy request removes it from the pending replay queue."""
+        import threading
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # discard player.state
+
+            t = threading.Thread(
+                target=lambda: c.post(
+                    "/api/v1/bandcamp/proxy-fetch",
+                    json={
+                        "url": "https://bandcamp.com/api/test",
+                        "method": "GET",
+                        "headers": {},
+                        "body": None,
+                    },
+                )
+            )
+            t.start()
+
+            msg = ws.receive_json()
+            req_id = msg["id"]
+
+            # Answer the request.
+            c.post(
+                "/api/v1/bandcamp/fetch-result",
+                json={
+                    "id": req_id,
+                    "status": 200,
+                    "body": "done",
+                    "content_type": "text/plain",
+                },
+            )
+            t.join(timeout=5)
+
+        # A second client connecting after the request is answered should NOT
+        # receive the already-answered proxy-fetch event.
+        with c.websocket_connect("/api/v1/ws") as ws2:
+            ws2.receive_json()  # discard player.state
+            # No further message should arrive — queue should be empty.
+            import queue as _queue
+
+            with TestClient(app).websocket_connect("/api/v1/ws") as ws3:
+                ws3.receive_json()
+                # Verify the pending dict is empty by confirming no replay events
+                # arrive for a fresh client (the answered request must be gone).
+                # We confirm indirectly: send a ping and get a player.state back,
+                # not a proxy-fetch replay.
+                ws3.send_text("ping")
+                pong = ws3.receive_json()
+                assert pong["type"] == "player.state"

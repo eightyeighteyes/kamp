@@ -31,6 +31,30 @@ _ABOUT_URL = "https://github.com/eightyeighteyes/kamp"
 _SYMBOL_NAME = "music.note.list"  # music.note.square.stack does not exist in SF Symbols
 
 
+def _notify_via_osascript(title: str, message: str) -> None:
+    """Fire a macOS notification via osascript.
+
+    Works from any process context without requiring a CFBundleIdentifier or an
+    Info.plist file on disk.  Used as a final fallback when both
+    UNUserNotificationCenter and rumps.notification() are unavailable.
+    """
+    # Escape double-quotes so the AppleScript string is never broken.
+    safe_title = title.replace('"', '\\"')
+    safe_message = message.replace('"', '\\"')
+    try:
+        subprocess.run(
+            [
+                "osascript",
+                "-e",
+                f'display notification "{safe_message}" with title "{safe_title}"',
+            ],
+            check=False,
+            timeout=5,
+        )
+    except Exception:
+        pass  # Notifications are best-effort; never crash the daemon.
+
+
 class MenuBarApp(rumps.App):
     """rumps-based menu bar application for the kamp daemon.
 
@@ -156,12 +180,13 @@ class MenuBarApp(rumps.App):
             bundle_id = None
 
         if not bundle_id:
-            # No CFBundleIdentifier (dev venv) — currentNotificationCenter()
-            # raises NSInternalInconsistencyException, which is an ObjC exception
-            # that bypasses Python's except clauses and aborts the process.
-            # Fall back to the deprecated API which works without a bundle.
-            logger.debug("No bundle identifier — using rumps notification fallback")
-            rumps.notification(title, subtitle, message)
+            # No CFBundleIdentifier — currentNotificationCenter() raises an
+            # ObjC exception that bypasses Python's except clauses.  rumps also
+            # fails in the built app because it looks for an Info.plist file on
+            # disk which does not exist (plist is embedded in the binary).
+            # osascript works from any process context without bundle machinery.
+            logger.debug("No bundle identifier — using osascript notification fallback")
+            _notify_via_osascript(title, message)
             return
 
         try:
@@ -193,8 +218,8 @@ class MenuBarApp(rumps.App):
             )
             center.addNotificationRequest_withCompletionHandler_(request, None)
         except Exception:
-            logger.debug("UNUserNotificationCenter failed, using rumps fallback")
-            rumps.notification(title, subtitle, message)
+            logger.debug("UNUserNotificationCenter failed, using osascript fallback")
+            _notify_via_osascript(title, message)
 
     def _on_sync_status(self, msg: str) -> None:
         """Store the current download target for the main-thread _refresh timer.

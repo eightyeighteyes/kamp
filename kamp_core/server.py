@@ -240,6 +240,12 @@ def create_app(
         "bandcamp_proxy_requests": {},
     }
 
+    # Proxy-fetch events that were broadcast but had no WS client connected to
+    # receive them.  Keyed by request ID so they can be removed when answered.
+    # A newly-connected WS client receives these immediately so that requests
+    # made before the client connected are not silently dropped.
+    _pending_proxy_fetches: dict[str, dict[str, Any]] = {}
+
     # Active WebSocket queues — one asyncio.Queue per connected client.
     # Events are broadcast to all queues so push notifications wake every client.
     _ws_queues: set[asyncio.Queue[dict[str, Any]]] = set()
@@ -566,6 +572,22 @@ def create_app(
             return {"connected": False, "username": None}
         return {"connected": True, "username": session.get("username")}
 
+    @app.get("/api/v1/bandcamp/session-cookies")
+    def get_bandcamp_session_cookies() -> dict[str, Any]:
+        """Return the raw cookie list from the stored Bandcamp session.
+
+        Used by the Electron main process to reload cookies into
+        ``session.defaultSession`` before each proxy-fetch request so that
+        ``net.fetch`` carries valid credentials in the PyInstaller bundle.
+        Returns an empty list when no session is stored.
+        """
+        if get_bandcamp_session is None:
+            return {"cookies": []}
+        session_data = get_bandcamp_session()
+        if session_data is None:
+            return {"cookies": []}
+        return {"cookies": session_data.get("cookies", [])}
+
     @app.delete("/api/v1/bandcamp/connect")
     def delete_bandcamp_connect() -> dict[str, Any]:
         """Disconnect the Bandcamp session (clear session from DB)."""
@@ -769,21 +791,38 @@ def create_app(
             "event": event,
             "result": None,
         }
+        # Include session cookies in the broadcast so the Electron main
+        # process can inject them into session.defaultSession before calling
+        # net.fetch — no extra HTTP round-trip required.
+        session_data = (
+            get_bandcamp_session() if get_bandcamp_session is not None else None
+        )
+        broadcast_cookies: list[Any] = (
+            session_data.get("cookies", []) if session_data else []
+        )
+        # Build the push event.  Save it in _pending_proxy_fetches *before*
+        # broadcasting so that a WS client connecting after _broadcast() (but
+        # before the request is answered) still receives it on connect.  The
+        # entry is removed when /fetch-result arrives.
+        proxy_event: dict[str, Any] = {
+            "type": "bandcamp.proxy-fetch",
+            "id": req_id,
+            "url": req.url,
+            "method": req.method,
+            "headers": req.headers,
+            "body": req.body,
+            "cookies": broadcast_cookies,
+        }
+        _pending_proxy_fetches[req_id] = proxy_event
         # Notify the Electron preload via the existing WebSocket push channel.
         # The preload forwards to ipcMain which executes net.fetch and posts
         # the result back to /fetch-result.
-        _broadcast(
-            {
-                "type": "bandcamp.proxy-fetch",
-                "id": req_id,
-                "url": req.url,
-                "method": req.method,
-                "headers": req.headers,
-                "body": req.body,
-            }
-        )
+        _broadcast(proxy_event)
         loop = asyncio.get_running_loop()
-        signalled = await loop.run_in_executor(None, event.wait, 30.0)
+        # Allow up to 60s for Electron to complete net.fetch and post the
+        # result.  Real Bandcamp API calls can take 20–30s; the subprocess
+        # proxy_timeout is now 2×inner + 10s, so 60s covers the worst case.
+        signalled = await loop.run_in_executor(None, event.wait, 60.0)
         if not signalled:
             _state["bandcamp_proxy_requests"].pop(req_id, None)
             raise HTTPException(
@@ -808,6 +847,8 @@ def create_app(
             "body": req.body,
             "content_type": req.content_type,
         }
+        # Remove from pending — this request has been answered.
+        _pending_proxy_fetches.pop(req.id, None)
         entry["event"].set()
         return {"ok": True}
 
@@ -825,6 +866,11 @@ def create_app(
         await ws.accept()
         # Push initial snapshot immediately on connect.
         await ws.send_json({"type": "player.state", **_state_snapshot().model_dump()})
+        # Replay any proxy-fetch events that fired before this client connected.
+        # This closes the startup-race window: the daemon may have posted a
+        # proxy request before the Electron preload established its WS connection.
+        for pending_event in list(_pending_proxy_fetches.values()):
+            await ws.send_json(pending_event)
         last_library_version: int = _state["library_version"]
         try:
             while True:
@@ -838,13 +884,25 @@ def create_app(
                 )
                 for t in pending:
                     t.cancel()
-                    with suppress(asyncio.CancelledError):
+                    # asyncio.CancelledError is BaseException in Python 3.8+, so
+                    # suppress it explicitly alongside any other exception a
+                    # cancelled task may carry (e.g. WebSocketDisconnect).
+                    with suppress(asyncio.CancelledError, Exception):
                         await t
 
                 if push_task in done:
                     await ws.send_json(push_task.result())
 
                 if recv_task in done:
+                    # Retrieve the exception (if any) before branching so asyncio
+                    # never sees an un-retrieved exception on the task object,
+                    # which would emit a "Task exception was never retrieved" warning.
+                    # Guard against cancelled tasks: .exception() raises CancelledError
+                    # if the task was cancelled (it shouldn't be here since it's done,
+                    # but be defensive).
+                    _recv_exc = None if recv_task.cancelled() else recv_task.exception()
+                    if _recv_exc is not None:
+                        raise _recv_exc
                     # Each "ping" from the client triggers a fresh snapshot.
                     await ws.send_json(
                         {"type": "player.state", **_state_snapshot().model_dump()}

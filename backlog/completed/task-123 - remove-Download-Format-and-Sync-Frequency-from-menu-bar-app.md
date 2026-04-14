@@ -4,12 +4,12 @@ title: remove Download Format and Sync Frequency from menu bar app
 status: Done
 assignee: []
 created_date: '2026-04-13 01:53'
-updated_date: '2026-04-14 01:25'
+updated_date: '2026-04-14 21:36'
 labels: []
 milestone: m-1
 dependencies: []
 priority: medium
-ordinal: 1000
+ordinal: 2000
 ---
 
 ## Description

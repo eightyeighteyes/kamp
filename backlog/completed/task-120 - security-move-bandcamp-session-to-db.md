@@ -4,12 +4,12 @@ title: 'security: move bandcamp session to db'
 status: Done
 assignee: []
 created_date: '2026-04-13 01:47'
-updated_date: '2026-04-14 02:12'
+updated_date: '2026-04-14 21:36'
 labels: []
 milestone: m-1
 dependencies: []
 priority: high
-ordinal: 2000
+ordinal: 3000
 ---
 
 ## Description

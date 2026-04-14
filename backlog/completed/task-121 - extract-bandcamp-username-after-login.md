@@ -4,12 +4,12 @@ title: extract bandcamp username after login
 status: Done
 assignee: []
 created_date: '2026-04-13 01:49'
-updated_date: '2026-04-14 02:33'
+updated_date: '2026-04-14 21:36'
 labels: []
 milestone: m-1
 dependencies: []
 priority: medium
-ordinal: 3000
+ordinal: 4000
 ---
 
 ## Description

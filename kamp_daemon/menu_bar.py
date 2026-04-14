@@ -31,28 +31,6 @@ logger = logging.getLogger(__name__)
 _ABOUT_URL = "https://github.com/eightyeighteyes/kamp"
 _SYMBOL_NAME = "music.note.list"  # music.note.square.stack does not exist in SF Symbols
 
-# Sync frequency options: (poll_interval_minutes, display label).
-# 0 = manual only (Off); all others are polling intervals.
-_SYNC_INTERVALS: list[tuple[int, str]] = [
-    (0, "Off"),
-    (5, "5 minutes"),
-    (15, "15 minutes"),
-    (30, "30 minutes"),
-    (60, "Hourly"),
-    (1440, "Daily"),
-]
-
-# Valid format keys and their display labels (alphabetical).
-_FORMAT_LABELS: list[tuple[str, str]] = [
-    ("aac-hi", "AAC-HI"),
-    ("alac", "ALAC"),
-    ("flac", "FLAC"),
-    ("mp3-320", "MP3-320"),
-    ("mp3-v0", "MP3-V0"),
-    ("vorbis", "Ogg Vorbis"),
-    ("wav", "WAV"),
-]
-
 
 class MenuBarApp(rumps.App):
     """rumps-based menu bar application for the kamp daemon.
@@ -104,22 +82,6 @@ class MenuBarApp(rumps.App):
         self._login_item = rumps.MenuItem("Bandcamp Login", callback=self._on_login)
         self._logout_item = rumps.MenuItem("Bandcamp Logout", callback=self._on_logout)
 
-        # Build the Download Format submenu.
-        self._format_menu = rumps.MenuItem("Download Format")
-        self._format_items: dict[str, rumps.MenuItem] = {}
-        for fmt, label in _FORMAT_LABELS:
-            item = rumps.MenuItem(label, callback=self._on_format)
-            self._format_items[fmt] = item
-        self._format_menu.update(self._format_items.values())
-
-        # Build the Sync Frequency submenu.
-        self._interval_menu = rumps.MenuItem("Sync Frequency")
-        self._interval_items: dict[int, rumps.MenuItem] = {}
-        for minutes, label in _SYNC_INTERVALS:
-            item = rumps.MenuItem(label, callback=self._on_sync_interval)
-            self._interval_items[minutes] = item
-        self._interval_menu.update(self._interval_items.values())
-
         self.menu = [
             self._toggle_item,
             None,  # separator
@@ -127,8 +89,6 @@ class MenuBarApp(rumps.App):
             self._status_item,
             self._login_item,
             self._logout_item,
-            self._format_menu,
-            self._interval_menu,
             None,  # separator
             rumps.MenuItem("About Kamp", callback=self._on_about),
             rumps.MenuItem("Quit", callback=self._on_quit),
@@ -281,30 +241,6 @@ class MenuBarApp(rumps.App):
         """
         self._pipeline_status = stage
 
-    def _on_format(self, sender: rumps.MenuItem) -> None:
-        """Write the selected download format to the config file."""
-        fmt = next(k for k, v in self._format_items.items() if v is sender)
-        try:
-            from .config import config_set
-
-            config_set(self._core._config_path, "bandcamp.format", fmt)
-        except Exception as exc:
-            _logger.warning("Failed to set download format: %s", exc)
-
-    def _on_sync_interval(self, sender: rumps.MenuItem) -> None:
-        """Write the selected sync interval to the config file."""
-        minutes = next(k for k, v in self._interval_items.items() if v is sender)
-        try:
-            from .config import config_set
-
-            config_set(
-                self._core._config_path,
-                "bandcamp.poll_interval_minutes",
-                str(minutes),
-            )
-        except Exception as exc:
-            _logger.warning("Failed to set sync interval: %s", exc)
-
     def _on_about(self, sender: rumps.MenuItem) -> None:
         subprocess.run(["open", _ABOUT_URL], check=False)
 
@@ -411,7 +347,6 @@ class MenuBarApp(rumps.App):
         # Login/Logout are disabled mid-sync to avoid touching the session while it's in use.
         login_available = has_bandcamp and not self._sync_in_progress
         logout_available = has_bandcamp and not self._sync_in_progress
-        current_fmt = bc.format if bc is not None else None
 
         if sync_available:
             self._sync_item.set_callback(self._on_sync)
@@ -428,8 +363,6 @@ class MenuBarApp(rumps.App):
         else:
             self._logout_item.set_callback(None)
 
-        current_interval = bc.poll_interval_minutes if bc is not None else None
-
         # setEnabled_ controls the visual gray-out at the AppKit level;
         # set_callback(None) alone only removes the click handler.
         try:
@@ -437,19 +370,5 @@ class MenuBarApp(rumps.App):
             self._status_item._menuitem.setEnabled_(has_bandcamp)
             self._login_item._menuitem.setEnabled_(login_available)
             self._logout_item._menuitem.setEnabled_(logout_available)
-            self._format_menu._menuitem.setEnabled_(has_bandcamp)
-            self._interval_menu._menuitem.setEnabled_(has_bandcamp)
         except Exception:
             pass
-
-        # Update checkmarks on format submenu items.
-        for fmt, item in self._format_items.items():
-            label_base = next(lbl for k, lbl in _FORMAT_LABELS if k == fmt)
-            item.title = f"{label_base} \u2713" if fmt == current_fmt else label_base
-
-        # Update checkmarks on sync interval submenu items.
-        for minutes, item in self._interval_items.items():
-            label_base = next(lbl for k, lbl in _SYNC_INTERVALS if k == minutes)
-            item.title = (
-                f"{label_base} \u2713" if minutes == current_interval else label_base
-            )

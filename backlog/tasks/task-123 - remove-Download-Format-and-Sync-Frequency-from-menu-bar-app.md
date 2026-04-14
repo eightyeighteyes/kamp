@@ -1,14 +1,15 @@
 ---
 id: TASK-123
 title: remove Download Format and Sync Frequency from menu bar app
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-13 01:53'
-updated_date: '2026-04-13 02:09'
+updated_date: '2026-04-14 01:25'
 labels: []
 milestone: m-1
 dependencies: []
 priority: medium
+ordinal: 1000
 ---
 
 ## Description

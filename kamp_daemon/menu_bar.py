@@ -14,7 +14,6 @@ import platform
 import signal
 import subprocess
 import threading
-import urllib.request
 
 _logger = logging.getLogger(__name__)
 
@@ -79,16 +78,12 @@ class MenuBarApp(rumps.App):
         self._toggle_item = rumps.MenuItem("Stop", callback=self._on_toggle)
         self._sync_item = rumps.MenuItem("Bandcamp Sync", callback=self._on_sync)
         self._status_item = rumps.MenuItem("Status: Idle")
-        self._login_item = rumps.MenuItem("Bandcamp Login", callback=self._on_login)
-        self._logout_item = rumps.MenuItem("Bandcamp Logout", callback=self._on_logout)
 
         self.menu = [
             self._toggle_item,
             None,  # separator
             self._sync_item,
             self._status_item,
-            self._login_item,
-            self._logout_item,
             None,  # separator
             rumps.MenuItem("About Kamp", callback=self._on_about),
             rumps.MenuItem("Quit", callback=self._on_quit),
@@ -131,40 +126,16 @@ class MenuBarApp(rumps.App):
             try:
                 syncer.sync_once()
             except NeedsLoginError:
-                # No session — open the Bandcamp login window instead of
-                # logging a traceback.  _on_login POSTs to begin-login which
-                # triggers the Electron BrowserWindow via WebSocket push.
-                self._on_login(None)
+                # No valid session — direct the user to Preferences to reconnect.
+                logger.warning(
+                    "Bandcamp sync requires login. Open Preferences → Services to connect."
+                )
             except Exception:
                 logger.exception("Unhandled error during manual Bandcamp sync")
             finally:
                 self._sync_in_progress = False
 
         threading.Thread(target=_run, daemon=True).start()
-
-    def _on_login(self, sender: rumps.MenuItem) -> None:
-        """Signal the Electron UI to open a Bandcamp login BrowserWindow.
-
-        POSTs to the kamp HTTP server's begin-login endpoint, which broadcasts
-        a ``bandcamp.needs-login`` WebSocket push.  The Electron renderer
-        receives this push and invokes the ``bandcamp:begin-login`` IPC handler
-        in the Electron main process, which opens the actual BrowserWindow.
-        """
-        try:
-            req = urllib.request.Request(
-                "http://127.0.0.1:8000/api/v1/bandcamp/begin-login",
-                data=b"",
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=3)  # noqa: S310
-        except Exception as exc:
-            _logger.warning("Bandcamp begin-login request failed: %s", exc)
-
-    def _on_logout(self, sender: rumps.MenuItem) -> None:
-        from .syncer import logout
-
-        logout()
-        self._refresh_bandcamp_items()
 
     def _on_notification(self, title: str, subtitle: str, message: str) -> None:
         """Fire a macOS notification.
@@ -340,35 +311,19 @@ class MenuBarApp(rumps.App):
             _logger.warning("Pulse animation failed: %s", exc)
 
     def _refresh_bandcamp_items(self) -> None:
-        """Disable Bandcamp items when config or conditions prevent use."""
-        bc = self._core._config.bandcamp
-        has_bandcamp = bc is not None
+        """Enable/disable Bandcamp Sync based on config and sync state."""
+        has_bandcamp = self._core._config.bandcamp is not None
         sync_available = has_bandcamp and not self._sync_in_progress
-        # Login/Logout are disabled mid-sync to avoid touching the session while it's in use.
-        login_available = has_bandcamp and not self._sync_in_progress
-        logout_available = has_bandcamp and not self._sync_in_progress
 
         if sync_available:
             self._sync_item.set_callback(self._on_sync)
         else:
             self._sync_item.set_callback(None)
 
-        if login_available:
-            self._login_item.set_callback(self._on_login)
-        else:
-            self._login_item.set_callback(None)
-
-        if logout_available:
-            self._logout_item.set_callback(self._on_logout)
-        else:
-            self._logout_item.set_callback(None)
-
         # setEnabled_ controls the visual gray-out at the AppKit level;
         # set_callback(None) alone only removes the click handler.
         try:
             self._sync_item._menuitem.setEnabled_(sync_available)
             self._status_item._menuitem.setEnabled_(has_bandcamp)
-            self._login_item._menuitem.setEnabled_(login_available)
-            self._logout_item._menuitem.setEnabled_(logout_available)
         except Exception:
             pass

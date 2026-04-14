@@ -1,14 +1,15 @@
 ---
 id: TASK-128
 title: don't distribute Groover with the application
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-13 11:43'
-updated_date: '2026-04-14 21:13'
+updated_date: '2026-04-14 21:32'
 labels: []
 milestone: m-9
 dependencies: []
 priority: low
+ordinal: 9500
 ---
 
 ## Description

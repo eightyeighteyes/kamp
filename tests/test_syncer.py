@@ -21,7 +21,9 @@ from kamp_daemon.syncer import NeedsLoginError, Syncer, logout
 
 def _make_config(tmp_path: Path, poll_interval: int = 0) -> Config:
     return Config(
-        paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
+        paths=PathsConfig(
+            watch_folder=tmp_path / "watch", library=tmp_path / "library"
+        ),
         musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(
@@ -38,7 +40,9 @@ def _make_config(tmp_path: Path, poll_interval: int = 0) -> Config:
 
 def _make_config_no_bandcamp(tmp_path: Path) -> Config:
     return Config(
-        paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
+        paths=PathsConfig(
+            watch_folder=tmp_path / "watch", library=tmp_path / "library"
+        ),
         musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(

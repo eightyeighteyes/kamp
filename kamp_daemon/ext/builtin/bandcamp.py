@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 class KampBandcampSyncer(BaseSyncer):
-    """Sync Bandcamp purchases to the staging directory.
+    """Sync Bandcamp purchases to the watch folder.
 
     Thin extension wrapper around ``kamp_daemon.syncer.Syncer``.  All public
     methods delegate to the inner syncer; this class exists to register the
@@ -49,7 +49,7 @@ class KampBandcampSyncer(BaseSyncer):
     alongside third-party extensions.
     """
 
-    # stage() deposits downloaded archives into the staging directory.
+    # stage() deposits downloaded archives into the watch folder.
     kampground_permissions = ["library.write"]
     # Needs filesystem writes (session/state files, /tmp) and subprocess spawn
     # (Playwright launches Chromium).  See project/sandbox-profiles.md.

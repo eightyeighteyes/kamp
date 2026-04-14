@@ -32,7 +32,7 @@ DEFAULT_CONFIG_PATH = _default_config_path()
 
 DEFAULT_CONFIG_CONTENT = """\
 [paths]
-staging = "~/Music/staging"
+watch_folder = "~/Music/staging"   # drop ZIPs/folders here for automatic ingest
 library = "~/Music"
 
 [musicbrainz]
@@ -53,7 +53,7 @@ active_view = "library"  # "library" | "now-playing"
 
 @dataclass
 class PathsConfig:
-    staging: Path
+    watch_folder: Path
     library: Path
 
 
@@ -126,22 +126,22 @@ class Config:
         """Interactively collect key config values, write *path*, and return Config.
 
         Prompts for the three fields with no sensible universal default —
-        staging dir, library dir, and MusicBrainz contact email — then writes
+        watch folder, library dir, and MusicBrainz contact email — then writes
         the TOML file (substituting into DEFAULT_CONFIG_CONTENT to preserve
         comments and formatting) and returns the ready-to-use Config.
         """
         print("\nWelcome to kamp! Let's set up your configuration.")
         print(f"(Config will be saved to {path})\n")
 
-        staging = Path(
-            _prompt("Staging directory (drop ZIPs/folders here)", "~/Music/staging")
+        watch_folder = Path(
+            _prompt("Watch folder (drop ZIPs/folders here)", "~/Music/staging")
         ).expanduser()
         library = Path(
             _prompt("Library directory (finished files land here)", "~/Music")
         ).expanduser()
 
         config = cls(
-            paths=PathsConfig(staging=staging, library=library),
+            paths=PathsConfig(watch_folder=watch_folder, library=library),
             musicbrainz=MusicBrainzConfig(),
             artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
             library=LibraryConfig(
@@ -152,10 +152,11 @@ class Config:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Substitute user values into the canonical TOML template so the file
         # retains its comments and familiar structure rather than being
-        # machine-generated.  Order matters: staging is a prefix of library, so
-        # replace the longer string first.
+        # machine-generated.  Order matters: watch_folder default contains
+        # "staging" which is a substring of nothing else, but replace the longer
+        # path first to be safe.
         toml_content = DEFAULT_CONFIG_CONTENT.replace(
-            '"~/Music/staging"', f'"{staging}"'
+            '"~/Music/staging"', f'"{watch_folder}"'
         ).replace('"~/Music"', f'"{library}"')
         path.write_text(toml_content)
         print(f"\nConfiguration saved to {path}\n")
@@ -212,7 +213,7 @@ class Config:
             path.write_text(DEFAULT_CONFIG_CONTENT)
             raise FileNotFoundError(
                 f"Config file created at {path}. "
-                "Please edit it with your staging/library paths, "
+                "Please edit it with your watch folder and library paths, "
                 "then re-run kamp."
             )
 
@@ -220,6 +221,10 @@ class Config:
             raw = tomllib.load(f)
 
         p = raw["paths"]
+        # paths.staging is the legacy key name; migrate it transparently so
+        # existing config.toml files continue to work without modification.
+        if "watch_folder" not in p and "staging" in p:
+            p = {**p, "watch_folder": p["staging"]}
         mb = raw["musicbrainz"]
         art = raw["artwork"]
         lib = raw["library"]
@@ -252,7 +257,7 @@ class Config:
 
         return cls(
             paths=PathsConfig(
-                staging=Path(p["staging"]).expanduser(),
+                watch_folder=Path(p["watch_folder"]).expanduser(),
                 library=Path(p["library"]).expanduser(),
             ),
             musicbrainz=MusicBrainzConfig(
@@ -280,7 +285,7 @@ class Config:
 # Explicit allowlist of every settable key with its expected Python/TOML type.
 # Drives validation and type coercion in config_set(), and ordering in config_show().
 _CONFIG_KEY_TYPES: dict[str, type] = {
-    "paths.staging": str,
+    "paths.watch_folder": str,
     "paths.library": str,
     "musicbrainz.trust-musicbrainz-when-tags-conflict": bool,
     "artwork.min_dimension": int,
@@ -332,7 +337,7 @@ def config_show(path: Path) -> str:
 def config_set(path: Path, key: str, value: str) -> None:
     """Update a single key in the TOML config file.
 
-    *key* must be a dot-notation string like ``paths.staging`` or
+    *key* must be a dot-notation string like ``paths.watch_folder`` or
     ``artwork.min_dimension``.  *value* is always provided as a string and
     coerced to the appropriate type.  Raises KeyError for unknown or missing
     keys, ValueError for type mismatches.

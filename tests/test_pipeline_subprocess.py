@@ -21,7 +21,9 @@ from kamp_daemon.pipeline import _DIR_SENTINEL, _handle_stage_msg, run_in_subpro
 
 def _make_config(tmp_path: Path) -> Config:
     return Config(
-        paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
+        paths=PathsConfig(
+            watch_folder=tmp_path / "watch", library=tmp_path / "library"
+        ),
         musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(

@@ -15,7 +15,7 @@ const INT_KEYS = new Set([
 
 // Keys that require a server restart to take effect.
 const RESTART_KEYS = new Set([
-  'paths.staging',
+  'paths.watch_folder',
   'paths.library',
   'bandcamp.poll_interval_minutes'
 ])
@@ -964,9 +964,9 @@ export function PreferencesDialog({
                       onSave={handleSave}
                     />
                     <PathRow
-                      label="Staging folder"
+                      label="Watch folder"
                       configKey="paths.staging"
-                      initialValue={str('paths.staging')}
+                      initialValue={str('paths.watch_folder')}
                       onSave={handleSave}
                     />
                     <div className="prefs-row">

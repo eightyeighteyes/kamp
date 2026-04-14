@@ -8,13 +8,13 @@ from .types import ArtworkQuery, ArtworkResult, TrackMetadata
 
 
 class BaseSyncer(ABC):
-    """Polls an external source and deposits new downloads into staging.
+    """Polls an external source and deposits new downloads into the watch folder.
 
     Implementations run in-process within the daemon — the extension host
     already provides process isolation, so a nested subprocess is not needed.
     Third-party syncers that cannot write to the filesystem directly should
     call ``ctx.stage(filename, content)`` to deposit files; the host writes
-    them to the staging directory.
+    them to the watch folder.
 
     Lifecycle
     ---------

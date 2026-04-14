@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 def _sync_worker(
     bc_config: BandcampConfig,
-    staging_dir: Path,
+    watch_dir: Path,
     state_file: Path,
     status_q: Any,
     log_q: Any,
@@ -51,7 +51,7 @@ def _sync_worker(
 
         paths = sync_new_purchases(
             bc_config=bc_config,
-            staging_dir=staging_dir,
+            watch_dir=watch_dir,
             state_file=state_file,
             status_callback=lambda msg: status_q.put(msg),
         )
@@ -243,7 +243,7 @@ class Syncer:
 
         proc, status_q, log_q, result_q = _spawn_worker(
             _sync_worker,
-            (bc, self._config.paths.staging, state_file),
+            (bc, self._config.paths.watch_folder, state_file),
         )
 
         # Drain both queues while the subprocess runs.  log_q MUST be drained
@@ -286,7 +286,9 @@ class Syncer:
 
         paths = value or []
         if paths:
-            logger.info("Sync complete: %d file(s) downloaded to staging.", len(paths))
+            logger.info(
+                "Sync complete: %d file(s) downloaded to watch folder.", len(paths)
+            )
         else:
             logger.info("Sync complete: nothing new.")
         # Clear the status display in the menu bar (applies to both automatic

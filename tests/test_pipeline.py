@@ -37,7 +37,7 @@ from kamp_daemon.pipeline_impl import (
 def config(tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(
-            staging=tmp_path / "staging",
+            watch_folder=tmp_path / "watch",
             library=tmp_path / "library",
         ),
         musicbrainz=MusicBrainzConfig(),
@@ -118,14 +118,14 @@ MB_RELEASE_DETAIL: dict[str, Any] = {
 
 class TestPipelineRun:
     def test_zip_lands_in_library(self, tmp_path: Path, config: Config) -> None:
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
 
-        zip_path = config.paths.staging / "great-album.zip"
+        zip_path = config.paths.watch_folder / "great-album.zip"
         _make_zip(zip_path, ["01 - First Track.mp3", "02 - Second Track.mp3"])
 
         # Write valid ID3 headers so mutagen can read/write tags
-        extracted = config.paths.staging / "great-album"
+        extracted = config.paths.watch_folder / "great-album"
         extracted.mkdir()
         for name in ["01 - First Track.mp3", "02 - Second Track.mp3"]:
             f = extracted / name
@@ -156,14 +156,14 @@ class TestPipelineRun:
     def test_quarantine_on_extraction_failure(
         self, tmp_path: Path, config: Config
     ) -> None:
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
 
-        bad_zip = config.paths.staging / "bad.zip"
+        bad_zip = config.paths.watch_folder / "bad.zip"
         bad_zip.write_bytes(b"not a zip")
 
         run(bad_zip, config)
 
-        errors_dir = config.paths.staging / "errors"
+        errors_dir = config.paths.watch_folder / "errors"
         assert errors_dir.exists()
         quarantined = list(errors_dir.iterdir())
         assert len(quarantined) == 1
@@ -172,21 +172,21 @@ class TestPipelineRun:
         self, tmp_path: Path, config: Config
     ) -> None:
         """An extracted directory with no audio files is quarantined."""
-        config.paths.staging.mkdir(parents=True)
-        album_dir = config.paths.staging / "empty-album"
+        config.paths.watch_folder.mkdir(parents=True)
+        album_dir = config.paths.watch_folder / "empty-album"
         album_dir.mkdir()
         (album_dir / "cover.jpg").write_bytes(b"fake image")
 
         run(album_dir, config)
 
-        assert (config.paths.staging / "errors" / "empty-album").exists()
+        assert (config.paths.watch_folder / "errors" / "empty-album").exists()
 
     def test_artwork_failure_is_nonfatal(self, tmp_path: Path, config: Config) -> None:
         """An ArtworkError is logged as a warning and the pipeline continues."""
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
 
-        album_dir = config.paths.staging / "great-album"
+        album_dir = config.paths.watch_folder / "great-album"
         album_dir.mkdir()
         mp3 = album_dir / "01.mp3"
         mp3.write_bytes(b"\xff\xfb" * 64)
@@ -212,10 +212,10 @@ class TestPipelineRun:
 
     def test_quarantine_on_move_failure(self, tmp_path: Path, config: Config) -> None:
         """A MoveError causes the directory to be quarantined."""
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
 
-        album_dir = config.paths.staging / "great-album"
+        album_dir = config.paths.watch_folder / "great-album"
         album_dir.mkdir()
         mp3 = album_dir / "01.mp3"
         mp3.write_bytes(b"\xff\xfb" * 64)
@@ -236,26 +236,26 @@ class TestPipelineRun:
         ):
             run(album_dir, config)
 
-        assert (config.paths.staging / "errors" / "great-album").exists()
+        assert (config.paths.watch_folder / "errors" / "great-album").exists()
 
     def test_quarantine_tagging_failure(self, tmp_path: Path, config: Config) -> None:
         """A quarantine that itself fails logs an error rather than raising."""
-        config.paths.staging.mkdir(parents=True)
-        item = config.paths.staging / "bad-album"
+        config.paths.watch_folder.mkdir(parents=True)
+        item = config.paths.watch_folder / "bad-album"
         item.mkdir()
 
         with patch(
             "kamp_daemon.pipeline_impl.shutil.move", side_effect=OSError("no space")
         ):
-            _quarantine(item, config.paths.staging)
+            _quarantine(item, config.paths.watch_folder)
         # Should not raise; errors/ dir was created even if move failed
 
     def test_quarantine_on_tagging_failure(
         self, tmp_path: Path, config: Config
     ) -> None:
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
 
-        album_dir = config.paths.staging / "mystery-album"
+        album_dir = config.paths.watch_folder / "mystery-album"
         album_dir.mkdir()
         mp3 = album_dir / "01.mp3"
         mp3.write_bytes(b"\xff\xfb" * 64)
@@ -265,7 +265,7 @@ class TestPipelineRun:
         with patch("musicbrainzngs.search_releases", return_value={"release-list": []}):
             run(album_dir, config)
 
-        errors_dir = config.paths.staging / "errors"
+        errors_dir = config.paths.watch_folder / "errors"
         assert errors_dir.exists()
 
 
@@ -277,10 +277,10 @@ class TestOnDirectoryCallback:
         extraction so the watcher can cancel any pending timer for that directory."""
         import zipfile
 
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
 
-        zip_path = config.paths.staging / "artist-album.zip"
+        zip_path = config.paths.watch_folder / "artist-album.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("01 - Track.mp3", b"\xff\xfb" * 64)
 
@@ -299,15 +299,15 @@ class TestOnDirectoryCallback:
             run(zip_path, config, _on_directory=claimed.append)
 
         assert len(claimed) == 1
-        assert claimed[0].parent == config.paths.staging
+        assert claimed[0].parent == config.paths.watch_folder
         assert claimed[0].name == "artist-album"
 
     def test_callback_not_called_on_extraction_failure(
         self, tmp_path: Path, config: Config
     ) -> None:
         """_on_directory must not fire when extraction fails."""
-        config.paths.staging.mkdir(parents=True)
-        bad_zip = config.paths.staging / "bad.zip"
+        config.paths.watch_folder.mkdir(parents=True)
+        bad_zip = config.paths.watch_folder / "bad.zip"
         bad_zip.write_bytes(b"not a zip")
 
         claimed: list[Path] = []
@@ -323,9 +323,9 @@ class TestSkipAlreadyTagged:
 
     def _setup_dir(self, config: Config) -> tuple[Path, Path]:
         """Create staging + library dirs and return (album_dir, mp3)."""
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
-        album_dir = config.paths.staging / "great-album"
+        album_dir = config.paths.watch_folder / "great-album"
         album_dir.mkdir()
         mp3 = album_dir / "01.mp3"
         mp3.write_bytes(b"\xff\xfb" * 64)
@@ -380,9 +380,9 @@ class TestSkipAlreadyTagged:
         self, tmp_path: Path, config: Config
     ) -> None:
         """If any file is untagged, the full MB lookup runs for the whole directory."""
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
-        album_dir = config.paths.staging / "partial-album"
+        album_dir = config.paths.watch_folder / "partial-album"
         album_dir.mkdir()
 
         mp3_a = album_dir / "01.mp3"
@@ -418,9 +418,9 @@ class TestStageCallback:
     """stage_callback receives stage labels in order and is cleared in finally."""
 
     def _setup_dir(self, config: Config) -> Path:
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
-        album_dir = config.paths.staging / "test-album"
+        album_dir = config.paths.watch_folder / "test-album"
         album_dir.mkdir()
         mp3 = album_dir / "01.mp3"
         mp3.write_bytes(b"\xff\xfb" * 64)
@@ -449,8 +449,8 @@ class TestStageCallback:
         self, tmp_path: Path, config: Config
     ) -> None:
         """stage_callback('') fires even when extraction fails."""
-        config.paths.staging.mkdir(parents=True)
-        bad_zip = config.paths.staging / "bad.zip"
+        config.paths.watch_folder.mkdir(parents=True)
+        bad_zip = config.paths.watch_folder / "bad.zip"
         bad_zip.write_bytes(b"not a zip")
         calls: list[str] = []
 
@@ -533,7 +533,7 @@ class TestMbTagsConflict:
 def _make_conflict_config(tmp_path: Path, trust: bool) -> Config:
     return Config(
         paths=PathsConfig(
-            staging=tmp_path / "staging",
+            watch_folder=tmp_path / "watch",
             library=tmp_path / "library",
         ),
         musicbrainz=MusicBrainzConfig(
@@ -574,9 +574,9 @@ class TestMbConflictFallback:
     """When trust=False and MB returns mismatched tags, ID3 writes are skipped."""
 
     def _setup_album(self, config: Config) -> tuple[Path, Path]:
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
-        album_dir = config.paths.staging / "file-album"
+        album_dir = config.paths.watch_folder / "file-album"
         album_dir.mkdir()
         mp3 = album_dir / "01.mp3"
         _make_mp3_with_tags(mp3, artist="File Artist", album="File Album")
@@ -649,9 +649,9 @@ class TestMbConflictFallback:
     def test_writes_id3_when_no_conflict(self, tmp_path: Path) -> None:
         """When tags agree with MB, ID3 is written normally even with trust=False."""
         config = _make_conflict_config(tmp_path, trust=False)
-        config.paths.staging.mkdir(parents=True)
+        config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
-        album_dir = config.paths.staging / "mb-album"
+        album_dir = config.paths.watch_folder / "mb-album"
         album_dir.mkdir()
         mp3 = album_dir / "01.mp3"
         # File tags match the MB result

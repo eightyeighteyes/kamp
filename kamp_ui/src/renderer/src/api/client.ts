@@ -161,7 +161,7 @@ export type ScanProgress = { active: boolean; current: number; total: number }
 export const getScanProgress = (): Promise<ScanProgress> => get('/api/v1/library/scan/progress')
 
 export type ConfigValues = {
-  'paths.staging': string | null
+  'paths.watch_folder': string | null
   'paths.library': string | null
   'musicbrainz.contact': string | null
   'musicbrainz.trust-musicbrainz-when-tags-conflict': boolean | null

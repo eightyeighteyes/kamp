@@ -92,11 +92,11 @@ class SetArtworkMutation:
 
 @dataclass
 class StageMutation:
-    """A queued request to deposit a file in the staging directory.
+    """A queued request to deposit a file in the watch folder.
 
     Collected during extension execution (typically by a BaseSyncer) and
     applied by the host after the worker completes.  The host writes
-    ``content`` to ``staging_dir / filename``.  Extensions must not write
+    ``content`` to ``watch_folder / filename``.  Extensions must not write
     to the filesystem directly — use ``KampGround.stage()`` instead.
 
     Args:
@@ -315,9 +315,9 @@ class KampGround:
         self._pending_mutations.append(SetArtworkMutation(mbid=mbid, artwork=artwork))
 
     def stage(self, filename: str, content: bytes) -> None:
-        """Queue a file to be deposited in the staging directory by the host.
+        """Queue a file to be deposited in the watch folder by the host.
 
-        The host writes ``content`` to ``staging_dir / filename`` after the
+        The host writes ``content`` to ``watch_folder / filename`` after the
         extension completes.  Extensions (particularly ``BaseSyncer``
         implementations) must use this method rather than writing to the
         filesystem directly — doing so would couple the extension to a
@@ -326,7 +326,7 @@ class KampGround:
         Args:
             filename: Base filename for the staged file.  Must not contain
                 path separators (``/`` or ``\\``).  The host rejects names
-                that would escape the staging directory.
+                that would escape the watch folder.
             content: Raw bytes to write (e.g. a downloaded ZIP archive).
 
         Raises:

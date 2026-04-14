@@ -23,7 +23,7 @@ class MoveError(Exception):
 
 def move_to_library(
     audio_files: list[Path],
-    staging_dir: Path,
+    watch_dir: Path,
     library_root: Path,
     path_template: str,
 ) -> list[Path]:
@@ -48,7 +48,7 @@ def move_to_library(
     if errors:
         raise MoveError("Some files could not be moved:\n" + "\n".join(errors))
 
-    _cleanup_staging(staging_dir)
+    _cleanup_watch_folder(watch_dir)
     return destinations
 
 
@@ -181,10 +181,10 @@ def _make_vars(
     }
 
 
-def _cleanup_staging(staging_dir: Path) -> None:
-    """Remove the staging subdirectory and any remaining non-audio files."""
+def _cleanup_watch_folder(watch_dir: Path) -> None:
+    """Remove the watch folder item and any remaining non-audio files."""
     try:
-        shutil.rmtree(staging_dir)
-        logger.info("Removed staging directory %s", staging_dir)
+        shutil.rmtree(watch_dir)
+        logger.info("Removed watch folder item %s", watch_dir)
     except OSError:
-        logger.debug("Could not remove staging directory: %s", staging_dir)
+        logger.debug("Could not remove watch folder item: %s", watch_dir)

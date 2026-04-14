@@ -1,14 +1,15 @@
 ---
 id: TASK-124
 title: rebrand "staging folder" as "watch folder"
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-13 01:54'
-updated_date: '2026-04-13 02:09'
+updated_date: '2026-04-13 23:33'
 labels: []
 milestone: m-9
 dependencies: []
 priority: medium
+ordinal: 8500
 ---
 
 ## Description
@@ -26,9 +27,9 @@ Any user-visible mention of "staging folder" should be changed to "watch folder"
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 All user-visible text says 'watch folder' not 'staging folder'
-- [ ] #2 Existing config.toml files with paths.staging continue to work without modification
-- [ ] #3 README updated
+- [x] #1 All user-visible text says 'watch folder' not 'staging folder'
+- [x] #2 Existing config.toml files with paths.staging continue to work without modification
+- [x] #3 README updated
 <!-- AC:END -->
 
 ## Implementation Notes

@@ -208,11 +208,11 @@ def mark_collection_synced(
 
 def sync_new_purchases(
     bc_config: BandcampConfig,
-    staging_dir: Path,
+    watch_dir: Path,
     state_file: Path,
     status_callback: Callable[[str], None] | None = None,
 ) -> list[Path]:
-    """Download any purchases not yet recorded in *state_file* to *staging_dir*.
+    """Download any purchases not yet recorded in *state_file* to *watch_dir*.
 
     Returns a list of paths to the downloaded ZIP files.
     """
@@ -236,7 +236,7 @@ def sync_new_purchases(
     new_item_ids = {item["sale_item_id"] for item in new_items}
     download_links = _get_download_links(bc_config.username, new_item_ids, session)
 
-    staging_dir.mkdir(parents=True, exist_ok=True)
+    watch_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded: list[Path] = []
     for item in new_items:
@@ -256,7 +256,7 @@ def sync_new_purchases(
                 status_callback(
                     f"{item.get('item_title', '?')} by {item.get('band_name', '?')}"
                 )
-            path = _download_item(item, bc_config, staging_dir, session)
+            path = _download_item(item, bc_config, watch_dir, session)
             downloaded.append(path)
             state[str(item["sale_item_id"])] = time.time()
             _save_state(state_file, state)
@@ -616,7 +616,7 @@ def _get_cdn_url(redownload_url: str, fmt: str, session: _AnySession) -> str:
 def _download_item(
     item: dict[str, Any],
     bc_config: BandcampConfig,
-    staging_dir: Path,
+    watch_dir: Path,
     session: _AnySession,
 ) -> Path:
     band_name: str = item.get("band_name", "Unknown Artist")
@@ -631,7 +631,7 @@ def _download_item(
         )
 
     safe_name = re.sub(r'[<>:"/\\|?*]', "_", f"{band_name} - {item_title}")
-    dest = staging_dir / f"{safe_name}.zip"
+    dest = watch_dir / f"{safe_name}.zip"
 
     logger.info("Downloading %r by %r…", item_title, band_name)
     cdn_url = _get_cdn_url(redownload_url, bc_config.format, session)

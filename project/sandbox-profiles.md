@@ -150,7 +150,7 @@ syncer isolation separately if needed.
 |------|--------|-------|
 | `~/.local/share/kamp/bandcamp_session.json` | read/write | Session cookies |
 | `~/.local/share/kamp/bandcamp_state.json` | read/write | Sync state (downloaded item IDs) |
-| Staging directory (`config.paths.staging`) | write | Downloaded ZIP/audio files |
+| Watch folder (`config.paths.watch_folder`) | write | Downloaded ZIP/audio files |
 | `/tmp` (system temp) | read/write | Playwright session files, download staging |
 | Chromium binary path (`~/.cache/ms-playwright/`) | read/execute | Playwright-managed Chromium |
 
@@ -169,7 +169,7 @@ managed by Playwright (path: `~/.cache/ms-playwright/chromium-*/chrome`).
 
 **TIER_SYNCER profile requirements:**
 - `process-exec*` allowed (macOS) / execve not blocked in seccomp (Linux)
-- Write access to `~/.local/share/kamp/`, `/tmp`, staging dir
+- Write access to `~/.local/share/kamp/`, `/tmp`, watch folder
 - Read/execute access to Playwright Chromium binary path
 
 ⚠️ The Chromium binary path is not currently encoded in the TIER_SYNCER
@@ -243,7 +243,7 @@ Profiles are in `kamp_daemon/ext/sandbox/_macos.py` as string templates.
 
 **Outstanding tightening** (post-profiling):
 - Add Chromium binary path to `file-read*` / `process-exec*`
-- Add staging directory as a writable path (requires runtime parameterisation)
+- Add watch folder as a writable path (requires runtime parameterisation)
 
 ---
 
@@ -299,7 +299,7 @@ older kernels.  CI runs on `ubuntu-latest` (kernel ≥ 6.x as of 2026).
 - [ ] Confirm landlock write restriction does not break PIL (image codec
       temp files?) for CoverArt fetcher
 - [ ] Add Playwright Chromium binary path to TIER_SYNCER landlock allow rules
-- [ ] Add staging directory to TIER_SYNCER landlock allow rules (runtime
+- [ ] Add watch folder to TIER_SYNCER landlock allow rules (runtime
       parameterisation needed)
 
 ---

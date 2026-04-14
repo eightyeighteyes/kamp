@@ -227,7 +227,7 @@ def _apply_landlock(allowed_write_paths: list[str]) -> None:
     """Restrict filesystem writes to *allowed_write_paths* via landlock.
 
     Paths not in the list will be read-only.  If a path does not exist it is
-    silently skipped (e.g. staging dir may not be created yet).
+    silently skipped (e.g. watch folder may not be created yet).
 
     Non-fatal: logs a warning and returns if any step fails.
     """
@@ -260,7 +260,7 @@ def _apply_landlock(allowed_write_paths: list[str]) -> None:
         for path_str in allowed_write_paths:
             path = Path(path_str)
             if not path.exists():
-                continue  # skip non-existent paths (e.g. staging not yet created)
+                continue  # skip non-existent paths (e.g. watch folder not yet created)
             try:
                 fd = os.open(str(path), _O_PATH | os.O_CLOEXEC)
             except OSError:

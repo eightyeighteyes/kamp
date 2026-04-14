@@ -10,7 +10,7 @@ import pytest
 
 from kamp_daemon.mover import (
     MoveError,
-    _cleanup_staging,
+    _cleanup_watch_folder,
     _destination,
     move_to_library,
 )
@@ -80,19 +80,19 @@ class TestCleanup:
     def test_removes_directory_with_leftover_non_audio_files(
         self, tmp_path: Path
     ) -> None:
-        """Staging dir is fully removed even when non-audio files remain."""
-        staging = tmp_path / "Artist - Album"
-        staging.mkdir()
-        (staging / "cover.jpg").write_bytes(b"fake image")
-        (staging / "booklet.pdf").write_bytes(b"fake pdf")
+        """Watch folder item dir is fully removed even when non-audio files remain."""
+        watch_dir = tmp_path / "Artist - Album"
+        watch_dir.mkdir()
+        (watch_dir / "cover.jpg").write_bytes(b"fake image")
+        (watch_dir / "booklet.pdf").write_bytes(b"fake pdf")
 
-        _cleanup_staging(staging)
+        _cleanup_watch_folder(watch_dir)
 
-        assert not staging.exists()
+        assert not watch_dir.exists()
 
     def test_does_not_raise_when_directory_is_missing(self, tmp_path: Path) -> None:
         """OSError from rmtree is caught; cleanup never raises."""
-        _cleanup_staging(tmp_path / "nonexistent")
+        _cleanup_watch_folder(tmp_path / "nonexistent")
 
 
 class TestM4ADestination:
@@ -365,11 +365,11 @@ class TestOggDestination:
 
 
 class TestMoveToLibrary:
-    def test_moves_files_and_cleans_staging(self, tmp_path: Path) -> None:
-        """move_to_library moves all files and removes the staging dir."""
-        staging = tmp_path / "Artist - Album"
-        staging.mkdir()
-        mp3 = staging / "01.mp3"
+    def test_moves_files_and_cleans_watch_dir(self, tmp_path: Path) -> None:
+        """move_to_library moves all files and removes the watch folder item dir."""
+        watch_dir = tmp_path / "Artist - Album"
+        watch_dir.mkdir()
+        mp3 = watch_dir / "01.mp3"
         _make_mp3(
             mp3,
             album_artist="Artist",
@@ -381,17 +381,17 @@ class TestMoveToLibrary:
         library = tmp_path / "library"
         library.mkdir()
 
-        dests = move_to_library([mp3], staging, library, TEMPLATE)
+        dests = move_to_library([mp3], watch_dir, library, TEMPLATE)
 
         assert len(dests) == 1
         assert dests[0].exists()
-        assert not staging.exists()
+        assert not watch_dir.exists()
 
     def test_raises_move_error_on_failure(self, tmp_path: Path) -> None:
         """move_to_library raises MoveError when shutil.move fails."""
-        staging = tmp_path / "Artist - Album"
-        staging.mkdir()
-        mp3 = staging / "01.mp3"
+        watch_dir = tmp_path / "Artist - Album"
+        watch_dir.mkdir()
+        mp3 = watch_dir / "01.mp3"
         _make_mp3(
             mp3,
             album_artist="Artist",
@@ -404,7 +404,7 @@ class TestMoveToLibrary:
 
         with patch("kamp_daemon.mover.shutil.move", side_effect=OSError("disk full")):
             with pytest.raises(MoveError, match="disk full"):
-                move_to_library([mp3], staging, library, TEMPLATE)
+                move_to_library([mp3], watch_dir, library, TEMPLATE)
 
     def test_template_error_raises_move_error(self, tmp_path: Path) -> None:
         """_destination raises MoveError when the template references a missing key."""

@@ -437,7 +437,7 @@ class TestSyncNewPurchases:
         items: list[dict[str, Any]],
         state: dict[str, float] | None = None,
     ) -> list[Path]:
-        staging = tmp_path / "staging"
+        watch_folder = tmp_path / "watch"
         state_file = tmp_path / "state.json"
         session_file = _make_session_file(tmp_path)
         if state:
@@ -449,11 +449,11 @@ class TestSyncNewPurchases:
         def fake_download(
             item: dict[str, Any],
             bc_config: BandcampConfig,
-            staging_dir: Path,
+            watch_dir: Path,
             session: Any,
         ) -> Path:
-            staging_dir.mkdir(parents=True, exist_ok=True)
-            path = staging_dir / f"{item['sale_item_id']}.zip"
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            path = watch_dir / f"{item['sale_item_id']}.zip"
             path.write_bytes(b"fake zip")
             return path
 
@@ -464,7 +464,7 @@ class TestSyncNewPurchases:
             ),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            return sync_new_purchases(config, staging, state_file)
+            return sync_new_purchases(config, watch_folder, state_file)
 
     def test_downloads_new_items(self, tmp_path: Path) -> None:
         items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
@@ -487,7 +487,7 @@ class TestSyncNewPurchases:
 
     def test_state_updated_after_download(self, tmp_path: Path) -> None:
         state_file = tmp_path / "state.json"
-        staging = tmp_path / "staging"
+        watch_folder = tmp_path / "watch"
         session_file = _make_session_file(tmp_path)
         config = _bc_config(tmp_path)
         items = [_item(99)]
@@ -496,11 +496,11 @@ class TestSyncNewPurchases:
         def fake_download(
             item: dict[str, Any],
             bc_config: BandcampConfig,
-            staging_dir: Path,
+            watch_dir: Path,
             session: Any,
         ) -> Path:
-            staging_dir.mkdir(parents=True, exist_ok=True)
-            path = staging_dir / f"{item['sale_item_id']}.zip"
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            path = watch_dir / f"{item['sale_item_id']}.zip"
             path.write_bytes(b"fake")
             return path
 
@@ -511,13 +511,13 @@ class TestSyncNewPurchases:
             ),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            sync_new_purchases(config, staging, state_file)
+            sync_new_purchases(config, watch_folder, state_file)
 
         assert "99" in _load_state(state_file)
 
     def test_state_persists_across_calls(self, tmp_path: Path) -> None:
         state_file = tmp_path / "state.json"
-        staging = tmp_path / "staging"
+        watch_folder = tmp_path / "watch"
         session_file = _make_session_file(tmp_path)
         config = _bc_config(tmp_path)
         call_num = 0
@@ -525,13 +525,13 @@ class TestSyncNewPurchases:
         def fake_download(
             item: dict[str, Any],
             bc_config: BandcampConfig,
-            staging_dir: Path,
+            watch_dir: Path,
             session: Any,
         ) -> Path:
             nonlocal call_num
             call_num += 1
-            staging_dir.mkdir(parents=True, exist_ok=True)
-            path = staging_dir / f"{item['sale_item_id']}_{call_num}.zip"
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            path = watch_dir / f"{item['sale_item_id']}_{call_num}.zip"
             path.write_bytes(b"fake")
             return path
 
@@ -541,7 +541,7 @@ class TestSyncNewPurchases:
             patch("kamp_daemon.bandcamp._make_requests_session", return_value=mock1),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            sync_new_purchases(config, staging, state_file)
+            sync_new_purchases(config, watch_folder, state_file)
 
         mock2 = _make_requests_mock([_item(42)])
         with (
@@ -549,12 +549,12 @@ class TestSyncNewPurchases:
             patch("kamp_daemon.bandcamp._make_requests_session", return_value=mock2),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            paths = sync_new_purchases(config, staging, state_file)
+            paths = sync_new_purchases(config, watch_folder, state_file)
 
         assert paths == []
 
     def test_skips_failed_download_continues_others(self, tmp_path: Path) -> None:
-        staging = tmp_path / "staging"
+        watch_folder = tmp_path / "watch"
         state_file = tmp_path / "state.json"
         session_file = _make_session_file(tmp_path)
         config = _bc_config(tmp_path)
@@ -565,15 +565,15 @@ class TestSyncNewPurchases:
         def fake_download(
             item: dict[str, Any],
             bc_config: BandcampConfig,
-            staging_dir: Path,
+            watch_dir: Path,
             session: Any,
         ) -> Path:
             nonlocal call_num
             call_num += 1
             if call_num == 1:
                 raise BandcampAPIError("simulated failure")
-            staging_dir.mkdir(parents=True, exist_ok=True)
-            path = staging_dir / f"{item['sale_item_id']}.zip"
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            path = watch_dir / f"{item['sale_item_id']}.zip"
             path.write_bytes(b"fake")
             return path
 
@@ -584,13 +584,13 @@ class TestSyncNewPurchases:
             ),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            paths = sync_new_purchases(config, staging, state_file)
+            paths = sync_new_purchases(config, watch_folder, state_file)
 
         assert len(paths) == 1
 
     def test_warns_when_item_not_on_collection_page(self, tmp_path: Path) -> None:
         """Items missing from the HTML scrape should be warned and skipped."""
-        staging = tmp_path / "staging"
+        watch_folder = tmp_path / "watch"
         state_file = tmp_path / "state.json"
         session_file = _make_session_file(tmp_path)
         config = _bc_config(tmp_path)
@@ -634,11 +634,11 @@ class TestSyncNewPurchases:
         def fake_download(
             item: dict[str, Any],
             bc_config: BandcampConfig,
-            staging_dir: Path,
+            watch_dir: Path,
             session: Any,
         ) -> Path:
-            staging_dir.mkdir(parents=True, exist_ok=True)
-            path = staging_dir / f"{item['sale_item_id']}.zip"
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            path = watch_dir / f"{item['sale_item_id']}.zip"
             path.write_bytes(b"fake")
             return path
 
@@ -649,7 +649,7 @@ class TestSyncNewPurchases:
             ),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            paths = sync_new_purchases(config, staging, state_file)
+            paths = sync_new_purchases(config, watch_folder, state_file)
 
         assert len(paths) == 1  # only item 2 downloaded
 
@@ -702,7 +702,7 @@ class TestMarkCollectionSynced:
 
     def test_subsequent_sync_downloads_nothing(self, tmp_path: Path) -> None:
         state_file = tmp_path / "state.json"
-        staging = tmp_path / "staging"
+        watch_folder = tmp_path / "watch"
         session_file = _make_session_file(tmp_path)
         config = _bc_config(tmp_path)
         items = [_item(1), _item(2)]
@@ -720,7 +720,7 @@ class TestMarkCollectionSynced:
             patch("kamp_daemon.bandcamp._make_requests_session", return_value=mock2),
             patch("kamp_daemon.bandcamp._download_item"),
         ):
-            paths = sync_new_purchases(config, staging, state_file)
+            paths = sync_new_purchases(config, watch_folder, state_file)
 
         assert paths == []
 
@@ -739,9 +739,7 @@ class TestNeedsLoginError:
             ),
         ):
             with pytest.raises(NeedsLoginError):
-                sync_new_purchases(
-                    config, tmp_path / "staging", tmp_path / "state.json"
-                )
+                sync_new_purchases(config, tmp_path / "watch", tmp_path / "state.json")
 
     def test_raised_when_session_expired(self, tmp_path: Path) -> None:
         config = _bc_config(tmp_path)
@@ -755,9 +753,7 @@ class TestNeedsLoginError:
         )
         with patch("kamp_daemon.bandcamp._session_file", return_value=sf):
             with pytest.raises(NeedsLoginError):
-                sync_new_purchases(
-                    config, tmp_path / "staging", tmp_path / "state.json"
-                )
+                sync_new_purchases(config, tmp_path / "watch", tmp_path / "state.json")
 
 
 # ---------------------------------------------------------------------------
@@ -1019,9 +1015,9 @@ class TestFetchCollection:
 
 
 class TestDownloadItem:
-    def test_downloads_to_staging_dir(self, tmp_path: Path) -> None:
-        staging = tmp_path / "staging"
-        staging.mkdir()
+    def test_downloads_to_watch_dir(self, tmp_path: Path) -> None:
+        watch_folder = tmp_path / "watch"
+        watch_folder.mkdir()
         config = _bc_config(tmp_path)
         item = {
             "sale_item_id": 42,
@@ -1037,14 +1033,14 @@ class TestDownloadItem:
                 "kamp_daemon.bandcamp._download_file",
                 side_effect=lambda url, dest, sess: dest.write_bytes(b"fake"),
             ):
-                path = _download_item(item, config, staging, session)
+                path = _download_item(item, config, watch_folder, session)
 
         assert path.suffix == ".zip"
-        assert path.parent == staging
+        assert path.parent == watch_folder
 
     def test_raises_when_no_redownload_url(self, tmp_path: Path) -> None:
-        staging = tmp_path / "staging"
-        staging.mkdir()
+        watch_folder = tmp_path / "watch"
+        watch_folder.mkdir()
         config = _bc_config(tmp_path)
         item = {
             "sale_item_id": 42,
@@ -1053,11 +1049,11 @@ class TestDownloadItem:
             "redownload_url": None,
         }
         with pytest.raises(BandcampAPIError, match="No redownload URL"):
-            _download_item(item, config, staging, MagicMock())
+            _download_item(item, config, watch_folder, MagicMock())
 
     def test_sanitises_unsafe_characters_in_filename(self, tmp_path: Path) -> None:
-        staging = tmp_path / "staging"
-        staging.mkdir()
+        watch_folder = tmp_path / "watch"
+        watch_folder.mkdir()
         config = _bc_config(tmp_path)
         item = {
             "sale_item_id": 1,
@@ -1073,7 +1069,7 @@ class TestDownloadItem:
                 "kamp_daemon.bandcamp._download_file",
                 side_effect=lambda url, dest, sess: dest.write_bytes(b"x"),
             ):
-                path = _download_item(item, config, staging, MagicMock())
+                path = _download_item(item, config, watch_folder, MagicMock())
         assert "/" not in path.name
         assert ":" not in path.name
 
@@ -1108,7 +1104,7 @@ class TestDownloadFile:
 class TestSyncStatusCallback:
     def test_status_callback_called_per_item(self, tmp_path: Path) -> None:
         state_file = tmp_path / "state.json"
-        staging = tmp_path / "staging"
+        watch_folder = tmp_path / "watch"
         session_file = _make_session_file(tmp_path)
         config = _bc_config(tmp_path)
         items = [_item(1, "Band A", "Album A"), _item(2, "Band B", "Album B")]
@@ -1119,11 +1115,11 @@ class TestSyncStatusCallback:
         def fake_download(
             item: dict[str, Any],
             bc_config: BandcampConfig,
-            staging_dir: Path,
+            watch_dir: Path,
             session: Any,
         ) -> Path:
-            staging_dir.mkdir(parents=True, exist_ok=True)
-            p = staging_dir / f"{item['sale_item_id']}.zip"
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            p = watch_dir / f"{item['sale_item_id']}.zip"
             p.write_bytes(b"x")
             return p
 
@@ -1135,7 +1131,7 @@ class TestSyncStatusCallback:
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
             sync_new_purchases(
-                config, staging, state_file, status_callback=statuses.append
+                config, watch_folder, state_file, status_callback=statuses.append
             )
 
         assert len(statuses) == 2

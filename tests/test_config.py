@@ -23,7 +23,7 @@ class TestFirstRunSetup:
         path = tmp_path / "config.toml"
         Config.first_run_setup(path)
         assert path.exists()
-        assert "staging" in path.read_text()
+        assert "watch_folder" in path.read_text()
 
     def test_returns_config_with_user_values(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -32,7 +32,7 @@ class TestFirstRunSetup:
         inputs = iter(["~/staging", "~/lib"])
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
         config = Config.first_run_setup(tmp_path / "config.toml")
-        assert "staging" in str(config.paths.staging)
+        assert "staging" in str(config.paths.watch_folder)  # user typed ~/staging
         assert "lib" in str(config.paths.library)
 
     def test_blank_input_uses_default(
@@ -41,7 +41,7 @@ class TestFirstRunSetup:
         """Pressing Enter at a prompt accepts the shown default."""
         monkeypatch.setattr("builtins.input", lambda _: "")
         config = Config.first_run_setup(tmp_path / "config.toml")
-        assert config.paths.staging == Path("~/Music/staging").expanduser()
+        assert config.paths.watch_folder == Path("~/Music/staging").expanduser()
         assert config.paths.library == Path("~/Music").expanduser()
 
     def test_written_toml_is_valid(
@@ -54,7 +54,7 @@ class TestFirstRunSetup:
         Config.first_run_setup(path)
         # Round-trip: load should succeed without error
         loaded = Config.load(path)
-        assert "staging" in str(loaded.paths.staging)
+        assert "staging" in str(loaded.paths.watch_folder)
 
     def test_creates_parent_directories(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -129,7 +129,7 @@ class TestBandcampSetup:
 
 _TOML_WITH_BANDCAMP = """\
 [paths]
-staging = "~/Music/staging"
+watch_folder = "~/Music/staging"
 library = "~/Music"
 
 [musicbrainz]
@@ -183,7 +183,7 @@ class TestConfigSet:
     def test_set_string_key_updates_value(self, tmp_path: Path) -> None:
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
-        config_set(path, "paths.staging", "~/new/staging")
+        config_set(path, "paths.watch_folder", "~/new/staging")
         assert "~/new/staging" in path.read_text()
 
     def test_set_int_key_updates_value(self, tmp_path: Path) -> None:
@@ -196,7 +196,7 @@ class TestConfigSet:
     def test_set_preserves_other_keys(self, tmp_path: Path) -> None:
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
-        config_set(path, "paths.staging", "~/new/staging")
+        config_set(path, "paths.watch_folder", "~/new/staging")
         text = path.read_text()
         assert "library" in text
         assert "path_template" in text
@@ -204,7 +204,7 @@ class TestConfigSet:
     def test_set_preserves_comments(self, tmp_path: Path) -> None:
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
-        config_set(path, "paths.staging", "~/new/staging")
+        config_set(path, "paths.watch_folder", "~/new/staging")
         # Comments on other lines must survive
         assert "# Available variables" in path.read_text()
 
@@ -242,17 +242,17 @@ class TestConfigSet:
         """Config.load() succeeds and reflects the new value after config_set."""
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
-        config_set(path, "paths.staging", "~/round/trip")
+        config_set(path, "paths.watch_folder", "~/round/trip")
         loaded = Config.load(path)
-        assert "round/trip" in str(loaded.paths.staging)
+        assert "round/trip" in str(loaded.paths.watch_folder)
 
     def test_set_path_value_round_trips(self, tmp_path: Path) -> None:
         """A path set via config_set is written as a string and loaded back correctly."""
         path = tmp_path / "config.toml"
         path.write_text(DEFAULT_CONFIG_CONTENT)
-        config_set(path, "paths.staging", "~/new/staging")
+        config_set(path, "paths.watch_folder", "~/new/staging")
         loaded = Config.load(path)
-        assert "new/staging" in str(loaded.paths.staging)
+        assert "new/staging" in str(loaded.paths.watch_folder)
 
     def test_set_field_missing_from_section_appends_key(self, tmp_path: Path) -> None:
         """config_set appends a missing key into an existing non-optional section.
@@ -321,7 +321,7 @@ class TestConfigSet:
 
 _TOML_WITH_LASTFM = """\
 [paths]
-staging = "~/Music/staging"
+watch_folder = "~/Music/staging"
 library = "~/Music"
 
 [musicbrainz]
@@ -391,3 +391,29 @@ class TestLegacyConfig:
         path.write_text(_TOML_WITH_BANDCAMP)  # _TOML_WITH_BANDCAMP has contact = "..."
         config = Config.load(path)
         assert config.musicbrainz is not None
+
+    def test_load_accepts_legacy_staging_key(self, tmp_path: Path) -> None:
+        """Existing config.toml files with paths.staging load without modification."""
+        path = tmp_path / "config.toml"
+        path.write_text(
+            _TOML_WITH_BANDCAMP.replace(
+                'watch_folder = "~/Music/staging"',
+                'staging = "~/Music/staging"',
+            )
+        )
+        config = Config.load(path)
+        assert config.paths.watch_folder == Path("~/Music/staging").expanduser()
+
+    def test_load_watch_folder_takes_precedence_over_legacy_staging(
+        self, tmp_path: Path
+    ) -> None:
+        """When both keys are present, watch_folder wins over the legacy staging key."""
+        path = tmp_path / "config.toml"
+        path.write_text(
+            _TOML_WITH_BANDCAMP.replace(
+                'watch_folder = "~/Music/staging"',
+                'watch_folder = "~/Music/watch"\nstaging = "~/Music/staging"',
+            )
+        )
+        config = Config.load(path)
+        assert config.paths.watch_folder == Path("~/Music/watch").expanduser()

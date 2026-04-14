@@ -1,4 +1,4 @@
-"""Filesystem watcher that triggers the ingest pipeline on new staging items."""
+"""Filesystem watcher that triggers the ingest pipeline on new items in the watch folder."""
 
 from __future__ import annotations
 
@@ -31,11 +31,11 @@ _SETTLE_SECONDS = 2.0  # wait for file to stop growing before processing
 _POLL_INTERVAL = 0.5  # how often to check file size during settle
 
 
-class _StagingHandler(FileSystemEventHandler):
+class _WatchHandler(FileSystemEventHandler):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self._config = config
-        self._staging_root = config.paths.staging
+        self._watch_root = config.paths.watch_folder
         # Track paths being debounced: path → timer
         self._pending: dict[Path, threading.Timer] = {}
         # Track paths whose pipeline is currently running to prevent double-execution
@@ -61,18 +61,18 @@ class _StagingHandler(FileSystemEventHandler):
     def on_modified(self, event: FileSystemEvent) -> None:
         # FSEvents on macOS coalesces renames into DirModifiedEvent on the parent
         # directory rather than emitting DirCreatedEvent/DirMovedEvent for the new
-        # item. Scan staging root on every modification and schedule any item that
+        # item. Scan watch root on every modification and schedule any item that
         # has appeared and is not already pending.
         if not event.is_directory:
             return
-        if Path(str(event.src_path)) != self._staging_root:
+        if Path(str(event.src_path)) != self._watch_root:
             return
-        self._scan_staging_root()
+        self._scan_watch_root()
 
-    def _scan_staging_root(self) -> None:
-        """Schedule any directories or ZIPs in staging that are not already pending."""
+    def _scan_watch_root(self) -> None:
+        """Schedule any directories or ZIPs in the watch folder that are not already pending."""
         try:
-            children = list(self._staging_root.iterdir())
+            children = list(self._watch_root.iterdir())
         except OSError:
             return
         with self._lock:
@@ -90,11 +90,11 @@ class _StagingHandler(FileSystemEventHandler):
                 self._schedule(child)
 
     def on_moved(self, event: FileSystemMovedEvent) -> None:
-        # On macOS, dragging a folder/file into staging fires a moved event rather
-        # than a created event. Handle it the same way, but only for items whose
-        # destination is directly inside staging (not nested subdirectories).
+        # On macOS, dragging a folder/file into the watch folder fires a moved event
+        # rather than a created event. Handle it the same way, but only for items whose
+        # destination is directly inside the watch folder (not nested subdirectories).
         dest = Path(str(event.dest_path))
-        if dest.parent != self._staging_root:
+        if dest.parent != self._watch_root:
             return
         if event.is_directory and dest.name != "errors":
             self._schedule(dest)
@@ -180,12 +180,12 @@ def _wait_for_stable_size(path: Path, timeout: float = 60.0) -> None:
 
 
 class Watcher:
-    """Manage a watchdog observer watching the staging directory."""
+    """Manage a watchdog observer watching the watch folder."""
 
     def __init__(self, config: Config) -> None:
         self._config = config
         self._observer = Observer()
-        self._handler = _StagingHandler(config)
+        self._handler = _WatchHandler(config)
         self._paused = False
         self._stage_callback: Callable[[str], None] | None = None
         self._notification_callback: Callable[[str, str, str], None] | None = None
@@ -209,20 +209,20 @@ class Watcher:
         self._handler.notification_callback = cb
 
     def start(self) -> None:
-        staging = self._config.paths.staging
-        staging.mkdir(parents=True, exist_ok=True)
-        self._observer.schedule(self._handler, str(staging), recursive=False)
+        watch_folder = self._config.paths.watch_folder
+        watch_folder.mkdir(parents=True, exist_ok=True)
+        self._observer.schedule(self._handler, str(watch_folder), recursive=False)
         self._observer.start()
-        logger.info("Watching staging directory: %s", staging)
+        logger.info("Watching watch folder: %s", watch_folder)
         # Process any items already present when the daemon starts.
-        self._handler._scan_staging_root()
+        self._handler._scan_watch_root()
 
     def pause(self) -> None:
         """Stop pipeline processing without tearing down the daemon.
 
         Cancels pending debounce timers and stops the observer thread.
-        Items dropped into staging while paused are picked up on resume()
-        via _scan_staging_root().
+        Items dropped into the watch folder while paused are picked up on resume()
+        via _scan_watch_root().
         """
         if self._paused:
             return
@@ -240,14 +240,14 @@ class Watcher:
         if not self._paused:
             return
         self._paused = False
-        staging = self._config.paths.staging
+        watch_folder = self._config.paths.watch_folder
         self._observer = Observer()
-        self._handler = _StagingHandler(self._config)
+        self._handler = _WatchHandler(self._config)
         self._handler.stage_callback = self._stage_callback
         self._handler.notification_callback = self._notification_callback
-        self._observer.schedule(self._handler, str(staging), recursive=False)
+        self._observer.schedule(self._handler, str(watch_folder), recursive=False)
         self._observer.start()
-        self._handler._scan_staging_root()
+        self._handler._scan_watch_root()
         logger.info("Watcher resumed")
 
     def stop(self) -> None:
@@ -261,27 +261,29 @@ class Watcher:
         """Apply a new config live.
 
         Updates the handler's config so future pipeline runs see the new
-        settings.  If the staging path changed the observer is rescheduled to
-        the new directory immediately.
+        settings.  If the watch folder path changed the observer is rescheduled
+        to the new directory immediately.
         """
-        old_staging = self._config.paths.staging
+        old_watch_folder = self._config.paths.watch_folder
         self._config = config
         self._handler._config = config
 
-        if config.paths.staging != old_staging:
+        if config.paths.watch_folder != old_watch_folder:
             logger.info(
-                "Staging path changed (%s → %s); rescheduling observer.",
-                old_staging,
-                config.paths.staging,
+                "Watch folder changed (%s → %s); rescheduling observer.",
+                old_watch_folder,
+                config.paths.watch_folder,
             )
             self._observer.unschedule_all()
-            new_staging = config.paths.staging
-            new_staging.mkdir(parents=True, exist_ok=True)
-            self._handler = _StagingHandler(config)
+            new_watch_folder = config.paths.watch_folder
+            new_watch_folder.mkdir(parents=True, exist_ok=True)
+            self._handler = _WatchHandler(config)
             self._handler.stage_callback = self._stage_callback
             self._handler.notification_callback = self._notification_callback
-            self._observer.schedule(self._handler, str(new_staging), recursive=False)
-            self._handler._scan_staging_root()
+            self._observer.schedule(
+                self._handler, str(new_watch_folder), recursive=False
+            )
+            self._handler._scan_watch_root()
         else:
             logger.info("Watcher config reloaded.")
 
@@ -293,7 +295,7 @@ class Watcher:
 class _LibraryHandler(FileSystemEventHandler):
     """Debounced handler that fires a callback when audio files change in the library.
 
-    Unlike _StagingHandler (one timer per path), a single timer is sufficient
+    Unlike _WatchHandler (one timer per path), a single timer is sufficient
     here because LibraryScanner.scan() always does a full recursive walk; there
     is no benefit to tracking individual paths.
 

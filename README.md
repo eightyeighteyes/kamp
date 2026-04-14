@@ -11,9 +11,9 @@ Built with Python 3 by [Claude Sonnet 4.6](https://www.anthropic.com/claude).
 - **Bandcamp auto-download** — polls your Bandcamp collection for new purchases and downloads them automatically; authenticates via a one-time interactive browser login (no credentials stored)
 - **Automatic tagging** — looks up every release on [MusicBrainz](https://musicbrainz.org) and writes canonical tags (artist, album artist, album, year, track number, disc number, MusicBrainz IDs)
 - **Cover art** — fetches front cover art from the [MusicBrainz Cover Art Archive](https://coverartarchive.org), validates minimum dimensions (≥ 1000 × 1000 px) and maximum file size (≤ 1 MB), and embeds it in every track
-- **Filesystem watcher** — monitors your staging directory; drop a ZIP or folder in and it is processed automatically
+- **Filesystem watcher** — monitors your watch folder; drop a ZIP or folder in and it is processed automatically
 - **Configurable library layout** — moves finished files into your library using a template you control (`{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}`)
-- **Error quarantine** — failed items are moved to `staging/errors/` so nothing loops or blocks the queue
+- **Error quarantine** — failed items are moved to `<watch-folder>/errors/` so nothing loops or blocks the queue
 - **Error notifications** — macOS system notifications for pipeline failures (extraction, tagging, artwork, download) and Bandcamp sync failures
 - **macOS menu bar** — optional status-bar icon with pipeline Play/Stop toggle, on-demand Bandcamp sync, and a live sync status indicator with pulse animation
 - **Background service** — one command registers the daemon as a system service that starts at login (macOS launchd)
@@ -27,10 +27,10 @@ Built with Python 3 by [Claude Sonnet 4.6](https://www.anthropic.com/claude).
 Bandcamp purchase
        │
        ▼
-  [bandcamp.py] poll collection API → scrape download links → download ZIP → staging/
+  [bandcamp.py] poll collection API → scrape download links → download ZIP → watch folder/
        │
        ▼
-  [watcher.py] detects new ZIP or folder in staging/
+  [watcher.py] detects new ZIP or folder in watch folder/
        │
        ▼
   [extractor.py] unzip archive
@@ -107,7 +107,7 @@ Edit it before starting:
 
 ```toml
 [paths]
-staging = "~/Music/staging"   # drop ZIPs here; kamp watches this directory
+watch_folder = "~/Music/staging"   # drop ZIPs/folders here for automatic ingest
 library = "~/Music"           # finished files land here
 
 [musicbrainz]
@@ -141,12 +141,12 @@ kamp
 kamp daemon
 ```
 
-Watches the staging directory for new ZIPs and folders, and (if `[bandcamp]` is configured) polls Bandcamp for new purchases on the configured interval.
+Watches the watch folder for new ZIPs and folders, and (if `[bandcamp]` is configured) polls Bandcamp for new purchases on the configured interval.
 
 Override paths without editing the config:
 
 ```bash
-kamp daemon --staging ~/Downloads/staging --library ~/Music
+kamp daemon --watch-folder ~/Downloads/staging --library ~/Music
 ```
 
 ### macOS menu bar
@@ -196,7 +196,7 @@ Open the Preferences dialog from **kamp → Preferences** in the macOS menu bar,
 
 ```bash
 kamp config show
-kamp config set paths.staging ~/Downloads/staging
+kamp config set paths.watch_folder ~/Downloads/staging
 kamp config set artwork.min_dimension 500
 ```
 
@@ -224,7 +224,7 @@ Each command runs the real pipeline (or syncer) up to the named stage, injects a
 kamp sync
 ```
 
-Downloads any purchases not yet in your local state, places them in staging, and exits. The watcher (if running) picks them up automatically.
+Downloads any purchases not yet in your local state, places them in the watch folder, and exits. The watcher (if running) picks them up automatically.
 
 ### First sync behaviour
 
@@ -250,7 +250,7 @@ This also clears the sync state file, so the next sync will re-examine your full
 
 ### Manual ingest
 
-Drop any Bandcamp ZIP or already-extracted folder into your staging directory. The daemon processes it within a few seconds.
+Drop any Bandcamp ZIP or already-extracted folder into your watch folder. The daemon processes it within a few seconds.
 
 ---
 

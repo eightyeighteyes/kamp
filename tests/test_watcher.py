@@ -23,7 +23,7 @@ from watchdog.events import (
 from kamp_daemon.watcher import (
     LibraryWatcher,
     _LibraryHandler,
-    _StagingHandler,
+    _WatchHandler,
     Watcher,
 )
 
@@ -32,7 +32,7 @@ from kamp_daemon.watcher import (
 def config(tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(
-            staging=tmp_path / "staging",
+            watch_folder=tmp_path / "watch",
             library=tmp_path / "library",
         ),
         musicbrainz=MusicBrainzConfig(),
@@ -43,9 +43,9 @@ def config(tmp_path: Path) -> Config:
     )
 
 
-def _make_handler(config: Config) -> _StagingHandler:
-    config.paths.staging.mkdir(parents=True, exist_ok=True)
-    return _StagingHandler(config)
+def _make_handler(config: Config) -> _WatchHandler:
+    config.paths.watch_folder.mkdir(parents=True, exist_ok=True)
+    return _WatchHandler(config)
 
 
 def _dir_moved_event(src: str, dest: str) -> MagicMock:
@@ -79,19 +79,21 @@ def _dir_created_event(path: str) -> MagicMock:
 
 
 class TestOnMoved:
-    def test_directory_moved_into_staging_is_scheduled(self, config: Config) -> None:
+    def test_directory_moved_into_watch_folder_is_scheduled(
+        self, config: Config
+    ) -> None:
         """Dragging a folder from Finder fires a moved event; it must be scheduled."""
         handler = _make_handler(config)
-        dest = str(config.paths.staging / "my-album")
+        dest = str(config.paths.watch_folder / "my-album")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             handler.on_moved(_dir_moved_event("/tmp/my-album", dest))
 
         mock_schedule.assert_called_once_with(Path(dest))
 
-    def test_zip_moved_into_staging_is_scheduled(self, config: Config) -> None:
+    def test_zip_moved_into_watch_folder_is_scheduled(self, config: Config) -> None:
         handler = _make_handler(config)
-        dest = str(config.paths.staging / "album.zip")
+        dest = str(config.paths.watch_folder / "album.zip")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             handler.on_moved(_file_moved_event("/tmp/album.zip", dest))
@@ -101,7 +103,7 @@ class TestOnMoved:
     def test_directory_moved_into_subdir_is_ignored(self, config: Config) -> None:
         """Items moved into a subdirectory of staging (not directly into root) are skipped."""
         handler = _make_handler(config)
-        dest = str(config.paths.staging / "subdir" / "my-album")
+        dest = str(config.paths.watch_folder / "subdir" / "my-album")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             handler.on_moved(_dir_moved_event("/tmp/my-album", dest))
@@ -110,17 +112,19 @@ class TestOnMoved:
 
     def test_errors_directory_moved_in_is_ignored(self, config: Config) -> None:
         handler = _make_handler(config)
-        dest = str(config.paths.staging / "errors")
+        dest = str(config.paths.watch_folder / "errors")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             handler.on_moved(_dir_moved_event("/tmp/errors", dest))
 
         mock_schedule.assert_not_called()
 
-    def test_audio_file_moved_into_staging_is_scheduled(self, config: Config) -> None:
+    def test_audio_file_moved_into_watch_folder_is_scheduled(
+        self, config: Config
+    ) -> None:
         """Dragging a single audio file into staging fires a moved event; it must be scheduled."""
         handler = _make_handler(config)
-        dest = str(config.paths.staging / "track.mp3")
+        dest = str(config.paths.watch_folder / "track.mp3")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             handler.on_moved(_file_moved_event("/tmp/track.mp3", dest))
@@ -129,7 +133,7 @@ class TestOnMoved:
 
     def test_non_audio_non_zip_file_moved_in_is_ignored(self, config: Config) -> None:
         handler = _make_handler(config)
-        dest = str(config.paths.staging / "cover.jpg")
+        dest = str(config.paths.watch_folder / "cover.jpg")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             handler.on_moved(_file_moved_event("/tmp/cover.jpg", dest))
@@ -144,32 +148,36 @@ class TestOnModified:
         event.src_path = path
         return event
 
-    def test_staging_root_modified_schedules_new_directory(
+    def test_watch_root_modified_schedules_new_directory(
         self, config: Config, tmp_path: Path
     ) -> None:
         """DirModifiedEvent on staging root (FSEvents rename coalescing) triggers schedule."""
         handler = _make_handler(config)
-        album_dir = config.paths.staging / "my-album"
+        album_dir = config.paths.watch_folder / "my-album"
         album_dir.mkdir()
 
         with patch.object(handler, "_schedule") as mock_schedule:
-            handler.on_modified(self._dir_modified_event(str(config.paths.staging)))
+            handler.on_modified(
+                self._dir_modified_event(str(config.paths.watch_folder))
+            )
 
         mock_schedule.assert_called_once_with(album_dir)
 
-    def test_staging_root_modified_ignores_errors_dir(self, config: Config) -> None:
+    def test_watch_root_modified_ignores_errors_dir(self, config: Config) -> None:
         handler = _make_handler(config)
-        (config.paths.staging / "errors").mkdir()
+        (config.paths.watch_folder / "errors").mkdir()
 
         with patch.object(handler, "_schedule") as mock_schedule:
-            handler.on_modified(self._dir_modified_event(str(config.paths.staging)))
+            handler.on_modified(
+                self._dir_modified_event(str(config.paths.watch_folder))
+            )
 
         mock_schedule.assert_not_called()
 
     def test_modified_event_on_subdirectory_is_ignored(self, config: Config) -> None:
         """Modification events inside staging subdirectories are not acted on."""
         handler = _make_handler(config)
-        subdir = config.paths.staging / "subdir"
+        subdir = config.paths.watch_folder / "subdir"
         subdir.mkdir()
 
         with patch.object(handler, "_schedule") as mock_schedule:
@@ -179,7 +187,7 @@ class TestOnModified:
 
     def test_already_pending_items_not_rescheduled(self, config: Config) -> None:
         handler = _make_handler(config)
-        album_dir = config.paths.staging / "my-album"
+        album_dir = config.paths.watch_folder / "my-album"
         album_dir.mkdir()
 
         # Simulate an already-pending path
@@ -187,7 +195,9 @@ class TestOnModified:
         handler._pending[album_dir] = fake_timer
 
         with patch.object(handler, "_schedule") as mock_schedule:
-            handler.on_modified(self._dir_modified_event(str(config.paths.staging)))
+            handler.on_modified(
+                self._dir_modified_event(str(config.paths.watch_folder))
+            )
 
         mock_schedule.assert_not_called()
 
@@ -197,12 +207,12 @@ class TestStartupScan:
         self, config: Config, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A directory already in staging when the daemon starts gets scheduled."""
-        config.paths.staging.mkdir(parents=True, exist_ok=True)
-        (config.paths.staging / "Artist - Album").mkdir()
+        config.paths.watch_folder.mkdir(parents=True, exist_ok=True)
+        (config.paths.watch_folder / "Artist - Album").mkdir()
 
         scheduled: list[Path] = []
         monkeypatch.setattr(
-            _StagingHandler, "_schedule", lambda self, p: scheduled.append(p)
+            _WatchHandler, "_schedule", lambda self, p: scheduled.append(p)
         )
 
         watcher = Watcher(config)
@@ -216,12 +226,12 @@ class TestStartupScan:
         self, config: Config, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A ZIP already in staging when the daemon starts gets scheduled."""
-        config.paths.staging.mkdir(parents=True, exist_ok=True)
-        (config.paths.staging / "album.zip").write_bytes(b"PK")
+        config.paths.watch_folder.mkdir(parents=True, exist_ok=True)
+        (config.paths.watch_folder / "album.zip").write_bytes(b"PK")
 
         scheduled: list[Path] = []
         monkeypatch.setattr(
-            _StagingHandler, "_schedule", lambda self, p: scheduled.append(p)
+            _WatchHandler, "_schedule", lambda self, p: scheduled.append(p)
         )
 
         watcher = Watcher(config)
@@ -235,12 +245,12 @@ class TestStartupScan:
         self, config: Config, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A lone audio file already in staging when the daemon starts gets scheduled."""
-        config.paths.staging.mkdir(parents=True, exist_ok=True)
-        (config.paths.staging / "track.mp3").write_bytes(b"fake mp3")
+        config.paths.watch_folder.mkdir(parents=True, exist_ok=True)
+        (config.paths.watch_folder / "track.mp3").write_bytes(b"fake mp3")
 
         scheduled: list[Path] = []
         monkeypatch.setattr(
-            _StagingHandler, "_schedule", lambda self, p: scheduled.append(p)
+            _WatchHandler, "_schedule", lambda self, p: scheduled.append(p)
         )
 
         watcher = Watcher(config)
@@ -254,12 +264,12 @@ class TestStartupScan:
         self, config: Config, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The errors/ subdirectory is not scheduled on startup."""
-        config.paths.staging.mkdir(parents=True, exist_ok=True)
-        (config.paths.staging / "errors").mkdir()
+        config.paths.watch_folder.mkdir(parents=True, exist_ok=True)
+        (config.paths.watch_folder / "errors").mkdir()
 
         scheduled: list[Path] = []
         monkeypatch.setattr(
-            _StagingHandler, "_schedule", lambda self, p: scheduled.append(p)
+            _WatchHandler, "_schedule", lambda self, p: scheduled.append(p)
         )
 
         watcher = Watcher(config)
@@ -274,22 +284,22 @@ class TestInFlight:
     def test_in_flight_path_is_not_rescheduled(self, config: Config) -> None:
         """_schedule is a no-op for a path currently being processed."""
         handler = _make_handler(config)
-        path = config.paths.staging / "my-album"
+        path = config.paths.watch_folder / "my-album"
         handler._in_flight.add(path)
 
         handler._schedule(path)
 
         assert path not in handler._pending
 
-    def test_scan_staging_root_skips_in_flight(self, config: Config) -> None:
-        """_scan_staging_root does not schedule a path that is currently in-flight."""
+    def test_scan_watch_root_skips_in_flight(self, config: Config) -> None:
+        """_scan_watch_root does not schedule a path that is currently in-flight."""
         handler = _make_handler(config)
-        album = config.paths.staging / "my-album"
+        album = config.paths.watch_folder / "my-album"
         album.mkdir()
         handler._in_flight.add(album)
 
         with patch.object(handler, "_schedule") as mock_schedule:
-            handler._scan_staging_root()
+            handler._scan_watch_root()
 
         mock_schedule.assert_not_called()
 
@@ -298,7 +308,7 @@ class TestInFlight:
     ) -> None:
         """After _process completes, the path is removed from _in_flight."""
         handler = _make_handler(config)
-        album = config.paths.staging / "my-album"
+        album = config.paths.watch_folder / "my-album"
         album.mkdir()
         monkeypatch.setattr(
             "kamp_daemon.watcher.run_in_subprocess", lambda path, cfg, **kw: None
@@ -312,7 +322,7 @@ class TestInFlight:
     ) -> None:
         """_in_flight is cleaned up even when run() raises."""
         handler = _make_handler(config)
-        album = config.paths.staging / "my-album"
+        album = config.paths.watch_folder / "my-album"
         album.mkdir()
 
         def _boom(path: Path, cfg: object) -> None:
@@ -325,9 +335,11 @@ class TestInFlight:
 
 
 class TestOnCreated:
-    def test_directory_created_in_staging_is_scheduled(self, config: Config) -> None:
+    def test_directory_created_in_watch_folder_is_scheduled(
+        self, config: Config
+    ) -> None:
         handler = _make_handler(config)
-        path = str(config.paths.staging / "my-album")
+        path = str(config.paths.watch_folder / "my-album")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             handler.on_created(_dir_created_event(path))
@@ -336,17 +348,19 @@ class TestOnCreated:
 
     def test_errors_directory_created_is_ignored(self, config: Config) -> None:
         handler = _make_handler(config)
-        path = str(config.paths.staging / "errors")
+        path = str(config.paths.watch_folder / "errors")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             handler.on_created(_dir_created_event(path))
 
         mock_schedule.assert_not_called()
 
-    def test_zip_file_created_in_staging_is_scheduled(self, config: Config) -> None:
+    def test_zip_file_created_in_watch_folder_is_scheduled(
+        self, config: Config
+    ) -> None:
         """A ZIP file created in staging is scheduled for processing."""
         handler = _make_handler(config)
-        path = str(config.paths.staging / "album.zip")
+        path = str(config.paths.watch_folder / "album.zip")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             from watchdog.events import FileCreatedEvent
@@ -355,10 +369,12 @@ class TestOnCreated:
 
         mock_schedule.assert_called_once_with(Path(path))
 
-    def test_audio_file_created_in_staging_is_scheduled(self, config: Config) -> None:
+    def test_audio_file_created_in_watch_folder_is_scheduled(
+        self, config: Config
+    ) -> None:
         """A single audio file created in staging is scheduled for processing."""
         handler = _make_handler(config)
-        path = str(config.paths.staging / "track.mp3")
+        path = str(config.paths.watch_folder / "track.mp3")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             from watchdog.events import FileCreatedEvent
@@ -370,7 +386,7 @@ class TestOnCreated:
     def test_non_zip_file_created_is_ignored(self, config: Config) -> None:
         """A non-ZIP file created in staging is not scheduled."""
         handler = _make_handler(config)
-        path = str(config.paths.staging / "cover.jpg")
+        path = str(config.paths.watch_folder / "cover.jpg")
 
         with patch.object(handler, "_schedule") as mock_schedule:
             from watchdog.events import FileCreatedEvent
@@ -386,9 +402,9 @@ class TestOnModifiedFileEvent:
         handler = _make_handler(config)
         event = MagicMock()
         event.is_directory = False
-        event.src_path = str(config.paths.staging / "track.mp3")
+        event.src_path = str(config.paths.watch_folder / "track.mp3")
 
-        with patch.object(handler, "_scan_staging_root") as mock_scan:
+        with patch.object(handler, "_scan_watch_root") as mock_scan:
             handler.on_modified(event)
 
         mock_scan.assert_not_called()
@@ -396,20 +412,20 @@ class TestOnModifiedFileEvent:
 
 class TestScanStagingRootOSError:
     def test_oserror_during_scan_is_silently_ignored(self, config: Config) -> None:
-        """_scan_staging_root handles OSError from iterdir gracefully."""
+        """_scan_watch_root handles OSError from iterdir gracefully."""
         handler = _make_handler(config)
 
         # Patch at the class level — PosixPath C-methods can't be patched on instances
         with patch("pathlib.Path.iterdir", side_effect=OSError("no access")):
-            handler._scan_staging_root()  # must not raise
+            handler._scan_watch_root()  # must not raise
 
 
 class TestScheduleTimer:
     def test_schedule_adds_to_pending(self, config: Config) -> None:
         """_schedule creates a timer and adds it to _pending."""
         handler = _make_handler(config)
-        path = config.paths.staging / "my-album"
-        (config.paths.staging / "my-album").mkdir()
+        path = config.paths.watch_folder / "my-album"
+        (config.paths.watch_folder / "my-album").mkdir()
 
         handler._schedule(path)
         assert path in handler._pending
@@ -418,7 +434,7 @@ class TestScheduleTimer:
     def test_schedule_cancels_existing_timer(self, config: Config) -> None:
         """_schedule cancels any existing timer for the same path."""
         handler = _make_handler(config)
-        path = config.paths.staging / "my-album"
+        path = config.paths.watch_folder / "my-album"
         path.mkdir()
 
         old_timer = MagicMock()
@@ -473,7 +489,7 @@ class TestDuplicateRunPrevention:
     ) -> None:
         """_process passes a _on_directory callback to run(); verifies callback arg."""
         handler = _make_handler(config)
-        album = config.paths.staging / "my-album"
+        album = config.paths.watch_folder / "my-album"
         album.mkdir()
 
         received_callbacks: list[object] = []
@@ -495,10 +511,10 @@ class TestDuplicateRunPrevention:
         """When the pipeline calls the callback, any pending timer for the
         extracted directory is cancelled and the directory is added to _in_flight."""
         handler = _make_handler(config)
-        zip_path = config.paths.staging / "album.zip"
+        zip_path = config.paths.watch_folder / "album.zip"
         zip_path.write_bytes(b"PK")
 
-        extracted_dir = config.paths.staging / "album"
+        extracted_dir = config.paths.watch_folder / "album"
         extracted_dir.mkdir()
 
         # Simulate a pending timer for the extracted directory (as the watcher
@@ -526,10 +542,10 @@ class TestDuplicateRunPrevention:
     ) -> None:
         """A directory added to _in_flight by the callback cannot be rescheduled."""
         handler = _make_handler(config)
-        zip_path = config.paths.staging / "album.zip"
+        zip_path = config.paths.watch_folder / "album.zip"
         zip_path.write_bytes(b"PK")
 
-        extracted_dir = config.paths.staging / "album"
+        extracted_dir = config.paths.watch_folder / "album"
         extracted_dir.mkdir()
 
         def _fake_run(path: Path, cfg: object, _on_directory: object = None) -> None:
@@ -579,7 +595,7 @@ class TestWatcherPauseResume:
         """pause() cancels any in-flight debounce timers."""
         watcher = self._patched_watcher(config, monkeypatch)
         timer = MagicMock()
-        watcher._handler._pending[config.paths.staging / "album"] = timer
+        watcher._handler._pending[config.paths.watch_folder / "album"] = timer
 
         watcher.pause()
 
@@ -628,12 +644,12 @@ class TestWatcherPauseResume:
 
         assert start_calls == [1]
 
-    def test_resume_scans_staging_for_existing_items(
+    def test_resume_scans_watch_folder_for_existing_items(
         self, config: Config, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """resume() picks up items already in staging."""
-        config.paths.staging.mkdir(parents=True, exist_ok=True)
-        (config.paths.staging / "Artist - Album").mkdir()
+        config.paths.watch_folder.mkdir(parents=True, exist_ok=True)
+        (config.paths.watch_folder / "Artist - Album").mkdir()
         watcher = self._patched_watcher(config, monkeypatch)
         watcher.pause()
 
@@ -643,7 +659,7 @@ class TestWatcherPauseResume:
             lambda: MagicMock(start=lambda: None, schedule=lambda *a, **kw: None),
         )
         monkeypatch.setattr(
-            _StagingHandler, "_schedule", lambda self, p: scheduled.append(p)
+            _WatchHandler, "_schedule", lambda self, p: scheduled.append(p)
         )
 
         watcher.resume()
@@ -733,16 +749,18 @@ class TestWatcherReload:
             "unschedule_all",
             lambda: reschedule_calls.append(1),
         )
-        new_staging = tmp_path / "new_staging"
+        new_watch_folder = tmp_path / "new_watch"
         new_config = Config(
-            paths=PathsConfig(staging=new_staging, library=config.paths.library),
+            paths=PathsConfig(
+                watch_folder=new_watch_folder, library=config.paths.library
+            ),
             musicbrainz=config.musicbrainz,
             artwork=config.artwork,
             library=config.library,
         )
         watcher.reload(new_config)
         assert reschedule_calls == [1]
-        assert watcher._config.paths.staging == new_staging
+        assert watcher._config.paths.watch_folder == new_watch_folder
 
 
 class TestStageCallback:
@@ -751,7 +769,7 @@ class TestStageCallback:
     ) -> None:
         """_process passes handler.stage_callback as stage_callback kwarg to run()."""
         handler = _make_handler(config)
-        album = config.paths.staging / "my-album"
+        album = config.paths.watch_folder / "my-album"
         album.mkdir()
 
         received: dict[str, object] = {}

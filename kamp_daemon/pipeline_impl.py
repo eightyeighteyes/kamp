@@ -32,7 +32,7 @@ from .tagger import (
 
 logger = logging.getLogger(__name__)
 
-# Marker embedded in a staging item's name to inject a failure at a specific
+# Marker embedded in a watch folder item's name to inject a failure at a specific
 # pipeline stage.  Used exclusively by `kamp test-notify` so the full
 # IPC notification path (pipeline_impl → stage_q → notification_callback) can
 # be exercised without a real audio file or network access.
@@ -73,9 +73,9 @@ def run(
     stage_callback: Callable[[str], None] | None = None,
     notify_callback: Callable[[str], None] | None = None,
 ) -> None:
-    """Process a single staging item (ZIP or directory) end-to-end.
+    """Process a single watch folder item (ZIP or directory) end-to-end.
 
-    On per-step failure the item is moved to staging/errors/ so the watcher
+    On per-step failure the item is moved to <watch-folder>/errors/ so the watcher
     does not trigger on it again.  *stage_callback* (if provided) is called
     with the current stage name ("Extracting", "Tagging", etc.) and with an
     empty string in a finally block so the caller can always reset its display.
@@ -95,10 +95,10 @@ def run(
         except ExtractionError as exc:
             logger.error("Extraction failed: %s", exc)
             _notify(notify_callback, "Extraction failed", path.name)
-            _quarantine(path, config.paths.staging)
+            _quarantine(path, config.paths.watch_folder)
             return
 
-        # Notify the watcher of the staging directory as early as possible so it
+        # Notify the watcher of the watch folder directory as early as possible so it
         # can cancel any pending debounce timer for this directory.  Without this,
         # extracting a ZIP creates the directory, the watcher schedules it for a
         # second pipeline run, and that run races the first.
@@ -111,11 +111,11 @@ def run(
             _notify(
                 notify_callback, "Extraction failed", f"No audio files in {path.name}"
             )
-            _quarantine(directory, config.paths.staging)
+            _quarantine(directory, config.paths.watch_folder)
             return
 
         # Build a shared KampGround context for this pipeline invocation.
-        # library_tracks is empty because the pipeline acts on staging files
+        # library_tracks is empty because the pipeline acts on watch folder files
         # (not yet in the library); playback snapshot is a default.
         ctx = KampGround(playback=PlaybackSnapshot(), library_tracks=[])
 
@@ -171,7 +171,7 @@ def run(
             except TaggingError as exc:
                 logger.error("Tagging failed: %s", exc)
                 _notify(notify_callback, "Tagging failed", path.name)
-                _quarantine(directory, config.paths.staging)
+                _quarantine(directory, config.paths.watch_folder)
                 return
 
         # --- 3. Artwork -------------------------------------------------------
@@ -209,14 +209,14 @@ def run(
                 raise MoveError("Injected by test-notify --type move")
             destinations = move_to_library(
                 audio_files=audio_files,
-                staging_dir=directory,
+                watch_dir=directory,
                 library_root=config.paths.library,
                 path_template=config.library.path_template,
             )
         except MoveError as exc:
             logger.error("Move failed: %s", exc)
             _notify(notify_callback, "Move failed", path.name)
-            _quarantine(directory, config.paths.staging)
+            _quarantine(directory, config.paths.watch_folder)
             return
 
         logger.info(
@@ -253,7 +253,7 @@ def _fetch_and_embed_via_extension(
     image_bytes: bytes | None = None
     mime_type = "image/jpeg"
 
-    # Local-first: check for a bundled cover image in the staging directory.
+    # Local-first: check for a bundled cover image in the watch folder item directory.
     local = find_local_artwork(directory)
     if local is not None:
         image_bytes = _load_local_artwork(local, min_dimension, max_bytes)
@@ -330,9 +330,9 @@ def _mb_tags_conflict(
     return False
 
 
-def _quarantine(item: Path, staging_root: Path) -> None:
-    """Move *item* to staging/errors/ to prevent reprocessing."""
-    errors_dir = staging_root / "errors"
+def _quarantine(item: Path, watch_root: Path) -> None:
+    """Move *item* to <watch-folder>/errors/ to prevent reprocessing."""
+    errors_dir = watch_root / "errors"
     errors_dir.mkdir(exist_ok=True)
     dest = errors_dir / item.name
     try:

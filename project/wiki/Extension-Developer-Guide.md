@@ -518,7 +518,7 @@ Return `ArtworkResult(image_bytes=..., mime_type="image/jpeg")` on success, or `
 
 #### `BaseSyncer`
 
-Polls an external source and deposits new downloads into the kamp staging directory. The host picks them up for ingest.
+Polls an external source and deposits new downloads into the kamp watch folder. The host picks them up for ingest.
 
 ```python
 class MySyncer(BaseSyncer):
@@ -594,7 +594,7 @@ ctx.update_metadata(track.mbid, {"title": "Alright", "year": "2015"})
 # Set artwork
 ctx.set_artwork(track.mbid, ArtworkResult(image_bytes=b"...", mime_type="image/jpeg"))
 
-# Deposit a file in the staging directory (syncers only)
+# Deposit a file in the watch folder (syncers only)
 ctx.stage("artist-album.zip", zip_bytes)
 ```
 
@@ -647,7 +647,7 @@ Backend extensions run in an OS-level sandboxed subprocess (macOS `sandbox_init`
 | Tier | Default for | Restrictions |
 |---|---|---|
 | `"minimal"` | Taggers, artwork sources | No filesystem writes outside `/dev`; no subprocess spawn; network allowed |
-| `"syncer"` | Syncers | Writes restricted to staging and state directories; subprocess spawn permitted |
+| `"syncer"` | Syncers | Writes restricted to watch folder and state directories; subprocess spawn permitted |
 
 ```python
 class MyTagger(BaseTagger):

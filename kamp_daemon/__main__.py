@@ -97,9 +97,9 @@ def main() -> None:
     # daemon subcommand (default) with pause/resume subcommands
     daemon_parser = subparsers.add_parser(
         "daemon",
-        help="Watch staging directory and (optionally) poll Bandcamp. Default when no subcommand given.",
+        help="Watch the watch folder and (optionally) poll Bandcamp. Default when no subcommand given.",
     )
-    daemon_parser.add_argument("--staging", metavar="DIR", type=Path, default=None)
+    daemon_parser.add_argument("--watch-folder", metavar="DIR", type=Path, default=None)
     daemon_parser.add_argument("--library", metavar="DIR", type=Path, default=None)
     daemon_parser.add_argument(
         "--no-menu-bar",
@@ -131,7 +131,7 @@ def main() -> None:
     # sync subcommand
     sync_parser = subparsers.add_parser(
         "sync",
-        help="One-shot: download any new Bandcamp purchases to staging, then exit.",
+        help="One-shot: download any new Bandcamp purchases to the watch folder, then exit.",
     )
     sync_parser.add_argument(
         "--download-all",
@@ -222,9 +222,9 @@ def main() -> None:
     config_sub.add_parser("show", help="Print current configuration.")
     set_parser = config_sub.add_parser(
         "set",
-        help="Set a config value. Keys use dot notation, e.g. paths.staging",
+        help="Set a config value. Keys use dot notation, e.g. paths.watch_folder",
     )
-    set_parser.add_argument("key", help="Dot-notation key (e.g. paths.staging)")
+    set_parser.add_argument("key", help="Dot-notation key (e.g. paths.watch_folder)")
     set_parser.add_argument("value", help="New value")
 
     args = parser.parse_args()
@@ -306,7 +306,7 @@ def main() -> None:
             # by Config.load(); print guidance and exit.
             print(
                 f"Config file created at {args.config}. "
-                "Edit it with your staging/library paths, "
+                "Edit it with your watch folder and library paths, "
                 "then re-run kamp.",
                 file=sys.stderr,
             )
@@ -344,8 +344,8 @@ def main() -> None:
             _cmd_daemon_signal(signal.SIGUSR2, "resume")
         else:
             # daemon (with optional CLI overrides)
-            if hasattr(args, "staging") and args.staging:
-                config.paths.staging = args.staging
+            if hasattr(args, "watch_folder") and args.watch_folder:
+                config.paths.watch_folder = args.watch_folder
             if hasattr(args, "library") and args.library:
                 config.paths.library = args.library
             _cmd_daemon(
@@ -413,7 +413,7 @@ def _cmd_test_notify(notify_type: str) -> None:
     """Run the pipeline (or syncer) to a specific failure point and fire a real notification.
 
     For pipeline types (extraction, tagging, artwork, move): creates a temporary
-    staging item whose name contains a test-injection marker, then runs the full
+    watch folder item whose name contains a test-injection marker, then runs the full
     run_in_subprocess() so the complete IPC path
     (pipeline_impl → stage_q → notification_callback) is exercised.
 
@@ -450,13 +450,13 @@ def _cmd_test_notify(notify_type: str) -> None:
 
     with _tmp.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        staging = tmp_path / "staging"
+        watch_folder = tmp_path / "watch"
         library = tmp_path / "library"
-        staging.mkdir()
+        watch_folder.mkdir()
         library.mkdir()
 
         cfg = Config(
-            paths=PathsConfig(staging=staging, library=library),
+            paths=PathsConfig(watch_folder=watch_folder, library=library),
             musicbrainz=MusicBrainzConfig(),
             artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
             library=LibraryConfig(
@@ -464,7 +464,7 @@ def _cmd_test_notify(notify_type: str) -> None:
             ),
         )
 
-        item = staging / _TEST_INJECT[notify_type]
+        item = watch_folder / _TEST_INJECT[notify_type]
         item.mkdir()
 
         if notify_type in ("tagging", "artwork", "move"):
@@ -786,7 +786,7 @@ def _cmd_daemon(
     # Build the initial preference values dict from the loaded config.
     # Bandcamp and Last.fm fields are None when the section is absent.
     _config_values: dict[str, object] = {
-        "paths.staging": str(config.paths.staging),
+        "paths.watch_folder": str(config.paths.watch_folder),
         "paths.library": str(config.paths.library),
         "musicbrainz.trust-musicbrainz-when-tags-conflict": config.musicbrainz.trust_musicbrainz_when_tags_conflict,
         "artwork.min_dimension": config.artwork.min_dimension,

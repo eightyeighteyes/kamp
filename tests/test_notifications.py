@@ -44,7 +44,9 @@ _MOCK_TRACKS = [
 
 def _make_config(tmp_path: Path) -> Config:
     return Config(
-        paths=PathsConfig(staging=tmp_path / "staging", library=tmp_path / "library"),
+        paths=PathsConfig(
+            watch_folder=tmp_path / "watch", library=tmp_path / "library"
+        ),
         musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(
@@ -158,8 +160,8 @@ class TestPipelineImplNotifications:
 
     def _run(self, tmp_path: Path) -> tuple[Path, Config]:
         config = _make_config(tmp_path)
-        config.paths.staging.mkdir(parents=True)
-        path = config.paths.staging / "my-album"
+        config.paths.watch_folder.mkdir(parents=True)
+        path = config.paths.watch_folder / "my-album"
         path.mkdir()
         return path, config
 

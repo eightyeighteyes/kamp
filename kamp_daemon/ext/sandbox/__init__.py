@@ -17,9 +17,9 @@ Two profile tiers are defined:
 
 ``TIER_SYNCER``
     Intended for syncers (e.g. Bandcamp/Playwright) that legitimately need
-    to write to the staging directory, maintain state files, and spawn
-    Chromium subprocesses.  Filesystem writes are restricted to the staging
-    and state directories; subprocess spawning is permitted.
+    to write to the watch folder, maintain state files, and spawn
+    Chromium subprocesses.  Filesystem writes are restricted to the watch
+    folder and state directories; subprocess spawning is permitted.
 
 On platforms without sandbox support the initializer is None (no-op).
 The caller (worker.py) passes None directly to multiprocessing.Process —

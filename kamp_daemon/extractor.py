@@ -1,4 +1,4 @@
-"""Extract ZIP archives and resolve already-extracted folders in the staging area."""
+"""Extract ZIP archives and resolve already-extracted folders from the watch folder."""
 
 from __future__ import annotations
 
@@ -39,7 +39,9 @@ def extract(path: Path) -> Path:
         return dest
 
     if not path.suffix.lower() == ".zip":
-        raise ExtractionError(f"Unsupported staging item (not a ZIP or folder): {path}")
+        raise ExtractionError(
+            f"Unsupported watch folder item (not a ZIP or folder): {path}"
+        )
 
     dest = path.parent / path.stem
     logger.info("Extracting %s → %s", path, dest)

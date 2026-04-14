@@ -785,6 +785,15 @@ def create_app(
             "event": event,
             "result": None,
         }
+        # Include session cookies in the broadcast so the Electron main
+        # process can inject them into session.defaultSession before calling
+        # net.fetch — no extra HTTP round-trip required.
+        session_data = (
+            get_bandcamp_session() if get_bandcamp_session is not None else None
+        )
+        broadcast_cookies: list[Any] = (
+            session_data.get("cookies", []) if session_data else []
+        )
         # Notify the Electron preload via the existing WebSocket push channel.
         # The preload forwards to ipcMain which executes net.fetch and posts
         # the result back to /fetch-result.
@@ -796,6 +805,7 @@ def create_app(
                 "method": req.method,
                 "headers": req.headers,
                 "body": req.body,
+                "cookies": broadcast_cookies,
             }
         )
         loop = asyncio.get_running_loop()

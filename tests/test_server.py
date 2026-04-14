@@ -1517,6 +1517,8 @@ class TestBandcampProxyEndpoints:
             assert msg["method"] == "GET"
             req_id = msg["id"]
             assert req_id
+            # No session configured — cookies list should be empty.
+            assert msg["cookies"] == []
 
             # Simulate Electron posting the net.fetch result.
             result_r = c.post(
@@ -1535,3 +1537,51 @@ class TestBandcampProxyEndpoints:
         assert proxy_response["status"] == 200
         assert proxy_response["body"] == '{"fan_id": 42}'
         assert proxy_response["content_type"] == "application/json"
+
+    def test_proxy_broadcast_includes_session_cookies(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Cookies from the stored session are embedded in the proxy-fetch broadcast."""
+        import threading
+
+        cookies = [{"name": "js_logged_in", "value": "1", "domain": ".bandcamp.com"}]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: {"cookies": cookies, "username": "johndoe"},
+        )
+        c = TestClient(app)
+        broadcast: dict = {}
+
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # discard initial player.state
+
+            t = threading.Thread(
+                target=lambda: c.post(
+                    "/api/v1/bandcamp/proxy-fetch",
+                    json={
+                        "url": "https://bandcamp.com/api/test",
+                        "method": "GET",
+                        "headers": {},
+                        "body": None,
+                    },
+                )
+            )
+            t.start()
+
+            broadcast.update(ws.receive_json())
+            req_id = broadcast["id"]
+
+            c.post(
+                "/api/v1/bandcamp/fetch-result",
+                json={
+                    "id": req_id,
+                    "status": 200,
+                    "body": "ok",
+                    "content_type": "text/plain",
+                },
+            )
+            t.join(timeout=5)
+
+        assert broadcast["cookies"] == cookies

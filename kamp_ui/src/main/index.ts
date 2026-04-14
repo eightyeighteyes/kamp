@@ -349,50 +349,54 @@ app.whenReady().then(async () => {
     'bandcamp:proxy-fetch',
     async (
       _event,
-      req: { id: string; url: string; method: string; headers: Record<string, string>; body: string | null }
+      req: {
+        id: string
+        url: string
+        method: string
+        headers: Record<string, string>
+        body: string | null
+        // Cookies are embedded in the broadcast by the server so no extra
+        // HTTP round-trip is needed to load them from the DB.
+        cookies?: Array<{
+          name: string
+          value: string
+          domain: string
+          path: string
+          expires: number
+          httpOnly: boolean
+          secure: boolean
+          sameSite: string
+        }>
+      }
     ) => {
       // In the PyInstaller bundle, cookies are stored in library.db rather than
-      // in session.defaultSession (they are cleared after login to avoid plaintext
-      // storage on disk).  net.fetch relies on the session cookie jar, so we
-      // reload them here before every proxy request and remove them afterward.
-      type StoredCookie = {
-        name: string
-        value: string
-        domain: string
-        path: string
-        expires: number
-        httpOnly: boolean
-        secure: boolean
-        sameSite: string
-      }
+      // in session.defaultSession (cleared after login to avoid plaintext on disk).
+      // The server embeds them in the proxy-fetch broadcast so we can inject them
+      // into session.defaultSession before net.fetch and remove them afterward.
       const injectedNames: string[] = []
-      try {
-        const cookieResp = await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/session-cookies')
-        if (cookieResp.ok) {
-          const { cookies } = (await cookieResp.json()) as { cookies: StoredCookie[] }
-          for (const c of cookies) {
-            const sameSite = (['lax', 'strict', 'no_restriction', 'unspecified'] as const).includes(
-              c.sameSite?.toLowerCase() as never
-            )
-              ? (c.sameSite.toLowerCase() as 'unspecified' | 'no_restriction' | 'lax' | 'strict')
-              : 'unspecified'
-            await session.defaultSession.cookies.set({
-              url: `https://${c.domain.replace(/^\./, '')}`,
-              name: c.name,
-              value: c.value,
-              domain: c.domain,
-              path: c.path,
-              secure: c.secure,
-              httpOnly: c.httpOnly,
-              expirationDate: c.expires > 0 ? c.expires : undefined,
-              sameSite
-            })
-            injectedNames.push(c.name)
-          }
+      for (const c of req.cookies ?? []) {
+        const sameSiteLower = c.sameSite?.toLowerCase()
+        const sameSite = (['lax', 'strict', 'no_restriction', 'unspecified'] as const).includes(
+          sameSiteLower as never
+        )
+          ? (sameSiteLower as 'unspecified' | 'no_restriction' | 'lax' | 'strict')
+          : 'unspecified'
+        try {
+          await session.defaultSession.cookies.set({
+            url: `https://${c.domain.replace(/^\./, '')}`,
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: c.path,
+            secure: c.secure,
+            httpOnly: c.httpOnly,
+            expirationDate: c.expires > 0 ? c.expires : undefined,
+            sameSite
+          })
+          injectedNames.push(c.name)
+        } catch {
+          // Non-fatal: skip cookies that fail to set (e.g. malformed domain).
         }
-      } catch {
-        // Non-fatal: if injection fails, proceed without cookies.
-        // In dev (non-frozen) this handler is never called by the Python side.
       }
 
       let status = 502

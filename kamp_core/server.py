@@ -809,7 +809,10 @@ def create_app(
             }
         )
         loop = asyncio.get_running_loop()
-        signalled = await loop.run_in_executor(None, event.wait, 30.0)
+        # Allow up to 60s for Electron to complete net.fetch and post the
+        # result.  Real Bandcamp API calls can take 20–30s; the subprocess
+        # proxy_timeout is now 2×inner + 10s, so 60s covers the worst case.
+        signalled = await loop.run_in_executor(None, event.wait, 60.0)
         if not signalled:
             _state["bandcamp_proxy_requests"].pop(req_id, None)
             raise HTTPException(
@@ -864,13 +867,25 @@ def create_app(
                 )
                 for t in pending:
                     t.cancel()
-                    with suppress(asyncio.CancelledError):
+                    # asyncio.CancelledError is BaseException in Python 3.8+, so
+                    # suppress it explicitly alongside any other exception a
+                    # cancelled task may carry (e.g. WebSocketDisconnect).
+                    with suppress(asyncio.CancelledError, Exception):
                         await t
 
                 if push_task in done:
                     await ws.send_json(push_task.result())
 
                 if recv_task in done:
+                    # Retrieve the exception (if any) before branching so asyncio
+                    # never sees an un-retrieved exception on the task object,
+                    # which would emit a "Task exception was never retrieved" warning.
+                    # Guard against cancelled tasks: .exception() raises CancelledError
+                    # if the task was cancelled (it shouldn't be here since it's done,
+                    # but be defensive).
+                    _recv_exc = None if recv_task.cancelled() else recv_task.exception()
+                    if _recv_exc is not None:
+                        raise _recv_exc
                     # Each "ping" from the client triggers a fresh snapshot.
                     await ws.send_json(
                         {"type": "player.state", **_state_snapshot().model_dump()}

@@ -128,7 +128,12 @@ class _ProxySession:
             req_headers["Content-Type"] = "application/json"
             body = _json_dumps(json)
 
-        proxy_timeout = float(timeout) + 5  # outer > inner so server surfaces 504
+        # The proxy relay chain adds significant latency: the request goes
+        # subprocess → server → WS → Electron → net.fetch(bandcamp.com) → back.
+        # net.fetch on a real Bandcamp API call can take 10–20s on a slow
+        # connection, so the outer timeout must be considerably larger than the
+        # inner one.  2× + 10s gives ≥50s headroom for a 20s inner timeout.
+        proxy_timeout = float(timeout) * 2 + 10
         resp = _requests.post(
             _PROXY_FETCH_URL,
             json={"url": url, "method": method, "headers": req_headers, "body": body},

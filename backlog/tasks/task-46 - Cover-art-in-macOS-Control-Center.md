@@ -1,10 +1,10 @@
 ---
 id: TASK-46
 title: Cover art in macOS Control Center
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-30 23:14'
-updated_date: '2026-04-17 15:54'
+updated_date: '2026-04-17 19:17'
 labels:
   - feature
   - macos
@@ -13,7 +13,7 @@ labels:
 milestone: m-27
 dependencies: []
 priority: low
-ordinal: 3000
+ordinal: 2000
 ---
 
 ## Description

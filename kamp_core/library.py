@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -325,6 +325,17 @@ class LibraryIndex:
             # The table is created by _DDL via executescript at the top of
             # _migrate, so we only need to bump the version here.
             self._conn.execute("UPDATE schema_version SET version = 8")
+            self._conn.commit()
+
+        if version < 9:
+            # v8 → v9: fix blank tags caused by the buggy FLAC/OGG tag reader
+            # (which looked up uppercase keys in a lowercase dict).  Nulling
+            # file_mtime for all FLAC/OGG tracks forces the scanner to re-read
+            # their tags on the next startup scan.
+            self._conn.execute(
+                "UPDATE tracks SET file_mtime = NULL WHERE ext IN ('flac', 'ogg')"
+            )
+            self._conn.execute("UPDATE schema_version SET version = 9")
             self._conn.commit()
 
     def _rebuild_fts(self) -> None:

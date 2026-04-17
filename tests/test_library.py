@@ -123,7 +123,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 8
+        assert version == 9
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -970,7 +970,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 8
+        assert version == 9
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1027,7 +1027,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 8
+        assert version == 9
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1320,7 +1320,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 8
+        assert version == 9
         assert row is not None
         assert row[0] == 0
 
@@ -1433,7 +1433,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 8
+        assert version == 9
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -1614,7 +1614,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 8
+        assert version == 9
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -1682,4 +1682,78 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 8
+        assert version == 9
+
+    def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        index.close()
+        assert version == 9
+
+    def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
+        """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
+
+        This fixes the case where blank tags (written by the buggy tag reader)
+        were cached in the DB and would never be refreshed without this nudge.
+        """
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (8)")
+        conn.execute("""
+            CREATE TABLE tracks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path       TEXT UNIQUE NOT NULL,
+                title           TEXT NOT NULL DEFAULT '',
+                artist          TEXT NOT NULL DEFAULT '',
+                album_artist    TEXT NOT NULL DEFAULT '',
+                album           TEXT NOT NULL DEFAULT '',
+                year            TEXT NOT NULL DEFAULT '',
+                track_number    INTEGER,
+                disc_number     INTEGER NOT NULL DEFAULT 1,
+                ext             TEXT NOT NULL DEFAULT '',
+                embedded_art    INTEGER NOT NULL DEFAULT 0,
+                mb_release_id   TEXT NOT NULL DEFAULT '',
+                mb_recording_id TEXT NOT NULL DEFAULT '',
+                date_added      TEXT,
+                last_played     TEXT,
+                favorite        INTEGER NOT NULL DEFAULT 0,
+                play_count      INTEGER NOT NULL DEFAULT 0,
+                file_mtime      REAL
+            )
+            """)
+        # Insert one of each format: FLAC/OGG should have mtime nulled; MP3/M4A kept.
+        conn.execute(
+            "INSERT INTO tracks (file_path, ext, file_mtime) VALUES (?, ?, ?)",
+            ("/music/a.flac", "flac", 1111.0),
+        )
+        conn.execute(
+            "INSERT INTO tracks (file_path, ext, file_mtime) VALUES (?, ?, ?)",
+            ("/music/b.ogg", "ogg", 2222.0),
+        )
+        conn.execute(
+            "INSERT INTO tracks (file_path, ext, file_mtime) VALUES (?, ?, ?)",
+            ("/music/c.mp3", "mp3", 3333.0),
+        )
+        conn.execute(
+            "INSERT INTO tracks (file_path, ext, file_mtime) VALUES (?, ?, ?)",
+            ("/music/d.m4a", "m4a", 4444.0),
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        rows = index._conn.execute(
+            "SELECT ext, file_mtime FROM tracks ORDER BY file_path"
+        ).fetchall()
+        index.close()
+
+        by_ext = {r[0]: r[1] for r in rows}
+        assert by_ext["flac"] is None, "FLAC mtime should be nulled by migration"
+        assert by_ext["ogg"] is None, "OGG mtime should be nulled by migration"
+        assert by_ext["mp3"] == 3333.0, "MP3 mtime should be unchanged"
+        assert by_ext["m4a"] == 4444.0, "M4A mtime should be unchanged"

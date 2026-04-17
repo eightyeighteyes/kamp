@@ -662,8 +662,6 @@ def _cmd_daemon(
     # callbacks (next/prev/play/pause) via its own RunLoop.main.  The daemon
     # no longer writes to MPNowPlayingInfoCenter; Electron observes track and
     # play-state WebSocket events and forwards them to the helper via stdin.
-    # CoreAudioMediaController is kept in media_controller.py for non-Electron
-    # CLI use but is not wired here.
 
     # Advance the queue automatically at end-of-track; stop cleanly at the end.
     def _on_track_end() -> None:

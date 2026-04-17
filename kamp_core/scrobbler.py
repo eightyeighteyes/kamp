@@ -94,6 +94,10 @@ class Scrobbler:
         if track is None:
             return
 
+        # Last.fm requires artist and title; skip rather than send a 400.
+        if not track.artist or not track.title:
+            return
+
         try:
             self._network.update_now_playing(
                 artist=track.artist,
@@ -137,6 +141,9 @@ class Scrobbler:
 
     def _scrobble(self, track: Track) -> None:
         self._scrobbled = True
+        # Last.fm requires artist and title; skip rather than send a 400.
+        if not track.artist or not track.title:
+            return
         try:
             self._network.scrobble(
                 artist=track.artist,

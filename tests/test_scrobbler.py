@@ -139,6 +139,18 @@ class TestOnTrackChanged:
         call_kwargs = net.update_now_playing.call_args.kwargs
         assert call_kwargs.get("album_artist") == "Various Artists"
 
+    def test_skips_now_playing_when_artist_is_blank(self) -> None:
+        """Tracks with no artist tag must not be sent to Last.fm (400 error)."""
+        s, net = _make_scrobbler()
+        s.on_track_changed(_track(artist="", title="Metronomic Underground"))
+        net.update_now_playing.assert_not_called()
+
+    def test_skips_now_playing_when_title_is_blank(self) -> None:
+        """Tracks with no title tag must not be sent to Last.fm (400 error)."""
+        s, net = _make_scrobbler()
+        s.on_track_changed(_track(artist="Stereolab", title=""))
+        net.update_now_playing.assert_not_called()
+
     def test_now_playing_exception_does_not_propagate(self) -> None:
         """pylast exceptions must never crash the player."""
         s, net = _make_scrobbler()
@@ -265,6 +277,12 @@ class TestTick:
         t = _track()
         # Should not raise
         self._advance(s, t, 35.0)
+
+    def test_skips_scrobble_when_artist_is_blank(self) -> None:
+        """Tracks with no artist tag must not be scrobbled (Last.fm rejects them)."""
+        s, net = _make_scrobbler()
+        self._advance(s, _track(artist="", title="Metronomic Underground"), 35.0)
+        net.scrobble.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ files:
   - '!resources/node'
   - '!resources/npm/**'
   - '!resources/icon_1024.png'
+  - '!resources/now-playing-helper'
   # Explicitly include compiled JS (electron-vite output) so it is packed into
   # the ASAR. Without this, the positive 'extensions/**' pattern below changes
   # electron-builder's default glob behavior and out/ is not included.
@@ -38,6 +39,9 @@ extraResources:
   # Standalone mpv binary → Contents/Resources/mpv
   - from: resources/mpv
     to: mpv
+  # Swift Now Playing helper → Contents/Resources/now-playing-helper
+  - from: resources/now-playing-helper
+    to: now-playing-helper
   # Node.js binary + npm CLI — required for extension install/uninstall in the
   # packaged app where the user may not have Node.js on their machine.
   - from: resources/node
@@ -73,6 +77,7 @@ mac:
     - "Contents/Resources/kamp"
     - "Contents/Resources/mpv"
     - "Contents/Resources/node"
+    - "Contents/Resources/now-playing-helper"
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
     - NSMicrophoneUsageDescription: Application requests access to the device's microphone.

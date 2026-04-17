@@ -27,12 +27,22 @@ let _pushWs: WebSocket | null = null
 function ensurePushWs(): void {
   if (_pushWs && _pushWs.readyState < WebSocket.CLOSING) return
   const ws = new WebSocket(WS_URL)
+  ws.addEventListener('open', () => {
+    // Prime the Now Playing helper with current player state on (re)connect so
+    // media keys route correctly even before the first track.changed event.
+    fetch(`${SERVER_URL}/api/v1/player/state`)
+      .then((r) => r.json())
+      .then((s) => ipcRenderer.send('player:state-changed', s))
+      .catch(() => {})
+  })
   ws.addEventListener('message', (evt) => {
     try {
       const msg = JSON.parse(evt.data as string) as { type: string } & PlayerState
       if (msg.type === 'track.changed') {
+        ipcRenderer.send('player:state-changed', msg)
         trackChangeCallbacks.forEach((cb) => cb(msg))
       } else if (msg.type === 'play_state.changed') {
+        ipcRenderer.send('player:state-changed', msg)
         playStateChangeCallbacks.forEach((cb) => cb(msg))
       } else if (msg.type === 'bandcamp.needs-login') {
         // Triggered by the Python daemon (via menu bar or sync failure) when no

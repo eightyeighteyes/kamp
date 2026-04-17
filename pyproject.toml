@@ -109,10 +109,3 @@ module = ["kamp_daemon.menu_bar"]
 ignore_missing_imports = true
 disable_error_code = ["misc", "untyped-decorator", "import-untyped"]
 
-[[tool.mypy.overrides]]
-# media_controller imports AppKit/Foundation/objc lazily inside methods;
-# subclasses NSObject (typed Any) which triggers misc errors
-module = ["kamp_core.media_controller"]
-ignore_missing_imports = true
-disable_error_code = ["import-untyped", "misc"]
-

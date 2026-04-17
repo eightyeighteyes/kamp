@@ -657,22 +657,11 @@ def _cmd_daemon(
             queue.load([track], 0)
             engine.load_paused(track.file_path, saved_position)
 
-    # Wire the macOS Now Playing widget.
-    # make_media_controller() returns NullMediaController on non-macOS.
-    # start() is best-effort — a failure here must never crash the server.
-    from kamp_core.media_controller import MediaController, make_media_controller
-
-    _mc: MediaController = make_media_controller()
-    try:
-        _mc.start()
-    except Exception as exc:
-        import logging as _logging
-        from kamp_core.media_controller import NullMediaController
-
-        _logging.getLogger(__name__).warning(
-            "MediaController failed to start (%s); Now Playing disabled.", exc
-        )
-        _mc = NullMediaController()
+    # Now Playing (MPNowPlayingInfoCenter) is owned by the Electron
+    # now-playing-helper subprocess, which also handles MPRemoteCommandCenter
+    # callbacks (next/prev/play/pause) via its own RunLoop.main.  The daemon
+    # no longer writes to MPNowPlayingInfoCenter; Electron observes track and
+    # play-state WebSocket events and forwards them to the helper via stdin.
 
     # Advance the queue automatically at end-of-track; stop cleanly at the end.
     def _on_track_end() -> None:
@@ -683,10 +672,8 @@ def _cmd_daemon(
             index.record_played(finished.file_path)
         if track:
             engine.play(track.file_path)
-            _mc.update(track, True, 0.0, engine.state.duration)
         else:
             engine.stop()
-            _mc.update(None, False, 0.0, 0.0)
             # Queue exhausted — clear saved state so restart starts fresh
             # rather than restoring the last track a few seconds from the end.
             index.clear_player_state()
@@ -694,13 +681,8 @@ def _cmd_daemon(
 
     engine.on_track_end = _on_track_end
 
-    # Push metadata to Now Playing as soon as the file demuxer is ready
-    # (duration becomes accurate at this point).
     def _on_file_loaded() -> None:
-        t = queue.current()
-        _mc.update(
-            t, engine.state.playing, engine.state.position, engine.state.duration
-        )
+        pass  # Now Playing updates are driven by Electron WebSocket subscription.
 
     engine.on_file_loaded = _on_file_loaded
 
@@ -734,8 +716,7 @@ def _cmd_daemon(
 
     engine.on_file_loaded = _on_file_loaded_scrobble
 
-    # Persist current track and position every 5 s so restarts can resume;
-    # also push position to the Now Playing widget at ~1 Hz.
+    # Persist current track and position every 5 s so restarts can resume.
     def _state_saver() -> None:
         import time
 
@@ -750,13 +731,6 @@ def _cmd_daemon(
                     index.save_player_state(current.file_path, engine.state.position)
                     q_paths, q_pos, q_shuffle, q_repeat = queue.get_state()
                     index.save_queue_state(q_paths, q_pos, q_shuffle, q_repeat)
-                if engine.state.playing:
-                    _mc.update(
-                        current,
-                        True,
-                        engine.state.position,
-                        engine.state.duration,
-                    )
             tick += 1
 
     threading.Thread(target=_state_saver, daemon=True, name="state-saver").start()
@@ -949,7 +923,6 @@ def _cmd_daemon(
     uv_thread.join(timeout=10)
 
     lib_watcher.stop()
-    _mc.stop()
     engine.shutdown()
     index.close()
 

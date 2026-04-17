@@ -1,10 +1,10 @@
 ---
 id: TASK-136
 title: FLAC artist / album / song tags aren't being read correctly
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-17 00:45'
-updated_date: '2026-04-17 00:50'
+updated_date: '2026-04-17 19:31'
 labels: []
 milestone: m-27
 dependencies: []

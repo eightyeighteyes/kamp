@@ -992,7 +992,13 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
             audio = mutagen.flac.FLAC(str(path))
         else:
             audio = mutagen.oggvorbis.OggVorbis(str(path))
-        tags: dict[str, list[str]] = dict(audio.tags or {})
+        # Vorbis comment keys are case-insensitive; real mutagen VCFLACDict/
+        # VCommentDict yields lowercase keys from dict(), so normalise to
+        # uppercase so that _s("ARTIST") etc. always find a match.
+        tags: dict[str, list[str]] = {
+            k.upper(): (v if isinstance(v, list) else [v])
+            for k, v in dict(audio.tags or {}).items()
+        }
         pictures = getattr(audio, "pictures", [])
     except Exception:
         tags = {}

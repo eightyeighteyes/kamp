@@ -643,6 +643,38 @@ class TestLibraryScanner:
         assert t.mb_release_id == "mbid-flac"
         assert t.ext == "flac"
 
+    def test_scan_reads_flac_tags_lowercase_keys(self, tmp_path: Path) -> None:
+        """Real mutagen VCFLACDict yields lowercase keys; the reader must handle them."""
+        lib = tmp_path / "music"
+        lib.mkdir()
+        (lib / "01.flac").write_bytes(b"fLaC")
+
+        mock_audio = MagicMock()
+        mock_audio.tags = {
+            "artist": ["Stereolab"],
+            "albumartist": ["Stereolab"],
+            "album": ["Emperor Tomato Ketchup"],
+            "date": ["1996"],
+            "title": ["Metronomic Underground"],
+            "tracknumber": ["1"],
+            "discnumber": ["1"],
+            "musicbrainz_albumid": ["mbid-etk"],
+        }
+        mock_audio.pictures = []
+
+        with patch("kamp_core.library.mutagen.flac.FLAC", return_value=mock_audio):
+            index = LibraryIndex(tmp_path / "library.db")
+            LibraryScanner(index).scan(lib)
+            tracks = index.all_tracks()
+            index.close()
+
+        t = tracks[0]
+        assert t.artist == "Stereolab"
+        assert t.album == "Emperor Tomato Ketchup"
+        assert t.title == "Metronomic Underground"
+        assert t.year == "1996"
+        assert t.mb_release_id == "mbid-etk"
+
     def test_scan_reads_ogg_tags(self, tmp_path: Path) -> None:
         lib = tmp_path / "music"
         lib.mkdir()

@@ -29,6 +29,9 @@ export type Album = {
   year: string
   track_count: number
   has_art: boolean
+  missing_album: boolean
+  // Non-empty when missing_album=true; used as the unique lookup key.
+  file_path: string
 }
 
 export type PlayerState = {
@@ -111,15 +114,22 @@ export const getAlbums = (sort = 'album_artist'): Promise<Album[]> =>
 
 // Returns the URL for an album's cover art; load it in an <img> src.
 // The server returns 404 when no art is embedded — handle with onError.
-export const artUrl = (albumArtist: string, album: string): string =>
-  `${BASE_URL}/api/v1/album-art?album_artist=${encodeURIComponent(albumArtist)}&album=${encodeURIComponent(album)}`
+// Pass filePath for missing-album tracks to look up by file instead of album key.
+export const artUrl = (albumArtist: string, album: string, filePath = ''): string => {
+  const base = `${BASE_URL}/api/v1/album-art?album_artist=${encodeURIComponent(albumArtist)}&album=${encodeURIComponent(album)}`
+  return filePath ? `${base}&file_path=${encodeURIComponent(filePath)}` : base
+}
 
 export const getArtists = (): Promise<string[]> => get('/api/v1/artists')
 
-export const getTracksForAlbum = (albumArtist: string, album: string): Promise<Track[]> =>
-  get(
-    `/api/v1/tracks?album_artist=${encodeURIComponent(albumArtist)}&album=${encodeURIComponent(album)}`
-  )
+export const getTracksForAlbum = (
+  albumArtist: string,
+  album: string,
+  filePath = ''
+): Promise<Track[]> => {
+  const base = `/api/v1/tracks?album_artist=${encodeURIComponent(albumArtist)}&album=${encodeURIComponent(album)}`
+  return get(filePath ? `${base}&file_path=${encodeURIComponent(filePath)}` : base)
+}
 
 export type SearchResult = {
   albums: Album[]
@@ -198,8 +208,18 @@ export const disconnectBandcamp = (): Promise<{ ok: boolean }> => del('/api/v1/b
 
 export const getPlayerState = (): Promise<PlayerState> => get('/api/v1/player/state')
 
-export const playAlbum = (albumArtist: string, album: string, trackIndex = 0): Promise<unknown> =>
-  post('/api/v1/player/play', { album_artist: albumArtist, album, track_index: trackIndex })
+export const playAlbum = (
+  albumArtist: string,
+  album: string,
+  trackIndex = 0,
+  filePath = ''
+): Promise<unknown> =>
+  post('/api/v1/player/play', {
+    album_artist: albumArtist,
+    album,
+    track_index: trackIndex,
+    file_path: filePath
+  })
 
 export const pause = (): Promise<unknown> => post('/api/v1/player/pause')
 export const resume = (): Promise<unknown> => post('/api/v1/player/resume')
@@ -214,16 +234,34 @@ export const setShuffle = (shuffle: boolean): Promise<unknown> =>
   post('/api/v1/player/shuffle', { shuffle })
 export const setRepeat = (repeat: boolean): Promise<unknown> =>
   post('/api/v1/player/repeat', { repeat })
-export const addAlbumToQueue = (albumArtist: string, album: string): Promise<unknown> =>
-  post('/api/v1/player/queue/add-album', { album_artist: albumArtist, album })
-export const playAlbumNext = (albumArtist: string, album: string): Promise<unknown> =>
-  post('/api/v1/player/queue/play-album-next', { album_artist: albumArtist, album })
+export const addAlbumToQueue = (
+  albumArtist: string,
+  album: string,
+  filePath = ''
+): Promise<unknown> =>
+  post('/api/v1/player/queue/add-album', { album_artist: albumArtist, album, file_path: filePath })
+export const playAlbumNext = (
+  albumArtist: string,
+  album: string,
+  filePath = ''
+): Promise<unknown> =>
+  post('/api/v1/player/queue/play-album-next', {
+    album_artist: albumArtist,
+    album,
+    file_path: filePath
+  })
 export const insertAlbumAt = (
   albumArtist: string,
   album: string,
-  index: number
+  index: number,
+  filePath = ''
 ): Promise<unknown> =>
-  post('/api/v1/player/queue/insert-album', { album_artist: albumArtist, album, index })
+  post('/api/v1/player/queue/insert-album', {
+    album_artist: albumArtist,
+    album,
+    index,
+    file_path: filePath
+  })
 export const addToQueue = (filePath: string): Promise<unknown> =>
   post('/api/v1/player/queue/add', { file_path: filePath })
 export const insertIntoQueue = (filePath: string, index: number): Promise<unknown> =>

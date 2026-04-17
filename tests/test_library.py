@@ -123,7 +123,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 9
+        assert version == 10
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -292,6 +292,58 @@ class TestLibraryIndex:
         index.close()
 
         assert albums[0].has_art is True
+
+    def test_missing_album_track_appears_as_own_entry(self, tmp_path: Path) -> None:
+        """A track with no album tag should produce its own AlbumInfo entry."""
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "standalone.mp3")
+        t.album = ""
+        t.title = "Standalone Track"
+        index.upsert_track(t)
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].missing_album is True
+        assert albums[0].album == "Standalone Track"  # title used as display name
+        assert albums[0].file_path == str(tmp_path / "standalone.mp3")
+
+    def test_two_missing_album_tracks_each_get_own_entry(self, tmp_path: Path) -> None:
+        """Each track without an album tag should be its own entry, not grouped."""
+        index = LibraryIndex(tmp_path / "library.db")
+        for i, title in enumerate(["Track A", "Track B"]):
+            t = _sample_track(tmp_path / f"{i}.mp3")
+            t.album = ""
+            t.title = title
+            index.upsert_track(t)
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 2
+        assert all(a.missing_album for a in albums)
+        assert {a.album for a in albums} == {"Track A", "Track B"}
+
+    def test_missing_album_and_normal_album_coexist(self, tmp_path: Path) -> None:
+        """Normal albums and missing-album tracks appear together in the list."""
+        index = LibraryIndex(tmp_path / "library.db")
+        normal = _sample_track(tmp_path / "normal.mp3")
+        normal.album = "Real Album"
+        index.upsert_track(normal)
+
+        standalone = _sample_track(tmp_path / "standalone.mp3")
+        standalone.album = ""
+        standalone.title = "Lone Track"
+        index.upsert_track(standalone)
+
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 2
+        normal_entry = next(a for a in albums if not a.missing_album)
+        missing_entry = next(a for a in albums if a.missing_album)
+        assert normal_entry.album == "Real Album"
+        assert missing_entry.album == "Lone Track"
+        assert missing_entry.file_path == str(tmp_path / "standalone.mp3")
 
     def test_get_track_by_path_returns_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -812,6 +864,48 @@ class TestTagReaders:
             result = _read_tags(mp3)
         assert result is None
 
+    def test_read_mp3_tags_album_artist_falls_back_to_artist(
+        self, tmp_path: Path
+    ) -> None:
+        """When TPE2 (album artist) is absent, album_artist should equal TPE1 (artist)."""
+        mp3 = tmp_path / "no_tpe2.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TPE1"] = id3.TPE1(encoding=3, text="Solo Artist")
+        tags.save(str(mp3))
+        track = _read_mp3_tags(mp3)
+        assert track.artist == "Solo Artist"
+        assert track.album_artist == "Solo Artist"
+
+    def test_read_m4a_tags_album_artist_falls_back_to_artist(
+        self, tmp_path: Path
+    ) -> None:
+        """When aART is absent, album_artist should equal ©ART."""
+        m4a = tmp_path / "no_aart.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {"\xa9ART": ["Solo Artist"], "\xa9nam": ["A Track"]}
+        with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
+            track = _read_m4a_tags(m4a)
+        assert track.artist == "Solo Artist"
+        assert track.album_artist == "Solo Artist"
+
+    def test_read_vorbis_tags_album_artist_falls_back_to_artist(
+        self, tmp_path: Path
+    ) -> None:
+        """When ALBUMARTIST is absent, album_artist should equal ARTIST."""
+        ogg = tmp_path / "no_albumartist.ogg"
+        ogg.write_bytes(b"\x00" * 8)
+        mock_audio = MagicMock()
+        mock_audio.tags = {"ARTIST": ["Solo Artist"], "TITLE": ["A Track"]}
+        mock_audio.pictures = []
+        with patch(
+            "kamp_core.library.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            track = _read_vorbis_tags(ogg, is_flac=False)
+        assert track.artist == "Solo Artist"
+        assert track.album_artist == "Solo Artist"
+
     def test_read_tags_returns_none_for_unknown_extension(self, tmp_path: Path) -> None:
         wav = tmp_path / "file.wav"
         wav.write_bytes(b"")
@@ -970,7 +1064,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 9
+        assert version == 10
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1027,7 +1121,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 9
+        assert version == 10
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1320,7 +1414,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 9
+        assert version == 10
         assert row is not None
         assert row[0] == 0
 
@@ -1433,7 +1527,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 9
+        assert version == 10
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -1614,7 +1708,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 9
+        assert version == 10
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -1682,7 +1776,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 9
+        assert version == 10
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -1690,7 +1784,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 9
+        assert version == 10
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -1757,3 +1851,75 @@ class TestSessionManagement:
         assert by_ext["ogg"] is None, "OGG mtime should be nulled by migration"
         assert by_ext["mp3"] == 3333.0, "MP3 mtime should be unchanged"
         assert by_ext["m4a"] == 4444.0, "M4A mtime should be unchanged"
+
+    def test_migration_v9_to_v10_nulls_missing_album_artist_mtimes(
+        self, tmp_path: Path
+    ) -> None:
+        """v9→v10 resets file_mtime for tracks that have an artist but no album_artist.
+
+        This allows the scanner to re-read those files and apply the new
+        album_artist → artist fallback, so they show up correctly in the library.
+        """
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (9)")
+        conn.execute("""
+            CREATE TABLE tracks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path       TEXT UNIQUE NOT NULL,
+                title           TEXT NOT NULL DEFAULT '',
+                artist          TEXT NOT NULL DEFAULT '',
+                album_artist    TEXT NOT NULL DEFAULT '',
+                album           TEXT NOT NULL DEFAULT '',
+                year            TEXT NOT NULL DEFAULT '',
+                track_number    INTEGER,
+                disc_number     INTEGER NOT NULL DEFAULT 1,
+                ext             TEXT NOT NULL DEFAULT '',
+                embedded_art    INTEGER NOT NULL DEFAULT 0,
+                mb_release_id   TEXT NOT NULL DEFAULT '',
+                mb_recording_id TEXT NOT NULL DEFAULT '',
+                date_added      TEXT,
+                last_played     TEXT,
+                favorite        INTEGER NOT NULL DEFAULT 0,
+                play_count      INTEGER NOT NULL DEFAULT 0,
+                file_mtime      REAL
+            )
+            """)
+        # has artist but no album_artist → mtime should be nulled
+        conn.execute(
+            "INSERT INTO tracks (file_path, ext, artist, album_artist, file_mtime)"
+            " VALUES (?, ?, ?, ?, ?)",
+            ("/music/solo.mp3", "mp3", "Solo Artist", "", 1111.0),
+        )
+        # has both fields empty → mtime should be left alone (re-reading would be a no-op)
+        conn.execute(
+            "INSERT INTO tracks (file_path, ext, artist, album_artist, file_mtime)"
+            " VALUES (?, ?, ?, ?, ?)",
+            ("/music/untagged.mp3", "mp3", "", "", 2222.0),
+        )
+        # already has album_artist → mtime should be unchanged
+        conn.execute(
+            "INSERT INTO tracks (file_path, ext, artist, album_artist, file_mtime)"
+            " VALUES (?, ?, ?, ?, ?)",
+            ("/music/tagged.mp3", "mp3", "Band", "The Band", 3333.0),
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        rows = index._conn.execute(
+            "SELECT file_path, file_mtime FROM tracks ORDER BY file_path"
+        ).fetchall()
+        index.close()
+
+        by_path = {r[0]: r[1] for r in rows}
+        assert (
+            by_path["/music/solo.mp3"] is None
+        ), "missing album_artist should be nulled"
+        assert (
+            by_path["/music/untagged.mp3"] == 2222.0
+        ), "fully untagged mtime unchanged"
+        assert by_path["/music/tagged.mp3"] == 3333.0, "already-tagged mtime unchanged"

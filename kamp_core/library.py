@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -142,8 +142,11 @@ _SORT_CLAUSES: dict[str, str] = {
     "album_artist": "album_artist COLLATE NOCASE, album COLLATE NOCASE",
     "album": "album COLLATE NOCASE, album_artist COLLATE NOCASE",
     # Newest first (largest timestamp); NULLs sort last in DESC.
-    "date_added": "MIN(date_added) DESC, album_artist COLLATE NOCASE",
-    "last_played": "MAX(last_played) DESC, album_artist COLLATE NOCASE",
+    # These reference the sort_date_added / sort_last_played columns produced
+    # by the UNION ALL query in albums() (aliases for MIN/MAX in the grouped
+    # part and the raw value in the single-track missing-album part).
+    "date_added": "sort_date_added DESC, album_artist COLLATE NOCASE",
+    "last_played": "sort_last_played DESC, album_artist COLLATE NOCASE",
 }
 
 
@@ -190,6 +193,10 @@ class AlbumInfo:
     year: str
     track_count: int
     has_art: bool = False
+    # True when the track has no album tag; album field holds the track title
+    # as a display name, and file_path uniquely identifies this virtual album.
+    missing_album: bool = False
+    file_path: str = ""
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -338,6 +345,20 @@ class LibraryIndex:
             self._conn.execute("UPDATE schema_version SET version = 9")
             self._conn.commit()
 
+        if version < 10:
+            # v9 → v10: tag readers now fall back album_artist → artist when the
+            # album-artist tag is absent.  Null file_mtime for tracks that have
+            # an artist but no album_artist so the scanner re-reads them and
+            # derives album_artist from artist on the next scan.
+            # Tracks with both fields empty are left alone — re-reading them
+            # would produce the same empty result.
+            self._conn.execute(
+                "UPDATE tracks SET file_mtime = NULL"
+                " WHERE album_artist = '' AND artist != ''"
+            )
+            self._conn.execute("UPDATE schema_version SET version = 10")
+            self._conn.commit()
+
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
         self._conn.execute("DELETE FROM tracks_fts")
@@ -452,16 +473,36 @@ class LibraryIndex:
     def albums(self, sort: str = "album_artist") -> list[AlbumInfo]:
         """Return one AlbumInfo per (album_artist, album) pair.
 
+        Tracks that have no album tag are each returned as their own entry
+        with ``missing_album=True``; the ``album`` field is set to the track
+        title (for display) and ``file_path`` uniquely identifies the entry.
+
         *sort* must be one of: ``album_artist`` (default), ``album``,
         ``date_added``, ``last_played``.  Unknown values fall back to
         ``album_artist`` so callers never have to guard against bad input.
         """
         order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
         rows = self._conn.execute(f"""
-            SELECT album_artist, album, year, COUNT(*) AS track_count,
-                   MAX(embedded_art) AS has_art
-            FROM tracks
-            GROUP BY album_artist, album
+            SELECT album_artist, album, year, track_count, has_art,
+                   missing_album, file_path
+            FROM (
+                SELECT album_artist, album, year, COUNT(*) AS track_count,
+                       MAX(embedded_art) AS has_art,
+                       0 AS missing_album, '' AS file_path,
+                       MIN(date_added) AS sort_date_added,
+                       MAX(last_played) AS sort_last_played
+                FROM tracks
+                WHERE album != ''
+                GROUP BY album_artist, album
+                UNION ALL
+                SELECT album_artist, title AS album, year, 1 AS track_count,
+                       embedded_art AS has_art,
+                       1 AS missing_album, file_path,
+                       date_added AS sort_date_added,
+                       last_played AS sort_last_played
+                FROM tracks
+                WHERE album = ''
+            )
             ORDER BY {order_by}
             """).fetchall()  # noqa: S608 — order_by is from a whitelist, not user input
         return [
@@ -471,6 +512,8 @@ class LibraryIndex:
                 year=r["year"],
                 track_count=r["track_count"],
                 has_art=bool(r["has_art"]),
+                missing_album=bool(r["missing_album"]),
+                file_path=r["file_path"],
             )
             for r in rows
         ]
@@ -944,11 +987,12 @@ def _read_mp3_tags(path: Path) -> Track:
         frame = tags.get(frame_key)
         return str(frame) if frame else ""
 
+    artist = _str("TPE1")
     return Track(
         file_path=path,
         ext="mp3",
-        artist=_str("TPE1"),
-        album_artist=_str("TPE2"),
+        artist=artist,
+        album_artist=_str("TPE2") or artist,  # fall back to artist when TPE2 absent
         album=_str("TALB"),
         year=_str("TDRC"),
         title=_str("TIT2"),
@@ -980,11 +1024,12 @@ def _read_m4a_tags(path: Path) -> Track:
     disk = tags.get("disk")
     disc_number = disk[0][0] if disk else 1
 
+    artist = _s("\xa9ART")
     return Track(
         file_path=path,
         ext="m4a",
-        artist=_s("\xa9ART"),
-        album_artist=_s("aART"),
+        artist=artist,
+        album_artist=_s("aART") or artist,  # fall back to artist when aART absent
         album=_s("\xa9alb"),
         year=_s("\xa9day"),
         title=_s("\xa9nam"),
@@ -1019,11 +1064,13 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
         vals = tags.get(key)
         return vals[0] if vals else ""
 
+    artist = _s("ARTIST")
     return Track(
         file_path=path,
         ext="flac" if is_flac else "ogg",
-        artist=_s("ARTIST"),
-        album_artist=_s("ALBUMARTIST"),
+        artist=artist,
+        album_artist=_s("ALBUMARTIST")
+        or artist,  # fall back to artist when ALBUMARTIST absent
         album=_s("ALBUM"),
         year=_s("DATE"),
         title=_s("TITLE"),

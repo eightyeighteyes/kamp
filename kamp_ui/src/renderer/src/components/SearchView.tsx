@@ -36,7 +36,7 @@ function SearchAlbumCard({
       <div className={`search-album-art${artLoaded ? ' has-art' : ''}`}>
         {album.has_art && (
           <img
-            src={artUrl(album.album_artist, album.album)}
+            src={artUrl(album.album_artist, album.album, album.file_path)}
             alt=""
             onLoad={() => setArtLoaded(true)}
             onError={() => setArtLoaded(false)}
@@ -63,7 +63,14 @@ function SearchTrackRow({
   const setSearchQuery = useStore((s) => s.setSearchQuery)
 
   const handleClick = (): void => {
-    void playTrack(track.album_artist, track.album, track.track_number - 1)
+    // Pass file_path for tracks with no album so the server can look them up
+    // by path rather than by the empty album key.
+    void playTrack(
+      track.album_artist,
+      track.album,
+      track.track_number - 1,
+      track.album ? '' : track.file_path
+    )
     void setSearchQuery('')
   }
 
@@ -206,7 +213,11 @@ export function SearchView(): React.JSX.Element {
           <button
             className="track-context-menu-item"
             onClick={() => {
-              void playAlbumNext(albumMenu.album.album_artist, albumMenu.album.album)
+              void playAlbumNext(
+                albumMenu.album.album_artist,
+                albumMenu.album.album,
+                albumMenu.album.file_path
+              )
               setAlbumMenu(null)
             }}
           >
@@ -215,7 +226,11 @@ export function SearchView(): React.JSX.Element {
           <button
             className="track-context-menu-item"
             onClick={() => {
-              void addAlbumToQueue(albumMenu.album.album_artist, albumMenu.album.album)
+              void addAlbumToQueue(
+                albumMenu.album.album_artist,
+                albumMenu.album.album,
+                albumMenu.album.file_path
+              )
               setAlbumMenu(null)
             }}
           >

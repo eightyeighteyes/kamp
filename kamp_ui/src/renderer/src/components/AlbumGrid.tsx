@@ -22,8 +22,11 @@ function AlbumCard({
   const playing = useStore((s) => s.player.playing)
   const [artLoaded, setArtLoaded] = useState(false)
 
-  const isActive =
-    currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
+  // For missing-album tracks, match by file_path since album="" in the DB
+  // while album.album holds the track title as a display name.
+  const isActive = album.missing_album
+    ? currentTrack?.file_path === album.file_path
+    : currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
   return (
     <div
@@ -36,7 +39,11 @@ function AlbumCard({
       onDragStart={(e) => {
         e.dataTransfer.setData(
           'text/kamp-album',
-          JSON.stringify({ album_artist: album.album_artist, album: album.album })
+          JSON.stringify({
+            album_artist: album.album_artist,
+            album: album.album,
+            file_path: album.file_path
+          })
         )
         e.dataTransfer.effectAllowed = 'copy'
       }}
@@ -45,7 +52,7 @@ function AlbumCard({
         {album.has_art && (
           <img
             className="album-art-img"
-            src={artUrl(album.album_artist, album.album)}
+            src={artUrl(album.album_artist, album.album, album.file_path)}
             alt=""
             onLoad={() => setArtLoaded(true)}
             onError={() => setArtLoaded(false)}
@@ -54,7 +61,13 @@ function AlbumCard({
         {playing && isActive && <div className="now-playing-badge">▶</div>}
       </div>
       <div className="album-info">
-        <div className="album-title">{album.album}</div>
+        {album.missing_album ? (
+          <div className="album-title">
+            <em>{album.album}</em>
+          </div>
+        ) : (
+          <div className="album-title">{album.album}</div>
+        )}
         <div className="album-artist">{album.album_artist}</div>
         <div className="album-year">{album.year}</div>
       </div>
@@ -116,7 +129,7 @@ export function AlbumGrid(): React.JSX.Element {
         <div className="album-grid">
           {visible.map((album) => (
             <AlbumCard
-              key={`${album.album_artist}\0${album.album}`}
+              key={album.missing_album ? album.file_path : `${album.album_artist}\0${album.album}`}
               album={album}
               onContextMenu={(e, a) => {
                 e.preventDefault()
@@ -132,7 +145,7 @@ export function AlbumGrid(): React.JSX.Element {
           <button
             className="track-context-menu-item"
             onClick={() => {
-              void playAlbumNext(menu.album.album_artist, menu.album.album)
+              void playAlbumNext(menu.album.album_artist, menu.album.album, menu.album.file_path)
               setMenu(null)
             }}
           >
@@ -141,7 +154,7 @@ export function AlbumGrid(): React.JSX.Element {
           <button
             className="track-context-menu-item"
             onClick={() => {
-              void addAlbumToQueue(menu.album.album_artist, menu.album.album)
+              void addAlbumToQueue(menu.album.album_artist, menu.album.album, menu.album.file_path)
               setMenu(null)
             }}
           >

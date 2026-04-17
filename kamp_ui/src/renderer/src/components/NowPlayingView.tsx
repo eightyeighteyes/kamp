@@ -41,7 +41,11 @@ export function NowPlayingView(): React.JSX.Element {
       <div className={`now-playing-art${artLoaded ? ' has-art' : ''}`}>
         <span className="now-playing-art-placeholder">♪</span>
         <img
-          src={artUrl(current_track.album_artist, current_track.album)}
+          src={artUrl(
+            current_track.album_artist,
+            current_track.album,
+            current_track.album ? '' : current_track.file_path
+          )}
           onLoad={() => setArtLoaded(true)}
           onError={() => setArtLoaded(false)}
         />

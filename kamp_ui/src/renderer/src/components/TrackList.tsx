@@ -63,7 +63,7 @@ export function TrackList(): React.JSX.Element | null {
     <div className="track-list-view">
       {/* Hero: full-width art — image intentionally taller than hero to bleed into track list */}
       <div className={`track-list-hero${album.has_art ? ' has-art' : ''}`}>
-        {album.has_art && <HeroImage src={artUrl(album.album_artist, album.album)} />}
+        {album.has_art && <HeroImage src={artUrl(album.album_artist, album.album, album.file_path)} />}
       </div>
       {/* Overlay spans the full view so the gradient covers both hero and the top of the track list */}
       <div className="track-list-hero-overlay" />
@@ -93,7 +93,7 @@ export function TrackList(): React.JSX.Element | null {
         <button
           className="play-all-btn"
           aria-label="Play all"
-          onClick={() => playTrack(album.album_artist, album.album, 0)}
+          onClick={() => playTrack(album.album_artist, album.album, 0, album.file_path)}
         >
           ▶
         </button>
@@ -115,13 +115,13 @@ export function TrackList(): React.JSX.Element | null {
                   if (isCurrent) {
                     togglePlayPause()
                   } else {
-                    playTrack(album.album_artist, album.album, i)
+                    playTrack(album.album_artist, album.album, i, album.file_path)
                   }
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter') return
                   if (isCurrent) togglePlayPause()
-                  else playTrack(album.album_artist, album.album, i)
+                  else playTrack(album.album_artist, album.album, i, album.file_path)
                 }}
                 draggable
                 onDragStart={(e) => {

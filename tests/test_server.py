@@ -184,6 +184,62 @@ class TestArtistsEndpoint:
         assert c.get("/api/v1/artists").json() == ["Aesop Rock", "Zeppelin"]
 
 
+class TestMissingAlbumEndpoints:
+    """Endpoints that support file_path-based lookup for tracks without an album tag."""
+
+    def test_albums_includes_missing_album_fields(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.albums.return_value = [
+            AlbumInfo(
+                album_artist="Mndsgn.",
+                album="Lone Track",
+                year="2020",
+                track_count=1,
+                has_art=False,
+                missing_album=True,
+                file_path="/music/lone.mp3",
+            )
+        ]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        album = c.get("/api/v1/albums").json()[0]
+        assert album["missing_album"] is True
+        assert album["file_path"] == "/music/lone.mp3"
+
+    def test_tracks_endpoint_uses_file_path_when_provided(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1, album="")
+        mock_index.get_track_by_path.return_value = track
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        data = c.get(
+            "/api/v1/tracks?album_artist=&album=&file_path=%2Fmusic%2F01.mp3"
+        ).json()
+        assert len(data) == 1
+        mock_index.get_track_by_path.assert_called_once_with(Path("/music/01.mp3"))
+        mock_index.tracks_for_album.assert_not_called()
+
+    def test_album_art_endpoint_uses_file_path_when_provided(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1, album="")
+        track.embedded_art = True
+        mock_index.get_track_by_path.return_value = track
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with patch(
+            "kamp_core.server.extract_art", return_value=(b"IMGDATA", "image/jpeg")
+        ):
+            res = c.get(
+                "/api/v1/album-art?album_artist=&album=&file_path=%2Fmusic%2F01.mp3"
+            )
+        assert res.status_code == 200
+        mock_index.get_track_by_path.assert_called_once_with(Path("/music/01.mp3"))
+        mock_index.tracks_for_album.assert_not_called()
+
+
 class TestTracksForAlbumEndpoint:
     def test_returns_tracks_for_album(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

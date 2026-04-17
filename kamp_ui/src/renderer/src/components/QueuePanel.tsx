@@ -79,11 +79,16 @@ export function QueuePanel(): React.JSX.Element {
       void insertIntoQueue(trackPath, dropIdx)
     } else if (albumJson) {
       try {
-        const { album_artist, album } = JSON.parse(albumJson) as {
+        const {
+          album_artist,
+          album,
+          file_path = ''
+        } = JSON.parse(albumJson) as {
           album_artist: string
           album: string
+          file_path?: string
         }
-        void insertAlbumAt(album_artist, album, dropIdx)
+        void insertAlbumAt(album_artist, album, dropIdx, file_path)
       } catch {
         // malformed drag data — ignore
       }
@@ -109,11 +114,16 @@ export function QueuePanel(): React.JSX.Element {
               void addToQueue(trackPath)
             } else if (albumJson) {
               try {
-                const { album_artist, album } = JSON.parse(albumJson) as {
+                const {
+                  album_artist,
+                  album,
+                  file_path = ''
+                } = JSON.parse(albumJson) as {
                   album_artist: string
                   album: string
+                  file_path?: string
                 }
-                void addAlbumToQueue(album_artist, album)
+                void addAlbumToQueue(album_artist, album, file_path)
               } catch {
                 // malformed drag data — ignore
               }
@@ -192,7 +202,9 @@ export function QueuePanel(): React.JSX.Element {
                     album: menu.album!,
                     year: '',
                     track_count: 0,
-                    has_art: false
+                    has_art: false,
+                    missing_album: false,
+                    file_path: ''
                   }
                   void setActiveView('library')
                   void selectAlbum(found)

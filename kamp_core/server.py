@@ -75,6 +75,10 @@ class AlbumOut(BaseModel):
     year: str
     track_count: int
     has_art: bool
+    missing_album: bool = False
+    # Non-empty only when missing_album=True; used as the unique lookup key
+    # instead of (album_artist, album) for tracks without an album tag.
+    file_path: str = ""
 
 
 class PlayerStateOut(BaseModel):
@@ -89,6 +93,7 @@ class PlayRequest(BaseModel):
     album_artist: str
     album: str
     track_index: int = 0
+    file_path: str = ""  # non-empty for missing-album tracks
 
 
 class SeekRequest(BaseModel):
@@ -150,12 +155,14 @@ class InsertQueueRequest(BaseModel):
 class AlbumQueueRequest(BaseModel):
     album_artist: str
     album: str
+    file_path: str = ""  # non-empty for missing-album tracks
 
 
 class InsertAlbumQueueRequest(BaseModel):
     album_artist: str
     album: str
     index: int
+    file_path: str = ""  # non-empty for missing-album tracks
 
 
 class SkipToRequest(BaseModel):
@@ -314,6 +321,8 @@ def create_app(
                 year=a.year,
                 track_count=a.track_count,
                 has_art=a.has_art,
+                missing_album=a.missing_album,
+                file_path=a.file_path,
             )
             for a in index.albums(sort=sort)
         ]
@@ -323,9 +332,16 @@ def create_app(
         return index.artists()
 
     @app.get("/api/v1/tracks", response_model=list[TrackOut])
-    def get_tracks(album_artist: str, album: str) -> list[TrackOut]:
+    def get_tracks(
+        album_artist: str, album: str, file_path: str = ""
+    ) -> list[TrackOut]:
         # Query parameters instead of path segments — artist/album names may
         # contain slashes (e.g. "AC/DC") which would break URL path routing.
+        # file_path is used for missing-album tracks where (album_artist, album)
+        # is not a unique key; when present it takes precedence.
+        if file_path:
+            track = index.get_track_by_path(Path(file_path))
+            return [TrackOut.from_track(track)] if track else []
         return [
             TrackOut.from_track(t) for t in index.tracks_for_album(album_artist, album)
         ]
@@ -342,8 +358,13 @@ def create_app(
         return {"ok": True}
 
     @app.get("/api/v1/album-art")
-    def get_album_art(album_artist: str, album: str) -> Response:
-        tracks = index.tracks_for_album(album_artist, album)
+    def get_album_art(album_artist: str, album: str, file_path: str = "") -> Response:
+        # file_path overrides (album_artist, album) for missing-album tracks.
+        if file_path:
+            track = index.get_track_by_path(Path(file_path))
+            tracks = [track] if track else []
+        else:
+            tracks = index.tracks_for_album(album_artist, album)
         for track in tracks:
             if track.embedded_art:
                 result = extract_art(track.file_path)
@@ -357,7 +378,10 @@ def create_app(
         fts_tracks = index.search(q)
         # Collect the set of (album_artist, album) keys that appear in FTS results,
         # then filter the pre-sorted album list so the response respects sort order.
+        # Missing-album tracks have album="" in the DB, so also match them by
+        # file_path since their AlbumInfo.album is the display title, not "".
         fts_keys = {(t.album_artist, t.album) for t in fts_tracks}
+        fts_paths = {str(t.file_path) for t in fts_tracks if not t.album}
         albums = [
             AlbumOut(
                 album_artist=a.album_artist,
@@ -365,9 +389,12 @@ def create_app(
                 year=a.year,
                 track_count=a.track_count,
                 has_art=a.has_art,
+                missing_album=a.missing_album,
+                file_path=a.file_path,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys
+            or (a.missing_album and a.file_path in fts_paths)
         ]
         return SearchOut(
             albums=albums, tracks=[TrackOut.from_track(t) for t in fts_tracks]
@@ -615,7 +642,11 @@ def create_app(
 
     @app.post("/api/v1/player/play")
     def play(req: PlayRequest) -> dict[str, Any]:
-        tracks = index.tracks_for_album(req.album_artist, req.album)
+        if req.file_path:
+            track = index.get_track_by_path(Path(req.file_path))
+            tracks = [track] if track else []
+        else:
+            tracks = index.tracks_for_album(req.album_artist, req.album)
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.load(tracks, start_index=req.track_index)
@@ -713,7 +744,11 @@ def create_app(
 
     @app.post("/api/v1/player/queue/add-album")
     def queue_add_album(req: AlbumQueueRequest) -> dict[str, Any]:
-        tracks = index.tracks_for_album(req.album_artist, req.album)
+        if req.file_path:
+            track = index.get_track_by_path(Path(req.file_path))
+            tracks = [track] if track else []
+        else:
+            tracks = index.tracks_for_album(req.album_artist, req.album)
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.add_album_to_queue(tracks)
@@ -721,7 +756,11 @@ def create_app(
 
     @app.post("/api/v1/player/queue/play-album-next")
     def queue_play_album_next(req: AlbumQueueRequest) -> dict[str, Any]:
-        tracks = index.tracks_for_album(req.album_artist, req.album)
+        if req.file_path:
+            track = index.get_track_by_path(Path(req.file_path))
+            tracks = [track] if track else []
+        else:
+            tracks = index.tracks_for_album(req.album_artist, req.album)
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.play_album_next(tracks)
@@ -729,7 +768,11 @@ def create_app(
 
     @app.post("/api/v1/player/queue/insert-album")
     def queue_insert_album(req: InsertAlbumQueueRequest) -> dict[str, Any]:
-        tracks = index.tracks_for_album(req.album_artist, req.album)
+        if req.file_path:
+            track = index.get_track_by_path(Path(req.file_path))
+            tracks = [track] if track else []
+        else:
+            tracks = index.tracks_for_album(req.album_artist, req.album)
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.insert_album_at(tracks, req.index)

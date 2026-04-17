@@ -98,6 +98,18 @@ func applyUpdate(_ json: [String: Any]) {
     if let position = json["position"] as? Double { info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position }
     if let playing  = json["playing"]  as? Bool   { info[MPNowPlayingInfoPropertyPlaybackRate]        = playing ? 1.0 : 0.0 }
 
+    // Artwork: Electron sends base64-encoded image bytes when the track has
+    // embedded art.  MPMediaItemArtwork(boundsSize:requestHandler:) is the
+    // supported API on macOS 10.13+ for supplying artwork to the Now Playing
+    // widget.  The request handler is called with the size the system needs;
+    // we return the same NSImage at any requested size.
+    if let artworkBase64 = json["artworkBase64"] as? String,
+       let artworkData   = Data(base64Encoded: artworkBase64),
+       let artworkImage  = NSImage(data: artworkData) {
+        let artwork = MPMediaItemArtwork(boundsSize: artworkImage.size) { _ in artworkImage }
+        info[MPMediaItemPropertyArtwork] = artwork
+    }
+
     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 }
 

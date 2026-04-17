@@ -27,6 +27,12 @@ app.setName('Kamp')
 
 let _helper: ChildProcess | null = null
 let _isPlaying = false  // tracks current playback state to correctly handle togglePlayPause
+// Cache artwork as base64 strings keyed by "album_artist|album" so we only
+// fetch once per album rather than on every position-tick update.
+const _artworkCache = new Map<string, string>()
+// Key of the album currently loaded in the player ("album_artist|album"),
+// used to guard deferred artwork re-sends against stale in-flight fetches.
+let _currentAlbumKey = ''
 
 function findNowPlayingBinary(): string | null {
   if (app.isPackaged) {
@@ -422,7 +428,13 @@ app.whenReady().then(async () => {
     (
       _event,
       state: {
-        current_track: { title: string; artist: string; album: string } | null
+        current_track: {
+          title: string
+          artist: string
+          album_artist: string
+          album: string
+          embedded_art: boolean
+        } | null
         playing: boolean
         position: number
         duration: number
@@ -430,18 +442,71 @@ app.whenReady().then(async () => {
     ) => {
       _isPlaying = state.playing
       if (!state.current_track) {
+        _currentAlbumKey = ''
         sendToHelper({ cmd: 'stop' })
         return
       }
+      const track = state.current_track
+
+      // Build the update message synchronously from whatever artwork we already
+      // have cached, then dispatch immediately so position/playback state stays
+      // in sync without waiting for a network round-trip.
+      const artKey = `${track.album_artist}|${track.album}`
+      _currentAlbumKey = artKey
+      const cachedArtwork = _artworkCache.get(artKey)
+
       sendToHelper({
         cmd: 'update',
-        title: state.current_track.title,
-        artist: state.current_track.artist,
-        album: state.current_track.album,
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
         position: state.position,
         duration: state.duration,
-        playing: state.playing
+        playing: state.playing,
+        ...(cachedArtwork !== undefined ? { artworkBase64: cachedArtwork } : {})
       })
+
+      // Fetch artwork in the background on cache miss so subsequent updates for
+      // the same album include it.  net.fetch routes through Chromium's stack
+      // (session.defaultSession) which already has the kamp server in its allow
+      // list and avoids the Cloudflare TLS fingerprint issue for local requests.
+      if (track.embedded_art && cachedArtwork === undefined) {
+        const url =
+          `http://127.0.0.1:8000/api/v1/album-art` +
+          `?album_artist=${encodeURIComponent(track.album_artist)}` +
+          `&album=${encodeURIComponent(track.album)}`
+        net.fetch(url)
+          .then((res) => {
+            if (!res.ok) return
+            return res.arrayBuffer()
+          })
+          .then((buf) => {
+            if (!buf) return
+            const b64 = Buffer.from(buf).toString('base64')
+            _artworkCache.set(artKey, b64)
+            // Re-send the full update (not just artworkBase64) because
+            // applyUpdate in the Swift helper always replaces nowPlayingInfo
+            // from scratch — a partial message would drop title/artist/etc.
+            // Guard against a track change that arrived while fetch was
+            // in-flight by comparing against the live _currentAlbumKey.
+            if (_currentAlbumKey === artKey) {
+              sendToHelper({
+                cmd: 'update',
+                title: track.title,
+                artist: track.artist,
+                album: track.album,
+                position: state.position,
+                duration: state.duration,
+                playing: state.playing,
+                artworkBase64: b64
+              })
+            }
+          })
+          .catch(() => {
+            // Mark cache so we don't retry on every position tick.
+            _artworkCache.set(artKey, '')
+          })
+      }
     }
   )
 

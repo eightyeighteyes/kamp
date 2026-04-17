@@ -71,6 +71,23 @@ jobs:
           chmod +x kamp_ui/resources/mpv
           echo "→ $(file kamp_ui/resources/mpv)"
 
+      - name: Build Now Playing helper
+        # Compile the Swift helper that owns the macOS Now Playing session and
+        # routes media keys (MPRemoteCommandCenter) to Kamp. Build for the native
+        # arch of each runner — the matrix produces separate arm64/x64 DMGs, so
+        # there is no need for a universal binary here.
+        run: |
+          SWIFT_ARCH=$([ "${{ matrix.arch }}" = "x64" ] && echo "x86_64" || echo "arm64")
+          swiftc -O \
+            -target "${SWIFT_ARCH}-apple-macosx11.0" \
+            -framework MediaPlayer \
+            -Xlinker -sectcreate -Xlinker __TEXT \
+            -Xlinker __info_plist -Xlinker kamp_ui/native/NowPlayingHelper.plist \
+            -o kamp_ui/resources/now-playing-helper \
+            kamp_ui/native/NowPlayingHelper.swift
+          chmod +x kamp_ui/resources/now-playing-helper
+          echo "→ $(file kamp_ui/resources/now-playing-helper)"
+
       - name: Bundle Node.js + npm for extension installs
         # Each runner fetches a native node binary for its own architecture.
         run: bash scripts/fetch_node.sh --arch ${{ matrix.arch }}
@@ -120,7 +137,8 @@ jobs:
         run: |
           chmod +x kamp_ui/resources/kamp/kamp \
                    kamp_ui/resources/mpv \
-                   kamp_ui/resources/node
+                   kamp_ui/resources/node \
+                   kamp_ui/resources/now-playing-helper
 
       - name: Import signing certificate
         env:
@@ -199,6 +217,11 @@ jobs:
             --entitlements kamp_ui/build/entitlements.mac.plist \
             kamp_ui/resources/mpv \
             kamp_ui/resources/node
+          echo "→ Signing now-playing-helper..."
+          # No special entitlements needed — MPNowPlayingInfoCenter and
+          # MPRemoteCommandCenter are unprivileged MediaPlayer framework APIs.
+          codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+            kamp_ui/resources/now-playing-helper
           END=$(date +%s)
           echo "→ Pre-signing done in $((END-START))s"
 

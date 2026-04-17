@@ -1,7 +1,8 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, globalShortcut, Menu, session, net } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, Menu, session, net } from 'electron'
 import { join, resolve } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { spawn, ChildProcess } from 'child_process'
+import { createInterface } from 'readline'
 import * as http from 'http'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -12,6 +13,78 @@ import { readManifest } from './communityManifest'
 // Set the app name before the app is ready so the macOS menu bar and all
 // default menu items ("About Kamp", "Quit Kamp") reflect the correct name.
 app.setName('Kamp')
+
+// ---------------------------------------------------------------------------
+// Swift Now Playing helper
+// ---------------------------------------------------------------------------
+// macOS routes media keys to the process that owns MPNowPlayingInfoCenter.
+// Chromium's Media Session API only activates that ownership when Chromium itself
+// is producing audio output — which Kamp does not (audio goes through mpv).
+// A dedicated Swift helper runs as a hidden AppKit application, which is the
+// minimum requirement for MPRemoteCommandCenter to receive media key callbacks.
+// The helper owns the Now Playing session; Electron relays player state to it
+// via stdin and receives media key events back on stdout.
+
+let _helper: ChildProcess | null = null
+let _isPlaying = false  // tracks current playback state to correctly handle togglePlayPause
+
+function findNowPlayingBinary(): string | null {
+  if (app.isPackaged) {
+    const bundled = join(process.resourcesPath, 'now-playing-helper')
+    if (existsSync(bundled)) return bundled
+  }
+  // Dev: built binary lives at kamp_ui/resources/now-playing-helper
+  const dev = resolve(app.getAppPath(), 'resources/now-playing-helper')
+  if (existsSync(dev)) return dev
+  return null
+}
+
+function sendToHelper(msg: object): void {
+  if (!_helper?.stdin?.writable) return
+  _helper.stdin.write(JSON.stringify(msg) + '\n')
+}
+
+function postToPlayer(path: string): void {
+  net.fetch(`http://127.0.0.1:8000${path}`, { method: 'POST' }).catch(() => {})
+}
+
+function startNowPlayingHelper(): void {
+  const binary = findNowPlayingBinary()
+  if (!binary) {
+    console.warn('[kamp] now-playing-helper binary not found — media keys disabled')
+    return
+  }
+  _helper = spawn(binary, [], { stdio: ['pipe', 'pipe', 'inherit'] })
+  _helper.on('exit', () => {
+    _helper = null
+  })
+
+  // Parse newline-delimited JSON events emitted by the helper to stdout.
+  const rl = createInterface({ input: _helper.stdout! })
+  rl.on('line', (line) => {
+    try {
+      const evt = JSON.parse(line) as { event: string }
+      switch (evt.event) {
+        case 'play':           postToPlayer('/api/v1/player/resume'); break
+        case 'pause':          postToPlayer('/api/v1/player/pause');  break
+        case 'togglePlayPause':
+          // Physical play/pause key fires togglePlayPause — check actual state to toggle.
+          postToPlayer(_isPlaying ? '/api/v1/player/pause' : '/api/v1/player/resume')
+          break
+        case 'next':           postToPlayer('/api/v1/player/next');   break
+        case 'prev':           postToPlayer('/api/v1/player/prev');   break
+      }
+    } catch {
+      // Ignore malformed lines
+    }
+  })
+}
+
+function stopNowPlayingHelper(): void {
+  sendToHelper({ cmd: 'stop' })
+  _helper?.kill()
+  _helper = null
+}
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -341,6 +414,37 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // Forward player state from the preload to the Now Playing helper.
+  // The preload sends this on every track.changed / play_state.changed WS event
+  // and once on WS open (initial fetch), so the helper stays in sync.
+  ipcMain.on(
+    'player:state-changed',
+    (
+      _event,
+      state: {
+        current_track: { title: string; artist: string; album: string } | null
+        playing: boolean
+        position: number
+        duration: number
+      }
+    ) => {
+      _isPlaying = state.playing
+      if (!state.current_track) {
+        sendToHelper({ cmd: 'stop' })
+        return
+      }
+      sendToHelper({
+        cmd: 'update',
+        title: state.current_track.title,
+        artist: state.current_track.artist,
+        album: state.current_track.album,
+        position: state.position,
+        duration: state.duration,
+        playing: state.playing
+      })
+    }
+  )
+
   ipcMain.handle('kamp:get-extensions', () => discoverExtensions())
 
   ipcMain.handle('bandcamp:begin-login', () => openBandcampLogin())
@@ -445,22 +549,6 @@ app.whenReady().then(async () => {
     return result.canceled ? null : result.filePaths[0]
   })
 
-  // Register next/prev media keys. mpv handles play/pause natively; we
-  // only need to route next/prev since our queue lives outside mpv.
-  // globalShortcut works at OS level so it fires even when the window is hidden.
-  if (process.platform === 'darwin') {
-    globalShortcut.register('MediaNextTrack', () => {
-      http
-        .request({ hostname: '127.0.0.1', port: 8000, path: '/api/v1/player/next', method: 'POST' })
-        .end()
-    })
-    globalShortcut.register('MediaPreviousTrack', () => {
-      http
-        .request({ hostname: '127.0.0.1', port: 8000, path: '/api/v1/player/prev', method: 'POST' })
-        .end()
-    })
-  }
-
   // Reinstall community extensions from the manifest. This ensures they are
   // present in node_modules in packaged builds where node_modules may not
   // survive between launches. Already-installed packages are a fast no-op.
@@ -486,6 +574,10 @@ app.whenReady().then(async () => {
   // existing reconnect loop handles the brief gap while the server starts up.
   await startServer()
 
+  // Start the Now Playing helper after the server so it can accept key events
+  // immediately. The preload primes it with current player state on WS connect.
+  startNowPlayingHelper()
+
   createWindow()
 
   app.on('activate', function () {
@@ -504,13 +596,13 @@ app.on('window-all-closed', () => {
   }
 })
 
-// Unregister global shortcuts before quitting — they persist for the process lifetime otherwise.
-app.on('will-quit', () => globalShortcut.unregisterAll())
-
-// Kill the server we launched when the app exits.
+// Kill the server and Now Playing helper when the app exits.
 // `will-quit` handles graceful quit; `process.on('exit')` is the synchronous
 // fallback that fires even if the event loop is torn down abruptly.
-app.on('will-quit', stopServer)
+app.on('will-quit', () => {
+  stopNowPlayingHelper()
+  stopServer()
+})
 process.on('exit', stopServer)
 
 // In this file you can include the rest of your app's specific main process

@@ -348,6 +348,11 @@ class MpvPlaybackEngine:
                 "--idle=yes",
                 "--really-quiet",
                 f"--input-ipc-server={tmp}",
+                # Prevent mpv from intercepting media keys via its IOKit HID tap.
+                # Media key events are now handled by the Electron now-playing-helper
+                # subprocess via MPRemoteCommandCenter (registered by the process
+                # that owns MPNowPlayingInfoCenter, which is now the helper).
+                "--input-media-keys=no",
             ],
             stdout=subprocess.DEVNULL,
             # Capture stderr so we can surface it if mpv fails to start.

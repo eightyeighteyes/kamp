@@ -1,16 +1,16 @@
 ---
 id: TASK-48
 title: 'Media keys: next/prev track'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-30 23:47'
-updated_date: '2026-04-03 04:36'
+updated_date: '2026-04-17 00:38'
 labels:
   - feature
   - macos
   - os-integration
   - 'estimate: 2xlp'
-milestone: m-9
+milestone: m-27
 dependencies: []
 priority: medium
 ordinal: 1000

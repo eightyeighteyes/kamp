@@ -1627,6 +1627,12 @@ body,
   border-top: 2px solid var(--accent);
 }
 
+/* Drop zone at the bottom of the queue (empty space below the last track row) */
+.queue-track-list.queue-tail-drop {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* Right-click context menu on track rows */
 .track-context-menu {
   position: fixed;

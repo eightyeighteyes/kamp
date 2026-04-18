@@ -1,12 +1,14 @@
 ---
 id: TASK-140
 title: 'regression: current playback position is no longer saved between instances'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-18 01:52'
+updated_date: '2026-04-18 02:58'
 labels: []
 milestone: m-27
 dependencies: []
+ordinal: 10000
 ---
 
 ## Description

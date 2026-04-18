@@ -34,7 +34,12 @@ textarea {
   --text-on-accent: #000;
   --transport-h: 88px;
   --panel-w: 200px;
-  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family:
+    'DM Sans',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
   font-size: 13px;
   color: var(--text);
   background: var(--bg);
@@ -135,10 +140,18 @@ body,
 .splash-deco {
   animation: splash-twinkle 2.4s ease-in-out infinite;
 }
-.s1 { animation-delay: 0s; }
-.s2 { animation-delay: 0.8s; }
-.s3 { animation-delay: 1.6s; }
-.s4 { animation-delay: 0.4s; }
+.s1 {
+  animation-delay: 0s;
+}
+.s2 {
+  animation-delay: 0.8s;
+}
+.s3 {
+  animation-delay: 1.6s;
+}
+.s4 {
+  animation-delay: 0.4s;
+}
 
 @keyframes splash-twinkle {
   0%,
@@ -154,8 +167,12 @@ body,
 .splash-note {
   animation: splash-float 3s ease-in-out infinite;
 }
-.n1 { animation-delay: 0s; }
-.n2 { animation-delay: 1.5s; }
+.n1 {
+  animation-delay: 0s;
+}
+.n2 {
+  animation-delay: 1.5s;
+}
 
 @keyframes splash-float {
   0%,
@@ -205,7 +222,9 @@ body,
   font-size: 13px;
   padding: 8px 12px;
   margin-bottom: -1px;
-  transition: color 0.15s, border-color 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
   /* Buttons must opt out of the drag region so clicks register. */
   -webkit-app-region: no-drag;
 }
@@ -238,7 +257,9 @@ body,
 .search-bar:focus-within {
   border-color: var(--accent);
   width: 280px;
-  transition: width 0.2s ease, border-color 0.15s;
+  transition:
+    width 0.2s ease,
+    border-color 0.15s;
 }
 
 .search-icon {
@@ -294,7 +315,9 @@ body,
   padding: 4px 6px;
   border-radius: 4px;
   line-height: 1;
-  transition: color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    background 0.15s;
 }
 
 .panel-picker-trigger:hover,
@@ -372,7 +395,10 @@ body,
   font-size: 14px;
   padding: 2px 5px;
   line-height: 1;
-  transition: color 0.12s, background 0.12s, border-color 0.12s;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
 }
 
 .panel-picker-slot-btn:hover {
@@ -691,7 +717,6 @@ body,
   scrollbar-color: var(--border) transparent;
 }
 
-
 /* View panes: always mounted so img elements survive view switches and cached
    art appears instantly. The inactive pane is hidden; the active one uses
    display:contents so it has no box of its own and children lay out as if they
@@ -759,7 +784,6 @@ body,
   color: var(--accent);
 }
 
-
 /* Album grid --------------------------------------------------------------- */
 
 .album-grid-container {
@@ -791,7 +815,9 @@ body,
   cursor: pointer;
   font-size: 12px;
   padding: 3px 10px;
-  transition: background 0.1s, color 0.1s;
+  transition:
+    background 0.1s,
+    color 0.1s;
 }
 
 .sort-btn:hover {
@@ -839,7 +865,9 @@ body,
 }
 
 .album-card.playing:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 0 3px rgba(124, 134, 225, 0.35);
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.4),
+    0 0 0 3px rgba(124, 134, 225, 0.35);
 }
 
 .album-art {
@@ -1165,7 +1193,9 @@ body,
   padding: 5px 12px 5px 9px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.15s, border-color 0.15s;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
 }
 
 .back-btn:hover {
@@ -1920,7 +1950,9 @@ body,
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  transition: background 150ms ease, color 150ms ease;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
 }
 
 .prefs-choose-btn:hover {
@@ -1995,7 +2027,9 @@ body,
   padding: 10px 12px 8px;
   margin-bottom: -1px;
   text-transform: uppercase;
-  transition: color 150ms ease, border-color 150ms ease;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
 }
 
 .prefs-tab:hover {
@@ -2079,7 +2113,9 @@ body,
   height: 12px;
   background: var(--text-dim);
   border-radius: 50%;
-  transition: transform 150ms ease, background 150ms ease;
+  transition:
+    transform 150ms ease,
+    background 150ms ease;
 }
 
 .prefs-toggle input:checked + .prefs-toggle-track {
@@ -2184,8 +2220,12 @@ body,
 }
 
 @keyframes prefs-ext-slide {
-  0%   { transform: translateX(-200%); }
-  100% { transform: translateX(350%); }
+  0% {
+    transform: translateX(-200%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
 }
 
 /* Destructive variant of prefs-choose-btn (used for the Remove confirmation). */
@@ -2206,8 +2246,12 @@ body,
 }
 
 @keyframes prefs-ext-highlight-fade {
-  0%   { background: color-mix(in srgb, var(--accent) 45%, transparent); }
-  100% { background: transparent; }
+  0% {
+    background: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
 }
 
 /* Inline remove confirmation layout. */
@@ -2293,7 +2337,9 @@ body,
   font-size: 12px;
   padding: 6px 14px;
   border-radius: 4px;
-  transition: color 150ms ease, border-color 150ms ease;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
 }
 
 .ext-perm-deny-btn:hover {

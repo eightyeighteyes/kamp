@@ -54,14 +54,17 @@ def _sync_worker(
         from .bandcamp import sync_new_purchases
 
         index = LibraryIndex(db_path)
-        paths = sync_new_purchases(
-            bc_config=bc_config,
-            watch_dir=watch_dir,
-            state_file=state_file,
-            index=index,
-            status_callback=lambda msg: status_q.put(msg),
-        )
-        result_q.put(("ok", paths))
+        try:
+            paths = sync_new_purchases(
+                bc_config=bc_config,
+                watch_dir=watch_dir,
+                state_file=state_file,
+                index=index,
+                status_callback=lambda msg: status_q.put(msg),
+            )
+            result_q.put(("ok", paths))
+        finally:
+            index.close()
     except Exception as exc:  # noqa: BLE001
         # NeedsLoginError is identified by class name so the parent process
         # does not need to import bandcamp to handle the login-needed case.
@@ -96,8 +99,13 @@ def _mark_synced_worker(
         from .bandcamp import mark_collection_synced
 
         index = LibraryIndex(db_path)
-        mark_collection_synced(bc_config=bc_config, state_file=state_file, index=index)
-        result_q.put(("ok", None))
+        try:
+            mark_collection_synced(
+                bc_config=bc_config, state_file=state_file, index=index
+            )
+            result_q.put(("ok", None))
+        finally:
+            index.close()
     except Exception as exc:  # noqa: BLE001
         result_q.put(("error", str(exc)))
     finally:
@@ -397,7 +405,10 @@ def logout() -> None:
 
     if db_path.exists():
         index = LibraryIndex(db_path)
-        index.clear_session("bandcamp")
+        try:
+            index.clear_session("bandcamp")
+        finally:
+            index.close()
         logger.info("Bandcamp logout: session cleared from database.")
 
     # Remove legacy session file if it still exists (e.g. migration failed).

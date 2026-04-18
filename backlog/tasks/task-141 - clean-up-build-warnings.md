@@ -1,13 +1,21 @@
 ---
 id: TASK-141
 title: clean up build warnings
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-18 02:09'
+updated_date: '2026-04-18 02:26'
 labels: []
 milestone: m-27
 dependencies: []
 priority: low
 ---
 
+## Description
 
+<!-- SECTION:DESCRIPTION:BEGIN -->
+Clean up build/lint warnings across the stack:
+1. Python: unclosed SQLite connections in syncer worker functions (ResourceWarning in tests)
+2. Python: unused mypy module overrides in pyproject.toml
+3. Frontend: prettier formatting warnings
+<!-- SECTION:DESCRIPTION:END -->

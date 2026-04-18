@@ -26,7 +26,7 @@ app.setName('Kamp')
 // via stdin and receives media key events back on stdout.
 
 let _helper: ChildProcess | null = null
-let _isPlaying = false  // tracks current playback state to correctly handle togglePlayPause
+let _isPlaying = false // tracks current playback state to correctly handle togglePlayPause
 // Cache artwork as base64 strings keyed by "album_artist|album" so we only
 // fetch once per album rather than on every position-tick update.
 const _artworkCache = new Map<string, string>()
@@ -71,14 +71,22 @@ function startNowPlayingHelper(): void {
     try {
       const evt = JSON.parse(line) as { event: string }
       switch (evt.event) {
-        case 'play':           postToPlayer('/api/v1/player/resume'); break
-        case 'pause':          postToPlayer('/api/v1/player/pause');  break
+        case 'play':
+          postToPlayer('/api/v1/player/resume')
+          break
+        case 'pause':
+          postToPlayer('/api/v1/player/pause')
+          break
         case 'togglePlayPause':
           // Physical play/pause key fires togglePlayPause — check actual state to toggle.
           postToPlayer(_isPlaying ? '/api/v1/player/pause' : '/api/v1/player/resume')
           break
-        case 'next':           postToPlayer('/api/v1/player/next');   break
-        case 'prev':           postToPlayer('/api/v1/player/prev');   break
+        case 'next':
+          postToPlayer('/api/v1/player/next')
+          break
+        case 'prev':
+          postToPlayer('/api/v1/player/prev')
+          break
       }
     } catch {
       // Ignore malformed lines
@@ -475,7 +483,8 @@ app.whenReady().then(async () => {
           `http://127.0.0.1:8000/api/v1/album-art` +
           `?album_artist=${encodeURIComponent(track.album_artist)}` +
           `&album=${encodeURIComponent(track.album)}`
-        net.fetch(url)
+        net
+          .fetch(url)
           .then((res) => {
             if (!res.ok) return
             return res.arrayBuffer()

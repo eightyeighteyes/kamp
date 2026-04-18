@@ -692,8 +692,21 @@ body,
 }
 
 
-/* Now-playing fills its own space — override the shared padding */
-.main-content:has(.now-playing) {
+/* View panes: always mounted so img elements survive view switches and cached
+   art appears instantly. The inactive pane is hidden; the active one uses
+   display:contents so it has no box of its own and children lay out as if they
+   were direct children of .main-content. */
+.view-pane {
+  display: none;
+}
+.view-pane--active {
+  display: contents;
+}
+
+/* Now-playing fills its own space — override the shared padding.
+   Scoped to .view-pane--active so the hidden now-playing pane never
+   accidentally applies these overrides when library is active. */
+.main-content:has(.view-pane--active .now-playing) {
   padding: 0;
   overflow: hidden;
 }
@@ -1067,8 +1080,10 @@ body,
 
 /* Track list view ---------------------------------------------------------- */
 
-/* Opt out of main-content padding/scroll — this view manages its own layout */
-.main-content:has(.track-list-view) {
+/* Opt out of main-content padding/scroll — this view manages its own layout.
+   Scoped to .view-pane--active so the hidden track-list never applies these
+   overrides when the now-playing pane is active. */
+.main-content:has(.view-pane--active .track-list-view) {
   padding: 0;
   overflow: hidden;
 }

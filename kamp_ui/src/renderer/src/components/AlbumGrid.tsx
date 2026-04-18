@@ -52,7 +52,7 @@ function AlbumCard({
         {album.has_art && (
           <img
             className="album-art-img"
-            src={artUrl(album.album_artist, album.album, album.file_path)}
+            src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)}
             alt=""
             onLoad={() => setArtLoaded(true)}
             onError={() => setArtLoaded(false)}

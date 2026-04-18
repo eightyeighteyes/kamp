@@ -32,6 +32,9 @@ export type Album = {
   missing_album: boolean
   // Non-empty when missing_album=true; used as the unique lookup key.
   file_path: string
+  // MAX(file_mtime) across the album's tracks; appended to art URLs as ?v=
+  // so the browser caches by URL and only re-fetches when files change on disk.
+  art_version: number | null
 }
 
 export type PlayerState = {
@@ -115,9 +118,17 @@ export const getAlbums = (sort = 'album_artist'): Promise<Album[]> =>
 // Returns the URL for an album's cover art; load it in an <img> src.
 // The server returns 404 when no art is embedded — handle with onError.
 // Pass filePath for missing-album tracks to look up by file instead of album key.
-export const artUrl = (albumArtist: string, album: string, filePath = ''): string => {
+// artVersion (MAX file_mtime across the album's tracks) is appended as ?v=
+// so the browser caches by URL and only re-fetches when files change on disk.
+export const artUrl = (
+  albumArtist: string,
+  album: string,
+  filePath = '',
+  artVersion: number | null = null
+): string => {
   const base = `${BASE_URL}/api/v1/album-art?album_artist=${encodeURIComponent(albumArtist)}&album=${encodeURIComponent(album)}`
-  return filePath ? `${base}&file_path=${encodeURIComponent(filePath)}` : base
+  const withPath = filePath ? `${base}&file_path=${encodeURIComponent(filePath)}` : base
+  return artVersion != null ? `${withPath}&v=${artVersion}` : withPath
 }
 
 export const getArtists = (): Promise<string[]> => get('/api/v1/artists')

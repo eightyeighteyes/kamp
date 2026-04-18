@@ -79,6 +79,9 @@ class AlbumOut(BaseModel):
     # Non-empty only when missing_album=True; used as the unique lookup key
     # instead of (album_artist, album) for tracks without an album tag.
     file_path: str = ""
+    # MAX(file_mtime) across the album's tracks — appended to art URLs as ?v=
+    # so the browser caches images by URL and only re-fetches when files change.
+    art_version: float | None = None
 
 
 class PlayerStateOut(BaseModel):
@@ -323,6 +326,7 @@ def create_app(
                 has_art=a.has_art,
                 missing_album=a.missing_album,
                 file_path=a.file_path,
+                art_version=a.art_version,
             )
             for a in index.albums(sort=sort)
         ]
@@ -358,7 +362,9 @@ def create_app(
         return {"ok": True}
 
     @app.get("/api/v1/album-art")
-    def get_album_art(album_artist: str, album: str, file_path: str = "") -> Response:
+    def get_album_art(
+        album_artist: str, album: str, file_path: str = "", v: str = ""
+    ) -> Response:
         # file_path overrides (album_artist, album) for missing-album tracks.
         if file_path:
             track = index.get_track_by_path(Path(file_path))
@@ -370,7 +376,17 @@ def create_app(
                 result = extract_art(track.file_path)
                 if result:
                     data, mime = result
-                    return Response(content=data, media_type=mime)
+                    # When a version stamp is present the URL encodes the content
+                    # identity, so the response is safe to cache indefinitely.
+                    # Without a stamp we can't guarantee freshness, so opt out.
+                    cache_control = (
+                        "public, max-age=31536000, immutable" if v else "no-store"
+                    )
+                    return Response(
+                        content=data,
+                        media_type=mime,
+                        headers={"Cache-Control": cache_control},
+                    )
         raise HTTPException(status_code=404, detail="No art found")
 
     @app.get("/api/v1/search", response_model=SearchOut)
@@ -391,6 +407,7 @@ def create_app(
                 has_art=a.has_art,
                 missing_album=a.missing_album,
                 file_path=a.file_path,
+                art_version=a.art_version,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys

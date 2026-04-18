@@ -4,7 +4,7 @@ title: fix database file permissions — apply restrictive umask before sqlite3.
 status: Done
 assignee: []
 created_date: '2026-04-18 18:01'
-updated_date: '2026-04-18 18:05'
+updated_date: '2026-04-18 22:37'
 labels:
   - security
   - chore
@@ -14,6 +14,7 @@ dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0 (FINDING-04)
 priority: high
+ordinal: 1000
 ---
 
 ## Description

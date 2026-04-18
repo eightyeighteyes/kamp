@@ -1,10 +1,10 @@
 ---
 id: TASK-132
 title: move application configuration inside the database
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-15 02:48'
-updated_date: '2026-04-18 21:42'
+updated_date: '2026-04-18 22:37'
 labels:
   - feature
   - backend
@@ -12,6 +12,7 @@ labels:
 milestone: m-29
 dependencies: []
 priority: medium
+ordinal: 3000
 ---
 
 ## Description

@@ -4,7 +4,7 @@ title: audit application database for security
 status: Done
 assignee: []
 created_date: '2026-04-15 02:47'
-updated_date: '2026-04-18 17:54'
+updated_date: '2026-04-18 22:37'
 labels:
   - chore
   - security
@@ -14,6 +14,7 @@ dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0
 priority: high
+ordinal: 2000
 ---
 
 ## Description

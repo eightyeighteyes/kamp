@@ -749,20 +749,30 @@ def _cmd_daemon(
         session_data: dict[str, Any] = dict(payload)
         index.set_session("bandcamp", session_data)
         _logger.info("Bandcamp session saved to database from Electron login flow.")
-        # Immediately fetch username from the Bandcamp API so the UI can show
-        # "Connected as {username}" without waiting for the first sync.
-        # Wrapped in try/except — a network failure here should not fail the login.
-        try:
-            from .bandcamp import _get_fan_info, _make_requests_session
+        # Extract username immediately so the UI can show "Connected as {username}".
+        # Primary source: the logout cookie (URL-encoded JSON, always present after
+        # login, no network round-trip required).  Fallback: the collection_summary
+        # API (requires a network call; may return empty if Bandcamp changes the field).
+        from .bandcamp import (
+            _get_fan_info,
+            _make_requests_session,
+            _username_from_logout_cookie,
+        )
 
-            bc_session = _make_requests_session(session_data)
-            _fan_id, username = _get_fan_info(bc_session)
-            if username:
-                session_data["username"] = username
-                index.set_session("bandcamp", session_data)
-                _logger.info("Bandcamp username %r stored in session.", username)
-        except Exception as exc:
-            _logger.warning("Could not fetch Bandcamp username after login: %s", exc)
+        cookies: list[Any] = list(session_data.get("cookies", []))
+        username = _username_from_logout_cookie(cookies)
+        if not username:
+            try:
+                bc_session = _make_requests_session(session_data)
+                _fan_id, username = _get_fan_info(bc_session)
+            except Exception as exc:
+                _logger.warning(
+                    "Could not fetch Bandcamp username after login: %s", exc
+                )
+        if username:
+            session_data["username"] = username
+            index.set_session("bandcamp", session_data)
+            _logger.info("Bandcamp username %r stored in session.", username)
 
     def _on_bandcamp_disconnect() -> None:
         index.clear_session("bandcamp")
@@ -777,6 +787,7 @@ def _cmd_daemon(
         "artwork.min_dimension": config.artwork.min_dimension,
         "artwork.max_bytes": config.artwork.max_bytes,
         "library.path_template": config.library.path_template,
+        "bandcamp.connected": _bc_session is not None,
         "bandcamp.username": _bc_username,
         "bandcamp.format": config.bandcamp.format if config.bandcamp else None,
         "bandcamp.poll_interval_minutes": (

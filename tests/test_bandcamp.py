@@ -28,6 +28,7 @@ from kamp_daemon.bandcamp import (
     _paginate,
     _save_state,
     _session_from_cookie_file,
+    _username_from_logout_cookie,
     _validate_session,
     mark_collection_synced,
     sync_new_purchases,
@@ -282,6 +283,30 @@ class TestExtractPagedata:
 # ---------------------------------------------------------------------------
 
 
+class TestUsernameFromLogoutCookie:
+    def test_extracts_username_from_logout_cookie(self) -> None:
+        import urllib.parse
+
+        value = urllib.parse.quote('{"username":"tedd-e-terry"}')
+        cookies = [{"name": "logout", "value": value, "domain": ".bandcamp.com"}]
+        assert _username_from_logout_cookie(cookies) == "tedd-e-terry"
+
+    def test_returns_empty_when_no_logout_cookie(self) -> None:
+        cookies = [{"name": "js_logged_in", "value": "1", "domain": ".bandcamp.com"}]
+        assert _username_from_logout_cookie(cookies) == ""
+
+    def test_returns_empty_on_malformed_value(self) -> None:
+        cookies = [{"name": "logout", "value": "not-json", "domain": ".bandcamp.com"}]
+        assert _username_from_logout_cookie(cookies) == ""
+
+    def test_returns_empty_when_username_key_absent(self) -> None:
+        import urllib.parse
+
+        value = urllib.parse.quote('{"other":"data"}')
+        cookies = [{"name": "logout", "value": value, "domain": ".bandcamp.com"}]
+        assert _username_from_logout_cookie(cookies) == ""
+
+
 class TestGetFanInfo:
     def test_returns_fan_id_and_username_from_collection_summary(self) -> None:
         session = MagicMock()
@@ -291,6 +316,21 @@ class TestGetFanInfo:
             "fan_id": 42,
             "username": "testuser",
             "collection_summary": {},
+        }
+        resp.raise_for_status = MagicMock()
+        session.get.return_value = resp
+        fan_id, username = _get_fan_info(session)
+        assert fan_id == 42
+        assert username == "testuser"
+
+    def test_falls_back_to_url_hints_subdomain(self) -> None:
+        session = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "fan_id": 42,
+            "username": "",
+            "url_hints": {"subdomain": "testuser"},
         }
         resp.raise_for_status = MagicMock()
         session.get.return_value = resp

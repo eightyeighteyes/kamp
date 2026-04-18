@@ -189,6 +189,7 @@ export type ConfigValues = {
   'artwork.min_dimension': number | null
   'artwork.max_bytes': number | null
   'library.path_template': string | null
+  'bandcamp.connected': boolean | null
   'bandcamp.username': string | null
   'bandcamp.format': string | null
   'bandcamp.poll_interval_minutes': number | null

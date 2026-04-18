@@ -224,6 +224,7 @@ def create_app(
     on_bandcamp_login_complete: Callable[[dict[str, Any]], None] | None = None,
     get_bandcamp_session: Callable[[], dict[str, Any] | None] | None = None,
     on_bandcamp_disconnect: Callable[[], None] | None = None,
+    dev_mode: bool = False,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -292,13 +293,20 @@ def create_app(
     # background reader thread whenever mpv's pause property flips.
     engine.on_play_state_changed = _notify_play_state_changed
 
-    # Allow requests from the Electron renderer (Vite dev server and file://).
-    # This server only binds to 127.0.0.1, so wildcard origins are safe.
+    # Restrict to origins kamp actually serves; wildcard would allow any page
+    # open in any browser to read session cookies via cross-origin requests.
+    _allowed_origins = [
+        "http://localhost",
+        "http://127.0.0.1",
+        "file://",  # Electron renderer (production file:// pages)
+    ]
+    if dev_mode:
+        _allowed_origins.append("http://localhost:5173")  # Vite dev server
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=_allowed_origins,
+        allow_methods=["GET", "POST", "DELETE", "PATCH"],
+        allow_headers=["Content-Type"],
     )
 
     def _state_snapshot() -> PlayerStateOut:

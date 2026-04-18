@@ -335,6 +335,10 @@ class MpvPlaybackEngine:
         self._sock_path = ""
         self._reader_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        # One-shot seek applied on the next file-loaded event (set by load_paused).
+        # Stored here rather than in on_file_loaded so it doesn't clobber the
+        # external callback chain wired up after engine creation.
+        self._pending_seek: float | None = None
         self._start_mpv()
 
     def _start_mpv(self) -> None:  # pragma: no cover
@@ -409,17 +413,12 @@ class MpvPlaybackEngine:
         Used on daemon startup to restore the previous session state without
         auto-resuming — the user must press play explicitly.
 
-        The seek is deferred to the ``file-loaded`` event callback so it only
-        runs after the demuxer is ready — seek commands sent before that point
-        are silently dropped by mpv.
+        The seek is deferred to the ``file-loaded`` event so it only runs after
+        the demuxer is ready — seek commands sent before that point are silently
+        dropped by mpv.  The position is stored in ``_pending_seek`` rather than
+        in ``on_file_loaded`` so it doesn't overwrite callbacks wired externally.
         """
-        if position > 0:
-            # One-shot: seek to position when mpv confirms the file is ready.
-            def _seek_then_clear() -> None:
-                self.seek(position)
-                self.on_file_loaded = None
-
-            self.on_file_loaded = _seek_then_clear
+        self._pending_seek = position if position > 0 else None
         self._send_command("loadfile", str(path), "replace")
         self._send_command("set_property", "pause", True)
 
@@ -514,6 +513,9 @@ class MpvPlaybackEngine:
                     self.on_play_state_changed()
 
         elif name == "file-loaded":
+            if self._pending_seek is not None:
+                self.seek(self._pending_seek)
+                self._pending_seek = None
             if self.on_file_loaded is not None:
                 self.on_file_loaded()
 

@@ -713,7 +713,9 @@ function BandcampSection({
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 13 }}>
             {connectedUsername ? (
-              <>Connected as <strong>{connectedUsername}</strong></>
+              <>
+                Connected as <strong>{connectedUsername}</strong>
+              </>
             ) : (
               'Connected'
             )}

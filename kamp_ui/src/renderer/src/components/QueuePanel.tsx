@@ -70,6 +70,7 @@ export function QueuePanel(): React.JSX.Element {
   function handleDrop(e: React.DragEvent, dropIdx: number): void {
     e.stopPropagation()
     e.currentTarget.classList.remove('drag-over')
+    listRef.current?.classList.remove('queue-tail-drop')
     const queueIdx = e.dataTransfer.getData('text/kamp-queue-idx')
     const trackPath = e.dataTransfer.getData('text/kamp-track-path')
     const albumJson = e.dataTransfer.getData('text/kamp-album')
@@ -204,6 +205,8 @@ export function QueuePanel(): React.JSX.Element {
                   e.preventDefault()
                   e.stopPropagation()
                   e.currentTarget.classList.add('drag-over')
+                  // Clear tail-drop outline when pointer enters a row.
+                  listRef.current?.classList.remove('queue-tail-drop')
                 }}
                 onDragLeave={(e) => {
                   e.stopPropagation()

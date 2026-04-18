@@ -1,12 +1,14 @@
 ---
 id: TASK-138
 title: the area under the queue is an active drop target for Add to Queue
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-17 20:43'
+updated_date: '2026-04-18 01:19'
 labels: []
 milestone: m-27
 dependencies: []
+ordinal: 5000
 ---
 
 ## Description

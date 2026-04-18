@@ -1963,3 +1963,29 @@ class TestSessionManagement:
             by_path["/music/untagged.mp3"] == 2222.0
         ), "fully untagged mtime unchanged"
         assert by_path["/music/tagged.mp3"] == 3333.0, "already-tagged mtime unchanged"
+
+
+class TestDatabaseFilePermissions:
+    def test_new_database_created_with_owner_only_permissions(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "library.db"
+        index = LibraryIndex(db_path)
+        index.close()
+        mode = db_path.stat().st_mode & 0o777
+        assert mode == 0o600, f"Expected 600, got {oct(mode)}"
+
+    def test_existing_world_readable_database_corrected_on_open(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "library.db"
+        # Simulate a pre-existing DB with the old default 644 permissions.
+        index = LibraryIndex(db_path)
+        index.close()
+        db_path.chmod(0o644)
+        assert db_path.stat().st_mode & 0o777 == 0o644
+
+        index2 = LibraryIndex(db_path)
+        index2.close()
+        mode = db_path.stat().st_mode & 0o777
+        assert mode == 0o600, f"Expected 600 after re-open, got {oct(mode)}"

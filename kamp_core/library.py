@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
+import stat
 import threading
 import time as _time
 from collections.abc import Callable
@@ -226,6 +228,10 @@ class LibraryIndex:
         # all down cleanly at server shutdown.
         self._all_conns: list[sqlite3.Connection] = []
         self._all_conns_lock = threading.Lock()
+        # Correct permissions on existing installs where the file was created
+        # with the default umask (644).
+        if db_path.exists():
+            db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         self._migrate()
 
     def _make_conn(self) -> sqlite3.Connection:
@@ -233,7 +239,13 @@ class LibraryIndex:
         # check_same_thread=False: each connection is only *used* by the thread
         # that created it (enforced by threading.local), but close() is called
         # from the main thread at shutdown and needs to reach all connections.
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        # Apply a restrictive umask so SQLite creates library.db (and its WAL/SHM
+        # sidecar files) with 600 permissions rather than the default 644.
+        old_umask = os.umask(0o077)
+        try:
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        finally:
+            os.umask(old_umask)
         conn.row_factory = sqlite3.Row
         # WAL allows concurrent reads from other thread-connections while a
         # write (e.g. library scan) is in progress.

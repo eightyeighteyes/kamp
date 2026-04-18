@@ -4,12 +4,12 @@ title: update github actions to use node 24
 status: To Do
 assignee: []
 created_date: '2026-04-14 03:22'
-updated_date: '2026-04-15 03:09'
+updated_date: '2026-04-18 17:14'
 labels:
   - chore
   - ci
   - 'estimate: single'
-milestone: m-15
+milestone: m-29
 dependencies: []
 priority: high
 ---

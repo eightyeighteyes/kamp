@@ -4,12 +4,12 @@ title: Now Playing view should auto-hide Artist pane (if currently visible)
 status: To Do
 assignee: []
 created_date: '2026-04-09 02:12'
-updated_date: '2026-04-10 14:16'
+updated_date: '2026-04-18 17:15'
 labels:
   - bug
   - ui
   - 'estimate: single'
-milestone: m-19
+milestone: m-29
 dependencies: []
 priority: medium
 ---

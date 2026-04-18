@@ -598,6 +598,7 @@ def create_app(
         if get_bandcamp_session is not None:
             session = get_bandcamp_session()
             if session:
+                _state["config"]["bandcamp.connected"] = True
                 _state["config"]["bandcamp.username"] = session.get("username")
         _broadcast({"type": "bandcamp.login-complete"})
         return {"ok": True}
@@ -640,6 +641,7 @@ def create_app(
                 status_code=503, detail="Bandcamp disconnect not configured"
             )
         on_bandcamp_disconnect()
+        _state["config"]["bandcamp.connected"] = False
         _state["config"]["bandcamp.username"] = None
         _broadcast({"type": "bandcamp.disconnected"})
         return {"ok": True}

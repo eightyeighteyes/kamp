@@ -31,6 +31,7 @@ import logging
 import re
 import sys
 import time
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
@@ -194,6 +195,8 @@ def mark_collection_synced(
     session_data = _ensure_session(bc_config, index)
     session = _make_requests_session(session_data)
     fan_id, username = _get_fan_info(session)
+    if not username:
+        username = _username_from_logout_cookie(session_data.get("cookies", []))
     _store_username_in_session(username, session_data, index)
     collection = _fetch_collection(fan_id, session, index)
 
@@ -229,8 +232,9 @@ def sync_new_purchases(
     session_data = _ensure_session(bc_config, index)
     session = _make_requests_session(session_data)
     fan_id, username = _get_fan_info(session)
+    if not username:
+        username = _username_from_logout_cookie(session_data.get("cookies", []))
     _store_username_in_session(username, session_data, index)
-    # Use config username as fallback if API didn't return one.
     logger.info("Fetched fan_id=%s for user %r", fan_id, username)
 
     state = _load_state(state_file)
@@ -452,8 +456,30 @@ def _get_fan_info(session: _AnySession) -> tuple[int, str]:
         )
         raise BandcampAPIError(f"collection_summary returned non-JSON: {exc}") from exc
     fan_id: int = data["fan_id"]
-    username: str = data.get("username", "")
+    # Bandcamp moved the username out of the top-level "username" key; fall
+    # back to url_hints.subdomain (the URL slug used in collection page URLs).
+    username: str = data.get("username", "") or data.get("url_hints", {}).get(
+        "subdomain", ""
+    )
     return fan_id, username
+
+
+def _username_from_logout_cookie(cookies: list[dict[str, Any]]) -> str:
+    """Extract username from the Bandcamp ``logout`` cookie.
+
+    Bandcamp's ``logout`` cookie value is URL-encoded JSON: ``{"username":"…"}``.
+    This is a reliable, zero-network-request source of the username that is
+    always present right after login.  Used as a fallback when the API does not
+    return the username field.
+    """
+    for c in cookies:
+        if c.get("name") == "logout":
+            try:
+                payload = json.loads(urllib.parse.unquote(c["value"]))
+                return str(payload.get("username", ""))
+            except Exception:
+                pass
+    return ""
 
 
 def _store_username_in_session(

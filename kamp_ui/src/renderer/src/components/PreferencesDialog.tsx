@@ -661,10 +661,12 @@ function ExtensionsPanel({
 // ---------------------------------------------------------------------------
 
 function BandcampSection({
+  isConnected,
   connectedUsername,
   onConnected,
   onDisconnected
 }: {
+  isConnected: boolean
   connectedUsername: string | null
   onConnected: () => void
   onDisconnected: () => void
@@ -707,10 +709,14 @@ function BandcampSection({
       <div className="prefs-row-header">
         <span className="prefs-label">Session</span>
       </div>
-      {connectedUsername ? (
+      {isConnected ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 13 }}>
-            Connected as <strong>{connectedUsername}</strong>
+            {connectedUsername ? (
+              <>Connected as <strong>{connectedUsername}</strong></>
+            ) : (
+              'Connected'
+            )}
           </span>
           <button
             className="prefs-choose-btn prefs-choose-btn--destructive"
@@ -1103,6 +1109,7 @@ export function PreferencesDialog({
                         onSave={handleSave}
                       />
                       <BandcampSection
+                        isConnected={configValues?.['bandcamp.connected'] ?? false}
                         connectedUsername={configValues?.['bandcamp.username'] ?? null}
                         onConnected={() => void loadConfig()}
                         onDisconnected={() => void loadConfig()}

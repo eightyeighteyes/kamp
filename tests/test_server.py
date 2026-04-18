@@ -1167,6 +1167,7 @@ _SAMPLE_CONFIG_VALUES = {
     "artwork.min_dimension": 1000,
     "artwork.max_bytes": 1000000,
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
+    "bandcamp.connected": False,
     "bandcamp.username": None,
     "bandcamp.format": None,
     "bandcamp.poll_interval_minutes": None,
@@ -1489,13 +1490,58 @@ class TestBandcampStatus:
             index=mock_index,
             engine=mock_engine,
             queue=mock_queue,
-            config_values={"bandcamp.username": "johndoe"},
+            config_values={"bandcamp.connected": True, "bandcamp.username": "johndoe"},
             on_bandcamp_disconnect=lambda: None,
         )
         c = TestClient(app)
         c.delete("/api/v1/bandcamp/connect")
         data = c.get("/api/v1/config").json()
+        assert data["bandcamp.connected"] is False
         assert data["bandcamp.username"] is None
+
+    def test_login_complete_sets_bandcamp_connected(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """bandcamp.connected is set to True even when username fetch fails."""
+        cookies = [{"name": "js_logged_in", "value": "1", "domain": ".bandcamp.com"}]
+        session = {"cookies": cookies, "username": None}
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"bandcamp.connected": False, "bandcamp.username": None},
+            on_bandcamp_login_complete=lambda payload: None,
+            get_bandcamp_session=lambda: session,
+        )
+        c = TestClient(app)
+        c.post(
+            "/api/v1/bandcamp/login-complete",
+            json={"cookies": cookies, "origins": []},
+        )
+        data = c.get("/api/v1/config").json()
+        assert data["bandcamp.connected"] is True
+
+    def test_login_complete_sets_username_when_available(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        cookies = [{"name": "js_logged_in", "value": "1", "domain": ".bandcamp.com"}]
+        session = {"cookies": cookies, "username": "johndoe"}
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"bandcamp.connected": False, "bandcamp.username": None},
+            on_bandcamp_login_complete=lambda payload: None,
+            get_bandcamp_session=lambda: session,
+        )
+        c = TestClient(app)
+        c.post(
+            "/api/v1/bandcamp/login-complete",
+            json={"cookies": cookies, "origins": []},
+        )
+        data = c.get("/api/v1/config").json()
+        assert data["bandcamp.connected"] is True
+        assert data["bandcamp.username"] == "johndoe"
 
 
 # ---------------------------------------------------------------------------

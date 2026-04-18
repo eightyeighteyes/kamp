@@ -81,7 +81,7 @@ python_version = "3.11"
 
 [[tool.mypy.overrides]]
 # musicbrainzngs ships no type stubs
-module = ["musicbrainzngs", "musicbrainzngs.*"]
+module = ["musicbrainzngs"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -94,12 +94,12 @@ disable_error_code = ["import-untyped", "import-not-found", "no-untyped-call", "
 # mutagen has partial stubs that don't cover ID3 frame classes, MP4 methods, or
 # FLAC tag access (audio.tags is typed as VCFLACDict | MetadataBlock; the union
 # causes false union-attr/index errors on the VCFLACDict branch we always use).
-module = ["kamp_daemon.tagger", "kamp_daemon.mover", "kamp_daemon.artwork", "kamp_core.library", "tests.test_library"]
+module = ["kamp_daemon.tagger", "kamp_daemon.mover", "kamp_daemon.artwork", "kamp_core.library"]
 disable_error_code = ["no-untyped-call", "attr-defined", "unused-ignore", "union-attr", "index", "var-annotated", "assignment", "arg-type"]
 
 [[tool.mypy.overrides]]
 # rumps, AppKit, objc (PyObjC runtime), and setproctitle ship no type stubs
-module = ["rumps", "rumps.*", "AppKit", "AppKit.*", "Foundation", "Foundation.*", "objc", "objc.*", "setproctitle"]
+module = ["rumps", "AppKit", "objc", "setproctitle"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

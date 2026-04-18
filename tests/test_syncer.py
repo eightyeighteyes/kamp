@@ -590,16 +590,19 @@ class TestLogout:
 
         db_path = tmp_path / "library.db"
         index = LibraryIndex(db_path)
-        index.set_session(
-            "bandcamp", {"cookies": [{"name": "js_logged_in", "value": "1"}]}
-        )
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        try:
+            index.set_session(
+                "bandcamp", {"cookies": [{"name": "js_logged_in", "value": "1"}]}
+            )
+            (tmp_path / "bandcamp_state.json").write_text("{}")
 
-        with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
-            logout()
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                logout()
 
-        assert index.get_session("bandcamp") is None
-        assert not (tmp_path / "bandcamp_state.json").exists()
+            assert index.get_session("bandcamp") is None
+            assert not (tmp_path / "bandcamp_state.json").exists()
+        finally:
+            index.close()
 
     def test_noop_when_db_absent(self, tmp_path: Path) -> None:
         """logout() does not raise when library.db does not exist."""

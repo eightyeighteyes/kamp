@@ -24,10 +24,10 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -107,7 +107,7 @@ jobs:
         run: bash scripts/make_icns.sh kamp_ui/resources/icon_1024.png
 
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bundle-${{ matrix.arch }}
           path: kamp_ui/resources/
@@ -127,10 +127,10 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download bundle artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: bundle-${{ matrix.arch }}
           path: kamp_ui/resources/
@@ -231,7 +231,7 @@ jobs:
       - name: Cache electron-builder binaries
         # electron-builder downloads dmgbuild and other native helpers on first run.
         # Caching avoids transient network failures and speeds up subsequent builds.
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/Library/Caches/electron-builder
           key: electron-builder-cache-${{ matrix.arch }}-${{ hashFiles('kamp_ui/package-lock.json') }}
@@ -239,7 +239,7 @@ jobs:
             electron-builder-cache-${{ matrix.arch }}-
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
@@ -274,7 +274,7 @@ jobs:
           echo "name=Kamp-${safe}-mac-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.artifact.outputs.name }}
           path: kamp_ui/dist/*.dmg

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.10.0](https://github.com/eightyeighteyes/kamp/compare/v1.9.0...v1.10.0) (2026-04-18)
+
+
+### Features
+
+* area below queue tracks is a drop target (TASK-138) ([#219](https://github.com/eightyeighteyes/kamp/issues/219)) ([4535434](https://github.com/eightyeighteyes/kamp/commit/4535434b4e879cd059f4497903af5ea4271f0018))
+* cache album art via URL-based version stamp (TASK-94) ([#221](https://github.com/eightyeighteyes/kamp/issues/221)) ([5fa657e](https://github.com/eightyeighteyes/kamp/commit/5fa657e270d738407e351f0ccc6ba0c771132776))
+* cover art in macOS Control Center Now Playing widget (TASK-46) ([#216](https://github.com/eightyeighteyes/kamp/issues/216)) ([6a2e3ea](https://github.com/eightyeighteyes/kamp/commit/6a2e3ea7f17bb2a4baacd6963e8f138076f8b943))
+* media keys via Swift Now Playing helper (TASK-48) ([#214](https://github.com/eightyeighteyes/kamp/issues/214)) ([8025f7a](https://github.com/eightyeighteyes/kamp/commit/8025f7acda334c7ee65ace72e47208f926a6dff0))
+* show tracks without album tags as individual library entries (TASK-137) ([#218](https://github.com/eightyeighteyes/kamp/issues/218)) ([2f60910](https://github.com/eightyeighteyes/kamp/commit/2f60910a4308e22f4dc30857a985e1908f80a8cd))
+
+
+### Bug Fixes
+
+* clean up build warnings (TASK-141) ([#223](https://github.com/eightyeighteyes/kamp/issues/223)) ([2ccc402](https://github.com/eightyeighteyes/kamp/commit/2ccc40284cfdfc9fdbd296071366dbf74fee8da8))
+* FLAC/OGG blank tags + Last.fm 400 errors (TASK-136) ([#217](https://github.com/eightyeighteyes/kamp/issues/217)) ([2b9d638](https://github.com/eightyeighteyes/kamp/commit/2b9d6385198268a1a48a66b379456fcb8481e10e))
+* queue panel opens at current track without visible scroll (TASK-95) ([#220](https://github.com/eightyeighteyes/kamp/issues/220)) ([be2a86f](https://github.com/eightyeighteyes/kamp/commit/be2a86f92e4650a650b8eff73d1750cad19d83d8))
+* restore playback position between sessions (TASK-140) ([#224](https://github.com/eightyeighteyes/kamp/issues/224)) ([0ae3ff4](https://github.com/eightyeighteyes/kamp/commit/0ae3ff48d49cb9c273bb46a76103dd45935cc8bb))
+* treat kamp and kamp_ui as a single release unit ([#225](https://github.com/eightyeighteyes/kamp/issues/225)) ([5ce5b95](https://github.com/eightyeighteyes/kamp/commit/5ce5b953c96fe12796a2d49494202e08dec013e7))
+* wire kamp_ui into release-please so installer version tracks releases ([#222](https://github.com/eightyeighteyes/kamp/issues/222)) ([6c57023](https://github.com/eightyeighteyes/kamp/commit/6c57023f517534a542242e370382b358cc288540))
+
 ## [1.9.0](https://github.com/eightyeighteyes/kamp/compare/v1.8.0...v1.9.0) (2026-04-14)
 
 

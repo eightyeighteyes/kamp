@@ -648,25 +648,44 @@ class TestMpvPlaybackEngine:
         send.assert_any_call("loadfile", "/music/track.mp3", "replace")
         send.assert_any_call("set_property", "pause", True)
 
-    def test_load_paused_registers_file_loaded_callback_when_position_nonzero(
-        self,
-    ) -> None:
+    def test_load_paused_sets_pending_seek_when_position_nonzero(self) -> None:
         engine, _ = _make_engine()
         engine.load_paused(Path("/music/track.mp3"), 42.5)
-        assert engine.on_file_loaded is not None
+        assert engine._pending_seek == 42.5
 
-    def test_load_paused_no_callback_when_position_is_zero(self) -> None:
+    def test_load_paused_no_pending_seek_when_position_is_zero(self) -> None:
         engine, _ = _make_engine()
         engine.load_paused(Path("/music/track.mp3"), 0.0)
-        assert engine.on_file_loaded is None
+        assert engine._pending_seek is None
 
-    def test_load_paused_callback_seeks_and_clears_itself(self) -> None:
+    def test_load_paused_does_not_overwrite_on_file_loaded(self) -> None:
+        engine, _ = _make_engine()
+        callback = MagicMock()
+        engine.on_file_loaded = callback
+        engine.load_paused(Path("/music/track.mp3"), 42.5)
+        # The external callback must be untouched — this was the regression.
+        assert engine.on_file_loaded is callback
+
+    def test_pending_seek_fires_and_clears_on_file_loaded_event(self) -> None:
         engine, send = _make_engine()
         engine.load_paused(Path("/music/track.mp3"), 42.5)
-        assert engine.on_file_loaded is not None
-        engine.on_file_loaded()  # simulate file-loaded event
+        assert engine._pending_seek == 42.5
+        engine._handle_event({"event": "file-loaded"})
         send.assert_any_call("seek", 42.5, "absolute")
-        assert engine.on_file_loaded is None  # one-shot: cleared after firing
+        assert engine._pending_seek is None  # one-shot: cleared after firing
+
+    def test_pending_seek_fires_before_on_file_loaded_callback(self) -> None:
+        """Seek must happen before the user callback so position is set first."""
+        engine, send = _make_engine()
+        order: list[str] = []
+        send.side_effect = lambda *a: order.append(str(a))
+        callback = MagicMock(side_effect=lambda: order.append("callback"))
+        engine.on_file_loaded = callback
+        engine.load_paused(Path("/music/track.mp3"), 42.5)
+        engine._handle_event({"event": "file-loaded"})
+        seek_idx = next(i for i, s in enumerate(order) if "seek" in s)
+        cb_idx = order.index("callback")
+        assert seek_idx < cb_idx
 
     def test_file_loaded_event_triggers_on_file_loaded_callback(self) -> None:
         engine, _ = _make_engine()

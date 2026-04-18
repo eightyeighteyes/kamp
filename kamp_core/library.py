@@ -197,6 +197,9 @@ class AlbumInfo:
     # as a display name, and file_path uniquely identifies this virtual album.
     missing_album: bool = False
     file_path: str = ""
+    # MAX(file_mtime) across the album's tracks — used as a cache-busting key
+    # in image URLs so the browser only re-fetches art when files change.
+    art_version: float | None = None
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -484,13 +487,14 @@ class LibraryIndex:
         order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
         rows = self._conn.execute(f"""
             SELECT album_artist, album, year, track_count, has_art,
-                   missing_album, file_path
+                   missing_album, file_path, art_version
             FROM (
                 SELECT album_artist, album, year, COUNT(*) AS track_count,
                        MAX(embedded_art) AS has_art,
                        0 AS missing_album, '' AS file_path,
                        MIN(date_added) AS sort_date_added,
-                       MAX(last_played) AS sort_last_played
+                       MAX(last_played) AS sort_last_played,
+                       MAX(file_mtime) AS art_version
                 FROM tracks
                 WHERE album != ''
                 GROUP BY album_artist, album
@@ -499,7 +503,8 @@ class LibraryIndex:
                        embedded_art AS has_art,
                        1 AS missing_album, file_path,
                        date_added AS sort_date_added,
-                       last_played AS sort_last_played
+                       last_played AS sort_last_played,
+                       file_mtime AS art_version
                 FROM tracks
                 WHERE album = ''
             )
@@ -514,6 +519,7 @@ class LibraryIndex:
                 has_art=bool(r["has_art"]),
                 missing_album=bool(r["missing_album"]),
                 file_path=r["file_path"],
+                art_version=r["art_version"],
             )
             for r in rows
         ]

@@ -79,6 +79,9 @@ class AlbumOut(BaseModel):
     # Non-empty only when missing_album=True; used as the unique lookup key
     # instead of (album_artist, album) for tracks without an album tag.
     file_path: str = ""
+    # MAX(file_mtime) across the album's tracks — appended to art URLs as ?v=
+    # so the browser caches images by URL and only re-fetches when files change.
+    art_version: float | None = None
 
 
 class PlayerStateOut(BaseModel):
@@ -323,6 +326,7 @@ def create_app(
                 has_art=a.has_art,
                 missing_album=a.missing_album,
                 file_path=a.file_path,
+                art_version=a.art_version,
             )
             for a in index.albums(sort=sort)
         ]
@@ -391,6 +395,7 @@ def create_app(
                 has_art=a.has_art,
                 missing_album=a.missing_album,
                 file_path=a.file_path,
+                art_version=a.art_version,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys

@@ -125,6 +125,17 @@ class TestAlbumsEndpoint:
         album = c.get("/api/v1/albums").json()[0]
         assert album["has_art"] is True
 
+    def test_album_includes_art_version(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        album_info = _album("Artist", "Record")
+        album_info.art_version = 1234567.0
+        mock_index.albums.return_value = [album_info]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        album = c.get("/api/v1/albums").json()[0]
+        assert album["art_version"] == pytest.approx(1234567.0)
+
 
 class TestAlbumArtEndpoint:
     def test_returns_art_bytes_when_embedded(

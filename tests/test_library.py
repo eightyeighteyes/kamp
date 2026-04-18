@@ -345,6 +345,46 @@ class TestLibraryIndex:
         assert missing_entry.album == "Lone Track"
         assert missing_entry.file_path == str(tmp_path / "standalone.mp3")
 
+    def test_albums_art_version_is_max_file_mtime(self, tmp_path: Path) -> None:
+        """art_version is the largest file_mtime across tracks in the album."""
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = _sample_track(tmp_path / "1.mp3")
+        t1.track_number = 1
+        t1.file_mtime = 1000.0
+        t2 = _sample_track(tmp_path / "2.mp3")
+        t2.track_number = 2
+        t2.file_mtime = 2000.0
+        index.upsert_many([t1, t2])
+        albums = index.albums()
+        index.close()
+
+        assert albums[0].art_version == pytest.approx(2000.0)
+
+    def test_albums_art_version_none_when_file_mtime_null(self, tmp_path: Path) -> None:
+        """art_version is None when no track has a file_mtime."""
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "1.mp3")
+        # file_mtime defaults to None — not set
+        index.upsert_track(t)
+        albums = index.albums()
+        index.close()
+
+        assert albums[0].art_version is None
+
+    def test_missing_album_art_version_is_file_mtime(self, tmp_path: Path) -> None:
+        """art_version for a missing-album track is its own file_mtime."""
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "standalone.mp3")
+        t.album = ""
+        t.title = "Lone Track"
+        t.file_mtime = 5000.0
+        index.upsert_track(t)
+        albums = index.albums()
+        index.close()
+
+        assert albums[0].missing_album is True
+        assert albums[0].art_version == pytest.approx(5000.0)
+
     def test_get_track_by_path_returns_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         track = _sample_track(tmp_path / "01.mp3")

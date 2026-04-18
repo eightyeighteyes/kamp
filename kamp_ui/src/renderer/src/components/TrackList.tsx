@@ -63,7 +63,7 @@ export function TrackList(): React.JSX.Element | null {
     <div className="track-list-view">
       {/* Hero: full-width art — image intentionally taller than hero to bleed into track list */}
       <div className={`track-list-hero${album.has_art ? ' has-art' : ''}`}>
-        {album.has_art && <HeroImage src={artUrl(album.album_artist, album.album, album.file_path)} />}
+        {album.has_art && <HeroImage src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)} />}
       </div>
       {/* Overlay spans the full view so the gradient covers both hero and the top of the track list */}
       <div className="track-list-hero-overlay" />

@@ -3,10 +3,10 @@ id: TASK-94
 title: >-
   cache album art images so they don't reload every time the library view is
   loaded
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-08 13:37'
-updated_date: '2026-04-18 01:22'
+updated_date: '2026-04-18 01:40'
 labels:
   - performance
   - ui

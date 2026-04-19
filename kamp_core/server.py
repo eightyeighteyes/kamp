@@ -20,6 +20,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -199,6 +200,29 @@ class BandcampProxyFetchResult(BaseModel):
     status: int
     body: str
     content_type: str = "text/html"
+
+
+# ---------------------------------------------------------------------------
+# Bandcamp proxy URL allowlist
+# ---------------------------------------------------------------------------
+
+# Only requests targeting these hostnames (or subdomains) may be forwarded to
+# Electron's net.fetch, which carries Bandcamp session cookies.  This prevents
+# a malicious extension or local process from exfiltrating credentials to an
+# arbitrary host.
+_ALLOWED_PROXY_HOSTS: frozenset[str] = frozenset(
+    {"bandcamp.com", "f4.bcbits.com", "t4.bcbits.com"}
+)
+
+
+def _validate_proxy_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if not any(host == h or host.endswith(f".{h}") for h in _ALLOWED_PROXY_HOSTS):
+        raise HTTPException(
+            status_code=422, detail=f"Proxy URL host not allowed: {host}"
+        )
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -843,6 +867,7 @@ def create_app(
 
     @app.post("/api/v1/bandcamp/proxy-fetch")
     async def bandcamp_proxy_fetch(req: BandcampProxyFetchRequest) -> dict[str, Any]:
+        _validate_proxy_url(req.url)
         nonlocal _event_loop
         # Capture the running loop here so _broadcast (which uses
         # call_soon_threadsafe) works even before any WS client has connected.

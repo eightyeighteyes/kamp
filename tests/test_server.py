@@ -1848,6 +1848,82 @@ class TestBandcampProxyEndpoints:
                 pong = ws3.receive_json()
                 assert pong["type"] == "player.state"
 
+    # -- URL allowlist tests -------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://bandcamp.com/api/fan/2/collection_summary",
+            "https://api.bandcamp.com/api/tralbum/2/info",
+            "https://f4.bcbits.com/img/a1234567890_10.jpg",
+            "https://t4.bcbits.com/stream/some-track",
+        ],
+    )
+    def test_proxy_fetch_allows_bandcamp_urls(
+        self,
+        client: TestClient,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        url: str,
+    ) -> None:
+        """Legitimate Bandcamp hostnames must not be rejected by the allowlist."""
+        import threading
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        responses: list = []
+
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # discard player.state
+
+            t = threading.Thread(
+                target=lambda: responses.append(
+                    c.post(
+                        "/api/v1/bandcamp/proxy-fetch",
+                        json={"url": url, "method": "GET", "headers": {}, "body": None},
+                    )
+                )
+            )
+            t.start()
+
+            msg = ws.receive_json()
+            req_id = msg["id"]
+
+            c.post(
+                "/api/v1/bandcamp/fetch-result",
+                json={
+                    "id": req_id,
+                    "status": 200,
+                    "body": "{}",
+                    "content_type": "application/json",
+                },
+            )
+            t.join(timeout=5)
+
+        assert responses and responses[0].status_code == 200
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://evil.com/steal-cookies",
+            "https://notbandcamp.com/api",
+            "https://bandcamp.com.evil.com/api",
+            "http://127.0.0.1:9000/internal",
+            "https://bcbits.com/img/fake.jpg",
+        ],
+    )
+    def test_proxy_fetch_rejects_non_bandcamp_urls(
+        self, client: TestClient, url: str
+    ) -> None:
+        """Non-Bandcamp URLs must be rejected with 422 before any broadcast."""
+        response = client.post(
+            "/api/v1/bandcamp/proxy-fetch",
+            json={"url": url, "method": "GET", "headers": {}, "body": None},
+        )
+        assert response.status_code == 422
+        assert "not allowed" in response.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # CORS

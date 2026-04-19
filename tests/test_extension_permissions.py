@@ -91,7 +91,7 @@ def test_multiple_permissions() -> None:
 
     result = extract_permissions(_MultiPerm)
     assert result.permissions == frozenset({"network.fetch", "library.write"})
-    assert "api.example.com" in result.allowed_domains
+    assert result.allowed_domains == frozenset({"api.example.com"})
 
 
 # ---------------------------------------------------------------------------

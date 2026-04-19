@@ -916,7 +916,23 @@ class TestSessionFromCookieFile:
             + self._netscape_line("js_logged_in", "1", future)
         )
         state = _session_from_cookie_file(cookie_file)
-        assert all("bandcamp" in c["domain"] for c in state["cookies"])
+        assert all(
+            c["domain"] == "bandcamp.com" or c["domain"].endswith(".bandcamp.com")
+            for c in state["cookies"]
+        )
+
+    def test_rejects_domain_substring_bypass(self, tmp_path: Path) -> None:
+        # evil-bandcamp.com and notbandcamp.com must not pass the domain check
+        future = int(time.time()) + 86400
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text(
+            f"evil-bandcamp.com\tTRUE\t/\tTRUE\t{future}\ttoken\tEVIL\n"
+            f"notbandcamp.com\tTRUE\t/\tTRUE\t{future}\ttoken\tEVIL\n"
+            + self._netscape_line("js_logged_in", "1", future)
+        )
+        state = _session_from_cookie_file(cookie_file)
+        assert len(state["cookies"]) == 1
+        assert state["cookies"][0]["name"] == "js_logged_in"
 
     def test_raises_cookie_error_on_missing_file(self, tmp_path: Path) -> None:
         with pytest.raises(CookieError, match="Could not read"):

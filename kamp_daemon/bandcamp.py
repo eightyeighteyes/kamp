@@ -398,7 +398,9 @@ def _session_from_cookie_file(cookie_file: Path) -> dict[str, Any]:
             if line.startswith("#") or not line.strip():
                 continue
             parts = line.split("\t")
-            if len(parts) >= 7 and "bandcamp.com" in parts[0]:
+            if len(parts) >= 7 and (
+                parts[0] == "bandcamp.com" or parts[0].endswith(".bandcamp.com")
+            ):
                 try:
                     expires = float(parts[4])
                 except ValueError:

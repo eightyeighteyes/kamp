@@ -1,9 +1,10 @@
 ---
 id: TASK-160
 title: 'security: fix incomplete domain check in bandcamp cookie parser'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-19 13:48'
+updated_date: '2026-04-19 19:59'
 labels:
   - security
   - codeql
@@ -15,6 +16,7 @@ references:
   - scripts/spike_bandcamp_http.py#L53
   - 'https://github.com/teddyterry/kamp/security/code-scanning/2'
 priority: medium
+ordinal: 19000
 ---
 
 ## Description
@@ -35,8 +37,8 @@ A cookie domain like `evil-bandcamp.com` or `notbandcamp.com` would pass this ch
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 bandcamp.py cookie parser uses exact/suffix domain match, not substring
-- [ ] #2 test_extension_permissions.py URL check cannot be bypassed by a substring match
-- [ ] #3 spike script alert is dismissed or the file is deleted
-- [ ] #4 CodeQL alerts #2, #3, #4 are resolved
+- [x] #1 bandcamp.py cookie parser uses exact/suffix domain match, not substring
+- [x] #2 test_extension_permissions.py URL check cannot be bypassed by a substring match
+- [x] #3 spike script alert is dismissed or the file is deleted
+- [x] #4 CodeQL alerts #2, #3, #4 are resolved
 <!-- AC:END -->

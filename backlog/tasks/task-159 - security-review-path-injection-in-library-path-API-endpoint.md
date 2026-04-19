@@ -1,10 +1,10 @@
 ---
 id: TASK-159
 title: 'security: review path injection in library-path API endpoint'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-19 13:48'
-updated_date: '2026-04-19 19:50'
+updated_date: '2026-04-19 19:56'
 labels:
   - security
   - codeql
@@ -14,6 +14,7 @@ references:
   - kamp_core/server.py#L487
   - 'https://github.com/teddyterry/kamp/security/code-scanning/5'
 priority: medium
+ordinal: 18000
 ---
 
 ## Description

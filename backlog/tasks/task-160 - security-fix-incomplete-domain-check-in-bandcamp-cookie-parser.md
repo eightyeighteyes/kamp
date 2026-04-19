@@ -1,10 +1,10 @@
 ---
 id: TASK-160
 title: 'security: fix incomplete domain check in bandcamp cookie parser'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-19 13:48'
-updated_date: '2026-04-19 19:58'
+updated_date: '2026-04-19 19:59'
 labels:
   - security
   - codeql
@@ -16,6 +16,7 @@ references:
   - scripts/spike_bandcamp_http.py#L53
   - 'https://github.com/teddyterry/kamp/security/code-scanning/2'
 priority: medium
+ordinal: 19000
 ---
 
 ## Description

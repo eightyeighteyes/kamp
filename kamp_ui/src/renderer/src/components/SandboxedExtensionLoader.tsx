@@ -102,7 +102,7 @@ function handleSdkSubscribe(
   if (msg.type === 'kamp:sdk-unsubscribe') {
     const sourceSubs = _activeSubscriptions.get(source)
     const unsub = sourceSubs?.get(msg.subId)
-    if (unsub) {
+    if (typeof unsub === 'function') {
       unsub()
       sourceSubs!.delete(msg.subId)
     }

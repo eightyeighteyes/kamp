@@ -103,7 +103,7 @@ function handleSdkSubscribe(
     const sourceSubs = _activeSubscriptions.get(source)
     const unsub = sourceSubs?.get(msg.subId)
     if (unsub) {
-      unsub()
+      unsub() // codeql[js/unvalidated-dynamic-method-call] -- value is always an internal unsubscribe fn stored by this renderer; WeakMap outer key (event.source) is browser-controlled and scopes access to the requesting iframe's own subscriptions only
       sourceSubs!.delete(msg.subId)
     }
     return

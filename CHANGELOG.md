@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.11.0](https://github.com/eightyeighteyes/kamp/compare/v1.10.0...v1.11.0) (2026-04-19)
+
+
+### Features
+
+* move application configuration into SQLite database (TASK-132) ([#230](https://github.com/eightyeighteyes/kamp/issues/230)) ([4b28d2c](https://github.com/eightyeighteyes/kamp/commit/4b28d2c49064a0103f35a9dcf7f27e408438da72))
+
+
+### Bug Fixes
+
+* artist panel open on Now Playing view on first load (TASK-153) ([#241](https://github.com/eightyeighteyes/kamp/issues/241)) ([1969754](https://github.com/eightyeighteyes/kamp/commit/1969754ec2878c4cd30cee2d67c07202f51a43f1))
+* set restrictive permissions on SQLite database file (TASK-142) ([#228](https://github.com/eightyeighteyes/kamp/issues/228)) ([15fba4e](https://github.com/eightyeighteyes/kamp/commit/15fba4e4ec6f88764149f5693923af60e1b8aec8))
+* show Bandcamp connected state and extract username from logout cookie ([#231](https://github.com/eightyeighteyes/kamp/issues/231)) ([c43f8a3](https://github.com/eightyeighteyes/kamp/commit/c43f8a3baef23cc9dc4961377d7d97ecd1f810f0))
+* suppress recurring CodeQL alert in SandboxedExtensionLoader ([#266](https://github.com/eightyeighteyes/kamp/issues/266)) ([b6d14ca](https://github.com/eightyeighteyes/kamp/commit/b6d14ca5b8192a541248abf225cbde612fe338ca))
+
 ## [1.10.0](https://github.com/eightyeighteyes/kamp/compare/v1.9.0...v1.10.0) (2026-04-18)
 
 

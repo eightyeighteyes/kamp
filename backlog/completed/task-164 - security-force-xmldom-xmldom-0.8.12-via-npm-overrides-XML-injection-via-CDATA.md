@@ -3,9 +3,10 @@ id: TASK-164
 title: >-
   security: force @xmldom/xmldom >= 0.8.12 via npm overrides (XML injection via
   CDATA)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-19 13:59'
+updated_date: '2026-04-19 19:33'
 labels:
   - security
   - dependabot
@@ -40,7 +41,7 @@ Run `npm install` and verify with `npm list @xmldom/xmldom`.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 npm list @xmldom/xmldom shows >= 0.8.12
-- [ ] #2 npm run build completes without errors
-- [ ] #3 Dependabot alert #1 is resolved
+- [x] #1 npm list @xmldom/xmldom shows >= 0.8.12
+- [x] #2 npm run build completes without errors
+- [x] #3 Dependabot alert #1 is resolved
 <!-- AC:END -->

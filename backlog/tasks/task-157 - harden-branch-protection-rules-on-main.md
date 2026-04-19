@@ -1,10 +1,10 @@
 ---
 id: TASK-157
 title: harden branch protection rules on main
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-19 02:58'
-updated_date: '2026-04-19 03:17'
+updated_date: '2026-04-19 19:31'
 labels:
   - security
   - chore
@@ -14,7 +14,7 @@ dependencies: []
 references:
   - backlog/docs/doc-2 - GitHub Repository Security Checklist — kamp.md
 priority: medium
-ordinal: 2000
+ordinal: 15000
 ---
 
 ## Description

@@ -3,9 +3,10 @@ id: TASK-163
 title: >-
   security: force lodash >= 4.18.0 via npm overrides (2 CVEs — code injection,
   prototype pollution)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-19 13:59'
+updated_date: '2026-04-19 19:33'
 labels:
   - security
   - dependabot
@@ -46,7 +47,7 @@ Then run `npm install` and verify with `npm list lodash`.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 npm list lodash shows >= 4.18.0 for all instances
-- [ ] #2 npm run build completes without errors
-- [ ] #3 Dependabot alerts #2 and #3 are resolved
+- [x] #1 npm list lodash shows >= 4.18.0 for all instances
+- [x] #2 npm run build completes without errors
+- [x] #3 Dependabot alerts #2 and #3 are resolved
 <!-- AC:END -->

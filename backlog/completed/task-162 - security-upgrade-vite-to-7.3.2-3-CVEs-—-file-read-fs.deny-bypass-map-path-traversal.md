@@ -3,9 +3,10 @@ id: TASK-162
 title: >-
   security: upgrade vite to 7.3.2 (3 CVEs — file read, fs.deny bypass, map path
   traversal)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-19 13:58'
+updated_date: '2026-04-19 19:33'
 labels:
   - security
   - dependabot
@@ -47,7 +48,7 @@ Dependabot alerts #4, #5, #6 — all fixed by upgrading vite to 7.3.2.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 npm list vite shows >= 7.3.2
-- [ ] #2 npm run build completes without errors
-- [ ] #3 Dependabot alerts #4, #5, #6 are resolved
+- [x] #1 npm list vite shows >= 7.3.2
+- [x] #2 npm run build completes without errors
+- [x] #3 Dependabot alerts #4, #5, #6 are resolved
 <!-- AC:END -->

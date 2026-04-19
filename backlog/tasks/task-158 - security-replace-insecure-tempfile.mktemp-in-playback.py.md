@@ -1,9 +1,10 @@
 ---
 id: TASK-158
 title: 'security: replace insecure tempfile.mktemp in playback.py'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-19 13:48'
+updated_date: '2026-04-19 19:36'
 labels:
   - security
   - codeql

@@ -1847,3 +1847,87 @@ class TestBandcampProxyEndpoints:
                 ws3.send_text("ping")
                 pong = ws3.receive_json()
                 assert pong["type"] == "player.state"
+
+
+# ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
+
+
+class TestCORSMiddleware:
+    def _make_client(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        dev_mode: bool = False,
+    ) -> TestClient:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            dev_mode=dev_mode,
+        )
+        return TestClient(app, raise_server_exceptions=True)
+
+    def _preflight(self, client: TestClient, origin: str) -> "requests.Response":
+        return client.options(
+            "/api/v1/albums",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
+    def test_wildcard_not_used(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        client = self._make_client(mock_index, mock_engine, mock_queue)
+        resp = self._preflight(client, "http://localhost")
+        acao = resp.headers.get("access-control-allow-origin", "")
+        assert acao != "*"
+
+    def test_localhost_origin_allowed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        client = self._make_client(mock_index, mock_engine, mock_queue)
+        resp = self._preflight(client, "http://localhost")
+        assert resp.headers.get("access-control-allow-origin") == "http://localhost"
+
+    def test_127_origin_allowed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        client = self._make_client(mock_index, mock_engine, mock_queue)
+        resp = self._preflight(client, "http://127.0.0.1")
+        assert resp.headers.get("access-control-allow-origin") == "http://127.0.0.1"
+
+    def test_electron_null_origin_allowed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        # Electron's file:// renderer sends Origin: null (opaque origin serialization).
+        client = self._make_client(mock_index, mock_engine, mock_queue)
+        resp = self._preflight(client, "null")
+        assert resp.headers.get("access-control-allow-origin") == "null"
+
+    def test_arbitrary_origin_rejected(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        client = self._make_client(mock_index, mock_engine, mock_queue)
+        resp = self._preflight(client, "https://evil.example.com")
+        assert "access-control-allow-origin" not in resp.headers
+
+    def test_vite_origin_blocked_without_dev_mode(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        client = self._make_client(mock_index, mock_engine, mock_queue, dev_mode=False)
+        resp = self._preflight(client, "http://localhost:5173")
+        assert "access-control-allow-origin" not in resp.headers
+
+    def test_vite_origin_allowed_in_dev_mode(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        client = self._make_client(mock_index, mock_engine, mock_queue, dev_mode=True)
+        resp = self._preflight(client, "http://localhost:5173")
+        assert (
+            resp.headers.get("access-control-allow-origin") == "http://localhost:5173"
+        )

@@ -150,10 +150,15 @@ async function startServer(): Promise<void> {
 
   // detached: true puts the daemon in its own process group so that
   // stopServer() can kill the group (daemon + mpv) all at once.
+  const spawnEnv: NodeJS.ProcessEnv = { ...process.env }
+  if (mpvBin) spawnEnv['KAMP_MPV_BIN'] = mpvBin
+  // Tell the daemon it's running in dev mode so it allows the Vite dev server
+  // origin (http://localhost:5173) in CORS — the renderer loads from there.
+  if (is.dev) spawnEnv['KAMP_DEV'] = '1'
   serverProcess = spawn(binary, ['daemon'], {
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: mpvBin ? { ...process.env, KAMP_MPV_BIN: mpvBin } : process.env
+    env: spawnEnv
   })
 
   serverProcess.stdout?.on('data', (d) => console.log('[kamp daemon]', String(d).trimEnd()))

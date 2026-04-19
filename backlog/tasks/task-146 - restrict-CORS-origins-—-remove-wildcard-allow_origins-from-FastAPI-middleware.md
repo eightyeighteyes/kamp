@@ -1,9 +1,10 @@
 ---
 id: TASK-146
 title: restrict CORS origins — remove wildcard allow_origins from FastAPI middleware
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-18 18:02'
+updated_date: '2026-04-19 00:20'
 labels:
   - security
   - chore
@@ -13,6 +14,7 @@ dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0 (FINDING-02)
 priority: medium
+ordinal: 7000
 ---
 
 ## Description
@@ -47,8 +49,8 @@ Verify the Electron renderer (production `file://` origin) and Vite dev server c
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 CORS no longer uses wildcard allow_origins
-- [ ] #2 Electron renderer (file:// origin) can still reach all API endpoints
-- [ ] #3 Vite dev server (localhost:5173) works in dev mode
-- [ ] #4 Requests from arbitrary browser origins are rejected with CORS error
+- [x] #1 CORS no longer uses wildcard allow_origins
+- [x] #2 Electron renderer (file:// origin) can still reach all API endpoints
+- [x] #3 Vite dev server (localhost:5173) works in dev mode
+- [x] #4 Requests from arbitrary browser origins are rejected with CORS error
 <!-- AC:END -->

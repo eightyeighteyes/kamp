@@ -813,6 +813,7 @@ def _cmd_daemon(
         on_bandcamp_login_complete=_on_bandcamp_login_complete,
         get_bandcamp_session=lambda: index.get_session("bandcamp"),
         on_bandcamp_disconnect=_on_bandcamp_disconnect,
+        dev_mode=bool(os.environ.get("KAMP_DEV")),
     )
 
     # Wrap the existing on_track_end callback to also push track.changed events.

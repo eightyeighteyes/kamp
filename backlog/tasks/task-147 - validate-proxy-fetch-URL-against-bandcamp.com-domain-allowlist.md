@@ -1,9 +1,10 @@
 ---
 id: TASK-147
 title: validate proxy-fetch URL against bandcamp.com domain allowlist
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-18 18:02'
+updated_date: '2026-04-19 00:40'
 labels:
   - security
   - chore
@@ -13,6 +14,7 @@ dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0 (FINDING-09)
 priority: medium
+ordinal: 8000
 ---
 
 ## Description

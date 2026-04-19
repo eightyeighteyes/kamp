@@ -50,7 +50,9 @@ def _load_netscape_cookies(cookie_file: Path) -> dict[str, str]:
         if line.startswith("#") or not line.strip():
             continue
         parts = line.split("\t")
-        if len(parts) >= 7 and "bandcamp.com" in parts[0]:
+        if len(parts) >= 7 and (
+            parts[0] == "bandcamp.com" or parts[0].endswith(".bandcamp.com")
+        ):
             cookies[parts[5]] = parts[6]
     return cookies
 

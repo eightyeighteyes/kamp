@@ -202,7 +202,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const { artistPanelVisible, artistPanelSnapshot } = get()
     if (view === 'now-playing') {
       // Hide the artist panel (non-functional in Now Playing) and save its state.
+      // Persist false so a restart with Now Playing active doesn't reopen the panel.
       set({ activeView: view, artistPanelSnapshot: artistPanelVisible, artistPanelVisible: false })
+      localStorage.setItem('kamp:artist-panel-visible', 'false')
     } else {
       // Restore the artist panel to its pre-Now-Playing state.
       const restored = artistPanelSnapshot ?? artistPanelVisible

@@ -1,10 +1,10 @@
 ---
 id: TASK-146
 title: restrict CORS origins — remove wildcard allow_origins from FastAPI middleware
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-18 18:02'
-updated_date: '2026-04-18 23:28'
+updated_date: '2026-04-19 00:20'
 labels:
   - security
   - chore
@@ -14,6 +14,7 @@ dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0 (FINDING-02)
 priority: medium
+ordinal: 7000
 ---
 
 ## Description

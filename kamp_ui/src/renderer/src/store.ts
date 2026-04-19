@@ -44,6 +44,7 @@ type PlayerStore = {
   searchResults: SearchResult | null
   queueVisible: boolean
   artistPanelVisible: boolean
+  artistPanelSnapshot: boolean | null // saved visibility before entering Now Playing
   queue: QueueState | null
 
   // Actions
@@ -140,6 +141,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   queueVisible: false,
   // Client-only persistence — no backend endpoint needed for this toggle.
   artistPanelVisible: localStorage.getItem('kamp:artist-panel-visible') !== 'false',
+  artistPanelSnapshot: null,
   queue: null,
   configValues: null,
   prefsOpen: false,
@@ -197,7 +199,16 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   setActiveView: async (view) => {
-    set({ activeView: view })
+    const { artistPanelVisible, artistPanelSnapshot } = get()
+    if (view === 'now-playing') {
+      // Hide the artist panel (non-functional in Now Playing) and save its state.
+      set({ activeView: view, artistPanelSnapshot: artistPanelVisible, artistPanelVisible: false })
+    } else {
+      // Restore the artist panel to its pre-Now-Playing state.
+      const restored = artistPanelSnapshot ?? artistPanelVisible
+      set({ activeView: view, artistPanelSnapshot: null, artistPanelVisible: restored })
+      localStorage.setItem('kamp:artist-panel-visible', String(restored))
+    }
     try {
       await api.setActiveViewApi(view)
     } catch {

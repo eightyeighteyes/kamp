@@ -102,8 +102,8 @@ function handleSdkSubscribe(
   if (msg.type === 'kamp:sdk-unsubscribe') {
     const sourceSubs = _activeSubscriptions.get(source)
     const unsub = sourceSubs?.get(msg.subId)
-    if (unsub) {
-      unsub() // lgtm[js/unvalidated-dynamic-method-call] -- value is always an internal unsubscribe fn stored by this renderer; WeakMap outer key (event.source) is browser-controlled and scopes lookup to the requesting iframe's own subscriptions
+    if (typeof unsub === 'function') {
+      unsub()
       sourceSubs!.delete(msg.subId)
     }
     return

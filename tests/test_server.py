@@ -1188,7 +1188,7 @@ class TestFavoriteEndpoint:
 # ---------------------------------------------------------------------------
 
 _SAMPLE_CONFIG_VALUES = {
-    "paths.staging": "~/Music/staging",
+    "paths.watch_folder": "~/Music/staging",
     "paths.library": "~/Music",
     "artwork.min_dimension": 1000,
     "artwork.max_bytes": 1000000,
@@ -1213,7 +1213,7 @@ class TestConfigEndpoints:
         response = TestClient(app).get("/api/v1/config")
         assert response.status_code == 200
         data = response.json()
-        assert data["paths.staging"] == "~/Music/staging"
+        assert data["paths.watch_folder"] == "~/Music/staging"
         assert data["paths.library"] == "~/Music"
         assert data["artwork.min_dimension"] == 1000
         assert data["artwork.max_bytes"] == 1000000

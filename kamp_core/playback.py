@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -333,6 +334,7 @@ class MpvPlaybackEngine:
         self._proc: subprocess.Popen[bytes] | None = None
         self._sock: socket.socket | None = None
         self._sock_path = ""
+        self._sock_tmpdir = ""
         self._reader_thread: threading.Thread | None = None
         self._lock = threading.Lock()
         # One-shot seek applied on the next file-loaded event (set by load_paused).
@@ -343,8 +345,9 @@ class MpvPlaybackEngine:
 
     def _start_mpv(self) -> None:  # pragma: no cover
         """Launch mpv and connect to its IPC socket."""
-        tmp = tempfile.mktemp(suffix=".sock", prefix="kamp-mpv-")
-        self._sock_path = tmp
+        tmpdir = tempfile.mkdtemp(prefix="kamp-mpv-")
+        self._sock_tmpdir = tmpdir
+        self._sock_path = str(Path(tmpdir) / "mpv.sock")
         self._proc = subprocess.Popen(
             [
                 self._mpv_bin,
@@ -457,6 +460,9 @@ class MpvPlaybackEngine:
             except OSError:
                 pass
             self._sock = None
+        if self._sock_tmpdir:
+            shutil.rmtree(self._sock_tmpdir, ignore_errors=True)
+            self._sock_tmpdir = ""
 
     # ------------------------------------------------------------------
     # Internal: IPC send/receive

@@ -806,6 +806,21 @@ class TestMpvPlaybackEngine:
         engine._proc = None
         engine.shutdown()  # should not raise
 
+    def test_shutdown_removes_sock_tmpdir(self) -> None:
+        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
+            engine = MpvPlaybackEngine()
+        with patch("kamp_core.playback.shutil.rmtree") as mock_rmtree:
+            engine._sock_tmpdir = "/tmp/kamp-mpv-abc123"
+            engine.shutdown()
+        mock_rmtree.assert_called_once_with("/tmp/kamp-mpv-abc123", ignore_errors=True)
+
+    def test_shutdown_skips_rmtree_when_no_tmpdir(self) -> None:
+        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
+            engine = MpvPlaybackEngine()
+        with patch("kamp_core.playback.shutil.rmtree") as mock_rmtree:
+            engine.shutdown()
+        mock_rmtree.assert_not_called()
+
     def test_send_command_is_noop_when_no_socket(self) -> None:
         with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
             engine = MpvPlaybackEngine()

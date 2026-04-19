@@ -1013,7 +1013,7 @@ export function PreferencesDialog({
                     />
                     <PathRow
                       label="Watch folder"
-                      configKey="paths.staging"
+                      configKey="paths.watch_folder"
                       initialValue={str('paths.watch_folder')}
                       onSave={handleSave}
                     />

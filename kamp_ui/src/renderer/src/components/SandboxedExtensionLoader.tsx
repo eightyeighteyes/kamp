@@ -46,26 +46,11 @@ const SANDBOX_SRCDOC =
 </html>`
 
 // Tracks active subscriptions from sandboxed iframes.
-// Key: `${sourceWindow}-${subId}` (we use a Map keyed by [source, subId]).
-// Value: the unsubscribe function returned by window.KampAPI.player.on*
-const _activeSubscriptions = new Map<string, () => void>()
-
-function _subKey(source: WindowProxy, subId: number): string {
-  // Use a combination of object identity (via WeakMap index) and subId.
-  // Since we can't stringify a WindowProxy, we use a numeric id instead.
-  return `${_getSourceId(source)}_${subId}`
-}
-
-const _sourceIds = new WeakMap<WindowProxy, number>()
-let _nextSourceId = 0
-function _getSourceId(source: WindowProxy): number {
-  let id = _sourceIds.get(source)
-  if (id === undefined) {
-    id = _nextSourceId++
-    _sourceIds.set(source, id)
-  }
-  return id
-}
+// Outer key: the iframe's WindowProxy (browser-controlled, not forgeable by message content).
+// Inner key: the subId chosen by that iframe.
+// An extension can only reach its own inner Map, making cross-extension unsubscription
+// structurally impossible without needing composite string keys or suppression annotations.
+const _activeSubscriptions = new WeakMap<WindowProxy, Map<number, () => void>>()
 
 /**
  * Handles kamp:sdk-call messages from sandboxed extension iframes.
@@ -114,13 +99,12 @@ function handleSdkSubscribe(
   const source = event.source as WindowProxy | null
   if (!source) return
 
-  const key = _subKey(source, msg.subId)
-
   if (msg.type === 'kamp:sdk-unsubscribe') {
-    const unsub = _activeSubscriptions.get(key)
+    const sourceSubs = _activeSubscriptions.get(source)
+    const unsub = sourceSubs?.get(msg.subId)
     if (unsub) {
       unsub()
-      _activeSubscriptions.delete(key)
+      sourceSubs!.delete(msg.subId)
     }
     return
   }
@@ -137,7 +121,12 @@ function handleSdkSubscribe(
     unsub = window.KampAPI.player!.onPlayStateChange(dispatch)
   }
   if (unsub) {
-    _activeSubscriptions.set(key, unsub)
+    let sourceSubs = _activeSubscriptions.get(source)
+    if (!sourceSubs) {
+      sourceSubs = new Map()
+      _activeSubscriptions.set(source, sourceSubs)
+    }
+    sourceSubs.set(msg.subId, unsub)
   }
 }
 

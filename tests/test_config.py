@@ -390,3 +390,35 @@ class TestConfigSet:
         config = Config.load(db)
         assert config.lastfm is not None
         assert config.lastfm.session_key == "newkey"
+
+    def test_path_key_relative_raises(self, db: LibraryIndex) -> None:
+        with pytest.raises(ValueError, match="requires an absolute path"):
+            config_set(db, "paths.watch_folder", "relative/path")
+
+    def test_path_key_dotdot_raises(self, db: LibraryIndex) -> None:
+        with pytest.raises(ValueError, match="requires an absolute path"):
+            config_set(db, "paths.watch_folder", "../escape")
+
+    @pytest.mark.parametrize(
+        "forbidden",
+        [
+            "/",
+            "/etc",
+            "/private/etc",
+            "/System",
+            "/usr",
+            "/bin",
+            "/Library",
+            "/Applications",
+        ],
+    )
+    def test_path_key_forbidden_root_raises(
+        self, db: LibraryIndex, forbidden: str
+    ) -> None:
+        with pytest.raises(ValueError, match="not allowed"):
+            config_set(db, "paths.watch_folder", forbidden)
+
+    def test_path_key_tilde_accepted(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        config_set(db, "paths.watch_folder", "~/Music/staging")
+        assert db.get_setting("paths.watch_folder") == "~/Music/staging"

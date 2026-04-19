@@ -959,6 +959,32 @@ class TestSetLibraryPathEndpoint:
         res = c.post("/api/v1/config/library-path", json={"path": str(tmp_path)})
         assert res.status_code == 200
 
+    def test_relative_path_returns_422(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        c = self._make_client(mock_index, mock_engine, mock_queue)
+        for bad in ("music", "../music", "relative/path"):
+            res = c.post("/api/v1/config/library-path", json={"path": bad})
+            assert res.status_code == 422, f"expected 422 for {bad!r}"
+
+    @pytest.mark.parametrize(
+        "forbidden",
+        ["/", "/etc", "/System", "/usr", "/bin", "/Library", "/Applications"],
+    )
+    def test_forbidden_system_roots_return_422(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        forbidden: str,
+    ) -> None:
+        c = self._make_client(mock_index, mock_engine, mock_queue)
+        res = c.post("/api/v1/config/library-path", json={"path": forbidden})
+        assert res.status_code == 422
+
 
 class TestSearchEndpoint:
     def test_empty_query_returns_empty_results(
@@ -1162,7 +1188,7 @@ class TestFavoriteEndpoint:
 # ---------------------------------------------------------------------------
 
 _SAMPLE_CONFIG_VALUES = {
-    "paths.staging": "~/Music/staging",
+    "paths.watch_folder": "~/Music/staging",
     "paths.library": "~/Music",
     "artwork.min_dimension": 1000,
     "artwork.max_bytes": 1000000,
@@ -1187,7 +1213,7 @@ class TestConfigEndpoints:
         response = TestClient(app).get("/api/v1/config")
         assert response.status_code == 200
         data = response.json()
-        assert data["paths.staging"] == "~/Music/staging"
+        assert data["paths.watch_folder"] == "~/Music/staging"
         assert data["paths.library"] == "~/Music"
         assert data["artwork.min_dimension"] == 1000
         assert data["artwork.max_bytes"] == 1000000

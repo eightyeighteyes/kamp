@@ -3,9 +3,10 @@ id: TASK-161
 title: >-
   security: validate message type before unsubscribe dispatch in
   SandboxedExtensionLoader
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-19 13:48'
+updated_date: '2026-04-19 20:11'
 labels:
   - security
   - codeql
@@ -15,6 +16,7 @@ references:
   - kamp_ui/src/renderer/src/components/SandboxedExtensionLoader.tsx#L122
   - 'https://github.com/teddyterry/kamp/security/code-scanning/6'
 priority: low
+ordinal: 1000
 ---
 
 ## Description

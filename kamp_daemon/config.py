@@ -130,6 +130,31 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "ui.queue_panel_open": int,
 }
 
+# Config keys that accept filesystem paths — validated on write.
+_PATH_CONFIG_KEYS: frozenset[str] = frozenset({"paths.watch_folder", "paths.library"})
+
+# Filesystem roots that must never be accepted as a config path value.
+_FORBIDDEN_PATH_ROOTS: frozenset[Path] = frozenset(
+    Path(p).resolve()
+    for p in (
+        "/",
+        "/System",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/etc",
+        "/private/etc",
+        "/var",
+        "/private/var",
+        "/Library",
+        "/Applications",
+        "/dev",
+        "/proc",
+        "/sys",
+    )
+)
+
 # Keys deprecated in TASK-132; providing them as an argument to config_set() is an error.
 _DEPRECATED_KEYS: frozenset[str] = frozenset(
     {"bandcamp.username", "bandcamp.cookie_file"}
@@ -420,6 +445,19 @@ def config_set(db: "LibraryIndex", key: str, value: str) -> None:
         except ValueError:
             raise ValueError(f"Key {key!r} requires an integer value, got {value!r}")
     else:
+        normalized_value = value
+        if key in _PATH_CONFIG_KEYS:
+            if not value.startswith("/") and not value.startswith("~"):
+                raise ValueError(
+                    f"Key {key!r} requires an absolute path, got {value!r}"
+                )
+            # nosec: py/path-injection — absolute-path requirement above rejects
+            # traversal; deny-list below blocks system roots and their subtrees.
+            resolved = Path(value).expanduser().resolve()  # noqa: S603
+            if resolved in _FORBIDDEN_PATH_ROOTS:
+                raise ValueError(
+                    f"Path {value!r} is not allowed as a value for {key!r}"
+                )
         if key in _CONFIG_KEY_CHOICES:
             valid_choices = sorted(_CONFIG_KEY_CHOICES[key])
             if value not in _CONFIG_KEY_CHOICES[key]:

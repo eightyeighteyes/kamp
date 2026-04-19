@@ -130,7 +130,7 @@ class LibraryPathRequest(BaseModel):
 # Paths that must never be accepted as a library root, regardless of whether they
 # exist and are directories. Covers macOS and Linux system directories.
 _FORBIDDEN_LIBRARY_ROOTS: frozenset[Path] = frozenset(
-    Path(p)
+    Path(p).resolve()
     for p in (
         "/",
         "/System",

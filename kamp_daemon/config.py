@@ -135,7 +135,7 @@ _PATH_CONFIG_KEYS: frozenset[str] = frozenset({"paths.watch_folder", "paths.libr
 
 # Filesystem roots that must never be accepted as a config path value.
 _FORBIDDEN_PATH_ROOTS: frozenset[Path] = frozenset(
-    Path(p)
+    Path(p).resolve()
     for p in (
         "/",
         "/System",

@@ -29,7 +29,7 @@ htmlcov/
 .DS_Store
 
 # Claude
-.claude/*.json
+.claude/
 
 # App bundle build artifacts (generated; not committed)
 kamp_ui/resources/kamp/

@@ -3,9 +3,10 @@ id: TASK-148
 title: >-
   replace noqa S608 with explicit ValueError guard in dynamic SET clause
   construction
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-18 18:02'
+updated_date: '2026-04-19 00:58'
 labels:
   - security
   - chore
@@ -15,6 +16,7 @@ dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0 (FINDING-06)
 priority: low
+ordinal: 9000
 ---
 
 ## Description

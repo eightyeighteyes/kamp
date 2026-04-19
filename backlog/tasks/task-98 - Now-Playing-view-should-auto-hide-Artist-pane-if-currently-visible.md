@@ -1,10 +1,10 @@
 ---
 id: TASK-98
 title: Now Playing view should auto-hide Artist pane (if currently visible)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-09 02:12'
-updated_date: '2026-04-18 17:15'
+updated_date: '2026-04-19 01:12'
 labels:
   - bug
   - ui
@@ -12,6 +12,7 @@ labels:
 milestone: m-29
 dependencies: []
 priority: medium
+ordinal: 10000
 ---
 
 ## Description
@@ -24,9 +25,9 @@ If it was visible in the Library panel, it should be hidden when the user shows 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Artist pane is always hidden when Now Playing panel is active
-- [ ] #2 If Artist pane was visible before switching to Now Playing, it becomes visible again when returning to Library
-- [ ] #3 No Artist pane toggle button visible in Now Playing context
+- [x] #1 Artist pane is always hidden when Now Playing panel is active
+- [x] #2 If Artist pane was visible before switching to Now Playing, it becomes visible again when returning to Library
+- [x] #3 No Artist pane toggle button visible in Now Playing context
 <!-- AC:END -->
 
 ## Implementation Plan

@@ -220,7 +220,8 @@ export default function App(): React.JSX.Element {
           break
         case 'a':
         case 'A':
-          toggleArtistPanel()
+          // Artist panel is hidden and non-functional in Now Playing.
+          if (activeView !== 'now-playing') toggleArtistPanel()
           break
       }
     }

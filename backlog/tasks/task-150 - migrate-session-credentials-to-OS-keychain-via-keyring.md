@@ -1,10 +1,10 @@
 ---
 id: TASK-150
 title: migrate session credentials to OS keychain via keyring
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-18 18:02'
-updated_date: '2026-04-19 23:52'
+updated_date: '2026-04-20 01:27'
 labels:
   - security
   - feature
@@ -14,6 +14,7 @@ dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0 (FINDING-03)
 priority: high
+ordinal: 1000
 ---
 
 ## Description
@@ -54,11 +55,11 @@ One-time migration: on first load after upgrade, move any existing `sessions` ro
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 keyring added as a dependency
-- [ ] #2 set_session writes to OS keychain when available; falls back to DB otherwise
-- [ ] #3 get_session reads from OS keychain first, then DB fallback
-- [ ] #4 clear_session removes from both keychain and DB
-- [ ] #5 One-time migration moves existing DB session data into the keychain on upgrade
-- [ ] #6 After migration, session_json in DB is cleared (no plaintext credentials at rest)
-- [ ] #7 Bandcamp and Last.fm auth flows work end-to-end on macOS, with graceful degradation on platforms without a keyring
+- [x] #1 keyring added as a dependency
+- [x] #2 set_session writes to OS keychain when available; falls back to DB otherwise
+- [x] #3 get_session reads from OS keychain first, then DB fallback
+- [x] #4 clear_session removes from both keychain and DB
+- [x] #5 One-time migration moves existing DB session data into the keychain on upgrade
+- [x] #6 After migration, session_json in DB is cleared (no plaintext credentials at rest)
+- [x] #7 Bandcamp and Last.fm auth flows work end-to-end on macOS, with graceful degradation on platforms without a keyring
 <!-- AC:END -->

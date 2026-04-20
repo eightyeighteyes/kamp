@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
+import keyring.errors
 import mutagen.id3 as id3
 import pytest
+from pytest_mock import MockerFixture
 
 from kamp_core.library import (
     AlbumInfo,
@@ -123,7 +126,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 11
+        assert version == 12
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1104,7 +1107,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 11
+        assert version == 12
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1161,7 +1164,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 11
+        assert version == 12
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1454,7 +1457,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 11
+        assert version == 12
         assert row is not None
         assert row[0] == 0
 
@@ -1567,7 +1570,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 11
+        assert version == 12
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -1748,7 +1751,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 11
+        assert version == 12
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -1761,6 +1764,16 @@ class TestMtimeReindex:
 
 
 class TestSessionManagement:
+    """Tests the DB-fallback path (no keyring backend available)."""
+
+    @pytest.fixture(autouse=True)
+    def no_keyring(self, mocker: MockerFixture) -> None:
+        """Simulate a platform without a keyring backend."""
+        err = keyring.errors.NoKeyringError()
+        mocker.patch("kamp_core.library.keyring.get_password", side_effect=err)
+        mocker.patch("kamp_core.library.keyring.set_password", side_effect=err)
+        mocker.patch("kamp_core.library.keyring.delete_password", side_effect=err)
+
     def _make_index(self, tmp_path: Path) -> LibraryIndex:
         return LibraryIndex(tmp_path / "library.db")
 
@@ -1828,7 +1841,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 11
+        assert version == 12
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -1836,7 +1849,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 11
+        assert version == 12
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -2001,3 +2014,200 @@ class TestDatabaseFilePermissions:
         index2.close()
         mode = db_path.stat().st_mode & 0o777
         assert mode == 0o600, f"Expected 600 after re-open, got {oct(mode)}"
+
+
+# ---------------------------------------------------------------------------
+# Session management — keyring-available path
+# ---------------------------------------------------------------------------
+
+
+class TestSessionManagementKeyring:
+    """Tests the keychain-first path when a keyring backend is available."""
+
+    @pytest.fixture(autouse=True)
+    def mock_keyring(self, mocker: MockerFixture) -> dict[str, str]:
+        """In-memory keyring store; returns the backing dict for inspection."""
+        store: dict[str, str] = {}
+
+        def _set(app: str, service: str, value: str) -> None:
+            store[f"{app}/{service}"] = value
+
+        def _get(app: str, service: str) -> str | None:
+            return store.get(f"{app}/{service}")
+
+        def _delete(app: str, service: str) -> None:
+            key = f"{app}/{service}"
+            if key not in store:
+                raise keyring.errors.PasswordDeleteError(service)
+            del store[key]
+
+        mocker.patch("kamp_core.library.keyring.set_password", side_effect=_set)
+        mocker.patch("kamp_core.library.keyring.get_password", side_effect=_get)
+        mocker.patch("kamp_core.library.keyring.delete_password", side_effect=_delete)
+        return store
+
+    def _make_index(self, tmp_path: Path) -> LibraryIndex:
+        return LibraryIndex(tmp_path / "library.db")
+
+    def test_set_session_writes_to_keyring_not_db(
+        self, tmp_path: Path, mock_keyring: dict[str, str]
+    ) -> None:
+        index = self._make_index(tmp_path)
+        data = {"cookies": [{"name": "js_logged_in", "value": "1"}]}
+        index.set_session("bandcamp", data)
+
+        # Credential must be in keychain.
+        assert "kamp/bandcamp" in mock_keyring
+        # session_json column must be NULL — no plaintext in the DB.
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is not None
+        assert row["session_json"] is None
+        index.close()
+
+    def test_get_session_reads_from_keyring(
+        self, tmp_path: Path, mock_keyring: dict[str, str]
+    ) -> None:
+        index = self._make_index(tmp_path)
+        data: dict[str, Any] = {"session_key": "abc123"}
+        index.set_session("lastfm", data)
+        assert index.get_session("lastfm") == data
+        index.close()
+
+    def test_clear_session_removes_from_keyring_and_db(
+        self, tmp_path: Path, mock_keyring: dict[str, str]
+    ) -> None:
+        index = self._make_index(tmp_path)
+        index.set_session("bandcamp", {"cookies": []})
+        index.clear_session("bandcamp")
+        assert "kamp/bandcamp" not in mock_keyring
+        assert index.get_session("bandcamp") is None
+        index.close()
+
+    def test_clear_session_noop_when_absent(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        index.clear_session("bandcamp")  # must not raise
+        index.close()
+
+    def test_set_then_get_roundtrip(
+        self, tmp_path: Path, mock_keyring: dict[str, str]
+    ) -> None:
+        index = self._make_index(tmp_path)
+        data: dict[str, Any] = {"cookies": [{"name": "x", "value": "y"}], "origins": []}
+        index.set_session("bandcamp", data)
+        assert index.get_session("bandcamp") == data
+        index.close()
+
+
+# ---------------------------------------------------------------------------
+# Migration v11 → v12: credentials moved from DB to keychain
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV11ToV12:
+    def _build_v11_db(self, db_path: Path) -> None:
+        """Create a v11 database with a sessions row containing plaintext JSON."""
+        import json as _json
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (11)")
+        conn.execute("""
+            CREATE TABLE sessions (
+                service      TEXT NOT NULL PRIMARY KEY,
+                session_json TEXT NOT NULL,
+                updated_at   REAL NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE settings (
+                key   TEXT NOT NULL PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO sessions (service, session_json, updated_at) VALUES (?, ?, ?)",
+            (
+                "bandcamp",
+                _json.dumps({"cookies": [{"name": "js_logged_in", "value": "1"}]}),
+                1.0,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO sessions (service, session_json, updated_at) VALUES (?, ?, ?)",
+            ("lastfm", _json.dumps({"session_key": "sk_abc"}), 2.0),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_migration_moves_credentials_to_keychain(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        store: dict[str, str] = {}
+
+        def _set(app: str, service: str, value: str) -> None:
+            store[f"{app}/{service}"] = value
+
+        mocker.patch("kamp_core.library.keyring.set_password", side_effect=_set)
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library.keyring.delete_password")
+
+        db_path = tmp_path / "library.db"
+        self._build_v11_db(db_path)
+
+        index = LibraryIndex(db_path)
+
+        # Both services should be in the keychain.
+        assert "kamp/bandcamp" in store
+        assert "kamp/lastfm" in store
+
+        # session_json column must be cleared in DB.
+        rows = index._conn.execute(
+            "SELECT service, session_json FROM sessions"
+        ).fetchall()
+        for row in rows:
+            assert (
+                row["session_json"] is None
+            ), f"session_json not cleared for service {row['service']!r}"
+
+        # Schema version bumped.
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        assert version == 12
+
+        index.close()
+
+    def test_migration_leaves_db_intact_when_no_keyring(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        err = keyring.errors.NoKeyringError()
+        mocker.patch("kamp_core.library.keyring.set_password", side_effect=err)
+        mocker.patch("kamp_core.library.keyring.get_password", side_effect=err)
+        mocker.patch("kamp_core.library.keyring.delete_password", side_effect=err)
+
+        db_path = tmp_path / "library.db"
+        self._build_v11_db(db_path)
+
+        index = LibraryIndex(db_path)
+
+        # Credentials must still be in the DB since keyring was unavailable.
+        rows = {
+            row["service"]: row["session_json"]
+            for row in index._conn.execute(
+                "SELECT service, session_json FROM sessions"
+            ).fetchall()
+        }
+        assert rows["bandcamp"] is not None
+        assert rows["lastfm"] is not None
+
+        # get_session must fall back to DB and return the data.
+        assert index.get_session("bandcamp") == {
+            "cookies": [{"name": "js_logged_in", "value": "1"}]
+        }
+        assert index.get_session("lastfm") == {"session_key": "sk_abc"}
+
+        index.close()

@@ -745,10 +745,9 @@ def _cmd_daemon(
         _scrobbler_ref[0] = None
 
     def _on_bandcamp_login_complete(payload: dict[str, object]) -> None:
-        # Persist cookies to DB so they are never written to plaintext on disk.
         session_data: dict[str, Any] = dict(payload)
         index.set_session("bandcamp", session_data)
-        _logger.info("Bandcamp session saved to database from Electron login flow.")
+        _logger.info("Bandcamp session saved from Electron login flow.")
         # Extract username immediately so the UI can show "Connected as {username}".
         # Primary source: the logout cookie (URL-encoded JSON, always present after
         # login, no network round-trip required).  Fallback: the collection_summary

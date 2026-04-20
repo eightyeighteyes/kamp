@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import keyring
+import keyring.errors
 import mutagen.flac
 import mutagen.id3 as id3
 import mutagen.mp4
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 11
+_SCHEMA_VERSION = 12
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -89,10 +91,10 @@ CREATE TABLE IF NOT EXISTS extension_audit_log (
 );
 
 -- Per-service session storage (Bandcamp, Last.fm, future integrations).
--- Keyed by service name; session_json holds the full cookie/token payload.
+-- session_json is NULL when credentials are stored in the OS keychain (keyring).
 CREATE TABLE IF NOT EXISTS sessions (
     service      TEXT NOT NULL PRIMARY KEY,
-    session_json TEXT NOT NULL,
+    session_json TEXT,
     updated_at   REAL NOT NULL
 );
 
@@ -386,6 +388,40 @@ class LibraryIndex:
             # The table is created by _DDL via executescript at the top of _migrate.
             self._conn.execute("UPDATE schema_version SET version = 11")
             self._conn.commit()
+            version = 11
+
+        if version < 12:
+            # v11 → v12: migrate session credentials from plaintext DB column to the
+            # OS keychain.  Recreate the sessions table so session_json is nullable
+            # (credentials stored in keychain leave the column NULL).  Then attempt
+            # to move each existing row into keychain and null it out.  On platforms
+            # without a keyring backend the rows are left intact as fallback storage.
+            self._conn.executescript("""
+                CREATE TABLE sessions_new (
+                    service      TEXT NOT NULL PRIMARY KEY,
+                    session_json TEXT,
+                    updated_at   REAL NOT NULL
+                );
+                INSERT INTO sessions_new SELECT * FROM sessions;
+                DROP TABLE sessions;
+                ALTER TABLE sessions_new RENAME TO sessions;
+            """)
+            rows = self._conn.execute(
+                "SELECT service, session_json FROM sessions"
+                " WHERE session_json IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                try:
+                    keyring.set_password("kamp", row["service"], row["session_json"])
+                    self._conn.execute(
+                        "UPDATE sessions SET session_json = NULL WHERE service = ?",
+                        (row["service"],),
+                    )
+                except keyring.errors.NoKeyringError:
+                    # No keyring on this platform; leave remaining rows in DB.
+                    break
+            self._conn.execute("UPDATE schema_version SET version = 12")
+            self._conn.commit()
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -400,16 +436,38 @@ class LibraryIndex:
     # ------------------------------------------------------------------
 
     def get_session(self, service: str) -> dict[str, Any] | None:
-        """Return the stored session data for *service*, or None if absent."""
+        """Return the stored session data for *service*, or None if absent.
+
+        Reads from the OS keychain when available; falls back to the DB column
+        on platforms without a keyring backend.
+        """
+        try:
+            raw = keyring.get_password("kamp", service)
+            if raw is not None:
+                return json.loads(raw)  # type: ignore[no-any-return]
+        except keyring.errors.NoKeyringError:
+            pass
         row = self._conn.execute(
             "SELECT session_json FROM sessions WHERE service = ?", (service,)
         ).fetchone()
-        if row is None:
+        if row is None or row["session_json"] is None:
             return None
         return dict(json.loads(row["session_json"]))  # type: ignore[no-any-return]
 
     def set_session(self, service: str, data: dict[str, Any]) -> None:
-        """Persist session data for *service*, replacing any existing row."""
+        """Persist session data for *service*, replacing any existing entry.
+
+        Writes to the OS keychain when available, leaving session_json NULL in
+        the DB so the credential is absent from backups.  Falls back to the DB
+        column on platforms without a keyring backend.
+        """
+        payload = json.dumps(data)
+        session_json: str | None = payload
+        try:
+            keyring.set_password("kamp", service, payload)
+            session_json = None  # stored in keychain; keep DB row metadata-only
+        except keyring.errors.NoKeyringError:
+            pass
         self._conn.execute(
             """
             INSERT INTO sessions (service, session_json, updated_at)
@@ -418,12 +476,16 @@ class LibraryIndex:
                 session_json = excluded.session_json,
                 updated_at   = excluded.updated_at
             """,
-            (service, json.dumps(data), _time.time()),
+            (service, session_json, _time.time()),
         )
         self._conn.commit()
 
     def clear_session(self, service: str) -> None:
-        """Remove the session row for *service* (no-op if absent)."""
+        """Remove the session entry for *service* from keychain and DB."""
+        try:
+            keyring.delete_password("kamp", service)
+        except (keyring.errors.NoKeyringError, keyring.errors.PasswordDeleteError):
+            pass
         self._conn.execute("DELETE FROM sessions WHERE service = ?", (service,))
         self._conn.commit()
         # Truncate the WAL so deleted credential data (cookies, session keys) is

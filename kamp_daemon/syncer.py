@@ -409,7 +409,7 @@ def logout() -> None:
             index.clear_session("bandcamp")
         finally:
             index.close()
-        logger.info("Bandcamp logout: session cleared from database.")
+        logger.info("Bandcamp logout: session cleared.")
 
     # Remove legacy session file if it still exists (e.g. migration failed).
     session_file = state / "bandcamp_session.json"

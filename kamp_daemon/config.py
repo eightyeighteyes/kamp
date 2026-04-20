@@ -95,7 +95,8 @@ def _prompt(label: str, default: str) -> str:
     return value if value else default
 
 
-# Default values for all 13 active config keys (stored as text in the DB).
+# Default values for all 11 active config keys (stored as text in the DB).
+# Last.fm credentials are stored in the OS keychain via the sessions table, not here.
 _CONFIG_DEFAULTS: dict[str, str] = {
     "paths.watch_folder": "~/Music/staging",
     "paths.library": "~/Music",
@@ -105,8 +106,6 @@ _CONFIG_DEFAULTS: dict[str, str] = {
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
     "bandcamp.format": "mp3-v0",
     "bandcamp.poll_interval_minutes": "0",
-    "lastfm.username": "",
-    "lastfm.session_key": "",
     "ui.active_view": "library",
     "ui.sort_order": "album_artist",
     "ui.queue_panel_open": "0",
@@ -123,8 +122,6 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "library.path_template": str,
     "bandcamp.format": str,
     "bandcamp.poll_interval_minutes": int,
-    "lastfm.username": str,
-    "lastfm.session_key": str,
     "ui.active_view": str,
     "ui.sort_order": str,
     "ui.queue_panel_open": int,
@@ -155,10 +152,16 @@ _FORBIDDEN_PATH_ROOTS: frozenset[Path] = frozenset(
     )
 )
 
-# Keys deprecated in TASK-132; providing them as an argument to config_set() is an error.
-_DEPRECATED_KEYS: frozenset[str] = frozenset(
-    {"bandcamp.username", "bandcamp.cookie_file"}
-)
+# Keys that are no longer settable via config_set(); each maps to a user-facing hint.
+_DEPRECATED_KEY_MESSAGES: dict[str, str] = {
+    # Deprecated in TASK-132: Bandcamp credentials moved to session store.
+    "bandcamp.username": "Bandcamp credentials are managed via 'kamp login'.",
+    "bandcamp.cookie_file": "Bandcamp credentials are managed via 'kamp login'.",
+    # Deprecated in TASK-151: Last.fm credentials moved to OS keychain.
+    "lastfm.session_key": "Last.fm credentials are managed via the Last.fm connect flow.",
+    "lastfm.username": "Last.fm credentials are managed via the Last.fm connect flow.",
+}
+_DEPRECATED_KEYS: frozenset[str] = frozenset(_DEPRECATED_KEY_MESSAGES)
 
 # Keys whose values must come from a fixed set of choices.
 _CONFIG_KEY_CHOICES: dict[str, frozenset[str]] = {
@@ -250,6 +253,24 @@ class Config:
             if not existing:
                 raise FileNotFoundError("No configuration found.")
 
+        # One-time migration: move Last.fm session key from the settings table
+        # (where it was stored as plaintext) to the OS keychain via the sessions
+        # table.  Runs once on first load after upgrading; afterwards the settings
+        # rows are empty and the session lives in the keychain.
+        _session_key = existing.get("lastfm.session_key", "")
+        if _session_key:
+            _username = existing.get("lastfm.username", "")
+            db.set_session(
+                "lastfm", {"session_key": _session_key, "username": _username}
+            )
+            db.set_setting("lastfm.session_key", "")
+            db.set_setting("lastfm.username", "")
+            existing["lastfm.session_key"] = ""
+            existing["lastfm.username"] = ""
+            logger.info(
+                "Migrated Last.fm session key from settings table to session store."
+            )
+
         # Back-fill defaults for any keys added after the initial setup
         # (e.g. when a new config key is introduced in a later release).
         for key, default in _CONFIG_DEFAULTS.items():
@@ -257,11 +278,11 @@ class Config:
                 db.set_setting(key, default)
                 existing[key] = default
 
-        return cls._from_settings(existing)
+        return cls._from_settings(existing, db)
 
     @classmethod
-    def _from_settings(cls, settings: dict[str, str]) -> "Config":
-        """Build a Config from a flat key→str settings dict."""
+    def _from_settings(cls, settings: dict[str, str], db: "LibraryIndex") -> "Config":
+        """Build a Config from a flat key→str settings dict and live DB (for sessions)."""
 
         def _get(key: str) -> str:
             return settings.get(key, _CONFIG_DEFAULTS.get(key, ""))
@@ -275,12 +296,12 @@ class Config:
             except (ValueError, TypeError):
                 return int(_CONFIG_DEFAULTS[key])
 
-        session_key = _get("lastfm.session_key")
         lastfm: LastfmConfig | None = None
-        if session_key:
+        _lastfm_session = db.get_session("lastfm")
+        if _lastfm_session and _lastfm_session.get("session_key"):
             lastfm = LastfmConfig(
-                username=_get("lastfm.username"),
-                session_key=session_key,
+                username=_lastfm_session.get("username", ""),
+                session_key=_lastfm_session["session_key"],
             )
 
         return cls(
@@ -366,10 +387,16 @@ def _migrate_from_toml(db: "LibraryIndex", toml_path: Path) -> dict[str, str]:
     # bandcamp.username and bandcamp.cookie_file are intentionally not migrated.
 
     lf = raw.get("lastfm", {})
-    if "username" in lf:
-        settings["lastfm.username"] = str(lf["username"])
-    if "session_key" in lf:
-        settings["lastfm.session_key"] = str(lf["session_key"])
+    if "session_key" in lf and lf["session_key"]:
+        # Write directly to the session store rather than the settings table so
+        # the session key is never stored as plaintext config.
+        db.set_session(
+            "lastfm",
+            {
+                "session_key": str(lf["session_key"]),
+                "username": str(lf.get("username", "")),
+            },
+        )
 
     ui = raw.get("ui", {})
     if "active_view" in ui:
@@ -425,9 +452,9 @@ def config_set(db: "LibraryIndex", key: str, value: str) -> None:
     keys, ValueError for type mismatches or invalid choices.
     """
     if key in _DEPRECATED_KEYS:
+        hint = _DEPRECATED_KEY_MESSAGES[key]
         raise KeyError(
-            f"Key {key!r} has been deprecated and is no longer supported. "
-            "Bandcamp credentials are managed via 'kamp login'."
+            f"Key {key!r} has been deprecated and is no longer supported. {hint}"
         )
 
     if key not in _CONFIG_KEY_TYPES:

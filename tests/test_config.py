@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
+import keyring.errors
 import pytest
+from pytest_mock import MockerFixture
 
 from kamp_core.library import LibraryIndex
 from kamp_daemon.config import (
@@ -16,8 +18,12 @@ from kamp_daemon.config import (
 
 
 @pytest.fixture()
-def db(tmp_path: Path) -> LibraryIndex:
-    """Return a fresh LibraryIndex backed by a temp DB."""
+def db(tmp_path: Path, mocker: MockerFixture) -> LibraryIndex:
+    """Return a fresh LibraryIndex backed by a temp DB, with keyring mocked out."""
+    err = keyring.errors.NoKeyringError()
+    mocker.patch("kamp_core.library.keyring.get_password", side_effect=err)
+    mocker.patch("kamp_core.library.keyring.set_password", side_effect=err)
+    mocker.patch("kamp_core.library.keyring.delete_password", side_effect=err)
     index = LibraryIndex(tmp_path / "library.db")
     yield index
     index.close()
@@ -29,7 +35,7 @@ def db(tmp_path: Path) -> LibraryIndex:
 
 
 class TestWriteDefaults:
-    def test_writes_all_13_keys(self, db: LibraryIndex) -> None:
+    def test_writes_all_11_keys(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
         settings = db.get_all_settings()
         assert len(settings) == len(_CONFIG_DEFAULTS)
@@ -81,21 +87,36 @@ class TestLoad:
         config = Config.load(db)
         assert config.artwork.min_dimension == 1000
 
-    def test_load_lastfm_when_session_key_present(self, db: LibraryIndex) -> None:
+    def test_load_lastfm_when_session_present(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
-        db.set_setting("lastfm.username", "myuser")
-        db.set_setting("lastfm.session_key", "mysecret")
+        db.set_session("lastfm", {"session_key": "mysecret", "username": "myuser"})
         config = Config.load(db)
         assert config.lastfm is not None
         assert isinstance(config.lastfm, LastfmConfig)
         assert config.lastfm.username == "myuser"
         assert config.lastfm.session_key == "mysecret"
 
-    def test_load_lastfm_none_when_session_key_empty(self, db: LibraryIndex) -> None:
+    def test_load_lastfm_none_when_no_session(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
-        db.set_setting("lastfm.session_key", "")
         config = Config.load(db)
         assert config.lastfm is None
+
+    def test_load_migrates_lastfm_from_settings_table(self, db: LibraryIndex) -> None:
+        """One-time migration: session_key in settings → moved to session store."""
+        Config.write_defaults(db)
+        db.set_setting("lastfm.username", "olduser")
+        db.set_setting("lastfm.session_key", "oldkey")
+        config = Config.load(db)
+        assert config.lastfm is not None
+        assert config.lastfm.session_key == "oldkey"
+        assert config.lastfm.username == "olduser"
+        # Credentials must be cleared from the settings table after migration.
+        assert db.get_setting("lastfm.session_key") == ""
+        assert db.get_setting("lastfm.username") == ""
+        # Session store must hold the migrated data.
+        session = db.get_session("lastfm")
+        assert session is not None
+        assert session["session_key"] == "oldkey"
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +245,7 @@ class TestTomlMigration:
         assert db.get_setting("bandcamp.username") is None
         assert db.get_setting("bandcamp.cookie_file") is None
 
-    def test_all_13_active_keys_present_after_migration(
+    def test_all_active_keys_present_after_migration(
         self, db: LibraryIndex, tmp_path: Path
     ) -> None:
         toml_path = tmp_path / "config.toml"
@@ -259,6 +280,8 @@ class TestTomlMigration:
         assert config.lastfm is not None
         assert config.lastfm.username == "myuser"
         assert config.lastfm.session_key == "abc123sessionkey"
+        # Session key must not be in the settings table after TOML migration.
+        assert not db.get_setting("lastfm.session_key")
 
     def test_migrates_legacy_staging_key(
         self, db: LibraryIndex, tmp_path: Path
@@ -288,8 +311,9 @@ class TestConfigShow:
         assert "[artwork]" in output
         assert "[library]" in output
         assert "[bandcamp]" in output
-        assert "[lastfm]" in output
         assert "[ui]" in output
+        # Last.fm credentials are in the session store, not config — no [lastfm] section.
+        assert "[lastfm]" not in output
 
     def test_includes_key_value_pairs(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
@@ -379,17 +403,13 @@ class TestConfigSet:
         with pytest.raises(KeyError, match="deprecated"):
             config_set(db, "bandcamp.cookie_file", "/tmp/cookies.txt")
 
-    def test_set_lastfm_username(self, db: LibraryIndex) -> None:
-        Config.write_defaults(db)
-        config_set(db, "lastfm.username", "newuser")
-        assert db.get_setting("lastfm.username") == "newuser"
+    def test_set_lastfm_username_raises_deprecated(self, db: LibraryIndex) -> None:
+        with pytest.raises(KeyError, match="deprecated"):
+            config_set(db, "lastfm.username", "newuser")
 
-    def test_set_lastfm_session_key(self, db: LibraryIndex) -> None:
-        Config.write_defaults(db)
-        config_set(db, "lastfm.session_key", "newkey")
-        config = Config.load(db)
-        assert config.lastfm is not None
-        assert config.lastfm.session_key == "newkey"
+    def test_set_lastfm_session_key_raises_deprecated(self, db: LibraryIndex) -> None:
+        with pytest.raises(KeyError, match="deprecated"):
+            config_set(db, "lastfm.session_key", "newkey")
 
     def test_path_key_relative_raises(self, db: LibraryIndex) -> None:
         with pytest.raises(ValueError, match="requires an absolute path"):

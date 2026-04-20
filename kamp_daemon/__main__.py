@@ -736,12 +736,11 @@ def _cmd_daemon(
 
     def _on_lastfm_connect(username: str, password: str) -> None:
         session_key = _lastfm_authenticate(username, password)
-        _config_set(index, "lastfm.username", username)
-        _config_set(index, "lastfm.session_key", session_key)
+        index.set_session("lastfm", {"session_key": session_key, "username": username})
         _scrobbler_ref[0] = Scrobbler(session_key)
 
     def _on_lastfm_disconnect() -> None:
-        _config_set(index, "lastfm.session_key", "")
+        index.clear_session("lastfm")
         _scrobbler_ref[0] = None
 
     def _on_bandcamp_login_complete(payload: dict[str, object]) -> None:

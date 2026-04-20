@@ -1,23 +1,20 @@
 from __future__ import annotations
 
 import ctypes
-import sys
 
 import keyring.errors
 import pytest
 from pytest_mock import MockerFixture
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "darwin", reason="macos_keychain is macOS-only"
+# Skips the entire module on non-macOS before any ctypes calls are attempted.
+macos_keychain = pytest.importorskip(
+    "kamp_core.macos_keychain", reason="macos_keychain is macOS-only"
 )
 
-from kamp_core import macos_keychain
-from kamp_core.macos_keychain import (
-    _ERR_SEC_AUTH_FAILED,
-    _ERR_SEC_INTERACTION_NOT_ALLOWED,
-    _ERR_SEC_ITEM_NOT_FOUND,
-    _raise_for_status,
-)
+_ERR_SEC_AUTH_FAILED = macos_keychain._ERR_SEC_AUTH_FAILED
+_ERR_SEC_INTERACTION_NOT_ALLOWED = macos_keychain._ERR_SEC_INTERACTION_NOT_ALLOWED
+_ERR_SEC_ITEM_NOT_FOUND = macos_keychain._ERR_SEC_ITEM_NOT_FOUND
+_raise_for_status = macos_keychain._raise_for_status
 
 # ---------------------------------------------------------------------------
 # _raise_for_status

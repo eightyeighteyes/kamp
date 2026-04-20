@@ -17,10 +17,14 @@ exception-handling in ``library.py`` is unchanged.
 from __future__ import annotations
 
 import ctypes
+import sys
 from ctypes import byref, c_int32, c_uint32, c_void_p
 from ctypes.util import find_library
 
 import keyring.errors
+
+if sys.platform != "darwin":
+    raise ImportError("kamp_core.macos_keychain is macOS-only")
 
 _OS_STATUS_SUCCESS = 0
 _ERR_SEC_ITEM_NOT_FOUND = -25300

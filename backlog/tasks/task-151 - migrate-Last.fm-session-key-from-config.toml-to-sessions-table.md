@@ -4,7 +4,7 @@ title: migrate Last.fm session key from config.toml to sessions table
 status: Done
 assignee: []
 created_date: '2026-04-18 18:03'
-updated_date: '2026-04-20 16:35'
+updated_date: '2026-04-20 18:45'
 labels:
   - security
   - chore
@@ -14,6 +14,7 @@ dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0 (FINDING-07)
 priority: medium
+ordinal: 5000
 ---
 
 ## Description

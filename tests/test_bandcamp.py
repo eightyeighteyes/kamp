@@ -1351,3 +1351,40 @@ class TestProxySession:
 
         payload = patched.call_args[1]["json"]
         assert payload["headers"]["User-Agent"] == _UA
+
+    def test_includes_auth_token_header(self, tmp_path: Path) -> None:
+        from kamp_daemon.bandcamp import _ProxySession
+
+        token_file = tmp_path / ".token"
+        token_file.write_text("mysecret")
+
+        sess = _ProxySession()
+        mock_post = self._make_proxy_response(200, "{}")
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._requests.post", return_value=mock_post
+            ) as patched,
+            patch("kamp_daemon.bandcamp.token_path", return_value=token_file),
+        ):
+            sess.get("https://bandcamp.com/api/test")
+
+        assert patched.call_args[1]["headers"] == {"X-Kamp-Token": "mysecret"}
+
+    def test_no_auth_header_when_token_missing(self, tmp_path: Path) -> None:
+        from kamp_daemon.bandcamp import _ProxySession
+
+        missing = tmp_path / ".token"  # does not exist
+
+        sess = _ProxySession()
+        mock_post = self._make_proxy_response(200, "{}")
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._requests.post", return_value=mock_post
+            ) as patched,
+            patch("kamp_daemon.bandcamp.token_path", return_value=missing),
+        ):
+            sess.get("https://bandcamp.com/api/test")
+
+        assert patched.call_args[1]["headers"] is None

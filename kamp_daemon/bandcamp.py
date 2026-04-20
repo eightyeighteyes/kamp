@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Union
 
 import requests as _requests
 
-from .config import BandcampConfig
+from .config import BandcampConfig, token_path
 
 if TYPE_CHECKING:
     from kamp_core.library import LibraryIndex
@@ -58,6 +58,14 @@ _UA = (
 
 # URL of the kamp server's Bandcamp HTTP proxy relay endpoint.
 _PROXY_FETCH_URL = "http://127.0.0.1:8000/api/v1/bandcamp/proxy-fetch"
+
+
+def _read_auth_token() -> str | None:
+    """Return the shared-secret token written by the daemon on startup, or None."""
+    try:
+        return token_path().read_text().strip()
+    except OSError:
+        return None
 
 
 def _is_frozen() -> bool:
@@ -135,9 +143,12 @@ class _ProxySession:
         # connection, so the outer timeout must be considerably larger than the
         # inner one.  2× + 10s gives ≥50s headroom for a 20s inner timeout.
         proxy_timeout = float(timeout) * 2 + 10
+        kamp_token = _read_auth_token()
+        post_headers = {"X-Kamp-Token": kamp_token} if kamp_token else None
         resp = _requests.post(
             _PROXY_FETCH_URL,
             json={"url": url, "method": method, "headers": req_headers, "body": body},
+            headers=post_headers,
             timeout=proxy_timeout,
         )
         resp.raise_for_status()

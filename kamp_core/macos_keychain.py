@@ -1,22 +1,17 @@
-"""Direct Security.framework wrapper using the Data Protection Keychain.
+"""Security.framework wrapper for the macOS Login Keychain.
 
-The Python ``keyring`` library stores items in the old macOS Login Keychain,
-which uses per-application binary-hash ACLs.  Two problems follow:
+The Python ``keyring`` library stores items in the macOS Login Keychain but
+uses ``SecItemDelete`` + ``SecItemAdd`` for every write.  This wipes the
+item's ACL — including any "Always Allow" the user granted — so the dialog
+reappears on the next keychain access.
 
-1. ``keyring.set_password`` deletes the existing item before adding the new
-   one, wiping any "Always Allow" ACL the user granted.
-2. Each Kamp release recompiles the ``kamp`` binary, changing its hash.
-   macOS then treats it as a new application and prompts again.
-
-The Data Protection Keychain (``kSecUseDataProtectionKeychain``) uses the
-code-signing identity (team ID + binary identifier) instead of binary hashes,
-so "Always Allow" survives updates.  More importantly, items in this keychain
-do not trigger per-application access dialogs at all — the OS grants access
-based on user-session authentication state rather than ACLs.
+This module replaces that with ``SecItemUpdate`` (update-in-place) for
+existing items, which preserves ACL entries so "Always Allow" survives
+session refreshes.  New items are created with ``SecItemAdd`` as usual.
 
 This module is macOS-only.  Callers must guard with ``sys.platform``.
-``KeyringError`` / ``NoKeyringError`` from ``keyring.errors`` are raised on
-failure so existing exception-handling in ``library.py`` is unchanged.
+``KeyringError`` from ``keyring.errors`` is raised on failure so existing
+exception-handling in ``library.py`` is unchanged.
 """
 
 from __future__ import annotations
@@ -31,15 +26,6 @@ _OS_STATUS_SUCCESS = 0
 _ERR_SEC_ITEM_NOT_FOUND = -25300
 _ERR_SEC_INTERACTION_NOT_ALLOWED = -25308
 _ERR_SEC_AUTH_FAILED = -25293
-_ERR_SEC_MISSING_ENTITLEMENT = -34018
-
-
-class KeyringEntitlementError(keyring.errors.KeyringError):
-    """Raised when the binary lacks the keychain-access-groups entitlement.
-
-    This happens in unsigned dev builds.  The caller should fall back to the
-    old Login Keychain via ``keyring``.
-    """
 
 
 _sec = ctypes.CDLL(find_library("Security"))
@@ -154,16 +140,11 @@ def _raise_for_status(status: int) -> None:
         return
     if status == _ERR_SEC_INTERACTION_NOT_ALLOWED or status == _ERR_SEC_AUTH_FAILED:
         raise keyring.errors.KeyringLocked(f"Keychain locked (OSStatus {status})")
-    if status == _ERR_SEC_MISSING_ENTITLEMENT:
-        raise KeyringEntitlementError(
-            "kamp binary lacks the keychain-access-groups entitlement;"
-            " run from a signed build or add the entitlement to the dev binary"
-        )
     raise keyring.errors.KeyringError(f"Security framework error (OSStatus {status})")
 
 
 def get_password(service: str, username: str) -> str | None:
-    """Read a generic password from the Data Protection Keychain.
+    """Read a generic password from the Login Keychain.
 
     Returns the stored string, or ``None`` if the item is absent.
     Raises ``keyring.errors.KeyringLocked`` when the keychain is locked and
@@ -175,7 +156,6 @@ def get_password(service: str, username: str) -> str | None:
         kSecAttrService=service,
         kSecAttrAccount=username,
         kSecReturnData=True,
-        kSecUseDataProtectionKeychain=True,
     )
     data = c_void_p()
     status = _SecItemCopyMatching(q, byref(data))
@@ -188,18 +168,16 @@ def get_password(service: str, username: str) -> str | None:
 
 
 def set_password(service: str, username: str, password: str) -> None:
-    """Write a generic password to the Data Protection Keychain.
+    """Write a generic password to the Login Keychain.
 
-    Uses ``SecItemUpdate`` when the item already exists so that item metadata
-    is preserved without delete-then-recreate (which would wipe any ACL the
-    user has approved).  Falls through to ``SecItemAdd`` for new items.
+    Uses ``SecItemUpdate`` when the item already exists so that item ACL
+    entries (including any "Always Allow" the user granted) are preserved.
+    Falls through to ``SecItemAdd`` for new items.
     """
-    # Build a lookup query for an existing item
     find_q = _make_dict(
         kSecClass="kSecClassGenericPassword",
         kSecAttrService=service,
         kSecAttrAccount=username,
-        kSecUseDataProtectionKeychain=True,
     )
     update_attrs = _make_dict(kSecValueData=_cf_str(password))
     status = _SecItemUpdate(find_q, update_attrs)
@@ -211,7 +189,6 @@ def set_password(service: str, username: str, password: str) -> None:
             kSecAttrAccount=username,
             kSecValueData=_cf_str(password),
             kSecAttrAccessible="kSecAttrAccessibleWhenUnlocked",
-            kSecUseDataProtectionKeychain=True,
         )
         status = _SecItemAdd(add_q, None)
 
@@ -219,7 +196,7 @@ def set_password(service: str, username: str, password: str) -> None:
 
 
 def delete_password(service: str, username: str) -> None:
-    """Delete a generic password from the Data Protection Keychain.
+    """Delete a generic password from the Login Keychain.
 
     Silently ignores the case where the item is absent.
     """
@@ -227,7 +204,6 @@ def delete_password(service: str, username: str) -> None:
         kSecClass="kSecClassGenericPassword",
         kSecAttrService=service,
         kSecAttrAccount=username,
-        kSecUseDataProtectionKeychain=True,
     )
     status = _SecItemDelete(q)
     if status == _ERR_SEC_ITEM_NOT_FOUND:

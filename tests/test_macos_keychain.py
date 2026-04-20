@@ -13,11 +13,9 @@ pytestmark = pytest.mark.skipif(
 
 from kamp_core import macos_keychain
 from kamp_core.macos_keychain import (
-    KeyringEntitlementError,
     _ERR_SEC_AUTH_FAILED,
     _ERR_SEC_INTERACTION_NOT_ALLOWED,
     _ERR_SEC_ITEM_NOT_FOUND,
-    _ERR_SEC_MISSING_ENTITLEMENT,
     _raise_for_status,
 )
 
@@ -37,10 +35,6 @@ class TestRaiseForStatus:
     def test_auth_failed_raises_keyring_locked(self) -> None:
         with pytest.raises(keyring.errors.KeyringLocked):
             _raise_for_status(_ERR_SEC_AUTH_FAILED)
-
-    def test_missing_entitlement_raises_entitlement_error(self) -> None:
-        with pytest.raises(KeyringEntitlementError):
-            _raise_for_status(_ERR_SEC_MISSING_ENTITLEMENT)
 
     def test_unknown_error_raises_keyring_error(self) -> None:
         with pytest.raises(keyring.errors.KeyringError):
@@ -86,17 +80,6 @@ class TestGetPassword:
         with pytest.raises(keyring.errors.KeyringLocked):
             macos_keychain.get_password("svc", "user")
 
-    def test_raises_entitlement_error_on_missing_entitlement(
-        self, mocker: MockerFixture
-    ) -> None:
-        mocker.patch.object(
-            macos_keychain,
-            "_SecItemCopyMatching",
-            return_value=_ERR_SEC_MISSING_ENTITLEMENT,
-        )
-        with pytest.raises(KeyringEntitlementError):
-            macos_keychain.get_password("svc", "user")
-
     def test_raises_keyring_error_on_generic_failure(
         self, mocker: MockerFixture
     ) -> None:
@@ -139,15 +122,6 @@ class TestSetPassword:
         mocker.patch.object(macos_keychain, "_SecItemAdd", return_value=-99999)
 
         with pytest.raises(keyring.errors.KeyringError):
-            macos_keychain.set_password("svc", "user", "pass")
-
-    def test_raises_entitlement_error_on_update(self, mocker: MockerFixture) -> None:
-        mocker.patch.object(
-            macos_keychain,
-            "_SecItemUpdate",
-            return_value=_ERR_SEC_MISSING_ENTITLEMENT,
-        )
-        with pytest.raises(KeyringEntitlementError):
             macos_keychain.set_password("svc", "user", "pass")
 
 

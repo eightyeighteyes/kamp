@@ -19,14 +19,5 @@
     <!-- Outbound requests: MusicBrainz, Last.fm, AcoustID lookups -->
     <key>com.apple.security.network.client</key>
     <true/>
-    <!-- Required for kSecUseDataProtectionKeychain — stores credentials in the
-         modern Data Protection Keychain so access is tied to the app's signing
-         identity (stable across updates) rather than to the binary hash.
-         This eliminates the repeated "kamp wants to access your keychain"
-         dialog that appears after each release. -->
-    <key>keychain-access-groups</key>
-    <array>
-        <string>$(AppIdentifierPrefix)com.kamp.app</string>
-    </array>
 </dict>
 </plist>

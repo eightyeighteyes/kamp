@@ -2382,16 +2382,16 @@ class TestMigrationV11ToV12:
 
 
 # ---------------------------------------------------------------------------
-# Session management — macOS Data Protection Keychain path
+# Session management — macOS Login Keychain (SecItemUpdate) path
 # ---------------------------------------------------------------------------
 
 
 class TestSessionManagementMacOS:
-    """Tests the Data Protection Keychain path (macOS _mac_kc module)."""
+    """Tests the macOS _mac_kc path (Login Keychain with SecItemUpdate)."""
 
     @pytest.fixture(autouse=True)
     def mock_mac_kc(self, mocker: MockerFixture) -> dict[str, str]:
-        """In-memory Data Protection Keychain store; returns the backing dict."""
+        """In-memory Login Keychain store; returns the backing dict."""
         store: dict[str, str] = {}
 
         def _get(app: str, service: str) -> str | None:
@@ -2418,7 +2418,7 @@ class TestSessionManagementMacOS:
     def _make_index(self, tmp_path: Path) -> LibraryIndex:
         return LibraryIndex(tmp_path / "library.db")
 
-    def test_set_session_writes_to_data_protection_keychain_not_db(
+    def test_set_session_writes_to_keychain_not_db(
         self, tmp_path: Path, mock_mac_kc: dict[str, str]
     ) -> None:
         index = self._make_index(tmp_path)
@@ -2435,7 +2435,7 @@ class TestSessionManagementMacOS:
         ), "credential must not be stored in plaintext DB"
         index.close()
 
-    def test_get_session_reads_from_data_protection_keychain(
+    def test_get_session_reads_from_keychain(
         self, tmp_path: Path, mock_mac_kc: dict[str, str]
     ) -> None:
         index = self._make_index(tmp_path)
@@ -2447,8 +2447,8 @@ class TestSessionManagementMacOS:
     def test_set_session_uses_update_not_delete_recreate(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
-        """set_session must call mac_kc.set_password (which uses SecItemUpdate),
-        not delete + add, so previously granted ACL entries survive updates."""
+        """set_session calls mac_kc.set_password (SecItemUpdate-based), never
+        delete_password, so previously granted ACL entries survive updates."""
         store: dict[str, str] = {}
 
         def _get(app: str, service: str) -> str | None:
@@ -2478,7 +2478,7 @@ class TestSessionManagementMacOS:
         assert index.get_session("lastfm") == data2
         index.close()
 
-    def test_clear_session_removes_from_data_protection_keychain_and_db(
+    def test_clear_session_removes_from_keychain_and_db(
         self, tmp_path: Path, mock_mac_kc: dict[str, str]
     ) -> None:
         index = self._make_index(tmp_path)
@@ -2508,126 +2508,4 @@ class TestSessionManagementMacOS:
         ).fetchone()
         assert row is not None
         assert row["session_json"] is not None, "must fall back to DB on write failure"
-        index.close()
-
-
-# ---------------------------------------------------------------------------
-# Session management — Login Keychain → Data Protection Keychain migration
-# ---------------------------------------------------------------------------
-
-
-class TestLoginKeychainMigration:
-    """Tests the one-time migration from the old Login Keychain to the
-    Data Protection Keychain that runs transparently inside get_session."""
-
-    def _make_index(self, tmp_path: Path) -> LibraryIndex:
-        return LibraryIndex(tmp_path / "library.db")
-
-    def test_migrates_item_from_login_keychain_to_data_protection_keychain(
-        self, tmp_path: Path, mocker: MockerFixture
-    ) -> None:
-        """When a service is absent from the Data Protection Keychain but present
-        in the old Login Keychain, get_session migrates it automatically."""
-        dpc_store: dict[str, str] = {}
-        login_store: dict[str, str] = {
-            "kamp/bandcamp": '{"cookies": [{"name": "js_logged_in", "value": "1"}]}'
-        }
-
-        mac_mock = MagicMock()
-        mac_mock.get_password.side_effect = lambda app, svc: dpc_store.get(
-            f"{app}/{svc}"
-        )
-        mac_mock.set_password.side_effect = lambda app, svc, val: dpc_store.__setitem__(
-            f"{app}/{svc}", val
-        )
-        mac_mock.delete_password.side_effect = lambda app, svc: dpc_store.pop(
-            f"{app}/{svc}", None
-        )
-        mocker.patch("kamp_core.library._mac_kc", mac_mock)
-        mocker.patch(
-            "kamp_core.library.keyring.get_password",
-            side_effect=lambda app, svc: login_store.get(f"{app}/{svc}"),
-        )
-        mocker.patch(
-            "kamp_core.library.keyring.delete_password",
-            side_effect=lambda app, svc: login_store.pop(f"{app}/{svc}", None),
-        )
-        mocker.patch("kamp_core.library.keyring.set_password")
-
-        index = self._make_index(tmp_path)
-        result = index.get_session("bandcamp")
-
-        assert result == {"cookies": [{"name": "js_logged_in", "value": "1"}]}
-        # Item must now be in the Data Protection Keychain.
-        assert "kamp/bandcamp" in dpc_store
-        index.close()
-
-    def test_migration_cleans_up_old_login_keychain_item(
-        self, tmp_path: Path, mocker: MockerFixture
-    ) -> None:
-        """After migration, the old Login Keychain entry is deleted."""
-        dpc_store: dict[str, str] = {}
-        login_store: dict[str, str] = {"kamp/lastfm": '{"session_key": "old_key"}'}
-        deleted: list[str] = []
-
-        mac_mock = MagicMock()
-        mac_mock.get_password.side_effect = lambda app, svc: dpc_store.get(
-            f"{app}/{svc}"
-        )
-        mac_mock.set_password.side_effect = lambda app, svc, val: dpc_store.__setitem__(
-            f"{app}/{svc}", val
-        )
-        mac_mock.delete_password.side_effect = lambda app, svc: dpc_store.pop(
-            f"{app}/{svc}", None
-        )
-        mocker.patch("kamp_core.library._mac_kc", mac_mock)
-        mocker.patch(
-            "kamp_core.library.keyring.get_password",
-            side_effect=lambda app, svc: login_store.get(f"{app}/{svc}"),
-        )
-
-        def _delete(app: str, svc: str) -> None:
-            deleted.append(f"{app}/{svc}")
-            login_store.pop(f"{app}/{svc}", None)
-
-        mocker.patch("kamp_core.library.keyring.delete_password", side_effect=_delete)
-        mocker.patch("kamp_core.library.keyring.set_password")
-
-        index = self._make_index(tmp_path)
-        index.get_session("lastfm")
-
-        assert "kamp/lastfm" in deleted, "legacy Login Keychain item must be deleted"
-        assert "kamp/lastfm" not in login_store
-        index.close()
-
-    def test_second_call_uses_data_protection_keychain_only(
-        self, tmp_path: Path, mocker: MockerFixture
-    ) -> None:
-        """After migration, subsequent get_session calls read from the Data Protection
-        Keychain without touching the Login Keychain."""
-        dpc_store: dict[str, str] = {
-            "kamp/bandcamp": '{"cookies": [{"name": "js_logged_in", "value": "1"}]}'
-        }
-
-        mac_mock = MagicMock()
-        mac_mock.get_password.side_effect = lambda app, svc: dpc_store.get(
-            f"{app}/{svc}"
-        )
-        mac_mock.set_password.side_effect = lambda app, svc, val: dpc_store.__setitem__(
-            f"{app}/{svc}", val
-        )
-        mac_mock.delete_password.side_effect = lambda app, svc: None
-        mocker.patch("kamp_core.library._mac_kc", mac_mock)
-        legacy_get = mocker.patch(
-            "kamp_core.library.keyring.get_password", return_value=None
-        )
-        mocker.patch("kamp_core.library.keyring.set_password")
-        mocker.patch("kamp_core.library.keyring.delete_password")
-
-        index = self._make_index(tmp_path)
-        result = index.get_session("bandcamp")
-
-        assert result == {"cookies": [{"name": "js_logged_in", "value": "1"}]}
-        # Item found in DPC immediately — no need to consult the Login Keychain.
-        legacy_get.assert_not_called()
         index.close()

@@ -22,25 +22,10 @@ import keyring.errors
 if sys.platform == "darwin":
     try:
         from . import macos_keychain as _mac_kc
-        from .macos_keychain import KeyringEntitlementError as _KeyringEntitlementError
     except Exception:
         _mac_kc = None  # type: ignore[assignment]
-
-        class _KeyringEntitlementError(Exception):  # type: ignore[no-redef]
-            """Unreachable sentinel — raised only when macos_keychain is importable."""
-
 else:
     _mac_kc = None  # type: ignore[assignment]
-
-    class _KeyringEntitlementError(Exception):  # type: ignore[no-redef]
-        """Unreachable sentinel — macOS only."""
-
-
-# Flipped to True the first time KeyringEntitlementError is raised so that
-# subsequent calls skip the Data Protection Keychain and go straight to
-# keyring (old Login Keychain).  This covers unsigned dev builds where the
-# kamp binary lacks the keychain-access-groups entitlement.
-_mac_kc_entitlement_missing: bool = False
 import mutagen.flac
 import mutagen.id3 as id3
 import mutagen.mp4
@@ -462,42 +447,26 @@ class LibraryIndex:
     def get_session(self, service: str) -> dict[str, Any] | None:
         """Return the stored session data for *service*, or None if absent.
 
-        On macOS, reads from the Data Protection Keychain first (no per-app
-        access dialogs, stable across binary updates).  If not found there,
-        falls back to the old Login Keychain (``keyring``) for a one-time
-        migration: the item is moved to the Data Protection Keychain and the
-        legacy entry is deleted so subsequent reads are dialog-free.
-
+        On macOS, reads from the Login Keychain via the SecItemUpdate-based
+        wrapper (which preserves ACL entries so "Always Allow" is respected).
         On other platforms, reads from the ``keyring`` backend with exponential
         backoff on transient lock errors.  Falls through to the DB column when
         no keychain is available.
         """
-        global _mac_kc_entitlement_missing
         logger.debug("get_session: reading keychain for service=%s", service)
 
-        # --- macOS: Data Protection Keychain (primary) -----------------------
-        if _mac_kc is not None and not _mac_kc_entitlement_missing:
+        # --- macOS: Login Keychain via SecItemUpdate-based wrapper -----------
+        if _mac_kc is not None:
             _MAX_RETRIES = 3
             for attempt in range(_MAX_RETRIES):
                 try:
                     raw = _mac_kc.get_password("kamp", service)
                     if raw is not None:
                         logger.debug(
-                            "get_session: data-protection keychain hit for service=%s",
-                            service,
+                            "get_session: keychain hit for service=%s", service
                         )
                         return json.loads(raw)  # type: ignore[no-any-return]
-                    break  # absent — check legacy keychain for migration
-                except _KeyringEntitlementError:
-                    # Unsigned dev build — fall back to Login Keychain for
-                    # this and all future calls.
-                    _mac_kc_entitlement_missing = True
-                    logger.info(
-                        "get_session: data-protection keychain unavailable"
-                        " (missing entitlement); using Login Keychain for service=%s",
-                        service,
-                    )
-                    break
+                    break  # absent — fall through to DB
                 except keyring.errors.KeyringLocked as exc:
                     delay = 0.5 * (2**attempt)
                     logger.debug(
@@ -512,8 +481,7 @@ class LibraryIndex:
                     _time.sleep(delay)
                 except keyring.errors.KeyringError as exc:
                     logger.warning(
-                        "get_session: data-protection keychain read failed"
-                        " for service=%s (%s: %s)",
+                        "get_session: keychain read failed for service=%s (%s: %s)",
                         service,
                         type(exc).__name__,
                         exc,
@@ -527,62 +495,18 @@ class LibraryIndex:
                     service,
                 )
 
-            if not _mac_kc_entitlement_missing:
-                # One-time migration from old Login Keychain (keyring) to Data
-                # Protection Keychain.  Best-effort: a failure here is not fatal.
-                legacy_raw: str | None = None
-                try:
-                    legacy_raw = keyring.get_password("kamp", service)
-                except keyring.errors.KeyringError as exc:
-                    logger.debug(
-                        "get_session: legacy keychain check failed for service=%s"
-                        " (%s: %s); falling through to DB",
-                        service,
-                        type(exc).__name__,
-                        exc,
-                    )
-                if legacy_raw is not None:
-                    logger.info(
-                        "get_session: migrating service=%s from Login Keychain"
-                        " to Data Protection Keychain",
-                        service,
-                    )
-                    try:
-                        _mac_kc.set_password("kamp", service, legacy_raw)
-                        try:
-                            keyring.delete_password("kamp", service)
-                        except keyring.errors.KeyringError:
-                            pass  # old item stays; harmless
-                    except _KeyringEntitlementError:
-                        _mac_kc_entitlement_missing = True  # noqa: PLW0603
-                        logger.debug(
-                            "get_session: DPC migration write failed (missing"
-                            " entitlement); dev build will use Login Keychain"
-                        )
-                    except keyring.errors.KeyringError as exc:
-                        logger.warning(
-                            "get_session: DPC migration write failed for service=%s"
-                            " (%s: %s); credential still in Login Keychain",
-                            service,
-                            type(exc).__name__,
-                            exc,
-                        )
-                    return json.loads(legacy_raw)  # type: ignore[no-any-return]
+            row = self._conn.execute(
+                "SELECT session_json FROM sessions WHERE service = ?", (service,)
+            ).fetchone()
+            if row is None or row["session_json"] is None:
+                logger.debug(
+                    "get_session: no entry in keychain or DB for service=%s", service
+                )
+                return None
+            logger.debug("get_session: DB fallback hit for service=%s", service)
+            return dict(json.loads(row["session_json"]))  # type: ignore[no-any-return]
 
-                # Fall through to DB if DPC is confirmed available but item absent.
-                row = self._conn.execute(
-                    "SELECT session_json FROM sessions WHERE service = ?", (service,)
-                ).fetchone()
-                if row is None or row["session_json"] is None:
-                    logger.debug(
-                        "get_session: no entry in keychain or DB for service=%s",
-                        service,
-                    )
-                    return None
-                logger.debug("get_session: DB fallback hit for service=%s", service)
-                return dict(json.loads(row["session_json"]))  # type: ignore[no-any-return]
-
-        # --- keyring path (non-macOS, or DPC unavailable / missing entitlement)
+        # --- keyring path (non-macOS)
         _MAX_RETRIES = 3
         for attempt in range(_MAX_RETRIES):
             try:
@@ -639,53 +563,39 @@ class LibraryIndex:
     def set_session(self, service: str, data: dict[str, Any]) -> None:
         """Persist session data for *service*, replacing any existing entry.
 
-        On macOS (signed build), writes to the Data Protection Keychain using
-        SecItemUpdate so that any user-approved ACL entries are preserved (no
-        delete+recreate).  Falls back to the Login Keychain (keyring) when the
-        entitlement is missing (unsigned dev build), and to the DB column when
-        no keychain is available.
+        On macOS, writes to the Login Keychain using SecItemUpdate so that any
+        user-approved ACL entries are preserved (no delete+recreate).  Falls
+        back to the DB column when the keychain write fails.  On other
+        platforms, writes via ``keyring``.
         """
-        global _mac_kc_entitlement_missing
         payload = json.dumps(data)
         session_json: str | None = payload
 
-        if _mac_kc is not None and not _mac_kc_entitlement_missing:
+        if _mac_kc is not None:
             try:
                 _mac_kc.set_password("kamp", service, payload)
-                # Verify the write persisted.
                 verified = _mac_kc.get_password("kamp", service)
                 if verified == payload:
                     session_json = None  # stored in keychain; keep DB row metadata-only
                     logger.debug(
-                        "set_session: data-protection keychain write verified"
-                        " for service=%s",
-                        service,
+                        "set_session: keychain write verified for service=%s", service
                     )
                 else:
                     logger.warning(
-                        "set_session: data-protection keychain write for service=%s"
-                        " did not verify (read-back returned %s); falling back to DB",
+                        "set_session: keychain write for service=%s did not verify"
+                        " (read-back returned %s); falling back to DB",
                         service,
                         "wrong value" if verified is not None else "None",
                     )
-            except _KeyringEntitlementError:
-                _mac_kc_entitlement_missing = True
-                logger.info(
-                    "set_session: data-protection keychain unavailable"
-                    " (missing entitlement); using Login Keychain for service=%s",
-                    service,
-                )
-                # Fall through to keyring below.
             except keyring.errors.KeyringError as exc:
                 logger.warning(
-                    "set_session: data-protection keychain write failed for"
-                    " service=%s (%s: %s); credential stored in DB fallback",
+                    "set_session: keychain write failed for service=%s (%s: %s);"
+                    " credential stored in DB fallback",
                     service,
                     type(exc).__name__,
                     exc,
                 )
-
-        if _mac_kc is None or _mac_kc_entitlement_missing:
+        else:
             try:
                 keyring.set_password("kamp", service, payload)
                 verified = keyring.get_password("kamp", service)
@@ -726,28 +636,22 @@ class LibraryIndex:
 
     def clear_session(self, service: str) -> None:
         """Remove the session entry for *service* from keychain and DB."""
-        global _mac_kc_entitlement_missing
-        if _mac_kc is not None and not _mac_kc_entitlement_missing:
+        if _mac_kc is not None:
             try:
                 _mac_kc.delete_password("kamp", service)
-            except _KeyringEntitlementError:
-                _mac_kc_entitlement_missing = True
             except keyring.errors.KeyringError as exc:
                 logger.warning(
-                    "clear_session: data-protection keychain delete failed"
-                    " for service=%s (%s: %s)",
+                    "clear_session: keychain delete failed for service=%s (%s: %s)",
                     service,
                     type(exc).__name__,
                     exc,
                 )
-        # Also purge any item in the Login Keychain (handles migration leftovers
-        # and is the primary path when the entitlement is missing).
-        try:
-            keyring.delete_password("kamp", service)
-        except (keyring.errors.NoKeyringError, keyring.errors.PasswordDeleteError):
-            pass
-        except keyring.errors.KeyringError as exc:
-            if _mac_kc is None or _mac_kc_entitlement_missing:
+        else:
+            try:
+                keyring.delete_password("kamp", service)
+            except (keyring.errors.NoKeyringError, keyring.errors.PasswordDeleteError):
+                pass
+            except keyring.errors.KeyringError as exc:
                 logger.warning(
                     "clear_session: keychain delete failed for service=%s (%s: %s)",
                     service,

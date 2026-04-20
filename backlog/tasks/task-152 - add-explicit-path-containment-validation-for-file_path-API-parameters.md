@@ -4,11 +4,12 @@ title: add explicit path containment validation for file_path API parameters
 status: To Do
 assignee: []
 created_date: '2026-04-18 18:03'
+updated_date: '2026-04-19 23:52'
 labels:
   - security
   - chore
   - 'estimate: side'
-milestone: m-15
+milestone: m-30
 dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0 (FINDING-05)

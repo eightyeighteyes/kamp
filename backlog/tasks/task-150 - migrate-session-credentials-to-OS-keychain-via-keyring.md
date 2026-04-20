@@ -4,11 +4,12 @@ title: migrate session credentials to OS keychain via keyring
 status: To Do
 assignee: []
 created_date: '2026-04-18 18:02'
+updated_date: '2026-04-19 23:52'
 labels:
   - security
   - feature
   - 'estimate: lp'
-milestone: m-15
+milestone: m-30
 dependencies: []
 references:
   - doc-1 - Database Security Audit — v1.11.0 (FINDING-03)

@@ -112,6 +112,25 @@ class TestSetPassword:
 
         add.assert_called_once()
 
+    def test_add_does_not_include_kSecAttrAccessible(
+        self, mocker: MockerFixture
+    ) -> None:
+        """kSecAttrAccessible is Data Protection Keychain-only; passing it to
+        a Login Keychain SecItemAdd produces errSecParam (-50)."""
+        mocker.patch.object(
+            macos_keychain, "_SecItemUpdate", return_value=_ERR_SEC_ITEM_NOT_FOUND
+        )
+        add = mocker.patch.object(macos_keychain, "_SecItemAdd", return_value=0)
+        make_dict = mocker.patch.object(
+            macos_keychain, "_make_dict", wraps=macos_keychain._make_dict
+        )
+
+        macos_keychain.set_password("svc", "user", "pass")
+
+        add.assert_called_once()
+        all_kwargs = {k for call in make_dict.call_args_list for k in call.kwargs}
+        assert "kSecAttrAccessible" not in all_kwargs
+
     def test_raises_on_add_failure(self, mocker: MockerFixture) -> None:
         mocker.patch.object(
             macos_keychain, "_SecItemUpdate", return_value=_ERR_SEC_ITEM_NOT_FOUND

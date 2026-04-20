@@ -187,12 +187,13 @@ def set_password(service: str, username: str, password: str) -> None:
     status = _SecItemUpdate(find_q, update_attrs)
 
     if status == _ERR_SEC_ITEM_NOT_FOUND:
+        # kSecAttrAccessible is only valid for the Data Protection Keychain;
+        # omit it here so the Login Keychain uses its default ACL.
         add_q = _make_dict(
             kSecClass="kSecClassGenericPassword",
             kSecAttrService=service,
             kSecAttrAccount=username,
             kSecValueData=_cf_str(password),
-            kSecAttrAccessible="kSecAttrAccessibleWhenUnlocked",
         )
         status = _SecItemAdd(add_q, None)
 

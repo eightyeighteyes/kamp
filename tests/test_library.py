@@ -2194,6 +2194,27 @@ class TestSessionManagementKeyringErrors:
         sleep_mock.assert_not_called()
         index.close()
 
+    def test_set_session_falls_back_to_db_when_readback_fails(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """When keychain write appears to succeed but read-back returns None, fall back to DB."""
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library.keyring.delete_password")
+
+        index = self._make_index(tmp_path)
+        data = {"cookies": [{"name": "js_logged_in", "value": "1"}]}
+        index.set_session("bandcamp", data)
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is not None
+        assert (
+            row["session_json"] is not None
+        ), "should fall back to DB when read-back returns None"
+        index.close()
+
     def test_set_session_falls_back_to_db_on_keyring_error(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:

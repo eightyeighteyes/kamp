@@ -449,7 +449,11 @@ class LibraryIndex:
             try:
                 raw = keyring.get_password("kamp", service)
                 if raw is not None:
+                    logger.debug("get_session: keychain hit for service=%s", service)
                     return json.loads(raw)  # type: ignore[no-any-return]
+                logger.debug(
+                    "get_session: keychain returned no entry for service=%s", service
+                )
                 break  # key not present — no point retrying
             except keyring.errors.NoKeyringError:
                 # No keyring backend — fall through to DB
@@ -484,7 +488,11 @@ class LibraryIndex:
             "SELECT session_json FROM sessions WHERE service = ?", (service,)
         ).fetchone()
         if row is None or row["session_json"] is None:
+            logger.debug(
+                "get_session: no entry in keychain or DB for service=%s", service
+            )
             return None
+        logger.debug("get_session: DB fallback hit for service=%s", service)
         return dict(json.loads(row["session_json"]))  # type: ignore[no-any-return]
 
     def set_session(self, service: str, data: dict[str, Any]) -> None:
@@ -498,7 +506,21 @@ class LibraryIndex:
         session_json: str | None = payload
         try:
             keyring.set_password("kamp", service, payload)
-            session_json = None  # stored in keychain; keep DB row metadata-only
+            # Verify the write actually persisted — keyring.set_password can return
+            # without raising yet still fail silently on some backends/OS versions.
+            verified = keyring.get_password("kamp", service)
+            if verified == payload:
+                session_json = None  # stored in keychain; keep DB row metadata-only
+                logger.debug(
+                    "set_session: keychain write verified for service=%s", service
+                )
+            else:
+                logger.warning(
+                    "set_session: keychain write for service=%s did not verify"
+                    " (read-back returned %s); falling back to DB",
+                    service,
+                    "wrong value" if verified is not None else "None",
+                )
         except keyring.errors.NoKeyringError:
             pass
         except keyring.errors.KeyringError as exc:

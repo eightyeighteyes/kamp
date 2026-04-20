@@ -104,6 +104,12 @@ class DaemonCore:
         self._syncer.resume()
         self._state = "running"
 
+    def reload(self, config: Config) -> None:
+        """Apply updated config to running components without restarting the daemon."""
+        self._config = config
+        self._watcher.reload(config)
+        self._syncer.reload(config)
+
     def shutdown(self) -> None:
         """Stop all components and unblock wait()."""
         _logger.info("Shutting down…")

@@ -249,6 +249,27 @@ class TestSignalHandlers:
             mock_resume.assert_called_once()
 
 
+class TestReload:
+    def test_reload_delegates_to_watcher_and_syncer(
+        self,
+        core: DaemonCore,
+        mock_watcher: MagicMock,
+        mock_syncer: MagicMock,
+        config: Config,
+    ) -> None:
+        new_config = MagicMock(spec=Config)
+        core.reload(new_config)
+        mock_watcher.return_value.reload.assert_called_once_with(new_config)
+        mock_syncer.return_value.reload.assert_called_once_with(new_config)
+
+    def test_reload_updates_stored_config(
+        self, core: DaemonCore, config: Config
+    ) -> None:
+        new_config = MagicMock(spec=Config)
+        core.reload(new_config)
+        assert core._config is new_config
+
+
 class TestWait:
     def test_returns_after_shutdown(self, core: DaemonCore, mock_pid: Path) -> None:
         with patch.object(core, "_install_signal_handlers"):

@@ -305,7 +305,7 @@ def _ensure_session(bc_config: BandcampConfig, index: "LibraryIndex") -> dict[st
         return data
 
     if data is not None:
-        logger.info("Bandcamp session expired — login required.")
+        logger.info("Bandcamp session expired — clearing session and prompting login.")
         index.clear_session("bandcamp")
     else:
         # get_session returns None for two distinct reasons: credentials are
@@ -552,7 +552,11 @@ def _paginate(
         )
 
         if resp.status_code in (401, 403, 302):
-            # Session expired mid-sync — clear DB row so the next run re-prompts login.
+            # Session expired mid-sync — clear keychain+DB so the next run re-prompts login.
+            logger.info(
+                "Bandcamp session rejected by API (HTTP %d) — clearing session.",
+                resp.status_code,
+            )
             index.clear_session("bandcamp")
             raise BandcampAPIError(
                 f"Bandcamp session expired (HTTP {resp.status_code}) — "

@@ -741,6 +741,9 @@ def _cmd_daemon(
         # Raises KeyError / ValueError on invalid key or value — server
         # catches these and returns HTTP 422 to the client.
         _config_set(index, key, value)
+        # Propagate the change to the running pipeline so settings like
+        # bandcamp.poll_interval_minutes take effect without a restart.
+        core.reload(Config.load(index))
 
     def _on_lastfm_connect(username: str, password: str) -> None:
         session_key = _lastfm_authenticate(username, password)

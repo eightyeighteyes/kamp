@@ -308,7 +308,10 @@ def _ensure_session(bc_config: BandcampConfig, index: "LibraryIndex") -> dict[st
         logger.info("Bandcamp session expired — login required.")
         index.clear_session("bandcamp")
     else:
-        logger.info("No Bandcamp session found — login required.")
+        # get_session returns None for two distinct reasons: credentials are
+        # genuinely absent, OR the keychain was unreachable (already logged as
+        # WARNING by get_session). Either way, prompt for login.
+        logger.info("No Bandcamp session available — login required.")
 
     raise NeedsLoginError(
         "No valid Bandcamp session. "

@@ -2101,6 +2101,141 @@ class TestSessionManagementKeyring:
 
 
 # ---------------------------------------------------------------------------
+# Session management — transient keychain errors (retry / backoff)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionManagementKeyringErrors:
+    """Tests retry logic and error handling when the keychain is transiently locked."""
+
+    def _make_index(self, tmp_path: Path) -> "LibraryIndex":
+        return LibraryIndex(tmp_path / "library.db")
+
+    def test_get_session_retries_on_keyring_locked_then_succeeds(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Succeeds on the 2nd attempt when the keychain is locked once."""
+        data = {"cookies": [{"name": "js_logged_in", "value": "1"}]}
+        locked = keyring.errors.KeyringLocked("locked")
+        call_count = 0
+
+        def _get(app: str, service: str) -> str | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise locked
+            return __import__("json").dumps(data)
+
+        mocker.patch("kamp_core.library.keyring.get_password", side_effect=_get)
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.delete_password")
+        sleep_mock = mocker.patch("kamp_core.library._time.sleep")
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("bandcamp")
+
+        assert result == data
+        assert call_count == 2
+        sleep_mock.assert_called_once_with(0.5)
+        index.close()
+
+    def test_get_session_returns_none_after_all_retries_exhausted(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Returns None (not an exception) after 3 consecutive KeyringLocked failures."""
+        mocker.patch(
+            "kamp_core.library.keyring.get_password",
+            side_effect=keyring.errors.KeyringLocked("locked"),
+        )
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.delete_password")
+        mocker.patch("kamp_core.library._time.sleep")
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("bandcamp")
+
+        assert result is None
+        index.close()
+
+    def test_get_session_does_not_sleep_on_no_keyring_error(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """NoKeyringError falls through to DB without sleeping."""
+        mocker.patch(
+            "kamp_core.library.keyring.get_password",
+            side_effect=keyring.errors.NoKeyringError(),
+        )
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.delete_password")
+        sleep_mock = mocker.patch("kamp_core.library._time.sleep")
+
+        index = self._make_index(tmp_path)
+        index.get_session("bandcamp")
+
+        sleep_mock.assert_not_called()
+        index.close()
+
+    def test_get_session_does_not_sleep_on_generic_keyring_error(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Non-locked KeyringError is logged and returns None without retrying."""
+        mocker.patch(
+            "kamp_core.library.keyring.get_password",
+            side_effect=keyring.errors.KeyringError("unexpected"),
+        )
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.delete_password")
+        sleep_mock = mocker.patch("kamp_core.library._time.sleep")
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("bandcamp")
+
+        assert result is None
+        sleep_mock.assert_not_called()
+        index.close()
+
+    def test_set_session_falls_back_to_db_on_keyring_error(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """When keychain write fails, the session is stored in the DB."""
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.KeyringError("write failed"),
+        )
+        mocker.patch(
+            "kamp_core.library.keyring.get_password",
+            side_effect=keyring.errors.KeyringError("read failed"),
+        )
+        mocker.patch("kamp_core.library.keyring.delete_password")
+
+        index = self._make_index(tmp_path)
+        data = {"cookies": [{"name": "js_logged_in", "value": "1"}]}
+        index.set_session("bandcamp", data)
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is not None
+        assert row["session_json"] is not None
+        index.close()
+
+    def test_clear_session_does_not_raise_on_keyring_error(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """A generic KeyringError during delete is caught and does not propagate."""
+        mocker.patch(
+            "kamp_core.library.keyring.delete_password",
+            side_effect=keyring.errors.KeyringError("delete failed"),
+        )
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library.keyring.set_password")
+
+        index = self._make_index(tmp_path)
+        index.clear_session("bandcamp")  # must not raise
+        index.close()
+
+
+# ---------------------------------------------------------------------------
 # Migration v11 → v12: credentials moved from DB to keychain
 # ---------------------------------------------------------------------------
 

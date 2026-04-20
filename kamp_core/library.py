@@ -439,14 +439,47 @@ class LibraryIndex:
         """Return the stored session data for *service*, or None if absent.
 
         Reads from the OS keychain when available; falls back to the DB column
-        on platforms without a keyring backend.
+        on platforms without a keyring backend.  Retries up to 3 times with
+        exponential backoff when the keychain is transiently locked (e.g. brief
+        race at wake/login before the login-keychain unlocks).
         """
-        try:
-            raw = keyring.get_password("kamp", service)
-            if raw is not None:
-                return json.loads(raw)  # type: ignore[no-any-return]
-        except keyring.errors.NoKeyringError:
-            pass
+        logger.debug("get_session: reading keychain for service=%s", service)
+        _MAX_RETRIES = 3
+        for attempt in range(_MAX_RETRIES):
+            try:
+                raw = keyring.get_password("kamp", service)
+                if raw is not None:
+                    return json.loads(raw)  # type: ignore[no-any-return]
+                break  # key not present — no point retrying
+            except keyring.errors.NoKeyringError:
+                # No keyring backend — fall through to DB
+                break
+            except keyring.errors.KeyringLocked as exc:
+                delay = 0.5 * (2**attempt)
+                logger.debug(
+                    "get_session: keychain locked for service=%s (attempt %d/%d, retry in %.1fs): %s",
+                    service,
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    delay,
+                    exc,
+                )
+                _time.sleep(delay)
+            except keyring.errors.KeyringError as exc:
+                logger.warning(
+                    "get_session: keychain read failed for service=%s (%s: %s)",
+                    service,
+                    type(exc).__name__,
+                    exc,
+                )
+                break
+        else:
+            logger.warning(
+                "get_session: keychain still locked after %d retries for service=%s;"
+                " credentials may appear missing until the keychain unlocks",
+                _MAX_RETRIES,
+                service,
+            )
         row = self._conn.execute(
             "SELECT session_json FROM sessions WHERE service = ?", (service,)
         ).fetchone()
@@ -468,6 +501,14 @@ class LibraryIndex:
             session_json = None  # stored in keychain; keep DB row metadata-only
         except keyring.errors.NoKeyringError:
             pass
+        except keyring.errors.KeyringError as exc:
+            logger.warning(
+                "set_session: keychain write failed for service=%s (%s: %s);"
+                " credential stored in DB fallback",
+                service,
+                type(exc).__name__,
+                exc,
+            )
         self._conn.execute(
             """
             INSERT INTO sessions (service, session_json, updated_at)
@@ -486,6 +527,13 @@ class LibraryIndex:
             keyring.delete_password("kamp", service)
         except (keyring.errors.NoKeyringError, keyring.errors.PasswordDeleteError):
             pass
+        except keyring.errors.KeyringError as exc:
+            logger.warning(
+                "clear_session: keychain delete failed for service=%s (%s: %s)",
+                service,
+                type(exc).__name__,
+                exc,
+            )
         self._conn.execute("DELETE FROM sessions WHERE service = ?", (service,))
         self._conn.commit()
         # Truncate the WAL so deleted credential data (cookies, session keys) is

@@ -15,8 +15,6 @@ import { readManifest } from './communityManifest'
 // Auth token
 // ---------------------------------------------------------------------------
 
-let _kampToken: string | null = null
-
 function kampTokenFilePath(): string {
   if (process.platform === 'win32') {
     return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'kamp', '.token')
@@ -24,6 +22,8 @@ function kampTokenFilePath(): string {
   return join(homedir(), '.local', 'share', 'kamp', '.token')
 }
 
+// Re-read on every call so a daemon restart's fresh token is always used,
+// matching the same strategy used by the preload and renderer.
 function readKampToken(): string | null {
   try {
     return readFileSync(kampTokenFilePath(), 'utf8').trim()
@@ -32,9 +32,10 @@ function readKampToken(): string | null {
   }
 }
 
-/** Return headers with the auth token when available. */
+/** Return headers with the auth token attached. */
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
-  return _kampToken ? { 'X-Kamp-Token': _kampToken, ...extra } : { ...extra }
+  const token = readKampToken()
+  return token ? { 'X-Kamp-Token': token, ...extra } : { ...extra }
 }
 
 // Set the app name before the app is ready so the macOS menu bar and all
@@ -684,9 +685,6 @@ app.whenReady().then(async () => {
   // Start the kamp server if it isn't already running. The renderer's
   // existing reconnect loop handles the brief gap while the server starts up.
   await startServer()
-  // Token is written by the daemon at startup, before it accepts connections,
-  // so it is guaranteed to exist once isServerRunning() returns true.
-  _kampToken = readKampToken()
 
   // Start the Now Playing helper after the server so it can accept key events
   // immediately. The preload primes it with current player state on WS connect.

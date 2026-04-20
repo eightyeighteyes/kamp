@@ -62,6 +62,8 @@ omit = [
     # subprocesses.  Omit to keep the coverage threshold meaningful.
     "kamp_daemon/ext/sandbox/_macos.py",
     "kamp_daemon/ext/sandbox/_linux.py",
+    # macOS-only module; raises ImportError on Linux so tests are skipped there.
+    "kamp_core/macos_keychain.py",
 ]
 
 [tool.coverage.report]

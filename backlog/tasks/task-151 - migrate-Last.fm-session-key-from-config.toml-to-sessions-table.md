@@ -1,10 +1,10 @@
 ---
 id: TASK-151
 title: migrate Last.fm session key from config.toml to sessions table
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-18 18:03'
-updated_date: '2026-04-19 23:52'
+updated_date: '2026-04-20 16:35'
 labels:
   - security
   - chore

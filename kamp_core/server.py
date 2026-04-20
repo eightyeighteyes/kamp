@@ -239,6 +239,19 @@ _ALLOWED_PROXY_HOSTS: frozenset[str] = frozenset(
 )
 
 
+def _validate_library_path(file_path: str, library_path: Path | None) -> Path:
+    """Resolve *file_path* and verify it lies within *library_path*.
+
+    Raises HTTP 400 when a library_path is configured and the resolved path
+    falls outside it — preventing path-traversal attacks from reaching any
+    future code that uses the caller-supplied path directly.
+    """
+    p = Path(file_path).resolve()
+    if library_path is not None and not p.is_relative_to(library_path.resolve()):
+        raise HTTPException(status_code=400, detail="Path outside library directory")
+    return p
+
+
 def _validate_proxy_url(url: str) -> str:
     parsed = urlparse(url)
     host = parsed.hostname or ""
@@ -416,7 +429,8 @@ def create_app(
         # file_path is used for missing-album tracks where (album_artist, album)
         # is not a unique key; when present it takes precedence.
         if file_path:
-            track = index.get_track_by_path(Path(file_path))
+            p = _validate_library_path(file_path, _state["library_path"])
+            track = index.get_track_by_path(p)
             return [TrackOut.from_track(track)] if track else []
         return [
             TrackOut.from_track(t) for t in index.tracks_for_album(album_artist, album)
@@ -424,13 +438,14 @@ def create_app(
 
     @app.post("/api/v1/tracks/favorite")
     def set_track_favorite(req: FavoriteRequest) -> dict[str, Any]:
-        track = index.get_track_by_path(Path(req.file_path))
+        p = _validate_library_path(req.file_path, _state["library_path"])
+        track = index.get_track_by_path(p)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
-        index.set_favorite(Path(req.file_path), req.favorite)
+        index.set_favorite(p, req.favorite)
         # Keep the in-memory queue in sync so the next player-state snapshot
         # reflects the new favorite value without requiring a queue reload.
-        queue.update_favorite(Path(req.file_path), req.favorite)
+        queue.update_favorite(p, req.favorite)
         return {"ok": True}
 
     @app.get("/api/v1/album-art")
@@ -439,7 +454,8 @@ def create_app(
     ) -> Response:
         # file_path overrides (album_artist, album) for missing-album tracks.
         if file_path:
-            track = index.get_track_by_path(Path(file_path))
+            p = _validate_library_path(file_path, _state["library_path"])
+            track = index.get_track_by_path(p)
             tracks = [track] if track else []
         else:
             tracks = index.tracks_for_album(album_artist, album)
@@ -744,7 +760,8 @@ def create_app(
     @app.post("/api/v1/player/play")
     def play(req: PlayRequest) -> dict[str, Any]:
         if req.file_path:
-            track = index.get_track_by_path(Path(req.file_path))
+            p = _validate_library_path(req.file_path, _state["library_path"])
+            track = index.get_track_by_path(p)
             tracks = [track] if track else []
         else:
             tracks = index.tracks_for_album(req.album_artist, req.album)
@@ -821,7 +838,8 @@ def create_app(
 
     @app.post("/api/v1/player/queue/add")
     def queue_add(req: AddToQueueRequest) -> dict[str, Any]:
-        track = index.get_track_by_path(Path(req.file_path))
+        p = _validate_library_path(req.file_path, _state["library_path"])
+        track = index.get_track_by_path(p)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.add_to_queue(track)
@@ -829,7 +847,8 @@ def create_app(
 
     @app.post("/api/v1/player/queue/play-next")
     def queue_play_next(req: AddToQueueRequest) -> dict[str, Any]:
-        track = index.get_track_by_path(Path(req.file_path))
+        p = _validate_library_path(req.file_path, _state["library_path"])
+        track = index.get_track_by_path(p)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.play_next(track)
@@ -837,7 +856,8 @@ def create_app(
 
     @app.post("/api/v1/player/queue/insert")
     def queue_insert(req: InsertQueueRequest) -> dict[str, Any]:
-        track = index.get_track_by_path(Path(req.file_path))
+        p = _validate_library_path(req.file_path, _state["library_path"])
+        track = index.get_track_by_path(p)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.insert_at(track, req.index)
@@ -846,7 +866,8 @@ def create_app(
     @app.post("/api/v1/player/queue/add-album")
     def queue_add_album(req: AlbumQueueRequest) -> dict[str, Any]:
         if req.file_path:
-            track = index.get_track_by_path(Path(req.file_path))
+            p = _validate_library_path(req.file_path, _state["library_path"])
+            track = index.get_track_by_path(p)
             tracks = [track] if track else []
         else:
             tracks = index.tracks_for_album(req.album_artist, req.album)
@@ -858,7 +879,8 @@ def create_app(
     @app.post("/api/v1/player/queue/play-album-next")
     def queue_play_album_next(req: AlbumQueueRequest) -> dict[str, Any]:
         if req.file_path:
-            track = index.get_track_by_path(Path(req.file_path))
+            p = _validate_library_path(req.file_path, _state["library_path"])
+            track = index.get_track_by_path(p)
             tracks = [track] if track else []
         else:
             tracks = index.tracks_for_album(req.album_artist, req.album)

@@ -406,6 +406,143 @@ class TestMissingAlbumEndpoints:
         mock_index.tracks_for_album.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# Path containment validation
+# ---------------------------------------------------------------------------
+
+
+class TestPathContainmentValidation:
+    """file_path parameters must resolve within the configured library directory."""
+
+    def _client(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        library_path: Path = Path("/music"),
+    ) -> TestClient:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            library_path=library_path,
+        )
+        return TestClient(app)
+
+    def test_tracks_rejects_path_outside_library(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.get("/api/v1/tracks?album_artist=&album=&file_path=/etc/passwd")
+        assert resp.status_code == 400
+        mock_index.get_track_by_path.assert_not_called()
+
+    def test_tracks_rejects_traversal_path(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.get(
+            "/api/v1/tracks?album_artist=&album=&file_path=/music/../etc/passwd"
+        )
+        assert resp.status_code == 400
+
+    def test_tracks_accepts_valid_library_path(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.get_track_by_path.return_value = _track(1)
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.get(
+            "/api/v1/tracks?album_artist=&album=&file_path=/music/artist/01.mp3"
+        )
+        assert resp.status_code == 200
+
+    def test_favorite_rejects_path_outside_library(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.post(
+            "/api/v1/tracks/favorite",
+            json={"file_path": "/etc/passwd", "favorite": True},
+        )
+        assert resp.status_code == 400
+        mock_index.get_track_by_path.assert_not_called()
+
+    def test_album_art_rejects_path_outside_library(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.get("/api/v1/album-art?album_artist=&album=&file_path=/etc/passwd")
+        assert resp.status_code == 400
+        mock_index.get_track_by_path.assert_not_called()
+
+    def test_play_rejects_path_outside_library(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.post(
+            "/api/v1/player/play",
+            json={"file_path": "/etc/passwd", "album_artist": "", "album": ""},
+        )
+        assert resp.status_code == 400
+        mock_index.get_track_by_path.assert_not_called()
+
+    def test_queue_add_rejects_path_outside_library(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.post("/api/v1/player/queue/add", json={"file_path": "/etc/passwd"})
+        assert resp.status_code == 400
+        mock_index.get_track_by_path.assert_not_called()
+
+    def test_queue_play_next_rejects_path_outside_library(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.post(
+            "/api/v1/player/queue/play-next", json={"file_path": "/etc/passwd"}
+        )
+        assert resp.status_code == 400
+
+    def test_queue_insert_rejects_path_outside_library(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.post(
+            "/api/v1/player/queue/insert",
+            json={"file_path": "/etc/passwd", "index": 0},
+        )
+        assert resp.status_code == 400
+
+    def test_queue_add_album_rejects_path_outside_library(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.post(
+            "/api/v1/player/queue/add-album",
+            json={"file_path": "/etc/passwd", "album_artist": "", "album": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_queue_play_album_next_rejects_path_outside_library(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._client(mock_index, mock_engine, mock_queue)
+        resp = c.post(
+            "/api/v1/player/queue/play-album-next",
+            json={"file_path": "/etc/passwd", "album_artist": "", "album": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_no_validation_when_library_path_not_configured(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.get_track_by_path.return_value = _track(1)
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        resp = c.get("/api/v1/tracks?album_artist=&album=&file_path=/music/01.mp3")
+        assert resp.status_code == 200
+
+
 class TestTracksForAlbumEndpoint:
     def test_returns_tracks_for_album(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

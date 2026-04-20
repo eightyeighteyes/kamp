@@ -20,6 +20,7 @@ from kamp_daemon.config import (
 @pytest.fixture()
 def db(tmp_path: Path, mocker: MockerFixture) -> LibraryIndex:
     """Return a fresh LibraryIndex backed by a temp DB, with keyring mocked out."""
+    mocker.patch("kamp_core.library._mac_kc", None)
     err = keyring.errors.NoKeyringError()
     mocker.patch("kamp_core.library.keyring.get_password", side_effect=err)
     mocker.patch("kamp_core.library.keyring.set_password", side_effect=err)

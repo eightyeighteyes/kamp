@@ -1,10 +1,10 @@
 ---
 id: TASK-152
 title: add explicit path containment validation for file_path API parameters
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-18 18:03'
-updated_date: '2026-04-20 16:35'
+updated_date: '2026-04-20 16:47'
 labels:
   - security
   - chore

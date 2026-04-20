@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Response, WebSocket
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -273,6 +273,7 @@ def create_app(
     get_bandcamp_session: Callable[[], dict[str, Any] | None] | None = None,
     on_bandcamp_disconnect: Callable[[], None] | None = None,
     dev_mode: bool = False,
+    auth_token: str | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -341,6 +342,18 @@ def create_app(
     # background reader thread whenever mpv's pause property flips.
     engine.on_play_state_changed = _notify_play_state_changed
 
+    # Auth middleware must be defined before add_middleware(CORSMiddleware) so
+    # CORS ends up as the outermost wrapper (handles OPTIONS preflight first).
+    @app.middleware("http")
+    async def _auth_middleware(request: Request, call_next: Any) -> Any:
+        if auth_token is None or request.method == "OPTIONS":
+            return await call_next(request)
+        # Accept token via header (fetch/XHR) or query param (<img src> URLs).
+        token = request.headers.get("X-Kamp-Token") or request.query_params.get("token")
+        if token != auth_token:
+            return Response(status_code=401)
+        return await call_next(request)
+
     # Restrict to origins kamp actually serves; wildcard would allow any page
     # open in any browser to read session cookies via cross-origin requests.
     _allowed_origins = [
@@ -356,7 +369,8 @@ def create_app(
         CORSMiddleware,
         allow_origins=_allowed_origins,
         allow_methods=["GET", "POST", "DELETE", "PATCH"],
-        allow_headers=["Content-Type"],
+        # X-Kamp-Token must be listed so CORS preflight allows it.
+        allow_headers=["Content-Type", "X-Kamp-Token"],
     )
 
     def _state_snapshot() -> PlayerStateOut:
@@ -980,7 +994,13 @@ def create_app(
     # -----------------------------------------------------------------------
 
     @app.websocket("/api/v1/ws")
-    async def websocket_endpoint(ws: WebSocket) -> None:
+    async def websocket_endpoint(ws: WebSocket, token: str = "") -> None:
+        # Accept token via query param (legacy / non-Electron clients) or the
+        # X-Kamp-Token header injected by Electron's webRequest interceptor.
+        received = token or ws.headers.get("x-kamp-token", "")
+        if auth_token is not None and received != auth_token:
+            await ws.close(code=1008)  # Policy Violation
+            return
         nonlocal _event_loop
         _event_loop = asyncio.get_running_loop()
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()

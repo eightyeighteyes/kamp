@@ -57,10 +57,23 @@ export type ScanResult = {
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
 const WS_BASE = BASE_URL.replace(/^http/, 'ws')
 
+// Re-read on each call so a daemon restart's fresh token is always used.
+function _getToken(): string | null {
+  return window.api?.getApiToken?.() ?? null
+}
+
+function _authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const token = _getToken()
+  return token ? { 'X-Kamp-Token': token, ...extra } : { ...extra }
+}
+
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    headers:
+      body !== undefined
+        ? _authHeaders({ 'Content-Type': 'application/json' })
+        : _authHeaders(),
     body: body !== undefined ? JSON.stringify(body) : undefined
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`)
@@ -68,13 +81,13 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`)
+  const res = await fetch(`${BASE_URL}${path}`, { headers: _authHeaders() })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`)
   return res.json() as Promise<T>
 }
 
 async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, { method: 'DELETE' })
+  const res = await fetch(`${BASE_URL}${path}`, { method: 'DELETE', headers: _authHeaders() })
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`
     try {
@@ -91,7 +104,7 @@ async function del<T>(path: string): Promise<T> {
 async function patch<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: _authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body)
   })
   if (!res.ok) {

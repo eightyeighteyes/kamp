@@ -18,6 +18,7 @@ import logging
 import os
 import platform
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -27,7 +28,14 @@ from pathlib import Path
 
 import musicbrainzngs
 
-from .config import DEFAULT_CONFIG_PATH, Config, _state_dir, config_set, config_show
+from .config import (
+    DEFAULT_CONFIG_PATH,
+    Config,
+    _state_dir,
+    config_set,
+    config_show,
+    token_path,
+)
 from .daemon_core import DaemonCore, _PID_PATH
 
 # Stable Homebrew binary locations (Apple Silicon, then Intel). Checked in order
@@ -794,6 +802,14 @@ def _cmd_daemon(
         "lastfm.username": config.lastfm.username if config.lastfm else None,
     }
 
+    # Generate a fresh shared-secret token on every daemon start.  Electron
+    # re-reads the file on reconnect so there is no persistent state to sync.
+    _tp = token_path()
+    _tp.parent.mkdir(parents=True, exist_ok=True)
+    _auth_token = secrets.token_hex(32)
+    _tp.write_text(_auth_token)
+    os.chmod(_tp, 0o600)
+
     app = create_app(
         index=index,
         engine=engine,
@@ -812,6 +828,7 @@ def _cmd_daemon(
         get_bandcamp_session=lambda: index.get_session("bandcamp"),
         on_bandcamp_disconnect=_on_bandcamp_disconnect,
         dev_mode=bool(os.environ.get("KAMP_DEV")),
+        auth_token=_auth_token,
     )
 
     # Wrap the existing on_track_end callback to also push track.changed events.

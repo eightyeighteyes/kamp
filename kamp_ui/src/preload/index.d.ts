@@ -10,6 +10,7 @@ declare global {
       bandcamp: {
         beginLogin: () => Promise<{ ok: boolean; error?: string }>
       }
+      getApiToken: () => string | null
     }
     KampAPI: KampAPI
   }

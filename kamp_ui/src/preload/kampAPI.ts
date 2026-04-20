@@ -7,10 +7,30 @@
  */
 
 import { ipcRenderer } from 'electron'
+import { readFileSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 import type { KampAPI, PanelManifest, ExtensionInstallResult, PlayerState } from '../shared/kampAPI'
 
 const SERVER_URL = 'http://127.0.0.1:8000'
 const WS_URL = 'ws://127.0.0.1:8000/api/v1/ws'
+
+function _readToken(): string | null {
+  try {
+    const p =
+      process.platform === 'win32'
+        ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'kamp', '.token')
+        : join(homedir(), '.local', 'share', 'kamp', '.token')
+    return readFileSync(p, 'utf8').trim()
+  } catch {
+    return null
+  }
+}
+
+function _authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const token = _readToken()
+  return token ? { 'X-Kamp-Token': token, ...extra } : { ...extra }
+}
 
 const panelRegistry: PanelManifest[] = []
 // Callbacks registered by the renderer via panels.onRegister().
@@ -30,7 +50,7 @@ function ensurePushWs(): void {
   ws.addEventListener('open', () => {
     // Prime the Now Playing helper with current player state on (re)connect so
     // media keys route correctly even before the first track.changed event.
-    fetch(`${SERVER_URL}/api/v1/player/state`)
+    fetch(`${SERVER_URL}/api/v1/player/state`, { headers: _authHeaders() })
       .then((r) => r.json())
       .then((s) => ipcRenderer.send('player:state-changed', s))
       .catch(() => {})
@@ -110,7 +130,7 @@ export function buildKampAPI(): KampAPI {
 
     player: {
       async getState(): Promise<PlayerState> {
-        const res = await fetch(`${SERVER_URL}/api/v1/player/state`)
+        const res = await fetch(`${SERVER_URL}/api/v1/player/state`, { headers: _authHeaders() })
         if (!res.ok) throw new Error(`player.getState failed: ${res.status}`)
         return res.json() as Promise<PlayerState>
       },

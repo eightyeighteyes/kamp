@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, Menu, session, net } from 'electron'
 import { join, resolve } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { homedir } from 'os'
 import { spawn, ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
 import * as http from 'http'
@@ -9,6 +10,33 @@ import icon from '../../resources/icon.png?asset'
 import { theme } from '../shared/theme'
 import { discoverExtensions, installExtension, uninstallExtension } from './extensions'
 import { readManifest } from './communityManifest'
+
+// ---------------------------------------------------------------------------
+// Auth token
+// ---------------------------------------------------------------------------
+
+function kampTokenFilePath(): string {
+  if (process.platform === 'win32') {
+    return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'kamp', '.token')
+  }
+  return join(homedir(), '.local', 'share', 'kamp', '.token')
+}
+
+// Re-read on every call so a daemon restart's fresh token is always used,
+// matching the same strategy used by the preload and renderer.
+function readKampToken(): string | null {
+  try {
+    return readFileSync(kampTokenFilePath(), 'utf8').trim()
+  } catch {
+    return null
+  }
+}
+
+/** Return headers with the auth token attached. */
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const token = readKampToken()
+  return token ? { 'X-Kamp-Token': token, ...extra } : { ...extra }
+}
 
 // Set the app name before the app is ready so the macOS menu bar and all
 // default menu items ("About Kamp", "Quit Kamp") reflect the correct name.
@@ -51,7 +79,9 @@ function sendToHelper(msg: object): void {
 }
 
 function postToPlayer(path: string): void {
-  net.fetch(`http://127.0.0.1:8000${path}`, { method: 'POST' }).catch(() => {})
+  net.fetch(`http://127.0.0.1:8000${path}`, { method: 'POST', headers: authHeaders() }).catch(
+    () => {}
+  )
 }
 
 function startNowPlayingHelper(): void {
@@ -239,7 +269,7 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
       try {
         const res = await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/login-complete', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload)
         })
         if (!res.ok) throw new Error(`login-complete returned ${res.status}`)
@@ -489,7 +519,7 @@ app.whenReady().then(async () => {
           `?album_artist=${encodeURIComponent(track.album_artist)}` +
           `&album=${encodeURIComponent(track.album)}`
         net
-          .fetch(url)
+          .fetch(url, { headers: authHeaders() })
           .then((res) => {
             if (!res.ok) return
             return res.arrayBuffer()
@@ -555,7 +585,9 @@ app.whenReady().then(async () => {
       // in session.defaultSession (cleared after login to avoid plaintext on disk).
       // Fetch them from the daemon endpoint rather than reading from the WS payload
       // so auth cookies are never broadcast to all WS clients.
-      const cookieResp = await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/session-cookies')
+      const cookieResp = await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/session-cookies', {
+        headers: authHeaders()
+      })
       const { cookies } = (await cookieResp.json()) as { cookies: BandcampCookie[] }
       const injectedNames: string[] = []
       for (const c of cookies) {
@@ -609,7 +641,7 @@ app.whenReady().then(async () => {
 
       await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/fetch-result', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ id: req.id, status, body, content_type: contentType })
       })
     }
@@ -653,6 +685,20 @@ app.whenReady().then(async () => {
   // Start the kamp server if it isn't already running. The renderer's
   // existing reconnect loop handles the brief gap while the server starts up.
   await startServer()
+
+  // Inject X-Kamp-Token on every outgoing request to the local API — including
+  // <img src> image loads, which cannot carry custom headers from JS.
+  // This keeps art URLs free of the token so the browser HTTP cache is stable
+  // across daemon restarts (the token changes each time, but the URL doesn't).
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ['http://127.0.0.1:8000/*', 'ws://127.0.0.1:8000/*'] },
+    (details, callback) => {
+      const token = readKampToken()
+      const requestHeaders = { ...details.requestHeaders }
+      if (token) requestHeaders['X-Kamp-Token'] = token
+      callback({ requestHeaders })
+    }
+  )
 
   // Start the Now Playing helper after the server so it can accept key events
   // immediately. The preload primes it with current player state on WS connect.

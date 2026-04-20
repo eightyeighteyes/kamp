@@ -76,6 +76,125 @@ def client(
 
 
 # ---------------------------------------------------------------------------
+# Auth token middleware
+# ---------------------------------------------------------------------------
+
+
+class TestAuthToken:
+    def test_no_auth_token_allows_all_requests(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """When auth_token is not set, all requests pass through."""
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        assert c.get("/api/v1/albums").status_code == 200
+
+    def test_request_without_token_returns_401(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, auth_token="secret"
+        )
+        c = TestClient(app)
+        assert c.get("/api/v1/albums").status_code == 401
+
+    def test_request_with_correct_token_succeeds(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, auth_token="secret"
+        )
+        c = TestClient(app)
+        assert (
+            c.get("/api/v1/albums", headers={"X-Kamp-Token": "secret"}).status_code
+            == 200
+        )
+
+    def test_request_with_token_query_param_succeeds(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Token in query param accepted (needed for <img src> album-art URLs)."""
+        app = create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, auth_token="secret"
+        )
+        c = TestClient(app)
+        assert c.get("/api/v1/albums?token=secret").status_code == 200
+
+    def test_request_with_wrong_token_returns_401(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, auth_token="secret"
+        )
+        c = TestClient(app)
+        assert (
+            c.get("/api/v1/albums", headers={"X-Kamp-Token": "wrong"}).status_code
+            == 401
+        )
+
+    def test_options_bypasses_auth(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """CORS preflight OPTIONS requests are never rejected by auth."""
+        app = create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, auth_token="secret"
+        )
+        c = TestClient(app)
+        # TestClient follows CORS — a plain OPTIONS to a real endpoint should not 401.
+        res = c.options("/api/v1/albums", headers={"Origin": "http://localhost"})
+        assert res.status_code != 401
+
+    def test_websocket_with_correct_token_accepted(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_engine.state = mock_engine.state.__class__()
+        app = create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, auth_token="secret"
+        )
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws?token=secret") as ws:
+            msg = ws.receive_json()
+        assert msg["type"] == "player.state"
+
+    def test_websocket_with_token_header_accepted(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Electron's webRequest interceptor injects the token as a header."""
+        mock_engine.state = mock_engine.state.__class__()
+        app = create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, auth_token="secret"
+        )
+        c = TestClient(app)
+        with c.websocket_connect(
+            "/api/v1/ws", headers={"X-Kamp-Token": "secret"}
+        ) as ws:
+            msg = ws.receive_json()
+        assert msg["type"] == "player.state"
+
+    def test_websocket_without_token_rejected(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, auth_token="secret"
+        )
+        c = TestClient(app)
+        with pytest.raises(Exception):
+            with c.websocket_connect("/api/v1/ws"):
+                pass  # pragma: no cover
+
+    def test_websocket_with_wrong_token_rejected(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, auth_token="secret"
+        )
+        c = TestClient(app)
+        with pytest.raises(Exception):
+            with c.websocket_connect("/api/v1/ws?token=wrong"):
+                pass  # pragma: no cover
+
+
+# ---------------------------------------------------------------------------
 # Library endpoints
 # ---------------------------------------------------------------------------
 

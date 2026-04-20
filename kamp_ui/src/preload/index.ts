@@ -1,6 +1,28 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import { readFileSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 import { buildKampAPI } from './kampAPI'
+
+function _kampTokenFilePath(): string {
+  if (process.platform === 'win32') {
+    return join(
+      process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'),
+      'kamp',
+      '.token'
+    )
+  }
+  return join(homedir(), '.local', 'share', 'kamp', '.token')
+}
+
+function _readKampToken(): string | null {
+  try {
+    return readFileSync(_kampTokenFilePath(), 'utf8').trim()
+  } catch {
+    return null
+  }
+}
 
 // Custom APIs for renderer
 const api = {
@@ -15,7 +37,9 @@ const api = {
     /** Open the Bandcamp login BrowserWindow. Resolves when login succeeds or the window is closed. */
     beginLogin: (): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('bandcamp:begin-login')
-  }
+  },
+  // Re-reads from disk so Electron picks up a fresh token after daemon restart.
+  getApiToken: (): string | null => _readKampToken()
 }
 
 const kampAPI = buildKampAPI()

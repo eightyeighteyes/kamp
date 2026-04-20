@@ -31,6 +31,11 @@ def _state_dir() -> Path:
     return Path("~/.local/share/kamp").expanduser()
 
 
+def token_path() -> Path:
+    """Return the path to the daemon's shared-secret auth token file."""
+    return _state_dir() / ".token"
+
+
 def _default_config_path() -> Path:
     """Return the legacy config.toml path (used only for one-time TOML migration)."""
     if sys.platform == "win32":  # pragma: no cover

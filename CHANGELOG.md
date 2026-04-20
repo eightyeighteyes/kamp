@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.11.1](https://github.com/eightyeighteyes/kamp/compare/v1.11.0...v1.11.1) (2026-04-20)
+
+
+### Bug Fixes
+
+* bandcamp polling interval changes apply immediately (TASK-166) ([#273](https://github.com/eightyeighteyes/kamp/issues/273)) ([9155e07](https://github.com/eightyeighteyes/kamp/commit/9155e07f81f8aac8d1c882bbc2befcf89e99f7f7))
+
 ## [1.11.0](https://github.com/eightyeighteyes/kamp/compare/v1.10.0...v1.11.0) (2026-04-19)
 
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
-from ctypes import byref, c_int32, c_uint32, c_void_p
+from ctypes import byref, c_int32, c_int64, c_uint32, c_void_p
 from ctypes.util import find_library
 
 import keyring.errors
@@ -52,20 +52,16 @@ _CFStringCreateWithCString = _found.CFStringCreateWithCString
 _CFStringCreateWithCString.restype = c_void_p
 _CFStringCreateWithCString.argtypes = [c_void_p, c_void_p, c_uint32]
 
-_CFNumberCreate = _found.CFNumberCreate
-_CFNumberCreate.restype = c_void_p
-_CFNumberCreate.argtypes = [c_void_p, c_uint32, c_void_p]
-
 _CFDataCreate = _found.CFDataCreate
 _CFDataCreate.restype = c_void_p
-_CFDataCreate.argtypes = (c_void_p, c_void_p, c_int32)
+_CFDataCreate.argtypes = (c_void_p, c_void_p, c_int64)
 
 _CFDataGetBytePtr = _found.CFDataGetBytePtr
 _CFDataGetBytePtr.restype = c_void_p
 _CFDataGetBytePtr.argtypes = (c_void_p,)
 
 _CFDataGetLength = _found.CFDataGetLength
-_CFDataGetLength.restype = c_int32
+_CFDataGetLength.restype = c_int64
 _CFDataGetLength.argtypes = (c_void_p,)
 
 # ----- Security.framework functions -----

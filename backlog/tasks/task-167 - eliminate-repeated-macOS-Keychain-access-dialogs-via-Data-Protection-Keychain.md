@@ -1,14 +1,15 @@
 ---
 id: TASK-167
 title: eliminate repeated macOS Keychain access dialogs via Data Protection Keychain
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-20 20:54'
-updated_date: '2026-04-20 21:02'
+updated_date: '2026-04-21 13:34'
 labels: []
 milestone: m-30
 dependencies: []
 priority: high
+ordinal: 7000
 ---
 
 ## Description

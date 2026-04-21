@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import stat
+import sys
 import threading
 import time as _time
 from collections.abc import Callable
@@ -17,6 +18,14 @@ from typing import Any
 
 import keyring
 import keyring.errors
+
+if sys.platform == "darwin":
+    try:
+        from . import macos_keychain as _mac_kc
+    except Exception:
+        _mac_kc = None  # type: ignore[assignment]
+else:
+    _mac_kc = None  # type: ignore[assignment]
 import mutagen.flac
 import mutagen.id3 as id3
 import mutagen.mp4
@@ -438,12 +447,66 @@ class LibraryIndex:
     def get_session(self, service: str) -> dict[str, Any] | None:
         """Return the stored session data for *service*, or None if absent.
 
-        Reads from the OS keychain when available; falls back to the DB column
-        on platforms without a keyring backend.  Retries up to 3 times with
-        exponential backoff when the keychain is transiently locked (e.g. brief
-        race at wake/login before the login-keychain unlocks).
+        On macOS, reads from the Login Keychain via the SecItemUpdate-based
+        wrapper (which preserves ACL entries so "Always Allow" is respected).
+        On other platforms, reads from the ``keyring`` backend with exponential
+        backoff on transient lock errors.  Falls through to the DB column when
+        no keychain is available.
         """
         logger.debug("get_session: reading keychain for service=%s", service)
+
+        # --- macOS: Login Keychain via SecItemUpdate-based wrapper -----------
+        if _mac_kc is not None:
+            _MAX_RETRIES = 3
+            for attempt in range(_MAX_RETRIES):
+                try:
+                    raw = _mac_kc.get_password("kamp", service)
+                    if raw is not None:
+                        logger.debug(
+                            "get_session: keychain hit for service=%s", service
+                        )
+                        return json.loads(raw)  # type: ignore[no-any-return]
+                    break  # absent — fall through to DB
+                except keyring.errors.KeyringLocked as exc:
+                    delay = 0.5 * (2**attempt)
+                    logger.debug(
+                        "get_session: keychain locked for service=%s"
+                        " (attempt %d/%d, retry in %.1fs): %s",
+                        service,
+                        attempt + 1,
+                        _MAX_RETRIES,
+                        delay,
+                        exc,
+                    )
+                    _time.sleep(delay)
+                except keyring.errors.KeyringError as exc:
+                    logger.warning(
+                        "get_session: keychain read failed for service=%s (%s: %s)",
+                        service,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    break
+            else:
+                logger.warning(
+                    "get_session: keychain still locked after %d retries for service=%s;"
+                    " credentials may appear missing until the keychain unlocks",
+                    _MAX_RETRIES,
+                    service,
+                )
+
+            row = self._conn.execute(
+                "SELECT session_json FROM sessions WHERE service = ?", (service,)
+            ).fetchone()
+            if row is None or row["session_json"] is None:
+                logger.debug(
+                    "get_session: no entry in keychain or DB for service=%s", service
+                )
+                return None
+            logger.debug("get_session: DB fallback hit for service=%s", service)
+            return dict(json.loads(row["session_json"]))  # type: ignore[no-any-return]
+
+        # --- keyring path (non-macOS)
         _MAX_RETRIES = 3
         for attempt in range(_MAX_RETRIES):
             try:
@@ -456,12 +519,12 @@ class LibraryIndex:
                 )
                 break  # key not present — no point retrying
             except keyring.errors.NoKeyringError:
-                # No keyring backend — fall through to DB
                 break
             except keyring.errors.KeyringLocked as exc:
                 delay = 0.5 * (2**attempt)
                 logger.debug(
-                    "get_session: keychain locked for service=%s (attempt %d/%d, retry in %.1fs): %s",
+                    "get_session: keychain locked for service=%s"
+                    " (attempt %d/%d, retry in %.1fs): %s",
                     service,
                     attempt + 1,
                     _MAX_RETRIES,
@@ -484,6 +547,8 @@ class LibraryIndex:
                 _MAX_RETRIES,
                 service,
             )
+
+        # --- DB fallback -------------------------------------
         row = self._conn.execute(
             "SELECT session_json FROM sessions WHERE service = ?", (service,)
         ).fetchone()
@@ -498,39 +563,65 @@ class LibraryIndex:
     def set_session(self, service: str, data: dict[str, Any]) -> None:
         """Persist session data for *service*, replacing any existing entry.
 
-        Writes to the OS keychain when available, leaving session_json NULL in
-        the DB so the credential is absent from backups.  Falls back to the DB
-        column on platforms without a keyring backend.
+        On macOS, writes to the Login Keychain using SecItemUpdate so that any
+        user-approved ACL entries are preserved (no delete+recreate).  Falls
+        back to the DB column when the keychain write fails.  On other
+        platforms, writes via ``keyring``.
         """
         payload = json.dumps(data)
         session_json: str | None = payload
-        try:
-            keyring.set_password("kamp", service, payload)
-            # Verify the write actually persisted — keyring.set_password can return
-            # without raising yet still fail silently on some backends/OS versions.
-            verified = keyring.get_password("kamp", service)
-            if verified == payload:
-                session_json = None  # stored in keychain; keep DB row metadata-only
-                logger.debug(
-                    "set_session: keychain write verified for service=%s", service
-                )
-            else:
+
+        if _mac_kc is not None:
+            try:
+                _mac_kc.set_password("kamp", service, payload)
+                verified = _mac_kc.get_password("kamp", service)
+                if verified == payload:
+                    session_json = None  # stored in keychain; keep DB row metadata-only
+                    logger.debug(
+                        "set_session: keychain write verified for service=%s", service
+                    )
+                else:
+                    logger.warning(
+                        "set_session: keychain write for service=%s did not verify"
+                        " (read-back returned %s); falling back to DB",
+                        service,
+                        "wrong value" if verified is not None else "None",
+                    )
+            except keyring.errors.KeyringError as exc:
                 logger.warning(
-                    "set_session: keychain write for service=%s did not verify"
-                    " (read-back returned %s); falling back to DB",
+                    "set_session: keychain write failed for service=%s (%s: %s);"
+                    " credential stored in DB fallback",
                     service,
-                    "wrong value" if verified is not None else "None",
+                    type(exc).__name__,
+                    exc,
                 )
-        except keyring.errors.NoKeyringError:
-            pass
-        except keyring.errors.KeyringError as exc:
-            logger.warning(
-                "set_session: keychain write failed for service=%s (%s: %s);"
-                " credential stored in DB fallback",
-                service,
-                type(exc).__name__,
-                exc,
-            )
+        else:
+            try:
+                keyring.set_password("kamp", service, payload)
+                verified = keyring.get_password("kamp", service)
+                if verified == payload:
+                    session_json = None
+                    logger.debug(
+                        "set_session: keychain write verified for service=%s", service
+                    )
+                else:
+                    logger.warning(
+                        "set_session: keychain write for service=%s did not verify"
+                        " (read-back returned %s); falling back to DB",
+                        service,
+                        "wrong value" if verified is not None else "None",
+                    )
+            except keyring.errors.NoKeyringError:
+                pass
+            except keyring.errors.KeyringError as exc:
+                logger.warning(
+                    "set_session: keychain write failed for service=%s (%s: %s);"
+                    " credential stored in DB fallback",
+                    service,
+                    type(exc).__name__,
+                    exc,
+                )
+
         self._conn.execute(
             """
             INSERT INTO sessions (service, session_json, updated_at)
@@ -545,17 +636,28 @@ class LibraryIndex:
 
     def clear_session(self, service: str) -> None:
         """Remove the session entry for *service* from keychain and DB."""
-        try:
-            keyring.delete_password("kamp", service)
-        except (keyring.errors.NoKeyringError, keyring.errors.PasswordDeleteError):
-            pass
-        except keyring.errors.KeyringError as exc:
-            logger.warning(
-                "clear_session: keychain delete failed for service=%s (%s: %s)",
-                service,
-                type(exc).__name__,
-                exc,
-            )
+        if _mac_kc is not None:
+            try:
+                _mac_kc.delete_password("kamp", service)
+            except keyring.errors.KeyringError as exc:
+                logger.warning(
+                    "clear_session: keychain delete failed for service=%s (%s: %s)",
+                    service,
+                    type(exc).__name__,
+                    exc,
+                )
+        else:
+            try:
+                keyring.delete_password("kamp", service)
+            except (keyring.errors.NoKeyringError, keyring.errors.PasswordDeleteError):
+                pass
+            except keyring.errors.KeyringError as exc:
+                logger.warning(
+                    "clear_session: keychain delete failed for service=%s (%s: %s)",
+                    service,
+                    type(exc).__name__,
+                    exc,
+                )
         self._conn.execute("DELETE FROM sessions WHERE service = ?", (service,))
         self._conn.commit()
         # Truncate the WAL so deleted credential data (cookies, session keys) is

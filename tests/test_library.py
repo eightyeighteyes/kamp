@@ -1769,6 +1769,7 @@ class TestSessionManagement:
     @pytest.fixture(autouse=True)
     def no_keyring(self, mocker: MockerFixture) -> None:
         """Simulate a platform without a keyring backend."""
+        mocker.patch("kamp_core.library._mac_kc", None)
         err = keyring.errors.NoKeyringError()
         mocker.patch("kamp_core.library.keyring.get_password", side_effect=err)
         mocker.patch("kamp_core.library.keyring.set_password", side_effect=err)
@@ -2027,6 +2028,7 @@ class TestSessionManagementKeyring:
     @pytest.fixture(autouse=True)
     def mock_keyring(self, mocker: MockerFixture) -> dict[str, str]:
         """In-memory keyring store; returns the backing dict for inspection."""
+        mocker.patch("kamp_core.library._mac_kc", None)
         store: dict[str, str] = {}
 
         def _set(app: str, service: str, value: str) -> None:
@@ -2107,6 +2109,11 @@ class TestSessionManagementKeyring:
 
 class TestSessionManagementKeyringErrors:
     """Tests retry logic and error handling when the keychain is transiently locked."""
+
+    @pytest.fixture(autouse=True)
+    def force_keyring_path(self, mocker: MockerFixture) -> None:
+        """Disable the macOS Data Protection Keychain so these tests exercise keyring."""
+        mocker.patch("kamp_core.library._mac_kc", None)
 
     def _make_index(self, tmp_path: Path) -> "LibraryIndex":
         return LibraryIndex(tmp_path / "library.db")
@@ -2262,6 +2269,11 @@ class TestSessionManagementKeyringErrors:
 
 
 class TestMigrationV11ToV12:
+    @pytest.fixture(autouse=True)
+    def force_keyring_path(self, mocker: MockerFixture) -> None:
+        """Disable the macOS Data Protection Keychain so v11→v12 migration uses keyring."""
+        mocker.patch("kamp_core.library._mac_kc", None)
+
     def _build_v11_db(self, db_path: Path) -> None:
         """Create a v11 database with a sessions row containing plaintext JSON."""
         import json as _json
@@ -2366,4 +2378,134 @@ class TestMigrationV11ToV12:
         }
         assert index.get_session("lastfm") == {"session_key": "sk_abc"}
 
+        index.close()
+
+
+# ---------------------------------------------------------------------------
+# Session management — macOS Login Keychain (SecItemUpdate) path
+# ---------------------------------------------------------------------------
+
+
+class TestSessionManagementMacOS:
+    """Tests the macOS _mac_kc path (Login Keychain with SecItemUpdate)."""
+
+    @pytest.fixture(autouse=True)
+    def mock_mac_kc(self, mocker: MockerFixture) -> dict[str, str]:
+        """In-memory Login Keychain store; returns the backing dict."""
+        store: dict[str, str] = {}
+
+        def _get(app: str, service: str) -> str | None:
+            return store.get(f"{app}/{service}")
+
+        def _set(app: str, service: str, value: str) -> None:
+            store[f"{app}/{service}"] = value
+
+        def _delete(app: str, service: str) -> None:
+            store.pop(f"{app}/{service}", None)
+
+        mock = MagicMock()
+        mock.get_password.side_effect = _get
+        mock.set_password.side_effect = _set
+        mock.delete_password.side_effect = _delete
+
+        mocker.patch("kamp_core.library._mac_kc", mock)
+        # keyring must NOT be called on the macOS path.
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.delete_password")
+        return store
+
+    def _make_index(self, tmp_path: Path) -> LibraryIndex:
+        return LibraryIndex(tmp_path / "library.db")
+
+    def test_set_session_writes_to_keychain_not_db(
+        self, tmp_path: Path, mock_mac_kc: dict[str, str]
+    ) -> None:
+        index = self._make_index(tmp_path)
+        data = {"cookies": [{"name": "js_logged_in", "value": "1"}]}
+        index.set_session("bandcamp", data)
+
+        assert "kamp/bandcamp" in mock_mac_kc
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is not None
+        assert (
+            row["session_json"] is None
+        ), "credential must not be stored in plaintext DB"
+        index.close()
+
+    def test_get_session_reads_from_keychain(
+        self, tmp_path: Path, mock_mac_kc: dict[str, str]
+    ) -> None:
+        index = self._make_index(tmp_path)
+        data: dict[str, Any] = {"session_key": "mac_abc123"}
+        index.set_session("lastfm", data)
+        assert index.get_session("lastfm") == data
+        index.close()
+
+    def test_set_session_uses_update_not_delete_recreate(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """set_session calls mac_kc.set_password (SecItemUpdate-based), never
+        delete_password, so previously granted ACL entries survive updates."""
+        store: dict[str, str] = {}
+
+        def _get(app: str, service: str) -> str | None:
+            return store.get(f"{app}/{service}")
+
+        def _set(app: str, service: str, value: str) -> None:
+            store[f"{app}/{service}"] = value
+
+        mock = MagicMock()
+        mock.get_password.side_effect = _get
+        mock.set_password.side_effect = _set
+        mock.delete_password.side_effect = lambda *_: None
+        mocker.patch("kamp_core.library._mac_kc", mock)
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.delete_password")
+
+        index = self._make_index(tmp_path)
+        data1 = {"session_key": "first"}
+        data2 = {"session_key": "second"}
+        index.set_session("lastfm", data1)
+        index.set_session("lastfm", data2)
+
+        # set_password called twice (once per set_session) — never delete_password
+        assert mock.set_password.call_count == 2
+        assert mock.delete_password.call_count == 0
+        assert index.get_session("lastfm") == data2
+        index.close()
+
+    def test_clear_session_removes_from_keychain_and_db(
+        self, tmp_path: Path, mock_mac_kc: dict[str, str]
+    ) -> None:
+        index = self._make_index(tmp_path)
+        index.set_session("bandcamp", {"cookies": []})
+        index.clear_session("bandcamp")
+        assert "kamp/bandcamp" not in mock_mac_kc
+        assert index.get_session("bandcamp") is None
+        index.close()
+
+    def test_set_session_falls_back_to_db_when_write_fails(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """KeyringError from mac_kc.set_password causes DB fallback."""
+        mock = MagicMock()
+        mock.set_password.side_effect = keyring.errors.KeyringError("write failed")
+        mock.get_password.return_value = None
+        mocker.patch("kamp_core.library._mac_kc", mock)
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.delete_password")
+
+        index = self._make_index(tmp_path)
+        index.set_session("bandcamp", {"cookies": []})
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is not None
+        assert row["session_json"] is not None, "must fall back to DB on write failure"
         index.close()

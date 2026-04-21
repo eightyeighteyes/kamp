@@ -112,6 +112,23 @@ class TestSetPassword:
 
         add.assert_called_once()
 
+    def test_value_data_uses_cfdata_not_cfstring(self, mocker: MockerFixture) -> None:
+        """kSecValueData must be CFData. Passing CFString returns errSecParam (-50)."""
+        mocker.patch.object(macos_keychain, "_SecItemUpdate", return_value=0)
+        cf_data_spy = mocker.patch.object(
+            macos_keychain, "_cf_data", wraps=macos_keychain._cf_data
+        )
+        cf_str_spy = mocker.patch.object(
+            macos_keychain, "_cf_str", wraps=macos_keychain._cf_str
+        )
+
+        macos_keychain.set_password("svc", "user", "mypassword")
+
+        cf_data_spy.assert_called_once_with("mypassword")
+        # password must not travel through _cf_str (which creates CFString, not CFData)
+        cf_str_calls = [call.args[0] for call in cf_str_spy.call_args_list]
+        assert "mypassword" not in cf_str_calls
+
     def test_add_does_not_include_kSecAttrAccessible(
         self, mocker: MockerFixture
     ) -> None:

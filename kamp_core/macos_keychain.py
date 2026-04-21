@@ -56,6 +56,10 @@ _CFNumberCreate = _found.CFNumberCreate
 _CFNumberCreate.restype = c_void_p
 _CFNumberCreate.argtypes = [c_void_p, c_uint32, c_void_p]
 
+_CFDataCreate = _found.CFDataCreate
+_CFDataCreate.restype = c_void_p
+_CFDataCreate.argtypes = (c_void_p, c_void_p, c_int32)
+
 _CFDataGetBytePtr = _found.CFDataGetBytePtr
 _CFDataGetBytePtr.restype = c_void_p
 _CFDataGetBytePtr.argtypes = (c_void_p,)
@@ -98,6 +102,12 @@ def _cf_str(s: str) -> c_void_p:
 def _cf_bool(val: bool) -> c_void_p:
     # Boolean constants live in CoreFoundation
     return c_void_p.in_dll(_found, "kCFBooleanTrue" if val else "kCFBooleanFalse")
+
+
+def _cf_data(s: str) -> c_void_p:
+    # kSecValueData requires CFData, not CFString.
+    encoded = s.encode("utf-8")
+    return c_void_p(_CFDataCreate(None, encoded, len(encoded)))
 
 
 def _make_dict(**kwargs: object) -> c_void_p:
@@ -183,7 +193,7 @@ def set_password(service: str, username: str, password: str) -> None:
         kSecAttrService=service,
         kSecAttrAccount=username,
     )
-    update_attrs = _make_dict(kSecValueData=_cf_str(password))
+    update_attrs = _make_dict(kSecValueData=_cf_data(password))
     status = _SecItemUpdate(find_q, update_attrs)
 
     if status == _ERR_SEC_ITEM_NOT_FOUND:
@@ -193,7 +203,7 @@ def set_password(service: str, username: str, password: str) -> None:
             kSecClass="kSecClassGenericPassword",
             kSecAttrService=service,
             kSecAttrAccount=username,
-            kSecValueData=_cf_str(password),
+            kSecValueData=_cf_data(password),
         )
         status = _SecItemAdd(add_q, None)
 

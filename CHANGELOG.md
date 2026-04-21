@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.11.2](https://github.com/eightyeighteyes/kamp/compare/v1.11.1...v1.11.2) (2026-04-21)
+
+
+### Bug Fixes
+
+* eliminate repeated Keychain access dialogs (TASK-167) ([#277](https://github.com/eightyeighteyes/kamp/issues/277)) ([039bf17](https://github.com/eightyeighteyes/kamp/commit/039bf17bc281389ec7371f0d447f89667c150e15))
+* pass X-Kamp-Token header in proxy-fetch requests (TASK-149) ([#275](https://github.com/eightyeighteyes/kamp/issues/275)) ([52f9d0e](https://github.com/eightyeighteyes/kamp/commit/52f9d0e58b20033a0dffb8debb5082619c333da0))
+
 ## [1.11.1](https://github.com/eightyeighteyes/kamp/compare/v1.11.0...v1.11.1) (2026-04-20)
 
 

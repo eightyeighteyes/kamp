@@ -99,6 +99,7 @@ type PlayerStore = {
   refreshOpenAlbum: () => Promise<void>
   scanLibrary: () => Promise<void>
   setLibraryPath: (path: string) => Promise<void>
+  setWatchFolderPath: (path: string) => Promise<void>
   applyServerState: (state: PlayerState) => void
 
   // Preferences
@@ -426,6 +427,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setLibraryPath: async (path) => {
     await api.setLibraryPath(path)
     set({ configuredLibraryPath: path })
+  },
+
+  setWatchFolderPath: async (path) => {
+    await api.patchConfig('paths.watch_folder', path)
+    set((s) => ({
+      configValues: s.configValues
+        ? { ...s.configValues, 'paths.watch_folder': path }
+        : s.configValues
+    }))
   },
 
   loadConfig: async () => {

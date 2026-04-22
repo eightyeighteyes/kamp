@@ -15,7 +15,10 @@ const STEP_TITLES: Record<OnboardingStep, string> = {
 const ALMOST_DONE_STRINGS = [
   'Almost done…',
   "You're gonna love this…",
-  'What are you gonna listen to first?'
+  'What are you gonna listen to first?',
+  "Press 'A' to show or hide the Artist panel",
+  "Press 'Q' to show or hide the Queue panel",
+  "The 'Now Playing' tab shows off your album art"
 ]
 
 // Vinyl proportions derived from the splash screen record (r=86 baseline).

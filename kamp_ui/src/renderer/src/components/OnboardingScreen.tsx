@@ -288,6 +288,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
               <text
                 x="0"
                 y="-10"
+                dx="4"
                 textAnchor="middle"
                 fill="#1c1a16"
                 fontSize="31"
@@ -300,6 +301,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
               <text
                 x="0"
                 y="18"
+                dx="2.5"
                 textAnchor="middle"
                 fill="#1c1a16"
                 fontSize="17"

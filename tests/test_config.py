@@ -66,11 +66,12 @@ class TestLoad:
         assert config.ui.sort_order == "album_artist"
         assert config.ui.queue_panel_open == 0
 
-    def test_load_raises_when_no_config_and_no_toml(
+    def test_load_seeds_defaults_when_no_config_and_no_toml(
         self, db: LibraryIndex, tmp_path: Path
     ) -> None:
-        with pytest.raises(FileNotFoundError):
-            Config.load(db, legacy_config_path=tmp_path / "nonexistent.toml")
+        config = Config.load(db, legacy_config_path=tmp_path / "nonexistent.toml")
+        assert config.bandcamp is not None
+        assert config.bandcamp.poll_interval_minutes == 0
 
     def test_load_respects_custom_values(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)

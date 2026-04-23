@@ -19,5 +19,10 @@
     <!-- Outbound requests: MusicBrainz, Last.fm, AcoustID lookups -->
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- Allows kSecUseDataProtectionKeychain — stable across app updates -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>X6K4L8ZMLS.com.kamp.app</string>
+    </array>
 </dict>
 </plist>

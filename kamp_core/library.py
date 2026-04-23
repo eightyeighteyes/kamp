@@ -447,26 +447,29 @@ class LibraryIndex:
     def get_session(self, service: str) -> dict[str, Any] | None:
         """Return the stored session data for *service*, or None if absent.
 
-        On macOS, reads from the Login Keychain via the SecItemUpdate-based
-        wrapper (which preserves ACL entries so "Always Allow" is respected).
+        On macOS, reads from the Data Protection Keychain (stable across app
+        updates) with a one-time migration from the Login Keychain for existing
+        credentials.  Falls back to the Login Keychain in unsigned dev builds.
         On other platforms, reads from the ``keyring`` backend with exponential
         backoff on transient lock errors.  Falls through to the DB column when
         no keychain is available.
         """
         logger.debug("get_session: reading keychain for service=%s", service)
 
-        # --- macOS: Login Keychain via SecItemUpdate-based wrapper -----------
+        # --- macOS: Data Protection Keychain (or Login Keychain fallback) ----
         if _mac_kc is not None:
             _MAX_RETRIES = 3
+            _dpc_responded = False  # True when DPC answered without error
             for attempt in range(_MAX_RETRIES):
                 try:
                     raw = _mac_kc.get_password("kamp", service)
+                    _dpc_responded = True
                     if raw is not None:
                         logger.debug(
                             "get_session: keychain hit for service=%s", service
                         )
                         return json.loads(raw)  # type: ignore[no-any-return]
-                    break  # absent — fall through to DB
+                    break  # absent — check for migration, then fall through to DB
                 except keyring.errors.KeyringLocked as exc:
                     delay = 0.5 * (2**attempt)
                     logger.debug(
@@ -494,6 +497,31 @@ class LibraryIndex:
                     _MAX_RETRIES,
                     service,
                 )
+
+            # One-time migration: if DPC is available but item not found there,
+            # check the Login Keychain. Move it to DPC so future launches are silent.
+            if _dpc_responded and not _mac_kc._dpc_unavailable:
+                try:
+                    raw_login = _mac_kc._get_login_keychain_password("kamp", service)
+                    if raw_login is not None:
+                        logger.info(
+                            "get_session: migrating %s credentials from Login to"
+                            " Data Protection Keychain",
+                            service,
+                        )
+                        _mac_kc.set_password("kamp", service, raw_login)
+                        try:
+                            _mac_kc._delete_login_keychain_password("kamp", service)
+                        except Exception:
+                            pass  # migration cleanup is best-effort
+                        return json.loads(raw_login)  # type: ignore[no-any-return]
+                except Exception as exc:
+                    logger.debug(
+                        "get_session: Login Keychain migration probe failed"
+                        " for service=%s: %s",
+                        service,
+                        exc,
+                    )
 
             row = self._conn.execute(
                 "SELECT session_json FROM sessions WHERE service = ?", (service,)
@@ -563,10 +591,10 @@ class LibraryIndex:
     def set_session(self, service: str, data: dict[str, Any]) -> None:
         """Persist session data for *service*, replacing any existing entry.
 
-        On macOS, writes to the Login Keychain using SecItemUpdate so that any
-        user-approved ACL entries are preserved (no delete+recreate).  Falls
-        back to the DB column when the keychain write fails.  On other
-        platforms, writes via ``keyring``.
+        On macOS, writes to the Data Protection Keychain so that items remain
+        accessible across app updates without prompts.  Falls back to the DB
+        column when the keychain write fails.  On other platforms, writes via
+        ``keyring``.
         """
         payload = json.dumps(data)
         session_json: str | None = payload

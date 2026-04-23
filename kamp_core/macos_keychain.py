@@ -1,17 +1,19 @@
-"""Security.framework wrapper for the macOS Login Keychain.
+"""Security.framework wrapper for the macOS Data Protection Keychain.
 
-The Python ``keyring`` library stores items in the macOS Login Keychain but
-uses ``SecItemDelete`` + ``SecItemAdd`` for every write.  This wipes the
-item's ACL — including any "Always Allow" the user granted — so the dialog
-reappears on the next keychain access.
+Stores items in the Data Protection Keychain (kSecUseDataProtectionKeychain)
+which uses the app's code-signing identity rather than binary-hash ACLs.
+This means keychain items remain accessible after app updates with no dialog,
+because the signing identity (team ID + bundle ID) is stable across builds.
 
-This module replaces that with ``SecItemUpdate`` (update-in-place) for
-existing items, which preserves ACL entries so "Always Allow" survives
-session refreshes.  New items are created with ``SecItemAdd`` as usual.
+Requires the ``keychain-access-groups`` entitlement in the signed binary.
+In unsigned dev builds the entitlement is absent; the module detects
+``errSecMissingEntitlement`` (-34018) on the first access and falls back to
+the Login Keychain (TASK-167 SecItemUpdate behaviour) for the process lifetime.
 
-This module is macOS-only.  Callers must guard with ``sys.platform``.
 ``KeyringError`` from ``keyring.errors`` is raised on failure so existing
 exception-handling in ``library.py`` is unchanged.
+
+This module is macOS-only.  Callers must guard with ``sys.platform``.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ _OS_STATUS_SUCCESS = 0
 _ERR_SEC_ITEM_NOT_FOUND = -25300
 _ERR_SEC_INTERACTION_NOT_ALLOWED = -25308
 _ERR_SEC_AUTH_FAILED = -25293
+_ERR_SEC_MISSING_ENTITLEMENT = -34018
 
 
 _sec = ctypes.CDLL(find_library("Security"))
@@ -82,6 +85,11 @@ _SecItemDelete = _sec.SecItemDelete
 _SecItemDelete.restype = c_int32
 _SecItemDelete.argtypes = (c_void_p,)
 
+# Set to True at runtime when errSecMissingEntitlement is returned, meaning the
+# binary lacks the keychain-access-groups entitlement (unsigned dev builds).
+# All subsequent calls skip the DPC path and use the Login Keychain instead.
+_dpc_unavailable: bool = False
+
 
 def _sym(name: str) -> c_void_p:
     """Return a pointer to a Security.framework constant by name."""
@@ -96,7 +104,6 @@ def _cf_str(s: str) -> c_void_p:
 
 
 def _cf_bool(val: bool) -> c_void_p:
-    # Boolean constants live in CoreFoundation
     return c_void_p.in_dll(_found, "kCFBooleanTrue" if val else "kCFBooleanFalse")
 
 
@@ -153,20 +160,18 @@ def _raise_for_status(status: int) -> None:
     raise keyring.errors.KeyringError(f"Security framework error (OSStatus {status})")
 
 
-def get_password(service: str, username: str) -> str | None:
-    """Read a generic password from the Login Keychain.
-
-    Returns the stored string, or ``None`` if the item is absent.
-    Raises ``keyring.errors.KeyringLocked`` when the keychain is locked and
-    ``keyring.errors.KeyringError`` for other Security framework failures.
-    """
-    q = _make_dict(
+def _read_raw(service: str, username: str, use_dpc: bool) -> str | None:
+    """Read a raw password string from either the DPC or Login Keychain."""
+    q_kwargs: dict[str, object] = dict(
         kSecClass="kSecClassGenericPassword",
         kSecMatchLimit="kSecMatchLimitOne",
         kSecAttrService=service,
         kSecAttrAccount=username,
         kSecReturnData=True,
     )
+    if use_dpc:
+        q_kwargs["kSecUseDataProtectionKeychain"] = True
+    q = _make_dict(**q_kwargs)
     data = c_void_p()
     status = _SecItemCopyMatching(q, byref(data))
     if status == _ERR_SEC_ITEM_NOT_FOUND:
@@ -177,13 +182,100 @@ def get_password(service: str, username: str) -> str | None:
     )
 
 
-def set_password(service: str, username: str, password: str) -> None:
-    """Write a generic password to the Login Keychain.
+def _delete_raw(service: str, username: str, use_dpc: bool) -> None:
+    """Delete from either the DPC or Login Keychain; silently ignores missing items."""
+    q_kwargs: dict[str, object] = dict(
+        kSecClass="kSecClassGenericPassword",
+        kSecAttrService=service,
+        kSecAttrAccount=username,
+    )
+    if use_dpc:
+        q_kwargs["kSecUseDataProtectionKeychain"] = True
+    q = _make_dict(**q_kwargs)
+    status = _SecItemDelete(q)
+    if status == _ERR_SEC_ITEM_NOT_FOUND:
+        return
+    _raise_for_status(status)
 
-    Uses ``SecItemUpdate`` when the item already exists so that item ACL
-    entries (including any "Always Allow" the user granted) are preserved.
-    Falls through to ``SecItemAdd`` for new items.
+
+def get_password(service: str, username: str) -> str | None:
+    """Read a generic password, preferring the Data Protection Keychain.
+
+    Falls back to the Login Keychain when the binary lacks the
+    ``keychain-access-groups`` entitlement (unsigned dev builds).
+    Returns ``None`` if the item is absent.
+    Raises ``keyring.errors.KeyringLocked`` when the keychain is locked.
     """
+    global _dpc_unavailable
+    if not _dpc_unavailable:
+        q = _make_dict(
+            kSecClass="kSecClassGenericPassword",
+            kSecUseDataProtectionKeychain=True,
+            kSecMatchLimit="kSecMatchLimitOne",
+            kSecAttrService=service,
+            kSecAttrAccount=username,
+            kSecReturnData=True,
+        )
+        data = c_void_p()
+        status = _SecItemCopyMatching(q, byref(data))
+        if status == _ERR_SEC_MISSING_ENTITLEMENT:
+            _dpc_unavailable = True
+        elif status == _ERR_SEC_ITEM_NOT_FOUND:
+            return None
+        elif status == _OS_STATUS_SUCCESS:
+            return ctypes.string_at(
+                _CFDataGetBytePtr(data), _CFDataGetLength(data)
+            ).decode("utf-8")
+        else:
+            _raise_for_status(status)
+
+    # Login Keychain fallback (unsigned dev builds)
+    return _read_raw(service, username, use_dpc=False)
+
+
+def set_password(service: str, username: str, password: str) -> None:
+    """Write a generic password to the Data Protection Keychain.
+
+    Uses ``SecItemUpdate`` when the item already exists to preserve existing
+    entries in-place.  Falls through to ``SecItemAdd`` for new items, setting
+    ``kSecAttrAccessibleAfterFirstUnlock`` so the daemon can access credentials
+    after login without requiring the screen to be unlocked.
+
+    Falls back to the Login Keychain when the entitlement is absent.
+    """
+    global _dpc_unavailable
+    if not _dpc_unavailable:
+        find_q = _make_dict(
+            kSecClass="kSecClassGenericPassword",
+            kSecUseDataProtectionKeychain=True,
+            kSecAttrService=service,
+            kSecAttrAccount=username,
+        )
+        update_attrs = _make_dict(kSecValueData=_cf_data(password))
+        status = _SecItemUpdate(find_q, update_attrs)
+
+        if status == _ERR_SEC_MISSING_ENTITLEMENT:
+            _dpc_unavailable = True
+        elif status == _ERR_SEC_ITEM_NOT_FOUND:
+            add_q = _make_dict(
+                kSecClass="kSecClassGenericPassword",
+                kSecUseDataProtectionKeychain=True,
+                kSecAttrService=service,
+                kSecAttrAccount=username,
+                kSecValueData=_cf_data(password),
+                kSecAttrAccessible="kSecAttrAccessibleAfterFirstUnlock",
+            )
+            add_status = _SecItemAdd(add_q, None)
+            if add_status == _ERR_SEC_MISSING_ENTITLEMENT:
+                _dpc_unavailable = True
+            else:
+                _raise_for_status(add_status)
+                return
+        else:
+            _raise_for_status(status)
+            return
+
+    # Login Keychain fallback (unsigned dev builds)
     find_q = _make_dict(
         kSecClass="kSecClassGenericPassword",
         kSecAttrService=service,
@@ -191,10 +283,7 @@ def set_password(service: str, username: str, password: str) -> None:
     )
     update_attrs = _make_dict(kSecValueData=_cf_data(password))
     status = _SecItemUpdate(find_q, update_attrs)
-
     if status == _ERR_SEC_ITEM_NOT_FOUND:
-        # kSecAttrAccessible is only valid for the Data Protection Keychain;
-        # omit it here so the Login Keychain uses its default ACL.
         add_q = _make_dict(
             kSecClass="kSecClassGenericPassword",
             kSecAttrService=service,
@@ -202,21 +291,43 @@ def set_password(service: str, username: str, password: str) -> None:
             kSecValueData=_cf_data(password),
         )
         status = _SecItemAdd(add_q, None)
-
     _raise_for_status(status)
 
 
 def delete_password(service: str, username: str) -> None:
-    """Delete a generic password from the Login Keychain.
+    """Delete a generic password, preferring the Data Protection Keychain.
 
-    Silently ignores the case where the item is absent.
+    Silently ignores the case where the item is absent in either keychain.
+    Falls back to the Login Keychain when the entitlement is absent.
     """
-    q = _make_dict(
-        kSecClass="kSecClassGenericPassword",
-        kSecAttrService=service,
-        kSecAttrAccount=username,
-    )
-    status = _SecItemDelete(q)
-    if status == _ERR_SEC_ITEM_NOT_FOUND:
-        return
-    _raise_for_status(status)
+    global _dpc_unavailable
+    if not _dpc_unavailable:
+        q = _make_dict(
+            kSecClass="kSecClassGenericPassword",
+            kSecUseDataProtectionKeychain=True,
+            kSecAttrService=service,
+            kSecAttrAccount=username,
+        )
+        status = _SecItemDelete(q)
+        if status == _ERR_SEC_MISSING_ENTITLEMENT:
+            _dpc_unavailable = True
+        elif status == _ERR_SEC_ITEM_NOT_FOUND:
+            # Not in DPC — also check Login Keychain (transition period)
+            _delete_raw(service, username, use_dpc=False)
+            return
+        else:
+            _raise_for_status(status)
+            return
+
+    # Login Keychain fallback (unsigned dev builds)
+    _delete_raw(service, username, use_dpc=False)
+
+
+def _get_login_keychain_password(service: str, username: str) -> str | None:
+    """Read directly from the Login Keychain — used only for DPC migration."""
+    return _read_raw(service, username, use_dpc=False)
+
+
+def _delete_login_keychain_password(service: str, username: str) -> None:
+    """Delete directly from the Login Keychain — used only for DPC migration cleanup."""
+    _delete_raw(service, username, use_dpc=False)

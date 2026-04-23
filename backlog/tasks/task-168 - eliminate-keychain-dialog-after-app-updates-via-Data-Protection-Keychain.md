@@ -4,8 +4,13 @@ title: eliminate keychain dialog after app updates via Data Protection Keychain
 status: To Do
 assignee: []
 created_date: '2026-04-20 21:30'
-updated_date: '2026-04-20 21:59'
-labels: []
+updated_date: '2026-04-23 14:16'
+labels:
+  - feature
+  - os-integration
+  - keychain
+  - 'estimate: lp'
+milestone: m-31
 dependencies:
   - TASK-167
 priority: medium

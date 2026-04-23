@@ -4,10 +4,12 @@ title: 'Media keys: next/prev/play/pause on Windows'
 status: To Do
 assignee: []
 created_date: '2026-04-17 00:05'
+updated_date: '2026-04-23 14:16'
 labels:
   - feature
   - windows
   - os-integration
+  - 'estimate: lp'
 milestone: m-3
 dependencies:
   - TASK-48

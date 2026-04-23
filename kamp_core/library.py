@@ -1429,7 +1429,7 @@ class LibraryScanner:
     def scan(
         self,
         library_path: Path,
-        on_progress: Callable[[int, int], None] | None = None,
+        on_progress: Callable[[int, int, "Track | None"], None] | None = None,
     ) -> ScanResult:
         """Scan *library_path* recursively and update the index.
 
@@ -1439,8 +1439,9 @@ class LibraryScanner:
         removed.
 
         *on_progress*, if provided, is called after each processed file's tags
-        are read with (current, total) where total = number of files to index
-        (new + updated).
+        are read with (current, total, track) where total = number of files to
+        index (new + updated) and track is the parsed Track (or None if parsing
+        failed).
         """
         if not library_path.exists():
             return ScanResult(added=0, removed=0, unchanged=0)
@@ -1476,7 +1477,7 @@ class LibraryScanner:
             else:
                 logger.warning("Skipped unreadable file: %s", path)
             if on_progress is not None:
-                on_progress(current, total)
+                on_progress(current, total, track)
         self._index.upsert_many(tracks_to_upsert)
 
         newly_added = [t for t in tracks_to_upsert if t.file_path in to_add]

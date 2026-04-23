@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -2510,4 +2511,230 @@ class TestSessionManagementMacOS:
         ).fetchone()
         assert row is not None
         assert row["session_json"] is not None, "must fall back to DB on write failure"
+        index.close()
+
+    def test_set_session_verification_mismatch_stores_in_db(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """When read-back returns wrong value, credential falls back to DB."""
+        mock = MagicMock()
+        mock.set_password.return_value = None
+        mock.get_password.return_value = '{"wrong": "value"}'
+        mocker.patch("kamp_core.library._mac_kc", mock)
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.delete_password")
+
+        index = self._make_index(tmp_path)
+        index.set_session("bandcamp", {"cookies": []})
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is not None
+        assert row["session_json"] is not None, "verification mismatch must store in DB"
+        index.close()
+
+    def test_clear_session_logs_warning_on_keyring_error(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """KeyringError from mac_kc.delete_password is logged but not re-raised."""
+        mock = MagicMock()
+        mock.delete_password.side_effect = keyring.errors.KeyringError("delete failed")
+        mocker.patch("kamp_core.library._mac_kc", mock)
+
+        index = self._make_index(tmp_path)
+        index.clear_session("lastfm")  # must not raise
+        index.close()
+
+
+class TestLoginKeychainMigration:
+    """get_session migrates credentials from Login Keychain to DPC transparently."""
+
+    @pytest.fixture(autouse=True)
+    def mock_mac_kc(self, mocker: MockerFixture) -> MagicMock:
+        mock = MagicMock()
+        mock._dpc_unavailable = False
+        mock.get_password.return_value = None  # DPC has nothing
+        mock._get_login_keychain_password.return_value = (
+            None  # Login KC empty by default
+        )
+        mock._delete_login_keychain_password.return_value = None
+        mocker.patch("kamp_core.library._mac_kc", mock)
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        return mock
+
+    def _make_index(self, tmp_path: Path) -> LibraryIndex:
+        return LibraryIndex(tmp_path / "library.db")
+
+    def test_login_keychain_item_migrated_to_dpc(
+        self, tmp_path: Path, mock_mac_kc: MagicMock
+    ) -> None:
+        data = {"session_key": "abc123"}
+        payload = json.dumps(data)
+        mock_mac_kc._get_login_keychain_password.return_value = payload
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("lastfm")
+
+        assert result == data
+        mock_mac_kc.set_password.assert_called_once_with("kamp", "lastfm", payload)
+        mock_mac_kc._delete_login_keychain_password.assert_called_once_with(
+            "kamp", "lastfm"
+        )
+        index.close()
+
+    def test_no_migration_when_dpc_has_item(
+        self, tmp_path: Path, mock_mac_kc: MagicMock
+    ) -> None:
+        data = {"session_key": "abc123"}
+        mock_mac_kc.get_password.return_value = json.dumps(data)
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("lastfm")
+
+        assert result == data
+        mock_mac_kc._get_login_keychain_password.assert_not_called()
+        index.close()
+
+    def test_migration_cleanup_failure_is_silent(
+        self, tmp_path: Path, mock_mac_kc: MagicMock
+    ) -> None:
+        data = {"session_key": "abc123"}
+        payload = json.dumps(data)
+        mock_mac_kc._get_login_keychain_password.return_value = payload
+        mock_mac_kc._delete_login_keychain_password.side_effect = Exception(
+            "delete failed"
+        )
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("lastfm")
+
+        assert result == data
+        index.close()
+
+    def test_migration_probe_failure_falls_through_to_db(
+        self, tmp_path: Path, mock_mac_kc: MagicMock
+    ) -> None:
+        mock_mac_kc._get_login_keychain_password.side_effect = Exception("probe failed")
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("lastfm")
+
+        assert result is None
+        index.close()
+
+    def test_both_keychains_empty_falls_through_to_db(
+        self, tmp_path: Path, mock_mac_kc: MagicMock
+    ) -> None:
+        # DPC returns None, Login Keychain returns None — DB fallback returns None
+        index = self._make_index(tmp_path)
+        result = index.get_session("lastfm")
+
+        assert result is None
+        mock_mac_kc._get_login_keychain_password.assert_called_once_with(
+            "kamp", "lastfm"
+        )
+        index.close()
+
+    def test_falls_back_to_db_when_both_keychains_miss(
+        self, tmp_path: Path, mock_mac_kc: MagicMock
+    ) -> None:
+        data = {"session_key": "from_db"}
+        index = self._make_index(tmp_path)
+        index._conn.execute(
+            "INSERT INTO sessions (service, session_json, updated_at)"
+            " VALUES (?, ?, 0)",
+            ("lastfm", json.dumps(data)),
+        )
+        index._conn.commit()
+
+        result = index.get_session("lastfm")
+
+        assert result == data
+        index.close()
+
+
+class TestSessionManagementMacOSErrors:
+    """Retry and error-handling paths for get_session on the macOS _mac_kc path."""
+
+    @pytest.fixture(autouse=True)
+    def mock_mac_kc(self, mocker: MockerFixture) -> MagicMock:
+        mock = MagicMock()
+        mock._dpc_unavailable = False
+        mock._get_login_keychain_password.return_value = None
+        mocker.patch("kamp_core.library._mac_kc", mock)
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library._time.sleep")
+        return mock
+
+    def _make_index(self, tmp_path: Path) -> LibraryIndex:
+        return LibraryIndex(tmp_path / "library.db")
+
+    def test_retries_on_keyring_locked_then_succeeds(
+        self, tmp_path: Path, mock_mac_kc: MagicMock
+    ) -> None:
+        data = {"session_key": "abc"}
+        mock_mac_kc.get_password.side_effect = [
+            keyring.errors.KeyringLocked("locked"),
+            json.dumps(data),
+        ]
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("lastfm")
+
+        assert result == data
+        index.close()
+
+    def test_breaks_on_keyring_error(
+        self, tmp_path: Path, mock_mac_kc: MagicMock
+    ) -> None:
+        mock_mac_kc.get_password.side_effect = keyring.errors.KeyringError("boom")
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("lastfm")
+
+        assert result is None
+        assert mock_mac_kc.get_password.call_count == 1
+        index.close()
+
+    def test_warns_after_all_retries_exhausted(
+        self, tmp_path: Path, mock_mac_kc: MagicMock
+    ) -> None:
+        mock_mac_kc.get_password.side_effect = keyring.errors.KeyringLocked("locked")
+
+        index = self._make_index(tmp_path)
+        result = index.get_session("lastfm")
+
+        assert result is None
+        assert mock_mac_kc.get_password.call_count == 3  # _MAX_RETRIES
+        index.close()
+
+
+class TestMarkProcessedBy:
+    """Tests for LibraryIndex.mark_processed_by and has_been_processed_by."""
+
+    def _make_index(self, tmp_path: Path) -> LibraryIndex:
+        return LibraryIndex(tmp_path / "library.db")
+
+    def test_mark_processed_by_makes_has_been_processed_true(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._make_index(tmp_path)
+        mbid = "mbid-1234"
+        ext = "kamp.musicbrainz"
+
+        assert not index.has_been_processed_by(ext, mbid)
+        index.mark_processed_by(ext, mbid)
+        assert index.has_been_processed_by(ext, mbid)
+        index.close()
+
+    def test_mark_processed_by_does_not_affect_other_extensions(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._make_index(tmp_path)
+        mbid = "mbid-5678"
+        index.mark_processed_by("kamp.musicbrainz", mbid)
+
+        assert not index.has_been_processed_by("kamp.coverart", mbid)
         index.close()

@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { connectLastfm } from '../api/client'
 import { useStore } from '../store'
 
-type OnboardingStep = 'welcome' | 'library' | 'watch-folder' | 'bandcamp' | 'almost-done'
+type OnboardingStep = 'welcome' | 'library' | 'watch-folder' | 'bandcamp' | 'lastfm' | 'almost-done'
 type VinylPhase = 'rising' | 'spinning' | 'sinking'
 
 const STEP_TITLES: Record<OnboardingStep, string> = {
@@ -9,6 +10,7 @@ const STEP_TITLES: Record<OnboardingStep, string> = {
   library: 'Library Setup',
   'watch-folder': 'Watch Folder Setup',
   bandcamp: 'Bandcamp Setup',
+  lastfm: 'Last.fm Setup',
   'almost-done': 'Almost Done'
 }
 
@@ -52,6 +54,9 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
   const [vinylPhase, setVinylPhase] = useState<VinylPhase>('rising')
   const [cardError, setCardError] = useState<string | null>(null)
   const [bandcampBusy, setBandcampBusy] = useState(false)
+  const [lastfmUsername, setLastfmUsername] = useState('')
+  const [lastfmPassword, setLastfmPassword] = useState('')
+  const [lastfmBusy, setLastfmBusy] = useState(false)
   const [stringIndex, setStringIndex] = useState(0)
   const [stringVisible, setStringVisible] = useState(true)
   const [showAllSet, setShowAllSet] = useState(false)
@@ -164,7 +169,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
     try {
       const result = await window.api.bandcamp.beginLogin()
       if (result.ok) {
-        advancePastBandcamp()
+        changeStep('lastfm')
       } else {
         setCardError(result.error ?? 'Login cancelled.')
       }
@@ -175,12 +180,28 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
     }
   }
 
-  function advancePastBandcamp(): void {
+  function advancePastCards(): void {
     if (scanDoneRef.current) {
-      // Scan already finished while we were on a card — done immediately.
       onCompleteRef.current()
     } else {
       changeStep('almost-done')
+    }
+  }
+
+  async function handleLastfmLogin(): Promise<void> {
+    setLastfmBusy(true)
+    setCardError(null)
+    try {
+      const result = await connectLastfm(lastfmUsername, lastfmPassword)
+      if (result.ok) {
+        advancePastCards()
+      } else {
+        setCardError('Login failed.')
+      }
+    } catch {
+      setCardError('Login failed.')
+    } finally {
+      setLastfmBusy(false)
     }
   }
 
@@ -207,7 +228,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
           </div>
         )}
 
-        {(step === 'watch-folder' || step === 'bandcamp') && (
+        {(step === 'watch-folder' || step === 'bandcamp' || step === 'lastfm') && (
           <div className="onboarding-card">
             <div className="onboarding-card-heading">While we&apos;re waiting&hellip;</div>
 
@@ -240,7 +261,44 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                   and put them into your library
                 </p>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
-                <button className="onboarding-skip-btn" onClick={advancePastBandcamp}>
+                <button className="onboarding-skip-btn" onClick={() => changeStep('lastfm')}>
+                  Skip
+                </button>
+              </>
+            )}
+
+            {step === 'lastfm' && (
+              <>
+                <input
+                  className="prefs-input"
+                  type="text"
+                  placeholder="Last.fm username"
+                  value={lastfmUsername}
+                  autoComplete="username"
+                  onChange={(e) => setLastfmUsername(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && void handleLastfmLogin()}
+                />
+                <input
+                  className="prefs-input"
+                  type="password"
+                  placeholder="Password"
+                  value={lastfmPassword}
+                  autoComplete="current-password"
+                  onChange={(e) => setLastfmPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && void handleLastfmLogin()}
+                />
+                <button
+                  className="onboarding-primary-btn"
+                  onClick={handleLastfmLogin}
+                  disabled={lastfmBusy}
+                >
+                  {lastfmBusy ? 'Connecting…' : 'Connect Last.fm'}
+                </button>
+                <p className="onboarding-card-body">
+                  Connect your <strong>Last.fm</strong> account to scrobble what you listen to.
+                </p>
+                {cardError && <div className="onboarding-error">{cardError}</div>}
+                <button className="onboarding-skip-btn" onClick={advancePastCards}>
                   Skip
                 </button>
               </>

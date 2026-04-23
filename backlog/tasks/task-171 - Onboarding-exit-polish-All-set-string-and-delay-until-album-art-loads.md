@@ -1,15 +1,15 @@
 ---
 id: TASK-171
 title: 'Onboarding exit polish: "All set!" string and delay until album art loads'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-22 13:12'
-updated_date: '2026-04-22 14:18'
+updated_date: '2026-04-23 00:36'
 labels: []
 milestone: m-30
 dependencies: []
 priority: medium
-ordinal: 1000
+ordinal: 9000
 ---
 
 ## Description

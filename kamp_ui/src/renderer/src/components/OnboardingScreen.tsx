@@ -27,10 +27,13 @@ const STATIC_STRINGS = [
 function buildDynamicStrings(progress: ScanProgress | null): string[] {
   if (!progress?.active) return []
   const strings: string[] = []
-  if (progress.current_file && progress.current_artist) strings.push(`My favorite song is ${progress.current_file} by ${progress.current_artist}…`)
+  if (progress.current_file && progress.current_artist)
+    strings.push(`My favorite song is ${progress.current_file} by ${progress.current_artist}…`)
   if (progress.top_artist) strings.push(`You ever hear of ${progress.top_artist}?`)
-  if (progress.current_artist) strings.push(`Ooooh, I haven't heard ${progress.current_artist} in ages!`)
-  if (progress.current_artist) strings.push(`I'd sell my left kidney to see ${progress.current_artist} live…`)
+  if (progress.current_artist)
+    strings.push(`Ooooh, I haven't heard ${progress.current_artist} in ages!`)
+  if (progress.current_artist)
+    strings.push(`I'd sell my left kidney to see ${progress.current_artist} live…`)
   return strings
 }
 

@@ -7,11 +7,7 @@ import { buildKampAPI } from './kampAPI'
 
 function _kampTokenFilePath(): string {
   if (process.platform === 'win32') {
-    return join(
-      process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'),
-      'kamp',
-      '.token'
-    )
+    return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'kamp', '.token')
   }
   return join(homedir(), '.local', 'share', 'kamp', '.token')
 }

@@ -699,6 +699,208 @@ body,
   color: var(--text);
 }
 
+/* Onboarding screen -------------------------------------------------------- */
+
+.onboarding-titlebar {
+  /* Sits above the nav tabs, in the hidden-title-bar area.
+     Left padding clears the macOS traffic-light buttons. */
+  padding: 6px 16px 6px 80px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+  -webkit-app-region: drag;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.onboarding-screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  background: var(--bg);
+}
+
+.onboarding-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  width: 100%;
+}
+
+/* Reserve vertical space equal to the fixed-position vinyl height so content
+   doesn't overlap the record. */
+.onboarding-vinyl-spacer {
+  flex-shrink: 0;
+  height: min(350px, 45vw);
+}
+
+/* Welcome step */
+.onboarding-welcome-text {
+  font-size: 28px;
+  color: var(--text);
+  text-align: center;
+}
+
+/* Library step */
+.onboarding-library {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.onboarding-heading {
+  font-size: 24px;
+  color: var(--text);
+  text-align: center;
+}
+
+/* Shared primary button */
+.onboarding-primary-btn {
+  background: var(--accent);
+  border: none;
+  color: var(--text-on-accent);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 28px;
+  border-radius: 8px;
+  cursor: pointer;
+  min-width: 200px;
+}
+
+.onboarding-primary-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.onboarding-primary-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.onboarding-error {
+  font-size: 13px;
+  color: var(--error);
+  text-align: center;
+  max-width: 340px;
+}
+
+/* "While we're waiting" card */
+.onboarding-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px 40px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: 400px;
+  width: 100%;
+}
+
+.onboarding-card-heading {
+  font-size: 22px;
+  color: var(--text);
+  text-align: center;
+}
+
+.onboarding-card-body {
+  font-size: 14px;
+  color: var(--text-dim);
+  text-align: center;
+  line-height: 1.65;
+  margin: 0;
+}
+
+.onboarding-skip-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-top: 4px;
+}
+
+.onboarding-skip-btn:hover {
+  text-decoration: underline;
+}
+
+/* Almost Done rotating text */
+.onboarding-almost-done-text {
+  font-size: 24px;
+  color: var(--text);
+  text-align: center;
+  transition: opacity 0.35s ease;
+}
+
+/* Vinyl record — fixed to the viewport so it can animate past the transport
+   bar without being clipped by overflow:hidden ancestors. The transport bar
+   renders above it (z-index:10) so it appears to slide under as it sinks. */
+.onboarding-vinyl-wrap {
+  position: fixed;
+  bottom: var(--transport-h);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  line-height: 0;
+  width: min(700px, 90vw);
+}
+
+.onboarding-vinyl-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.onboarding-vinyl-wrap--rising {
+  animation: onboarding-vinyl-rise 0.7s ease-out forwards;
+}
+
+.onboarding-vinyl-wrap--spinning {
+  /* disc spins via child SVG class; wrapper stays put */
+}
+
+.onboarding-vinyl-wrap--sinking {
+  animation: onboarding-vinyl-sink 0.6s ease-in forwards;
+}
+
+@keyframes onboarding-vinyl-rise {
+  from {
+    transform: translateX(-50%) translateY(70%);
+  }
+  to {
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes onboarding-vinyl-sink {
+  from {
+    transform: translateX(-50%) translateY(0);
+  }
+  to {
+    transform: translateX(-50%) translateY(115%);
+  }
+}
+
+/* Spinning disc (SVG group) */
+.onboarding-disc--spinning {
+  animation: onboarding-disc-spin 2.4s linear infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes onboarding-disc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* App body ----------------------------------------------------------------- */
 
 .app-body {
@@ -937,6 +1139,8 @@ body,
 /* Transport bar ------------------------------------------------------------ */
 
 .transport-bar {
+  position: relative;
+  z-index: 10;
   height: var(--transport-h);
   border-top: 1px solid var(--border);
   background: var(--surface);

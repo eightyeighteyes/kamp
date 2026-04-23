@@ -1,4 +1,14 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, Menu, session, net } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  Menu,
+  session,
+  net,
+  screen as electronScreen
+} from 'electron'
 import { join, resolve } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
@@ -79,9 +89,9 @@ function sendToHelper(msg: object): void {
 }
 
 function postToPlayer(path: string): void {
-  net.fetch(`http://127.0.0.1:8000${path}`, { method: 'POST', headers: authHeaders() }).catch(
-    () => {}
-  )
+  net
+    .fetch(`http://127.0.0.1:8000${path}`, { method: 'POST', headers: authHeaders() })
+    .catch(() => {})
 }
 
 function startNowPlayingHelper(): void {
@@ -321,7 +331,15 @@ type NetFetchOptions = Parameters<typeof net.fetch>[1] & { session?: Electron.Se
 type WindowBounds = { x: number; y: number; width: number; height: number }
 
 function loadWindowBounds(): WindowBounds {
-  const defaults: WindowBounds = { x: 0, y: 0, width: 900, height: 670 }
+  const { width: sw, height: sh } = electronScreen.getPrimaryDisplay().workAreaSize
+  const w = 900
+  const h = 1000
+  const defaults: WindowBounds = {
+    x: Math.round((sw - w) / 2),
+    y: Math.round((sh - h) / 2),
+    width: w,
+    height: h
+  }
   try {
     const file = join(app.getPath('userData'), 'window-state.json')
     return JSON.parse(readFileSync(file, 'utf8')) as WindowBounds

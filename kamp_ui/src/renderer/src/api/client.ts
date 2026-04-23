@@ -71,9 +71,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
     headers:
-      body !== undefined
-        ? _authHeaders({ 'Content-Type': 'application/json' })
-        : _authHeaders(),
+      body !== undefined ? _authHeaders({ 'Content-Type': 'application/json' }) : _authHeaders(),
     body: body !== undefined ? JSON.stringify(body) : undefined
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`)

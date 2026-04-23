@@ -256,7 +256,11 @@ class Config:
                 existing = _migrate_from_toml(db, toml_path)
 
             if not existing:
-                raise FileNotFoundError("No configuration found.")
+                # No TOML to migrate from — seed defaults so the daemon can
+                # start. The UI onboarding flow sets paths.library and
+                # paths.watch_folder once the user completes setup.
+                cls.write_defaults(db)
+                existing = dict(_CONFIG_DEFAULTS)
 
         # One-time migration: move Last.fm session key from the settings table
         # (where it was stored as plaintext) to the OS keychain via the sessions

@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
@@ -10,7 +10,7 @@ import { PreferencesDialog } from './components/PreferencesDialog'
 import { QueuePanel } from './components/QueuePanel'
 import { SearchBar } from './components/SearchBar'
 import { SearchView } from './components/SearchView'
-import { SetupScreen } from './components/SetupScreen'
+import { OnboardingScreen } from './components/OnboardingScreen'
 import { SplashScreen } from './components/SplashScreen'
 import { TransportBar } from './components/TransportBar'
 import { SandboxedExtensionLoader } from './components/SandboxedExtensionLoader'
@@ -115,6 +115,14 @@ export default function App(): React.JSX.Element {
   // Key: active main panel id (built-in view name or extension panel id).
   const viewScrollRef = useRef<Partial<Record<string, number>>>({})
 
+  // Onboarding: required when the library is empty on first connect.
+  // Determined once (after the splash clears) so the flow doesn't exit prematurely
+  // when hasAlbums becomes true mid-scan while a card step is still on screen.
+  const [onboardingRequired, setOnboardingRequired] = useState<boolean | null>(null)
+  const [onboardingComplete, setOnboardingComplete] = useState(false)
+  const [onboardingTitle, setOnboardingTitle] = useState('Welcome to Kamp')
+  const handleOnboardingComplete = useCallback(() => setOnboardingComplete(true), [])
+
   // Splash: shown while reconnecting, then lingers 1s after connect so the
   // library fetch completes before the app is revealed, then fades out.
   const [splashHiding, setSplashHiding] = useState(false)
@@ -133,6 +141,15 @@ export default function App(): React.JSX.Element {
       clearTimeout(splashFadeRef.current)
     }
   }, [serverStatus])
+
+  // Determine onboarding requirement once the splash clears (by which time
+  // loadLibrary has had ~1.5s to complete and hasAlbums is stable).
+  useEffect(() => {
+    if (splashGone && onboardingRequired === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setOnboardingRequired(!hasAlbums)
+    }
+  }, [splashGone, hasAlbums, onboardingRequired])
 
   useEffect(() => {
     loadUiState().then(() => loadLibrary())
@@ -396,7 +413,7 @@ export default function App(): React.JSX.Element {
     )
   }
 
-  const showSetup = serverStatus === 'connected' && !hasAlbums
+  const showSetup = onboardingRequired === true && !onboardingComplete
 
   // Panels to show as tabs in the main area nav bar.
   const mainPanels = layout.panelsInSlot('main')
@@ -425,7 +442,13 @@ export default function App(): React.JSX.Element {
 
   // Determine what to render in the main content area.
   function renderMainContent(): React.JSX.Element {
-    if (showSetup) return <SetupScreen />
+    if (showSetup)
+      return (
+        <OnboardingScreen
+          onComplete={handleOnboardingComplete}
+          onTitleChange={setOnboardingTitle}
+        />
+      )
     const extPanel = activeExtPanel ? mainPanels.find((p) => p.id === activeExtPanel) : null
     // Library and NowPlaying are always mounted so <img> elements (and their
     // artLoaded state) survive view switches. The inactive pane is hidden via
@@ -467,21 +490,20 @@ export default function App(): React.JSX.Element {
       {serverStatus === 'reconnecting' && (
         <div className="reconnecting-banner">Reconnecting to server…</div>
       )}
-      {!showSetup && (
-        <nav className="view-tabs">
-          {mainPanels.map((panel) => (
-            <button
-              key={panel.id}
-              className={isActiveMain(panel) && !searchQuery ? 'active' : ''}
-              onClick={() => activateMain(panel)}
-            >
-              {panel.title}
-            </button>
-          ))}
-          <SearchBar ref={searchBarRef} />
-          <PanelPicker layout={layout} />
-        </nav>
-      )}
+      {showSetup && <div className="onboarding-titlebar">{onboardingTitle}</div>}
+      <nav className="view-tabs">
+        {mainPanels.map((panel) => (
+          <button
+            key={panel.id}
+            className={isActiveMain(panel) && !searchQuery ? 'active' : ''}
+            onClick={() => activateMain(panel)}
+          >
+            {panel.title}
+          </button>
+        ))}
+        <SearchBar ref={searchBarRef} />
+        <PanelPicker layout={layout} />
+      </nav>
       <div className="app-body">
         {!showSetup && isPanelVisible(leftPanel) && <SlotPanel panel={leftPanel!} />}
         <main className="main-content" ref={mainContentRef}>

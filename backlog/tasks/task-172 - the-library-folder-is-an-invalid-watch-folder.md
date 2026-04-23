@@ -1,13 +1,15 @@
 ---
 id: TASK-172
 title: the library folder is an invalid watch folder
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-23 01:03'
+updated_date: '2026-04-23 01:22'
 labels: []
 milestone: m-30
 dependencies: []
 priority: medium
+ordinal: 11000
 ---
 
 ## Description

@@ -1,15 +1,15 @@
 ---
 id: TASK-170
 title: Add Last.fm login step to onboarding flow
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-22 13:12'
-updated_date: '2026-04-23 01:00'
+updated_date: '2026-04-23 01:22'
 labels: []
 milestone: m-30
 dependencies: []
 priority: medium
-ordinal: 1000
+ordinal: 10000
 ---
 
 ## Description

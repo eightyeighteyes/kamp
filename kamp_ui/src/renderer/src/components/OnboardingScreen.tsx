@@ -295,7 +295,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                   {lastfmBusy ? 'Connecting…' : 'Connect Last.fm'}
                 </button>
                 <p className="onboarding-card-body">
-                  Connect your <strong>Last.fm</strong> account to scrobble what you listen to.
+                  Connect your <strong>Last.fm</strong> account to save your listening history.
                 </p>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
                 <button className="onboarding-skip-btn" onClick={advancePastCards}>

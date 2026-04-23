@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.12.0](https://github.com/eightyeighteyes/kamp/compare/v1.11.2...v1.12.0) (2026-04-23)
+
+
+### Features
+
+* add Last.fm login step to onboarding flow (TASK-170) ([#281](https://github.com/eightyeighteyes/kamp/issues/281)) ([117fa52](https://github.com/eightyeighteyes/kamp/commit/117fa52244afbf433a1707389ac546fef1f9b2ab))
+* dynamic rotating strings in onboarding Almost Done screen (TASK-169) ([#283](https://github.com/eightyeighteyes/kamp/issues/283)) ([1bbea71](https://github.com/eightyeighteyes/kamp/commit/1bbea713436a426ca8450705bf28afc620838d61))
+* multi-step onboarding flow with animated vinyl record (TASK-139) ([#278](https://github.com/eightyeighteyes/kamp/issues/278)) ([eed2958](https://github.com/eightyeighteyes/kamp/commit/eed29582caff0d4a3f63f2f26633a5354917bbe0))
+* onboarding exit polish — "All set!" string and art-preload delay (TASK-171) ([#280](https://github.com/eightyeighteyes/kamp/issues/280)) ([00cab96](https://github.com/eightyeighteyes/kamp/commit/00cab962a4ad192d81fffc684f0eb1ce5d292af9))
+
+
+### Bug Fixes
+
+* guard against watch folder matching library folder (TASK-172) ([#282](https://github.com/eightyeighteyes/kamp/issues/282)) ([458365c](https://github.com/eightyeighteyes/kamp/commit/458365c18f089367e5c7042c7fdff3a78ee0be46))
+
 ## [1.11.2](https://github.com/eightyeighteyes/kamp/compare/v1.11.1...v1.11.2) (2026-04-21)
 
 

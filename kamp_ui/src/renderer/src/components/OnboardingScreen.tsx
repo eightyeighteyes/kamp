@@ -54,6 +54,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
   const [bandcampBusy, setBandcampBusy] = useState(false)
   const [stringIndex, setStringIndex] = useState(0)
   const [stringVisible, setStringVisible] = useState(true)
+  const [showAllSet, setShowAllSet] = useState(false)
   // Fade transition state for content changes
   const [contentVisible, setContentVisible] = useState(true)
 
@@ -92,10 +93,17 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
   useEffect(() => {
     if (scanStatus !== 'done' || scanDoneRef.current) return
     scanDoneRef.current = true
-    setVinylPhase('sinking')
     if (step === 'almost-done') {
-      // Delay matches the CSS sinking animation (~600ms).
-      setTimeout(() => onCompleteRef.current(), 700)
+      // Snap rotating strings to "All set!" immediately (deferred to avoid sync setState in effect).
+      setTimeout(() => setShowAllSet(true), 0)
+      // After the 500ms hold, sink the vinyl; then wait for sink + art-preload buffer.
+      setTimeout(() => {
+        setVinylPhase('sinking')
+        // ~600ms CSS sink + ~1s buffer for the browser to begin fetching album art.
+        setTimeout(() => onCompleteRef.current(), 1600)
+      }, 500)
+    } else {
+      setTimeout(() => setVinylPhase('sinking'), 0)
     }
   }, [scanStatus, step])
 
@@ -241,8 +249,11 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
         )}
 
         {step === 'almost-done' && (
-          <div className="onboarding-almost-done-text" style={{ opacity: stringVisible ? 1 : 0 }}>
-            {ALMOST_DONE_STRINGS[stringIndex]}
+          <div
+            className="onboarding-almost-done-text"
+            style={{ opacity: showAllSet || stringVisible ? 1 : 0 }}
+          >
+            {showAllSet ? 'All set!' : ALMOST_DONE_STRINGS[stringIndex]}
           </div>
         )}
       </div>

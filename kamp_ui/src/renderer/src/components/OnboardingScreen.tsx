@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { connectLastfm } from '../api/client'
+import { type ScanProgress, connectLastfm } from '../api/client'
 import { useStore } from '../store'
 
 type OnboardingStep = 'welcome' | 'library' | 'watch-folder' | 'bandcamp' | 'lastfm' | 'almost-done'
@@ -14,14 +14,25 @@ const STEP_TITLES: Record<OnboardingStep, string> = {
   'almost-done': 'Almost Done'
 }
 
-const ALMOST_DONE_STRINGS = [
+const STATIC_STRINGS = [
   'Almost done…',
+  'Just a little bit longer…',
   "In the Library, press 'A' to show or hide the Artist panel",
   "The 'Now Playing' tab shows off your album art",
   "Press 'Q' at any time to show or hide the Queue panel",
   'Good things are worth waiting for…',
   'What are you gonna listen to first?'
 ]
+
+function buildDynamicStrings(progress: ScanProgress | null): string[] {
+  if (!progress?.active) return []
+  const strings: string[] = []
+  if (progress.current_file && progress.current_artist) strings.push(`My favorite song is ${progress.current_file} by ${progress.current_artist}…`)
+  if (progress.top_artist) strings.push(`You ever hear of ${progress.top_artist}?`)
+  if (progress.current_artist) strings.push(`Ooooh, I haven't heard ${progress.current_artist} in ages!`)
+  if (progress.current_artist) strings.push(`I'd sell my left kidney to see ${progress.current_artist} live…`)
+  return strings
+}
 
 // Vinyl proportions derived from the splash screen record (r=86 baseline).
 // All values below are for R=300.
@@ -58,7 +69,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
   const [lastfmUsername, setLastfmUsername] = useState('')
   const [lastfmPassword, setLastfmPassword] = useState('')
   const [lastfmBusy, setLastfmBusy] = useState(false)
-  const [stringIndex, setStringIndex] = useState(0)
+  const [currentString, setCurrentString] = useState(STATIC_STRINGS[0])
   const [stringVisible, setStringVisible] = useState(true)
   const [showAllSet, setShowAllSet] = useState(false)
   // Fade transition state for content changes
@@ -113,16 +124,28 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
     }
   }, [scanStatus, step])
 
+  // Keep refs so the rotation interval can read the latest values without
+  // needing them as dependencies (which would restart the interval on every poll tick).
+  const dynamicStringsRef = useRef<string[]>([])
+  const stringPosRef = useRef(0)
+  useEffect(() => {
+    dynamicStringsRef.current = buildDynamicStrings(scanProgress)
+  }, [scanProgress])
+
   // Rotate the 'Almost done' strings every 4s with a fade.
+  // The next string is snapshotted during the fade-out so live scanProgress
+  // updates between rotations never mutate the currently visible string.
   useEffect(() => {
     if (step !== 'almost-done') return
     const t = setInterval(() => {
       setStringVisible(false)
       setTimeout(() => {
-        setStringIndex((i) => (i + 1) % ALMOST_DONE_STRINGS.length)
+        const pool = [...STATIC_STRINGS, ...dynamicStringsRef.current]
+        stringPosRef.current = (stringPosRef.current + 1) % pool.length
+        setCurrentString(pool[stringPosRef.current])
         setStringVisible(true)
       }, 350)
-    }, 4000)
+    }, 3000)
     return () => clearInterval(t)
   }, [step])
 
@@ -316,7 +339,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
             className="onboarding-almost-done-text"
             style={{ opacity: showAllSet || stringVisible ? 1 : 0 }}
           >
-            {showAllSet ? 'All set!' : ALMOST_DONE_STRINGS[stringIndex]}
+            {showAllSet ? 'All set!' : currentString}
           </div>
         )}
       </div>

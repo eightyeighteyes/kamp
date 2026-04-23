@@ -827,7 +827,9 @@ class TestLibraryScanner:
 
         calls: list[tuple[int, int]] = []
         index = LibraryIndex(tmp_path / "library.db")
-        LibraryScanner(index).scan(lib, on_progress=lambda c, t: calls.append((c, t)))
+        LibraryScanner(index).scan(
+            lib, on_progress=lambda c, t, _track: calls.append((c, t))
+        )
         index.close()
 
         # One call per new file; total is always 3.

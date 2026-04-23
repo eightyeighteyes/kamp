@@ -302,7 +302,14 @@ def create_app(
     # detect the bump on the next ping and push a "library.changed" notification.
     _state: dict[str, Any] = {
         "library_path": library_path,
-        "scan_progress": {"active": False, "current": 0, "total": 0},
+        "scan_progress": {
+            "active": False,
+            "current": 0,
+            "total": 0,
+            "current_file": None,
+            "current_artist": None,
+            "top_artist": None,
+        },
         "ui_active_view": ui_active_view,
         "ui_sort_order": ui_sort_order,
         "ui_queue_panel_open": ui_queue_panel_open,
@@ -510,20 +517,54 @@ def create_app(
         if _state["library_path"] is None:
             raise HTTPException(status_code=503, detail="Library path not configured")
 
-        def _on_progress(current: int, total: int) -> None:
+        # Running artist frequency map, accumulated across all on_progress calls.
+        artist_counts: dict[str, int] = {}
+
+        def _on_progress(current: int, total: int, track: Track | None) -> None:
+            current_file: str | None = None
+            current_artist: str | None = None
+            if track is not None:
+                current_file = track.title.strip() or track.file_path.stem
+                if track.artist.strip():
+                    current_artist = track.artist.strip()
+                    artist_counts[current_artist] = (
+                        artist_counts.get(current_artist, 0) + 1
+                    )
+            top_artist = (
+                max(artist_counts, key=lambda a: artist_counts[a])
+                if artist_counts
+                else None
+            )
             _state["scan_progress"] = {
                 "active": True,
                 "current": current,
                 "total": total,
+                "current_file": current_file,
+                "current_artist": current_artist,
+                "top_artist": top_artist,
             }
 
-        _state["scan_progress"] = {"active": True, "current": 0, "total": 0}
+        _state["scan_progress"] = {
+            "active": True,
+            "current": 0,
+            "total": 0,
+            "current_file": None,
+            "current_artist": None,
+            "top_artist": None,
+        }
         try:
             result = LibraryScanner(index).scan(
                 _state["library_path"], on_progress=_on_progress
             )
         finally:
-            _state["scan_progress"] = {"active": False, "current": 0, "total": 0}
+            _state["scan_progress"] = {
+                "active": False,
+                "current": 0,
+                "total": 0,
+                "current_file": None,
+                "current_artist": None,
+                "top_artist": None,
+            }
 
         return ScanResult(
             added=result.added,

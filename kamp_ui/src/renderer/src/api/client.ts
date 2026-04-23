@@ -188,7 +188,14 @@ export const setSortOrderApi = (
 export const setQueuePanelApi = (open: boolean): Promise<{ ok: boolean }> =>
   post('/api/v1/ui/queue-panel', { open })
 
-export type ScanProgress = { active: boolean; current: number; total: number }
+export type ScanProgress = {
+  active: boolean
+  current: number
+  total: number
+  current_file?: string | null
+  current_artist?: string | null
+  top_artist?: string | null
+}
 
 export const getScanProgress = (): Promise<ScanProgress> => get('/api/v1/library/scan/progress')
 

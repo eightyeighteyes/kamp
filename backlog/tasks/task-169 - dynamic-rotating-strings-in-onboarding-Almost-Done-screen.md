@@ -1,10 +1,10 @@
 ---
 id: TASK-169
 title: dynamic rotating strings in onboarding Almost Done screen
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-22 02:11'
-updated_date: '2026-04-23 01:22'
+updated_date: '2026-04-23 01:48'
 labels:
   - feature
   - ui
@@ -13,7 +13,7 @@ milestone: m-30
 dependencies:
   - TASK-139
 priority: low
-ordinal: 1000
+ordinal: 12000
 ---
 
 ## Description

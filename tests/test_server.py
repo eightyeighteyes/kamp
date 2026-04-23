@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -660,6 +661,39 @@ class TestScanProgressEndpoint:
             data = c.get("/api/v1/library/scan/progress").json()
 
         assert data["active"] is False
+
+    def test_progress_exposes_track_data(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        captured: list[Any] = []
+
+        def _fake_scan(path: object, on_progress: Any = None) -> MagicMock:
+            captured.append(on_progress)
+            return MagicMock(added=1, removed=0, unchanged=0)
+
+        with patch("kamp_core.server.LibraryScanner") as MockScanner:
+            MockScanner.return_value.scan.side_effect = _fake_scan
+            app = create_app(
+                index=mock_index,
+                engine=mock_engine,
+                queue=mock_queue,
+                library_path=Path("/music"),
+            )
+            c = TestClient(app)
+            c.post("/api/v1/library/scan")
+
+        # Invoke the captured callback with two tracks to simulate scan progress.
+        track_a = _track(1, artist="Aphex Twin", album="Selected Ambient Works")
+        track_a.title = "Xtal"
+        track_b = _track(2, artist="Aphex Twin", album="Selected Ambient Works")
+        track_b.title = "Tha"
+        captured[0](1, 2, track_a)
+        captured[0](2, 2, track_b)
+
+        data = c.get("/api/v1/library/scan/progress").json()
+        assert data["current_file"] == "Tha"
+        assert data["current_artist"] == "Aphex Twin"
+        assert data["top_artist"] == "Aphex Twin"
 
 
 # ---------------------------------------------------------------------------

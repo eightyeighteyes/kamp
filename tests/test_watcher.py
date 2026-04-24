@@ -14,9 +14,11 @@ from kamp_daemon.config import (
 )
 from watchdog.events import (
     DirDeletedEvent,
+    DirModifiedEvent,
     DirMovedEvent,
     FileCreatedEvent,
     FileDeletedEvent,
+    FileModifiedEvent,
     FileMovedEvent,
 )
 
@@ -933,6 +935,34 @@ class TestLibraryHandler:
             )
 
         mock_schedule.assert_called_once()
+
+    def test_fires_scan_on_directory_modified(self, tmp_path: Path) -> None:
+        """DirModifiedEvent schedules a re-scan.
+
+        macOS FSEvents coalesces file renames (shutil.move on the same
+        filesystem) into DirModifiedEvent on the parent directory rather than
+        emitting FileCreatedEvent for the moved file.  This is the primary
+        trigger for pipeline-ingested tracks.
+        """
+        handler = _make_library_handler(tmp_path)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_modified(
+                DirModifiedEvent(str(tmp_path / "library" / "Artist" / "Album"))
+            )
+
+        mock_schedule.assert_called_once()
+
+    def test_ignores_file_modified_event(self, tmp_path: Path) -> None:
+        """FileModifiedEvent (e.g. tag write) does not trigger a re-scan."""
+        handler = _make_library_handler(tmp_path)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_modified(
+                FileModifiedEvent(str(tmp_path / "library" / "track.mp3"))
+            )
+
+        mock_schedule.assert_not_called()
 
     def test_debounces_rapid_events(self, tmp_path: Path) -> None:
         """Multiple rapid events collapse into a single scan call."""

@@ -344,6 +344,14 @@ class _LibraryHandler(FileSystemEventHandler):
         if isinstance(event, FileCreatedEvent) and self._is_audio(event.src_path):
             self._schedule()
 
+    def on_modified(self, event: FileSystemEvent) -> None:
+        # FSEvents on macOS coalesces file renames (shutil.move on the same
+        # filesystem) into DirModifiedEvent on the parent directory rather than
+        # emitting FileCreatedEvent for the moved file.  Schedule a rescan on
+        # any directory modification so pipeline-ingested tracks are picked up.
+        if event.is_directory:
+            self._schedule()
+
     def on_deleted(self, event: FileSystemEvent) -> None:
         # Directory deletions (e.g. entire album folder removed) are caught here
         # in addition to individual audio file deletions.

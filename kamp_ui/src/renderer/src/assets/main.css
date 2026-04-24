@@ -272,6 +272,25 @@ body,
   animation: bandcamp-pulse 1.4s ease-in-out infinite;
 }
 
+.album-grid-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pipeline-indicator {
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  color: #666;
+  cursor: default;
+}
+
+.pipeline-indicator--active {
+  color: var(--accent);
+  animation: bandcamp-pulse 1.4s ease-in-out infinite;
+}
+
 .bandcamp-context-menu {
   position: absolute;
   top: calc(100% + 4px);

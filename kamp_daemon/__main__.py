@@ -114,12 +114,6 @@ def main() -> None:
     daemon_parser.add_argument("--watch-folder", metavar="DIR", type=Path, default=None)
     daemon_parser.add_argument("--library", metavar="DIR", type=Path, default=None)
     daemon_parser.add_argument(
-        "--no-menu-bar",
-        action="store_true",
-        default=False,
-        help="Disable the macOS menu bar icon (shown by default on macOS).",
-    )
-    daemon_parser.add_argument(
         "--host",
         default="127.0.0.1",
         help="Bind address for the HTTP server (default: 127.0.0.1)",
@@ -160,12 +154,6 @@ def main() -> None:
     install_parser = subparsers.add_parser(
         "install-service",
         help="Register kamp as a launchd user agent (macOS). Starts at login, runs in background.",
-    )
-    install_parser.add_argument(
-        "--no-menu-bar",
-        action="store_true",
-        default=False,
-        help="Exclude the menu bar icon from the installed service (shown by default on macOS).",
     )
     subparsers.add_parser(
         "uninstall-service",
@@ -273,9 +261,7 @@ def main() -> None:
     command = args.command or "daemon"
 
     if command == "install-service":
-        _cmd_install_service(
-            args.config, menu_bar=not getattr(args, "no_menu_bar", False)
-        )
+        _cmd_install_service(args.config)
         return
     if command == "uninstall-service":
         _cmd_uninstall_service()
@@ -362,7 +348,6 @@ def main() -> None:
                 config.paths.library = args.library
             _cmd_daemon(
                 config,
-                menu_bar=not getattr(args, "no_menu_bar", False),
                 host=getattr(args, "host", "127.0.0.1"),
                 port=getattr(args, "port", 8000),
                 library_path=getattr(args, "library", None),
@@ -543,7 +528,6 @@ def _cmd_server(
     )
     _cmd_daemon(
         config,
-        menu_bar=False,
         host=host,
         port=port,
         library_path=library_path,
@@ -568,7 +552,6 @@ def _cmd_sync(config: Config, download_all: bool = False) -> None:
 
 def _cmd_daemon(
     config: Config,
-    menu_bar: bool = False,
     host: str = "127.0.0.1",
     port: int = 8000,
     library_path: Path | None = None,
@@ -933,26 +916,10 @@ def _cmd_daemon(
     # has the callback set.
     _sync_trigger_ref[0] = core.syncer.sync_once
 
-    if menu_bar and platform.system() == "Darwin":
-        from .menu_bar import MenuBarApp
-
-        # MenuBarApp also wires status_callback; chain it so both the menu bar
-        # and the WebSocket push channel receive status updates.
-        menu_bar_app = MenuBarApp(core)
-        _menu_bar_status_cb = core.syncer.status_callback
-
-        def _chained_status_cb(msg: str) -> None:
-            app.state.notify_bandcamp_sync_status(msg)
-            if _menu_bar_status_cb is not None:
-                _menu_bar_status_cb(msg)
-
-        core.syncer.status_callback = _chained_status_cb
-        core.start()
-        menu_bar_app.run()
-    else:
-        core.syncer.status_callback = app.state.notify_bandcamp_sync_status
-        core.start()
-        core.wait()
+    core.syncer.status_callback = app.state.notify_bandcamp_sync_status
+    core.watcher.stage_callback = app.state.notify_pipeline_stage
+    core.start()
+    core.wait()
 
     # --- Shutdown sequence ---
     # Signal uvicorn to drain in-flight requests and stop its event loop.
@@ -1160,7 +1127,7 @@ def _resolve_mpv_binary() -> str:
     return shutil.which("mpv") or "mpv"
 
 
-def _cmd_install_service(config_path: Path, menu_bar: bool = False) -> None:
+def _cmd_install_service(config_path: Path) -> None:
     from kamp_core.library import LibraryIndex
 
     db = LibraryIndex(_state_dir() / "library.db")
@@ -1172,7 +1139,6 @@ def _cmd_install_service(config_path: Path, menu_bar: bool = False) -> None:
         db.close()
     exec_path = _resolve_kamp_binary()
     _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    menu_bar_arg = "" if menu_bar else "\n        <string>--no-menu-bar</string>"
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1184,7 +1150,7 @@ def _cmd_install_service(config_path: Path, menu_bar: bool = False) -> None:
         <string>{exec_path}</string>
         <string>--config</string>
         <string>{config_path}</string>
-        <string>daemon</string>{menu_bar_arg}
+        <string>daemon</string>
     </array>
     <key>RunAtLoad</key>         <true/>
     <key>KeepAlive</key>         <true/>

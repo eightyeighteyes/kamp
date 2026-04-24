@@ -58,7 +58,7 @@ class PathsConfig:
 @dataclass
 class MusicBrainzConfig:
     # When False: skip ID3 writes when MB artist/album differs from existing tags.
-    trust_musicbrainz_when_tags_conflict: bool = True
+    trust_musicbrainz_when_tags_conflict: bool = False
 
 
 @dataclass
@@ -105,7 +105,7 @@ def _prompt(label: str, default: str) -> str:
 _CONFIG_DEFAULTS: dict[str, str] = {
     "paths.watch_folder": "~/Music/staging",
     "paths.library": "~/Music",
-    "musicbrainz.trust-musicbrainz-when-tags-conflict": "true",
+    "musicbrainz.trust-musicbrainz-when-tags-conflict": "false",
     "artwork.min_dimension": "1000",
     "artwork.max_bytes": "1000000",
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",

@@ -1,10 +1,10 @@
 ---
 id: TASK-168
 title: eliminate keychain dialog after app updates via Data Protection Keychain
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-20 21:30'
-updated_date: '2026-04-23 14:16'
+updated_date: '2026-04-24 00:14'
 labels:
   - feature
   - os-integration
@@ -14,6 +14,7 @@ milestone: m-31
 dependencies:
   - TASK-167
 priority: medium
+ordinal: 1000
 ---
 
 ## Description

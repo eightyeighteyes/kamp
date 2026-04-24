@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Allows kSecUseDataProtectionKeychain — items are bound to the
+         code-signing identity (team ID + bundle ID), not the binary hash,
+         so they survive app updates without triggering a keychain dialog. -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>X6K4L8ZMLS.com.kamp.app</string>
+    </array>
+</dict>
+</plist>

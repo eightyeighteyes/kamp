@@ -18,7 +18,7 @@ import type { ExtensionInfo, SlotId, PlayerState } from '../../../shared/kampAPI
  *   player.onPlayStateChange(cb) — subscription, same pattern
  *   library.getAlbumArtUrl()   — sync, constructs URL against the hardcoded server origin
  *
- * Hash (index.html script-src): sha256-pZ2P3MM/ZsmuxQcGlYScwK38Sz5eE+wn9o/rNUV96gA=
+ * Hash (index.html script-src): sha256-Qrq7V00AEpImSbCKsaI7NRxZg/HdKn5nEEyG5fkTiU0=
  * If you change SANDBOX_SHIM, recompute the hash and update index.html:
  *   node -e "const s='<paste shim>';console.log('sha256-'+require('crypto').createHash('sha256').update(s,'utf8').digest('base64'))"
  *

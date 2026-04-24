@@ -121,8 +121,8 @@ def main() -> None:
     daemon_parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port for the HTTP server (default: 8000)",
+        default=47483,
+        help="Port for the HTTP server (default: 47483)",
     )
     daemon_sub = daemon_parser.add_subparsers(dest="daemon_command")
     daemon_sub.add_parser(
@@ -180,8 +180,8 @@ def main() -> None:
     server_parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to listen on (default: 8000)",
+        default=47483,
+        help="Port to listen on (default: 47483)",
     )
     server_parser.add_argument(
         "--library",
@@ -349,7 +349,7 @@ def main() -> None:
             _cmd_daemon(
                 config,
                 host=getattr(args, "host", "127.0.0.1"),
-                port=getattr(args, "port", 8000),
+                port=getattr(args, "port", 47483),
                 library_path=getattr(args, "library", None),
             )
 
@@ -516,7 +516,7 @@ def _write_test_mp3(path: Path, *, with_mbid: bool = False) -> None:
 def _cmd_server(
     config: Config,
     host: str = "127.0.0.1",
-    port: int = 8000,
+    port: int = 47483,
     library_path: Path | None = None,
 ) -> None:
     # kamp server is now an alias for kamp daemon. The two were previously
@@ -553,7 +553,7 @@ def _cmd_sync(config: Config, download_all: bool = False) -> None:
 def _cmd_daemon(
     config: Config,
     host: str = "127.0.0.1",
-    port: int = 8000,
+    port: int = 47483,
     library_path: Path | None = None,
 ) -> None:
     import threading
@@ -784,6 +784,21 @@ def _cmd_daemon(
             _logger.exception("Unhandled error during manual Bandcamp sync")
             app.state.notify_bandcamp_sync_status("")  # back to idle
 
+    def _on_bandcamp_sync_all_trigger() -> None:
+        from .syncer import NeedsLoginError
+
+        fn = _sync_all_trigger_ref[0]
+        if fn is None:
+            return
+        try:
+            fn()
+        except NeedsLoginError:
+            _logger.warning("Bandcamp sync-all: no valid session — login required.")
+            app.state.notify_bandcamp_sync_status("")  # back to idle
+        except Exception:
+            _logger.exception("Unhandled error during Bandcamp sync-all")
+            app.state.notify_bandcamp_sync_status("")  # back to idle
+
     # Bandcamp username comes only from the session (set after Electron login flow).
     _bc_session = index.get_session("bandcamp")
     _bc_username: str | None = _bc_session.get("username") if _bc_session else None
@@ -811,9 +826,10 @@ def _cmd_daemon(
     _tp.write_text(_auth_token)
     os.chmod(_tp, 0o600)
 
-    # Filled after DaemonCore is constructed; the lambda above captures this list
-    # so the endpoint can call sync_once() without a forward-reference problem.
+    # Filled after DaemonCore is constructed; the lambdas above capture these
+    # lists so endpoints can call syncer methods without forward-reference issues.
     _sync_trigger_ref: list[Any] = [None]
+    _sync_all_trigger_ref: list[Any] = [None]
 
     app = create_app(
         index=index,
@@ -833,6 +849,7 @@ def _cmd_daemon(
         get_bandcamp_session=lambda: index.get_session("bandcamp"),
         on_bandcamp_disconnect=_on_bandcamp_disconnect,
         on_bandcamp_sync_trigger=_on_bandcamp_sync_trigger,
+        on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,
         dev_mode=bool(os.environ.get("KAMP_DEV")),
         auth_token=_auth_token,
     )
@@ -915,6 +932,7 @@ def _cmd_daemon(
     # first automatic sync (which may fire immediately on thread start) already
     # has the callback set.
     _sync_trigger_ref[0] = core.syncer.sync_once
+    _sync_all_trigger_ref[0] = core.syncer.sync_all_purchases
 
     core.syncer.status_callback = app.state.notify_bandcamp_sync_status
     core.watcher.stage_callback = app.state.notify_pipeline_stage

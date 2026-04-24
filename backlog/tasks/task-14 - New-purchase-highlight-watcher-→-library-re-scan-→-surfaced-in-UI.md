@@ -4,14 +4,15 @@ title: New purchase highlight (watcher → library re-scan → surfaced in UI)
 status: To Do
 assignee: []
 created_date: '2026-03-29 03:11'
-updated_date: '2026-04-24 16:05'
+updated_date: '2026-04-24 18:42'
 labels:
   - feature
   - ui
   - bandcamp
   - 'estimate: lp'
-milestone: m-31
+milestone: m-1
 dependencies: []
+priority: low
 ---
 
 ## Description

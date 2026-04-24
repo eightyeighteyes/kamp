@@ -322,6 +322,14 @@ class Syncer:
         if self.status_callback is not None:
             self.status_callback("")
 
+    def sync_all_purchases(self) -> None:
+        """Clear the sync-state file and re-download the entire Bandcamp collection."""
+        state_file = _state_dir() / "bandcamp_state.json"
+        if state_file.exists():
+            state_file.unlink()
+            logger.info("Bandcamp sync-all: cleared state file.")
+        self.sync_once(skip_auto_mark=True)
+
     def mark_synced(self) -> None:
         """Mark the entire collection as already downloaded without fetching anything."""
         bc = self._config.bandcamp

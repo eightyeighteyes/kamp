@@ -75,6 +75,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
   const [vinylPhase, setVinylPhase] = useState<VinylPhase>('rising')
   const [cardError, setCardError] = useState<string | null>(null)
   const [bandcampBusy, setBandcampBusy] = useState(false)
+  const [bandcampDownloadAll, setBandcampDownloadAll] = useState(false)
   const [lastfmUsername, setLastfmUsername] = useState('')
   const [lastfmPassword, setLastfmPassword] = useState('')
   const [lastfmBusy, setLastfmBusy] = useState(false)
@@ -206,6 +207,9 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
     try {
       const result = await window.api.bandcamp.beginLogin()
       if (result.ok) {
+        if (bandcampDownloadAll) {
+          window.api.bandcamp.triggerSyncAll().catch(console.error)
+        }
         changeStep('lastfm')
       } else {
         setCardError(result.error ?? 'Login cancelled.')
@@ -297,6 +301,14 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                   If you have a Bandcamp account, <strong>kamp</strong> can download your purchases
                   and put them into your library
                 </p>
+                <label className="onboarding-toggle">
+                  <input
+                    type="checkbox"
+                    checked={bandcampDownloadAll}
+                    onChange={(e) => setBandcampDownloadAll(e.target.checked)}
+                  />
+                  Download all my existing purchases
+                </label>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
                 <button className="onboarding-skip-btn" onClick={() => changeStep('lastfm')}>
                   Skip

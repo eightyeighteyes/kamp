@@ -57,7 +57,7 @@ _UA = (
 )
 
 # URL of the kamp server's Bandcamp HTTP proxy relay endpoint.
-_PROXY_FETCH_URL = "http://127.0.0.1:8000/api/v1/bandcamp/proxy-fetch"
+_PROXY_FETCH_URL = "http://127.0.0.1:47483/api/v1/bandcamp/proxy-fetch"
 
 
 def _read_auth_token() -> str | None:
@@ -86,10 +86,17 @@ class _ProxyResponse:
     modification regardless of whether we are in dev or bundled mode.
     """
 
-    def __init__(self, status_code: int, text: str, content_type: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        text: str,
+        content_type: str,
+        url: str | None = None,
+    ) -> None:
         self.status_code = status_code
         self.text = text
         self.content_type = content_type
+        self.url = url
         self.ok = 200 <= status_code < 300
 
     def json(self) -> Any:
@@ -157,6 +164,7 @@ class _ProxySession:
             status_code=data["status"],
             text=data["body"],
             content_type=data.get("content_type", "text/html"),
+            url=data.get("url"),
         )
 
     def get(self, url: str, **kwargs: Any) -> _ProxyResponse:
@@ -165,12 +173,15 @@ class _ProxySession:
     def post(self, url: str, **kwargs: Any) -> _ProxyResponse:
         return self._fetch("POST", url, **kwargs)
 
+    def head(self, url: str, **kwargs: Any) -> _ProxyResponse:
+        return self._fetch("HEAD", url, **kwargs)
+
 
 # Alias json.dumps to avoid shadowing in _ProxySession._fetch
 _json_dumps = json.dumps
 
 # Union type accepted by all internal helpers that take an HTTP session.
-_AnySession = Union[_requests.Session, "_ProxySession"]
+_AnySession = Union[_requests.Session, _ProxySession]
 
 
 class CookieError(Exception):
@@ -259,25 +270,23 @@ def sync_new_purchases(
 
     logger.info("%d new purchase(s) to download.", len(new_items))
 
-    # Scrape download-page URLs from the collection page HTML.
-    new_item_ids = {item["sale_item_id"] for item in new_items}
-    download_links = _get_download_links(username, new_item_ids, session)
-
     watch_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded: list[Path] = []
-    for item in new_items:
-        dl_url = download_links.get(item["sale_item_id"])
-        if not dl_url:
+    for i, item in enumerate(new_items):
+        if not item.get("redownload_url"):
             logger.warning(
-                "No download link found on collection page for %r by %r "
-                "(sale_item_id=%s) — skipping.",
+                "No redownload_url for %r by %r (sale_item_id=%s) — skipping.",
                 item.get("item_title"),
                 item.get("band_name"),
                 item.get("sale_item_id"),
             )
             continue
-        item["redownload_url"] = dl_url
+        # Throttle download-page requests to avoid Bandcamp 429 rate limiting.
+        # Each iteration GETs a signed download page before hitting the CDN;
+        # back-to-back requests across a large collection trigger the rate limit.
+        if i > 0:
+            time.sleep(1)
         try:
             if status_callback:
                 status_callback(
@@ -332,7 +341,7 @@ def _ensure_session(bc_config: BandcampConfig, index: "LibraryIndex") -> dict[st
 
 def _make_requests_session(
     session_data: dict[str, Any],
-) -> Union[_requests.Session, "_ProxySession"]:
+) -> Union[_requests.Session, _ProxySession]:
     """Build an HTTP session authenticated with cookies from *session_data*.
 
     In the PyInstaller bundle (``sys.frozen`` is True), returns a ``_ProxySession``
@@ -545,7 +554,13 @@ def _fetch_collection(
 def _paginate(
     endpoint: str, fan_id: int, session: _AnySession, index: "LibraryIndex"
 ) -> list[dict[str, Any]]:
-    """POST paginated requests to *endpoint* and return all items."""
+    """POST paginated requests to *endpoint* and return all items.
+
+    Each API response contains a ``redownload_urls`` dict keyed by
+    ``"{sale_item_type}{sale_item_id}"`` (e.g. ``"p380008227"``).  These
+    signed download-page URLs are embedded directly into each item so that
+    callers do not need a separate HTML-scraping step to obtain them.
+    """
     items: list[dict[str, Any]] = []
     older_than_token = f"{int(time.time())}:0:a::"
 
@@ -583,6 +598,16 @@ def _paginate(
             )
 
         page_items: list[dict[str, Any]] = result.get("items", [])
+        page_redownload_urls: dict[str, str] = result.get("redownload_urls", {})
+
+        for item in page_items:
+            sid = item.get("sale_item_id")
+            stype = item.get("sale_item_type", "p")
+            if sid is not None:
+                url = page_redownload_urls.get(f"{stype}{sid}")
+                if url:
+                    item["redownload_url"] = url
+
         items.extend(page_items)
 
         if len(page_items) < _COLLECTION_PAGE_BATCH:
@@ -670,6 +695,33 @@ def _get_cdn_url(redownload_url: str, fmt: str, session: _AnySession) -> str:
     return cdn_url
 
 
+def _resolve_cdn_redirect(cdn_url: str, session: _AnySession) -> str:
+    """Authenticate the popplers5 CDN URL so that a subsequent cookieless download works.
+
+    popplers5.bandcamp.com serves ZIP content when accessed with valid Bandcamp
+    session cookies; without cookies it returns an HTML error page (HTTP 200).
+    An authenticated GET+stream (no body read) appears to activate the signed
+    URL server-side, allowing the follow-up cookieless download from
+    ``_download_file`` to succeed.  In practice popplers5 does not issue a
+    redirect — it serves directly — so the returned URL is the same as the
+    input.
+
+    In frozen mode ``session`` is a ``_ProxySession`` that routes through
+    Electron's net.fetch (which carries the Bandcamp cookies automatically).
+    """
+    if isinstance(session, _requests.Session):
+        resp = session.get(cdn_url, stream=True, allow_redirects=True, timeout=30)
+        try:
+            final_url: str = resp.url
+        finally:
+            resp.close()
+        logger.debug("_resolve_cdn_redirect: %s → %s", cdn_url, final_url)
+        return final_url
+    # Frozen mode: GET via Electron carries Bandcamp cookies.
+    proxy_resp = session.get(cdn_url, timeout=30)
+    return proxy_resp.url or cdn_url
+
+
 def _download_item(
     item: dict[str, Any],
     bc_config: BandcampConfig,
@@ -693,15 +745,16 @@ def _download_item(
     logger.info("Downloading %r by %r…", item_title, band_name)
     cdn_url = _get_cdn_url(redownload_url, bc_config.format, session)
 
-    # CDN download URLs (popplers5.bandcamp.com) are pre-signed and do not
-    # require Bandcamp session cookies, so a plain requests.Session is fine
-    # even in frozen mode.  Streaming the large ZIP through the Electron proxy
-    # relay would buffer the entire file in memory; using requests directly
-    # avoids that.  If Cloudflare proves to be an issue on the CDN subdomain,
-    # see TASK-127 AC #3.
+    # popplers5 URLs require Bandcamp session cookies to redirect to the
+    # pre-signed bcbits.com URL.  Resolve the redirect using the authenticated
+    # session (HEAD, no body buffered) to get the final bcbits.com URL, then
+    # download from that URL with a plain session (bcbits.com URLs carry a
+    # time-limited token and do not need cookies).  See the popplers5 note in
+    # CLAUDE.md and TASK-173 for context.
+    final_url = _resolve_cdn_redirect(cdn_url, session)
     dl_session = _requests.Session()
     dl_session.headers["User-Agent"] = _UA
-    _download_file(cdn_url, dest, dl_session)
+    _download_file(final_url, dest, dl_session)
     return dest
 
 
@@ -710,12 +763,45 @@ def _download_file(
     dest: Path,
     session: _requests.Session,
 ) -> None:
-    """Stream *cdn_url* to *dest*, following redirects."""
-    with session.get(cdn_url, stream=True, timeout=300, allow_redirects=True) as resp:
-        resp.raise_for_status()
-        with open(dest, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                fh.write(chunk)
+    """Stream *cdn_url* to *dest*, following redirects.
+
+    Downloads to a ``*.part`` sibling first, then renames atomically on
+    completion.  This keeps the watch-folder watcher from picking up the
+    file mid-download — ``.part`` is not a watched extension, so only the
+    finished file triggers the ingest pipeline.
+    """
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    try:
+        with session.get(
+            cdn_url, stream=True, timeout=300, allow_redirects=True
+        ) as resp:
+            resp.raise_for_status()
+            content_type = resp.headers.get("Content-Type", "")
+            logger.debug(
+                "_download_file: status=%d content-type=%r url=%s",
+                resp.status_code,
+                content_type,
+                cdn_url,
+            )
+            with open(tmp, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    fh.write(chunk)
+
+        # Guard against CDN returning an HTML error page with HTTP 200.
+        # ZIP files always start with the PK local-file magic (0x50 0x4B 0x03 0x04).
+        with open(tmp, "rb") as fh:
+            magic = fh.read(4)
+        if not magic.startswith(b"PK"):
+            raise BandcampAPIError(
+                f"CDN response is not a ZIP file "
+                f"(first-bytes={magic!r}, content-type={content_type!r}) — "
+                f"url={cdn_url}"
+            )
+
+        tmp.rename(dest)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # ---------------------------------------------------------------------------

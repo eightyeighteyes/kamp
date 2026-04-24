@@ -90,7 +90,7 @@ function sendToHelper(msg: object): void {
 
 function postToPlayer(path: string): void {
   net
-    .fetch(`http://127.0.0.1:8000${path}`, { method: 'POST', headers: authHeaders() })
+    .fetch(`http://127.0.0.1:47483${path}`, { method: 'POST', headers: authHeaders() })
     .catch(() => {})
 }
 
@@ -163,7 +163,7 @@ function findKampBinary(): string | null {
 
 function isServerRunning(): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = http.get('http://127.0.0.1:8000/api/v1/player/state', (res) => {
+    const req = http.get('http://127.0.0.1:47483/api/v1/player/state', (res) => {
       res.resume() // discard body
       resolve(res.statusCode !== undefined)
     })
@@ -277,7 +277,7 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
         origins: []
       }
       try {
-        const res = await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/login-complete', {
+        const res = await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/login-complete', {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload)
@@ -533,7 +533,7 @@ app.whenReady().then(async () => {
       // list and avoids the Cloudflare TLS fingerprint issue for local requests.
       if (track.embedded_art && cachedArtwork === undefined) {
         const url =
-          `http://127.0.0.1:8000/api/v1/album-art` +
+          `http://127.0.0.1:47483/api/v1/album-art` +
           `?album_artist=${encodeURIComponent(track.album_artist)}` +
           `&album=${encodeURIComponent(track.album)}`
         net
@@ -603,7 +603,7 @@ app.whenReady().then(async () => {
       // in session.defaultSession (cleared after login to avoid plaintext on disk).
       // Fetch them from the daemon endpoint rather than reading from the WS payload
       // so auth cookies are never broadcast to all WS clients.
-      const cookieResp = await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/session-cookies', {
+      const cookieResp = await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/session-cookies', {
         headers: authHeaders()
       })
       const { cookies } = (await cookieResp.json()) as { cookies: BandcampCookie[] }
@@ -636,6 +636,7 @@ app.whenReady().then(async () => {
       let status = 502
       let body = 'net.fetch error'
       let contentType = 'text/plain'
+      let url = req.url
 
       try {
         const opts: NetFetchOptions = {
@@ -646,8 +647,11 @@ app.whenReady().then(async () => {
         }
         const fetchResp = await net.fetch(req.url, opts as Parameters<typeof net.fetch>[1])
         status = fetchResp.status
-        body = await fetchResp.text()
+        // Skip reading the body for HEAD requests — the caller only needs the
+        // final URL after following redirects (used to resolve popplers5 → bcbits.com).
+        body = req.method === 'HEAD' ? '' : await fetchResp.text()
         contentType = fetchResp.headers.get('content-type') ?? 'text/html'
+        url = fetchResp.url
       } catch (err) {
         body = String(err)
       }
@@ -657,10 +661,10 @@ app.whenReady().then(async () => {
         await session.defaultSession.cookies.remove('https://bandcamp.com', name)
       }
 
-      await net.fetch('http://127.0.0.1:8000/api/v1/bandcamp/fetch-result', {
+      await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/fetch-result', {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ id: req.id, status, body, content_type: contentType })
+        body: JSON.stringify({ id: req.id, status, body, content_type: contentType, url })
       })
     }
   )
@@ -709,7 +713,7 @@ app.whenReady().then(async () => {
   // This keeps art URLs free of the token so the browser HTTP cache is stable
   // across daemon restarts (the token changes each time, but the URL doesn't).
   session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: ['http://127.0.0.1:8000/*', 'ws://127.0.0.1:8000/*'] },
+    { urls: ['http://127.0.0.1:47483/*', 'ws://127.0.0.1:47483/*'] },
     (details, callback) => {
       const token = readKampToken()
       const requestHeaders = { ...details.requestHeaders }

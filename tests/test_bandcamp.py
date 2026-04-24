@@ -15,6 +15,7 @@ from kamp_daemon.bandcamp import (
     BandcampAPIError,
     CookieError,
     NeedsLoginError,
+    _ProxyResponse,
     _download_file,
     _download_item,
     _ensure_session,
@@ -26,6 +27,7 @@ from kamp_daemon.bandcamp import (
     _load_state,
     _make_requests_session,
     _paginate,
+    _resolve_cdn_redirect,
     _save_state,
     _session_from_cookie_file,
     _username_from_logout_cookie,
@@ -53,9 +55,22 @@ def _make_pagedata_html(blob: dict[str, Any]) -> str:
 
 
 def _collection_response(
-    items: list[dict[str, Any]], last_token: str = ""
+    items: list[dict[str, Any]],
+    last_token: str = "",
+    redownload_urls: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    return {"items": items, "last_token": last_token}
+    resp: dict[str, Any] = {"items": items, "last_token": last_token}
+    if redownload_urls is not None:
+        resp["redownload_urls"] = redownload_urls
+    return resp
+
+
+def _redownload_urls_for(items: list[dict[str, Any]]) -> dict[str, str]:
+    """Build a redownload_urls dict matching what the Bandcamp API returns."""
+    return {
+        f"p{item['sale_item_id']}": f"https://bandcamp.com/download?sitem_id={item['sale_item_id']}&sig=fake"
+        for item in items
+    }
 
 
 def _item(
@@ -140,7 +155,9 @@ def _make_requests_mock(
 
     collection_resp = MagicMock()
     collection_resp.status_code = 200
-    collection_resp.json.return_value = _collection_response(items)
+    collection_resp.json.return_value = _collection_response(
+        items, redownload_urls=_redownload_urls_for(items)
+    )
     collection_resp.raise_for_status = MagicMock()
 
     hidden_resp = MagicMock()
@@ -641,14 +658,13 @@ class TestSyncNewPurchases:
 
         assert len(paths) == 1
 
-    def test_warns_when_item_not_on_collection_page(self, tmp_path: Path) -> None:
-        """Items missing from the HTML scrape should be warned and skipped."""
+    def test_warns_when_item_missing_from_redownload_urls(self, tmp_path: Path) -> None:
+        """Items absent from the API redownload_urls dict are warned and skipped."""
         watch_folder = tmp_path / "watch"
         state_file = tmp_path / "state.json"
         config = _bc_config(tmp_path)
         items = [_item(1), _item(2)]
 
-        # Build a mock session where item 1 is absent from the collection page.
         mock_session = MagicMock()
 
         summary_resp = MagicMock()
@@ -656,9 +672,12 @@ class TestSyncNewPurchases:
         summary_resp.json.return_value = {"fan_id": 12345, "collection_summary": {}}
         summary_resp.raise_for_status = MagicMock()
 
+        # API returns redownload_url only for item 2, not item 1.
         collection_resp = MagicMock()
         collection_resp.status_code = 200
-        collection_resp.json.return_value = _collection_response(items)
+        collection_resp.json.return_value = _collection_response(
+            items, redownload_urls=_redownload_urls_for([_item(2)])
+        )
         collection_resp.raise_for_status = MagicMock()
 
         hidden_resp = MagicMock()
@@ -666,19 +685,7 @@ class TestSyncNewPurchases:
         hidden_resp.json.return_value = _collection_response([])
         hidden_resp.raise_for_status = MagicMock()
 
-        # Collection page HTML only has item 2.
-        coll_page_resp = MagicMock()
-        coll_page_resp.text = _collection_page_html([_item(2)])
-        coll_page_resp.raise_for_status = MagicMock()
-
-        def get_side_effect(url: str, **kwargs: Any) -> MagicMock:
-            if "api/fan/2" in url:
-                return summary_resp
-            if url.endswith("/"):
-                return coll_page_resp
-            return coll_page_resp
-
-        mock_session.get.side_effect = get_side_effect
+        mock_session.get.side_effect = lambda url, **kw: summary_resp
         mock_session.post.side_effect = lambda url, **kw: (
             hidden_resp if "hidden_items" in url else collection_resp
         )
@@ -961,14 +968,18 @@ class TestSessionFromCookieFile:
 
 class TestPaginate:
     def _make_post_mock(self, pages: list[list[dict[str, Any]]]) -> MagicMock:
-        """Return a mock post() that yields successive pages."""
+        """Return a mock post() that yields successive pages with redownload_urls."""
         responses = []
         for i, items in enumerate(pages):
             resp = MagicMock()
             resp.status_code = 200
             resp.raise_for_status = MagicMock()
             last_token = f"token_{i + 1}" if i < len(pages) - 1 else ""
-            resp.json.return_value = {"items": items, "last_token": last_token}
+            resp.json.return_value = _collection_response(
+                items,
+                last_token=last_token,
+                redownload_urls=_redownload_urls_for(items),
+            )
             responses.append(resp)
         session = MagicMock()
         session.post.side_effect = responses
@@ -1034,6 +1045,46 @@ class TestPaginate:
                 index,
             )
 
+    def test_embeds_redownload_url_from_api_response(self) -> None:
+        """redownload_url is extracted from per-page redownload_urls and set on each item."""
+        page1 = [_item(1), _item(2)]
+        page2 = [_item(3)]
+        session = self._make_post_mock([page1, page2])
+        index = MagicMock()
+        with patch("kamp_daemon.bandcamp._COLLECTION_PAGE_BATCH", 2):
+            result = _paginate(
+                "https://bandcamp.com/fancollection/1/collection_items",
+                123,
+                session,
+                index,
+            )
+        for item in result:
+            assert "redownload_url" in item
+            assert f"sitem_id={item['sale_item_id']}" in item["redownload_url"]
+
+    def test_items_without_redownload_url_are_unchanged(self) -> None:
+        """Items absent from redownload_urls dict are left without redownload_url."""
+        items = [_item(1), _item(2)]
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        # redownload_urls only has item 1
+        resp.json.return_value = _collection_response(
+            items,
+            redownload_urls={"p1": "https://bandcamp.com/download?sitem_id=1&sig=x"},
+        )
+        session = MagicMock()
+        session.post.return_value = resp
+        index = MagicMock()
+        result = _paginate(
+            "https://bandcamp.com/fancollection/1/collection_items", 123, session, index
+        )
+        assert (
+            result[0].get("redownload_url")
+            == "https://bandcamp.com/download?sitem_id=1&sig=x"
+        )
+        assert "redownload_url" not in result[1]
+
     def test_breaks_when_last_token_missing(self) -> None:
         """If the server returns a full page but no last_token, stop paginating."""
         page = [_item(i) for i in range(1, 6)]
@@ -1095,6 +1146,9 @@ class TestFetchCollection:
 
 
 class TestDownloadItem:
+    def _passthrough_resolve(self, url: str, sess: Any) -> str:
+        return url
+
     def test_downloads_to_watch_dir(self, tmp_path: Path) -> None:
         watch_folder = tmp_path / "watch"
         watch_folder.mkdir()
@@ -1110,10 +1164,14 @@ class TestDownloadItem:
 
         with patch("kamp_daemon.bandcamp._get_cdn_url", return_value=cdn_url):
             with patch(
-                "kamp_daemon.bandcamp._download_file",
-                side_effect=lambda url, dest, sess: dest.write_bytes(b"fake"),
+                "kamp_daemon.bandcamp._resolve_cdn_redirect",
+                side_effect=self._passthrough_resolve,
             ):
-                path = _download_item(item, config, watch_folder, session)
+                with patch(
+                    "kamp_daemon.bandcamp._download_file",
+                    side_effect=lambda url, dest, sess: dest.write_bytes(b"fake"),
+                ):
+                    path = _download_item(item, config, watch_folder, session)
 
         assert path.suffix == ".zip"
         assert path.parent == watch_folder
@@ -1146,34 +1204,91 @@ class TestDownloadItem:
             return_value="https://cdn.example.com/f",
         ):
             with patch(
-                "kamp_daemon.bandcamp._download_file",
-                side_effect=lambda url, dest, sess: dest.write_bytes(b"x"),
+                "kamp_daemon.bandcamp._resolve_cdn_redirect",
+                side_effect=self._passthrough_resolve,
             ):
-                path = _download_item(item, config, watch_folder, MagicMock())
+                with patch(
+                    "kamp_daemon.bandcamp._download_file",
+                    side_effect=lambda url, dest, sess: dest.write_bytes(b"x"),
+                ):
+                    path = _download_item(item, config, watch_folder, MagicMock())
         assert "/" not in path.name
         assert ":" not in path.name
 
 
+_ZIP_MAGIC = b"PK\x03\x04"
+_FAKE_ZIP = _ZIP_MAGIC + b"\x00" * 20
+
+
 class TestDownloadFile:
-    def test_writes_chunked_response_to_dest(self, tmp_path: Path) -> None:
-        dest = tmp_path / "album.zip"
-        session = MagicMock()
+    def _make_resp(
+        self, chunks: list[bytes], content_type: str = "application/zip"
+    ) -> MagicMock:
         resp = MagicMock()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
         resp.raise_for_status = MagicMock()
-        resp.iter_content.return_value = [b"chunk1", b"chunk2"]
-        session.get.return_value = resp
+        resp.headers = {"Content-Type": content_type}
+        resp.iter_content.return_value = chunks
+        return resp
+
+    def test_writes_chunked_response_to_dest(self, tmp_path: Path) -> None:
+        dest = tmp_path / "album.zip"
+        session = MagicMock()
+        session.get.return_value = self._make_resp([_FAKE_ZIP])
 
         _download_file("https://cdn.example.com/f.zip", dest, session)
 
-        assert dest.read_bytes() == b"chunk1chunk2"
+        assert dest.read_bytes() == _FAKE_ZIP
         session.get.assert_called_once_with(
             "https://cdn.example.com/f.zip",
             stream=True,
             timeout=300,
             allow_redirects=True,
         )
+
+    def test_renames_from_part_file(self, tmp_path: Path) -> None:
+        """Download writes to .part first, then renames — no partial file visible."""
+        dest = tmp_path / "album.zip"
+        session = MagicMock()
+        session.get.return_value = self._make_resp([_FAKE_ZIP])
+
+        _download_file("https://cdn.example.com/f.zip", dest, session)
+
+        assert dest.exists()
+        assert not (tmp_path / "album.zip.part").exists()
+
+    def test_cleans_up_part_file_on_error(self, tmp_path: Path) -> None:
+        """On download failure the .part file is removed."""
+        dest = tmp_path / "album.zip"
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.headers = {}
+        resp.raise_for_status.side_effect = RuntimeError("network error")
+        session = MagicMock()
+        session.get.return_value = resp
+
+        with pytest.raises(RuntimeError):
+            _download_file("https://cdn.example.com/f.zip", dest, session)
+
+        assert not dest.exists()
+        assert not (tmp_path / "album.zip.part").exists()
+
+    def test_raises_when_cdn_returns_non_zip(self, tmp_path: Path) -> None:
+        """Non-ZIP CDN response (e.g. HTML error page) raises BandcampAPIError."""
+        dest = tmp_path / "album.zip"
+        html_body = b"<html>Error: access denied</html>"
+        session = MagicMock()
+        session.get.return_value = self._make_resp(
+            [html_body], content_type="text/html"
+        )
+
+        with pytest.raises(BandcampAPIError, match="not a ZIP"):
+            _download_file("https://cdn.example.com/f.zip", dest, session)
+
+        assert not dest.exists()
+        assert not (tmp_path / "album.zip.part").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1388,3 +1503,87 @@ class TestProxySession:
             sess.get("https://bandcamp.com/api/test")
 
         assert patched.call_args[1]["headers"] is None
+
+    def test_head_method_sends_head_to_proxy(self) -> None:
+        from kamp_daemon.bandcamp import _PROXY_FETCH_URL, _ProxySession
+
+        sess = _ProxySession()
+        bcbits_url = "https://p4.bcbits.com/download/album/abc/mp3-v0/123?token=x"
+        mock_post = MagicMock()
+        mock_post.raise_for_status.return_value = None
+        mock_post.json.return_value = {
+            "status": 200,
+            "body": "",
+            "content_type": "application/octet-stream",
+            "url": bcbits_url,
+        }
+
+        with patch(
+            "kamp_daemon.bandcamp._requests.post", return_value=mock_post
+        ) as patched:
+            resp = sess.head(
+                "https://popplers5.bandcamp.com/download/album?enc=mp3-v0&id=1"
+            )
+
+        payload = patched.call_args[1]["json"]
+        assert payload["method"] == "HEAD"
+        assert "popplers5.bandcamp.com" in payload["url"]
+        assert patched.call_args[0][0] == _PROXY_FETCH_URL
+        assert resp.url == bcbits_url
+
+
+# ---------------------------------------------------------------------------
+# _resolve_cdn_redirect
+# ---------------------------------------------------------------------------
+
+
+class TestResolveCdnRedirect:
+    _popplers_url = (
+        "https://popplers5.bandcamp.com/download/album?enc=mp3-v0&id=1&sig=abc"
+    )
+    _bcbits_url = (
+        "https://p4.bcbits.com/download/album/hash/mp3-v0/1?id=1&sig=x&token=t"
+    )
+
+    def test_dev_mode_follows_redirect(self) -> None:
+        """GET+stream follows the popplers5 redirect; final URL comes from resp.url."""
+        import requests
+
+        mock_resp = MagicMock(spec=requests.Response)
+        mock_resp.url = self._bcbits_url
+        session = MagicMock(spec=requests.Session)
+        session.get.return_value = mock_resp
+
+        result = _resolve_cdn_redirect(self._popplers_url, session)
+
+        session.get.assert_called_once_with(
+            self._popplers_url, stream=True, allow_redirects=True, timeout=30
+        )
+        assert result == self._bcbits_url
+
+    def test_frozen_mode_uses_proxy_get(self) -> None:
+        """_ProxySession.get routes through Electron; final URL comes from resp.url."""
+        from kamp_daemon.bandcamp import _ProxySession
+
+        proxy_resp = _ProxyResponse(
+            status_code=200, text="", content_type="", url=self._bcbits_url
+        )
+        sess = MagicMock(spec=_ProxySession)
+        sess.get.return_value = proxy_resp
+
+        result = _resolve_cdn_redirect(self._popplers_url, sess)
+
+        sess.get.assert_called_once_with(self._popplers_url, timeout=30)
+        assert result == self._bcbits_url
+
+    def test_frozen_mode_falls_back_when_url_none(self) -> None:
+        """Falls back to the original popplers5 URL when proxy returns url=None."""
+        from kamp_daemon.bandcamp import _ProxySession
+
+        proxy_resp = _ProxyResponse(status_code=200, text="", content_type="", url=None)
+        sess = MagicMock(spec=_ProxySession)
+        sess.get.return_value = proxy_resp
+
+        result = _resolve_cdn_redirect(self._popplers_url, sess)
+
+        assert result == self._popplers_url

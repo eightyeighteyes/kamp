@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from pathlib import Path
 
@@ -29,6 +30,12 @@ logger = logging.getLogger(__name__)
 
 _SETTLE_SECONDS = 2.0  # wait for file to stop growing before processing
 _POLL_INTERVAL = 0.5  # how often to check file size during settle
+# Maximum number of pipeline subprocesses that may run concurrently.
+# A ThreadPoolExecutor with this many workers bounds both the number of OS
+# threads AND the number of concurrent POSIX semaphore allocations.  Without
+# a cap, bulk sync-all floods the watcher with hundreds of timer threads that
+# each spawn a subprocess, rapidly exhausting the OS semaphore table (ENOSPC).
+_MAX_CONCURRENT_PIPELINES = 4
 
 
 class _WatchHandler(FileSystemEventHandler):
@@ -41,6 +48,14 @@ class _WatchHandler(FileSystemEventHandler):
         # Track paths whose pipeline is currently running to prevent double-execution
         self._in_flight: set[Path] = set()
         self._lock = threading.Lock()
+        # Pool bounds both OS thread count and POSIX semaphore usage: only
+        # _MAX_CONCURRENT_PIPELINES threads exist regardless of how many items
+        # are queued.  Threading.Timer threads exit immediately after enqueuing
+        # work, so they don't pile up as blocked threads.
+        self._pipeline_pool = ThreadPoolExecutor(
+            max_workers=_MAX_CONCURRENT_PIPELINES,
+            thread_name_prefix="pipeline",
+        )
         # Set by Watcher to surface current pipeline stage in the menu bar.
         self.stage_callback: Callable[[str], None] | None = None
         # Set by Watcher to deliver error notifications to the menu bar.
@@ -111,16 +126,27 @@ class _WatchHandler(FileSystemEventHandler):
             existing = self._pending.pop(path, None)
             if existing is not None:
                 existing.cancel()
-            timer = threading.Timer(_SETTLE_SECONDS, self._process, args=[path])
+            timer = threading.Timer(_SETTLE_SECONDS, self._enqueue, args=[path])
             self._pending[path] = timer
             timer.start()
         logger.debug("Scheduled processing of %s in %.1fs", path, _SETTLE_SECONDS)
 
-    def _process(self, path: Path) -> None:
+    def _enqueue(self, path: Path) -> None:
+        """Debounce timer callback: claim path then submit to the pool.
+
+        Claiming happens here (not in _process) so the window between timer
+        firing and the pool worker starting cannot be re-scheduled by a new
+        filesystem event.
+        """
         with self._lock:
             self._pending.pop(path, None)
+            if path in self._in_flight:
+                logger.debug("Skipping enqueue: %s is already in-flight", path)
+                return
             self._in_flight.add(path)
+        self._pipeline_pool.submit(self._process, path)
 
+    def _process(self, path: Path) -> None:
         # Track any directory the pipeline extracts so we can cancel its
         # pending debounce timer and prevent a duplicate pipeline run.
         claimed_dir: list[Path] = []
@@ -231,6 +257,7 @@ class Watcher:
             for timer in self._handler._pending.values():
                 timer.cancel()
             self._handler._pending.clear()
+        self._handler._pipeline_pool.shutdown(wait=False)
         self._observer.stop()
         self._observer.join()
         logger.info("Watcher paused")
@@ -255,6 +282,7 @@ class Watcher:
         if not self._paused:
             self._observer.stop()
             self._observer.join()
+        self._handler._pipeline_pool.shutdown(wait=False)
         logger.info("Watcher stopped")
 
     def reload(self, config: Config) -> None:
@@ -275,6 +303,7 @@ class Watcher:
                 config.paths.watch_folder,
             )
             self._observer.unschedule_all()
+            self._handler._pipeline_pool.shutdown(wait=False)
             new_watch_folder = config.paths.watch_folder
             new_watch_folder.mkdir(parents=True, exist_ok=True)
             self._handler = _WatchHandler(config)

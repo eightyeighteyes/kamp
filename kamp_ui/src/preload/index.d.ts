@@ -11,6 +11,7 @@ declare global {
         beginLogin: () => Promise<{ ok: boolean; error?: string }>
         onSyncStatus: (callback: (state: 'idle' | 'syncing') => void) => () => void
         triggerSync: () => Promise<{ ok: boolean }>
+        triggerSyncAll: () => Promise<{ ok: boolean }>
       }
       pipeline: {
         onStage: (callback: (stage: string) => void) => () => void

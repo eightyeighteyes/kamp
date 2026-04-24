@@ -38,7 +38,15 @@ const api = {
     /** Trigger a manual Bandcamp sync. Returns immediately; progress arrives via onSyncStatus. */
     triggerSync: (): Promise<{ ok: boolean }> => {
       const token = _readKampToken()
-      return fetch('http://127.0.0.1:8000/api/v1/bandcamp/sync', {
+      return fetch('http://127.0.0.1:47483/api/v1/bandcamp/sync', {
+        method: 'POST',
+        headers: token ? { 'X-Kamp-Token': token } : {}
+      }).then((r) => r.json())
+    },
+    /** Clear sync state and re-download all Bandcamp purchases. Returns immediately. */
+    triggerSyncAll: (): Promise<{ ok: boolean }> => {
+      const token = _readKampToken()
+      return fetch('http://127.0.0.1:47483/api/v1/bandcamp/sync-all', {
         method: 'POST',
         headers: token ? { 'X-Kamp-Token': token } : {}
       }).then((r) => r.json())

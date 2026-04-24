@@ -333,6 +333,52 @@ class TestInFlight:
 
         assert album not in handler._in_flight
 
+    def test_concurrent_pipeline_limit(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """At most _MAX_CONCURRENT_PIPELINES subprocesses run at the same time."""
+        import threading
+        from kamp_daemon.watcher import _MAX_CONCURRENT_PIPELINES
+
+        entered = threading.Semaphore(0)
+        gate = threading.Event()
+        active_count = [0]
+        peak_concurrent = [0]
+        counter_lock = threading.Lock()
+
+        def _slow_run(path: object, cfg: object, **kw: object) -> None:
+            with counter_lock:
+                active_count[0] += 1
+                peak_concurrent[0] = max(peak_concurrent[0], active_count[0])
+            entered.release()
+            gate.wait()
+            with counter_lock:
+                active_count[0] -= 1
+
+        monkeypatch.setattr("kamp_daemon.watcher.run_in_subprocess", _slow_run)
+
+        handler = _make_handler(config)
+        n = _MAX_CONCURRENT_PIPELINES + 2
+        paths = [config.paths.watch_folder / f"album{i}" for i in range(n)]
+        for p in paths:
+            p.mkdir()
+
+        # Submit directly to the pool (the same path _enqueue takes) so the
+        # ThreadPoolExecutor's max_workers cap is what's under test.
+        futures = [handler._pipeline_pool.submit(handler._process, p) for p in paths]
+
+        # Wait until the cap is fully occupied (exactly _MAX_CONCURRENT_PIPELINES inside)
+        for _ in range(_MAX_CONCURRENT_PIPELINES):
+            entered.acquire(timeout=5)
+
+        # Release all blocked pipelines and wait for all futures to finish
+        gate.set()
+        for f in futures:
+            f.result(timeout=5)
+
+        handler._pipeline_pool.shutdown(wait=False)
+        assert peak_concurrent[0] <= _MAX_CONCURRENT_PIPELINES
+
 
 class TestOnCreated:
     def test_directory_created_in_watch_folder_is_scheduled(

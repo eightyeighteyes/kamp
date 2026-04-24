@@ -54,7 +54,7 @@ export type ScanResult = {
 
 // Configurable base URL: defaults to localhost but can be overridden via
 // environment variable for remote / mobile use cases.
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:47483'
 const WS_BASE = BASE_URL.replace(/^http/, 'ws')
 
 // Re-read on each call so a daemon restart's fresh token is always used.

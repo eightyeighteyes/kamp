@@ -578,6 +578,52 @@ class TestMarkSynced:
         mock_mark.assert_called_once()
 
 
+class TestSyncAllPurchases:
+    def test_clears_state_file_before_sync(self, tmp_path: Path) -> None:
+        """sync_all_purchases() deletes the state file and runs sync with skip_auto_mark."""
+        state_file = tmp_path / "bandcamp_state.json"
+        state_file.write_text('{"12345": 1234567890}')
+        call_order: list[str] = []
+
+        def _recording_noop_worker(
+            target: Any, args: tuple[Any, ...]
+        ) -> tuple[Any, Any, Any, Any]:
+            call_order.append(target.__name__)
+            status_q: _queue_module.Queue[str] = _queue_module.Queue()
+            log_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q.put(("ok", []))
+            return _FakeProc(), status_q, log_q, result_q
+
+        with patch(
+            "kamp_daemon.syncer._spawn_worker", side_effect=_recording_noop_worker
+        ):
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path))
+                syncer.sync_all_purchases()
+
+        assert not state_file.exists()
+        # skip_auto_mark=True means no mark-synced worker runs first
+        assert call_order == ["_sync_worker"]
+
+    def test_noop_when_no_state_file(self, tmp_path: Path) -> None:
+        """sync_all_purchases() proceeds normally when state file does not exist."""
+
+        def _noop_worker(
+            target: Any, args: tuple[Any, ...]
+        ) -> tuple[Any, Any, Any, Any]:
+            status_q: _queue_module.Queue[str] = _queue_module.Queue()
+            log_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q.put(("ok", []))
+            return _FakeProc(), status_q, log_q, result_q
+
+        with patch("kamp_daemon.syncer._spawn_worker", side_effect=_noop_worker):
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path))
+                syncer.sync_all_purchases()  # must not raise
+
+
 class TestLogout:
     def test_clears_db_session_and_state_file(self, tmp_path: Path) -> None:
         """logout() clears the DB session row and removes the state file."""

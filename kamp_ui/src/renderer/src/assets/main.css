@@ -899,6 +899,20 @@ body,
   margin: 0;
 }
 
+.onboarding-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.onboarding-toggle input[type='checkbox'] {
+  cursor: pointer;
+}
+
 .onboarding-skip-btn {
   background: none;
   border: none;

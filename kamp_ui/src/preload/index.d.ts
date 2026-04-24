@@ -12,6 +12,9 @@ declare global {
         onSyncStatus: (callback: (state: 'idle' | 'syncing') => void) => () => void
         triggerSync: () => Promise<{ ok: boolean }>
       }
+      pipeline: {
+        onStage: (callback: (stage: string) => void) => () => void
+      }
       getApiToken: () => string | null
     }
     KampAPI: KampAPI

@@ -1910,6 +1910,15 @@ class TestBandcampSync:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         assert callable(getattr(app.state, "notify_bandcamp_sync_status", None))
 
+    def test_notify_pipeline_stage_exposed_on_app_state(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        assert callable(getattr(app.state, "notify_pipeline_stage", None))
+
 
 # ---------------------------------------------------------------------------
 # Bandcamp session-cookies endpoint

@@ -8,6 +8,7 @@ import { artUrl } from '../api/client'
 import type { Album } from '../api/client'
 import { SortControl } from './SortControl'
 import { BandcampButton } from './BandcampButton'
+import { PipelineIndicator } from './PipelineIndicator'
 import { useMenuBounds } from '../hooks/useMenuBounds'
 
 type ContextMenu = { x: number; y: number; album: Album }
@@ -117,7 +118,10 @@ export function AlbumGrid(): React.JSX.Element {
     <div className="album-grid-container" ref={containerRef}>
       <div className="album-grid-toolbar">
         <SortControl />
-        <BandcampButton />
+        <div className="album-grid-toolbar-actions">
+          <PipelineIndicator />
+          <BandcampButton />
+        </div>
       </div>
       {visible.length === 0 ? (
         <div className="album-grid-empty">

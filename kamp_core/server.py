@@ -362,12 +362,22 @@ def create_app(
         state = "idle" if not status_msg else "syncing"
         _broadcast({"type": "bandcamp.sync-status", "state": state})
 
+    def _notify_pipeline_stage(stage: str) -> None:
+        """Broadcast the current pipeline stage to all connected WebSocket clients.
+
+        stage is "" when idle, or a human-readable label ("Extracting", "Tagging",
+        "Updating artwork", "Moving") while work is in progress.
+        Called from the watcher thread — _broadcast is thread-safe.
+        """
+        _broadcast({"type": "pipeline.stage", "stage": stage})
+
     # Expose notifiers on app.state so the daemon can wire them into engine
     # callbacks (e.g. on_track_end, on_play_state_changed).
     app.state.notify_library_changed = _notify_library_changed
     app.state.notify_track_changed = _notify_track_changed
     app.state.notify_play_state_changed = _notify_play_state_changed
     app.state.notify_bandcamp_sync_status = _notify_bandcamp_sync_status
+    app.state.notify_pipeline_stage = _notify_pipeline_stage
 
     # Wire play-state change callback directly — the engine fires it from its
     # background reader thread whenever mpv's pause property flips.

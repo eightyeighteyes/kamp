@@ -3,7 +3,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
-import { buildKampAPI, onBandcampSyncStatus } from './kampAPI'
+import { buildKampAPI, onBandcampSyncStatus, onPipelineStage } from './kampAPI'
 
 function _kampTokenFilePath(): string {
   if (process.platform === 'win32') {
@@ -43,6 +43,9 @@ const api = {
         headers: token ? { 'X-Kamp-Token': token } : {}
       }).then((r) => r.json())
     }
+  },
+  pipeline: {
+    onStage: onPipelineStage
   },
   // Re-reads from disk so Electron picks up a fresh token after daemon restart.
   getApiToken: (): string | null => _readKampToken()

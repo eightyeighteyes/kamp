@@ -4,13 +4,14 @@ title: download all bandcamp purchases
 status: To Do
 assignee: []
 created_date: '2026-04-23 14:15'
-updated_date: '2026-04-23 14:16'
+updated_date: '2026-04-24 01:51'
 labels:
   - feature
   - bandcamp
   - 'estimate: side'
-milestone: m-1
+milestone: m-31
 dependencies: []
+priority: high
 ---
 
 ## Description

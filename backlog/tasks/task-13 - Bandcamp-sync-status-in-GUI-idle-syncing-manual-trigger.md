@@ -1,10 +1,10 @@
 ---
 id: TASK-13
 title: 'Bandcamp sync status in GUI (idle/syncing, manual trigger)'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-03-29 03:11'
-updated_date: '2026-04-24 02:10'
+updated_date: '2026-04-24 16:01'
 labels:
   - feature
   - ui
@@ -12,6 +12,7 @@ labels:
   - 'estimate: side'
 milestone: m-31
 dependencies: []
+ordinal: 2000
 ---
 
 ## Description

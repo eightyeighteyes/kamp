@@ -1,6 +1,6 @@
 {
   "name": "kamp_ui",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "kamp music player",
   "main": "./out/main/index.js",
   "author": "example.com",

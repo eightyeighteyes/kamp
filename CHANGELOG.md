@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.13.0](https://github.com/eightyeighteyes/kamp/compare/v1.12.0...v1.13.0) (2026-04-25)
+
+
+### Features
+
+* Bandcamp sync status in GUI (TASK-13) ([#288](https://github.com/eightyeighteyes/kamp/issues/288)) ([585e354](https://github.com/eightyeighteyes/kamp/commit/585e35418647471360d068c33d97a865c68fee23))
+* Data Protection Keychain to eliminate post-update keychain dialogs (TASK-168) ([#285](https://github.com/eightyeighteyes/kamp/issues/285)) ([87c9d00](https://github.com/eightyeighteyes/kamp/commit/87c9d00ca631828cda1982d2b8087b2e6467db8f))
+* pipeline status indicator in UI, deprecate menu bar (TASK-177) ([#289](https://github.com/eightyeighteyes/kamp/issues/289)) ([87f1be9](https://github.com/eightyeighteyes/kamp/commit/87f1be95f3168ce77bd6de0658723896441601a1))
+* Re-download all Bandcamp purchases (TASK-173) ([#290](https://github.com/eightyeighteyes/kamp/issues/290)) ([4c72aa4](https://github.com/eightyeighteyes/kamp/commit/4c72aa458716f55e33eb01c4c1128119803ab484))
+
+
+### Bug Fixes
+
+* sanitize proxy-fetch headers to prevent ByteString crash (TASK-179, TASK-181) ([#292](https://github.com/eightyeighteyes/kamp/issues/292)) ([7e86e0e](https://github.com/eightyeighteyes/kamp/commit/7e86e0e22d01e3ff98dae0962b9a63b27436e692))
+
 ## [1.12.0](https://github.com/eightyeighteyes/kamp/compare/v1.11.2...v1.12.0) (2026-04-23)
 
 

@@ -12,8 +12,8 @@ import { homedir } from 'os'
 import { join } from 'path'
 import type { KampAPI, PanelManifest, ExtensionInstallResult, PlayerState } from '../shared/kampAPI'
 
-const SERVER_URL = 'http://127.0.0.1:8000'
-const WS_URL = 'ws://127.0.0.1:8000/api/v1/ws'
+const SERVER_URL = 'http://127.0.0.1:47483'
+const WS_URL = 'ws://127.0.0.1:47483/api/v1/ws'
 
 function _readToken(): string | null {
   try {

@@ -1,10 +1,10 @@
 ---
 id: TASK-173
 title: download all bandcamp purchases
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-23 14:15'
-updated_date: '2026-04-24 01:51'
+updated_date: '2026-04-25 14:39'
 labels:
   - feature
   - bandcamp
@@ -12,6 +12,7 @@ labels:
 milestone: m-31
 dependencies: []
 priority: high
+ordinal: 4000
 ---
 
 ## Description

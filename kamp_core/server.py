@@ -224,6 +224,7 @@ class BandcampProxyFetchResult(BaseModel):
     status: int
     body: str
     content_type: str = "text/html"
+    url: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +287,7 @@ def create_app(
     get_bandcamp_session: Callable[[], dict[str, Any] | None] | None = None,
     on_bandcamp_disconnect: Callable[[], None] | None = None,
     on_bandcamp_sync_trigger: Callable[[], None] | None = None,
+    on_bandcamp_sync_all_trigger: Callable[[], None] | None = None,
     dev_mode: bool = False,
     auth_token: str | None = None,
 ) -> FastAPI:
@@ -342,8 +344,9 @@ def create_app(
             _event_loop.call_soon_threadsafe(q.put_nowait, event)
 
     def _notify_library_changed() -> None:
-        """Increment the library version so connected WebSocket clients are notified."""
+        """Push library.changed to all connected WebSocket clients immediately."""
         _state["library_version"] += 1
+        _broadcast({"type": "library.changed"})
 
     def _notify_track_changed() -> None:
         """Broadcast a track.changed push event to all connected WebSocket clients."""
@@ -822,6 +825,24 @@ def create_app(
         ).start()
         return {"ok": True}
 
+    @app.post("/api/v1/bandcamp/sync-all")
+    def trigger_bandcamp_sync_all() -> dict[str, Any]:
+        """Re-download the entire Bandcamp collection from scratch.
+
+        Clears the local sync-state file then downloads all purchases.  Returns
+        immediately; progress arrives via ``bandcamp.sync-status`` WebSocket events.
+        """
+        import threading
+
+        if on_bandcamp_sync_all_trigger is None:
+            raise HTTPException(
+                status_code=503, detail="Bandcamp sync-all not configured"
+            )
+        threading.Thread(
+            target=on_bandcamp_sync_all_trigger, daemon=True, name="sync-all"
+        ).start()
+        return {"ok": True}
+
     # -----------------------------------------------------------------------
     # Player
     # -----------------------------------------------------------------------
@@ -1083,6 +1104,7 @@ def create_app(
             "status": req.status,
             "body": req.body,
             "content_type": req.content_type,
+            "url": req.url,
         }
         # Remove from pending — this request has been answered.
         _pending_proxy_fetches.pop(req.id, None)

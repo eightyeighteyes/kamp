@@ -152,6 +152,17 @@ export default function App(): React.JSX.Element {
     }
   }, [splashGone, hasAlbums, onboardingRequired])
 
+  // Auto-exit the onboarding once albums arrive — e.g. from a Bandcamp sync
+  // triggered before the user finished the setup steps. New users don't hit
+  // this because their library stays empty until the 'almost-done' scan
+  // completes, at which point the onboarding finishes through its normal path.
+  useEffect(() => {
+    if (onboardingRequired === true && !onboardingComplete && hasAlbums) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      handleOnboardingComplete()
+    }
+  }, [hasAlbums, onboardingRequired, onboardingComplete, handleOnboardingComplete])
+
   useEffect(() => {
     loadUiState().then(() => loadLibrary())
     void loadConfig()

@@ -114,6 +114,11 @@ class KampBandcampSyncer(BaseSyncer):
         assert self._inner is not None, "call _configure() before mark_synced()"
         self._inner.mark_synced()
 
+    def sync_all_purchases(self) -> None:
+        """Clear sync state and re-download the entire Bandcamp collection."""
+        assert self._inner is not None, "call _configure() before sync_all_purchases()"
+        self._inner.sync_all_purchases()
+
     # ------------------------------------------------------------------
     # Internal daemon API (not part of BaseSyncer)
     # ------------------------------------------------------------------

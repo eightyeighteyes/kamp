@@ -54,9 +54,10 @@ Budget at least a Side for any feature touching osacompile, Spotlight registrati
 ## Sandboxed iframes (community extensions)
 
 - **srcdoc iframes inherit the parent document's CSP** — even if the srcdoc has its own `<meta http-equiv=Content-Security-Policy>`, the parent's CSP overrides script-src. To allow an inline script, hash-whitelist it in the parent CSP (`'sha256-...'` in `src/renderer/index.html`). Recompute the hash every time the shim changes: `node -e "const s='...';console.log('sha256-'+require('crypto').createHash('sha256').update(s,'utf8').digest('base64'))"`.
+- **Any change to `SANDBOX_SHIM` in `SandboxedExtensionLoader.tsx` requires updating the sha256 hash in `src/renderer/index.html`** — including seemingly unrelated changes like port numbers embedded in the shim string. A stale hash causes the shim to be silently blocked: extensions install but panels never appear.
 - **Sandboxed iframes without allow-same-origin reload on DOM move** — Chromium treats them as cross-origin and navigates on reparent. The holding-area/move strategy doesn't work. Create a fresh iframe on each panel mount instead.
 - **Race condition: send init and mount in the same onLoad callback** — `kamp:init` triggers an async `import()`; `kamp:panel-mount` arrives before the import resolves, so `r[panelId]` is empty and mount silently no-ops. Fix: buffer the pending mount id and fire it inside `panels.register()` if it arrived early.
-- **iframe CSP needs explicit img-src** — `default-src 'none'` blocks image loads from the kamp server. Add `img-src http://127.0.0.1:8000` to the srcdoc CSP.
+- **iframe CSP needs explicit img-src** — `default-src 'none'` blocks image loads from the kamp server. Add `img-src http://127.0.0.1:47483` to the srcdoc CSP.
 
 ## macOS notifications
 `NSUserNotificationCenter` (used by `rumps.notification()`) is a no-op on macOS 14+. Use `UNUserNotificationCenter` instead. It requires `CFBundleIdentifier` — embed it in `launcher/main.c` via `__TEXT,__info_plist`. Without the compiled launcher (e.g. dev venv), `UNUserNotificationCenter.currentNotificationCenter()` crashes; wrap it in `try/except` and fall back to `rumps.notification()`.
@@ -76,6 +77,17 @@ The only reliable fix for any `bandcamp.com` request in the built app is to rout
 
 ## macOS CFRunLoop constraint
 Any macOS API that dispatches callbacks on the main GCD queue (`dispatch_get_main_queue()`) will not work in the kamp Python server process. The main thread runs asyncio/uvicorn, which does not pump a CFRunLoop. Affected APIs include: `MPRemoteCommandCenter`, `NSDistributedNotificationCenter`, `NSTimer`, and any delegate/target-action pattern that assumes an AppKit main loop. Features requiring these APIs must live in the Electron main process (which has a real CFRunLoop) or in a dedicated helper subprocess.
+
+## Bandcamp CDN downloads (popplers5)
+`popplers5.bandcamp.com` requires valid Bandcamp session cookies to serve a ZIP. Without cookies it returns HTTP 200 with an HTML error page.
+
+- **Dev mode:** pass the authenticated `requests.Session` directly to `_download_file`. The session carries cookies; `requests` follows any redirect automatically. Do not attempt an "activate then download cookieless" pattern — it is intermittent and unreliable.
+- **Frozen mode:** the `requests.Session` has a PyInstaller OpenSSL fingerprint Cloudflare blocks (see above). Route through Electron's proxy: call `_resolve_cdn_redirect(cdn_url, _ProxySession)` to follow the popplers5 → bcbits.com redirect via `net.fetch`, then download from the bcbits.com pre-signed URL with a plain cookieless `requests.Session` (bcbits.com URLs are time-limited tokens that do not need cookies).
+
+## Diagnosis discipline: ask before assuming
+Before proposing or implementing a fix, verify the actual failure mode from logs or a direct question. In TASK-173 multiple sessions were spent fixing things that were not broken (downloads, onboarding completion, the watch-folder/library wiring) because the diagnosis was assumed rather than confirmed. The cost: rewrites of working components, regressions introduced and then reverted, and a much longer path to the real two-line fix.
+
+**Rule:** if you cannot point to a specific log line, error message, or user-confirmed observation that proves X is broken, do not fix X. Ask instead.
 
 <!-- BACKLOG.MD MCP GUIDELINES START -->
 

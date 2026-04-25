@@ -672,6 +672,7 @@ function BandcampSection({
   onDisconnected: () => void
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false)
+  const [syncAllBusy, setSyncAllBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const handleConnect = async (): Promise<void> => {
@@ -704,43 +705,78 @@ function BandcampSection({
     }
   }
 
+  const handleSyncAll = async (): Promise<void> => {
+    setSyncAllBusy(true)
+    setError(null)
+    try {
+      await window.api.bandcamp.triggerSyncAll()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start re-download.')
+    } finally {
+      setSyncAllBusy(false)
+    }
+  }
+
   return (
-    <div className="prefs-row">
-      <div className="prefs-row-header">
-        <span className="prefs-label">Session</span>
+    <>
+      <div className="prefs-row">
+        <div className="prefs-row-header">
+          <span className="prefs-label">Session</span>
+        </div>
+        {isConnected ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 13 }}>
+              {connectedUsername ? (
+                <>
+                  Connected as <strong>{connectedUsername}</strong>
+                </>
+              ) : (
+                'Connected'
+              )}
+            </span>
+            <button
+              className="prefs-choose-btn prefs-choose-btn--destructive"
+              onClick={() => void handleDisconnect()}
+              disabled={busy}
+            >
+              Disconnect
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              className="prefs-choose-btn"
+              onClick={() => void handleConnect()}
+              disabled={busy}
+            >
+              {busy ? 'Waiting…' : 'Connect to Bandcamp'}
+            </button>
+          </div>
+        )}
+        {error && (
+          <p className="prefs-hint" style={{ color: 'var(--error)' }}>
+            {error}
+          </p>
+        )}
       </div>
-      {isConnected ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 13 }}>
-            {connectedUsername ? (
-              <>
-                Connected as <strong>{connectedUsername}</strong>
-              </>
-            ) : (
-              'Connected'
-            )}
-          </span>
-          <button
-            className="prefs-choose-btn prefs-choose-btn--destructive"
-            onClick={() => void handleDisconnect()}
-            disabled={busy}
-          >
-            Disconnect
-          </button>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button className="prefs-choose-btn" onClick={() => void handleConnect()} disabled={busy}>
-            {busy ? 'Waiting…' : 'Connect to Bandcamp'}
-          </button>
+      {isConnected && (
+        <div className="prefs-row">
+          <div className="prefs-row-header">
+            <span className="prefs-label">Re-download</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              className="prefs-choose-btn"
+              onClick={() => void handleSyncAll()}
+              disabled={syncAllBusy}
+            >
+              {syncAllBusy ? 'Starting…' : 'Re-download all purchases'}
+            </button>
+            <span className="prefs-hint">Clears sync history and re-downloads everything.</span>
+          </div>
         </div>
       )}
-      {error && (
-        <p className="prefs-hint" style={{ color: 'var(--error)' }}>
-          {error}
-        </p>
-      )}
-    </div>
+    </>
   )
 }
 

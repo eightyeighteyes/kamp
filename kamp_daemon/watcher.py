@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from pathlib import Path
 
@@ -29,6 +30,17 @@ logger = logging.getLogger(__name__)
 
 _SETTLE_SECONDS = 2.0  # wait for file to stop growing before processing
 _POLL_INTERVAL = 0.5  # how often to check file size during settle
+# During batch ingests (e.g. sync-all of 500 albums), filesystem events arrive
+# continuously and the debounce timer never gets a 2 s quiet window.  Cap the
+# window so a rescan fires at least every _MAX_SETTLE_SECONDS, keeping the UI
+# refreshed progressively rather than only after the entire batch completes.
+_MAX_SETTLE_SECONDS = 10.0
+# Maximum number of pipeline subprocesses that may run concurrently.
+# A ThreadPoolExecutor with this many workers bounds both the number of OS
+# threads AND the number of concurrent POSIX semaphore allocations.  Without
+# a cap, bulk sync-all floods the watcher with hundreds of timer threads that
+# each spawn a subprocess, rapidly exhausting the OS semaphore table (ENOSPC).
+_MAX_CONCURRENT_PIPELINES = 4
 
 
 class _WatchHandler(FileSystemEventHandler):
@@ -41,10 +53,21 @@ class _WatchHandler(FileSystemEventHandler):
         # Track paths whose pipeline is currently running to prevent double-execution
         self._in_flight: set[Path] = set()
         self._lock = threading.Lock()
+        # Pool bounds both OS thread count and POSIX semaphore usage: only
+        # _MAX_CONCURRENT_PIPELINES threads exist regardless of how many items
+        # are queued.  Threading.Timer threads exit immediately after enqueuing
+        # work, so they don't pile up as blocked threads.
+        self._pipeline_pool = ThreadPoolExecutor(
+            max_workers=_MAX_CONCURRENT_PIPELINES,
+            thread_name_prefix="pipeline",
+        )
         # Set by Watcher to surface current pipeline stage in the menu bar.
         self.stage_callback: Callable[[str], None] | None = None
         # Set by Watcher to deliver error notifications to the menu bar.
         self.notification_callback: Callable[[str, str, str], None] | None = None
+        # Called after each successful pipeline run so the library watcher can
+        # schedule a rescan immediately rather than waiting for FSEvents delivery.
+        self.on_pipeline_complete: Callable[[], None] | None = None
 
     def on_created(self, event: FileSystemEvent) -> None:
         if event.is_directory:
@@ -111,16 +134,27 @@ class _WatchHandler(FileSystemEventHandler):
             existing = self._pending.pop(path, None)
             if existing is not None:
                 existing.cancel()
-            timer = threading.Timer(_SETTLE_SECONDS, self._process, args=[path])
+            timer = threading.Timer(_SETTLE_SECONDS, self._enqueue, args=[path])
             self._pending[path] = timer
             timer.start()
         logger.debug("Scheduled processing of %s in %.1fs", path, _SETTLE_SECONDS)
 
-    def _process(self, path: Path) -> None:
+    def _enqueue(self, path: Path) -> None:
+        """Debounce timer callback: claim path then submit to the pool.
+
+        Claiming happens here (not in _process) so the window between timer
+        firing and the pool worker starting cannot be re-scheduled by a new
+        filesystem event.
+        """
         with self._lock:
             self._pending.pop(path, None)
+            if path in self._in_flight:
+                logger.debug("Skipping enqueue: %s is already in-flight", path)
+                return
             self._in_flight.add(path)
+        self._pipeline_pool.submit(self._process, path)
 
+    def _process(self, path: Path) -> None:
         # Track any directory the pipeline extracts so we can cancel its
         # pending debounce timer and prevent a duplicate pipeline run.
         claimed_dir: list[Path] = []
@@ -155,6 +189,11 @@ class _WatchHandler(FileSystemEventHandler):
                     stage_callback=self.stage_callback,
                     notification_callback=self.notification_callback,
                 )
+                if self.on_pipeline_complete is not None:
+                    try:
+                        self.on_pipeline_complete()
+                    except Exception:
+                        logger.exception("Error in on_pipeline_complete for %s", path)
             except Exception:
                 logger.exception("Unhandled error in pipeline for %s", path)
         finally:
@@ -189,6 +228,7 @@ class Watcher:
         self._paused = False
         self._stage_callback: Callable[[str], None] | None = None
         self._notification_callback: Callable[[str, str, str], None] | None = None
+        self._on_pipeline_complete: Callable[[], None] | None = None
 
     @property
     def stage_callback(self) -> Callable[[str], None] | None:
@@ -207,6 +247,15 @@ class Watcher:
     def notification_callback(self, cb: Callable[[str, str, str], None] | None) -> None:
         self._notification_callback = cb
         self._handler.notification_callback = cb
+
+    @property
+    def on_pipeline_complete(self) -> Callable[[], None] | None:
+        return self._on_pipeline_complete
+
+    @on_pipeline_complete.setter
+    def on_pipeline_complete(self, cb: Callable[[], None] | None) -> None:
+        self._on_pipeline_complete = cb
+        self._handler.on_pipeline_complete = cb
 
     def start(self) -> None:
         watch_folder = self._config.paths.watch_folder
@@ -231,6 +280,7 @@ class Watcher:
             for timer in self._handler._pending.values():
                 timer.cancel()
             self._handler._pending.clear()
+        self._handler._pipeline_pool.shutdown(wait=False)
         self._observer.stop()
         self._observer.join()
         logger.info("Watcher paused")
@@ -245,6 +295,7 @@ class Watcher:
         self._handler = _WatchHandler(self._config)
         self._handler.stage_callback = self._stage_callback
         self._handler.notification_callback = self._notification_callback
+        self._handler.on_pipeline_complete = self._on_pipeline_complete
         self._observer.schedule(self._handler, str(watch_folder), recursive=False)
         self._observer.start()
         self._handler._scan_watch_root()
@@ -255,6 +306,7 @@ class Watcher:
         if not self._paused:
             self._observer.stop()
             self._observer.join()
+        self._handler._pipeline_pool.shutdown(wait=False)
         logger.info("Watcher stopped")
 
     def reload(self, config: Config) -> None:
@@ -275,11 +327,13 @@ class Watcher:
                 config.paths.watch_folder,
             )
             self._observer.unschedule_all()
+            self._handler._pipeline_pool.shutdown(wait=False)
             new_watch_folder = config.paths.watch_folder
             new_watch_folder.mkdir(parents=True, exist_ok=True)
             self._handler = _WatchHandler(config)
             self._handler.stage_callback = self._stage_callback
             self._handler.notification_callback = self._notification_callback
+            self._handler.on_pipeline_complete = self._on_pipeline_complete
             self._observer.schedule(
                 self._handler, str(new_watch_folder), recursive=False
             )
@@ -299,9 +353,11 @@ class _LibraryHandler(FileSystemEventHandler):
     here because LibraryScanner.scan() always does a full recursive walk; there
     is no benefit to tracking individual paths.
 
-    Events caused by an active ingest pipeline (files being moved into the
-    library) continuously reset the timer, so the scan cannot fire until 2 s
-    after the last change — satisfying AC#3 without cross-process coordination.
+    The debounce has two modes:
+    - Quiet window: fire _SETTLE_SECONDS after the last event (normal use).
+    - Batch cap: if events have been arriving for longer than _MAX_SETTLE_SECONDS
+      without a quiet window, fire immediately so batch ingests (e.g. sync-all of
+      hundreds of albums) surface tracks progressively rather than all at once.
     """
 
     def __init__(self, library_root: Path, on_scan: Callable[[], None]) -> None:
@@ -310,9 +366,20 @@ class _LibraryHandler(FileSystemEventHandler):
         self._on_scan = on_scan
         self._pending: threading.Timer | None = None
         self._lock = threading.Lock()
+        # Monotonic time of the first event in the current debounce window.
+        # Reset to None when the timer fires or is cancelled.
+        self._batch_start: float | None = None
 
     def on_created(self, event: FileSystemEvent) -> None:
         if isinstance(event, FileCreatedEvent) and self._is_audio(event.src_path):
+            self._schedule()
+
+    def on_modified(self, event: FileSystemEvent) -> None:
+        # FSEvents on macOS coalesces file renames (shutil.move on the same
+        # filesystem) into DirModifiedEvent on the parent directory rather than
+        # emitting FileCreatedEvent for the moved file.  Schedule a rescan on
+        # any directory modification so pipeline-ingested tracks are picked up.
+        if event.is_directory:
             self._schedule()
 
     def on_deleted(self, event: FileSystemEvent) -> None:
@@ -336,15 +403,21 @@ class _LibraryHandler(FileSystemEventHandler):
 
     def _schedule(self) -> None:
         with self._lock:
+            now = time.monotonic()
+            if self._batch_start is None:
+                self._batch_start = now
             if self._pending is not None:
                 self._pending.cancel()
-            self._pending = threading.Timer(_SETTLE_SECONDS, self._fire)
+            elapsed = now - self._batch_start
+            delay = 0.0 if elapsed >= _MAX_SETTLE_SECONDS else _SETTLE_SECONDS
+            self._pending = threading.Timer(delay, self._fire)
             self._pending.start()
-        logger.debug("Library re-scan scheduled in %.1fs", _SETTLE_SECONDS)
+        logger.debug("Library change event received — rescan in %.1fs", delay)
 
     def _fire(self) -> None:
         with self._lock:
             self._pending = None
+            self._batch_start = None
         logger.info("Library change detected — triggering re-scan")
         try:
             self._on_scan()
@@ -357,6 +430,7 @@ class _LibraryHandler(FileSystemEventHandler):
             if self._pending is not None:
                 self._pending.cancel()
                 self._pending = None
+            self._batch_start = None
 
 
 class LibraryWatcher:
@@ -372,6 +446,19 @@ class LibraryWatcher:
         self._observer.schedule(self._handler, str(self._library_path), recursive=True)
         self._observer.start()
         logger.info("Watching library directory: %s", self._library_path)
+        # Scan immediately so files already present when the daemon starts
+        # (or moved in before the watcher was ready) are indexed right away.
+        threading.Thread(
+            target=self._handler._fire, daemon=True, name="library-startup-scan"
+        ).start()
+
+    def trigger_scan(self) -> None:
+        """Schedule a debounced library rescan (safe to call from any thread).
+
+        Called after each pipeline completion so albums appear in the UI as
+        they finish processing, without waiting for FSEvents delivery.
+        """
+        self._handler._schedule()
 
     def stop(self) -> None:
         self._handler.cancel_pending()

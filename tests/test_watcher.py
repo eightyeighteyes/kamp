@@ -14,9 +14,11 @@ from kamp_daemon.config import (
 )
 from watchdog.events import (
     DirDeletedEvent,
+    DirModifiedEvent,
     DirMovedEvent,
     FileCreatedEvent,
     FileDeletedEvent,
+    FileModifiedEvent,
     FileMovedEvent,
 )
 
@@ -332,6 +334,52 @@ class TestInFlight:
         handler._process(album)  # exception is caught internally
 
         assert album not in handler._in_flight
+
+    def test_concurrent_pipeline_limit(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """At most _MAX_CONCURRENT_PIPELINES subprocesses run at the same time."""
+        import threading
+        from kamp_daemon.watcher import _MAX_CONCURRENT_PIPELINES
+
+        entered = threading.Semaphore(0)
+        gate = threading.Event()
+        active_count = [0]
+        peak_concurrent = [0]
+        counter_lock = threading.Lock()
+
+        def _slow_run(path: object, cfg: object, **kw: object) -> None:
+            with counter_lock:
+                active_count[0] += 1
+                peak_concurrent[0] = max(peak_concurrent[0], active_count[0])
+            entered.release()
+            gate.wait()
+            with counter_lock:
+                active_count[0] -= 1
+
+        monkeypatch.setattr("kamp_daemon.watcher.run_in_subprocess", _slow_run)
+
+        handler = _make_handler(config)
+        n = _MAX_CONCURRENT_PIPELINES + 2
+        paths = [config.paths.watch_folder / f"album{i}" for i in range(n)]
+        for p in paths:
+            p.mkdir()
+
+        # Submit directly to the pool (the same path _enqueue takes) so the
+        # ThreadPoolExecutor's max_workers cap is what's under test.
+        futures = [handler._pipeline_pool.submit(handler._process, p) for p in paths]
+
+        # Wait until the cap is fully occupied (exactly _MAX_CONCURRENT_PIPELINES inside)
+        for _ in range(_MAX_CONCURRENT_PIPELINES):
+            entered.acquire(timeout=5)
+
+        # Release all blocked pipelines and wait for all futures to finish
+        gate.set()
+        for f in futures:
+            f.result(timeout=5)
+
+        handler._pipeline_pool.shutdown(wait=False)
+        assert peak_concurrent[0] <= _MAX_CONCURRENT_PIPELINES
 
 
 class TestOnCreated:
@@ -800,6 +848,62 @@ class TestStageCallback:
         assert watcher._handler.stage_callback is cb
 
 
+class TestPipelineCompleteCallback:
+    def test_callback_called_after_successful_pipeline(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """on_pipeline_complete fires after run_in_subprocess succeeds."""
+        handler = _make_handler(config)
+        album = config.paths.watch_folder / "my-album"
+        album.mkdir()
+
+        calls: list[int] = []
+        monkeypatch.setattr(
+            "kamp_daemon.watcher.run_in_subprocess", lambda *a, **kw: None
+        )
+        handler.on_pipeline_complete = lambda: calls.append(1)
+        handler._process(album)
+
+        assert calls == [1]
+
+    def test_callback_not_called_after_failed_pipeline(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """on_pipeline_complete does NOT fire when run_in_subprocess raises."""
+        handler = _make_handler(config)
+        album = config.paths.watch_folder / "my-album"
+        album.mkdir()
+
+        calls: list[int] = []
+        monkeypatch.setattr(
+            "kamp_daemon.watcher.run_in_subprocess",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        handler.on_pipeline_complete = lambda: calls.append(1)
+        handler._process(album)
+
+        assert calls == []
+
+    def test_watcher_setter_propagates_to_handler(self, config: Config) -> None:
+        """Setting Watcher.on_pipeline_complete updates the live handler."""
+        watcher = Watcher(config)
+        cb = lambda: None  # noqa: E731
+        watcher.on_pipeline_complete = cb
+        assert watcher._handler.on_pipeline_complete is cb
+
+    def test_trigger_scan_calls_schedule(self, tmp_path: Path) -> None:
+        """LibraryWatcher.trigger_scan() schedules a debounced rescan."""
+        on_change = MagicMock()
+        lib = tmp_path / "library"
+        lib.mkdir()
+        watcher = LibraryWatcher(lib, on_change)
+
+        with patch.object(watcher._handler, "_schedule") as mock_schedule:
+            watcher.trigger_scan()
+
+        mock_schedule.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # _LibraryHandler / LibraryWatcher
 # ---------------------------------------------------------------------------
@@ -888,6 +992,34 @@ class TestLibraryHandler:
 
         mock_schedule.assert_called_once()
 
+    def test_fires_scan_on_directory_modified(self, tmp_path: Path) -> None:
+        """DirModifiedEvent schedules a re-scan.
+
+        macOS FSEvents coalesces file renames (shutil.move on the same
+        filesystem) into DirModifiedEvent on the parent directory rather than
+        emitting FileCreatedEvent for the moved file.  This is the primary
+        trigger for pipeline-ingested tracks.
+        """
+        handler = _make_library_handler(tmp_path)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_modified(
+                DirModifiedEvent(str(tmp_path / "library" / "Artist" / "Album"))
+            )
+
+        mock_schedule.assert_called_once()
+
+    def test_ignores_file_modified_event(self, tmp_path: Path) -> None:
+        """FileModifiedEvent (e.g. tag write) does not trigger a re-scan."""
+        handler = _make_library_handler(tmp_path)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_modified(
+                FileModifiedEvent(str(tmp_path / "library" / "track.mp3"))
+            )
+
+        mock_schedule.assert_not_called()
+
     def test_debounces_rapid_events(self, tmp_path: Path) -> None:
         """Multiple rapid events collapse into a single scan call."""
         on_scan = MagicMock()
@@ -902,6 +1034,28 @@ class TestLibraryHandler:
             time.sleep(0.2)
 
         on_scan.assert_called_once()
+
+    def test_batch_cap_fires_immediately_after_max_settle(self, tmp_path: Path) -> None:
+        """Scan fires immediately once _MAX_SETTLE_SECONDS have elapsed, even if
+        events keep arriving, so batch ingests surface tracks progressively."""
+        import time
+
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+        lib = tmp_path / "library"
+
+        with (
+            patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.5),
+            patch("kamp_daemon.watcher._MAX_SETTLE_SECONDS", 0.05),
+        ):
+            handler.on_created(FileCreatedEvent(str(lib / "track1.mp3")))
+            time.sleep(0.08)  # exceed _MAX_SETTLE_SECONDS
+            # This event would normally reset the 0.5 s settle timer; instead,
+            # the cap means the timer fires almost immediately.
+            handler.on_created(FileCreatedEvent(str(lib / "track2.mp3")))
+            time.sleep(0.1)
+
+        on_scan.assert_called()
 
     def test_cancel_pending_prevents_scan(self, tmp_path: Path) -> None:
         """cancel_pending() stops the timer before it fires."""
@@ -923,18 +1077,20 @@ class TestLibraryWatcher:
     def test_stop_before_timer_fires_does_not_call_callback(
         self, tmp_path: Path
     ) -> None:
-        """Stopping the watcher before the debounce timer fires prevents the callback."""
+        """Startup scan fires once on start; stopping before the debounce timer
+        fires must not produce a second call."""
+        import time
+
         on_change = MagicMock()
         lib = tmp_path / "library"
         lib.mkdir()
         watcher = LibraryWatcher(lib, on_change)
         watcher.start()
+        time.sleep(0.05)  # let startup-scan thread complete
 
         with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.2):
             watcher._handler.on_created(FileCreatedEvent(str(lib / "track.mp3")))
             watcher.stop()
-            import time
-
             time.sleep(0.4)
 
-        on_change.assert_not_called()
+        on_change.assert_called_once()  # startup scan only; event timer cancelled

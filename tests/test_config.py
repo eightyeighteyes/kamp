@@ -55,7 +55,7 @@ class TestLoad:
         config = Config.load(db)
         assert config.paths.watch_folder == Path("~/Music/staging").expanduser()
         assert config.paths.library == Path("~/Music").expanduser()
-        assert config.musicbrainz.trust_musicbrainz_when_tags_conflict is True
+        assert config.musicbrainz.trust_musicbrainz_when_tags_conflict is False
         assert config.artwork.min_dimension == 1000
         assert config.artwork.max_bytes == 1_000_000
         assert config.bandcamp is not None

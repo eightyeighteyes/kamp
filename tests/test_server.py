@@ -1921,6 +1921,47 @@ class TestBandcampSync:
 
 
 # ---------------------------------------------------------------------------
+# Bandcamp sync-all endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestBandcampSyncAll:
+    """Tests for POST /api/v1/bandcamp/sync-all."""
+
+    def test_sync_all_returns_503_when_no_trigger_configured(
+        self, client: TestClient
+    ) -> None:
+        resp = client.post("/api/v1/bandcamp/sync-all")
+        assert resp.status_code == 503
+
+    def test_sync_all_fires_trigger_and_returns_ok(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        called: list[bool] = []
+        trigger_done = threading.Event()
+
+        def _trigger() -> None:
+            called.append(True)
+            trigger_done.set()
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_bandcamp_sync_all_trigger=_trigger,
+        )
+        with TestClient(app) as c:
+            resp = c.post("/api/v1/bandcamp/sync-all")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        trigger_done.wait(timeout=2)
+        assert called == [True]
+
+
+# ---------------------------------------------------------------------------
 # Bandcamp session-cookies endpoint
 # ---------------------------------------------------------------------------
 

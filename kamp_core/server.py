@@ -1083,6 +1083,11 @@ def create_app(
         signalled = await loop.run_in_executor(None, event.wait, 60.0)
         if not signalled:
             _state["bandcamp_proxy_requests"].pop(req_id, None)
+            # Also remove from pending so the event is not replayed to the next
+            # WS client.  Without this, a timed-out request (e.g. because Electron
+            # crashed) persists in _pending_proxy_fetches forever, causing a crash
+            # loop: every new Electron launch replays the stale event and crashes again.
+            _pending_proxy_fetches.pop(req_id, None)
             raise HTTPException(
                 status_code=504,
                 detail="Proxy fetch timed out — Electron did not respond",

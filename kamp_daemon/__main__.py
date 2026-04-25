@@ -885,24 +885,27 @@ def _cmd_daemon(
         # (to_update) are excluded — only ScanResult.new_tracks (to_add) are
         # passed.  The invoker enforces the single-invocation guarantee via the
         # audit log so extensions never see the same track twice.
-        if result.new_tracks:
-            # The built-in tagger and artwork source already ran in-process
-            # during the pipeline subprocess.  Mark them as processed for every
-            # new track so the post-scan invoker does not re-run them.
-            _BUILTIN_EXTENSION_IDS = (
-                "kamp_daemon.ext.builtin.musicbrainz.KampMusicBrainzTagger",
-                "kamp_daemon.ext.builtin.coverart.KampCoverArtArchive",
-            )
-            for track in result.new_tracks:
-                if track.mb_recording_id:
-                    for ext_id in _BUILTIN_EXTENSION_IDS:
-                        if not index.has_been_processed_by(
-                            ext_id, track.mb_recording_id
-                        ):
-                            index.mark_processed_by(ext_id, track.mb_recording_id)
-            invoke_extensions_for_new_tracks(
-                _extension_registry, result.new_tracks, index
-            )
+        try:
+            if result.new_tracks:
+                # The built-in tagger and artwork source already ran in-process
+                # during the pipeline subprocess.  Mark them as processed for every
+                # new track so the post-scan invoker does not re-run them.
+                _BUILTIN_EXTENSION_IDS = (
+                    "kamp_daemon.ext.builtin.musicbrainz.KampMusicBrainzTagger",
+                    "kamp_daemon.ext.builtin.coverart.KampCoverArtArchive",
+                )
+                for track in result.new_tracks:
+                    if track.mb_recording_id:
+                        for ext_id in _BUILTIN_EXTENSION_IDS:
+                            if not index.has_been_processed_by(
+                                ext_id, track.mb_recording_id
+                            ):
+                                index.mark_processed_by(ext_id, track.mb_recording_id)
+                invoke_extensions_for_new_tracks(
+                    _extension_registry, result.new_tracks, index
+                )
+        except Exception:
+            _logger.exception("Error invoking extensions after library scan")
         # Bump the server's library version so connected WebSocket clients
         # receive a "library.changed" push and reload the album list.
         app.state.notify_library_changed()

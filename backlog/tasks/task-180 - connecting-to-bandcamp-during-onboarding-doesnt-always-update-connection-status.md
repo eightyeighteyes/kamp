@@ -3,13 +3,15 @@ id: TASK-180
 title: >-
   connecting to bandcamp during onboarding doesn't always update connection
   status
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-25 14:33'
+updated_date: '2026-04-25 22:41'
 labels: []
 milestone: m-31
 dependencies: []
 priority: high
+ordinal: 7000
 ---
 
 ## Description

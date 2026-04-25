@@ -4,11 +4,12 @@ title: crash during bandcamp sync
 status: Done
 assignee: []
 created_date: '2026-04-25 14:36'
-updated_date: '2026-04-25 22:08'
+updated_date: '2026-04-25 22:41'
 labels: []
 milestone: m-31
 dependencies: []
 priority: high
+ordinal: 6000
 ---
 
 ## Description

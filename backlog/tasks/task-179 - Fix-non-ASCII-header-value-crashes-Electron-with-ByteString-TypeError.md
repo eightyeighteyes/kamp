@@ -4,7 +4,7 @@ title: 'Fix: non-ASCII header value crashes Electron with ByteString TypeError'
 status: Done
 assignee: []
 created_date: '2026-04-25 14:32'
-updated_date: '2026-04-25 22:08'
+updated_date: '2026-04-25 22:41'
 labels:
   - bug
   - electron
@@ -12,6 +12,7 @@ labels:
 milestone: m-31
 dependencies: []
 priority: low
+ordinal: 5000
 ---
 
 ## Description

@@ -70,6 +70,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
   const scanLibrary = useStore((s) => s.scanLibrary)
   const setWatchFolderPath = useStore((s) => s.setWatchFolderPath)
   const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
+  const loadConfig = useStore((s) => s.loadConfig)
 
   const [step, setStep] = useState<OnboardingStep>('welcome')
   const [vinylPhase, setVinylPhase] = useState<VinylPhase>('rising')
@@ -207,6 +208,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
     try {
       const result = await window.api.bandcamp.beginLogin()
       if (result.ok) {
+        await loadConfig()
         if (bandcampDownloadAll) {
           window.api.bandcamp.triggerSyncAll().catch(console.error)
         }

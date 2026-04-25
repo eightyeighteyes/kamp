@@ -715,7 +715,18 @@ def _cmd_daemon(
     threading.Thread(target=_state_saver, daemon=True, name="state-saver").start()
 
     def _on_library_path_set(path: Path) -> None:
+        nonlocal lib_path, lib_watcher
         _config_set(index, "paths.library", str(path))
+        new_path = path.expanduser().resolve()
+        if new_path == lib_path:
+            return
+        # Library path changed at runtime (e.g. during onboarding).  Restart the
+        # file-system watcher on the new path so FSEvents and pipeline-complete
+        # scans use the correct directory going forward.
+        lib_watcher.stop()
+        lib_path = new_path
+        lib_watcher = LibraryWatcher(lib_path, _on_library_change)
+        lib_watcher.start()
 
     def _on_ui_state_set(key: str, value: str) -> None:
         _config_set(index, key, value)

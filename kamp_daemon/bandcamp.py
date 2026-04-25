@@ -745,16 +745,19 @@ def _download_item(
     logger.info("Downloading %r by %r…", item_title, band_name)
     cdn_url = _get_cdn_url(redownload_url, bc_config.format, session)
 
-    # popplers5 URLs require Bandcamp session cookies to redirect to the
-    # pre-signed bcbits.com URL.  Resolve the redirect using the authenticated
-    # session (HEAD, no body buffered) to get the final bcbits.com URL, then
-    # download from that URL with a plain session (bcbits.com URLs carry a
-    # time-limited token and do not need cookies).  See the popplers5 note in
-    # CLAUDE.md and TASK-173 for context.
-    final_url = _resolve_cdn_redirect(cdn_url, session)
-    dl_session = _requests.Session()
-    dl_session.headers["User-Agent"] = _UA
-    _download_file(final_url, dest, dl_session)
+    if isinstance(session, _requests.Session):
+        # Dev mode: the requests.Session carries Bandcamp cookies.
+        # popplers5 requires cookies to serve the ZIP; pass the authenticated
+        # session directly so requests follows any redirect automatically.
+        _download_file(cdn_url, dest, session)
+    else:
+        # Frozen mode: Electron's net.fetch carries cookies and follows the
+        # popplers5 → bcbits.com redirect via the proxy HEAD call.
+        # Download from bcbits.com directly — its pre-signed URLs need no cookies.
+        final_url = _resolve_cdn_redirect(cdn_url, session)
+        dl_session = _requests.Session()
+        dl_session.headers["User-Agent"] = _UA
+        _download_file(final_url, dest, dl_session)
     return dest
 
 

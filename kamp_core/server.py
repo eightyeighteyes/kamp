@@ -344,8 +344,9 @@ def create_app(
             _event_loop.call_soon_threadsafe(q.put_nowait, event)
 
     def _notify_library_changed() -> None:
-        """Increment the library version so connected WebSocket clients are notified."""
+        """Push library.changed to all connected WebSocket clients immediately."""
         _state["library_version"] += 1
+        _broadcast({"type": "library.changed"})
 
     def _notify_track_changed() -> None:
         """Broadcast a track.changed push event to all connected WebSocket clients."""

@@ -1146,40 +1146,78 @@ class TestFetchCollection:
 
 
 class TestDownloadItem:
-    def _passthrough_resolve(self, url: str, sess: Any) -> str:
-        return url
+    _CDN = "https://popplers5.bandcamp.com/download/album?enc=mp3-v0"
+    _ITEM = {
+        "sale_item_id": 42,
+        "band_name": "Test Band",
+        "item_title": "Test Album",
+        "redownload_url": "https://bandcamp.com/download?sitem_id=42",
+    }
 
-    def test_downloads_to_watch_dir(self, tmp_path: Path) -> None:
+    def test_dev_mode_uses_authenticated_session(self, tmp_path: Path) -> None:
+        """Dev mode passes the authenticated requests.Session to _download_file directly."""
+        import requests as _req
+
         watch_folder = tmp_path / "watch"
         watch_folder.mkdir()
-        config = _bc_config(tmp_path)
-        item = {
-            "sale_item_id": 42,
-            "band_name": "Test Band",
-            "item_title": "Test Album",
-            "redownload_url": "https://bandcamp.com/download?sitem_id=42",
-        }
-        cdn_url = "https://popplers5.bandcamp.com/download/album?enc=mp3-v0"
-        session = MagicMock()
+        session = _req.Session()
+        calls: list[tuple[str, Any]] = []
 
-        with patch("kamp_daemon.bandcamp._get_cdn_url", return_value=cdn_url):
-            with patch(
-                "kamp_daemon.bandcamp._resolve_cdn_redirect",
-                side_effect=self._passthrough_resolve,
-            ):
+        with patch("kamp_daemon.bandcamp._get_cdn_url", return_value=self._CDN):
+            with patch("kamp_daemon.bandcamp._resolve_cdn_redirect") as mock_resolve:
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: dest.write_bytes(b"fake"),
+                    side_effect=lambda url, dest, sess: (
+                        calls.append((url, sess)),
+                        dest.write_bytes(b"fake"),
+                    ),
                 ):
-                    path = _download_item(item, config, watch_folder, session)
+                    _download_item(
+                        self._ITEM, _bc_config(tmp_path), watch_folder, session
+                    )
 
-        assert path.suffix == ".zip"
-        assert path.parent == watch_folder
+        mock_resolve.assert_not_called()
+        assert len(calls) == 1
+        assert calls[0][0] == self._CDN
+        assert calls[0][1] is session
+
+    def test_frozen_mode_resolves_redirect_and_uses_plain_session(
+        self, tmp_path: Path
+    ) -> None:
+        """Frozen mode calls _resolve_cdn_redirect and downloads with a plain session."""
+        watch_folder = tmp_path / "watch"
+        watch_folder.mkdir()
+        frozen_session = MagicMock()  # not a requests.Session → frozen-mode branch
+        final_url = "https://bcbits.com/download/album?token=abc"
+        calls: list[tuple[str, Any]] = []
+
+        with patch("kamp_daemon.bandcamp._get_cdn_url", return_value=self._CDN):
+            with patch(
+                "kamp_daemon.bandcamp._resolve_cdn_redirect", return_value=final_url
+            ) as mock_resolve:
+                with patch(
+                    "kamp_daemon.bandcamp._download_file",
+                    side_effect=lambda url, dest, sess: (
+                        calls.append((url, sess)),
+                        dest.write_bytes(b"fake"),
+                    ),
+                ):
+                    _download_item(
+                        self._ITEM, _bc_config(tmp_path), watch_folder, frozen_session
+                    )
+
+        mock_resolve.assert_called_once_with(self._CDN, frozen_session)
+        assert len(calls) == 1
+        assert calls[0][0] == final_url
+        # dl_session is a fresh plain Session, not the proxy session
+        import requests as _req
+
+        assert isinstance(calls[0][1], _req.Session)
+        assert calls[0][1] is not frozen_session
 
     def test_raises_when_no_redownload_url(self, tmp_path: Path) -> None:
         watch_folder = tmp_path / "watch"
         watch_folder.mkdir()
-        config = _bc_config(tmp_path)
         item = {
             "sale_item_id": 42,
             "band_name": "Band",
@@ -1187,12 +1225,11 @@ class TestDownloadItem:
             "redownload_url": None,
         }
         with pytest.raises(BandcampAPIError, match="No redownload URL"):
-            _download_item(item, config, watch_folder, MagicMock())
+            _download_item(item, _bc_config(tmp_path), watch_folder, MagicMock())
 
     def test_sanitises_unsafe_characters_in_filename(self, tmp_path: Path) -> None:
         watch_folder = tmp_path / "watch"
         watch_folder.mkdir()
-        config = _bc_config(tmp_path)
         item = {
             "sale_item_id": 1,
             "band_name": 'Band/With:Slashes"',
@@ -1205,13 +1242,15 @@ class TestDownloadItem:
         ):
             with patch(
                 "kamp_daemon.bandcamp._resolve_cdn_redirect",
-                side_effect=self._passthrough_resolve,
+                return_value="https://cdn.example.com/f",
             ):
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
                     side_effect=lambda url, dest, sess: dest.write_bytes(b"x"),
                 ):
-                    path = _download_item(item, config, watch_folder, MagicMock())
+                    path = _download_item(
+                        item, _bc_config(tmp_path), watch_folder, MagicMock()
+                    )
         assert "/" not in path.name
         assert ":" not in path.name
 

@@ -737,7 +737,7 @@ app.whenReady().then(async () => {
   // reach the JS layer. onHeadersReceived fires before ClientRequest processes
   // the response, so this intercepts it in time.
   session.defaultSession.webRequest.onHeadersReceived(
-    { urls: ['https://bandcamp.com/*', 'https://*.bandcamp.com/*'] },
+    { urls: ['https://bandcamp.com/*', 'https://*.bandcamp.com/*', 'https://*.bcbits.com/*'] },
     (details, callback) => {
       if (!details.responseHeaders) {
         callback({})

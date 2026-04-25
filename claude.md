@@ -78,6 +78,17 @@ The only reliable fix for any `bandcamp.com` request in the built app is to rout
 ## macOS CFRunLoop constraint
 Any macOS API that dispatches callbacks on the main GCD queue (`dispatch_get_main_queue()`) will not work in the kamp Python server process. The main thread runs asyncio/uvicorn, which does not pump a CFRunLoop. Affected APIs include: `MPRemoteCommandCenter`, `NSDistributedNotificationCenter`, `NSTimer`, and any delegate/target-action pattern that assumes an AppKit main loop. Features requiring these APIs must live in the Electron main process (which has a real CFRunLoop) or in a dedicated helper subprocess.
 
+## Bandcamp CDN downloads (popplers5)
+`popplers5.bandcamp.com` requires valid Bandcamp session cookies to serve a ZIP. Without cookies it returns HTTP 200 with an HTML error page.
+
+- **Dev mode:** pass the authenticated `requests.Session` directly to `_download_file`. The session carries cookies; `requests` follows any redirect automatically. Do not attempt an "activate then download cookieless" pattern — it is intermittent and unreliable.
+- **Frozen mode:** the `requests.Session` has a PyInstaller OpenSSL fingerprint Cloudflare blocks (see above). Route through Electron's proxy: call `_resolve_cdn_redirect(cdn_url, _ProxySession)` to follow the popplers5 → bcbits.com redirect via `net.fetch`, then download from the bcbits.com pre-signed URL with a plain cookieless `requests.Session` (bcbits.com URLs are time-limited tokens that do not need cookies).
+
+## Diagnosis discipline: ask before assuming
+Before proposing or implementing a fix, verify the actual failure mode from logs or a direct question. In TASK-173 multiple sessions were spent fixing things that were not broken (downloads, onboarding completion, the watch-folder/library wiring) because the diagnosis was assumed rather than confirmed. The cost: rewrites of working components, regressions introduced and then reverted, and a much longer path to the real two-line fix.
+
+**Rule:** if you cannot point to a specific log line, error message, or user-confirmed observation that proves X is broken, do not fix X. Ask instead.
+
 <!-- BACKLOG.MD MCP GUIDELINES START -->
 
 <CRITICAL_INSTRUCTION>

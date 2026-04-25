@@ -715,7 +715,18 @@ def _cmd_daemon(
     threading.Thread(target=_state_saver, daemon=True, name="state-saver").start()
 
     def _on_library_path_set(path: Path) -> None:
+        nonlocal lib_path, lib_watcher
         _config_set(index, "paths.library", str(path))
+        new_path = path.expanduser().resolve()
+        if new_path == lib_path:
+            return
+        # Library path changed at runtime (e.g. during onboarding).  Restart the
+        # file-system watcher on the new path so FSEvents and pipeline-complete
+        # scans use the correct directory going forward.
+        lib_watcher.stop()
+        lib_path = new_path
+        lib_watcher = LibraryWatcher(lib_path, _on_library_change)
+        lib_watcher.start()
 
     def _on_ui_state_set(key: str, value: str) -> None:
         _config_set(index, key, value)
@@ -880,35 +891,41 @@ def _cmd_daemon(
     def _on_library_change() -> None:
         from kamp_core.library import LibraryScanner
 
-        result = LibraryScanner(index).scan(lib_path)
-        # Offer newly ingested tracks to registered extensions.  Re-scan tracks
-        # (to_update) are excluded — only ScanResult.new_tracks (to_add) are
-        # passed.  The invoker enforces the single-invocation guarantee via the
-        # audit log so extensions never see the same track twice.
         try:
-            if result.new_tracks:
-                # The built-in tagger and artwork source already ran in-process
-                # during the pipeline subprocess.  Mark them as processed for every
-                # new track so the post-scan invoker does not re-run them.
-                _BUILTIN_EXTENSION_IDS = (
-                    "kamp_daemon.ext.builtin.musicbrainz.KampMusicBrainzTagger",
-                    "kamp_daemon.ext.builtin.coverart.KampCoverArtArchive",
-                )
-                for track in result.new_tracks:
-                    if track.mb_recording_id:
-                        for ext_id in _BUILTIN_EXTENSION_IDS:
-                            if not index.has_been_processed_by(
-                                ext_id, track.mb_recording_id
-                            ):
-                                index.mark_processed_by(ext_id, track.mb_recording_id)
-                invoke_extensions_for_new_tracks(
-                    _extension_registry, result.new_tracks, index
-                )
-        except Exception:
-            _logger.exception("Error invoking extensions after library scan")
-        # Bump the server's library version so connected WebSocket clients
-        # receive a "library.changed" push and reload the album list.
-        app.state.notify_library_changed()
+            result = LibraryScanner(index).scan(lib_path)
+            # Offer newly ingested tracks to registered extensions.  Re-scan tracks
+            # (to_update) are excluded — only ScanResult.new_tracks (to_add) are
+            # passed.  The invoker enforces the single-invocation guarantee via the
+            # audit log so extensions never see the same track twice.
+            try:
+                if result.new_tracks:
+                    # The built-in tagger and artwork source already ran in-process
+                    # during the pipeline subprocess.  Mark them as processed for every
+                    # new track so the post-scan invoker does not re-run them.
+                    _BUILTIN_EXTENSION_IDS = (
+                        "kamp_daemon.ext.builtin.musicbrainz.KampMusicBrainzTagger",
+                        "kamp_daemon.ext.builtin.coverart.KampCoverArtArchive",
+                    )
+                    for track in result.new_tracks:
+                        if track.mb_recording_id:
+                            for ext_id in _BUILTIN_EXTENSION_IDS:
+                                if not index.has_been_processed_by(
+                                    ext_id, track.mb_recording_id
+                                ):
+                                    index.mark_processed_by(
+                                        ext_id, track.mb_recording_id
+                                    )
+                    invoke_extensions_for_new_tracks(
+                        _extension_registry, result.new_tracks, index
+                    )
+            except Exception:
+                _logger.exception("Error invoking extensions after library scan")
+        finally:
+            # Bump the server's library version so connected WebSocket clients
+            # receive a "library.changed" push and reload the album list.
+            # Always runs — even if scan() raises — so the renderer is never
+            # left stale due to a transient scan error.
+            app.state.notify_library_changed()
 
     lib_watcher = LibraryWatcher(lib_path, _on_library_change)
     lib_watcher.start()
@@ -939,10 +956,19 @@ def _cmd_daemon(
 
     core.syncer.status_callback = app.state.notify_bandcamp_sync_status
     core.watcher.stage_callback = app.state.notify_pipeline_stage
-    # After each album finishes processing, schedule a debounced library rescan
-    # so newly ingested tracks appear in the UI immediately rather than waiting
-    # for FSEvents delivery (which is unreliable during high-volume batch syncs).
-    core.watcher.on_pipeline_complete = lib_watcher.trigger_scan
+
+    # After each album finishes processing, run a library rescan directly on a
+    # fresh thread — bypassing the LibraryWatcher debounce, which shares its
+    # timer with FSEvents from the library directory.  During a large sync,
+    # continuous FSEvents keep resetting that timer so it never fires; routing
+    # pipeline-complete events here ensures each completed album triggers an
+    # immediate scan and UI notification independently of FSEvents activity.
+    def _on_pipeline_complete() -> None:
+        threading.Thread(
+            target=_on_library_change, daemon=True, name="library-pipeline-scan"
+        ).start()
+
+    core.watcher.on_pipeline_complete = _on_pipeline_complete
     core.start()
     core.wait()
 

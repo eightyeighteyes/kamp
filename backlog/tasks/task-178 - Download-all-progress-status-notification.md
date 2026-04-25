@@ -4,12 +4,13 @@ title: Download-all progress / status notification
 status: To Do
 assignee: []
 created_date: '2026-04-24 19:29'
+updated_date: '2026-04-25 22:42'
 labels:
   - feature
   - bandcamp
   - ux
   - 'estimate: LP'
-milestone: m-31
+milestone: m-1
 dependencies: []
 priority: medium
 ---

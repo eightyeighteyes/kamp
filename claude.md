@@ -89,6 +89,18 @@ Before proposing or implementing a fix, verify the actual failure mode from logs
 
 **Rule:** if you cannot point to a specific log line, error message, or user-confirmed observation that proves X is broken, do not fix X. Ask instead.
 
+## Daemon runtime config and closure variables
+Variables captured at daemon startup (e.g. `lib_path`, `lib_watcher`) are NOT automatically updated when the user changes config at runtime (e.g. during onboarding). The callbacks wired to `on_library_path_set` etc. only write to the DB by default. To propagate a runtime config change through the daemon:
+- Use `nonlocal` in the callback to reassign the closure variable.
+- Stop and restart any dependent objects (e.g. `LibraryWatcher`) that were initialized with the old value.
+- Also call `core.reload(Config.load(index))` if the change should reach `DaemonCore` (see `_on_config_set` for the existing pattern).
+
+## UI config refresh after config-changing events
+The server does NOT push config changes over WebSocket. After any event that changes server-side config (Bandcamp login, library path set, etc.), the UI store must explicitly call `loadConfig()` to pick up the new state. Without this, fields like `bandcamp.connected` stay stale from the initial mount, hiding UI elements that depend on them (e.g. the sync button).
+
+## Shared debounce and high-volume FSEvents
+`_LibraryHandler._schedule()` (in `watcher.py`) is shared between FSEvents from the library directory and explicit `trigger_scan()` calls. During a large batch sync, continuous FSEvents from files being moved in reset the debounce timer faster than the `_MAX_SETTLE_SECONDS` cap fires. To guarantee a scan fires after each pipeline completion, bypass the debounce entirely: call `_on_library_change` directly in a `threading.Thread` from `on_pipeline_complete` instead of routing through `lib_watcher.trigger_scan()`.
+
 <!-- BACKLOG.MD MCP GUIDELINES START -->
 
 <CRITICAL_INSTRUCTION>

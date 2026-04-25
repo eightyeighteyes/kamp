@@ -2341,6 +2341,65 @@ class TestBandcampProxyEndpoints:
         assert response.status_code == 422
         assert "not allowed" in response.json()["detail"]
 
+    def test_proxy_fetch_timeout_removes_from_pending(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Timed-out proxy-fetch is removed from pending so it is not replayed.
+
+        This is the TASK-181 crash-loop fix: without the pop(), a timed-out
+        request stays in _pending_proxy_fetches and is re-delivered to every
+        new WS client, causing an infinite crash loop.
+        """
+        import threading
+        from threading import Event as _RealEvent
+        from unittest.mock import patch
+
+        # Patch threading.Event as seen from kamp_core.server so the per-request
+        # event times out immediately.  wait(timeout=None) is used by
+        # Thread._started so we only return False for bounded waits (the
+        # proxy-fetch handler always passes a 60.0 timeout).
+        class _ImmediateTimeoutEvent(_RealEvent):
+            def wait(self, timeout=None):  # type: ignore[override]
+                if timeout is None:
+                    return super().wait()
+                return False
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        proxy_response: dict = {}
+
+        with patch("kamp_core.server._threading.Event", _ImmediateTimeoutEvent):
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.receive_json()  # discard player.state
+
+                t = threading.Thread(
+                    target=lambda: proxy_response.update(
+                        {
+                            "resp": c.post(
+                                "/api/v1/bandcamp/proxy-fetch",
+                                json={
+                                    "url": "https://bandcamp.com/api/fan/2/collection_summary",
+                                    "method": "GET",
+                                    "headers": {},
+                                    "body": None,
+                                },
+                            )
+                        }
+                    )
+                )
+                t.start()
+                t.join(timeout=5)
+
+        assert proxy_response["resp"].status_code == 504
+
+        # A new WS client connecting after the timeout must NOT receive the
+        # timed-out request as a replay event.
+        with c.websocket_connect("/api/v1/ws") as ws2:
+            ws2.receive_json()  # discard player.state
+            ws2.send_text("ping")
+            pong = ws2.receive_json()
+            assert pong["type"] == "player.state"  # no replay event
+
 
 # ---------------------------------------------------------------------------
 # CORS

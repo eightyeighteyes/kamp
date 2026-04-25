@@ -305,6 +305,14 @@ class TestInFlight:
 
         mock_schedule.assert_not_called()
 
+    def test_process_skips_nonexistent_path(self, config: Config) -> None:
+        """_process returns early without calling run_in_subprocess when path is gone."""
+        handler = _make_handler(config)
+        gone = config.paths.watch_folder / "vanished-album"
+        # Do NOT create the directory — path does not exist.
+        handler._process(gone)  # must not raise
+        assert gone not in handler._in_flight
+
     def test_in_flight_cleared_after_process(
         self, config: Config, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -846,6 +854,14 @@ class TestStageCallback:
         cb = lambda stage: None  # noqa: E731
         watcher.stage_callback = cb
         assert watcher._handler.stage_callback is cb
+        assert watcher.stage_callback is cb
+
+    def test_notification_callback_getter_and_setter(self, config: Config) -> None:
+        """notification_callback getter returns the value set by the setter."""
+        watcher = Watcher(config)
+        cb = lambda title, body, url: None  # noqa: E731
+        watcher.notification_callback = cb
+        assert watcher.notification_callback is cb
 
 
 class TestPipelineCompleteCallback:
@@ -890,6 +906,23 @@ class TestPipelineCompleteCallback:
         cb = lambda: None  # noqa: E731
         watcher.on_pipeline_complete = cb
         assert watcher._handler.on_pipeline_complete is cb
+        assert watcher.on_pipeline_complete is cb
+
+    def test_callback_exception_is_caught(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An exception in on_pipeline_complete is caught and logged; pipeline still succeeds."""
+        handler = _make_handler(config)
+        album = config.paths.watch_folder / "my-album"
+        album.mkdir()
+
+        monkeypatch.setattr(
+            "kamp_daemon.watcher.run_in_subprocess", lambda *a, **kw: None
+        )
+        handler.on_pipeline_complete = lambda: (_ for _ in ()).throw(
+            RuntimeError("cb fail")
+        )
+        handler._process(album)  # must not raise
 
     def test_trigger_scan_calls_schedule(self, tmp_path: Path) -> None:
         """LibraryWatcher.trigger_scan() schedules a debounced rescan."""
@@ -1071,6 +1104,25 @@ class TestLibraryHandler:
             time.sleep(0.3)
 
         on_scan.assert_not_called()
+
+    def test_cancel_pending_when_no_pending_timer(self, tmp_path: Path) -> None:
+        """cancel_pending() is a no-op when no timer is pending."""
+        handler = _make_library_handler(tmp_path)
+        handler.cancel_pending()  # must not raise
+
+    def test_fire_exception_in_on_scan_is_caught(self, tmp_path: Path) -> None:
+        """_fire() catches and logs exceptions from on_scan; they must not propagate."""
+        on_scan = MagicMock(side_effect=RuntimeError("scan failed"))
+        handler = _make_library_handler(tmp_path, on_scan)
+        lib = tmp_path / "library"
+
+        with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.0):
+            handler.on_created(FileCreatedEvent(str(lib / "track.mp3")))
+            import time
+
+            time.sleep(0.1)
+
+        on_scan.assert_called_once()
 
 
 class TestLibraryWatcher:

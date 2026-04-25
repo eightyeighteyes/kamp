@@ -1,10 +1,10 @@
 ---
 id: TASK-179
 title: 'Fix: non-ASCII header value crashes Electron with ByteString TypeError'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-25 14:32'
-updated_date: '2026-04-25 14:37'
+updated_date: '2026-04-25 22:41'
 labels:
   - bug
   - electron
@@ -12,6 +12,7 @@ labels:
 milestone: m-31
 dependencies: []
 priority: low
+ordinal: 5000
 ---
 
 ## Description
@@ -43,3 +44,9 @@ A string containing non-Latin characters (artist name, album title, or status me
 
 Identify where the non-ASCII string enters a header and either percent-encode it, strip non-ASCII characters, or move the value into the request body / a JSON payload instead.
 <!-- SECTION:DESCRIPTION:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed by replacing `net.fetch` with `net.request` in `kamp_ui/src/main/index.ts`. `net.fetch` uses undici's Headers class which validates header values as ByteStrings (ASCII only); non-ASCII chars in Bandcamp CDN response headers triggered the TypeError. `net.request` uses plain Node.js IncomingMessage objects with no such validation. Also added an `onHeadersReceived` sanitizer to strip non-ASCII header values from CDN responses. PR #292.
+<!-- SECTION:FINAL_SUMMARY:END -->

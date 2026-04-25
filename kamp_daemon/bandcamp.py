@@ -717,8 +717,10 @@ def _resolve_cdn_redirect(cdn_url: str, session: _AnySession) -> str:
             resp.close()
         logger.debug("_resolve_cdn_redirect: %s → %s", cdn_url, final_url)
         return final_url
-    # Frozen mode: GET via Electron carries Bandcamp cookies.
-    proxy_resp = session.get(cdn_url, timeout=30)
+    # Frozen mode: HEAD via Electron carries Bandcamp cookies to follow the
+    # popplers5 → bcbits.com redirect. HEAD avoids downloading the full ZIP
+    # here — the caller only needs the final URL.
+    proxy_resp = session.head(cdn_url, timeout=30)
     return proxy_resp.url or cdn_url
 
 

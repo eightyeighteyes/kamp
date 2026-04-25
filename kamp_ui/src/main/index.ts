@@ -323,11 +323,6 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
 // which is handled here.  net.fetch uses session.defaultSession so Chromium's
 // TLS stack (real browser fingerprint, cf_clearance cookie) handles the request.
 
-// net.fetch accepts a `session` option at runtime (Chromium extension) but the
-// Electron TypeScript type only exposes the base RequestInit.  Cast via unknown
-// so we can pass the defaultSession without disabling the whole call site.
-type NetFetchOptions = Parameters<typeof net.fetch>[1] & { session?: Electron.Session }
-
 type WindowBounds = { x: number; y: number; width: number; height: number }
 
 function loadWindowBounds(): WindowBounds {
@@ -639,19 +634,75 @@ app.whenReady().then(async () => {
       let url = req.url
 
       try {
-        const opts: NetFetchOptions = {
-          method: req.method,
-          headers: req.headers as HeadersInit,
-          body: req.body ?? undefined,
-          session: session.defaultSession
-        }
-        const fetchResp = await net.fetch(req.url, opts as Parameters<typeof net.fetch>[1])
-        status = fetchResp.status
-        // Skip reading the body for HEAD requests — the caller only needs the
-        // final URL after following redirects (used to resolve popplers5 → bcbits.com).
-        body = req.method === 'HEAD' ? '' : await fetchResp.text()
-        contentType = fetchResp.headers.get('content-type') ?? 'text/html'
-        url = fetchResp.url
+        // Use net.request (Node.js IncomingMessage) instead of net.fetch (undici) so
+        // response headers are plain objects with no ByteString validation.
+        // net.fetch wraps response headers in undici's Headers class, which throws an
+        // uncaught TypeError inside ClientRequest.emit for values with code points
+        // > 0xFF (e.g. non-ASCII Content-Disposition filenames from Bandcamp CDN).
+        // That exception bypasses our try/catch and crashes the main process.
+        const safeHeaders = Object.fromEntries(
+          Object.entries(req.headers).filter(([, v]) =>
+            [...v].every((c) => c.charCodeAt(0) <= 0xff)
+          )
+        )
+        const result = await new Promise<{
+          status: number
+          body: string
+          contentType: string
+          url: string
+        }>((resolve, reject) => {
+          let finalUrl = req.url
+          const request = net.request({
+            method: req.method,
+            url: req.url,
+            session: session.defaultSession,
+            useSessionCookies: true
+          })
+          for (const [k, v] of Object.entries(safeHeaders)) {
+            request.setHeader(k, v)
+          }
+          // Track the final URL through redirects (popplers5.bandcamp.com →
+          // bcbits.com). followRedirect() must be called synchronously here.
+          request.on('redirect', (_code, _method, redirectUrl) => {
+            finalUrl = redirectUrl
+            request.followRedirect()
+          })
+          request.on('response', (response) => {
+            const resStatus = response.statusCode
+            const ct = response.headers['content-type']
+            const resContentType = Array.isArray(ct) ? ct[0] : (ct ?? 'text/html')
+            if (req.method === 'HEAD') {
+              // HEAD responses have no body per HTTP spec — resolve immediately.
+              resolve({ status: resStatus, body: '', contentType: resContentType, url: finalUrl })
+              return
+            }
+            const chunks: Buffer[] = []
+            let totalBytes = 0
+            // Bandcamp API responses are at most a few KB. 10 MB guards against
+            // stale GET events (from before the HEAD fix) buffering entire ZIPs.
+            const MAX_BODY = 10 * 1024 * 1024
+            response.on('data', (chunk: Buffer) => {
+              totalBytes += chunk.length
+              if (totalBytes <= MAX_BODY) chunks.push(chunk)
+            })
+            response.on('end', () => {
+              resolve({
+                status: totalBytes > MAX_BODY ? 413 : resStatus,
+                body: Buffer.concat(chunks).toString('utf-8'),
+                contentType: resContentType,
+                url: finalUrl
+              })
+            })
+            response.on('error', reject)
+          })
+          request.on('error', reject)
+          if (req.body) request.write(req.body)
+          request.end()
+        })
+        status = result.status
+        body = result.body
+        contentType = result.contentType
+        url = result.url
       } catch (err) {
         body = String(err)
       }
@@ -719,6 +770,32 @@ app.whenReady().then(async () => {
       const requestHeaders = { ...details.requestHeaders }
       if (token) requestHeaders['X-Kamp-Token'] = token
       callback({ requestHeaders })
+    }
+  )
+
+  // Bandcamp CDN responses include non-Latin-1 characters in Content-Disposition
+  // filenames (e.g. a Chinese album name starting at index 22 of the value:
+  // `attachment; filename="<non-ASCII>..."`). Electron's net.fetch wraps response
+  // headers using undici's Headers.set, which throws an uncaught TypeError on
+  // code points > 0xFF — crashing the main process. Sanitize before values
+  // reach the JS layer. onHeadersReceived fires before ClientRequest processes
+  // the response, so this intercepts it in time.
+  session.defaultSession.webRequest.onHeadersReceived(
+    { urls: ['https://bandcamp.com/*', 'https://*.bandcamp.com/*', 'https://*.bcbits.com/*'] },
+    (details, callback) => {
+      if (!details.responseHeaders) {
+        callback({})
+        return
+      }
+      const responseHeaders: Record<string, string[]> = {}
+      for (const [key, values] of Object.entries(details.responseHeaders)) {
+        responseHeaders[key] = values.map((v) =>
+          [...v].every((c) => c.charCodeAt(0) <= 0xff)
+            ? v
+            : [...v].map((c) => (c.charCodeAt(0) <= 0xff ? c : '?')).join('')
+        )
+      }
+      callback({ responseHeaders })
     }
   )
 

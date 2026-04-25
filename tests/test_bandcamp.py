@@ -1600,19 +1600,19 @@ class TestResolveCdnRedirect:
         )
         assert result == self._bcbits_url
 
-    def test_frozen_mode_uses_proxy_get(self) -> None:
-        """_ProxySession.get routes through Electron; final URL comes from resp.url."""
+    def test_frozen_mode_uses_proxy_head(self) -> None:
+        """_ProxySession.head routes through Electron; final URL comes from resp.url."""
         from kamp_daemon.bandcamp import _ProxySession
 
         proxy_resp = _ProxyResponse(
             status_code=200, text="", content_type="", url=self._bcbits_url
         )
         sess = MagicMock(spec=_ProxySession)
-        sess.get.return_value = proxy_resp
+        sess.head.return_value = proxy_resp
 
         result = _resolve_cdn_redirect(self._popplers_url, sess)
 
-        sess.get.assert_called_once_with(self._popplers_url, timeout=30)
+        sess.head.assert_called_once_with(self._popplers_url, timeout=30)
         assert result == self._bcbits_url
 
     def test_frozen_mode_falls_back_when_url_none(self) -> None:
@@ -1621,7 +1621,7 @@ class TestResolveCdnRedirect:
 
         proxy_resp = _ProxyResponse(status_code=200, text="", content_type="", url=None)
         sess = MagicMock(spec=_ProxySession)
-        sess.get.return_value = proxy_resp
+        sess.head.return_value = proxy_resp
 
         result = _resolve_cdn_redirect(self._popplers_url, sess)
 

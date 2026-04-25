@@ -1,13 +1,15 @@
 ---
 id: TASK-181
 title: crash during bandcamp sync
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-25 14:36'
+updated_date: '2026-04-25 22:41'
 labels: []
 milestone: m-31
 dependencies: []
 priority: high
+ordinal: 6000
 ---
 
 ## Description
@@ -863,3 +865,9 @@ Network Service: Wi-Fi, AirPort, en0
 Thunderbolt Bus: MacBook Pro, Apple Inc., 63.5
 Thunderbolt Bus: MacBook Pro, Apple Inc., 63.5
 <!-- SECTION:DESCRIPTION:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed in `kamp_core/server.py`: on proxy-fetch timeout, pop the entry from `_pending_proxy_fetches` so it is never replayed to the next WS client that connects. Without this, timed-out requests were stored indefinitely and re-delivered on every new WS connection, triggering a fresh proxy-fetch → timeout → crash loop. Also fixed two related regressions in the same branch: (1) `_on_library_path_set` now updates `lib_path` and restarts `lib_watcher` at runtime so library scans land in the correct directory after onboarding; (2) `OnboardingScreen` calls `loadConfig()` after Bandcamp login so `bandcamp.connected` is reflected immediately. PR #292.
+<!-- SECTION:FINAL_SUMMARY:END -->

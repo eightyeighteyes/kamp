@@ -92,7 +92,7 @@ jobs:
             -Dsdl2=disabled \
             -Dopenal=disabled \
             -Djack=disabled \
-            -Dpulseaudio=disabled \
+            -Dpulse=disabled \
             -Dalsa=disabled
           ninja -C build
           cp build/mpv "$GITHUB_WORKSPACE/kamp_ui/resources/mpv"

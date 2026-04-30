@@ -13,6 +13,7 @@ files:
   # to Contents/Resources/ outside the ASAR, no double-packing).
   - '!resources/kamp/**'
   - '!resources/mpv'
+  - '!resources/mpv-libs/**'
   - '!resources/node'
   - '!resources/npm/**'
   - '!resources/icon_1024.png'
@@ -40,6 +41,13 @@ extraResources:
   # Standalone mpv binary → Contents/Resources/mpv
   - from: resources/mpv
     to: mpv
+  # Bundled mpv dylibs → Contents/Resources/mpv-libs/
+  # dylibbundler rewrites mpv's load commands to @executable_path/mpv-libs/<lib>
+  # so this directory must be a sibling of the mpv binary in Contents/Resources/.
+  - from: resources/mpv-libs
+    to: mpv-libs
+    filter:
+      - '**/*'
   # Swift Now Playing helper → Contents/Resources/now-playing-helper
   - from: resources/now-playing-helper
     to: now-playing-helper
@@ -80,6 +88,7 @@ mac:
   signIgnore:
     - "Contents/Resources/kamp"
     - "Contents/Resources/mpv"
+    - "Contents/Resources/mpv-libs"
     - "Contents/Resources/node"
     - "Contents/Resources/now-playing-helper"
     - "Contents/Resources/kamp-keychain-helper"

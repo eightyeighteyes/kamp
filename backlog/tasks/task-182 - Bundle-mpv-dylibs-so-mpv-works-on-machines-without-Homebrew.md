@@ -1,19 +1,22 @@
 ---
 id: TASK-182
-title: 'Bundle mpv dylibs so mpv works on machines without Homebrew'
-status: To Do
+title: Bundle mpv dylibs so mpv works on machines without Homebrew
+status: Done
 assignee: []
 created_date: '2026-04-26'
-updated_date: '2026-04-26'
+updated_date: '2026-04-30 21:06'
 labels:
   - build
   - packaging
-priority: medium
+milestone: m-32
 dependencies: []
+priority: medium
+ordinal: 1000
 ---
 
 ## Description
 
+<!-- SECTION:DESCRIPTION:BEGIN -->
 The build copies mpv directly from Homebrew (`brew install mpv && cp $(brew --prefix)/bin/mpv ...`). Homebrew's mpv links against a chain of Homebrew-specific dylibs (`libavcodec`, `libavformat`, `libass`, `libfreetype`, `libharfbuzz`, etc.) that are absent on machines without Homebrew. On a clean machine, `dyld` cannot resolve these libs and mpv fails to launch.
 
 mpv is only spawned on playback (not server startup), so this does not prevent the server from running, but it means audio playback silently breaks for users who don't have Homebrew installed.
@@ -67,3 +70,4 @@ otool -L kamp_ui/resources/mpv
 Should show only `@loader_path/mpv-libs/...`, `/usr/lib/`, and `/System/` — nothing from `/opt/homebrew/` or `/usr/local/`.
 
 Test on a clean VM (no Homebrew) that audio playback works end-to-end.
+<!-- SECTION:DESCRIPTION:END -->

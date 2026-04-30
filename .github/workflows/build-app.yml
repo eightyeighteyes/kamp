@@ -70,12 +70,13 @@ jobs:
       - name: Build minimal mpv from source
         # Build mpv with only the capabilities kamp needs: audio decoding (FFmpeg)
         # and audio output (CoreAudio, a system framework). All video, scripting,
-        # disc, and Linux-specific features are disabled. This avoids bundling ~50
-        # Homebrew dylibs (including VapourSynth, which embeds an unbundleable
-        # Python.framework) and drops the bundle to ~15–20 dylibs.
+        # disc, and Linux-specific features are disabled. This avoids VapourSynth
+        # (which embeds an unbundleable Python.framework) and drops the bundle
+        # from ~47 to ~32 dylibs. libplacebo is a required dep in v0.41.0 and
+        # has no disable flag; it pulls in shaderc/vulkan-loader transitively.
         run: |
-          brew install dylibbundler meson ninja ffmpeg libass
-          git clone --depth=1 --branch v0.39.0 \
+          brew install dylibbundler meson ninja ffmpeg libass libplacebo
+          git clone --depth=1 --branch v0.41.0 \
             https://github.com/mpv-player/mpv.git /tmp/mpv-src
           cd /tmp/mpv-src
           meson setup build \
@@ -89,12 +90,16 @@ jobs:
             -Ddrm=disabled \
             -Dwayland=disabled \
             -Dx11=disabled \
-            -Dsdl2=disabled \
+            -Dsdl2-audio=disabled \
+            -Dsdl2-video=disabled \
+            -Dsdl2-gamepad=disabled \
             -Dopenal=disabled \
             -Djack=disabled \
             -Dpulse=disabled \
             -Dalsa=disabled \
-            -Dlibplacebo=disabled
+            -Dvulkan=disabled \
+            -Dshaderc=disabled \
+            -Dpipewire=disabled
           ninja -C build
           cp build/mpv "$GITHUB_WORKSPACE/kamp_ui/resources/mpv"
           chmod +x "$GITHUB_WORKSPACE/kamp_ui/resources/mpv"

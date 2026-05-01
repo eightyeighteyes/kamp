@@ -1,10 +1,10 @@
 ---
 id: TASK-185
 title: Build minimal mpv from source with audio-only feature set
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-04-30'
-updated_date: '2026-04-30 21:07'
+updated_date: '2026-04-30 21:37'
 labels:
   - build
   - packaging

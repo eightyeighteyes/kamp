@@ -30,9 +30,21 @@ function SearchAlbumCard({
     <div
       className="search-album-card"
       tabIndex={0}
+      draggable
       onClick={handleClick}
       onKeyDown={(e) => e.key === 'Enter' && handleClick()}
       onContextMenu={(e) => onContextMenu(e, album)}
+      onDragStart={(e) => {
+        e.dataTransfer.setData(
+          'text/kamp-album',
+          JSON.stringify({
+            album_artist: album.album_artist,
+            album: album.album,
+            file_path: album.file_path
+          })
+        )
+        e.dataTransfer.effectAllowed = 'copy'
+      }}
     >
       <div className={`search-album-art${artLoaded ? ' has-art' : ''}`}>
         {album.has_art && (
@@ -79,9 +91,14 @@ function SearchTrackRow({
     <div
       className="search-track-row"
       tabIndex={0}
+      draggable
       onClick={handleClick}
       onKeyDown={(e) => e.key === 'Enter' && handleClick()}
       onContextMenu={(e) => onContextMenu(e, track)}
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+        e.dataTransfer.effectAllowed = 'copy'
+      }}
     >
       <span className="search-track-fav" aria-hidden="true">
         {track.favorite ? '♥' : ''}

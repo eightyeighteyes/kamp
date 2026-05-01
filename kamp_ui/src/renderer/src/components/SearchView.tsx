@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { artUrl } from '../api/client'
+import { artUrl, getTracksForAlbum } from '../api/client'
 import type { Album, Track } from '../api/client'
 import { SortControl } from './SortControl'
 import { useMenuBounds } from '../hooks/useMenuBounds'
@@ -240,6 +240,27 @@ export function SearchView(): React.JSX.Element {
           >
             + Add to Queue
           </button>
+          <button
+            className="track-context-menu-item"
+            onClick={async () => {
+              let filePath = albumMenu.album.file_path
+              if (!filePath) {
+                const tracks = await getTracksForAlbum(
+                  albumMenu.album.album_artist,
+                  albumMenu.album.album
+                )
+                filePath = tracks[0]?.file_path ?? ''
+              }
+              if (filePath) window.api.showItemInFolder(filePath)
+              setAlbumMenu(null)
+            }}
+          >
+            {window.electron.process.platform === 'darwin'
+              ? '↗ Reveal in Finder'
+              : window.electron.process.platform === 'win32'
+                ? '↗ Show in Explorer'
+                : '↗ Show in Files'}
+          </button>
         </div>
       )}
 
@@ -288,6 +309,19 @@ export function SearchView(): React.JSX.Element {
               <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
             </svg>
             {trackMenu.favorite ? 'Remove from Favorites' : 'Add to Favorites'}
+          </button>
+          <button
+            className="track-context-menu-item"
+            onClick={() => {
+              window.api.showItemInFolder(trackMenu.filePath)
+              setTrackMenu(null)
+            }}
+          >
+            {window.electron.process.platform === 'darwin'
+              ? '↗ Reveal in Finder'
+              : window.electron.process.platform === 'win32'
+                ? '↗ Show in Explorer'
+                : '↗ Show in Files'}
           </button>
         </div>
       )}

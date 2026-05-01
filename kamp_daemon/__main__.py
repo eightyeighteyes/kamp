@@ -29,7 +29,6 @@ from pathlib import Path
 import musicbrainzngs
 
 from .config import (
-    DEFAULT_CONFIG_PATH,
     Config,
     _state_dir,
     config_set,
@@ -86,16 +85,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="kamp",
         description="Automated audio library ingest from Bandcamp.",
-    )
-    parser.add_argument(
-        "--config",
-        metavar="PATH",
-        type=Path,
-        default=DEFAULT_CONFIG_PATH,
-        help=(
-            f"Legacy config.toml path used for one-time migration (default: {DEFAULT_CONFIG_PATH}). "
-            "Configuration is now stored in the SQLite database."
-        ),
     )
     parser.add_argument(
         "--log-level",
@@ -297,21 +286,9 @@ def main() -> None:
     from kamp_core.library import LibraryIndex as _LibraryIndex
 
     _init_db = _LibraryIndex(_state_dir() / "library.db")
-    try:
-        config = Config.load(_init_db, legacy_config_path=args.config)
-    except FileNotFoundError:
-        if sys.stdin.isatty():
-            config = Config.first_run_setup(_init_db)
-        else:
-            print(
-                "No configuration found. Run kamp interactively to complete setup.",
-                file=sys.stderr,
-            )
-            _init_db.close()
-            sys.exit(1)
-    finally:
-        # Close the init DB; each long-running command opens its own connection.
-        _init_db.close()
+    config = Config.load(_init_db)
+    # Close the init DB; each long-running command opens its own connection.
+    _init_db.close()
 
     # app_name, app_version, and contact are not user-configurable — hardcoded
     # here so the User-Agent we send to MusicBrainz always accurately identifies

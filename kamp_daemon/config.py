@@ -1,9 +1,6 @@
 """Configuration loading and defaults for kamp.
 
-All application configuration is stored in the SQLite ``settings`` table
-(see TASK-132).  ``config.toml``, if present from a prior install, is read
-once on startup and migrated; afterwards the file is left in place but never
-written again.
+All application configuration is stored in the SQLite ``settings`` table.
 """
 
 from __future__ import annotations
@@ -11,7 +8,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-import tomllib  # stdlib since 3.11; used only for one-time TOML migration
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -34,19 +30,6 @@ def _state_dir() -> Path:
 def token_path() -> Path:
     """Return the path to the daemon's shared-secret auth token file."""
     return _state_dir() / ".token"
-
-
-def _default_config_path() -> Path:
-    """Return the legacy config.toml path (used only for one-time TOML migration)."""
-    if sys.platform == "win32":  # pragma: no cover
-        appdata = os.environ.get("APPDATA")
-        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
-        return base / "kamp" / "config.toml"
-    return Path("~/.config/kamp/config.toml").expanduser()
-
-
-# Retained for one-time TOML migration and backwards-compat with existing plists.
-DEFAULT_CONFIG_PATH = _default_config_path()
 
 
 @dataclass
@@ -231,34 +214,18 @@ class Config:
                 db.set_setting(key, default)
 
     @classmethod
-    def load(
-        cls, db: "LibraryIndex", legacy_config_path: "Path | None" = None
-    ) -> "Config":
+    def load(cls, db: "LibraryIndex") -> "Config":
         """Load config from the DB settings table.
 
-        On the first call after a TOML install, if the settings table is empty
-        and the legacy config.toml exists, the file is read once and its values
-        are written to the DB (deprecated keys silently dropped).
-
-        Raises FileNotFoundError when there are no settings and no TOML to migrate from.
+        On a fresh install the settings table is empty; write_defaults() seeds
+        the non-path keys so the daemon can start. The UI onboarding flow sets
+        paths.library and paths.watch_folder once the user completes setup.
         """
         existing = db.get_all_settings()
 
         if not existing:
-            toml_path = (
-                legacy_config_path
-                if legacy_config_path is not None
-                else DEFAULT_CONFIG_PATH
-            )
-            if toml_path.exists():
-                existing = _migrate_from_toml(db, toml_path)
-
-            if not existing:
-                # No TOML to migrate from — seed defaults so the daemon can
-                # start. The UI onboarding flow sets paths.library and
-                # paths.watch_folder once the user completes setup.
-                cls.write_defaults(db)
-                existing = dict(_CONFIG_DEFAULTS)
+            cls.write_defaults(db)
+            existing = dict(_CONFIG_DEFAULTS)
 
         # One-time migration: move Last.fm session key from the settings table
         # (where it was stored as plaintext) to the OS keychain via the sessions
@@ -343,88 +310,6 @@ class Config:
                 queue_panel_open=_int("ui.queue_panel_open"),
             ),
         )
-
-
-def _migrate_from_toml(db: "LibraryIndex", toml_path: Path) -> dict[str, str]:
-    """Read legacy config.toml and populate the settings table.
-
-    Deprecated keys (bandcamp.username, bandcamp.cookie_file) are silently
-    dropped.  Returns the migrated settings dict so the caller can build a
-    Config without a second DB round-trip.
-    """
-    try:
-        with open(toml_path, "rb") as f:
-            raw = tomllib.load(f)
-    except Exception:
-        logger.warning(
-            "Could not read legacy config.toml at %s — skipping migration.", toml_path
-        )
-        return {}
-
-    settings: dict[str, str] = dict(_CONFIG_DEFAULTS)
-
-    p = raw.get("paths", {})
-    if "watch_folder" in p:
-        settings["paths.watch_folder"] = str(p["watch_folder"])
-    elif "staging" in p:  # legacy key name
-        settings["paths.watch_folder"] = str(p["staging"])
-    if "library" in p:
-        settings["paths.library"] = str(p["library"])
-
-    mb = raw.get("musicbrainz", {})
-    if "trust-musicbrainz-when-tags-conflict" in mb:
-        val = mb["trust-musicbrainz-when-tags-conflict"]
-        settings["musicbrainz.trust-musicbrainz-when-tags-conflict"] = (
-            "true" if val else "false"
-        )
-
-    art = raw.get("artwork", {})
-    if "min_dimension" in art:
-        settings["artwork.min_dimension"] = str(art["min_dimension"])
-    if "max_bytes" in art:
-        settings["artwork.max_bytes"] = str(art["max_bytes"])
-
-    lib = raw.get("library", {})
-    if "path_template" in lib:
-        settings["library.path_template"] = str(lib["path_template"])
-
-    bc = raw.get("bandcamp", {})
-    if "format" in bc:
-        settings["bandcamp.format"] = str(bc["format"])
-    if "poll_interval_minutes" in bc:
-        settings["bandcamp.poll_interval_minutes"] = str(
-            int(bc["poll_interval_minutes"])
-        )
-    # bandcamp.username and bandcamp.cookie_file are intentionally not migrated.
-
-    lf = raw.get("lastfm", {})
-    if "session_key" in lf and lf["session_key"]:
-        # Write directly to the session store rather than the settings table so
-        # the session key is never stored as plaintext config.
-        db.set_session(
-            "lastfm",
-            {
-                "session_key": str(lf["session_key"]),
-                "username": str(lf.get("username", "")),
-            },
-        )
-
-    ui = raw.get("ui", {})
-    if "active_view" in ui:
-        settings["ui.active_view"] = str(ui["active_view"])
-    if "sort_order" in ui:
-        settings["ui.sort_order"] = str(ui["sort_order"])
-    if "queue_panel_open" in ui:
-        settings["ui.queue_panel_open"] = str(int(ui["queue_panel_open"]))
-
-    for key, value in settings.items():
-        db.set_setting(key, value)
-
-    logger.info(
-        "Migrated config.toml → database (deprecated keys dropped); "
-        "file left in place as backup."
-    )
-    return settings
 
 
 # ---------------------------------------------------------------------------

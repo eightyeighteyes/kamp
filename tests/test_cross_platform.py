@@ -1,54 +1,10 @@
-"""Tests for cross-platform compatibility: config path and signal handling."""
+"""Tests for cross-platform compatibility: signal handling."""
 
 from __future__ import annotations
 
 import signal
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-# ---------------------------------------------------------------------------
-# Config path
-# ---------------------------------------------------------------------------
-
-
-class TestDefaultConfigPath:
-    def test_posix_uses_xdg_config(self) -> None:
-        with patch.object(sys, "platform", "linux"):
-            # Re-run the function directly to avoid module-level caching
-            from kamp_daemon.config import _default_config_path
-
-            path = _default_config_path()
-        assert path == Path.home() / ".config" / "kamp" / "config.toml"
-
-    def test_macos_uses_xdg_config(self) -> None:
-        with patch.object(sys, "platform", "darwin"):
-            from kamp_daemon.config import _default_config_path
-
-            path = _default_config_path()
-        assert path == Path.home() / ".config" / "kamp" / "config.toml"
-
-    def test_windows_uses_appdata(self) -> None:
-        fake_appdata = r"C:\Users\User\AppData\Roaming"
-        with (
-            patch.object(sys, "platform", "win32"),
-            patch.dict("os.environ", {"APPDATA": fake_appdata}),
-        ):
-            from kamp_daemon.config import _default_config_path
-
-            path = _default_config_path()
-        assert path == Path(fake_appdata) / "kamp" / "config.toml"
-
-    def test_windows_fallback_without_appdata(self) -> None:
-        with (
-            patch.object(sys, "platform", "win32"),
-            patch.dict("os.environ", {}, clear=True),
-        ):
-            from kamp_daemon.config import _default_config_path
-
-            path = _default_config_path()
-        assert path == Path.home() / "AppData" / "Roaming" / "kamp" / "config.toml"
-
 
 # ---------------------------------------------------------------------------
 # Signal handling

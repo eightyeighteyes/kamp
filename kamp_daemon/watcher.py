@@ -228,6 +228,7 @@ class Watcher:
         self._observer = Observer()
         self._handler = _WatchHandler(config)
         self._paused = False
+        self._started = False  # False until start() succeeds with a real path
         self._stage_callback: Callable[[str], None] | None = None
         self._notification_callback: Callable[[str, str, str], None] | None = None
         self._on_pipeline_complete: Callable[[], None] | None = None
@@ -261,12 +262,13 @@ class Watcher:
 
     def start(self) -> None:
         watch_folder = self._config.paths.watch_folder
-        assert (
-            watch_folder is not None
-        ), "Watcher.start() called before watch_folder is configured"
+        if watch_folder is None:
+            # No watch folder configured yet — deferred until onboarding completes.
+            return
         watch_folder.mkdir(parents=True, exist_ok=True)
         self._observer.schedule(self._handler, str(watch_folder), recursive=False)
         self._observer.start()
+        self._started = True
         logger.info("Watching watch folder: %s", watch_folder)
         # Process any items already present when the daemon starts.
         self._handler._scan_watch_root()
@@ -278,7 +280,7 @@ class Watcher:
         Items dropped into the watch folder while paused are picked up on resume()
         via _scan_watch_root().
         """
-        if self._paused:
+        if self._paused or not self._started:
             return
         self._paused = True
         with self._handler._lock:
@@ -307,8 +309,7 @@ class Watcher:
         logger.info("Watcher resumed")
 
     def stop(self) -> None:
-        # Observer is already stopped when paused; avoid a redundant stop/join.
-        if not self._paused:
+        if self._started and not self._paused:
             self._observer.stop()
             self._observer.join()
         self._handler._pipeline_pool.shutdown(wait=False)
@@ -319,7 +320,8 @@ class Watcher:
 
         Updates the handler's config so future pipeline runs see the new
         settings.  If the watch folder path changed the observer is rescheduled
-        to the new directory immediately.
+        to the new directory immediately.  If the watcher was not yet started
+        (no watch folder at daemon startup), a first-time path triggers start().
         """
         old_watch_folder = self._config.paths.watch_folder
         self._config = config
@@ -331,21 +333,28 @@ class Watcher:
                 old_watch_folder,
                 config.paths.watch_folder,
             )
-            self._observer.unschedule_all()
-            self._handler._pipeline_pool.shutdown(wait=False)
-            new_watch_folder = config.paths.watch_folder
-            assert (
-                new_watch_folder is not None
-            ), "reload_config() called with no watch_folder configured"
-            new_watch_folder.mkdir(parents=True, exist_ok=True)
-            self._handler = _WatchHandler(config)
-            self._handler.stage_callback = self._stage_callback
-            self._handler.notification_callback = self._notification_callback
-            self._handler.on_pipeline_complete = self._on_pipeline_complete
-            self._observer.schedule(
-                self._handler, str(new_watch_folder), recursive=False
-            )
-            self._handler._scan_watch_root()
+            if not self._started:
+                # First watch folder set after onboarding — do a full start.
+                self._handler = _WatchHandler(config)
+                self._handler.stage_callback = self._stage_callback
+                self._handler.notification_callback = self._notification_callback
+                self._handler.on_pipeline_complete = self._on_pipeline_complete
+                self.start()
+            else:
+                self._observer.unschedule_all()
+                self._handler._pipeline_pool.shutdown(wait=False)
+                new_watch_folder = config.paths.watch_folder
+                if new_watch_folder is None:
+                    return
+                new_watch_folder.mkdir(parents=True, exist_ok=True)
+                self._handler = _WatchHandler(config)
+                self._handler.stage_callback = self._stage_callback
+                self._handler.notification_callback = self._notification_callback
+                self._handler.on_pipeline_complete = self._on_pipeline_complete
+                self._observer.schedule(
+                    self._handler, str(new_watch_folder), recursive=False
+                )
+                self._handler._scan_watch_root()
         else:
             logger.info("Watcher config reloaded.")
 

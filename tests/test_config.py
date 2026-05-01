@@ -67,10 +67,8 @@ class TestLoad:
         assert config.ui.sort_order == "album_artist"
         assert config.ui.queue_panel_open == 0
 
-    def test_load_seeds_defaults_when_no_config_and_no_toml(
-        self, db: LibraryIndex, tmp_path: Path
-    ) -> None:
-        config = Config.load(db, legacy_config_path=tmp_path / "nonexistent.toml")
+    def test_load_seeds_defaults_on_fresh_install(self, db: LibraryIndex) -> None:
+        config = Config.load(db)
         assert config.bandcamp is not None
         assert config.bandcamp.poll_interval_minutes == 0
 
@@ -176,129 +174,6 @@ class TestBandcampSetup:
         assert config.bandcamp is not None
         assert config.bandcamp.format == "mp3-320"
         assert config.bandcamp.poll_interval_minutes == 60
-
-
-# ---------------------------------------------------------------------------
-# TOML migration
-# ---------------------------------------------------------------------------
-
-
-_TOML_WITH_BANDCAMP = """\
-[paths]
-watch_folder = "~/Music/staging"
-library = "~/Music"
-
-[musicbrainz]
-contact = "user@example.com"
-
-[artwork]
-min_dimension = 1000
-max_bytes = 1000000
-
-[library]
-path_template = "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
-
-[bandcamp]
-username = "myuser"
-cookie_file = "/tmp/cookies.txt"
-format = "mp3-v0"
-poll_interval_minutes = 60
-"""
-
-_TOML_WITH_LASTFM = """\
-[paths]
-watch_folder = "~/Music/staging"
-library = "~/Music"
-
-[musicbrainz]
-contact = "user@example.com"
-
-[artwork]
-min_dimension = 1000
-max_bytes = 1000000
-
-[library]
-path_template = "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
-
-[lastfm]
-username = "myuser"
-session_key = "abc123sessionkey"
-"""
-
-
-class TestTomlMigration:
-    def test_migrates_from_toml_when_settings_empty(
-        self, db: LibraryIndex, tmp_path: Path
-    ) -> None:
-        """Fresh DB + existing config.toml → settings populated on first load."""
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text(_TOML_WITH_BANDCAMP)
-        config = Config.load(db, legacy_config_path=toml_path)
-        assert str(config.paths.watch_folder).endswith("Music/staging")
-        assert config.bandcamp is not None
-        assert config.bandcamp.format == "mp3-v0"
-        assert config.bandcamp.poll_interval_minutes == 60
-
-    def test_deprecated_keys_dropped_during_migration(
-        self, db: LibraryIndex, tmp_path: Path
-    ) -> None:
-        """bandcamp.username and bandcamp.cookie_file are not migrated."""
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text(_TOML_WITH_BANDCAMP)
-        Config.load(db, legacy_config_path=toml_path)
-        assert db.get_setting("bandcamp.username") is None
-        assert db.get_setting("bandcamp.cookie_file") is None
-
-    def test_all_active_keys_present_after_migration(
-        self, db: LibraryIndex, tmp_path: Path
-    ) -> None:
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text(_TOML_WITH_BANDCAMP)
-        Config.load(db, legacy_config_path=toml_path)
-        settings = db.get_all_settings()
-        from kamp_daemon.config import _CONFIG_KEY_TYPES
-
-        for key in _CONFIG_KEY_TYPES:
-            assert key in settings, f"Missing key after migration: {key}"
-
-    def test_toml_not_read_again_when_settings_populated(
-        self, db: LibraryIndex, tmp_path: Path
-    ) -> None:
-        """Once settings are in the DB, the TOML file is ignored."""
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text(_TOML_WITH_BANDCAMP)
-        Config.load(db, legacy_config_path=toml_path)
-
-        # Write a different value to the DB.
-        db.set_setting("artwork.min_dimension", "9999")
-        # Delete the TOML so any re-read would crash.
-        toml_path.unlink()
-
-        config = Config.load(db, legacy_config_path=toml_path)
-        assert config.artwork.min_dimension == 9999
-
-    def test_migrates_lastfm_section(self, db: LibraryIndex, tmp_path: Path) -> None:
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text(_TOML_WITH_LASTFM)
-        config = Config.load(db, legacy_config_path=toml_path)
-        assert config.lastfm is not None
-        assert config.lastfm.username == "myuser"
-        assert config.lastfm.session_key == "abc123sessionkey"
-        # Session key must not be in the settings table after TOML migration.
-        assert not db.get_setting("lastfm.session_key")
-
-    def test_migrates_legacy_staging_key(
-        self, db: LibraryIndex, tmp_path: Path
-    ) -> None:
-        """The legacy paths.staging key is migrated to paths.watch_folder."""
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text(
-            _TOML_WITH_BANDCAMP.replace(
-                'watch_folder = "~/Music/staging"', 'staging = "~/Music/staging"'
-            )
-        )
-        config = Config.load(db, legacy_config_path=toml_path)
-        assert str(config.paths.watch_folder).endswith("Music/staging")
 
 
 # ---------------------------------------------------------------------------

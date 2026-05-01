@@ -192,6 +192,19 @@ export function TrackList(): React.JSX.Element | null {
             </svg>
             {menu.favorite ? 'Remove from Favorites' : 'Add to Favorites'}
           </button>
+          <button
+            className="track-context-menu-item"
+            onClick={() => {
+              window.api.showItemInFolder(menu.filePath)
+              setMenu(null)
+            }}
+          >
+            {window.electron.process.platform === 'darwin'
+              ? '↗ Reveal in Finder'
+              : window.electron.process.platform === 'win32'
+                ? '↗ Show in Explorer'
+                : '↗ Show in Files'}
+          </button>
         </div>
       )}
     </div>

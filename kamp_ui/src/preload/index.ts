@@ -56,7 +56,9 @@ const api = {
     onStage: onPipelineStage
   },
   // Re-reads from disk so Electron picks up a fresh token after daemon restart.
-  getApiToken: (): string | null => _readKampToken()
+  getApiToken: (): string | null => _readKampToken(),
+  showItemInFolder: (filePath: string): void =>
+    ipcRenderer.send('shell:show-item-in-folder', filePath)
 }
 
 const kampAPI = buildKampAPI()

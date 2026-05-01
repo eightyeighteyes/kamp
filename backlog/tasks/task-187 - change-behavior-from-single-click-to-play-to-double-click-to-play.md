@@ -1,13 +1,14 @@
 ---
 id: TASK-187
 title: change behavior from single-click to play to double-click to play
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-01 02:28'
-updated_date: '2026-05-01 02:28'
+updated_date: '2026-05-01 12:50'
 labels: []
 milestone: m-32
 dependencies: []
+ordinal: 4000
 ---
 
 ## Description

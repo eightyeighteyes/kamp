@@ -98,6 +98,16 @@ Variables captured at daemon startup (e.g. `lib_path`, `lib_watcher`) are NOT au
 ## UI config refresh after config-changing events
 The server does NOT push config changes over WebSocket. After any event that changes server-side config (Bandcamp login, library path set, etc.), the UI store must explicitly call `loadConfig()` to pick up the new state. Without this, fields like `bandcamp.connected` stay stale from the initial mount, hiding UI elements that depend on them (e.g. the sync button).
 
+## Building mpv from source in CI
+
+When building mpv from source, use the latest release tag (v0.41.0 as of 2026-04) — older tags are incompatible with Homebrew's current FFmpeg (8.x removed `FF_PROFILE_*` constants and `av_format_inject_global_side_data`).
+
+- **libplacebo is a hard required dep** in v0.41.0 — there is no meson `-Dlibplacebo=disabled` flag. Install it via `brew install libplacebo`; it pulls in shaderc and vulkan-loader transitively.
+- **sdl2 split into three options** in v0.41.0: `-Dsdl2-audio=disabled -Dsdl2-video=disabled -Dsdl2-gamepad=disabled` (the old `-Dsdl2=disabled` errors out).
+- **PulseAudio option is `pulse`**, not `pulseaudio`.
+- **Iterate meson flag errors locally**, not in CI: clone mpv, run `meson setup`, check `meson.options` for valid option names, build with ninja, then run dylibbundler to verify final dylib count before pushing.
+- With the minimal flag set (audio-only), expect ~32 bundled dylibs (down from ~47 with Homebrew mpv). The video encoder libs (x264/x265/SVT-AV1/vmaf) come from Homebrew FFmpeg's transitive deps and cannot be avoided without building FFmpeg from source.
+
 ## Shared debounce and high-volume FSEvents
 `_LibraryHandler._schedule()` (in `watcher.py`) is shared between FSEvents from the library directory and explicit `trigger_scan()` calls. During a large batch sync, continuous FSEvents from files being moved in reset the debounce timer faster than the `_MAX_SETTLE_SECONDS` cap fires. To guarantee a scan fires after each pipeline completion, bypass the debounce entirely: call `_on_library_change` directly in a `threading.Thread` from `on_pipeline_complete` instead of routing through `lib_watcher.trigger_scan()`.
 

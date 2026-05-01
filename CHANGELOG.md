@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.13.1](https://github.com/eightyeighteyes/kamp/compare/v1.13.0...v1.13.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* **ui:** enable drag-to-queue from search results (TASK-186) ([#304](https://github.com/eightyeighteyes/kamp/issues/304)) ([bb2575a](https://github.com/eightyeighteyes/kamp/commit/bb2575a7f2af4da926f6e9d2af276da5907b97c3))
+* **ui:** require double-click to play tracks (TASK-187) ([#306](https://github.com/eightyeighteyes/kamp/issues/306)) ([18ef2fc](https://github.com/eightyeighteyes/kamp/commit/18ef2fc113e322b5db5c86efe39328b71047723c))
+
 ## [1.13.0](https://github.com/eightyeighteyes/kamp/compare/v1.12.0...v1.13.0) (2026-04-25)
 
 

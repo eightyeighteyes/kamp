@@ -726,6 +726,10 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('kamp:uninstall-extension', (_event, id: string) => uninstallExtension(id))
 
+  ipcMain.on('shell:show-item-in-folder', (_event, filePath: string) => {
+    shell.showItemInFolder(filePath)
+  })
+
   ipcMain.handle('open-directory', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory', 'createDirectory'],

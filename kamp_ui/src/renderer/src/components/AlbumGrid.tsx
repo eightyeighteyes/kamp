@@ -4,7 +4,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 // album → back). Module-level so it survives React unmounting the component.
 let savedScrollTop = 0
 import { useStore } from '../store'
-import { artUrl } from '../api/client'
+import { artUrl, getTracksForAlbum } from '../api/client'
 import type { Album } from '../api/client'
 import { SortControl } from './SortControl'
 import { BandcampButton } from './BandcampButton'
@@ -161,6 +161,24 @@ export function AlbumGrid(): React.JSX.Element {
             }}
           >
             + Add to Queue
+          </button>
+          <button
+            className="track-context-menu-item"
+            onClick={async () => {
+              let filePath = menu.album.file_path
+              if (!filePath) {
+                const tracks = await getTracksForAlbum(menu.album.album_artist, menu.album.album)
+                filePath = tracks[0]?.file_path ?? ''
+              }
+              if (filePath) window.api.showItemInFolder(filePath)
+              setMenu(null)
+            }}
+          >
+            {window.electron.process.platform === 'darwin'
+              ? '↗ Reveal in Finder'
+              : window.electron.process.platform === 'win32'
+                ? '↗ Show in Explorer'
+                : '↗ Show in Files'}
           </button>
         </div>
       )}

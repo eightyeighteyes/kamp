@@ -17,6 +17,7 @@ declare global {
         onStage: (callback: (stage: string) => void) => () => void
       }
       getApiToken: () => string | null
+      showItemInFolder: (filePath: string) => void
     }
     KampAPI: KampAPI
   }

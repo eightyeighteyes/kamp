@@ -1,10 +1,10 @@
 ---
 id: TASK-185
 title: Build minimal mpv from source with audio-only feature set
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-04-30'
-updated_date: '2026-04-30 21:37'
+updated_date: '2026-05-01 02:14'
 labels:
   - build
   - packaging
@@ -93,3 +93,9 @@ With a minimal build, the expected dylib count drops from ~50 to ~15–20.
 - Audio playback works end-to-end in the packaged app on a clean machine (no Homebrew)
 - No VapourSynth, LuaJIT, or other non-audio dylibs appear in mpv-libs/
 <!-- SECTION:DESCRIPTION:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Built mpv v0.41.0 from source with audio-only meson flags. Replaced the Homebrew binary copy + VapourSynth post-hoc removal hack. Dylib count: 47 → 32. No VapourSynth, no LuaJIT. Both arm64 and x64 CI runners passed including full sign-and-package. Lessons captured in CLAUDE.md: libplacebo is a hard dep (no disable flag), sdl2 split into three options, pulse not pulseaudio, iterate meson flags locally not in CI.
+<!-- SECTION:FINAL_SUMMARY:END -->

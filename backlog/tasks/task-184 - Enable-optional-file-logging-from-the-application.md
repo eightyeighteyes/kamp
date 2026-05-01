@@ -4,11 +4,12 @@ title: Enable optional file logging from the application
 status: To Do
 assignee: []
 created_date: '2026-04-30'
-updated_date: '2026-04-30 21:06'
+updated_date: '2026-05-01 12:34'
 labels:
   - dx
   - diagnostics
-milestone: m-32
+  - 'estimate: side'
+milestone: m-20
 dependencies: []
 priority: low
 ordinal: 3000

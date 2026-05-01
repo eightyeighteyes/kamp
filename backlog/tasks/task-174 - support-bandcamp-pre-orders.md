@@ -4,7 +4,11 @@ title: support bandcamp pre-orders
 status: To Do
 assignee: []
 created_date: '2026-04-24 01:45'
-labels: []
+updated_date: '2026-04-30 23:22'
+labels:
+  - feature
+  - bandcamp
+  - 'estimate: lp'
 milestone: m-1
 dependencies: []
 priority: medium

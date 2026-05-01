@@ -4,7 +4,11 @@ title: stream from bandcamp
 status: To Do
 assignee: []
 created_date: '2026-04-24 01:50'
-labels: []
+updated_date: '2026-04-30 23:22'
+labels:
+  - feature
+  - bandcamp
+  - 'estimate: box set'
 milestone: m-1
 dependencies: []
 priority: medium

@@ -375,9 +375,6 @@ class MpvPlaybackEngine:
                 # subprocess via MPRemoteCommandCenter (registered by the process
                 # that owns MPNowPlayingInfoCenter, which is now the helper).
                 "--input-media-keys=no",
-                # Pre-buffer the next playlist entry before the current one ends so
-                # track transitions are seamless.
-                "--gapless-audio=yes",
             ],
             stdout=subprocess.DEVNULL,
             # Capture stderr so we can surface it if mpv fails to start.

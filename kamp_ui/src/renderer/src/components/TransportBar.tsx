@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useRef, useState } from 'react'
 import { useStore } from '../store'
 
 function formatTime(seconds: number): string {
@@ -20,6 +20,13 @@ export function TransportBar(): React.JSX.Element {
   const setFavorite = useStore((s) => s.setFavorite)
 
   const { playing, position, duration, volume, current_track } = player
+  // Local scrub position: holds the seek-bar value while the pointer is down so
+  // that React's controlled-input re-render (which would reset value to the
+  // server position) can't fire a spurious second onChange and double-seek.
+  const [scrubPos, setScrubPos] = useState<number | null>(null)
+  const pointerDown = useRef(false)
+  const displayPosition = scrubPos !== null ? scrubPos : position
+
   return (
     <div className="transport-bar">
       <div className="transport-track-info">
@@ -77,17 +84,31 @@ export function TransportBar(): React.JSX.Element {
       </div>
 
       <div className="transport-progress">
-        <span className="time">{formatTime(position)}</span>
+        <span className="time">{formatTime(displayPosition)}</span>
         <input
           type="range"
           className="seek-bar"
           min={0}
           max={duration || 1}
           step={0.5}
-          value={position}
-          onChange={(e) => seek(parseFloat(e.target.value))}
+          value={displayPosition}
+          onPointerDown={() => {
+            pointerDown.current = true
+            setScrubPos(position)
+          }}
+          onChange={(e) => {
+            const val = parseFloat(e.target.value)
+            setScrubPos(val)
+            if (pointerDown.current) seek(val)
+          }}
+          onPointerUp={() => {
+            pointerDown.current = false
+            setScrubPos(null)
+          }}
           style={
-            { '--range-progress': `${(position / (duration || 1)) * 100}%` } as React.CSSProperties
+            {
+              '--range-progress': `${(displayPosition / (duration || 1)) * 100}%`
+            } as React.CSSProperties
           }
         />
         <span className="time">{formatTime(duration)}</span>

@@ -629,7 +629,11 @@ def _cmd_daemon(
         if finished is not None:
             index.record_played(finished.file_path)
         if track:
-            engine.play(track.file_path)
+            if not engine.has_lookahead:
+                # No gapless transition was queued — start the next track manually.
+                engine.play(track.file_path)
+            # If has_lookahead: mpv already transitioned gaplessly.  file-loaded
+            # will fire shortly and preload_next will queue the new next track.
         else:
             engine.stop()
             # Queue exhausted — clear saved state so restart starts fresh
@@ -640,7 +644,9 @@ def _cmd_daemon(
     engine.on_track_end = _on_track_end
 
     def _on_file_loaded() -> None:
-        pass  # Now Playing updates are driven by Electron WebSocket subscription.
+        # Prime or refresh the gapless lookahead whenever a new file starts.
+        # Now Playing updates are driven by Electron WebSocket subscription.
+        engine.preload_next(queue.peek_next())
 
     engine.on_file_loaded = _on_file_loaded
 
@@ -857,6 +863,11 @@ def _cmd_daemon(
         app.state.notify_track_changed()
 
     engine.on_track_end = _on_track_end_notify
+
+    # Prime the gapless lookahead for a restored session so the first automatic
+    # advance is seamless.  All callbacks are wired by this point.
+    if queue.current() is not None:
+        engine.preload_next(queue.peek_next())
 
     # Watch the library directory and re-scan when audio files are added or
     # removed, so the UI stays current without requiring a manual scan trigger.

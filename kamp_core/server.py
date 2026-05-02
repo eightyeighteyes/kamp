@@ -920,18 +920,22 @@ def create_app(
     @app.post("/api/v1/player/queue/clear")
     def queue_clear() -> dict[str, Any]:
         queue.clear()
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/clear-remaining")
     def queue_clear_remaining(req: SkipToRequest) -> dict[str, Any]:
         queue.clear_remaining(req.position)
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/skip-to")
     def skip_to_position(req: SkipToRequest) -> dict[str, Any]:
         track = queue.skip_to(req.position)
         if track:
-            engine.play(track.file_path)
+            engine.play(
+                track.file_path
+            )  # play() resets lookahead; file-loaded re-primes it
         _notify_track_changed()
         return {"ok": True}
 
@@ -942,6 +946,7 @@ def create_app(
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.add_to_queue(track)
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/play-next")
@@ -951,6 +956,7 @@ def create_app(
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.play_next(track)
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/insert")
@@ -960,6 +966,7 @@ def create_app(
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.insert_at(track, req.index)
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/add-album")
@@ -973,6 +980,7 @@ def create_app(
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.add_album_to_queue(tracks)
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/play-album-next")
@@ -986,6 +994,7 @@ def create_app(
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.play_album_next(tracks)
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/insert-album")
@@ -998,6 +1007,7 @@ def create_app(
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.insert_album_at(tracks, req.index)
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/move")
@@ -1006,16 +1016,19 @@ def create_app(
             queue.move(req.from_index, req.to_index)
         except IndexError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/shuffle")
     def set_shuffle(req: ShuffleRequest) -> dict[str, Any]:
         queue.set_shuffle(req.shuffle)
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/repeat")
     def set_repeat(req: RepeatRequest) -> dict[str, Any]:
         queue.set_repeat(req.repeat)
+        engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     # -----------------------------------------------------------------------

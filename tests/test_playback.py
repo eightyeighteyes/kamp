@@ -81,6 +81,34 @@ class TestPlaybackQueue:
         q.next()
         assert q.next() == tracks[0]
 
+    # ------------------------------------------------------------------
+    # peek_next
+    # ------------------------------------------------------------------
+
+    def test_peek_next_returns_next_track_without_advancing(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        assert q.peek_next() == tracks[1]
+        assert q.current() == tracks[0]  # position unchanged
+
+    def test_peek_next_at_last_track_returns_none(self) -> None:
+        q = PlaybackQueue()
+        q.load([_track(1)])
+        assert q.peek_next() is None
+
+    def test_peek_next_at_last_track_wraps_when_repeat(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.set_repeat(True)
+        q.next()
+        q.next()  # now at last track
+        assert q.peek_next() == tracks[0]
+
+    def test_peek_next_on_empty_queue_returns_none(self) -> None:
+        assert PlaybackQueue().peek_next() is None
+
     def test_prev_goes_back(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
@@ -853,6 +881,117 @@ class TestMpvPlaybackEngine:
         engine, _ = _make_engine()
         engine._handle_event({"event": "seek"})
         assert engine.state == PlaybackState()
+
+    # ------------------------------------------------------------------
+    # preload_next / has_lookahead
+    # ------------------------------------------------------------------
+
+    def test_has_lookahead_false_initially(self) -> None:
+        engine, _ = _make_engine()
+        assert engine.has_lookahead is False
+
+    def test_has_lookahead_true_after_preload_next(self) -> None:
+        engine, _ = _make_engine()
+        engine.preload_next(_track(2))
+        assert engine.has_lookahead is True
+
+    def test_has_lookahead_false_after_preload_next_none(self) -> None:
+        engine, _ = _make_engine()
+        engine.preload_next(_track(2))
+        engine.preload_next(None)
+        assert engine.has_lookahead is False
+
+    def test_preload_next_sends_loadfile_append(self) -> None:
+        engine, send = _make_engine()
+        engine.preload_next(_track(2))
+        send.assert_called_once_with("loadfile", "/music/02.mp3", "append")
+
+    def test_preload_next_is_noop_for_same_path(self) -> None:
+        engine, send = _make_engine()
+        engine.preload_next(_track(2))
+        send.reset_mock()
+        engine.preload_next(_track(2))
+        send.assert_not_called()
+
+    def test_preload_next_replaces_stale_lookahead(self) -> None:
+        engine, send = _make_engine()
+        engine.preload_next(_track(2))
+        send.reset_mock()
+        engine.preload_next(_track(3))
+        assert send.call_args_list == [
+            call("playlist-remove", 1),
+            call("loadfile", "/music/03.mp3", "append"),
+        ]
+
+    def test_preload_next_with_none_removes_stale_lookahead(self) -> None:
+        engine, send = _make_engine()
+        engine.preload_next(_track(2))
+        send.reset_mock()
+        engine.preload_next(None)
+        send.assert_called_once_with("playlist-remove", 1)
+        assert engine._lookahead_path is None
+
+    def test_preload_next_with_none_is_noop_when_no_lookahead(self) -> None:
+        engine, send = _make_engine()
+        engine.preload_next(None)
+        send.assert_not_called()
+
+    def test_preload_next_clears_lookahead_before_sending_remove(self) -> None:
+        """_lookahead_path must be None before playlist-remove is sent."""
+        engine, send = _make_engine()
+        engine.preload_next(_track(2))
+        observed_during_remove: list[bool] = []
+
+        def capture(*_args: object) -> None:
+            observed_during_remove.append(engine._lookahead_path is None)
+
+        send.side_effect = capture
+        engine.preload_next(_track(3))
+        # First send call is playlist-remove — lookahead must already be None then.
+        assert observed_during_remove[0] is True
+
+    def test_play_clears_lookahead_path(self) -> None:
+        engine, _ = _make_engine()
+        engine.preload_next(_track(2))
+        engine.play(Path("/music/01.mp3"))
+        assert engine._lookahead_path is None
+
+    def test_load_paused_clears_lookahead_path(self) -> None:
+        engine, _ = _make_engine()
+        engine.preload_next(_track(2))
+        engine.load_paused(Path("/music/01.mp3"))
+        assert engine._lookahead_path is None
+
+    # ------------------------------------------------------------------
+    # end-file gapless cleanup
+    # ------------------------------------------------------------------
+
+    def test_end_file_sends_playlist_remove_0_when_lookahead_present(self) -> None:
+        engine, send = _make_engine()
+        engine.preload_next(_track(2))
+        send.reset_mock()
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        send.assert_any_call("playlist-remove", 0)
+
+    def test_end_file_does_not_send_playlist_remove_when_no_lookahead(self) -> None:
+        engine, send = _make_engine()
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        send.assert_not_called()
+
+    def test_end_file_clears_lookahead_path_after_callback(self) -> None:
+        engine, _ = _make_engine()
+        engine.preload_next(_track(2))
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        assert engine._lookahead_path is None
+
+    def test_on_track_end_called_while_lookahead_still_set(self) -> None:
+        """has_lookahead must be True inside the on_track_end callback."""
+        engine, _ = _make_engine()
+        engine.preload_next(_track(2))
+        observed: list[bool] = []
+        engine.on_track_end = lambda: observed.append(engine.has_lookahead)
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        assert observed == [True]
 
     def test_handle_event_pause_with_non_bool_data_is_ignored(self) -> None:
         engine, _ = _make_engine()

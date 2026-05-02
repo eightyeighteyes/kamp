@@ -91,6 +91,18 @@ class PlaybackQueue:
         self._pos = next_pos
         return self.current()
 
+    def peek_next(self) -> Track | None:
+        """Return the next track without advancing the position."""
+        if not self._tracks:
+            return None
+        next_pos = self._pos + 1
+        if next_pos >= len(self._order):
+            if self._repeat:
+                next_pos = 0
+            else:
+                return None
+        return self._tracks[self._order[next_pos]]
+
     def prev(self) -> Track | None:
         if not self._tracks:
             return None
@@ -341,6 +353,9 @@ class MpvPlaybackEngine:
         # Stored here rather than in on_file_loaded so it doesn't clobber the
         # external callback chain wired up after engine creation.
         self._pending_seek: float | None = None
+        # Path of the track pre-appended to mpv's playlist as a gapless lookahead.
+        # None means mpv's playlist has only the current track (slot 0).
+        self._lookahead_path: Path | None = None
         self._start_mpv()
 
     def _start_mpv(self) -> None:  # pragma: no cover
@@ -360,6 +375,9 @@ class MpvPlaybackEngine:
                 # subprocess via MPRemoteCommandCenter (registered by the process
                 # that owns MPNowPlayingInfoCenter, which is now the helper).
                 "--input-media-keys=no",
+                # Pre-buffer the next playlist entry before the current one ends so
+                # track transitions are seamless.
+                "--gapless-audio=yes",
             ],
             stdout=subprocess.DEVNULL,
             # Capture stderr so we can surface it if mpv fails to start.
@@ -406,6 +424,8 @@ class MpvPlaybackEngine:
     # ------------------------------------------------------------------
 
     def play(self, path: Path) -> None:
+        # loadfile replace clears mpv's entire playlist, including any lookahead.
+        self._lookahead_path = None
         self._send_command("loadfile", str(path), "replace")
         # Explicitly unpause so calling play() after pause() always starts playback.
         self._send_command("set_property", "pause", False)
@@ -421,9 +441,39 @@ class MpvPlaybackEngine:
         dropped by mpv.  The position is stored in ``_pending_seek`` rather than
         in ``on_file_loaded`` so it doesn't overwrite callbacks wired externally.
         """
+        # loadfile replace clears mpv's entire playlist, including any lookahead.
+        self._lookahead_path = None
         self._pending_seek = position if position > 0 else None
         self._send_command("loadfile", str(path), "replace")
         self._send_command("set_property", "pause", True)
+
+    def preload_next(self, next_track: "Track | None") -> None:
+        """Keep mpv's slot-1 playlist entry in sync with next_track.
+
+        Called after file-loaded and after any queue mutation that may change
+        which track follows the current one.  Idempotent: no-op if path unchanged.
+
+        _lookahead_path is cleared before playlist-remove is sent so that a
+        concurrent end-file/eof event on the reader thread sees has_lookahead=False
+        and falls back to engine.play() — correct track, non-gapless.  An optimistic
+        update (set path first) is intentionally avoided: if the old lookahead played
+        gaplessly before the removal landed in mpv, on_track_end would skip
+        engine.play() and queue.next() would advance past the wrong track.
+        """
+        path = next_track.file_path if next_track is not None else None
+        if path == self._lookahead_path:
+            return
+        if self._lookahead_path is not None:
+            self._lookahead_path = None  # clear before sending remove (see docstring)
+            self._send_command("playlist-remove", 1)
+        if path is not None:
+            self._send_command("loadfile", str(path), "append")
+            self._lookahead_path = path
+
+    @property
+    def has_lookahead(self) -> bool:
+        """True when a next-track is pre-appended to mpv's playlist."""
+        return self._lookahead_path is not None
 
     def pause(self) -> None:
         self._send_command("set_property", "pause", True)
@@ -526,6 +576,15 @@ class MpvPlaybackEngine:
                 self.on_file_loaded()
 
         elif name == "end-file":
-            # Only fire on natural end-of-file, not user-initiated stops.
-            if event.get("reason") == "eof" and self.on_track_end is not None:
-                self.on_track_end()
+            if event.get("reason") == "eof":
+                # When a lookahead was present, mpv already transitioned gaplessly
+                # and the finished entry sits at slot 0.  Remove it now to maintain
+                # the invariant (current = slot 0, lookahead = slot 1).
+                if self._lookahead_path is not None:
+                    self._send_command("playlist-remove", 0)
+                # Fire on_track_end while _lookahead_path is still set so that
+                # has_lookahead returns True inside the callback — _on_track_end
+                # checks this to avoid calling engine.play() redundantly.
+                if self.on_track_end is not None:
+                    self.on_track_end()
+                self._lookahead_path = None

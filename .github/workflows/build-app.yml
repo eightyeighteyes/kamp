@@ -59,6 +59,18 @@ jobs:
           echo "→ Bundle: $(ls kamp_ui/resources/kamp/kamp)"
           echo "→ Playwright absent: $(ls kamp_ui/resources/kamp/_internal/ | grep -c playwright || echo 0) files"
 
+      - name: Audit bundle for Homebrew-linked dylibs
+        run: |
+          HOMEBREW_LEAKS=$(find kamp_ui/resources/kamp -type f \( -name "*.so" -o -name "*.dylib" \) \
+            -exec otool -L {} \; 2>/dev/null \
+            | grep -E '/opt/homebrew|/usr/local/Cellar' | wc -l)
+          echo "→ Homebrew-linked deps found: $HOMEBREW_LEAKS"
+          if [ "$HOMEBREW_LEAKS" -gt 0 ]; then
+            find kamp_ui/resources/kamp -type f \( -name "*.so" -o -name "*.dylib" \) \
+              -exec sh -c 'otool -L "$1" | grep -E "/opt/homebrew|/usr/local/Cellar" && echo "  ↑ in $1"' _ {} \;
+            exit 1
+          fi
+
       - name: Verify bundle excludes Playwright
         run: |
           if ls kamp_ui/resources/kamp/_internal/ | grep -q playwright; then

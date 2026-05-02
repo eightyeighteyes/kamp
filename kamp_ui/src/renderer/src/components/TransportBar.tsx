@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { useStore } from '../store'
 
 function formatTime(seconds: number): string {
@@ -24,6 +24,7 @@ export function TransportBar(): React.JSX.Element {
   // that React's controlled-input re-render (which would reset value to the
   // server position) can't fire a spurious second onChange and double-seek.
   const [scrubPos, setScrubPos] = useState<number | null>(null)
+  const pointerDown = useRef(false)
   const displayPosition = scrubPos !== null ? scrubPos : position
 
   return (
@@ -91,13 +92,19 @@ export function TransportBar(): React.JSX.Element {
           max={duration || 1}
           step={0.5}
           value={displayPosition}
-          onPointerDown={() => setScrubPos(position)}
+          onPointerDown={() => {
+            pointerDown.current = true
+            setScrubPos(position)
+          }}
           onChange={(e) => {
             const val = parseFloat(e.target.value)
             setScrubPos(val)
-            seek(val)
+            if (pointerDown.current) seek(val)
           }}
-          onPointerUp={() => setScrubPos(null)}
+          onPointerUp={() => {
+            pointerDown.current = false
+            setScrubPos(null)
+          }}
           style={
             {
               '--range-progress': `${(displayPosition / (duration || 1)) * 100}%`

@@ -1255,28 +1255,57 @@ body,
 }
 
 .transport-track-info {
+  --track-info-w: 220px;
+  width: var(--track-info-w);
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 180px;
-  max-width: 220px;
+}
+
+/* overflow container + hover target for each text row */
+.track-field {
   overflow: hidden;
+  white-space: nowrap;
+}
+
+/* inline-block so translateX(-100%) is relative to the text's own content width.
+   vertical-align: top prevents baseline-triggered vertical shift when overflow
+   flips between hidden and visible on hover. */
+.track-title,
+.track-artist,
+.track-album {
+  display: inline-block;
+  vertical-align: top;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  max-width: 100%;
+  transform: translateX(0);
+  transition: transform 0.3s ease;
 }
 
 .track-title {
   font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .track-artist,
 .track-album {
   font-size: 11px;
   color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+/* Marquee on hover. max-width: none lets the span grow to full content width so
+   -100% resolves to the actual text width rather than the 220px cap.
+   min(0px, …) keeps non-overflowing strings stationary. */
+.track-field:hover .track-title,
+.track-field:hover .track-artist,
+.track-field:hover .track-album {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  transform: translateX(min(0px, calc(-100% + var(--track-info-w, 220px))));
+  transition: transform 6s linear 0.5s;
 }
 
 .track-idle {

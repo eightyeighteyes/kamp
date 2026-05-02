@@ -32,9 +32,15 @@ export function TransportBar(): React.JSX.Element {
       <div className="transport-track-info">
         {current_track ? (
           <>
-            <span className="track-title">{current_track.title}</span>
-            <span className="track-artist">{current_track.artist}</span>
-            <span className="track-album">{current_track.album}</span>
+            <div className="track-field">
+              <span className="track-title">{current_track.title}</span>
+            </div>
+            <div className="track-field">
+              <span className="track-artist">{current_track.artist}</span>
+            </div>
+            <div className="track-field">
+              <span className="track-album">{current_track.album}</span>
+            </div>
           </>
         ) : (
           <span className="track-idle">No track loaded</span>

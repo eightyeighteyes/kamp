@@ -18,16 +18,6 @@ export function ShelfView({ albums }: ShelfViewProps): React.JSX.Element {
     })
   }
 
-  const onKeyDown = (e: React.KeyboardEvent): void => {
-    if (e.key === 'ArrowRight') {
-      e.preventDefault()
-      scroll('right')
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault()
-      scroll('left')
-    }
-  }
-
   return (
     <div className="module-shelf-wrapper">
       <button
@@ -38,14 +28,7 @@ export function ShelfView({ albums }: ShelfViewProps): React.JSX.Element {
       >
         ‹
       </button>
-      <div
-        className="module-shelf"
-        ref={scrollRef}
-        onKeyDown={onKeyDown}
-        tabIndex={0}
-        role="region"
-        aria-label="Album shelf"
-      >
+      <div className="module-shelf" ref={scrollRef} role="region" aria-label="Album shelf">
         {albums.map((album) => (
           <AlbumCard
             key={album.missing_album ? album.file_path : `${album.album_artist}\0${album.album}`}

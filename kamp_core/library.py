@@ -223,6 +223,8 @@ class AlbumInfo:
     # MIN(date_added) across the album's tracks — exposed so callers can filter
     # by recency without a separate query.
     added_at: float | None = None
+    # MAX(last_played) across the album's tracks — exposed for the Last Played module.
+    last_played_at: float | None = None
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -782,7 +784,7 @@ class LibraryIndex:
         order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
         rows = self._conn.execute(f"""
             SELECT album_artist, album, year, track_count, has_art,
-                   missing_album, file_path, art_version, sort_date_added
+                   missing_album, file_path, art_version, sort_date_added, sort_last_played
             FROM (
                 SELECT album_artist, album, year, COUNT(*) AS track_count,
                        MAX(embedded_art) AS has_art,
@@ -816,6 +818,7 @@ class LibraryIndex:
                 file_path=r["file_path"],
                 art_version=r["art_version"],
                 added_at=r["sort_date_added"],
+                last_played_at=r["sort_last_played"],
             )
             for r in rows
         ]

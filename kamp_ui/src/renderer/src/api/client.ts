@@ -37,6 +37,8 @@ export type Album = {
   art_version: number | null
   // MIN(date_added) across the album's tracks — used by the New Arrivals module.
   added_at: number | null
+  // MAX(last_played) across the album's tracks — used by the Last Played module.
+  last_played_at: number | null
 }
 
 export type PlayerState = {

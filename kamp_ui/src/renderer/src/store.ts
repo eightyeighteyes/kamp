@@ -40,6 +40,7 @@ type PlayerStore = {
   configuredLibraryPath: string | null
   activeView: 'library' | 'now-playing' | 'home'
   moduleOrder: string[]
+  lastPlayedCount: number
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
   searchQuery: string
   searchResults: SearchResult | null
@@ -57,6 +58,7 @@ type PlayerStore = {
   setSortOrder: (sort: 'album_artist' | 'album' | 'date_added' | 'last_played') => Promise<void>
   setActiveView: (view: 'library' | 'now-playing' | 'home') => Promise<void>
   setModuleOrder: (ids: string[]) => void
+  setLastPlayedCount: (n: number) => void
   loadLibrary: () => Promise<void>
   loadUiState: () => Promise<void>
   selectArtist: (artist: string | null) => void
@@ -142,6 +144,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
   moduleOrder: (() => {
     const saved = localStorage.getItem('kamp:module-order')
     return saved ? (JSON.parse(saved) as string[]) : ['kamp.new-arrivals', 'kamp.last-played']
+  })(),
+  lastPlayedCount: (() => {
+    const saved = localStorage.getItem('kamp:last-played-count')
+    return saved ? parseInt(saved) : 10
   })(),
   sortOrder: 'album_artist',
   searchQuery: '',
@@ -230,6 +236,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setModuleOrder: (ids) => {
     localStorage.setItem('kamp:module-order', JSON.stringify(ids))
     set({ moduleOrder: ids })
+  },
+
+  setLastPlayedCount: (n) => {
+    localStorage.setItem('kamp:last-played-count', String(n))
+    set({ lastPlayedCount: n })
   },
 
   loadUiState: async () => {

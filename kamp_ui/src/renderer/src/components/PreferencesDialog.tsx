@@ -927,6 +927,8 @@ export function PreferencesDialog({
 
   const moduleOrder = useStore((s) => s.moduleOrder)
   const setModuleOrder = useStore((s) => s.setModuleOrder)
+  const lastPlayedCount = useStore((s) => s.lastPlayedCount)
+  const setLastPlayedCount = useStore((s) => s.setLastPlayedCount)
 
   const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions' | 'home'>(
     () => prefsInitialTab
@@ -1211,6 +1213,7 @@ export function PreferencesDialog({
           )}
 
           {activeTab === 'home' && (
+            <>
             <div className="prefs-section">
               <div className="prefs-section-label">Modules</div>
               {moduleOrder.length === 0 && (
@@ -1275,6 +1278,29 @@ export function PreferencesDialog({
                 </div>
               ))}
             </div>
+
+            <div className="prefs-section">
+              <div className="prefs-section-label">Module Settings</div>
+              <div className="prefs-row">
+                <div className="prefs-row-header">
+                  <span className="prefs-label">Last Played — albums to show</span>
+                </div>
+                <div className="prefs-number-row">
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    className="prefs-input prefs-input--number"
+                    value={lastPlayedCount}
+                    onChange={(e) =>
+                      setLastPlayedCount(Math.max(1, parseInt(e.target.value) || 1))
+                    }
+                  />
+                  <span className="prefs-unit">albums</span>
+                </div>
+              </div>
+            </div>
+            </>
           )}
 
           {activeTab === 'extensions' && (

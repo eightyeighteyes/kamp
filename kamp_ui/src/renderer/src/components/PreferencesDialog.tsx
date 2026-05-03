@@ -1042,7 +1042,7 @@ export function PreferencesDialog({
             className={`prefs-tab${activeTab === 'home' ? ' prefs-tab--active' : ''}`}
             onClick={() => setActiveTab('home')}
           >
-            Home
+            Base Kamp
           </button>
           <button
             role="tab"

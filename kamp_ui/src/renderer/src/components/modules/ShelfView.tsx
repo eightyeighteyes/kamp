@@ -6,43 +6,62 @@ interface ShelfViewProps {
   albums: Album[]
 }
 
+type Anim = { from: number; to: number; startTime: number }
+
 const SCROLL_PX = 500
-const EASE = 0.15
+const DURATION = 380
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+}
+
+function step(
+  el: HTMLDivElement,
+  animRef: React.MutableRefObject<Anim | null>,
+  rafRef: React.MutableRefObject<number>
+): void {
+  const anim = animRef.current
+  if (!anim) return
+  const t = Math.min((performance.now() - anim.startTime) / DURATION, 1)
+  el.scrollLeft = anim.from + (anim.to - anim.from) * easeInOutCubic(t)
+  if (t < 1) {
+    rafRef.current = requestAnimationFrame(() => step(el, animRef, rafRef))
+  } else {
+    animRef.current = null
+  }
+}
+
+function scroll(
+  dir: 'left' | 'right',
+  el: HTMLDivElement,
+  animRef: React.MutableRefObject<Anim | null>,
+  rafRef: React.MutableRefObject<number>
+): void {
+  const maxScroll = el.scrollWidth - el.clientWidth
+  const prevTarget = animRef.current?.to ?? el.scrollLeft
+  const to = Math.max(
+    0,
+    Math.min(prevTarget + (dir === 'right' ? SCROLL_PX : -SCROLL_PX), maxScroll)
+  )
+  cancelAnimationFrame(rafRef.current)
+  animRef.current = { from: el.scrollLeft, to, startTime: performance.now() }
+  rafRef.current = requestAnimationFrame(() => step(el, animRef, rafRef))
+}
 
 export function ShelfView({ albums }: ShelfViewProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const targetRef = useRef(0)
-  const animatingRef = useRef(false)
+  const animRef = useRef<Anim | null>(null)
+  const rafRef = useRef<number>(0)
 
-  const animate = (el: HTMLDivElement): void => {
-    const maxScroll = el.scrollWidth - el.clientWidth
-    const target = Math.max(0, Math.min(targetRef.current, maxScroll))
-    const diff = target - el.scrollLeft
-    if (Math.abs(diff) < 0.5) {
-      el.scrollLeft = target
-      animatingRef.current = false
-      return
-    }
-    el.scrollLeft += diff * EASE
-    requestAnimationFrame(() => animate(el))
-  }
-
-  const scroll = (dir: 'left' | 'right'): void => {
-    const el = scrollRef.current
-    if (!el) return
-    if (!animatingRef.current) targetRef.current = el.scrollLeft
-    targetRef.current += dir === 'right' ? SCROLL_PX : -SCROLL_PX
-    if (!animatingRef.current) {
-      animatingRef.current = true
-      requestAnimationFrame(() => animate(el))
-    }
+  const handleScroll = (dir: 'left' | 'right'): void => {
+    if (scrollRef.current) scroll(dir, scrollRef.current, animRef, rafRef)
   }
 
   return (
     <div className="module-shelf-wrapper">
       <button
         className="module-shelf-arrow module-shelf-arrow--left"
-        onClick={() => scroll('left')}
+        onClick={() => handleScroll('left')}
         aria-label="Scroll left"
         tabIndex={-1}
       >
@@ -58,7 +77,7 @@ export function ShelfView({ albums }: ShelfViewProps): React.JSX.Element {
       </div>
       <button
         className="module-shelf-arrow module-shelf-arrow--right"
-        onClick={() => scroll('right')}
+        onClick={() => handleScroll('right')}
         aria-label="Scroll right"
         tabIndex={-1}
       >

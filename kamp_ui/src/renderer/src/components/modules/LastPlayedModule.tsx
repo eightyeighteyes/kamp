@@ -9,6 +9,7 @@ import type { ModuleProps } from './registry'
 
 export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Element {
   const count = useStore((s) => s.lastPlayedCount)
+  const days = useStore((s) => s.lastPlayedDays)
   // Re-fetch whenever the current track changes — the server updates last_played
   // at EOF before broadcasting track.changed, so the list is already stale by
   // the time this selector fires.
@@ -23,12 +24,15 @@ export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Eleme
     if (serverStatus !== 'connected') return
     getAlbums('last_played')
       .then((all) => {
-        const played = all.filter((a) => a.last_played_at !== null).slice(0, count)
+        const cutoff = days > 0 ? Date.now() / 1000 - days * 86400 : null
+        const played = all
+          .filter((a) => a.last_played_at !== null && (cutoff === null || a.last_played_at >= cutoff))
+          .slice(0, count)
         setAlbums(played)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [count, currentFilePath, serverStatus])
+  }, [count, days, currentFilePath, serverStatus])
 
   if (loading) {
     return (

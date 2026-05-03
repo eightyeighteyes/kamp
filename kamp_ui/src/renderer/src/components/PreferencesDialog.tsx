@@ -932,6 +932,8 @@ export function PreferencesDialog({
   const setModuleDisplayStyle = useStore((s) => s.setModuleDisplayStyle)
   const lastPlayedCount = useStore((s) => s.lastPlayedCount)
   const setLastPlayedCount = useStore((s) => s.setLastPlayedCount)
+  const lastPlayedDays = useStore((s) => s.lastPlayedDays)
+  const setLastPlayedDays = useStore((s) => s.setLastPlayedDays)
 
   const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions' | 'home'>(
     () => prefsInitialTab
@@ -1312,6 +1314,25 @@ export function PreferencesDialog({
                       }
                     />
                     <span className="prefs-unit">albums</span>
+                  </div>
+                </div>
+                <div className="prefs-row">
+                  <div className="prefs-row-header">
+                    <span className="prefs-label">Last Played — history window</span>
+                    <span className="prefs-hint">0 = no limit</span>
+                  </div>
+                  <div className="prefs-number-row">
+                    <input
+                      type="number"
+                      min={0}
+                      max={3650}
+                      className="prefs-input prefs-input--number"
+                      value={lastPlayedDays}
+                      onChange={(e) =>
+                        setLastPlayedDays(Math.max(0, parseInt(e.target.value) || 0))
+                      }
+                    />
+                    <span className="prefs-unit">days</span>
                   </div>
                 </div>
               </div>

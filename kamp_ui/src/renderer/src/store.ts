@@ -141,9 +141,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   activeView: 'library',
   moduleOrder: (() => {
     const saved = localStorage.getItem('kamp:module-order')
-    return saved
-      ? (JSON.parse(saved) as string[])
-      : ['kamp.new-arrivals', 'kamp.last-played']
+    return saved ? (JSON.parse(saved) as string[]) : ['kamp.new-arrivals', 'kamp.last-played']
   })(),
   sortOrder: 'album_artist',
   searchQuery: '',

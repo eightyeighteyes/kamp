@@ -12,5 +12,5 @@ export interface ModuleRegistration {
 
 export const MODULE_REGISTRY: ModuleRegistration[] = [
   { id: 'kamp.new-arrivals', title: 'New Arrivals', component: NewArrivalsModule },
-  { id: 'kamp.last-played', title: 'Last Played', component: LastPlayedModule },
+  { id: 'kamp.last-played', title: 'Last Played', component: LastPlayedModule }
 ]

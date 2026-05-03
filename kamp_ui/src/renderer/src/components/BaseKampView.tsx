@@ -12,9 +12,7 @@ export function BaseKampView(): React.JSX.Element {
 
   if (modules.length === 0) {
     return (
-      <div className="base-kamp-empty">
-        No modules configured. Add some in Preferences → Home.
-      </div>
+      <div className="base-kamp-empty">No modules configured. Add some in Preferences → Home.</div>
     )
   }
 

@@ -38,7 +38,8 @@ type PlayerStore = {
   scanProgress: ScanProgress | null
 
   configuredLibraryPath: string | null
-  activeView: 'library' | 'now-playing'
+  activeView: 'library' | 'now-playing' | 'home'
+  moduleOrder: string[]
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
   searchQuery: string
   searchResults: SearchResult | null
@@ -54,7 +55,8 @@ type PlayerStore = {
   loadQueue: () => Promise<void>
   setSearchQuery: (q: string) => void
   setSortOrder: (sort: 'album_artist' | 'album' | 'date_added' | 'last_played') => Promise<void>
-  setActiveView: (view: 'library' | 'now-playing') => Promise<void>
+  setActiveView: (view: 'library' | 'now-playing' | 'home') => Promise<void>
+  setModuleOrder: (ids: string[]) => void
   loadLibrary: () => Promise<void>
   loadUiState: () => Promise<void>
   selectArtist: (artist: string | null) => void
@@ -105,10 +107,10 @@ type PlayerStore = {
   // Preferences
   configValues: ConfigValues | null
   prefsOpen: boolean
-  prefsInitialTab: 'general' | 'services' | 'extensions'
+  prefsInitialTab: 'general' | 'services' | 'extensions' | 'home'
   loadConfig: () => Promise<void>
   setConfigValue: (key: string, value: string) => Promise<void>
-  openPrefs: (tab?: 'general' | 'services' | 'extensions') => void
+  openPrefs: (tab?: 'general' | 'services' | 'extensions' | 'home') => void
   closePrefs: () => void
 }
 
@@ -137,6 +139,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
   scanProgress: null,
   configuredLibraryPath: null,
   activeView: 'library',
+  moduleOrder: (() => {
+    const saved = localStorage.getItem('kamp:module-order')
+    return saved ? (JSON.parse(saved) as string[]) : ['kamp.new-arrivals', 'kamp.last-played']
+  })(),
   sortOrder: 'album_artist',
   searchQuery: '',
   searchResults: null,
@@ -219,6 +225,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
     } catch {
       // Best-effort — view is already updated locally; daemon will sync on next connect.
     }
+  },
+
+  setModuleOrder: (ids) => {
+    localStorage.setItem('kamp:module-order', JSON.stringify(ids))
+    set({ moduleOrder: ids })
   },
 
   loadUiState: async () => {

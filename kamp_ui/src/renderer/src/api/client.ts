@@ -174,14 +174,15 @@ export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
   post('/api/v1/config/library-path', { path })
 
 export type UiState = {
-  active_view: 'library' | 'now-playing'
+  active_view: 'library' | 'now-playing' | 'home'
   sort_order: 'album_artist' | 'album' | 'date_added' | 'last_played'
   queue_panel_open: boolean
 }
 
 export const getUiState = (): Promise<UiState> => get('/api/v1/ui')
-export const setActiveViewApi = (view: 'library' | 'now-playing'): Promise<{ ok: boolean }> =>
-  post('/api/v1/ui/active-view', { view })
+export const setActiveViewApi = (
+  view: 'library' | 'now-playing' | 'home'
+): Promise<{ ok: boolean }> => post('/api/v1/ui/active-view', { view })
 export const setSortOrderApi = (
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
 ): Promise<{ ok: boolean }> => post('/api/v1/ui/sort-order', { sort_order: sortOrder })

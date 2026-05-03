@@ -63,7 +63,7 @@ class TestLoad:
         assert config.bandcamp.format == "mp3-v0"
         assert config.bandcamp.poll_interval_minutes == 0
         assert config.lastfm is None
-        assert config.ui.active_view == "library"
+        assert config.ui.active_view == "home"
         assert config.ui.sort_order == "album_artist"
         assert config.ui.queue_panel_open == 0
 
@@ -267,6 +267,12 @@ class TestConfigSet:
         config_set(db, "ui.active_view", "now-playing")
         config = Config.load(db)
         assert config.ui.active_view == "now-playing"
+
+    def test_ui_active_view_home_is_valid(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        config_set(db, "ui.active_view", "home")
+        config = Config.load(db)
+        assert config.ui.active_view == "home"
 
     def test_ui_sort_order_valid(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { useStore } from './store'
 import { connectStateStream } from './api/client'
 import { ArtistPanel } from './components/ArtistPanel'
+import { BaseKampView } from './components/BaseKampView'
 import { ExtensionPanel } from './components/ExtensionPanel'
 import { LibraryView } from './components/LibraryView'
 import { NowPlayingView } from './components/NowPlayingView'
@@ -24,6 +25,13 @@ import type { ExtensionInfo } from '../../shared/kampAPI'
 // Register built-in panels before the component mounts.
 // Each call is idempotent — safe across HMR and React StrictMode re-runs.
 // ---------------------------------------------------------------------------
+registerBuiltInPanel({
+  id: 'kamp.base-kamp',
+  title: 'Base Kamp',
+  defaultSlot: 'main',
+  compatibleSlots: ['main'],
+  component: BaseKampView
+})
 registerBuiltInPanel({
   id: 'kamp.library',
   title: 'Library',
@@ -425,6 +433,7 @@ export default function App(): React.JSX.Element {
   // Determine whether a given main-slot panel tab is active.
   const isActiveMain = (panel: UnifiedPanel): boolean => {
     if (activeExtPanel) return panel.id === activeExtPanel
+    if (panel.kind === 'builtin' && panel.id === 'kamp.base-kamp') return activeView === 'home'
     if (panel.kind === 'builtin' && panel.id === 'kamp.library') return activeView === 'library'
     if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing')
       return activeView === 'now-playing'
@@ -433,7 +442,10 @@ export default function App(): React.JSX.Element {
 
   // Activate a main-slot panel tab.
   const activateMain = (panel: UnifiedPanel): void => {
-    if (panel.kind === 'builtin' && panel.id === 'kamp.library') {
+    if (panel.kind === 'builtin' && panel.id === 'kamp.base-kamp') {
+      void setActiveView('home')
+      setActiveExtPanel(null)
+    } else if (panel.kind === 'builtin' && panel.id === 'kamp.library') {
       void setActiveView('library')
       setActiveExtPanel(null)
     } else if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing') {
@@ -458,6 +470,7 @@ export default function App(): React.JSX.Element {
     // artLoaded state) survive view switches. The inactive pane is hidden via
     // display:none (.view-pane) and the active one uses display:contents
     // (.view-pane--active) so it has no layout box of its own.
+    const isHomePane = !searchQuery && !activeExtPanel && activeView === 'home'
     const isLibraryPane = !searchQuery && !activeExtPanel && activeView === 'library'
     const isNowPlayingPane = !searchQuery && !activeExtPanel && activeView === 'now-playing'
     return (
@@ -466,6 +479,9 @@ export default function App(): React.JSX.Element {
             switch so the previous extension's container is never reused. */}
         {extPanel?.kind === 'extension' && <ExtensionPanel key={extPanel.id} panel={extPanel} />}
         {searchQuery && <SearchView />}
+        <div className={isHomePane ? 'view-pane view-pane--active' : 'view-pane'}>
+          <BaseKampView />
+        </div>
         <div className={isLibraryPane ? 'view-pane view-pane--active' : 'view-pane'}>
           <LibraryView />
         </div>

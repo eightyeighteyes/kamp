@@ -2705,3 +2705,112 @@ body,
   outline: 1px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* ---------------------------------------------------------------------------
+ * Base Kamp view
+ * ------------------------------------------------------------------------- */
+
+.base-kamp {
+  display: flex;
+  flex-direction: column;
+  gap: 23px;
+  padding: 8px;
+}
+
+.base-kamp-module {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.base-kamp-module-label {
+  background: var(--surface);
+  border-radius: 6px 6px 0 0;
+  padding: 6px 10px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.base-kamp-module-body {
+  width: 100%;
+  background: var(--surface);
+  border-radius: 0 5px 5px 5px;
+  min-height: 285px;
+  overflow: hidden;
+}
+
+.base-kamp-empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* Skeleton cards inside stub modules */
+.module-skeleton-row {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+}
+
+.module-skeleton-card {
+  flex: 0 0 160px;
+  height: 240px;
+  background: var(--border);
+  border-radius: 5px;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+/* Preferences — Home tab module order editor */
+.prefs-module-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.prefs-module-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.prefs-module-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 2px 7px;
+  transition: color 100ms ease, border-color 100ms ease;
+}
+
+.prefs-module-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.prefs-module-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.prefs-module-btn--remove {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.prefs-module-btn--remove:hover {
+  opacity: 0.8;
+}

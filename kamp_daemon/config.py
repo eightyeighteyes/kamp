@@ -92,7 +92,7 @@ _CONFIG_DEFAULTS: dict[str, str] = {
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
     "bandcamp.format": "mp3-v0",
     "bandcamp.poll_interval_minutes": "0",
-    "ui.active_view": "library",
+    "ui.active_view": "home",
     "ui.sort_order": "album_artist",
     "ui.queue_panel_open": "0",
 }
@@ -154,7 +154,7 @@ _CONFIG_KEY_CHOICES: dict[str, frozenset[str]] = {
     "bandcamp.format": frozenset(
         {"mp3-v0", "mp3-320", "flac", "aac-hi", "vorbis", "alac", "wav"}
     ),
-    "ui.active_view": frozenset({"library", "now-playing"}),
+    "ui.active_view": frozenset({"library", "now-playing", "home"}),
     "ui.sort_order": frozenset({"album_artist", "album", "date_added", "last_played"}),
 }
 

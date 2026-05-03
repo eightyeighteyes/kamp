@@ -73,6 +73,7 @@ def _run_helper(
     op: str, service: str, username: str, password: str | None = None
 ) -> tuple[int, str]:
     """Invoke the helper binary and return (exit_code, stdout)."""
+    assert _helper_path is not None
     result = subprocess.run(
         [_helper_path, op, service, username],
         input=(password + "\n").encode("utf-8") if password is not None else None,

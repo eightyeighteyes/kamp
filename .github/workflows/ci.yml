@@ -33,7 +33,7 @@ jobs:
         run: poetry run black --check .
 
       - name: Type-check
-        run: poetry run mypy kamp_daemon/
+        run: poetry run mypy kamp_daemon/ kamp_core/
 
       - name: Run tests
         run: poetry run pytest

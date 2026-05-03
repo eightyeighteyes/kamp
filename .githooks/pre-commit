@@ -2,7 +2,7 @@
 set -e
 
 poetry run black --check kamp_core/ kamp_daemon/ tests/
-poetry run mypy kamp_daemon/
+poetry run mypy kamp_daemon/ kamp_core/
 
 # Run UI checks only when kamp_ui files are staged — skips on Python-only commits.
 if git diff --cached --name-only | grep -q '^kamp_ui/'; then

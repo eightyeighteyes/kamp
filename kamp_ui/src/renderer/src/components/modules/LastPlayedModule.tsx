@@ -12,10 +12,14 @@ export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Eleme
   // at EOF before broadcasting track.changed, so the list is already stale by
   // the time this selector fires.
   const currentFilePath = useStore((s) => s.player?.current_track?.file_path ?? null)
+  const serverStatus = useStore((s) => s.serverStatus)
   const [albums, setAlbums] = useState<Album[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // Skip until the server is reachable; this effect re-fires when serverStatus
+    // transitions to 'connected', so modules populate without a manual reload.
+    if (serverStatus !== 'connected') return
     getAlbums('last_played')
       .then((all) => {
         const played = all.filter((a) => a.last_played_at !== null).slice(0, count)
@@ -23,7 +27,7 @@ export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Eleme
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [count, currentFilePath])
+  }, [count, currentFilePath, serverStatus])
 
   if (loading) {
     return (

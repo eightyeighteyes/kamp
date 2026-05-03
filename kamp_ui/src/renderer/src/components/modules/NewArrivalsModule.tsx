@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { getAlbums } from '../../api/client'
 import type { Album } from '../../api/client'
+import { useStore } from '../../store'
 import { ShelfView } from './ShelfView'
 import { GridView } from './GridView'
 import type { ModuleProps } from './registry'
@@ -9,10 +10,14 @@ const DAYS = 30
 const CUTOFF_SECONDS = DAYS * 86400
 
 export function NewArrivalsModule({ displayStyle }: ModuleProps): React.JSX.Element {
+  const serverStatus = useStore((s) => s.serverStatus)
   const [albums, setAlbums] = useState<Album[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // Skip until the server is reachable; this effect re-fires when serverStatus
+    // transitions to 'connected', so modules populate without a manual reload.
+    if (serverStatus !== 'connected') return
     getAlbums('date_added')
       .then((all) => {
         const cutoff = Date.now() / 1000 - CUTOFF_SECONDS
@@ -21,7 +26,7 @@ export function NewArrivalsModule({ displayStyle }: ModuleProps): React.JSX.Elem
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [serverStatus])
 
   if (loading) {
     return (

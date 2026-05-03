@@ -1234,6 +1234,7 @@ export function PreferencesDialog({
                         onChange={(e) => setModuleDisplayStyle(id, e.target.value as DisplayStyle)}
                       >
                         <option value="shelf">Shelf</option>
+                        <option value="grid">Grid</option>
                       </select>
                       <div className="prefs-module-actions">
                         <button

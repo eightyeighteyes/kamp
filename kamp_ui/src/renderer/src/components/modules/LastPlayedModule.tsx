@@ -3,8 +3,10 @@ import { getAlbums } from '../../api/client'
 import type { Album } from '../../api/client'
 import { useStore } from '../../store'
 import { ShelfView } from './ShelfView'
+import { GridView } from './GridView'
+import type { ModuleProps } from './registry'
 
-export function LastPlayedModule(): React.JSX.Element {
+export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Element {
   const count = useStore((s) => s.lastPlayedCount)
   // Re-fetch whenever the current track changes — the server updates last_played
   // at EOF before broadcasting track.changed, so the list is already stale by
@@ -37,5 +39,5 @@ export function LastPlayedModule(): React.JSX.Element {
     return <div className="module-empty">No albums played yet.</div>
   }
 
-  return <ShelfView albums={albums} />
+  return displayStyle === 'grid' ? <GridView albums={albums} /> : <ShelfView albums={albums} />
 }

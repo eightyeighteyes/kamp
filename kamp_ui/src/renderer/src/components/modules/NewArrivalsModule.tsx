@@ -2,11 +2,13 @@ import React, { useEffect, useState } from 'react'
 import { getAlbums } from '../../api/client'
 import type { Album } from '../../api/client'
 import { ShelfView } from './ShelfView'
+import { GridView } from './GridView'
+import type { ModuleProps } from './registry'
 
 const DAYS = 30
 const CUTOFF_SECONDS = DAYS * 86400
 
-export function NewArrivalsModule(): React.JSX.Element {
+export function NewArrivalsModule({ displayStyle }: ModuleProps): React.JSX.Element {
   const [albums, setAlbums] = useState<Album[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -35,5 +37,5 @@ export function NewArrivalsModule(): React.JSX.Element {
     return <div className="module-empty">No albums added in the last {DAYS} days.</div>
   }
 
-  return <ShelfView albums={albums} />
+  return displayStyle === 'grid' ? <GridView albums={albums} /> : <ShelfView albums={albums} />
 }

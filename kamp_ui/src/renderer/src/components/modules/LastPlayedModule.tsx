@@ -4,6 +4,7 @@ import type { Album } from '../../api/client'
 import { useStore } from '../../store'
 import { ShelfView } from './ShelfView'
 import { GridView } from './GridView'
+import { ListView } from './ListView'
 import type { ModuleProps } from './registry'
 
 export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Element {
@@ -43,5 +44,6 @@ export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Eleme
     return <div className="module-empty">No albums played yet.</div>
   }
 
+  if (displayStyle === 'list') return <ListView albums={albums} />
   return displayStyle === 'grid' ? <GridView albums={albums} /> : <ShelfView albums={albums} />
 }

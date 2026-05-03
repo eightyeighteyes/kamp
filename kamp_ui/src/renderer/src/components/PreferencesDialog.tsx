@@ -1235,6 +1235,7 @@ export function PreferencesDialog({
                       >
                         <option value="shelf">Shelf</option>
                         <option value="grid">Grid</option>
+                        <option value="list">List</option>
                       </select>
                       <div className="prefs-module-actions">
                         <button

@@ -2842,6 +2842,86 @@ body,
   padding: 4px 2px 8px;
 }
 
+/* List module view (vertical rows) */
+.module-list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+}
+
+.module-list-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 100ms ease;
+}
+
+.module-list-row:hover {
+  background: var(--surface-hover);
+}
+
+.module-list-row.playing {
+  color: var(--accent);
+}
+
+.module-list-thumb {
+  position: relative;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.module-list-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.module-list-playing-badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 14px;
+  color: #fff;
+}
+
+.module-list-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.module-list-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.module-list-row.playing .module-list-title {
+  color: var(--accent);
+}
+
+.module-list-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
 .module-empty {
   padding: 48px 16px;
   text-align: center;

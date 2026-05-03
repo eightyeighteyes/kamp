@@ -4,6 +4,7 @@ import type { Album } from '../../api/client'
 import { useStore } from '../../store'
 import { ShelfView } from './ShelfView'
 import { GridView } from './GridView'
+import { ListView } from './ListView'
 import type { ModuleProps } from './registry'
 
 const DAYS = 30
@@ -42,5 +43,6 @@ export function NewArrivalsModule({ displayStyle }: ModuleProps): React.JSX.Elem
     return <div className="module-empty">No albums added in the last {DAYS} days.</div>
   }
 
+  if (displayStyle === 'list') return <ListView albums={albums} />
   return displayStyle === 'grid' ? <GridView albums={albums} /> : <ShelfView albums={albums} />
 }

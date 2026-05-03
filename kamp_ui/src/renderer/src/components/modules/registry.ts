@@ -2,7 +2,7 @@ import type React from 'react'
 import { NewArrivalsModule } from './NewArrivalsModule'
 import { LastPlayedModule } from './LastPlayedModule'
 
-export type DisplayStyle = 'shelf' | 'grid'
+export type DisplayStyle = 'shelf' | 'grid' | 'list'
 
 export interface ModuleProps {
   displayStyle: DisplayStyle

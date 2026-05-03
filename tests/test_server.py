@@ -1397,6 +1397,15 @@ class TestUiStateEndpoints:
         assert resp.status_code == 200
         assert client.get("/api/v1/ui").json()["sort_order"] == "last_played"
 
+    def test_set_active_view_home_returns_200(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/ui/active-view", json={"view": "home"})
+        assert resp.status_code == 200
+        assert client.get("/api/v1/ui").json()["active_view"] == "home"
+
+    def test_set_active_view_invalid_returns_422(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/ui/active-view", json={"view": "bogus"})
+        assert resp.status_code == 422
+
     def test_set_sort_order_invalid_returns_422(self, client: TestClient) -> None:
         resp = client.post("/api/v1/ui/sort-order", json={"sort_order": "bogus"})
         assert resp.status_code == 422

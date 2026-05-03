@@ -645,7 +645,7 @@ def create_app(
     @app.post("/api/v1/ui/active-view")
     def set_active_view(req: dict[str, Any]) -> dict[str, Any]:
         view = req.get("view", "library")
-        if view not in ("library", "now-playing"):
+        if view not in ("library", "now-playing", "home"):
             raise HTTPException(status_code=422, detail="Invalid view")
         _state["ui_active_view"] = view
         if on_ui_state_set is not None:

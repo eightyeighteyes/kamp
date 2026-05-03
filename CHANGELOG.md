@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.16.0](https://github.com/eightyeighteyes/kamp/compare/v1.15.0...v1.16.0) (2026-05-03)
+
+
+### Features
+
+* **ui:** Base Kamp landing view with module registry (KAMP-83) ([#317](https://github.com/eightyeighteyes/kamp/issues/317)) ([99933ec](https://github.com/eightyeighteyes/kamp/commit/99933eca6a02d6235c9e86f1a97967cf96303aed))
+* **ui:** configurable count and days window for Recently Added module (KAMP-242) ([#327](https://github.com/eightyeighteyes/kamp/issues/327)) ([4f11035](https://github.com/eightyeighteyes/kamp/commit/4f110359af621b8bcc5fd547fcd01b2e5302d08a))
+* **ui:** configurable days window for Last Played module (KAMP-240) ([#326](https://github.com/eightyeighteyes/kamp/issues/326)) ([675f0de](https://github.com/eightyeighteyes/kamp/commit/675f0def66f95d19af928b3433e84262cbd536fe))
+* **ui:** Grid view for Base Kamp modules (KAMP-87) ([#322](https://github.com/eightyeighteyes/kamp/issues/322)) ([cb7801e](https://github.com/eightyeighteyes/kamp/commit/cb7801e244e960437ac24b95890a9dfefb22440e))
+* **ui:** Last Played module (KAMP-85) ([#320](https://github.com/eightyeighteyes/kamp/issues/320)) ([fb15596](https://github.com/eightyeighteyes/kamp/commit/fb15596cc2b7927cdc35aa98fef535b3d4bcba24))
+* **ui:** List view for Base Kamp modules (KAMP-88) ([#325](https://github.com/eightyeighteyes/kamp/issues/325)) ([5796284](https://github.com/eightyeighteyes/kamp/commit/579628427d48b00b61a21531755595434b66f756))
+* **ui:** New Arrivals module with shared AlbumCard (KAMP-84) ([#319](https://github.com/eightyeighteyes/kamp/issues/319)) ([0e74b91](https://github.com/eightyeighteyes/kamp/commit/0e74b91eb6c2db84c2da0f3d42ca924dc09eb84a))
+* **ui:** Shelf view + display style picker for Base Kamp modules (KAMP-86) ([#321](https://github.com/eightyeighteyes/kamp/issues/321)) ([ea3366e](https://github.com/eightyeighteyes/kamp/commit/ea3366ef1d44c7dafb889a35b26c336b6e168d4d))
+
+
+### Bug Fixes
+
+* **ci:** expand mypy coverage to kamp_core (KAMP-228) ([#334](https://github.com/eightyeighteyes/kamp/issues/334)) ([f6db394](https://github.com/eightyeighteyes/kamp/commit/f6db39443095ae9200f06954aaef172c8c5dbcc3))
+* **server:** add 'home' to active-view allow-list (KAMP-238) ([#323](https://github.com/eightyeighteyes/kamp/issues/323)) ([65df11d](https://github.com/eightyeighteyes/kamp/commit/65df11dcca58b6d8f7fea56c78056de2789d5a03))
+* **ui:** add context menu to module List View items (KAMP-243) ([#328](https://github.com/eightyeighteyes/kamp/issues/328)) ([1883f5f](https://github.com/eightyeighteyes/kamp/commit/1883f5f52b3d87d4d7f34d2ed581899e6e7a10f3))
+* **ui:** re-fetch Base Kamp modules once server is reachable (KAMP-237) ([#324](https://github.com/eightyeighteyes/kamp/issues/324)) ([7eb7d12](https://github.com/eightyeighteyes/kamp/commit/7eb7d127de265e5da68c6bbe22672a4308c3da09))
+
 ## [1.15.0](https://github.com/eightyeighteyes/kamp/compare/v1.14.0...v1.15.0) (2026-05-02)
 
 

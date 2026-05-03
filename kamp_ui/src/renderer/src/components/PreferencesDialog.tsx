@@ -927,6 +927,8 @@ export function PreferencesDialog({
 
   const moduleOrder = useStore((s) => s.moduleOrder)
   const setModuleOrder = useStore((s) => s.setModuleOrder)
+  const lastPlayedCount = useStore((s) => s.lastPlayedCount)
+  const setLastPlayedCount = useStore((s) => s.setLastPlayedCount)
 
   const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions' | 'home'>(
     () => prefsInitialTab
@@ -1211,70 +1213,97 @@ export function PreferencesDialog({
           )}
 
           {activeTab === 'home' && (
-            <div className="prefs-section">
-              <div className="prefs-section-label">Modules</div>
-              {moduleOrder.length === 0 && (
-                <p className="prefs-hint">No modules enabled. Add one below.</p>
-              )}
-              {moduleOrder.map((id, idx) => {
-                const mod = MODULE_REGISTRY.find((m) => m.id === id)
-                if (!mod) return null
-                return (
-                  <div key={id} className="prefs-row prefs-module-row">
-                    <span className="prefs-label">{mod.title}</span>
+            <>
+              <div className="prefs-section">
+                <div className="prefs-section-label">Modules</div>
+                {moduleOrder.length === 0 && (
+                  <p className="prefs-hint">No modules enabled. Add one below.</p>
+                )}
+                {moduleOrder.map((id, idx) => {
+                  const mod = MODULE_REGISTRY.find((m) => m.id === id)
+                  if (!mod) return null
+                  return (
+                    <div key={id} className="prefs-row prefs-module-row">
+                      <span className="prefs-label">{mod.title}</span>
+                      <div className="prefs-module-actions">
+                        <button
+                          className="prefs-module-btn"
+                          disabled={idx === 0}
+                          onClick={() => {
+                            const next = [...moduleOrder]
+                            ;[next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]
+                            setModuleOrder(next)
+                          }}
+                          aria-label="Move up"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          className="prefs-module-btn"
+                          disabled={idx === moduleOrder.length - 1}
+                          onClick={() => {
+                            const next = [...moduleOrder]
+                            ;[next[idx], next[idx + 1]] = [next[idx + 1], next[idx]]
+                            setModuleOrder(next)
+                          }}
+                          aria-label="Move down"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          className="prefs-module-btn prefs-module-btn--remove"
+                          onClick={() => setModuleOrder(moduleOrder.filter((i) => i !== id))}
+                          aria-label="Remove module"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+                {MODULE_REGISTRY.filter((m) => !moduleOrder.includes(m.id)).map((mod) => (
+                  <div
+                    key={mod.id}
+                    className="prefs-row prefs-module-row prefs-module-row--disabled"
+                  >
+                    <span className="prefs-label" style={{ color: 'var(--text-dim)' }}>
+                      {mod.title}
+                    </span>
                     <div className="prefs-module-actions">
                       <button
                         className="prefs-module-btn"
-                        disabled={idx === 0}
-                        onClick={() => {
-                          const next = [...moduleOrder]
-                          ;[next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]
-                          setModuleOrder(next)
-                        }}
-                        aria-label="Move up"
+                        onClick={() => setModuleOrder([...moduleOrder, mod.id])}
+                        aria-label="Add module"
                       >
-                        ↑
-                      </button>
-                      <button
-                        className="prefs-module-btn"
-                        disabled={idx === moduleOrder.length - 1}
-                        onClick={() => {
-                          const next = [...moduleOrder]
-                          ;[next[idx], next[idx + 1]] = [next[idx + 1], next[idx]]
-                          setModuleOrder(next)
-                        }}
-                        aria-label="Move down"
-                      >
-                        ↓
-                      </button>
-                      <button
-                        className="prefs-module-btn prefs-module-btn--remove"
-                        onClick={() => setModuleOrder(moduleOrder.filter((i) => i !== id))}
-                        aria-label="Remove module"
-                      >
-                        Remove
+                        Add
                       </button>
                     </div>
                   </div>
-                )
-              })}
-              {MODULE_REGISTRY.filter((m) => !moduleOrder.includes(m.id)).map((mod) => (
-                <div key={mod.id} className="prefs-row prefs-module-row prefs-module-row--disabled">
-                  <span className="prefs-label" style={{ color: 'var(--text-dim)' }}>
-                    {mod.title}
-                  </span>
-                  <div className="prefs-module-actions">
-                    <button
-                      className="prefs-module-btn"
-                      onClick={() => setModuleOrder([...moduleOrder, mod.id])}
-                      aria-label="Add module"
-                    >
-                      Add
-                    </button>
+                ))}
+              </div>
+
+              <div className="prefs-section">
+                <div className="prefs-section-label">Module Settings</div>
+                <div className="prefs-row">
+                  <div className="prefs-row-header">
+                    <span className="prefs-label">Last Played — albums to show</span>
+                  </div>
+                  <div className="prefs-number-row">
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      className="prefs-input prefs-input--number"
+                      value={lastPlayedCount}
+                      onChange={(e) =>
+                        setLastPlayedCount(Math.max(1, parseInt(e.target.value) || 1))
+                      }
+                    />
+                    <span className="prefs-unit">albums</span>
                   </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            </>
           )}
 
           {activeTab === 'extensions' && (

@@ -386,6 +386,18 @@ class TestLibraryIndex:
 
         assert albums[0].added_at == pytest.approx(1234567890.0)
 
+    def test_albums_exposes_last_played_at(self, tmp_path: Path) -> None:
+        """albums() exposes MAX(last_played) per album as last_played_at."""
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "0.mp3")
+        index.upsert_track(t)
+        index.record_played(tmp_path / "0.mp3")
+        albums = index.albums(sort="last_played")
+        index.close()
+
+        assert albums[0].last_played_at is not None
+        assert albums[0].last_played_at > 0
+
     def test_missing_album_art_version_is_file_mtime(self, tmp_path: Path) -> None:
         """art_version for a missing-album track is its own file_mtime."""
         index = LibraryIndex(tmp_path / "library.db")

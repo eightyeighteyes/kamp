@@ -85,6 +85,8 @@ class AlbumOut(BaseModel):
     art_version: float | None = None
     # MIN(date_added) across the album's tracks — used by the New Arrivals module.
     added_at: float | None = None
+    # MAX(last_played) across the album's tracks — used by the Last Played module.
+    last_played_at: float | None = None
 
 
 class PlayerStateOut(BaseModel):
@@ -446,6 +448,7 @@ def create_app(
                 file_path=a.file_path,
                 art_version=a.art_version,
                 added_at=a.added_at,
+                last_played_at=a.last_played_at,
             )
             for a in index.albums(sort=sort)
         ]

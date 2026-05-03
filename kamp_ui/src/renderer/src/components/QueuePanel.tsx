@@ -253,7 +253,8 @@ export function QueuePanel(): React.JSX.Element {
                     missing_album: false,
                     file_path: '',
                     art_version: null,
-                    added_at: null
+                    added_at: null,
+                    last_played_at: null
                   }
                   void setActiveView('library')
                   void selectAlbum(found)

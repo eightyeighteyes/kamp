@@ -5,6 +5,7 @@ import type { ModuleRegistration } from './modules/registry'
 
 export function BaseKampView(): React.JSX.Element {
   const moduleOrder = useStore((s) => s.moduleOrder)
+  const moduleDisplayStyles = useStore((s) => s.moduleDisplayStyles)
 
   const modules = moduleOrder
     .map((id) => MODULE_REGISTRY.find((m) => m.id === id))
@@ -22,7 +23,7 @@ export function BaseKampView(): React.JSX.Element {
         <section key={mod.id} className="base-kamp-module">
           <div className="base-kamp-module-label">{mod.title}</div>
           <div className="base-kamp-module-body">
-            <mod.component />
+            <mod.component displayStyle={moduleDisplayStyles[mod.id] ?? 'shelf'} />
           </div>
         </section>
       ))}

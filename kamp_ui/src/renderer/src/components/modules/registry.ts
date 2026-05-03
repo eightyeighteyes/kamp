@@ -2,9 +2,11 @@ import type React from 'react'
 import { NewArrivalsModule } from './NewArrivalsModule'
 import { LastPlayedModule } from './LastPlayedModule'
 
-export type DisplayStyle = 'shelf'
+export type DisplayStyle = 'shelf' | 'grid'
 
-export interface ModuleProps {}
+export interface ModuleProps {
+  displayStyle: DisplayStyle
+}
 
 export interface ModuleRegistration {
   id: string

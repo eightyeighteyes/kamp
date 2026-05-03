@@ -2838,6 +2838,10 @@ body,
   right: 4px;
 }
 
+.module-grid {
+  padding: 4px 2px 8px;
+}
+
 .module-empty {
   padding: 48px 16px;
   text-align: center;

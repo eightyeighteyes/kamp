@@ -220,6 +220,9 @@ class AlbumInfo:
     # MAX(file_mtime) across the album's tracks — used as a cache-busting key
     # in image URLs so the browser only re-fetches art when files change.
     art_version: float | None = None
+    # MIN(date_added) across the album's tracks — exposed so callers can filter
+    # by recency without a separate query.
+    added_at: float | None = None
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -779,7 +782,7 @@ class LibraryIndex:
         order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
         rows = self._conn.execute(f"""
             SELECT album_artist, album, year, track_count, has_art,
-                   missing_album, file_path, art_version
+                   missing_album, file_path, art_version, sort_date_added
             FROM (
                 SELECT album_artist, album, year, COUNT(*) AS track_count,
                        MAX(embedded_art) AS has_art,
@@ -812,6 +815,7 @@ class LibraryIndex:
                 missing_album=bool(r["missing_album"]),
                 file_path=r["file_path"],
                 art_version=r["art_version"],
+                added_at=r["sort_date_added"],
             )
             for r in rows
         ]

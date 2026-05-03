@@ -2755,8 +2755,8 @@ body,
 }
 
 .module-skeleton-card {
-  flex: 0 0 160px;
-  height: 240px;
+  flex: 0 0 180px;
+  height: 255px;
   background: var(--border);
   border-radius: 5px;
   animation: skeleton-pulse 1.5s ease-in-out infinite;
@@ -2770,6 +2770,25 @@ body,
   50% {
     opacity: 0.8;
   }
+}
+
+/* New Arrivals module carousel */
+.module-new-arrivals {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.module-new-arrivals .album-card {
+  flex: 0 0 180px;
+}
+
+.module-empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
 }
 
 /* Preferences — Home tab module order editor */

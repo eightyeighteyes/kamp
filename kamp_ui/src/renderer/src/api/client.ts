@@ -35,6 +35,8 @@ export type Album = {
   // MAX(file_mtime) across the album's tracks; appended to art URLs as ?v=
   // so the browser caches by URL and only re-fetches when files change on disk.
   art_version: number | null
+  // MIN(date_added) across the album's tracks — used by the New Arrivals module.
+  added_at: number | null
 }
 
 export type PlayerState = {

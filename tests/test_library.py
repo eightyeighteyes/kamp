@@ -375,6 +375,17 @@ class TestLibraryIndex:
 
         assert albums[0].art_version is None
 
+    def test_albums_exposes_added_at(self, tmp_path: Path) -> None:
+        """albums() exposes the MIN(date_added) per album as added_at."""
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "0.mp3")
+        t.date_added = 1234567890.0
+        index.upsert_track(t)
+        albums = index.albums(sort="date_added")
+        index.close()
+
+        assert albums[0].added_at == pytest.approx(1234567890.0)
+
     def test_missing_album_art_version_is_file_mtime(self, tmp_path: Path) -> None:
         """art_version for a missing-album track is its own file_mtime."""
         index = LibraryIndex(tmp_path / "library.db")

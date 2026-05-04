@@ -4,8 +4,6 @@ import type { ExtensionInfo, ExtensionSettingSchema } from '../../../shared/kamp
 import type { ExtensionStateHook } from '../hooks/useExtensionState'
 import { useExtensionInstall } from '../hooks/useExtensionInstall'
 import { connectLastfm, disconnectLastfm, disconnectBandcamp } from '../api/client'
-import { MODULE_REGISTRY } from './modules/registry'
-import type { DisplayStyle } from './modules/registry'
 
 // Keys whose values must be integers — sent as strings over the wire but
 // stored as numbers in the config.
@@ -926,20 +924,7 @@ export function PreferencesDialog({
   const scanProgress = useStore((s) => s.scanProgress)
   const prefsInitialTab = useStore((s) => s.prefsInitialTab)
 
-  const moduleOrder = useStore((s) => s.moduleOrder)
-  const setModuleOrder = useStore((s) => s.setModuleOrder)
-  const moduleDisplayStyles = useStore((s) => s.moduleDisplayStyles)
-  const setModuleDisplayStyle = useStore((s) => s.setModuleDisplayStyle)
-  const lastPlayedCount = useStore((s) => s.lastPlayedCount)
-  const setLastPlayedCount = useStore((s) => s.setLastPlayedCount)
-  const lastPlayedDays = useStore((s) => s.lastPlayedDays)
-  const setLastPlayedDays = useStore((s) => s.setLastPlayedDays)
-  const recentlyAddedCount = useStore((s) => s.recentlyAddedCount)
-  const setRecentlyAddedCount = useStore((s) => s.setRecentlyAddedCount)
-  const recentlyAddedDays = useStore((s) => s.recentlyAddedDays)
-  const setRecentlyAddedDays = useStore((s) => s.setRecentlyAddedDays)
-
-  const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions' | 'home'>(
+  const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions'>(
     () => prefsInitialTab
   )
 
@@ -1046,14 +1031,6 @@ export function PreferencesDialog({
             onClick={() => setActiveTab('general')}
           >
             General
-          </button>
-          <button
-            role="tab"
-            aria-selected={activeTab === 'home'}
-            className={`prefs-tab${activeTab === 'home' ? ' prefs-tab--active' : ''}`}
-            onClick={() => setActiveTab('home')}
-          >
-            Base Kamp
           </button>
           <button
             role="tab"
@@ -1218,167 +1195,6 @@ export function PreferencesDialog({
                   </div>
                 </>
               )}
-            </>
-          )}
-
-          {activeTab === 'home' && (
-            <>
-              <div className="prefs-section">
-                <div className="prefs-section-label">Modules</div>
-                {moduleOrder.length === 0 && (
-                  <p className="prefs-hint">No modules enabled. Add one below.</p>
-                )}
-                {moduleOrder.map((id, idx) => {
-                  const mod = MODULE_REGISTRY.find((m) => m.id === id)
-                  if (!mod) return null
-                  return (
-                    <div key={id} className="prefs-row prefs-module-row">
-                      <span className="prefs-label">{mod.title}</span>
-                      <select
-                        className="prefs-module-style-select"
-                        value={moduleDisplayStyles[id] ?? 'shelf'}
-                        onChange={(e) => setModuleDisplayStyle(id, e.target.value as DisplayStyle)}
-                      >
-                        <option value="shelf">Shelf</option>
-                        <option value="grid">Grid</option>
-                        <option value="list">List</option>
-                      </select>
-                      <div className="prefs-module-actions">
-                        <button
-                          className="prefs-module-btn"
-                          disabled={idx === 0}
-                          onClick={() => {
-                            const next = [...moduleOrder]
-                            ;[next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]
-                            setModuleOrder(next)
-                          }}
-                          aria-label="Move up"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          className="prefs-module-btn"
-                          disabled={idx === moduleOrder.length - 1}
-                          onClick={() => {
-                            const next = [...moduleOrder]
-                            ;[next[idx], next[idx + 1]] = [next[idx + 1], next[idx]]
-                            setModuleOrder(next)
-                          }}
-                          aria-label="Move down"
-                        >
-                          ↓
-                        </button>
-                        <button
-                          className="prefs-module-btn prefs-module-btn--remove"
-                          onClick={() => setModuleOrder(moduleOrder.filter((i) => i !== id))}
-                          aria-label="Remove module"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-                {MODULE_REGISTRY.filter((m) => !moduleOrder.includes(m.id)).map((mod) => (
-                  <div
-                    key={mod.id}
-                    className="prefs-row prefs-module-row prefs-module-row--disabled"
-                  >
-                    <span className="prefs-label" style={{ color: 'var(--text-dim)' }}>
-                      {mod.title}
-                    </span>
-                    <div className="prefs-module-actions">
-                      <button
-                        className="prefs-module-btn"
-                        onClick={() => setModuleOrder([...moduleOrder, mod.id])}
-                        aria-label="Add module"
-                      >
-                        Add
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="prefs-section">
-                <div className="prefs-section-label">Module Settings</div>
-                <div className="prefs-row">
-                  <div className="prefs-row-header">
-                    <span className="prefs-label">Last Played — albums to show</span>
-                    <span className="prefs-hint">0 = no limit</span>
-                  </div>
-                  <div className="prefs-number-row">
-                    <input
-                      type="number"
-                      min={0}
-                      max={50}
-                      className="prefs-input prefs-input--number"
-                      value={lastPlayedCount}
-                      onChange={(e) =>
-                        setLastPlayedCount(Math.max(0, parseInt(e.target.value) || 0))
-                      }
-                    />
-                    <span className="prefs-unit">albums</span>
-                  </div>
-                </div>
-                <div className="prefs-row">
-                  <div className="prefs-row-header">
-                    <span className="prefs-label">Last Played — history window</span>
-                    <span className="prefs-hint">0 = no limit</span>
-                  </div>
-                  <div className="prefs-number-row">
-                    <input
-                      type="number"
-                      min={0}
-                      max={3650}
-                      className="prefs-input prefs-input--number"
-                      value={lastPlayedDays}
-                      onChange={(e) =>
-                        setLastPlayedDays(Math.max(0, parseInt(e.target.value) || 0))
-                      }
-                    />
-                    <span className="prefs-unit">days</span>
-                  </div>
-                </div>
-                <div className="prefs-row">
-                  <div className="prefs-row-header">
-                    <span className="prefs-label">Recently Added — albums to show</span>
-                    <span className="prefs-hint">0 = no limit</span>
-                  </div>
-                  <div className="prefs-number-row">
-                    <input
-                      type="number"
-                      min={0}
-                      max={50}
-                      className="prefs-input prefs-input--number"
-                      value={recentlyAddedCount}
-                      onChange={(e) =>
-                        setRecentlyAddedCount(Math.max(0, parseInt(e.target.value) || 0))
-                      }
-                    />
-                    <span className="prefs-unit">albums</span>
-                  </div>
-                </div>
-                <div className="prefs-row">
-                  <div className="prefs-row-header">
-                    <span className="prefs-label">Recently Added — history window</span>
-                    <span className="prefs-hint">0 = no limit</span>
-                  </div>
-                  <div className="prefs-number-row">
-                    <input
-                      type="number"
-                      min={0}
-                      max={3650}
-                      className="prefs-input prefs-input--number"
-                      value={recentlyAddedDays}
-                      onChange={(e) =>
-                        setRecentlyAddedDays(Math.max(0, parseInt(e.target.value) || 0))
-                      }
-                    />
-                    <span className="prefs-unit">days</span>
-                  </div>
-                </div>
-              </div>
             </>
           )}
 

@@ -120,10 +120,10 @@ type PlayerStore = {
   // Preferences
   configValues: ConfigValues | null
   prefsOpen: boolean
-  prefsInitialTab: 'general' | 'services' | 'extensions' | 'home'
+  prefsInitialTab: 'general' | 'services' | 'extensions'
   loadConfig: () => Promise<void>
   setConfigValue: (key: string, value: string) => Promise<void>
-  openPrefs: (tab?: 'general' | 'services' | 'extensions' | 'home') => void
+  openPrefs: (tab?: 'general' | 'services' | 'extensions') => void
   closePrefs: () => void
 }
 

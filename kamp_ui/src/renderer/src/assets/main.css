@@ -2044,6 +2044,17 @@ body,
   color: var(--accent);
 }
 
+.track-context-menu-item:disabled {
+  color: var(--text-dim);
+  cursor: default;
+  opacity: 0.4;
+}
+
+.track-context-menu-item:disabled:hover {
+  background: none;
+  color: var(--text-dim);
+}
+
 .track-context-menu-divider {
   height: 1px;
   background: var(--border);
@@ -2723,13 +2734,39 @@ body,
   align-items: flex-start;
 }
 
+.base-kamp-module.drag-over > .base-kamp-module-label {
+  outline: 2px solid var(--accent);
+  border-radius: 6px 6px 0 0;
+}
+
 .base-kamp-module-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: var(--surface);
   border-radius: 6px 6px 0 0;
   padding: 6px 10px;
   font-size: 14px;
   font-weight: 400;
   color: var(--text);
+}
+
+.base-kamp-drag-handle {
+  display: flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: grab;
+  padding: 2px 3px;
+  border-radius: 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.base-kamp-drag-handle:hover {
+  color: var(--text);
+  background: var(--hover);
 }
 
 .base-kamp-module-body {
@@ -3000,54 +3037,3 @@ body,
 }
 
 /* Preferences — Home tab module order editor */
-.prefs-module-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.prefs-module-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.prefs-module-style-select {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-size: 12px;
-  padding: 2px 6px;
-  cursor: pointer;
-}
-
-.prefs-module-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 11px;
-  padding: 2px 7px;
-  transition: color 100ms ease, border-color 100ms ease;
-}
-
-.prefs-module-btn:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--text-dim);
-}
-
-.prefs-module-btn:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
-
-.prefs-module-btn--remove {
-  color: var(--error);
-  border-color: var(--error);
-}
-
-.prefs-module-btn--remove:hover {
-  opacity: 0.8;
-}

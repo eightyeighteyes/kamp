@@ -88,6 +88,7 @@ export function BaseKampView(): React.JSX.Element {
                 draggable
                 onDragStart={(e) => {
                   setDragId(mod.id)
+                  e.dataTransfer.setData('text/kamp-module-id', mod.id)
                   e.dataTransfer.effectAllowed = 'move'
                 }}
                 onDragEnd={() => {

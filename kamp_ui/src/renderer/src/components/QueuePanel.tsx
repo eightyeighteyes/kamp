@@ -2,6 +2,11 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { QueueContextMenu } from './QueueContextMenu'
 
+const QUEUE_DROP_TYPES = new Set(['text/kamp-track-path', 'text/kamp-album', 'text/kamp-queue-idx'])
+function isQueueDrop(types: DOMStringList | readonly string[]): boolean {
+  return Array.from(types).some((t) => QUEUE_DROP_TYPES.has(t))
+}
+
 type ContextMenu = {
   x: number
   y: number
@@ -116,7 +121,10 @@ export function QueuePanel(): React.JSX.Element {
       {tracks.length === 0 ? (
         <div
           className="queue-empty"
-          onDragOver={(e) => e.preventDefault()}
+          onDragOver={(e) => {
+            if (!isQueueDrop(e.dataTransfer.types)) return
+            e.preventDefault()
+          }}
           onDrop={(e) => {
             const trackPath = e.dataTransfer.getData('text/kamp-track-path')
             const albumJson = e.dataTransfer.getData('text/kamp-album')
@@ -151,6 +159,7 @@ export function QueuePanel(): React.JSX.Element {
             setMenu({ x: e.clientX, y: e.clientY, trackIdx: null })
           }}
           onDragOver={(e) => {
+            if (!isQueueDrop(e.dataTransfer.types)) return
             e.preventDefault()
             e.currentTarget.classList.add('queue-tail-drop')
           }}
@@ -179,6 +188,7 @@ export function QueuePanel(): React.JSX.Element {
                   e.dataTransfer.effectAllowed = 'move'
                 }}
                 onDragOver={(e) => {
+                  if (!isQueueDrop(e.dataTransfer.types)) return
                   e.preventDefault()
                   e.stopPropagation()
                   e.currentTarget.classList.add('drag-over')

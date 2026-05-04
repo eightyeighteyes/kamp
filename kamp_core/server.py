@@ -87,6 +87,8 @@ class AlbumOut(BaseModel):
     added_at: float | None = None
     # MAX(last_played) across the album's tracks — used by the Last Played module.
     last_played_at: float | None = None
+    # SUM(play_count) / COUNT(*) across tracks — used by the Top Albums module.
+    play_count_avg: float = 0.0
 
 
 class PlayerStateOut(BaseModel):
@@ -449,6 +451,7 @@ def create_app(
                 art_version=a.art_version,
                 added_at=a.added_at,
                 last_played_at=a.last_played_at,
+                play_count_avg=a.play_count_avg,
             )
             for a in index.albums(sort=sort)
         ]
@@ -534,6 +537,7 @@ def create_app(
                 file_path=a.file_path,
                 art_version=a.art_version,
                 added_at=a.added_at,
+                play_count_avg=a.play_count_avg,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys

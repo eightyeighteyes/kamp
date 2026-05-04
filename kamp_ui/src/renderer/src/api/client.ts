@@ -39,6 +39,8 @@ export type Album = {
   added_at: number | null
   // MAX(last_played) across the album's tracks — used by the Last Played module.
   last_played_at: number | null
+  // SUM(play_count) / COUNT(*) across tracks — used by the Top Albums module.
+  play_count_avg: number
 }
 
 export type PlayerState = {

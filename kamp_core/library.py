@@ -167,6 +167,8 @@ _SORT_CLAUSES: dict[str, str] = {
     # part and the raw value in the single-track missing-album part).
     "date_added": "sort_date_added DESC, album_artist COLLATE NOCASE",
     "last_played": "sort_last_played DESC, album_artist COLLATE NOCASE",
+    # Highest average plays per track first; NULLs (unplayed) sort last via COALESCE.
+    "most_played": "sort_play_count_avg DESC, album_artist COLLATE NOCASE",
 }
 
 
@@ -225,6 +227,8 @@ class AlbumInfo:
     added_at: float | None = None
     # MAX(last_played) across the album's tracks — exposed for the Last Played module.
     last_played_at: float | None = None
+    # SUM(play_count) / COUNT(*) across tracks — exposed for the Top Albums module.
+    play_count_avg: float = 0.0
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -784,14 +788,16 @@ class LibraryIndex:
         order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
         rows = self._conn.execute(f"""
             SELECT album_artist, album, year, track_count, has_art,
-                   missing_album, file_path, art_version, sort_date_added, sort_last_played
+                   missing_album, file_path, art_version, sort_date_added, sort_last_played,
+                   sort_play_count_avg
             FROM (
                 SELECT album_artist, album, year, COUNT(*) AS track_count,
                        MAX(embedded_art) AS has_art,
                        0 AS missing_album, '' AS file_path,
                        MIN(date_added) AS sort_date_added,
                        MAX(last_played) AS sort_last_played,
-                       MAX(file_mtime) AS art_version
+                       MAX(file_mtime) AS art_version,
+                       CAST(SUM(play_count) AS REAL) / COUNT(*) AS sort_play_count_avg
                 FROM tracks
                 WHERE album != ''
                 GROUP BY album_artist, album
@@ -801,7 +807,8 @@ class LibraryIndex:
                        1 AS missing_album, file_path,
                        date_added AS sort_date_added,
                        last_played AS sort_last_played,
-                       file_mtime AS art_version
+                       file_mtime AS art_version,
+                       CAST(play_count AS REAL) AS sort_play_count_avg
                 FROM tracks
                 WHERE album = ''
             )
@@ -819,6 +826,7 @@ class LibraryIndex:
                 art_version=r["art_version"],
                 added_at=r["sort_date_added"],
                 last_played_at=r["sort_last_played"],
+                play_count_avg=r["sort_play_count_avg"] or 0.0,
             )
             for r in rows
         ]

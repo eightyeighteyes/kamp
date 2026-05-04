@@ -1327,6 +1327,72 @@ class TestAlbumsSort:
         index.close()
         assert albums[0].album_artist == "Amon Tobin"
 
+    def test_sort_by_most_played_highest_avg_first(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        # Hot Rats = p1, Foley Room = p2, Apostrophe = p3 (each 1 track)
+        p1 = tmp_path / "a.mp3"
+        p2 = tmp_path / "b.mp3"
+        p3 = tmp_path / "c.mp3"
+        index.record_played(p3)  # Apostrophe: 1 play / 1 track = 1.0
+        index.record_played(p3)  # Apostrophe: 2 plays / 1 track = 2.0
+        index.record_played(p1)  # Hot Rats: 1 play / 1 track = 1.0
+        albums = index.albums(sort="most_played")
+        index.close()
+        assert albums[0].album == "Apostrophe"  # highest avg
+        assert albums[1].album == "Hot Rats"  # tied at 1.0, tiebreak by artist
+
+    def test_sort_by_most_played_exposes_play_count_avg(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        p3 = tmp_path / "c.mp3"
+        index.record_played(p3)
+        index.record_played(p3)
+        albums = index.albums(sort="most_played")
+        index.close()
+        apostrophe = next(a for a in albums if a.album == "Apostrophe")
+        assert apostrophe.play_count_avg == pytest.approx(2.0)
+
+    def test_sort_by_most_played_unplayed_album_has_zero_avg(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._make_index(tmp_path)
+        albums = index.albums(sort="most_played")
+        index.close()
+        for a in albums:
+            assert a.play_count_avg == pytest.approx(0.0)
+
+    def test_sort_by_most_played_multi_track_album(self, tmp_path: Path) -> None:
+        """A 5-track album with 13 total plays has avg 2.6."""
+        index = LibraryIndex(tmp_path / "library.db")
+        tracks = []
+        for i in range(5):
+            p = tmp_path / f"t{i}.mp3"
+            _make_mp3(p, artist="A", album_artist="A", album="Multi", title=f"T{i}")
+            t = Track(
+                file_path=p,
+                title=f"T{i}",
+                artist="A",
+                album_artist="A",
+                album="Multi",
+                year="2020",
+                track_number=i + 1,
+                disc_number=1,
+                ext="mp3",
+                embedded_art=False,
+                mb_release_id="",
+                mb_recording_id="",
+            )
+            tracks.append((p, t))
+        index.upsert_many([t for _, t in tracks])
+        # 13 total plays across 5 tracks → avg 2.6
+        play_counts = [3, 3, 3, 2, 2]
+        for (p, _), n in zip(tracks, play_counts):
+            for _ in range(n):
+                index.record_played(p)
+        albums = index.albums(sort="most_played")
+        index.close()
+        assert albums[0].album == "Multi"
+        assert albums[0].play_count_avg == pytest.approx(2.6)
+
 
 class TestRecordPlayed:
     """Tests for LibraryIndex.record_played()."""

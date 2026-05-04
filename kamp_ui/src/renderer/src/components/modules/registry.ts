@@ -1,6 +1,7 @@
 import type React from 'react'
 import { NewArrivalsModule, NewArrivalsConfig } from './NewArrivalsModule'
 import { LastPlayedModule, LastPlayedConfig } from './LastPlayedModule'
+import { TopAlbumsModule, TopAlbumsConfig } from './TopAlbumsModule'
 
 export type DisplayStyle = 'shelf' | 'grid' | 'list'
 
@@ -27,5 +28,11 @@ export const MODULE_REGISTRY: ModuleRegistration[] = [
     title: 'Last Played',
     component: LastPlayedModule,
     configComponent: LastPlayedConfig
+  },
+  {
+    id: 'kamp.top-albums',
+    title: 'Top Albums',
+    component: TopAlbumsModule,
+    configComponent: TopAlbumsConfig
   }
 ]

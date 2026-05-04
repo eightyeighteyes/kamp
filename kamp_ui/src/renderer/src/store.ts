@@ -66,6 +66,7 @@ type PlayerStore = {
   setActiveView: (view: 'library' | 'now-playing' | 'home') => Promise<void>
   setModuleOrder: (ids: string[]) => void
   hideModule: (id: string) => void
+  showModule: (id: string) => void
   setModuleDisplayStyle: (id: string, style: DisplayStyle) => void
   setLastPlayedCount: (n: number) => void
   setLastPlayedDays: (n: number) => void
@@ -276,6 +277,16 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const next = [...get().hiddenModules, id]
     localStorage.setItem('kamp:hidden-modules', JSON.stringify(next))
     set({ hiddenModules: next })
+  },
+
+  showModule: (id) => {
+    const { hiddenModules, moduleOrder } = get()
+    const nextHidden = hiddenModules.filter((h) => h !== id)
+    // Always place the re-added module at the bottom
+    const nextOrder = [...moduleOrder.filter((oid) => oid !== id), id]
+    localStorage.setItem('kamp:hidden-modules', JSON.stringify(nextHidden))
+    localStorage.setItem('kamp:module-order', JSON.stringify(nextOrder))
+    set({ hiddenModules: nextHidden, moduleOrder: nextOrder })
   },
 
   setModuleDisplayStyle: (id, style) => {

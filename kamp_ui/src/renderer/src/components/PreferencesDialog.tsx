@@ -1279,7 +1279,6 @@ export function PreferencesDialog({
                   </div>
                 ))}
               </div>
-
             </>
           )}
 

@@ -659,6 +659,35 @@ class TestMpvPlaybackEngine:
         engine.seek(42.5)
         send.assert_called_once_with("seek", 42.5, "absolute")
 
+    def test_seek_removes_lookahead_before_seeking(self) -> None:
+        """Seeking with a lookahead must remove it first to prevent an immediate
+        gapless transition that stops time-pos events from flowing."""
+        engine, send = _make_engine()
+        engine.preload_next(_track(2))
+        send.reset_mock()
+        engine.seek(170.0)
+        send.assert_any_call("playlist-remove", 1)
+        assert engine._lookahead_path is None
+
+    def test_seek_sends_playlist_remove_before_seek_command(self) -> None:
+        """playlist-remove must precede the seek command so mpv drops the lookahead
+        before repositioning, preventing a premature gapless EOF."""
+        engine, send = _make_engine()
+        engine.preload_next(_track(2))
+        send.reset_mock()
+        calls: list[tuple[object, ...]] = []
+        send.side_effect = lambda *a: calls.append(a)
+        engine.seek(170.0)
+        remove_idx = next(i for i, c in enumerate(calls) if c[0] == "playlist-remove")
+        seek_idx = next(i for i, c in enumerate(calls) if c[0] == "seek")
+        assert remove_idx < seek_idx
+
+    def test_seek_without_lookahead_sends_only_seek_command(self) -> None:
+        """No playlist-remove should be sent when there is no active lookahead."""
+        engine, send = _make_engine()
+        engine.seek(42.5)
+        send.assert_called_once_with("seek", 42.5, "absolute")
+
     def test_set_volume_sends_set_property(self) -> None:
         engine, send = _make_engine()
         engine.volume = 75

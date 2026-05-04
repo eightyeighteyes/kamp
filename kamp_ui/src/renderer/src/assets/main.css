@@ -2804,22 +2804,32 @@ body,
 }
 
 .base-kamp-add-module {
+  width: 100%;
+  background: var(--surface);
+  border-radius: 5px;
+  min-height: 88px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  font-size: 13px;
-  color: var(--text-dim);
+  justify-content: center;
+  gap: 12px;
+}
+
+.base-kamp-add-module span {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
 }
 
 .base-kamp-add-module select {
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
   font-size: 12px;
-  padding: 3px 6px;
+  font-weight: 500;
+  padding: 4px 8px;
   cursor: pointer;
+  height: 24px;
 }
 
 .base-kamp-header {

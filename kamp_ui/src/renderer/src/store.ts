@@ -282,7 +282,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
   showModule: (id) => {
     const { hiddenModules, moduleOrder } = get()
     const nextHidden = hiddenModules.filter((h) => h !== id)
-    const nextOrder = moduleOrder.includes(id) ? moduleOrder : [...moduleOrder, id]
+    // Always place the re-added module at the bottom
+    const nextOrder = [...moduleOrder.filter((oid) => oid !== id), id]
     localStorage.setItem('kamp:hidden-modules', JSON.stringify(nextHidden))
     localStorage.setItem('kamp:module-order', JSON.stringify(nextOrder))
     set({ hiddenModules: nextHidden, moduleOrder: nextOrder })

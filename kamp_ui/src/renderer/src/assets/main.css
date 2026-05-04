@@ -2774,31 +2774,6 @@ body,
   background: var(--hover);
 }
 
-/* Animated config row — slides in/out when edit mode is toggled.
-   The opacity cross-fade on the inner element masks grid-row interpolation
-   jank, keeping the motion smooth regardless of content height. */
-.base-kamp-config-row {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 220ms ease;
-  width: 100%;
-  background: var(--surface);
-}
-
-.base-kamp-config-row.visible {
-  grid-template-rows: 1fr;
-}
-
-.base-kamp-config-row-inner {
-  overflow: hidden;
-  min-height: 0;
-  opacity: 0;
-  transition: opacity 180ms ease;
-}
-
-.base-kamp-config-row.visible .base-kamp-config-row-inner {
-  opacity: 1;
-}
 
 .module-config-row {
   display: flex;

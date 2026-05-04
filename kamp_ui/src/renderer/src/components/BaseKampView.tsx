@@ -6,6 +6,8 @@ import type { ModuleRegistration } from './modules/registry'
 export function BaseKampView(): React.JSX.Element {
   const moduleOrder = useStore((s) => s.moduleOrder)
   const moduleDisplayStyles = useStore((s) => s.moduleDisplayStyles)
+  const editMode = useStore((s) => s.baseKampEditMode)
+  const toggleEditMode = useStore((s) => s.toggleBaseKampEditMode)
 
   const modules = moduleOrder
     .map((id) => MODULE_REGISTRY.find((m) => m.id === id))
@@ -19,9 +21,23 @@ export function BaseKampView(): React.JSX.Element {
 
   return (
     <div className="base-kamp">
+      <div className="base-kamp-header">
+        <button
+          className={`base-kamp-gear${editMode ? ' active' : ''}`}
+          onClick={toggleEditMode}
+          title={editMode ? 'Done' : 'Customize'}
+        >
+          ⚙
+        </button>
+      </div>
       {modules.map((mod) => (
         <section key={mod.id} className="base-kamp-module">
           <div className="base-kamp-module-label">{mod.title}</div>
+          <div className={`base-kamp-config-row${editMode ? ' visible' : ''}`}>
+            <div className="base-kamp-config-row-inner">
+              {mod.configComponent && <mod.configComponent />}
+            </div>
+          </div>
           <div className="base-kamp-module-body">
             <mod.component displayStyle={moduleDisplayStyles[mod.id] ?? 'shelf'} />
           </div>

@@ -1,6 +1,6 @@
 import type React from 'react'
-import { NewArrivalsModule } from './NewArrivalsModule'
-import { LastPlayedModule } from './LastPlayedModule'
+import { NewArrivalsModule, NewArrivalsConfig } from './NewArrivalsModule'
+import { LastPlayedModule, LastPlayedConfig } from './LastPlayedModule'
 
 export type DisplayStyle = 'shelf' | 'grid' | 'list'
 
@@ -12,9 +12,20 @@ export interface ModuleRegistration {
   id: string
   title: string
   component: React.ComponentType<ModuleProps>
+  configComponent?: React.ComponentType
 }
 
 export const MODULE_REGISTRY: ModuleRegistration[] = [
-  { id: 'kamp.new-arrivals', title: 'New Arrivals', component: NewArrivalsModule },
-  { id: 'kamp.last-played', title: 'Last Played', component: LastPlayedModule }
+  {
+    id: 'kamp.new-arrivals',
+    title: 'New Arrivals',
+    component: NewArrivalsModule,
+    configComponent: NewArrivalsConfig
+  },
+  {
+    id: 'kamp.last-played',
+    title: 'Last Played',
+    component: LastPlayedModule,
+    configComponent: LastPlayedConfig
+  }
 ]

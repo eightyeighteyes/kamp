@@ -2748,6 +2748,83 @@ body,
   font-size: 13px;
 }
 
+.base-kamp-header {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 2px;
+}
+
+.base-kamp-gear {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+
+.base-kamp-gear:hover,
+.base-kamp-gear.active {
+  color: var(--text);
+  background: var(--hover);
+}
+
+/* Animated config row — slides in/out when edit mode is toggled */
+.base-kamp-config-row {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 150ms ease-out;
+  width: 100%;
+  background: var(--surface);
+}
+
+.base-kamp-config-row.visible {
+  grid-template-rows: 1fr;
+}
+
+.base-kamp-config-row-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.module-config-row {
+  display: flex;
+  gap: 16px;
+  padding: 8px 10px;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--border);
+}
+
+.module-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.module-config-field input[type='number'],
+.module-config-field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 2px 6px;
+  height: 24px;
+  width: 64px;
+}
+
+.module-config-field select {
+  width: auto;
+  cursor: pointer;
+}
+
 /* Skeleton cards inside stub modules */
 .module-skeleton-row {
   display: flex;

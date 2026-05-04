@@ -46,6 +46,7 @@ type PlayerStore = {
   lastPlayedDays: number
   recentlyAddedCount: number
   recentlyAddedDays: number
+  baseKampEditMode: boolean
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
   searchQuery: string
   searchResults: SearchResult | null
@@ -68,6 +69,7 @@ type PlayerStore = {
   setLastPlayedDays: (n: number) => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
+  toggleBaseKampEditMode: () => void
   loadLibrary: () => Promise<void>
   loadUiState: () => Promise<void>
   selectArtist: (artist: string | null) => void
@@ -174,6 +176,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const saved = localStorage.getItem('kamp:recently-added-days')
     return saved ? parseInt(saved) : 30
   })(),
+  baseKampEditMode: localStorage.getItem('kamp:base-kamp-edit-mode') === 'true',
   sortOrder: 'album_artist',
   searchQuery: '',
   searchResults: null,
@@ -287,6 +290,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setRecentlyAddedDays: (n) => {
     localStorage.setItem('kamp:recently-added-days', String(n))
     set({ recentlyAddedDays: n })
+  },
+
+  toggleBaseKampEditMode: () => {
+    const next = !get().baseKampEditMode
+    localStorage.setItem('kamp:base-kamp-edit-mode', String(next))
+    set({ baseKampEditMode: next })
   },
 
   loadUiState: async () => {

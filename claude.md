@@ -108,6 +108,10 @@ When building mpv from source, use the latest release tag (v0.41.0 as of 2026-04
 - **Iterate meson flag errors locally**, not in CI: clone mpv, run `meson setup`, check `meson.options` for valid option names, build with ninja, then run dylibbundler to verify final dylib count before pushing.
 - With the minimal flag set (audio-only), expect ~32 bundled dylibs (down from ~47 with Homebrew mpv). The video encoder libs (x264/x265/SVT-AV1/vmaf) come from Homebrew FFmpeg's transitive deps and cannot be avoided without building FFmpeg from source.
 
+## CSS height animations in Electron
+
+`grid-template-rows: 0fr → 1fr`, `max-height`, JS-measured `scrollHeight`, and `scaleY` + `max-height` combos all produce inconsistent or jerky results in the Electron renderer. Do not attempt to animate `height` or `max-height` for show/hide transitions. Use `display: none` / `display: block` (instant toggle) instead. If a smooth reveal is ever required, reach for a JS animation library (e.g. Framer Motion) rather than CSS property animation.
+
 ## Shared debounce and high-volume FSEvents
 `_LibraryHandler._schedule()` (in `watcher.py`) is shared between FSEvents from the library directory and explicit `trigger_scan()` calls. During a large batch sync, continuous FSEvents from files being moved in reset the debounce timer faster than the `_MAX_SETTLE_SECONDS` cap fires. To guarantee a scan fires after each pipeline completion, bypass the debounce entirely: call `_on_library_change` directly in a `threading.Thread` from `on_pipeline_complete` instead of routing through `lib_watcher.trigger_scan()`.
 

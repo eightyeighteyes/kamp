@@ -11,6 +11,7 @@ export function BaseKampView(): React.JSX.Element {
   const setModuleOrder = useStore((s) => s.setModuleOrder)
   const hiddenModules = useStore((s) => s.hiddenModules)
   const hideModule = useStore((s) => s.hideModule)
+  const showModule = useStore((s) => s.showModule)
   const moduleDisplayStyles = useStore((s) => s.moduleDisplayStyles)
   const editMode = useStore((s) => s.baseKampEditMode)
   const toggleEditMode = useStore((s) => s.toggleBaseKampEditMode)
@@ -22,6 +23,9 @@ export function BaseKampView(): React.JSX.Element {
     .filter((id) => !hiddenModules.includes(id))
     .map((id) => MODULE_REGISTRY.find((m) => m.id === id))
     .filter((m): m is ModuleRegistration => m !== undefined)
+
+  const visibleIds = new Set(modules.map((m) => m.id))
+  const addableModules = MODULE_REGISTRY.filter((m) => !visibleIds.has(m.id))
 
   function moveModule(id: string, direction: 'top' | 'up' | 'down' | 'bottom'): void {
     const idx = moduleOrder.indexOf(id)
@@ -46,7 +50,7 @@ export function BaseKampView(): React.JSX.Element {
     setModuleOrder(next)
   }
 
-  if (modules.length === 0) {
+  if (modules.length === 0 && addableModules.length === 0) {
     return <div className="base-kamp-empty">No modules configured.</div>
   }
 
@@ -135,6 +139,26 @@ export function BaseKampView(): React.JSX.Element {
           </div>
         </section>
       ))}
+      {editMode && addableModules.length > 0 && (
+        <div className="base-kamp-add-module">
+          <span>Add Module</span>
+          <select
+            value=""
+            onChange={(e) => {
+              if (e.target.value) showModule(e.target.value)
+            }}
+          >
+            <option value="" disabled>
+              Select…
+            </option>
+            {addableModules.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.title}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
           <button

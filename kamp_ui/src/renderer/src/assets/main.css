@@ -2803,6 +2803,25 @@ body,
   font-size: 13px;
 }
 
+.base-kamp-add-module {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.base-kamp-add-module select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
 .base-kamp-header {
   display: flex;
   justify-content: flex-end;

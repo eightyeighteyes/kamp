@@ -34,9 +34,7 @@ export function BaseKampView(): React.JSX.Element {
         <section key={mod.id} className="base-kamp-module">
           <div className="base-kamp-module-label">{mod.title}</div>
           <div className={`base-kamp-config-row${editMode ? ' visible' : ''}`}>
-            <div className="base-kamp-config-row-inner">
-              {mod.configComponent && <mod.configComponent />}
-            </div>
+            {mod.configComponent && <mod.configComponent />}
           </div>
           <div className="base-kamp-module-body">
             <mod.component displayStyle={moduleDisplayStyles[mod.id] ?? 'shelf'} />

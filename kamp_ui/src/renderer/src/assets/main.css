@@ -2954,6 +2954,10 @@ body,
   scroll-snap-align: start;
 }
 
+.module-shelf .album-card:first-child {
+  margin-left: 5px;
+}
+
 .module-shelf-arrow {
   position: absolute;
   top: 50%;

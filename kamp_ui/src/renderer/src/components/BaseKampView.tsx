@@ -29,10 +29,7 @@ function AnimatedConfigRow({
         width: '100%'
       }}
     >
-      <div
-        ref={innerRef}
-        style={{ opacity: visible ? 1 : 0, transition: 'opacity 180ms ease' }}
-      >
+      <div ref={innerRef} style={{ opacity: visible ? 1 : 0, transition: 'opacity 180ms ease' }}>
         {children}
       </div>
     </div>

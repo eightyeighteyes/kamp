@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
+import type { Album } from '../../api/client'
 import { useStore } from '../../store'
 import { ShelfView } from './ShelfView'
 import { GridView } from './GridView'
@@ -69,13 +70,18 @@ export function NewArrivalsModule({ displayStyle }: ModuleProps): React.JSX.Elem
   const days = useStore((s) => s.recentlyAddedDays)
   const allAlbums = useStore((s) => s.library.albums)
   const serverStatus = useStore((s) => s.serverStatus)
+  const [albums, setAlbums] = useState<Album[]>([])
 
-  const albums = useMemo(() => {
-    const cutoff = days > 0 ? Date.now() / 1000 - days * 86400 : null
-    return [...allAlbums]
-      .filter((a) => a.added_at !== null && (cutoff === null || a.added_at >= cutoff))
-      .sort((a, b) => (b.added_at ?? 0) - (a.added_at ?? 0))
-      .slice(0, count > 0 ? count : undefined)
+  useEffect(() => {
+    void Promise.resolve(allAlbums).then((all) => {
+      const cutoff = days > 0 ? Date.now() / 1000 - days * 86400 : null
+      setAlbums(
+        [...all]
+          .filter((a) => a.added_at !== null && (cutoff === null || a.added_at >= cutoff))
+          .sort((a, b) => (b.added_at ?? 0) - (a.added_at ?? 0))
+          .slice(0, count > 0 ? count : undefined)
+      )
+    })
   }, [allAlbums, count, days])
 
   if (serverStatus !== 'connected') {

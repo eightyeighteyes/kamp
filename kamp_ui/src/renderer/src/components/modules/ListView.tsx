@@ -31,11 +31,23 @@ function ListRow({ album }: { album: Album }): React.JSX.Element {
     <div
       className={`module-list-row${isActive ? ' playing' : ''}`}
       tabIndex={0}
+      draggable
       onClick={handleSelect}
       onKeyDown={(e) => e.key === 'Enter' && handleSelect()}
       onContextMenu={(e) => {
         e.preventDefault()
         setMenu({ x: e.clientX, y: e.clientY })
+      }}
+      onDragStart={(e) => {
+        e.dataTransfer.setData(
+          'text/kamp-album',
+          JSON.stringify({
+            album_artist: album.album_artist,
+            album: album.album,
+            file_path: album.file_path
+          })
+        )
+        e.dataTransfer.effectAllowed = 'copy'
       }}
     >
       <div className="module-list-thumb">

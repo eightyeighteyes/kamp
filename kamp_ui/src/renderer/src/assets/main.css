@@ -2774,6 +2774,24 @@ body,
   background: var(--hover);
 }
 
+/* Config row — max-height animates between two concrete pixel values so the
+   browser never has to compute a fractional target, keeping the motion smooth.
+   Bound is 68px; actual content is ~58px so the margin is imperceptible. */
+.base-kamp-config-row {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  background: var(--surface);
+  width: 100%;
+  transition:
+    max-height 220ms ease,
+    opacity 180ms ease;
+}
+
+.base-kamp-config-row.visible {
+  max-height: 68px;
+  opacity: 1;
+}
 
 .module-config-row {
   display: flex;

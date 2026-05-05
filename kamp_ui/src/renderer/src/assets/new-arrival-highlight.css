@@ -258,9 +258,12 @@
    Brown luminance-boosted from #784F17 → #C47A2B (original near-invisible as glow).
    Black omitted entirely — dead frame against dark surface. */
 
+/* Seamless tile size for 135deg diagonal: W = stripe_period × √2 = 120 × 1.414 ≈ 169.7px.
+   Rounded to 170px — error is ~0.2px per stripe, invisible. Using 120px produces
+   a visible seam every tile and an apparent random reset as it sweeps the border. */
 @keyframes proud-barber {
   from { background-position: 0 0, 0 0; }
-  to   { background-position: 0 0, 120px 120px; }
+  to   { background-position: 0 0, 170px 170px; }
 }
 
 .album-card--highlight-proud {
@@ -283,7 +286,7 @@
     );
   background-origin: padding-box, border-box;
   background-clip: padding-box, border-box;
-  background-size: auto, 120px 120px;
+  background-size: auto, 170px 170px;
   box-shadow: inset 0 0 8px 1px rgba(85, 205, 252, 0.15);
   animation: proud-barber 3s linear infinite;
 }
@@ -309,7 +312,7 @@
     );
   background-origin: padding-box, border-box;
   background-clip: padding-box, border-box;
-  background-size: auto, 120px 120px;
+  background-size: auto, 170px 170px;
   animation-duration: 0.8s;
 }
 

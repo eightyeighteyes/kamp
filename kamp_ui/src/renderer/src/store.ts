@@ -47,6 +47,10 @@ type PlayerStore = {
   lastPlayedDays: number
   recentlyAddedCount: number
   recentlyAddedDays: number
+  highlightEnabled: boolean
+  highlightDays: number
+  highlightCutoffSecs: number
+  highlightStyle: string
   topAlbumsCount: number
   baseKampEditMode: boolean
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
@@ -73,6 +77,9 @@ type PlayerStore = {
   setLastPlayedDays: (n: number) => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
+  setHighlightEnabled: (enabled: boolean) => void
+  setHighlightDays: (n: number) => void
+  setHighlightStyle: (style: string) => void
   setTopAlbumsCount: (n: number) => void
   toggleBaseKampEditMode: () => void
   loadLibrary: () => Promise<void>
@@ -185,6 +192,17 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const saved = localStorage.getItem('kamp:recently-added-days')
     return saved ? parseInt(saved) : 30
   })(),
+  highlightEnabled: localStorage.getItem('kamp:highlight-enabled') !== 'false',
+  highlightDays: (() => {
+    const saved = localStorage.getItem('kamp:highlight-days')
+    return saved ? parseInt(saved) : 3
+  })(),
+  highlightCutoffSecs: (() => {
+    const saved = localStorage.getItem('kamp:highlight-days')
+    const days = saved ? parseInt(saved) : 3
+    return Date.now() / 1000 - days * 86400
+  })(),
+  highlightStyle: localStorage.getItem('kamp:highlight-style') ?? 'shiny',
   topAlbumsCount: (() => {
     const saved = localStorage.getItem('kamp:top-albums-count')
     return saved ? parseInt(saved) : 10
@@ -319,6 +337,21 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setRecentlyAddedDays: (n) => {
     localStorage.setItem('kamp:recently-added-days', String(n))
     set({ recentlyAddedDays: n })
+  },
+
+  setHighlightEnabled: (enabled) => {
+    localStorage.setItem('kamp:highlight-enabled', String(enabled))
+    set({ highlightEnabled: enabled })
+  },
+
+  setHighlightDays: (n) => {
+    localStorage.setItem('kamp:highlight-days', String(n))
+    set({ highlightDays: n, highlightCutoffSecs: Date.now() / 1000 - n * 86400 })
+  },
+
+  setHighlightStyle: (style) => {
+    localStorage.setItem('kamp:highlight-style', style)
+    set({ highlightStyle: style })
   },
 
   setTopAlbumsCount: (n) => {

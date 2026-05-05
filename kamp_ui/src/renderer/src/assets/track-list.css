@@ -1,0 +1,356 @@
+/* Track list view ---------------------------------------------------------- */
+
+/* Opt out of main-content padding/scroll — this view manages its own layout.
+   Scoped to .view-pane--active so the hidden track-list never applies these
+   overrides when the now-playing pane is active. */
+.main-content:has(.view-pane--active .track-list-view) {
+  padding: 0;
+  overflow: hidden;
+}
+
+.track-list-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Hero: full-width art. No overflow clipping — the image intentionally
+   bleeds past the hero boundary into the track list zone. */
+.track-list-hero {
+  position: relative;
+  flex-shrink: 0;
+  height: 45vh;
+  background: linear-gradient(160deg, var(--surface) 0%, var(--bg) 100%);
+}
+
+/* Image is taller than its container so it bleeds into the track list.
+   Clipped by .track-list-view's overflow: hidden. */
+.track-list-hero-img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 150%;
+  object-fit: cover;
+  object-position: center top;
+  display: block;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.track-list-hero-img.loaded {
+  opacity: 1;
+}
+
+/* Overlay is a sibling of the hero (not inside it) so the gradient spans
+   the hero + part of the track list. Uses literal #141414 (= --bg) because
+   CSS gradient interpolates custom properties through transparent-black,
+   causing a gray band artifact. */
+.track-list-hero-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 85%;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 15%,
+    rgba(20, 20, 20, 0.45) 45%,
+    rgba(20, 20, 20, 0.8) 63%,
+    rgba(20, 20, 20, 0.95) 75%,
+    #141414 85%
+  );
+}
+
+/* Back button floats over the hero */
+.back-btn {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  background: rgba(20, 20, 20, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 12px 5px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.back-btn:hover {
+  background: rgba(20, 20, 20, 0.75);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Scrollable body — transparent so the art can bleed through the top rows. */
+.track-list-body {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  position: relative;
+  z-index: 2;
+  background: transparent;
+}
+
+.track-list-identity {
+  /* Pulled up into the hero gradient so the text floats above the fade */
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 28px 10px 28px;
+  margin-top: -48px;
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
+}
+
+.track-list-identity-text {
+  min-width: 0;
+}
+
+.track-list-album-title {
+  font-size: 26px;
+  font-weight: 700;
+  color: #ffffff;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+  margin: 0 0 6px 0;
+}
+
+.track-list-album-artist {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  margin: 0 0 4px 0;
+}
+
+.track-list-artist-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--accent);
+  font-size: inherit;
+  font-weight: inherit;
+  text-decoration: none;
+}
+
+.track-list-artist-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.track-list-artist-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.track-list-album-year {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 0;
+}
+
+.play-all-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  border: none;
+  color: var(--text-on-accent);
+  font-size: 11px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: filter 0.15s;
+}
+
+.play-all-btn:hover {
+  filter: brightness(1.12);
+}
+
+.track-list-divider {
+  margin: 8px 0 0 0;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 2;
+}
+
+.track-rows {
+  list-style: none;
+  padding: 0 20px 80px 20px;
+}
+
+.track-row {
+  display: grid;
+  grid-template-columns: 12px 32px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.track-row:hover {
+  background: var(--surface-hover);
+}
+
+.track-row.current {
+  color: var(--accent);
+}
+
+.track-row-fav {
+  font-size: 9px;
+  color: var(--accent);
+  text-align: center;
+}
+
+.track-row-num {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  min-width: 24px;
+}
+
+.track-row.current .track-row-num {
+  color: var(--accent);
+}
+
+.track-row-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.track-row-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+/* Now Playing view --------------------------------------------------------- */
+
+.now-playing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  height: 100%;
+  padding: 16px;
+}
+
+.now-playing-art {
+  position: relative;
+  /* Grow to fill available height, stay square, never exceed container width */
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: 1;
+  max-width: 100%;
+  border-radius: 8px;
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.now-playing-art-placeholder {
+  font-size: 72px;
+  opacity: 0.15;
+}
+
+.now-playing-art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.now-playing-art.has-art img {
+  opacity: 1;
+}
+
+.now-playing-meta {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.now-playing-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.now-playing-artist {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.now-playing-album {
+  font-size: 13px;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
+.now-playing-link {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.now-playing-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.now-playing-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+}
+
+.now-playing-empty-icon {
+  font-size: 52px;
+  opacity: 0.15;
+}
+
+.now-playing-empty-hint {
+  font-size: 14px;
+  color: var(--text-dim);
+}

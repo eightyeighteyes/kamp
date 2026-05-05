@@ -1,0 +1,91 @@
+.album-card {
+  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+  transition:
+    transform 0.1s,
+    background 0.1s,
+    box-shadow 0.1s;
+}
+
+.album-card:hover {
+  background: var(--surface-hover);
+  transform: translateY(-3px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.album-card.playing {
+  outline: 3px solid rgba(124, 134, 225, 0.55);
+  outline-offset: 0;
+}
+
+.album-card.playing:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  outline: 3px solid rgba(124, 134, 225, 0.55);
+  outline-offset: 0;
+}
+
+.album-art {
+  width: 100%;
+  aspect-ratio: 1;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  color: var(--text-dim);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Placeholder glyph — hidden once real art loads */
+.album-art:not(.has-art)::before {
+  content: '♪';
+}
+
+.album-art-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.now-playing-badge {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.album-info {
+  padding: 8px;
+}
+
+.album-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.album-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.album-year {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 1px;
+}

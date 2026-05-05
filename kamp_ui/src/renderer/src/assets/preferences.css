@@ -1,0 +1,517 @@
+/* Preferences dialog -------------------------------------------------------- */
+
+.prefs-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.prefs-dialog {
+  width: 520px;
+  max-height: calc(100vh - 80px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: prefs-in 150ms ease;
+}
+
+.prefs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 44px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.prefs-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+.prefs-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.prefs-close-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.prefs-close-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.prefs-body {
+  padding: 8px 24px 24px;
+  overflow-y: auto;
+  flex: 1;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.prefs-section {
+  margin-top: 24px;
+}
+
+.prefs-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.prefs-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-row:last-child {
+  border-bottom: none;
+}
+
+.prefs-row-header {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.prefs-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  flex: 1;
+}
+
+.prefs-restart-badge {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+}
+
+.prefs-input,
+.prefs-select,
+.prefs-textarea {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  transition: border-color 150ms ease;
+  width: 100%;
+}
+
+.prefs-input:focus,
+.prefs-select:focus,
+.prefs-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.prefs-input::placeholder,
+.prefs-textarea::placeholder {
+  color: var(--text-dim);
+}
+
+.prefs-number-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prefs-input--number {
+  width: 90px;
+}
+
+.prefs-unit {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.prefs-textarea {
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 12px;
+  resize: vertical;
+  min-height: 48px;
+  line-height: 1.5;
+}
+
+.prefs-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin-top: 2px;
+}
+
+.prefs-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+  cursor: pointer;
+}
+
+.prefs-path-display {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  min-height: 34px;
+}
+
+.prefs-path-text {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, 'SF Mono', monospace;
+}
+
+.prefs-path-text--saved {
+  color: var(--accent);
+  transition: color 600ms ease;
+}
+
+.prefs-choose-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+
+.prefs-choose-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.prefs-choose-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.prefs-saved-check {
+  font-size: 12px;
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity 100ms ease;
+  margin-left: 8px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.prefs-saved-check--visible {
+  opacity: 1;
+  transition: opacity 100ms ease;
+}
+
+.prefs-scan-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prefs-scan-scanning {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.prefs-scan-progress {
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.prefs-scan-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms ease;
+}
+
+/* ---- Preferences tab bar ---- */
+
+.prefs-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  flex-shrink: 0;
+}
+
+.prefs-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 10px 12px 8px;
+  margin-bottom: -1px;
+  text-transform: uppercase;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+.prefs-tab:hover {
+  color: var(--text);
+}
+
+.prefs-tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.prefs-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---- Extension rows ---- */
+
+.prefs-ext-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+
+.prefs-ext-version {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.prefs-ext-badge {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  background: var(--surface-hover);
+  white-space: nowrap;
+}
+
+.prefs-ext-badge--first-party {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: var(--accent-dim);
+}
+
+/* ---- Toggle switch ---- */
+
+.prefs-toggle {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-left: auto;
+  cursor: pointer;
+}
+
+.prefs-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.prefs-toggle-track {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 8px;
+  transition: background 150ms ease;
+}
+
+.prefs-toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: var(--text-dim);
+  border-radius: 50%;
+  transition:
+    transform 150ms ease,
+    background 150ms ease;
+}
+
+.prefs-toggle input:checked + .prefs-toggle-track {
+  background: var(--accent-dim);
+}
+
+.prefs-toggle input:checked + .prefs-toggle-track::after {
+  transform: translateX(12px);
+  background: var(--accent);
+}
+
+.prefs-toggle input:focus-visible + .prefs-toggle-track {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---- Configure drawer ---- */
+
+.prefs-ext-configure-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 150ms ease;
+}
+
+.prefs-ext-configure-btn:hover {
+  color: var(--text);
+}
+
+.prefs-ext-configure-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.prefs-ext-drawer {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Indent nested fields to visually associate them with the extension above. */
+.prefs-ext-drawer .prefs-row {
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+
+/* ---- Empty state ---- */
+
+.prefs-ext-empty {
+  padding: 32px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---- Extension install form ---- */
+
+.prefs-ext-install-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.prefs-ext-install-row .prefs-input {
+  flex: 1;
+}
+
+.prefs-ext-install-or {
+  padding: 6px 0;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+/* Indeterminate progress bar for npm install (no granular progress available). */
+.prefs-ext-install-progress {
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.prefs-ext-install-progress::after {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: var(--accent);
+  animation: prefs-ext-slide 1.4s ease-in-out infinite;
+}
+
+/* Destructive variant of prefs-choose-btn (used for the Remove confirmation). */
+.prefs-choose-btn--destructive {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.prefs-choose-btn--destructive:hover {
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Newly installed extension highlight — fades from accent tint to transparent over 5s. */
+.prefs-ext-highlight {
+  animation: prefs-ext-highlight-fade 5s ease-out forwards;
+}
+
+/* Inline remove confirmation layout. */
+.prefs-ext-remove-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

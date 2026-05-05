@@ -1,0 +1,25 @@
+:root {
+  /* --bg is set by main.tsx from shared/theme.ts so the main process can use
+     the same value for BrowserWindow.backgroundColor without a magic number. */
+  --surface: #1e1e1e;
+  --surface-hover: #2a2a2a;
+  --border: #2e2e2e;
+  --text: #e0e0e0;
+  --text-dim: #888;
+  --accent: #7c86e1;
+  --accent-dim: #252b5c;
+  --error: #e06c75;
+  --text-on-accent: #000;
+  --transport-h: 88px;
+  --panel-w: 200px;
+  font-family:
+    'DM Sans',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}

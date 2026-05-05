@@ -1,0 +1,184 @@
+/* ---------------------------------------------------------------------------
+ * Base Kamp view
+ * ------------------------------------------------------------------------- */
+
+.base-kamp {
+  display: flex;
+  flex-direction: column;
+  gap: 23px;
+  padding: 8px;
+}
+
+.base-kamp-module {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.base-kamp-module.drag-over > .base-kamp-module-label {
+  outline: 2px solid var(--accent);
+  border-radius: 6px 6px 0 0;
+}
+
+.base-kamp-module-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border-radius: 6px 6px 0 0;
+  padding: 6px 10px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.base-kamp-drag-handle {
+  display: flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: grab;
+  padding: 2px 3px;
+  border-radius: 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.base-kamp-drag-handle:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.base-kamp-remove-btn {
+  display: flex;
+  align-items: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+
+.base-kamp-remove-btn:hover {
+  opacity: 1;
+  background: var(--hover);
+}
+
+.base-kamp-module-body {
+  width: 100%;
+  background: var(--surface);
+  border-radius: 0 5px 5px 5px;
+  min-height: 285px;
+  overflow: clip;
+  padding: 2%;
+}
+
+.base-kamp-empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.base-kamp-add-module {
+  width: 100%;
+  background: var(--surface);
+  border-radius: 5px;
+  min-height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.base-kamp-add-module span {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.base-kamp-add-module select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 8px;
+  cursor: pointer;
+  height: 24px;
+}
+
+.base-kamp-header {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 2px;
+}
+
+.base-kamp-gear {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+
+.base-kamp-gear:hover,
+.base-kamp-gear.active {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.base-kamp-config-row {
+  display: none;
+  background: var(--surface);
+  width: 100%;
+}
+
+.base-kamp-config-row.visible {
+  display: block;
+}
+
+.module-config-row {
+  display: flex;
+  gap: 16px;
+  padding: 8px 10px;
+  align-items: flex-end;
+  justify-content: flex-end;
+  border-bottom: 1px solid var(--border);
+}
+
+.module-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.module-config-field input[type='number'],
+.module-config-field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 2px 6px;
+  height: 24px;
+  width: 64px;
+}
+
+.module-config-field select {
+  width: auto;
+  cursor: pointer;
+}

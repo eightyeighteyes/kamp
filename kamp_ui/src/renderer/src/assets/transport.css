@@ -1,0 +1,202 @@
+/* Transport bar ------------------------------------------------------------ */
+
+.transport-bar {
+  position: relative;
+  z-index: 10;
+  height: var(--transport-h);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  flex-shrink: 0;
+}
+
+.transport-track-info {
+  --track-info-w: 220px;
+  width: var(--track-info-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* overflow container + hover target for each text row */
+.track-field {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* inline-block so translateX(-100%) is relative to the text's own content width.
+   vertical-align: top prevents baseline-triggered vertical shift when overflow
+   flips between hidden and visible on hover. */
+.track-title,
+.track-artist,
+.track-album {
+  display: inline-block;
+  vertical-align: top;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  max-width: 100%;
+  transform: translateX(0);
+  transition: transform 0.3s ease;
+}
+
+.track-title {
+  font-weight: 500;
+}
+
+.track-artist,
+.track-album {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* Marquee on hover. max-width: none lets the span grow to full content width so
+   -100% resolves to the actual text width rather than the 220px cap.
+   min(0px, …) keeps non-overflowing strings stationary. */
+.track-field:hover .track-title,
+.track-field:hover .track-artist,
+.track-field:hover .track-album {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  transform: translateX(min(0px, calc(-100% + var(--track-info-w, 220px))));
+  transition: transform 6s linear 0.5s;
+}
+
+.track-idle {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.transport-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transport-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition:
+    color 0.1s,
+    background 0.1s;
+}
+
+.transport-btn:hover {
+  color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.transport-btn.primary {
+  font-size: 22px;
+}
+
+.transport-progress {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.seek-bar {
+  flex: 1;
+  cursor: pointer;
+}
+
+.time {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 32px;
+}
+
+.transport-volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.volume-slider {
+  width: 80px;
+  cursor: pointer;
+}
+
+/* Custom range input styling ----------------------------------------------- */
+
+.seek-bar,
+.volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+
+.seek-bar::-webkit-slider-runnable-track,
+.volume-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--range-progress, 0%),
+    var(--border) var(--range-progress, 0%),
+    var(--border) 100%
+  );
+}
+
+.seek-bar::-webkit-slider-thumb,
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-top: -5px; /* center on 4px track: (14-4)/2 = 5 */
+  transition: transform 0.1s;
+}
+
+.seek-bar::-webkit-slider-thumb:hover,
+.volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.seek-bar::-moz-range-track,
+.volume-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.seek-bar::-moz-range-progress,
+.volume-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.seek-bar::-moz-range-thumb,
+.volume-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+}
+
+.volume-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 24px;
+  font-variant-numeric: tabular-nums;
+}

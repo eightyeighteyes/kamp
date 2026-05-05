@@ -1,0 +1,199 @@
+/* Search bar --------------------------------------------------------------- */
+
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  width: 200px;
+  transition: border-color 0.15s;
+  -webkit-app-region: no-drag;
+}
+
+.search-bar:focus-within {
+  border-color: var(--accent);
+  width: 280px;
+  transition:
+    width 0.2s ease,
+    border-color 0.15s;
+}
+
+.search-icon {
+  color: var(--text-dim);
+  font-size: 15px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.search-input {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  width: 100%;
+}
+
+.search-input::placeholder {
+  color: var(--text-dim);
+}
+
+.search-clear {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.search-clear:hover {
+  color: var(--text);
+}
+
+/* Search results ----------------------------------------------------------- */
+
+.search-view {
+  padding: 20px 24px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.search-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+}
+
+.search-section {
+  margin-bottom: 32px;
+}
+
+.search-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.search-album-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.search-album-card {
+  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+  transition: background 0.15s;
+}
+
+.search-album-card:hover {
+  background: var(--surface-hover);
+}
+
+.search-album-art {
+  width: 100%;
+  aspect-ratio: 1;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.search-album-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.search-album-art.has-art img {
+  opacity: 1;
+}
+
+.search-album-info {
+  padding: 8px;
+}
+
+.search-album-title {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-album-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-album-year {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 1px;
+}
+
+.search-track-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.search-track-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.search-track-row:hover {
+  background: var(--surface-hover);
+}
+
+.search-track-fav {
+  width: 12px;
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--error);
+  text-align: center;
+}
+
+.search-track-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  max-width: 300px;
+}
+
+.search-track-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

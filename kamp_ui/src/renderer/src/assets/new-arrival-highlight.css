@@ -397,18 +397,30 @@
   z-index: 1;
 }
 
-/* 2×2px square (border-radius: 0) — CRT pixel noise, not firefly dots */
+/* 2×2px square (border-radius: 0) — CRT pixel noise, not firefly dots.
+   Dark outline makes sparks visible against white album covers. */
 .static-spark {
   position: absolute;
   width: 2px;
   height: 2px;
   border-radius: 0;
   background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
   pointer-events: none;
   /* --spark-speed-mult is set on .static-sparks; updating it mid-cycle avoids
      animation restart (no jarring all-sparks-reset-to-frame-0 flicker) */
   animation: static-blink calc(var(--blink-dur) * var(--spark-speed-mult, 1))
              var(--blink-delay) step-end infinite;
+}
+
+/* TV-static voltage surge: the art zone briefly over-exposes */
+.static-aura {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 28px 10px rgba(255, 255, 255, 0.22);
 }
 
 /* ── Reduced motion: static golden outline only (shiny) ────────────────── */
@@ -457,7 +469,8 @@
     display: none;
   }
 
-  .static-spark {
+  .static-spark,
+  .static-aura {
     display: none;
   }
 }

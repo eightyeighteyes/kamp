@@ -51,6 +51,7 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const [sparkParticles, setSparkParticles] = useState<SparkParticle[]>([])
   const [hoverSparkParticles, setHoverSparkParticles] = useState<SparkParticle[]>([])
   const [isHovered, setIsHovered] = useState(false)
+  const [auraActive, setAuraActive] = useState(false)
 
   useEffect(() => {
     if (!isNew) return
@@ -66,7 +67,7 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
           delay: Math.random() * 2
         }))
       )
-      const sparkCount = 12 + Math.floor(Math.random() * 7) // 12–18
+      const sparkCount = 25 + Math.floor(Math.random() * 16) // 25–40
       setSparkParticles(
         Array.from({ length: sparkCount }, (_, i) => ({
           id: i,
@@ -95,6 +96,45 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
       clearTimeout(mountTimer)
     }
   }, [isNew])
+
+  // Randomize spark positions over time — updating top/left without touching the
+  // animation props so blink cycles continue uninterrupted (no jarring reset)
+  useEffect(() => {
+    if (!isNew || highlightStyle !== 'static') return
+    const id = setInterval(() => {
+      setSparkParticles((prev) => prev.map((p) => ({ ...p, left: rnd(5, 85), top: rnd(5, 85) })))
+    }, 150)
+    return () => clearInterval(id)
+  }, [isNew, highlightStyle])
+
+  // White aura that fires at random intervals — like a voltage surge on a CRT
+  useEffect(() => {
+    if (!isNew || highlightStyle !== 'static') return
+    let cancelled = false
+
+    const schedule = (): void => {
+      setTimeout(
+        () => {
+          if (cancelled) return
+          setAuraActive(true)
+          setTimeout(
+            () => {
+              if (cancelled) return
+              setAuraActive(false)
+              schedule()
+            },
+            rnd(60, 120)
+          )
+        },
+        rnd(300, 4000)
+      )
+    }
+
+    schedule()
+    return () => {
+      cancelled = true
+    }
+  }, [isNew, highlightStyle])
 
   const handleSelect = (): void => {
     if (activeView !== 'library') void setActiveView('library')
@@ -160,6 +200,9 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
             <span className="pressed-glint" aria-hidden="true" />
             <span className="pressed-glint-hover" aria-hidden="true" />
           </>
+        )}
+        {isNew && highlightStyle === 'static' && (
+          <div className="static-aura" style={{ opacity: auraActive ? 1 : 0 }} aria-hidden="true" />
         )}
         {isNew && highlightStyle === 'static' && (
           <div

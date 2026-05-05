@@ -51,6 +51,8 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const highlightEnabled = useStore((s) => s.highlightEnabled)
   const highlightCutoffSecs = useStore((s) => s.highlightCutoffSecs)
   const highlightStyle = useStore((s) => s.highlightStyle)
+  const dismissedHighlightKeys = useStore((s) => s.dismissedHighlightKeys)
+  const dismissHighlight = useStore((s) => s.dismissHighlight)
   const [artLoaded, setArtLoaded] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
@@ -58,7 +60,20 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
     ? currentTrack?.file_path === album.file_path
     : currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
-  const isNew = highlightEnabled && album.added_at !== null && album.added_at >= highlightCutoffSecs
+  const albumHighlightKey = album.missing_album
+    ? (album.file_path ?? '')
+    : `${album.album_artist}::${album.album}`
+  const isNew =
+    highlightEnabled &&
+    album.added_at !== null &&
+    album.added_at >= highlightCutoffSecs &&
+    album.last_played_at === null &&
+    !dismissedHighlightKeys.has(albumHighlightKey)
+
+  // Dismiss the highlight the first time this album becomes the active playing track.
+  useEffect(() => {
+    if (isNew && isActive && playing) dismissHighlight(album)
+  }, [isNew, isActive, playing]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Start mounting=true so the fast sweep fires immediately; cleared after 1.2s
   const [isMounting, setIsMounting] = useState(isNew)

@@ -924,10 +924,8 @@ export function PreferencesDialog({
   const scanProgress = useStore((s) => s.scanProgress)
   const prefsInitialTab = useStore((s) => s.prefsInitialTab)
   const highlightEnabled = useStore((s) => s.highlightEnabled)
-  const highlightDays = useStore((s) => s.highlightDays)
   const highlightStyle = useStore((s) => s.highlightStyle)
   const setHighlightEnabled = useStore((s) => s.setHighlightEnabled)
-  const setHighlightDays = useStore((s) => s.setHighlightDays)
   const setHighlightStyle = useStore((s) => s.setHighlightStyle)
 
   const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions'>(
@@ -1020,10 +1018,6 @@ export function PreferencesDialog({
   const handleHighlightSave = async (key: string, value: string): Promise<void> => {
     if (key === 'highlight.enabled') {
       setHighlightEnabled(value === 'true')
-    } else if (key === 'highlight.days') {
-      const n = parseInt(value)
-      if (!Number.isInteger(n) || n < 1 || n > 365) throw new Error('Must be between 1 and 365.')
-      setHighlightDays(n)
     } else if (key === 'highlight.style') {
       setHighlightStyle(value)
     }
@@ -1139,14 +1133,6 @@ export function PreferencesDialog({
                     />
                     {highlightEnabled && (
                       <>
-                        <InputRow
-                          label="Days to highlight"
-                          configKey="highlight.days"
-                          type="number"
-                          unit="days"
-                          initialValue={String(highlightDays)}
-                          onSave={handleHighlightSave}
-                        />
                         <SelectRow
                           label="Highlight style"
                           configKey="highlight.style"

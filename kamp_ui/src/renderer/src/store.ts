@@ -48,9 +48,9 @@ type PlayerStore = {
   recentlyAddedCount: number
   recentlyAddedDays: number
   highlightEnabled: boolean
-  highlightDays: number
   highlightCutoffSecs: number
   highlightStyle: string
+  dismissedHighlightKeys: Set<string>
   topAlbumsCount: number
   baseKampEditMode: boolean
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
@@ -78,8 +78,8 @@ type PlayerStore = {
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
   setHighlightEnabled: (enabled: boolean) => void
-  setHighlightDays: (n: number) => void
   setHighlightStyle: (style: string) => void
+  dismissHighlight: (album: Album) => void
   setTopAlbumsCount: (n: number) => void
   toggleBaseKampEditMode: () => void
   loadLibrary: () => Promise<void>
@@ -193,16 +193,16 @@ export const useStore = create<PlayerStore>((set, get) => ({
     return saved ? parseInt(saved) : 30
   })(),
   highlightEnabled: localStorage.getItem('kamp:highlight-enabled') !== 'false',
-  highlightDays: (() => {
-    const saved = localStorage.getItem('kamp:highlight-days')
-    return saved ? parseInt(saved) : 3
-  })(),
-  highlightCutoffSecs: (() => {
-    const saved = localStorage.getItem('kamp:highlight-days')
-    const days = saved ? parseInt(saved) : 3
-    return Date.now() / 1000 - days * 86400
-  })(),
+  highlightCutoffSecs: Date.now() / 1000 - 5 * 86400,
   highlightStyle: localStorage.getItem('kamp:highlight-style') ?? 'shiny',
+  dismissedHighlightKeys: (() => {
+    try {
+      const saved = localStorage.getItem('kamp:dismissed-highlights')
+      return new Set<string>(saved ? (JSON.parse(saved) as string[]) : [])
+    } catch {
+      return new Set<string>()
+    }
+  })(),
   topAlbumsCount: (() => {
     const saved = localStorage.getItem('kamp:top-albums-count')
     return saved ? parseInt(saved) : 10
@@ -344,14 +344,20 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ highlightEnabled: enabled })
   },
 
-  setHighlightDays: (n) => {
-    localStorage.setItem('kamp:highlight-days', String(n))
-    set({ highlightDays: n, highlightCutoffSecs: Date.now() / 1000 - n * 86400 })
-  },
-
   setHighlightStyle: (style) => {
     localStorage.setItem('kamp:highlight-style', style)
     set({ highlightStyle: style })
+  },
+
+  dismissHighlight: (album) => {
+    const key = album.missing_album
+      ? (album.file_path ?? '')
+      : `${album.album_artist}::${album.album}`
+    const next = new Set(get().dismissedHighlightKeys)
+    if (next.has(key)) return
+    next.add(key)
+    localStorage.setItem('kamp:dismissed-highlights', JSON.stringify([...next]))
+    set({ dismissedHighlightKeys: next })
   },
 
   setTopAlbumsCount: (n) => {

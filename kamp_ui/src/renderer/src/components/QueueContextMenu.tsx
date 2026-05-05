@@ -8,6 +8,8 @@ interface Props {
   albumArtist?: string
   album?: string
   trackIdx: number | null
+  filePath?: string
+  favorite?: boolean
   onClose: () => void
 }
 
@@ -17,6 +19,8 @@ export function QueueContextMenu({
   albumArtist,
   album,
   trackIdx,
+  filePath,
+  favorite,
   onClose
 }: Props): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
@@ -25,6 +29,7 @@ export function QueueContextMenu({
   const setActiveView = useStore((s) => s.setActiveView)
   const clearQueue = useStore((s) => s.clearQueue)
   const clearRemainingQueue = useStore((s) => s.clearRemainingQueue)
+  const setFavorite = useStore((s) => s.setFavorite)
 
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
@@ -65,6 +70,17 @@ export function QueueContextMenu({
           >
             ♫ Go to Artist
           </button>
+          {filePath && (
+            <button
+              className="track-context-menu-item"
+              onClick={() => {
+                void setFavorite(filePath, !favorite)
+                onClose()
+              }}
+            >
+              {favorite ? '♥ Unfavorite' : '♥ Favorite'}
+            </button>
+          )}
           <div className="track-context-menu-divider" />
         </>
       )}

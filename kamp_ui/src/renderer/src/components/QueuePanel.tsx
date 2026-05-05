@@ -13,6 +13,8 @@ type ContextMenu = {
   trackIdx: number | null
   albumArtist?: string
   album?: string
+  filePath?: string
+  favorite?: boolean
 }
 
 export function QueuePanel(): React.JSX.Element {
@@ -209,7 +211,9 @@ export function QueuePanel(): React.JSX.Element {
                     y: e.clientY,
                     trackIdx: isUnplayed ? idx : null,
                     albumArtist: track.album_artist,
-                    album: track.album
+                    album: track.album,
+                    filePath: track.file_path,
+                    favorite: track.favorite
                   })
                 }}
               >
@@ -231,6 +235,8 @@ export function QueuePanel(): React.JSX.Element {
           albumArtist={menu.albumArtist}
           album={menu.album}
           trackIdx={menu.trackIdx}
+          filePath={menu.filePath}
+          favorite={menu.favorite}
           onClose={() => setMenu(null)}
         />
       )}

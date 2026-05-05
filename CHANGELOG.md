@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.17.0](https://github.com/eightyeighteyes/kamp/compare/v1.16.0...v1.17.0) (2026-05-05)
+
+
+### Features
+
+* **ui:** add Favorite toggle to queue context menu (KAMP-264) ([#357](https://github.com/eightyeighteyes/kamp/issues/357)) ([013c2cc](https://github.com/eightyeighteyes/kamp/commit/013c2ccd0e002d21dc785ab2e08a2595bee6d7f5))
+* **ui:** add module inline from Base Kamp edit mode (KAMP-254) ([#340](https://github.com/eightyeighteyes/kamp/issues/340)) ([7935485](https://github.com/eightyeighteyes/kamp/commit/793548594e6c1566aadd72236d0e73642c922984))
+* **ui:** boring highlight style — static blue ribbon NEW→wow! (KAMP-266) ([#350](https://github.com/eightyeighteyes/kamp/issues/350)) ([4b29627](https://github.com/eightyeighteyes/kamp/commit/4b296274cef2952a4e87c6f8e02737433b4d030f))
+* **ui:** dismiss new arrival highlight after first play (KAMP-275) ([#356](https://github.com/eightyeighteyes/kamp/issues/356)) ([68e66ca](https://github.com/eightyeighteyes/kamp/commit/68e66ca818b681ef91712f0e7eaea9b900e74c9b))
+* **ui:** fall back to most-recently-added when New Arrivals window is empty (KAMP-274) ([#358](https://github.com/eightyeighteyes/kamp/issues/358)) ([7cea8ba](https://github.com/eightyeighteyes/kamp/commit/7cea8baa0f3767de452412c22f38f2eb673eeb91))
+* **ui:** highlight preferences — enable/disable, day window, style picker (KAMP-263) ([#348](https://github.com/eightyeighteyes/kamp/issues/348)) ([b546245](https://github.com/eightyeighteyes/kamp/commit/b5462458c85d39824b356d4fd365540df9929d1e))
+* **ui:** inline Base Kamp module configuration (KAMP-259) ([#337](https://github.com/eightyeighteyes/kamp/issues/337)) ([30118e9](https://github.com/eightyeighteyes/kamp/commit/30118e9198582bafa6dbe89bed9e710609773eb9))
+* **ui:** module drag handles for inline reordering (KAMP-232) ([#338](https://github.com/eightyeighteyes/kamp/issues/338)) ([4a3906a](https://github.com/eightyeighteyes/kamp/commit/4a3906a25ffed722092ce4450002fdc1cf21d1ed))
+* **ui:** New Arrivals live update on library change (KAMP-241) ([#342](https://github.com/eightyeighteyes/kamp/issues/342)) ([7aa617f](https://github.com/eightyeighteyes/kamp/commit/7aa617fdbfe77c8a8741b384a6d8fba1599a17d5))
+* **ui:** newmoji highlight style — 🆕 badge with idle bob + hover pop (KAMP-265) ([#349](https://github.com/eightyeighteyes/kamp/issues/349)) ([0fbf278](https://github.com/eightyeighteyes/kamp/commit/0fbf278ed525353e5b363777c8c202b79bdbcb13))
+* **ui:** pressed highlight — white vinyl glint + breathing ring (KAMP-269) ([#353](https://github.com/eightyeighteyes/kamp/issues/353)) ([555b36e](https://github.com/eightyeighteyes/kamp/commit/555b36ee2a5093498aef93041ac5412a9cda4761))
+* **ui:** proud highlight — Progress Pride barber pole (KAMP-268) ([#352](https://github.com/eightyeighteyes/kamp/issues/352)) ([6e3eef5](https://github.com/eightyeighteyes/kamp/commit/6e3eef5e68e5a1718fd5112f5eedc3fcdc6a700b))
+* **ui:** remove module button on Base Kamp inline toolbar (KAMP-255) ([#339](https://github.com/eightyeighteyes/kamp/issues/339)) ([4c3d3f5](https://github.com/eightyeighteyes/kamp/commit/4c3d3f574dc1b43eec571270e8db668e988f36fc))
+* **ui:** shiny golden aura + shimmer for albums added in the past 3 days (KAMP-57) ([#347](https://github.com/eightyeighteyes/kamp/issues/347)) ([32f117d](https://github.com/eightyeighteyes/kamp/commit/32f117d5ce82fe23350f601ef6efeaac1235444c))
+* **ui:** static highlight — electrical spark crackle on new arrivals (KAMP-271) ([#355](https://github.com/eightyeighteyes/kamp/issues/355)) ([6f4fdf6](https://github.com/eightyeighteyes/kamp/commit/6f4fdf65f3901587789f47e6f4ce6f3de4b7d55d))
+* **ui:** Top Albums module for Base Kamp (KAMP-256) ([#341](https://github.com/eightyeighteyes/kamp/issues/341)) ([770cc03](https://github.com/eightyeighteyes/kamp/commit/770cc038f921855c3572f9c911630c215b223455))
+* **ui:** vaporwave highlight — neon halo + CRT scan-line overlay (KAMP-267) ([#351](https://github.com/eightyeighteyes/kamp/issues/351)) ([5343035](https://github.com/eightyeighteyes/kamp/commit/53430351ab1e14406b4aa641fd662197dc9072d3))
+
+
+### Bug Fixes
+
+* **playback:** remove gapless lookahead before seeking to prevent seek bar freeze ([#344](https://github.com/eightyeighteyes/kamp/issues/344)) ([12abc20](https://github.com/eightyeighteyes/kamp/commit/12abc2093062a954413e5c67540487e90747d7c6))
+* **playback:** reset position/duration on file-loaded to re-arm gapless lookahead (KAMP-276) ([#359](https://github.com/eightyeighteyes/kamp/issues/359)) ([6759403](https://github.com/eightyeighteyes/kamp/commit/675940318d9261f555fd45ac573df57210207b8f))
+* **playback:** skip preload_next append near end of track to prevent queue freeze ([#345](https://github.com/eightyeighteyes/kamp/issues/345)) ([cbdfd1b](https://github.com/eightyeighteyes/kamp/commit/cbdfd1b6a30c0fe42e18f1ac8292c1deb822b0f4))
+* **ui:** add drag-to-queue support for Base Kamp list view items (KAMP-244) ([#335](https://github.com/eightyeighteyes/kamp/issues/335)) ([79810f3](https://github.com/eightyeighteyes/kamp/commit/79810f349df0e3d3fca59509b98557fad50038b5))
+* **ui:** fix now-playing ring clipping on first shelf card (KAMP-253) ([#343](https://github.com/eightyeighteyes/kamp/issues/343)) ([05621d9](https://github.com/eightyeighteyes/kamp/commit/05621d9a3bdac8261aaef8f0d3fc0f7dd365f558))
+
 ## [1.16.0](https://github.com/eightyeighteyes/kamp/compare/v1.15.0...v1.16.0) (2026-05-03)
 
 

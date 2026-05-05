@@ -27,6 +27,18 @@ interface SparkParticle {
   sparkOpacity: number
 }
 
+// Frame 0 is the brightest gray — shown when prefers-reduced-motion is set
+const STATIC_BORDER_FRAMES = [
+  'conic-gradient(#bbb 0deg, #888 50deg, #aaa 100deg, #ccc 160deg, #999 210deg, #aaa 270deg, #bbb 360deg)',
+  'conic-gradient(#222 0deg, #777 40deg, #111 90deg, #555 140deg, #333 190deg, #888 240deg, #111 300deg, #444 350deg)',
+  'conic-gradient(#555 0deg, #111 55deg, #888 110deg, #222 165deg, #666 220deg, #333 275deg, #999 330deg)',
+  'conic-gradient(#888 0deg, #333 70deg, #111 140deg, #666 200deg, #222 260deg, #777 320deg)',
+  'conic-gradient(#111 0deg, #666 60deg, #333 120deg, #999 180deg, #444 240deg, #777 300deg, #222 360deg)',
+  'conic-gradient(#333 0deg, #999 50deg, #111 100deg, #666 160deg, #444 210deg, #111 270deg, #888 320deg)',
+  'conic-gradient(#777 0deg, #222 65deg, #555 130deg, #111 200deg, #888 265deg, #333 330deg)',
+  'conic-gradient(#444 0deg, #888 75deg, #111 150deg, #777 220deg, #333 290deg, #999 360deg)'
+]
+
 export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const setActiveView = useStore((s) => s.setActiveView)
@@ -52,6 +64,7 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const [hoverSparkParticles, setHoverSparkParticles] = useState<SparkParticle[]>([])
   const [isHovered, setIsHovered] = useState(false)
   const [auraActive, setAuraActive] = useState(false)
+  const [borderFrame, setBorderFrame] = useState(0)
 
   useEffect(() => {
     if (!isNew) return
@@ -107,6 +120,28 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
     return () => clearInterval(id)
   }, [isNew, highlightStyle])
 
+  // Gradient border: cycle through gray/black frames at random ~60–150ms intervals.
+  // Skip when prefers-reduced-motion is set — frame 0 (brightest) stays active.
+  useEffect(() => {
+    if (!isNew || highlightStyle !== 'static') return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    let cancelled = false
+    const schedule = (): void => {
+      setTimeout(
+        () => {
+          if (cancelled) return
+          setBorderFrame(Math.floor(Math.random() * STATIC_BORDER_FRAMES.length))
+          schedule()
+        },
+        rnd(60, 150)
+      )
+    }
+    schedule()
+    return () => {
+      cancelled = true
+    }
+  }, [isNew, highlightStyle])
+
   // White aura that fires at random intervals — like a voltage surge on a CRT
   useEffect(() => {
     if (!isNew || highlightStyle !== 'static') return
@@ -123,10 +158,10 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
               setAuraActive(false)
               schedule()
             },
-            rnd(60, 120)
+            rnd(10, 300)
           )
         },
-        rnd(300, 4000)
+        rnd(30, 1000)
       )
     }
 
@@ -153,6 +188,13 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   return (
     <div
       className={cardClass}
+      style={
+        isNew && highlightStyle === 'static'
+          ? ({
+              '--static-border-gradient': STATIC_BORDER_FRAMES[borderFrame]
+            } as React.CSSProperties)
+          : undefined
+      }
       tabIndex={0}
       draggable
       onClick={handleSelect}

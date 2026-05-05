@@ -384,6 +384,34 @@
 
 /* ── static ─────────────────────────────────────────────────────────────── */
 
+/* Gradient border — conic-gradient cycles through gray/black frames driven by
+   React updating --static-border-gradient. Technique mirrors `proud`:
+   Layer 1 (padding-box mask) hides the card surface; layer 2 (border-box)
+   fills the 3px border zone with the gradient.
+   .album-card--highlight-static:hover (specificity 0,2,0) redeclares
+   background-image after .album-card:hover (same specificity, earlier source)
+   so the border gradient survives the hover shorthand reset.
+   Cycling is stopped in JS when prefers-reduced-motion is set; frame 0 (the
+   brightest gray) stays active as the static reduced-motion state. */
+.album-card--highlight-static {
+  border: 3px solid transparent;
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(var(--surface), var(--surface)),
+    var(--static-border-gradient, conic-gradient(#bbb 0deg, #999 180deg, #bbb 360deg));
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+}
+
+.album-card--highlight-static:hover {
+  background-color: var(--surface-hover);
+  background-image:
+    linear-gradient(var(--surface-hover), var(--surface-hover)),
+    var(--static-border-gradient, conic-gradient(#bbb 0deg, #999 180deg, #bbb 360deg));
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+}
+
 /* Snap on/off — step-end is non-negotiable; it's what makes sparks electrical */
 @keyframes static-blink {
   0%, 100% { opacity: var(--spark-opacity); }
@@ -395,6 +423,13 @@
   inset: 0;
   pointer-events: none;
   z-index: 1;
+  transition: opacity 0.35s ease;
+}
+
+/* Fade sparks and aura on hover — reveals the album art underneath */
+.album-card--highlight-static:hover .static-sparks,
+.album-card--highlight-static:hover .static-aura {
+  opacity: 0;
 }
 
 /* 2×2px square (border-radius: 0) — CRT pixel noise, not firefly dots.
@@ -421,6 +456,7 @@
   z-index: 2;
   background: rgba(255, 255, 255, 0.07);
   box-shadow: inset 0 0 28px 10px rgba(255, 255, 255, 0.22);
+  transition: opacity 0.35s ease;
 }
 
 /* ── Reduced motion: static golden outline only (shiny) ────────────────── */

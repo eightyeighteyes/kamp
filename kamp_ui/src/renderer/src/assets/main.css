@@ -9,7 +9,8 @@
 @import './search.css';
 @import './onboarding.css';
 @import './album-grid.css';
-@import './album-card.css';    /* must precede modules.css */
+@import './album-card.css';             /* must precede modules.css */
+@import './new-arrival-highlight.css';  /* highlight modifier classes for .album-card */
 @import './transport.css';
 @import './track-list.css';
 @import './queue.css';

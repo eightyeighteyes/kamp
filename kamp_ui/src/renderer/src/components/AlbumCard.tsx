@@ -6,10 +6,6 @@ import { AlbumContextMenu } from './AlbumContextMenu'
 
 type MenuPos = { x: number; y: number }
 
-const THREE_DAYS_SECS = 3 * 86400
-// Computed once at module load; accurate enough for a 3-day window within a session
-const SHINY_CUTOFF_SECS = Date.now() / 1000 - THREE_DAYS_SECS
-
 interface StarParticle {
   id: number
   left: number
@@ -24,6 +20,9 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const activeView = useStore((s) => s.activeView)
   const currentTrack = useStore((s) => s.player.current_track)
   const playing = useStore((s) => s.player.playing)
+  const highlightEnabled = useStore((s) => s.highlightEnabled)
+  const highlightCutoffSecs = useStore((s) => s.highlightCutoffSecs)
+  const highlightStyle = useStore((s) => s.highlightStyle)
   const [artLoaded, setArtLoaded] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
@@ -31,14 +30,14 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
     ? currentTrack?.file_path === album.file_path
     : currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
-  const isShiny = album.added_at !== null && album.added_at >= SHINY_CUTOFF_SECS
+  const isNew = highlightEnabled && album.added_at !== null && album.added_at >= highlightCutoffSecs
 
   // Start mounting=true so the fast sweep fires immediately; cleared after 1.2s
-  const [isMounting, setIsMounting] = useState(isShiny)
+  const [isMounting, setIsMounting] = useState(isNew)
   const [starParticles, setStarParticles] = useState<StarParticle[]>([])
 
   useEffect(() => {
-    if (!isShiny) return
+    if (!isNew) return
     // Math.random() and setState must be in callbacks, not the effect body directly
     const initTimer = setTimeout(() => {
       const count = 3 + Math.floor(Math.random() * 3) // 3–5
@@ -57,7 +56,7 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
       clearTimeout(initTimer)
       clearTimeout(mountTimer)
     }
-  }, [isShiny])
+  }, [isNew])
 
   const handleSelect = (): void => {
     if (activeView !== 'library') void setActiveView('library')
@@ -67,8 +66,8 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const cardClass = [
     'album-card',
     isActive ? 'playing' : '',
-    isShiny ? 'shiny' : '',
-    isShiny && isMounting ? 'is-mounting' : ''
+    isNew ? `album-card--highlight-${highlightStyle}` : '',
+    isNew && isMounting ? 'is-mounting' : ''
   ]
     .filter(Boolean)
     .join(' ')
@@ -107,10 +106,11 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
           />
         )}
         {playing && isActive && <div className="now-playing-badge">▶</div>}
-        {isShiny && <span className="shiny-sweep" aria-hidden="true" />}
+        {isNew && highlightStyle === 'shiny' && <span className="shiny-sweep" aria-hidden="true" />}
       </div>
 
-      {isShiny &&
+      {isNew &&
+        highlightStyle === 'shiny' &&
         starParticles.map((p) => (
           <span
             key={p.id}

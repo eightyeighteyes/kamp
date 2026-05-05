@@ -923,6 +923,12 @@ export function PreferencesDialog({
   const scanStatus = useStore((s) => s.scanStatus)
   const scanProgress = useStore((s) => s.scanProgress)
   const prefsInitialTab = useStore((s) => s.prefsInitialTab)
+  const highlightEnabled = useStore((s) => s.highlightEnabled)
+  const highlightDays = useStore((s) => s.highlightDays)
+  const highlightStyle = useStore((s) => s.highlightStyle)
+  const setHighlightEnabled = useStore((s) => s.setHighlightEnabled)
+  const setHighlightDays = useStore((s) => s.setHighlightDays)
+  const setHighlightStyle = useStore((s) => s.setHighlightStyle)
 
   const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions'>(
     () => prefsInitialTab
@@ -1009,6 +1015,18 @@ export function PreferencesDialog({
     }
 
     await setConfigValue(key, value)
+  }
+
+  const handleHighlightSave = async (key: string, value: string): Promise<void> => {
+    if (key === 'highlight.enabled') {
+      setHighlightEnabled(value === 'true')
+    } else if (key === 'highlight.days') {
+      const n = parseInt(value)
+      if (!Number.isInteger(n) || n < 1 || n > 365) throw new Error('Must be between 1 and 365.')
+      setHighlightDays(n)
+    } else if (key === 'highlight.style') {
+      setHighlightStyle(value)
+    }
   }
 
   return (
@@ -1113,6 +1131,39 @@ export function PreferencesDialog({
                       hint="{album_artist}  {year}  {album}  {track}  {title}  {ext}"
                       onSave={handleSave}
                     />
+                    <BoolRow
+                      label="Highlight new arrivals in the library"
+                      configKey="highlight.enabled"
+                      initialValue={highlightEnabled}
+                      onSave={handleHighlightSave}
+                    />
+                    {highlightEnabled && (
+                      <>
+                        <InputRow
+                          label="Days to highlight"
+                          configKey="highlight.days"
+                          type="number"
+                          unit="days"
+                          initialValue={String(highlightDays)}
+                          onSave={handleHighlightSave}
+                        />
+                        <SelectRow
+                          label="Highlight style"
+                          configKey="highlight.style"
+                          options={[
+                            'shiny',
+                            'newmoji',
+                            'vaporwave',
+                            'proud-rainbow',
+                            'proud-trans',
+                            'proud-agender',
+                            'boring'
+                          ]}
+                          initialValue={highlightStyle}
+                          onSave={handleHighlightSave}
+                        />
+                      </>
+                    )}
                   </div>
 
                   {/* ARTWORK */}

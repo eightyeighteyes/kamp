@@ -1039,6 +1039,38 @@ class TestMpvPlaybackEngine:
         engine.preload_next(_track(2))
         send.assert_called_once_with("loadfile", "/music/02.mp3", "append")
 
+    def test_file_loaded_resets_state_so_lookahead_re_arms_after_gapless(
+        self,
+    ) -> None:
+        """Regression for KAMP-276: after a gapless transition the file-loaded
+        event must reset position/duration before calling on_file_loaded so the
+        preload_next guard (position > duration - 10s) does not fire on stale
+        old-track values and block the lookahead for the second transition."""
+        engine, send = _make_engine()
+
+        # Prime: track 2 is preloaded at the start (position≈0, guard passes)
+        engine.preload_next(_track(2))
+
+        # Simulate the near-end state that exists when end-file fires
+        engine.state.position = 238.0
+        engine.state.duration = 240.0
+
+        # Wire on_file_loaded to call preload_next for the third track,
+        # mirroring what the queue manager does on every file-loaded event.
+        engine.on_file_loaded = lambda: engine.preload_next(_track(3))
+
+        send.reset_mock()
+
+        # Gapless transition: mpv fires end-file/eof, clearing _lookahead_path
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        assert engine._lookahead_path is None
+
+        # file-loaded for track 2: stale position/duration would satisfy the guard
+        # (238 > 240-10) and block the append without the fix.
+        engine._handle_event({"event": "file-loaded"})
+
+        assert engine._lookahead_path == Path("/music/03.mp3")
+
     # ------------------------------------------------------------------
     # end-file gapless cleanup
     # ------------------------------------------------------------------

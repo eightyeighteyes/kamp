@@ -588,6 +588,11 @@ class MpvPlaybackEngine:
                     self.on_play_state_changed()
 
         elif name == "file-loaded":
+            # Reset stale values from the previous track so preload_next's guard
+            # (duration > 0 and position > duration - _GAPLESS_GUARD_SECS) does
+            # not fire on the new file-loaded event and block the lookahead re-arm.
+            self.state.position = 0.0
+            self.state.duration = 0.0
             if self._pending_seek is not None:
                 self.seek(self._pending_seek)
                 self._pending_seek = None

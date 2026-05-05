@@ -505,6 +505,16 @@
     display: none;
   }
 
+  /* !important overrides the React inline style that sets --static-border-gradient */
+  .album-card--highlight-static {
+    --static-border-gradient: conic-gradient(
+      from 180deg,
+      #bbb 0deg,
+      #999 180deg,
+      #bbb 360deg
+    ) !important;
+  }
+
   .static-spark,
   .static-aura {
     display: none;

@@ -696,6 +696,18 @@ class TestMpvPlaybackEngine:
         send.assert_called_once_with("seek", 60.0, "absolute")
         assert engine._lookahead_path is not None
 
+    def test_seek_at_exact_guard_boundary_preserves_lookahead(self) -> None:
+        """The guard uses strict '>' (matching preload_next), so a seek to exactly
+        duration - _GAPLESS_GUARD_SECS is outside the danger window and must
+        preserve the lookahead."""
+        engine, send = _make_engine()
+        engine.state.duration = 240.0
+        engine.preload_next(_track(2))
+        send.reset_mock()
+        engine.seek(230.0)  # exactly duration - _GAPLESS_GUARD_SECS, not inside
+        send.assert_called_once_with("seek", 230.0, "absolute")
+        assert engine._lookahead_path is not None
+
     def test_seek_without_lookahead_sends_only_seek_command(self) -> None:
         """No playlist-remove should be sent when there is no active lookahead."""
         engine, send = _make_engine()
@@ -1080,9 +1092,15 @@ class TestMpvPlaybackEngine:
         engine.state.position = 238.0
         engine.state.duration = 240.0
 
-        # Wire on_file_loaded to call preload_next for the third track,
-        # mirroring what the queue manager does on every file-loaded event.
-        engine.on_file_loaded = lambda: engine.preload_next(_track(3))
+        # Wire on_file_loaded to capture state at callback time and then call
+        # preload_next for the third track, mirroring what the queue manager does.
+        state_at_callback: list[tuple[float, float]] = []
+
+        def _on_file_loaded() -> None:
+            state_at_callback.append((engine.state.position, engine.state.duration))
+            engine.preload_next(_track(3))
+
+        engine.on_file_loaded = _on_file_loaded
 
         send.reset_mock()
 
@@ -1094,6 +1112,8 @@ class TestMpvPlaybackEngine:
         # (238 > 240-10) and block the append without the fix.
         engine._handle_event({"event": "file-loaded"})
 
+        # The reset must have happened BEFORE on_file_loaded fired.
+        assert state_at_callback == [(0.0, 0.0)]
         assert engine._lookahead_path == Path("/music/03.mp3")
 
     # ------------------------------------------------------------------

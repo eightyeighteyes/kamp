@@ -511,7 +511,7 @@ class MpvPlaybackEngine:
             if (
                 self._lookahead_path is not None
                 and self.state.duration > 0
-                and position >= self.state.duration - _GAPLESS_GUARD_SECS
+                and position > self.state.duration - _GAPLESS_GUARD_SECS
             ):
                 self._lookahead_path = None
                 self._send_command("playlist-remove", 1)

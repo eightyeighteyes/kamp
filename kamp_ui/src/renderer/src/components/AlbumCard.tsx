@@ -128,6 +128,9 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
         ))}
 
       <div className="album-info">
+        {isNew && highlightStyle === 'newmoji' && (
+          <span className="newmoji-badge" aria-hidden="true">🆕</span>
+        )}
         {album.missing_album ? (
           <div className="album-title">
             <em>{album.album}</em>

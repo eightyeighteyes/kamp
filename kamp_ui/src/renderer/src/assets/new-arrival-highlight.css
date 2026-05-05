@@ -101,6 +101,46 @@
   transform-origin: center;
 }
 
+/* ── newmoji ────────────────────────────────────────────────────────────── */
+
+/* Idle: slow bob + tilt, 5s loop */
+@keyframes newmoji-idle {
+  0%, 100% { translate: 0 0; rotate: 0deg; scale: 1; }
+  30%       { translate: 0 -3px; rotate: 1deg; scale: 1.05; }
+}
+
+/* Hover pop: scale out to 1.35 with overshoot easing, runs once */
+@keyframes newmoji-hover-scale {
+  0%   { scale: 1; }
+  100% { scale: 1.35; }
+}
+
+/* album-info needs position:relative so the badge can use absolute positioning */
+.album-card--highlight-newmoji .album-info {
+  position: relative;
+}
+
+/* Badge sits at the art/info boundary, overlapping slightly into the art zone */
+.newmoji-badge {
+  position: absolute;
+  top: -10px;
+  left: 6px;
+  font-size: 18px;
+  line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+  pointer-events: none;
+  transform-origin: bottom left;
+  animation: newmoji-idle 5s ease-in-out infinite;
+  z-index: 2;
+}
+
+/* Hover: idle bob continues (translate/rotate), scale pops once then holds */
+.album-card--highlight-newmoji:hover .newmoji-badge {
+  animation:
+    newmoji-idle 5s ease-in-out infinite,
+    newmoji-hover-scale 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) 1 forwards;
+}
+
 /* ── Reduced motion: static golden outline only (shiny) ────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -114,5 +154,12 @@
   .shiny-sweep,
   .shiny-star {
     display: none;
+  }
+
+  .newmoji-badge {
+    animation: none;
+    translate: 0 0;
+    rotate: 0deg;
+    scale: 1;
   }
 }

@@ -352,7 +352,13 @@ class MpvPlaybackEngine:
         self._sock_path = ""
         self._sock_tmpdir = ""
         self._reader_thread: threading.Thread | None = None
-        self._lock = threading.Lock()
+        # RLock so the reader thread can re-acquire the lock inside callbacks
+        # (e.g. on_track_end → engine.play() → _send_command) while still
+        # holding it across the end-file handler to prevent Race A: a concurrent
+        # seek() on the main thread sending playlist-remove 1 while the reader
+        # thread is already sending playlist-remove 0, which empties mpv's
+        # playlist and stops time-pos events.
+        self._lock = threading.RLock()
         # One-shot seek applied on the next file-loaded event (set by load_paused).
         # Stored here rather than in on_file_loaded so it doesn't clobber the
         # external callback chain wired up after engine creation.
@@ -493,17 +499,22 @@ class MpvPlaybackEngine:
         self._send_command("set_property", "pause", False)
 
     def seek(self, position: float) -> None:
-        # Only remove the lookahead when the seek target lands within the
-        # gapless danger window.  Seeking to an early/middle position carries
-        # no gapless risk — removing the lookahead there breaks gapless at the
-        # track's natural EOF without any benefit (KAMP-261 / KAMP-276).
-        if (
-            self._lookahead_path is not None
-            and self.state.duration > 0
-            and position >= self.state.duration - _GAPLESS_GUARD_SECS
-        ):
-            self._lookahead_path = None
-            self._send_command("playlist-remove", 1)
+        # Hold _lock so this check+clear is atomic with the end-file handler's
+        # playlist-remove 0 + _lookahead_path = None sequence on the reader
+        # thread (Race A prevention).  The seek command itself is sent outside
+        # the lock — it does not touch _lookahead_path.
+        with self._lock:
+            # Only remove the lookahead when the seek target lands within the
+            # gapless danger window.  Seeking to an early/middle position carries
+            # no gapless risk — removing the lookahead there breaks gapless at
+            # the track's natural EOF without any benefit (KAMP-261 / KAMP-276).
+            if (
+                self._lookahead_path is not None
+                and self.state.duration > 0
+                and position >= self.state.duration - _GAPLESS_GUARD_SECS
+            ):
+                self._lookahead_path = None
+                self._send_command("playlist-remove", 1)
         self._send_command("seek", position, "absolute")
 
     def stop(self) -> None:
@@ -604,14 +615,21 @@ class MpvPlaybackEngine:
 
         elif name == "end-file":
             if event.get("reason") == "eof":
-                # When a lookahead was present, mpv already transitioned gaplessly
-                # and the finished entry sits at slot 0.  Remove it now to maintain
-                # the invariant (current = slot 0, lookahead = slot 1).
-                if self._lookahead_path is not None:
-                    self._send_command("playlist-remove", 0)
-                # Fire on_track_end while _lookahead_path is still set so that
-                # has_lookahead returns True inside the callback — _on_track_end
-                # checks this to avoid calling engine.play() redundantly.
-                if self.on_track_end is not None:
-                    self.on_track_end()
-                self._lookahead_path = None
+                # Hold _lock across the entire block so a concurrent seek() on
+                # the main thread cannot send playlist-remove 1 while we are
+                # sending playlist-remove 0 (Race A: double-remove empties mpv's
+                # playlist, sending it idle and stopping time-pos events).
+                # _lock is an RLock so on_track_end → engine.play() →
+                # _send_command can re-acquire it on the same thread.
+                with self._lock:
+                    # When a lookahead was present, mpv already transitioned
+                    # gaplessly and the finished entry sits at slot 0.  Remove it
+                    # now to maintain the invariant (current = slot 0, lookahead = slot 1).
+                    if self._lookahead_path is not None:
+                        self._send_command("playlist-remove", 0)
+                    # Fire on_track_end while _lookahead_path is still set so that
+                    # has_lookahead returns True inside the callback — _on_track_end
+                    # checks this to avoid calling engine.play() redundantly.
+                    if self.on_track_end is not None:
+                        self.on_track_end()
+                    self._lookahead_path = None

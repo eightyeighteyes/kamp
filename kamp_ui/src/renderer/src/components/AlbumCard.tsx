@@ -112,6 +112,9 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
             wow!
           </span>
         )}
+        {isNew && highlightStyle === 'vaporwave' && (
+          <span className="vaporwave-scanlines" aria-hidden="true" />
+        )}
       </div>
 
       {isNew &&

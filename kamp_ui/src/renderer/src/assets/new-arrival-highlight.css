@@ -183,6 +183,69 @@
   opacity: 1;
 }
 
+/* ── vaporwave ──────────────────────────────────────────────────────────── */
+
+/* Halo cycles purple → hot pink → cyan → back, slow enough to feel dreamy */
+@keyframes vaporwave-halo {
+  0% {
+    box-shadow:
+      0 0 0 2px #A855F7,
+      0 0 12px 4px rgba(168, 85, 247, 0.55),
+      0 0 28px 10px rgba(168, 85, 247, 0.25);
+  }
+  33% {
+    box-shadow:
+      0 0 0 2px #FF6EC7,
+      0 0 12px 4px rgba(255, 110, 199, 0.55),
+      0 0 28px 10px rgba(255, 110, 199, 0.25);
+  }
+  66% {
+    box-shadow:
+      0 0 0 2px #38BDF8,
+      0 0 12px 4px rgba(56, 189, 248, 0.55),
+      0 0 28px 10px rgba(56, 189, 248, 0.25);
+  }
+  100% {
+    box-shadow:
+      0 0 0 2px #A855F7,
+      0 0 12px 4px rgba(168, 85, 247, 0.55),
+      0 0 28px 10px rgba(168, 85, 247, 0.25);
+  }
+}
+
+.album-card--highlight-vaporwave {
+  animation: vaporwave-halo 3.5s linear infinite;
+}
+
+/* Intensify glow on hover */
+.album-card--highlight-vaporwave:hover {
+  animation: vaporwave-halo 3.5s linear infinite;
+  filter: brightness(1.08);
+}
+
+/* CRT scan-line overlay — screen blend makes lines visible on dark art */
+.vaporwave-scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 3px,
+    rgba(0, 0, 0, 0.12) 3px,
+    rgba(0, 0, 0, 0.12) 4px
+  );
+  mix-blend-mode: screen;
+  opacity: 0.6;
+  transition: opacity 0.3s ease;
+}
+
+/* Hover: clear the CRT effect — like adjusting VCR tracking */
+.album-card--highlight-vaporwave:hover .vaporwave-scanlines {
+  opacity: 0;
+}
+
 /* ── Reduced motion: static golden outline only (shiny) ────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -203,5 +266,14 @@
     translate: 0 0;
     rotate: 0deg;
     scale: 1;
+  }
+
+  .album-card--highlight-vaporwave {
+    animation: none;
+    box-shadow: 0 0 0 2px #A855F7;
+  }
+
+  .vaporwave-scanlines {
+    display: none;
   }
 }

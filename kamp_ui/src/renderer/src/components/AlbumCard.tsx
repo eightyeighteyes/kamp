@@ -6,12 +6,25 @@ import { AlbumContextMenu } from './AlbumContextMenu'
 
 type MenuPos = { x: number; y: number }
 
+function rnd(min: number, max: number): number {
+  return min + Math.random() * (max - min)
+}
+
 interface StarParticle {
   id: number
   left: number
   top: number
   duration: number
   delay: number
+}
+
+interface SparkParticle {
+  id: number
+  left: number
+  top: number
+  blinkDur: number
+  blinkDelay: number
+  sparkOpacity: number
 }
 
 export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
@@ -35,6 +48,9 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   // Start mounting=true so the fast sweep fires immediately; cleared after 1.2s
   const [isMounting, setIsMounting] = useState(isNew)
   const [starParticles, setStarParticles] = useState<StarParticle[]>([])
+  const [sparkParticles, setSparkParticles] = useState<SparkParticle[]>([])
+  const [hoverSparkParticles, setHoverSparkParticles] = useState<SparkParticle[]>([])
+  const [isHovered, setIsHovered] = useState(false)
 
   useEffect(() => {
     if (!isNew) return
@@ -48,6 +64,28 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
           top: 15 + Math.random() * 50,
           duration: 2.8 + Math.random() * 1.6,
           delay: Math.random() * 2
+        }))
+      )
+      const sparkCount = 12 + Math.floor(Math.random() * 7) // 12–18
+      setSparkParticles(
+        Array.from({ length: sparkCount }, (_, i) => ({
+          id: i,
+          left: rnd(5, 85),
+          top: rnd(5, 85),
+          blinkDur: rnd(0.08, 0.22),
+          blinkDelay: rnd(0, 0.5),
+          sparkOpacity: rnd(0.4, 1.0)
+        }))
+      )
+      // pre-generate hover spark positions so they don't jump on every hover
+      setHoverSparkParticles(
+        Array.from({ length: 6 }, (_, i) => ({
+          id: i + 100,
+          left: rnd(5, 85),
+          top: rnd(5, 85),
+          blinkDur: rnd(0.3, 0.5),
+          blinkDelay: rnd(0, 0.5),
+          sparkOpacity: rnd(0.4, 1.0)
         }))
       )
     }, 0)
@@ -79,6 +117,8 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
       draggable
       onClick={handleSelect}
       onKeyDown={(e) => e.key === 'Enter' && handleSelect()}
+      onMouseEnter={isNew && highlightStyle === 'static' ? () => setIsHovered(true) : undefined}
+      onMouseLeave={isNew && highlightStyle === 'static' ? () => setIsHovered(false) : undefined}
       onContextMenu={(e) => {
         e.preventDefault()
         setMenu({ x: e.clientX, y: e.clientY })
@@ -120,6 +160,45 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
             <span className="pressed-glint" aria-hidden="true" />
             <span className="pressed-glint-hover" aria-hidden="true" />
           </>
+        )}
+        {isNew && highlightStyle === 'static' && (
+          <div
+            className="static-sparks"
+            style={{ '--spark-speed-mult': isHovered ? 1.4 : 1 } as React.CSSProperties}
+            aria-hidden="true"
+          >
+            {sparkParticles.map((p) => (
+              <span
+                key={p.id}
+                className="static-spark"
+                style={
+                  {
+                    '--blink-dur': `${p.blinkDur}s`,
+                    '--blink-delay': `${p.blinkDelay}s`,
+                    '--spark-opacity': p.sparkOpacity,
+                    top: `${p.top}%`,
+                    left: `${p.left}%`
+                  } as React.CSSProperties
+                }
+              />
+            ))}
+            {isHovered &&
+              hoverSparkParticles.map((p) => (
+                <span
+                  key={p.id}
+                  className="static-spark"
+                  style={
+                    {
+                      '--blink-dur': `${p.blinkDur}s`,
+                      '--blink-delay': `${p.blinkDelay}s`,
+                      '--spark-opacity': p.sparkOpacity,
+                      top: `${p.top}%`,
+                      left: `${p.left}%`
+                    } as React.CSSProperties
+                  }
+                />
+              ))}
+          </div>
         )}
       </div>
 

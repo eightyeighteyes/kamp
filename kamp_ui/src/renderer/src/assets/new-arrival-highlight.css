@@ -382,6 +382,35 @@
   animation: pressed-glint-once 0.5s ease-in-out forwards;
 }
 
+/* ── static ─────────────────────────────────────────────────────────────── */
+
+/* Snap on/off — step-end is non-negotiable; it's what makes sparks electrical */
+@keyframes static-blink {
+  0%, 100% { opacity: var(--spark-opacity); }
+  50%      { opacity: 0; }
+}
+
+.static-sparks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 2×2px square (border-radius: 0) — CRT pixel noise, not firefly dots */
+.static-spark {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 0;
+  background: #fff;
+  pointer-events: none;
+  /* --spark-speed-mult is set on .static-sparks; updating it mid-cycle avoids
+     animation restart (no jarring all-sparks-reset-to-frame-0 flicker) */
+  animation: static-blink calc(var(--blink-dur) * var(--spark-speed-mult, 1))
+             var(--blink-delay) step-end infinite;
+}
+
 /* ── Reduced motion: static golden outline only (shiny) ────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -425,6 +454,10 @@
 
   .pressed-glint,
   .pressed-glint-hover {
+    display: none;
+  }
+
+  .static-spark {
     display: none;
   }
 }

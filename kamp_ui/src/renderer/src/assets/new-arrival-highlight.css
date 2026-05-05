@@ -245,6 +245,77 @@
   opacity: 0;
 }
 
+/* ── proud ──────────────────────────────────────────────────────────────── */
+
+/* Progress Pride flag barber pole: diagonal stripes scroll across the border.
+   Technique: dual background-image layers on the element itself.
+     Layer 1: linear-gradient(--surface) fills the padding box, masking the center.
+     Layer 2: repeating diagonal gradient fills the border box — visible only in
+              the 3px border zone. border-radius: 6px works correctly with this.
+   IMPORTANT: .album-card:hover sets `background` (shorthand), which resets
+   background-image to none. The hover rule below must redeclare the full
+   background-image to keep the stripes alive.
+   Brown luminance-boosted from #784F17 → #C47A2B (original near-invisible as glow).
+   Black omitted entirely — dead frame against dark surface. */
+
+/* Seamless tile size for 135deg diagonal: W = stripe_period × √2 = 120 × 1.414 ≈ 169.7px.
+   Rounded to 170px — error is ~0.2px per stripe, invisible. Using 120px produces
+   a visible seam every tile and an apparent random reset as it sweeps the border. */
+@keyframes proud-barber {
+  from { background-position: 0 0, 0 0; }
+  to   { background-position: 0 0, 170px 170px; }
+}
+
+.album-card--highlight-proud {
+  border: 3px solid transparent;
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(var(--surface), var(--surface)),
+    repeating-linear-gradient(
+      135deg,
+      #FFFFFF   0px,  #FFFFFF  12px,
+      #F7A8B8  12px,  #F7A8B8  24px,
+      #55CDFC  24px,  #55CDFC  36px,
+      #C47A2B  36px,  #C47A2B  48px,
+      #E40303  48px,  #E40303  60px,
+      #FF8C00  60px,  #FF8C00  72px,
+      #FFED00  72px,  #FFED00  84px,
+      #008026  84px,  #008026  96px,
+      #004DFF  96px,  #004DFF 108px,
+      #750787 108px,  #750787 120px
+    );
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+  background-size: auto, 170px 170px;
+  box-shadow: inset 0 0 8px 1px rgba(85, 205, 252, 0.15);
+  animation: proud-barber 6s linear infinite;
+}
+
+/* .album-card:hover uses the `background` shorthand, resetting background-image,
+   -origin, -clip, and -size to their defaults. Redeclare all of them here. */
+.album-card--highlight-proud:hover {
+  background-color: var(--surface-hover);
+  background-image:
+    linear-gradient(var(--surface-hover), var(--surface-hover)),
+    repeating-linear-gradient(
+      135deg,
+      #FFFFFF   0px,  #FFFFFF  12px,
+      #F7A8B8  12px,  #F7A8B8  24px,
+      #55CDFC  24px,  #55CDFC  36px,
+      #C47A2B  36px,  #C47A2B  48px,
+      #E40303  48px,  #E40303  60px,
+      #FF8C00  60px,  #FF8C00  72px,
+      #FFED00  72px,  #FFED00  84px,
+      #008026  84px,  #008026  96px,
+      #004DFF  96px,  #004DFF 108px,
+      #750787 108px,  #750787 120px
+    );
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+  background-size: auto, 170px 170px;
+  animation-duration: 1.6s;
+}
+
 /* ── Reduced motion: static golden outline only (shiny) ────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -274,5 +345,10 @@
 
   .vaporwave-scanlines {
     display: none;
+  }
+
+  .album-card--highlight-proud {
+    animation: none;
+    /* static stripes — identity signal without motion */
   }
 }

@@ -121,6 +121,9 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
             <span className="pressed-glint-hover" aria-hidden="true" />
           </>
         )}
+        {isNew && highlightStyle === 'dogear' && (
+          <span className="dogear" aria-hidden="true" />
+        )}
       </div>
 
       {isNew &&

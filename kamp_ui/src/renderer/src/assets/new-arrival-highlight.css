@@ -382,6 +382,46 @@
   animation: pressed-glint-once 0.5s ease-in-out forwards;
 }
 
+/* ── dogear ─────────────────────────────────────────────────────────────── */
+
+/* Idle: corner slowly lifts and settles, like a Post-it about to fall off.
+   Frames 0–7%: brief snap-back overshoot at cycle restart (simulates mouse-leave
+   bounce when the idle animation resumes after hover ends). */
+@keyframes dogear-idle {
+  0%    { transform: scale(1) rotate(0deg); }
+  7%    { transform: scale(0.93) rotate(1deg); }
+  50%   { transform: scale(1.15) rotate(-3deg); }
+  100%  { transform: scale(1) rotate(0deg); }
+}
+
+/* Hover expand: peel-back suggestion */
+@keyframes dogear-hover-expand {
+  from { transform: scale(1) rotate(0deg); }
+  to   { transform: scaleX(1.6) scaleY(1.5); }
+}
+
+.dogear {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 22px 22px 0;
+  border-color: transparent var(--surface-hover) transparent transparent;
+  filter: drop-shadow(-2px 2px 3px rgba(0, 0, 0, 0.4));
+  transform-origin: top right;
+  pointer-events: none;
+  z-index: 2;
+  animation: dogear-idle 6s ease-in-out infinite;
+}
+
+/* On hover: expand with bouncy easing. When hover ends, idle animation restarts
+   from frame 0 (scale 0.93 overshoot) — the natural snap-back effect. */
+.album-card--highlight-dogear:hover .dogear {
+  animation: dogear-hover-expand 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
 /* ── Reduced motion: static golden outline only (shiny) ────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -426,5 +466,10 @@
   .pressed-glint,
   .pressed-glint-hover {
     display: none;
+  }
+
+  .dogear {
+    animation: none;
+    transform: scale(1) rotate(0deg);
   }
 }

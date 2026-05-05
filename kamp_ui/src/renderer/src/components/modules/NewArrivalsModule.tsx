@@ -74,13 +74,14 @@ export function NewArrivalsModule({ displayStyle }: ModuleProps): React.JSX.Elem
 
   useEffect(() => {
     void Promise.resolve(allAlbums).then((all) => {
+      const withDate = [...all]
+        .filter((a) => a.added_at !== null)
+        .sort((a, b) => (b.added_at ?? 0) - (a.added_at ?? 0))
       const cutoff = days > 0 ? Date.now() / 1000 - days * 86400 : null
-      setAlbums(
-        [...all]
-          .filter((a) => a.added_at !== null && (cutoff === null || a.added_at >= cutoff))
-          .sort((a, b) => (b.added_at ?? 0) - (a.added_at ?? 0))
-          .slice(0, count > 0 ? count : undefined)
-      )
+      const inWindow =
+        cutoff !== null ? withDate.filter((a) => (a.added_at ?? 0) >= cutoff) : withDate
+      // Fall back to most-recently-added if the date window returns nothing (e.g. older libraries)
+      setAlbums((inWindow.length > 0 ? inWindow : withDate).slice(0, count > 0 ? count : undefined))
     })
   }, [allAlbums, count, days])
 
@@ -95,11 +96,7 @@ export function NewArrivalsModule({ displayStyle }: ModuleProps): React.JSX.Elem
   }
 
   if (albums.length === 0) {
-    return (
-      <div className="module-empty">
-        {days > 0 ? `No albums added in the last ${days} days.` : 'No albums in your library.'}
-      </div>
-    )
+    return <div className="module-empty">No albums in your library.</div>
   }
 
   if (displayStyle === 'list') return <ListView albums={albums} />

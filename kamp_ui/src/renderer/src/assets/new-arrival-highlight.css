@@ -214,16 +214,16 @@
 }
 
 .album-card--highlight-vaporwave {
-  animation: vaporwave-halo 3.5s linear infinite;
+  animation: vaporwave-halo 6s linear infinite;
 }
 
 /* Intensify glow on hover */
 .album-card--highlight-vaporwave:hover {
-  animation: vaporwave-halo 3.5s linear infinite;
+  animation: vaporwave-halo 6s linear infinite;
   filter: brightness(1.08);
 }
 
-/* CRT scan-line overlay — screen blend makes lines visible on dark art */
+/* CRT scan-line overlay — alternating opaque/transparent rows, no blend mode needed */
 .vaporwave-scanlines {
   position: absolute;
   inset: 0;
@@ -231,13 +231,12 @@
   z-index: 1;
   background: repeating-linear-gradient(
     to bottom,
-    transparent 0px,
-    transparent 3px,
-    rgba(0, 0, 0, 0.12) 3px,
-    rgba(0, 0, 0, 0.12) 4px
+    rgba(0, 0, 0, 0.28) 0px,
+    rgba(0, 0, 0, 0.28) 1px,
+    transparent 1px,
+    transparent 3px
   );
-  mix-blend-mode: screen;
-  opacity: 0.6;
+  opacity: 1;
   transition: opacity 0.3s ease;
 }
 

@@ -245,6 +245,33 @@
   opacity: 0;
 }
 
+/* ── proud ──────────────────────────────────────────────────────────────── */
+
+/* Progress Pride flag: 10 stops, black omitted (dead frame against dark bg),
+   brown luminance-boosted from #784F17 → #C47A2B (original near-invisible as glow) */
+@keyframes proud-cycle {
+  0%   { box-shadow: 0 0 0 2px #FFFFFF, 0 0 10px 4px rgba(255, 255, 255, 0.5); }
+  10%  { box-shadow: 0 0 0 2px #F7A8B8, 0 0 10px 4px rgba(247, 168, 184, 0.5); }
+  20%  { box-shadow: 0 0 0 2px #55CDFC, 0 0 10px 4px rgba( 85, 205, 252, 0.5); }
+  30%  { box-shadow: 0 0 0 2px #C47A2B, 0 0 10px 4px rgba(196, 122,  43, 0.5); }
+  40%  { box-shadow: 0 0 0 2px #E40303, 0 0 10px 4px rgba(228,   3,   3, 0.5); }
+  50%  { box-shadow: 0 0 0 2px #FF8C00, 0 0 10px 4px rgba(255, 140,   0, 0.5); }
+  60%  { box-shadow: 0 0 0 2px #FFED00, 0 0 10px 4px rgba(255, 237,   0, 0.5); }
+  70%  { box-shadow: 0 0 0 2px #008026, 0 0 10px 4px rgba(  0, 128,  38, 0.5); }
+  80%  { box-shadow: 0 0 0 2px #004DFF, 0 0 10px 4px rgba(  0,  77, 255, 0.5); }
+  90%  { box-shadow: 0 0 0 2px #750787, 0 0 10px 4px rgba(117,   7, 135, 0.5); }
+  100% { box-shadow: 0 0 0 2px #FFFFFF, 0 0 10px 4px rgba(255, 255, 255, 0.5); }
+}
+
+.album-card--highlight-proud {
+  animation: proud-cycle 24s linear infinite;
+}
+
+/* Freeze on whatever color the user catches — the frozen color is the reward */
+.album-card--highlight-proud:hover {
+  animation-play-state: paused;
+}
+
 /* ── Reduced motion: static golden outline only (shiny) ────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -274,5 +301,10 @@
 
   .vaporwave-scanlines {
     display: none;
+  }
+
+  .album-card--highlight-proud {
+    animation: none;
+    box-shadow: 0 0 0 2px #750787, 0 0 10px 4px rgba(117, 7, 135, 0.5);
   }
 }

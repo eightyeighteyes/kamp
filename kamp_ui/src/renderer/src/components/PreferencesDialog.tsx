@@ -1154,9 +1154,7 @@ export function PreferencesDialog({
                             'shiny',
                             'newmoji',
                             'vaporwave',
-                            'proud-rainbow',
-                            'proud-trans',
-                            'proud-agender',
+                            'proud',
                             'boring'
                           ]}
                           initialValue={highlightStyle}

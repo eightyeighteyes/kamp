@@ -247,29 +247,70 @@
 
 /* ── proud ──────────────────────────────────────────────────────────────── */
 
-/* Progress Pride flag: 10 stops, black omitted (dead frame against dark bg),
-   brown luminance-boosted from #784F17 → #C47A2B (original near-invisible as glow) */
-@keyframes proud-cycle {
-  0%   { box-shadow: 0 0 0 2px #FFFFFF, 0 0 10px 4px rgba(255, 255, 255, 0.5); }
-  10%  { box-shadow: 0 0 0 2px #F7A8B8, 0 0 10px 4px rgba(247, 168, 184, 0.5); }
-  20%  { box-shadow: 0 0 0 2px #55CDFC, 0 0 10px 4px rgba( 85, 205, 252, 0.5); }
-  30%  { box-shadow: 0 0 0 2px #C47A2B, 0 0 10px 4px rgba(196, 122,  43, 0.5); }
-  40%  { box-shadow: 0 0 0 2px #E40303, 0 0 10px 4px rgba(228,   3,   3, 0.5); }
-  50%  { box-shadow: 0 0 0 2px #FF8C00, 0 0 10px 4px rgba(255, 140,   0, 0.5); }
-  60%  { box-shadow: 0 0 0 2px #FFED00, 0 0 10px 4px rgba(255, 237,   0, 0.5); }
-  70%  { box-shadow: 0 0 0 2px #008026, 0 0 10px 4px rgba(  0, 128,  38, 0.5); }
-  80%  { box-shadow: 0 0 0 2px #004DFF, 0 0 10px 4px rgba(  0,  77, 255, 0.5); }
-  90%  { box-shadow: 0 0 0 2px #750787, 0 0 10px 4px rgba(117,   7, 135, 0.5); }
-  100% { box-shadow: 0 0 0 2px #FFFFFF, 0 0 10px 4px rgba(255, 255, 255, 0.5); }
+/* Progress Pride flag barber pole: diagonal stripes scroll across the border.
+   Technique: dual background-image layers on the element itself.
+     Layer 1: linear-gradient(--surface) fills the padding box, masking the center.
+     Layer 2: repeating diagonal gradient fills the border box — visible only in
+              the 3px border zone. border-radius: 6px works correctly with this.
+   IMPORTANT: .album-card:hover sets `background` (shorthand), which resets
+   background-image to none. The hover rule below must redeclare the full
+   background-image to keep the stripes alive.
+   Brown luminance-boosted from #784F17 → #C47A2B (original near-invisible as glow).
+   Black omitted entirely — dead frame against dark surface. */
+
+@keyframes proud-barber {
+  from { background-position: 0 0, 0 0; }
+  to   { background-position: 0 0, 120px 120px; }
 }
 
 .album-card--highlight-proud {
-  animation: proud-cycle 24s linear infinite;
+  border: 3px solid transparent;
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(var(--surface), var(--surface)),
+    repeating-linear-gradient(
+      135deg,
+      #FFFFFF   0px,  #FFFFFF  12px,
+      #F7A8B8  12px,  #F7A8B8  24px,
+      #55CDFC  24px,  #55CDFC  36px,
+      #C47A2B  36px,  #C47A2B  48px,
+      #E40303  48px,  #E40303  60px,
+      #FF8C00  60px,  #FF8C00  72px,
+      #FFED00  72px,  #FFED00  84px,
+      #008026  84px,  #008026  96px,
+      #004DFF  96px,  #004DFF 108px,
+      #750787 108px,  #750787 120px
+    );
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+  background-size: auto, 120px 120px;
+  box-shadow: inset 0 0 8px 1px rgba(85, 205, 252, 0.15);
+  animation: proud-barber 3s linear infinite;
 }
 
-/* Freeze on whatever color the user catches — the frozen color is the reward */
+/* .album-card:hover uses the `background` shorthand, resetting background-image,
+   -origin, -clip, and -size to their defaults. Redeclare all of them here. */
 .album-card--highlight-proud:hover {
-  animation-play-state: paused;
+  background-color: var(--surface-hover);
+  background-image:
+    linear-gradient(var(--surface-hover), var(--surface-hover)),
+    repeating-linear-gradient(
+      135deg,
+      #FFFFFF   0px,  #FFFFFF  12px,
+      #F7A8B8  12px,  #F7A8B8  24px,
+      #55CDFC  24px,  #55CDFC  36px,
+      #C47A2B  36px,  #C47A2B  48px,
+      #E40303  48px,  #E40303  60px,
+      #FF8C00  60px,  #FF8C00  72px,
+      #FFED00  72px,  #FFED00  84px,
+      #008026  84px,  #008026  96px,
+      #004DFF  96px,  #004DFF 108px,
+      #750787 108px,  #750787 120px
+    );
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+  background-size: auto, 120px 120px;
+  animation-duration: 0.8s;
 }
 
 /* ── Reduced motion: static golden outline only (shiny) ────────────────── */
@@ -305,6 +346,6 @@
 
   .album-card--highlight-proud {
     animation: none;
-    box-shadow: 0 0 0 2px #750787, 0 0 10px 4px rgba(117, 7, 135, 0.5);
+    /* static stripes — identity signal without motion */
   }
 }

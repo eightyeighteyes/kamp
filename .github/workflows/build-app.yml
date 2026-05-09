@@ -461,14 +461,22 @@ jobs:
         run: pwsh scripts/fetch_node.ps1
 
       - name: Generate icon.ico from SVG
-        # ImageMagick on windows-latest does not ship a reliable SVG delegate.
-        # Use Inkscape (preinstalled on windows-latest) to render PNGs at
-        # standard Windows shell sizes, then merge them into a single
-        # multi-resolution .ico via ImageMagick (preinstalled).
+        # ImageMagick on windows-latest does not ship a reliable SVG delegate,
+        # and Inkscape is no longer guaranteed to be on the runner image.
+        # Use librsvg's rsvg-convert from MSYS2 (already on the box from the
+        # mpv build step's pacman; install explicitly here so this step is
+        # not coupled to a transitive dep) to render PNGs at standard Windows
+        # shell sizes, then merge them into a single multi-resolution .ico
+        # via ImageMagick (magick.exe is preinstalled on windows-latest).
         run: |
-          $inkscape = "C:\Program Files\Inkscape\bin\inkscape.exe"
-          if (-not (Test-Path $inkscape)) {
-            Write-Error "Inkscape not found at $inkscape -- windows-latest runner image changed?"
+          & C:\msys64\usr\bin\bash.exe -lc 'pacman -S --needed --noconfirm mingw-w64-x86_64-librsvg'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to install mingw-w64-x86_64-librsvg via pacman"
+            exit 1
+          }
+          $rsvg = "C:\msys64\mingw64\bin\rsvg-convert.exe"
+          if (-not (Test-Path $rsvg)) {
+            Write-Error "rsvg-convert not found at $rsvg after pacman install"
             exit 1
           }
           $svg = (Resolve-Path "kamp_ui/resources/icon_source.svg").Path
@@ -477,9 +485,9 @@ jobs:
           $sizes = 16, 32, 48, 64, 128, 256
           $pngs = foreach ($size in $sizes) {
             $out = Join-Path $env:TEMP "kamp-icon-$size.png"
-            & $inkscape --export-type=png --export-filename=$out -w $size -h $size $svg
+            & $rsvg -w $size -h $size $svg -o $out
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path $out)) {
-              Write-Error "Inkscape failed to render $size px PNG"
+              Write-Error "rsvg-convert failed to render $size px PNG"
               exit 1
             }
             $out

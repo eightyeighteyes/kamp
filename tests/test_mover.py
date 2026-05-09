@@ -72,8 +72,12 @@ class TestDestination:
         library = tmp_path / "library"
         result = _destination(mp3, library, TEMPLATE)
 
-        assert ":" not in str(result)
-        assert "?" not in str(result)
+        # Inspect only the path components rendered from tags — the absolute
+        # prefix on Windows includes the drive letter (e.g. "C:") which is not
+        # a sanitization target.
+        rendered = result.relative_to(library)
+        assert ":" not in str(rendered)
+        assert "?" not in str(rendered)
 
 
 class TestCleanup:

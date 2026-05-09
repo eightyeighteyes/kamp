@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -2083,6 +2084,11 @@ class TestSessionManagement:
         assert by_path["/music/tagged.mp3"] == 3333.0, "already-tagged mtime unchanged"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file-permission semantics (chmod / st_mode 0o600) do not "
+    "apply on Windows; see KAMP-281 for Windows ACL hardening follow-up",
+)
 class TestDatabaseFilePermissions:
     def test_new_database_created_with_owner_only_permissions(
         self, tmp_path: Path

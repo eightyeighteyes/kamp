@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -10,6 +11,14 @@ import pytest
 
 from kamp_daemon.config import Config
 from kamp_daemon.daemon_core import DaemonCore, _PID_PATH
+
+# SIGUSR1 / SIGUSR2 don't exist on Windows — the daemon's pause/resume signal
+# wiring is POSIX-only. Skip those tests on Windows; the SIGINT shutdown path
+# still runs cross-platform.
+_skip_on_windows_sigusr = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="SIGUSR1 / SIGUSR2 are POSIX-only signals",
+)
 
 
 @pytest.fixture
@@ -216,6 +225,7 @@ class TestSignalHandlers:
             sigint_handler(int(_signal.SIGINT), None)  # type: ignore[call-arg]
             mock_shutdown.assert_called_once()
 
+    @_skip_on_windows_sigusr
     def test_sigusr1_triggers_stop(self, core: DaemonCore) -> None:
         import signal as _signal
 
@@ -232,6 +242,7 @@ class TestSignalHandlers:
             handler(int(_signal.SIGUSR1), None)  # type: ignore[call-arg]
             mock_stop.assert_called_once()
 
+    @_skip_on_windows_sigusr
     def test_sigusr2_triggers_resume(self, core: DaemonCore) -> None:
         import signal as _signal
 

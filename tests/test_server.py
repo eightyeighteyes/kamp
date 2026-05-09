@@ -386,7 +386,11 @@ class TestMissingAlbumEndpoints:
             "/api/v1/tracks?album_artist=&album=&file_path=%2Fmusic%2F01.mp3"
         ).json()
         assert len(data) == 1
-        mock_index.get_track_by_path.assert_called_once_with(Path("/music/01.mp3"))
+        # Server resolves the path before lookup; on Windows that prepends the
+        # current drive letter, so assert against the same resolved form.
+        mock_index.get_track_by_path.assert_called_once_with(
+            Path("/music/01.mp3").resolve()
+        )
         mock_index.tracks_for_album.assert_not_called()
 
     def test_album_art_endpoint_uses_file_path_when_provided(
@@ -404,7 +408,9 @@ class TestMissingAlbumEndpoints:
                 "/api/v1/album-art?album_artist=&album=&file_path=%2Fmusic%2F01.mp3"
             )
         assert res.status_code == 200
-        mock_index.get_track_by_path.assert_called_once_with(Path("/music/01.mp3"))
+        mock_index.get_track_by_path.assert_called_once_with(
+            Path("/music/01.mp3").resolve()
+        )
         mock_index.tracks_for_album.assert_not_called()
 
 
@@ -1441,9 +1447,13 @@ class TestFavoriteEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        mock_index.set_favorite.assert_called_once_with(Path("/music/01.mp3"), True)
+        mock_index.set_favorite.assert_called_once_with(
+            Path("/music/01.mp3").resolve(), True
+        )
         # Queue must also be updated so the next player-state snapshot is correct.
-        mock_queue.update_favorite.assert_called_once_with(Path("/music/01.mp3"), True)
+        mock_queue.update_favorite.assert_called_once_with(
+            Path("/music/01.mp3").resolve(), True
+        )
 
     def test_set_favorite_returns_404_for_unknown_track(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

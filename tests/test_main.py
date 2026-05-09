@@ -2,10 +2,20 @@
 
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# Tests that exercise the launchd-specific service install/start/stop paths
+# call _launchd_domain(), which uses os.getuid() — POSIX-only. Mark them so
+# the suite stays green on Windows. The rest of the file (status checks,
+# log-suppression, binary resolution without launchd, etc.) runs cross-platform.
+_skip_on_windows_launchd = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="launchd command is macOS-specific (uses os.getuid via _launchd_domain)",
+)
 
 from kamp_daemon.__main__ import (
     _SERVICE_LABEL,
@@ -118,6 +128,7 @@ class TestCmdStop:
             _cmd_stop()
         assert "already stopped" in capsys.readouterr().out
 
+    @_skip_on_windows_launchd
     def test_stops_running_service(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
@@ -155,6 +166,7 @@ class TestCmdPlay:
             _cmd_play()
         assert "already running" in capsys.readouterr().out
 
+    @_skip_on_windows_launchd
     def test_starts_unregistered_service(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
@@ -172,6 +184,7 @@ class TestCmdPlay:
         )
         assert "started" in capsys.readouterr().out
 
+    @_skip_on_windows_launchd
     def test_kickstarts_registered_but_stopped_service(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
@@ -324,6 +337,7 @@ class TestResolveKampBinary:
         assert result == shim_path
         assert "pyenv shim" in capsys.readouterr().out
 
+    @_skip_on_windows_launchd
     def test_plist_uses_resolved_binary(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
         config_path.touch()
@@ -339,6 +353,7 @@ class TestResolveKampBinary:
 
 
 class TestCmdInstallService:
+    @_skip_on_windows_launchd
     def test_runs_first_run_setup_when_no_settings(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:

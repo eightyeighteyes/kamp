@@ -78,7 +78,9 @@ class TestLoad:
         db.set_setting("paths.watch_folder", "/my/staging")
         db.set_setting("artwork.min_dimension", "500")
         config = Config.load(db)
-        assert str(config.paths.watch_folder) == "/my/staging"
+        # Compare via Path so the test is platform-neutral — Windows will
+        # stringify with backslashes.
+        assert config.paths.watch_folder == Path("/my/staging")
         assert config.artwork.min_dimension == 500
 
     def test_load_backfills_new_keys(self, db: LibraryIndex) -> None:
@@ -216,8 +218,10 @@ class TestConfigShow:
 class TestConfigSet:
     def test_set_string_key(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
-        config_set(db, "paths.watch_folder", "/new/staging")
-        assert db.get_setting("paths.watch_folder") == "/new/staging"
+        # Use ~ so the path-validator accepts the value on Windows too —
+        # `/new/staging` lacks a drive letter and is not absolute on Windows.
+        config_set(db, "paths.watch_folder", "~/new/staging")
+        assert db.get_setting("paths.watch_folder") == "~/new/staging"
 
     def test_set_int_key(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
@@ -236,7 +240,8 @@ class TestConfigSet:
         Config.write_defaults(db)
         config_set(db, "paths.watch_folder", "~/round/trip")
         config = Config.load(db)
-        assert "round/trip" in str(config.paths.watch_folder)
+        # as_posix() always uses forward slashes — works on every platform.
+        assert "round/trip" in config.paths.watch_folder.as_posix()
 
     def test_unknown_key_raises_key_error(self, db: LibraryIndex) -> None:
         with pytest.raises(KeyError, match="Unknown config key"):

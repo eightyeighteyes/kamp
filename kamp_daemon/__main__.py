@@ -42,6 +42,17 @@ from .daemon_core import DaemonCore, _PID_PATH
 _HOMEBREW_KAMP_PATHS = ["/opt/homebrew/bin/kamp", "/usr/local/bin/kamp"]
 _HOMEBREW_MPV_PATHS = ["/opt/homebrew/bin/mpv", "/usr/local/bin/mpv"]
 
+# Common Windows mpv install locations. Checked in order when the daemon is
+# spawned by Electron with a stale PATH (PowerShell sessions don't refresh
+# PATH after a Scoop/Choco install in the same session, so PATH-based lookup
+# may miss mpv even though the user has it installed).
+_WIN_MPV_PATHS = [
+    str(Path.home() / "scoop" / "shims" / "mpv.exe"),
+    str(Path.home() / "scoop" / "apps" / "mpv" / "current" / "mpv.exe"),
+    r"C:\ProgramData\chocolatey\bin\mpv.exe",
+    r"C:\Program Files\mpv\mpv.exe",
+]
+
 _SERVICE_LABEL = "com.kamp"
 _PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{_SERVICE_LABEL}.plist"
 _LOG_PATH = _state_dir() / "daemon.log"
@@ -69,6 +80,16 @@ def _get_version() -> str:
 
 
 def main() -> None:
+    # Windows consoles default to a legacy code page (cp1252 on en-US) that
+    # rejects Unicode characters used in our startup banner ("→") and other
+    # log output. Reconfigure stdout/stderr to UTF-8 so prints never crash
+    # the daemon on a missing-glyph encode error. No-op on POSIX where the
+    # default is already UTF-8.
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+
     # Rename the process so `ps` output shows "kamp" instead of
     # "Python".  setproctitle updates argv[0] which is sufficient on Linux;
     # on macOS it also helps ps, but Activity Monitor reads the kernel-level
@@ -1164,13 +1185,15 @@ def _resolve_mpv_binary() -> str:
     """Return the absolute path to the mpv binary.
 
     The .app bundle sets KAMP_MPV_BIN to the bundled binary path; check that
-    first. For launchd (which runs with a minimal PATH that excludes Homebrew),
-    fall back to the stable Homebrew install locations, then PATH.
+    first. For launchd (macOS minimal PATH) or an Electron-spawned daemon on
+    Windows (stale parent-shell PATH), fall back to platform-typical install
+    locations before relying on PATH.
     """
     env_path = os.environ.get("KAMP_MPV_BIN")
     if env_path and Path(env_path).exists():
         return env_path
-    for path in _HOMEBREW_MPV_PATHS:
+    fallback_paths = _WIN_MPV_PATHS if sys.platform == "win32" else _HOMEBREW_MPV_PATHS
+    for path in fallback_paths:
         if Path(path).exists():
             return path
     return shutil.which("mpv") or "mpv"

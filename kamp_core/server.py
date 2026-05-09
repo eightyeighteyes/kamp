@@ -413,11 +413,16 @@ def create_app(
         # that as the opaque origin "null" in the Origin request header.
         "null",
     ]
-    if dev_mode:
-        _allowed_origins.append("http://localhost:5173")  # Vite dev server
+    # In dev mode, Vite picks the first free port from 5173 upward (5174, 5175,
+    # …) when an earlier dev session left a stale listener behind. Match any
+    # localhost port via regex so the renderer keeps working across restarts.
+    _allowed_origin_regex: str | None = (
+        r"^http://(localhost|127\.0\.0\.1):\d+$" if dev_mode else None
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_allowed_origins,
+        allow_origin_regex=_allowed_origin_regex,
         allow_methods=["GET", "POST", "DELETE", "PATCH"],
         # X-Kamp-Token must be listed so CORS preflight allows it.
         allow_headers=["Content-Type", "X-Kamp-Token"],
@@ -615,7 +620,10 @@ def create_app(
     @app.post("/api/v1/config/library-path")
     def set_library_path(req: LibraryPathRequest) -> dict[str, Any]:
         raw = req.path
-        if not raw.startswith("/") and not raw.startswith("~"):
+        # Path.is_absolute is platform-aware: matches "/..." on POSIX and
+        # "C:\\..." on Windows. Allow a leading ~ as a special case since it
+        # becomes absolute only after expanduser() below.
+        if not raw.startswith("~") and not Path(raw).is_absolute():
             raise HTTPException(status_code=422, detail="Path must be absolute")
         # nosec: py/path-injection — absolute-path requirement above rejects traversal;
         # deny-list below blocks system roots and their subtrees. Restricting to Path.home()

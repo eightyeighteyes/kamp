@@ -1,5 +1,6 @@
 """Tests for kamp_daemon.config (DB-backed configuration)."""
 
+import sys
 from pathlib import Path
 
 import keyring.errors
@@ -304,6 +305,11 @@ class TestConfigSet:
         with pytest.raises(ValueError, match="requires an absolute path"):
             config_set(db, "paths.watch_folder", "../escape")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="forbidden roots list is POSIX-specific; Windows hardening "
+        "(C:\\Windows, etc.) is tracked as a follow-up",
+    )
     @pytest.mark.parametrize(
         "forbidden",
         [

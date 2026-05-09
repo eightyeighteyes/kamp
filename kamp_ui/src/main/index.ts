@@ -95,6 +95,10 @@ function postToPlayer(path: string): void {
 }
 
 function startNowPlayingHelper(): void {
+  // The helper wraps MPRemoteCommandCenter / MPNowPlayingInfoCenter, both
+  // macOS-only frameworks. Skip on every other platform — Windows SMTC and
+  // Linux MPRIS integration are tracked as separate work.
+  if (process.platform !== 'darwin') return
   const binary = findNowPlayingBinary()
   if (!binary) {
     console.warn('[kamp] now-playing-helper binary not found — media keys disabled')
@@ -146,18 +150,34 @@ function stopNowPlayingHelper(): void {
 
 let serverProcess: ChildProcess | null = null
 
-function findKampBinary(): string | null {
+type KampInvocation = { command: string; args: string[] }
+
+function findKampInvocation(): KampInvocation | null {
+  const isWindows = process.platform === 'win32'
   if (app.isPackaged) {
-    // Inside Kamp.app, electron-builder places extraResources directly under
-    // Contents/Resources/. The PyInstaller onedir bundle's executable is at
-    // Resources/kamp/kamp.
-    const bundled = join(process.resourcesPath, 'kamp', 'kamp')
-    if (existsSync(bundled)) return bundled
+    // Inside the .app/installer, electron-builder places extraResources
+    // directly under Contents/Resources/. The PyInstaller onedir bundle's
+    // executable is named "kamp" on POSIX and "kamp.exe" on Windows; both
+    // are direct binaries so the invocation has no extra args.
+    const bundled = join(process.resourcesPath, 'kamp', isWindows ? 'kamp.exe' : 'kamp')
+    if (existsSync(bundled)) return { command: bundled, args: [] }
   }
-  // Dev fallback: app.getAppPath() returns the kamp_ui directory;
-  // .venv lives one level up (repo root).
-  const venvBin = resolve(app.getAppPath(), '../.venv/bin/kamp')
-  if (existsSync(venvBin)) return venvBin
+  // Dev fallback: app.getAppPath() returns the kamp_ui directory; the Poetry
+  // venv lives one level up (repo root). On POSIX Poetry produces a single
+  // .venv/bin/kamp script with a shebang. On Windows Poetry produces a pair
+  // — .venv\Scripts\kamp (Python script) and .venv\Scripts\kamp.cmd (batch
+  // wrapper). Spawning the .cmd from Node needs `shell: true`, which opens
+  // argument-quoting hazards. Invoke python.exe directly against the script
+  // file instead.
+  const venvRoot = resolve(app.getAppPath(), '../.venv')
+  if (isWindows) {
+    const py = join(venvRoot, 'Scripts', 'python.exe')
+    const script = join(venvRoot, 'Scripts', 'kamp')
+    if (existsSync(py) && existsSync(script)) return { command: py, args: [script] }
+  } else {
+    const bin = join(venvRoot, 'bin', 'kamp')
+    if (existsSync(bin)) return { command: bin, args: [] }
+  }
   return null
 }
 
@@ -178,8 +198,8 @@ function isServerRunning(): Promise<boolean> {
 async function startServer(): Promise<void> {
   if (await isServerRunning()) return
 
-  const binary = findKampBinary()
-  if (!binary) {
+  const invocation = findKampInvocation()
+  if (!invocation) {
     console.error('[kamp] kamp binary not found — start the server manually')
     return
   }
@@ -195,7 +215,7 @@ async function startServer(): Promise<void> {
   // Tell the daemon it's running in dev mode so it allows the Vite dev server
   // origin (http://localhost:5173) in CORS — the renderer loads from there.
   if (is.dev) spawnEnv['KAMP_DEV'] = '1'
-  serverProcess = spawn(binary, ['daemon'], {
+  serverProcess = spawn(invocation.command, [...invocation.args, 'daemon'], {
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: spawnEnv

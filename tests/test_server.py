@@ -2492,3 +2492,24 @@ class TestCORSMiddleware:
         assert (
             resp.headers.get("access-control-allow-origin") == "http://localhost:5173"
         )
+
+    def test_vite_alternate_port_allowed_in_dev_mode(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Vite rolls forward to 5174/5175/... when 5173 is occupied (e.g. a
+        stale dev session). dev_mode CORS must accept any localhost port so
+        the renderer keeps working across restarts."""
+        client = self._make_client(mock_index, mock_engine, mock_queue, dev_mode=True)
+        resp = self._preflight(client, "http://localhost:5174")
+        assert (
+            resp.headers.get("access-control-allow-origin") == "http://localhost:5174"
+        )
+
+    def test_non_localhost_origin_rejected_even_in_dev_mode(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """The dev regex must only match localhost/127.0.0.1, not arbitrary
+        origins. Otherwise an attacker on the LAN could hit the dev daemon."""
+        client = self._make_client(mock_index, mock_engine, mock_queue, dev_mode=True)
+        resp = self._preflight(client, "http://192.168.1.10:5173")
+        assert "access-control-allow-origin" not in resp.headers

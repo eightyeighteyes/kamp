@@ -370,7 +370,10 @@ def config_set(db: "LibraryIndex", key: str, value: str) -> None:
     else:
         normalized_value = value
         if key in _PATH_CONFIG_KEYS:
-            if not value.startswith("/") and not value.startswith("~"):
+            # Path.is_absolute is platform-aware: matches "/..." on POSIX and
+            # "C:\\..." on Windows. Allow a leading ~ as a special case since
+            # it becomes absolute only after expanduser() below.
+            if not value.startswith("~") and not Path(value).is_absolute():
                 raise ValueError(
                     f"Key {key!r} requires an absolute path, got {value!r}"
                 )

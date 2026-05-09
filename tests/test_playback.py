@@ -619,6 +619,99 @@ class TestPlaybackQueue:
 
 
 # ---------------------------------------------------------------------------
+# IPC transport (Unix socket / Windows named pipe)
+# ---------------------------------------------------------------------------
+
+
+class TestIPCTransport:
+    """Cross-platform constructor + server-arg generation.
+
+    The actual open/recv/send paths are real I/O against mpv and are exercised
+    by the integration test that boots the daemon; here we only verify the
+    factory selects the right class and that each transport produces a
+    server_arg in the shape mpv expects on its platform.
+    """
+
+    def test_factory_returns_unix_socket_when_platform_is_posix(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("kamp_core.playback.sys.platform", "darwin")
+        from kamp_core.playback import _make_ipc_transport, _UnixSocketTransport
+
+        transport = _make_ipc_transport()
+        try:
+            assert isinstance(transport, _UnixSocketTransport)
+        finally:
+            transport.close()
+
+    def test_factory_returns_named_pipe_when_platform_is_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("kamp_core.playback.sys.platform", "win32")
+        from kamp_core.playback import (
+            _make_ipc_transport,
+            _WindowsNamedPipeTransport,
+        )
+
+        transport = _make_ipc_transport()
+        try:
+            assert isinstance(transport, _WindowsNamedPipeTransport)
+        finally:
+            transport.close()
+
+    def test_unix_socket_server_arg_is_filesystem_path(self) -> None:
+        from kamp_core.playback import _UnixSocketTransport
+
+        transport = _UnixSocketTransport()
+        try:
+            arg = transport.server_arg
+            assert arg.endswith("mpv.sock")
+            assert "kamp-mpv-" in arg
+            # Filesystem path: parent dir must already exist (tempfile.mkdtemp).
+            assert Path(arg).parent.is_dir()
+        finally:
+            transport.close()
+
+    def test_windows_named_pipe_server_arg_uses_pipe_namespace(self) -> None:
+        from kamp_core.playback import _WindowsNamedPipeTransport
+
+        transport = _WindowsNamedPipeTransport()
+        try:
+            arg = transport.server_arg
+            # mpv on Windows binds --input-ipc-server=NAME to a Win32 named
+            # pipe; using the fully-qualified \\.\pipe\NAME path keeps client
+            # and server unambiguously aligned.
+            assert arg.startswith(r"\\.\pipe\kamp-mpv-")
+        finally:
+            transport.close()
+
+    def test_two_transports_use_distinct_server_args(self) -> None:
+        """Each engine instance must get its own IPC endpoint so multiple
+        daemons (e.g. dev + tests) can run side-by-side without fighting over
+        a single socket/pipe name."""
+        from kamp_core.playback import (
+            _UnixSocketTransport,
+            _WindowsNamedPipeTransport,
+        )
+
+        a = _UnixSocketTransport()
+        b = _UnixSocketTransport()
+        try:
+            assert a.server_arg != b.server_arg
+        finally:
+            a.close()
+            b.close()
+
+        c = _WindowsNamedPipeTransport()
+        d = _WindowsNamedPipeTransport()
+        try:
+            assert c.server_arg != d.server_arg
+        finally:
+            c.close()
+            d.close()
+
+
+# ---------------------------------------------------------------------------
 # MpvPlaybackEngine
 # ---------------------------------------------------------------------------
 
@@ -636,7 +729,9 @@ class TestMpvPlaybackEngine:
     def test_play_sends_loadfile_command(self) -> None:
         engine, send = _make_engine()
         engine.play(Path("/music/01.mp3"))
-        send.assert_any_call("loadfile", "/music/01.mp3", "replace")
+        # str(Path) yields OS-native separators — assert in that form so the
+        # test is platform-neutral (Windows uses backslashes).
+        send.assert_any_call("loadfile", str(Path("/music/01.mp3")), "replace")
 
     def test_play_always_unpauses(self) -> None:
         """play() must unpause mpv so a paused engine resumes on the new track."""
@@ -739,7 +834,7 @@ class TestMpvPlaybackEngine:
     def test_load_paused_loads_and_pauses(self) -> None:
         engine, send = _make_engine()
         engine.load_paused(Path("/music/track.mp3"))
-        send.assert_any_call("loadfile", "/music/track.mp3", "replace")
+        send.assert_any_call("loadfile", str(Path("/music/track.mp3")), "replace")
         send.assert_any_call("set_property", "pause", True)
 
     def test_load_paused_sets_pending_seek_when_position_nonzero(self) -> None:
@@ -878,20 +973,20 @@ class TestMpvPlaybackEngine:
 
         mock_proc.terminate.assert_called_once()
 
-    def test_shutdown_closes_socket(self) -> None:
+    def test_shutdown_closes_ipc_transport(self) -> None:
         with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
             engine = MpvPlaybackEngine()
-        mock_sock = MagicMock()
-        engine._sock = mock_sock
+        mock_ipc = MagicMock()
+        engine._ipc = mock_ipc
         engine.shutdown()
-        mock_sock.close.assert_called_once()
+        mock_ipc.close.assert_called_once()
 
-    def test_shutdown_ignores_socket_close_error(self) -> None:
+    def test_shutdown_ignores_ipc_close_error(self) -> None:
         with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
             engine = MpvPlaybackEngine()
-        mock_sock = MagicMock()
-        mock_sock.close.side_effect = OSError("already closed")
-        engine._sock = mock_sock
+        mock_ipc = MagicMock()
+        mock_ipc.close.side_effect = OSError("already closed")
+        engine._ipc = mock_ipc
         engine.shutdown()  # should not raise
 
     def test_shutdown_handles_none_proc(self) -> None:
@@ -900,47 +995,27 @@ class TestMpvPlaybackEngine:
         engine._proc = None
         engine.shutdown()  # should not raise
 
-    def test_shutdown_removes_sock_tmpdir(self) -> None:
-        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
-            engine = MpvPlaybackEngine()
-        with patch("kamp_core.playback.shutil.rmtree") as mock_rmtree:
-            engine._sock_tmpdir = "/tmp/kamp-mpv-abc123"
-            engine.shutdown()
-        mock_rmtree.assert_called_once_with("/tmp/kamp-mpv-abc123", ignore_errors=True)
-
-    def test_shutdown_skips_rmtree_when_no_tmpdir(self) -> None:
-        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
-            engine = MpvPlaybackEngine()
-        with patch("kamp_core.playback.shutil.rmtree") as mock_rmtree:
-            engine.shutdown()
-        mock_rmtree.assert_not_called()
-
-    def test_send_command_is_noop_when_no_socket(self) -> None:
-        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
-            engine = MpvPlaybackEngine()
-        engine._send_command("stop")  # _sock is None — should not raise
-
     def test_volume_getter_returns_state_volume(self) -> None:
         engine, _ = _make_engine()
         assert engine.volume == 100
 
-    def test_send_command_sends_json_over_socket(self) -> None:
+    def test_send_command_sends_json_over_ipc(self) -> None:
         with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
             engine = MpvPlaybackEngine()
-        mock_sock = MagicMock()
-        engine._sock = mock_sock
+        mock_ipc = MagicMock()
+        engine._ipc = mock_ipc
         engine._send_command("loadfile", "/music/01.mp3", "replace")
         expected = (
             json.dumps({"command": ["loadfile", "/music/01.mp3", "replace"]}) + "\n"
         )
-        mock_sock.sendall.assert_called_once_with(expected.encode())
+        mock_ipc.sendall.assert_called_once_with(expected.encode())
 
     def test_send_command_logs_warning_on_oserror(self) -> None:
         with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
             engine = MpvPlaybackEngine()
-        mock_sock = MagicMock()
-        mock_sock.sendall.side_effect = OSError("broken pipe")
-        engine._sock = mock_sock
+        mock_ipc = MagicMock()
+        mock_ipc.sendall.side_effect = OSError("broken pipe")
+        engine._ipc = mock_ipc
         engine._send_command("stop")  # should not raise
 
     def test_handle_event_unknown_event_is_ignored(self) -> None:
@@ -970,7 +1045,7 @@ class TestMpvPlaybackEngine:
     def test_preload_next_sends_loadfile_append(self) -> None:
         engine, send = _make_engine()
         engine.preload_next(_track(2))
-        send.assert_called_once_with("loadfile", "/music/02.mp3", "append")
+        send.assert_called_once_with("loadfile", str(_track(2).file_path), "append")
 
     def test_preload_next_is_noop_for_same_path(self) -> None:
         engine, send = _make_engine()
@@ -986,7 +1061,7 @@ class TestMpvPlaybackEngine:
         engine.preload_next(_track(3))
         assert send.call_args_list == [
             call("playlist-remove", 1),
-            call("loadfile", "/music/03.mp3", "append"),
+            call("loadfile", str(_track(3).file_path), "append"),
         ]
 
     def test_preload_next_with_none_removes_stale_lookahead(self) -> None:
@@ -1050,7 +1125,7 @@ class TestMpvPlaybackEngine:
         engine.state.duration = 180.0
         engine.state.position = 60.0  # 2 minutes from end
         engine.preload_next(_track(2))
-        send.assert_called_once_with("loadfile", "/music/02.mp3", "append")
+        send.assert_called_once_with("loadfile", str(_track(2).file_path), "append")
         assert engine.has_lookahead is True
 
     def test_preload_next_removes_stale_lookahead_even_within_guard_window(
@@ -1074,7 +1149,7 @@ class TestMpvPlaybackEngine:
         engine.state.duration = 0.0
         engine.state.position = 0.0
         engine.preload_next(_track(2))
-        send.assert_called_once_with("loadfile", "/music/02.mp3", "append")
+        send.assert_called_once_with("loadfile", str(_track(2).file_path), "append")
 
     def test_file_loaded_resets_state_so_lookahead_re_arms_after_gapless(
         self,

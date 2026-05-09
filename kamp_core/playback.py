@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import secrets
 import shutil
@@ -427,9 +428,17 @@ class _WindowsNamedPipeTransport(_IPCTransport):
 
     We pass a fully-qualified \\\\.\\pipe\\NAME path so mpv and the connecting
     client agree on the same endpoint regardless of how mpv normalizes the
-    argument internally. The connection is a duplex file handle obtained by
-    open(path, "r+b", buffering=0); read/write map to ReadFile/WriteFile on
-    the underlying handle.
+    argument internally.
+
+    The pipe is opened with TWO separate file handles — one read-only, one
+    write-only — opened sequentially. Win32 named pipe servers (mpv) treat
+    each CreateFile from a client as a new pipe instance, so the read and
+    write handles correspond to distinct instances even though they refer
+    to the same NAME. Using a single duplex handle (r+b) on Windows leads
+    to a deadlock pattern in practice: a long blocking ReadFile in one
+    thread serializes against a blocking WriteFile in another at the stdio
+    layer, even though the kernel-level operations target independent
+    inbound/outbound buffers. Two handles avoid this entirely.
     """
 
     # ERROR_PIPE_BUSY: all instances of the named pipe are saturated; retry.
@@ -439,7 +448,8 @@ class _WindowsNamedPipeTransport(_IPCTransport):
         # 16 hex chars = 64 bits of entropy — collision-free across concurrent
         # daemons on the same machine.
         self._pipe_name = rf"\\.\pipe\kamp-mpv-{secrets.token_hex(8)}"
-        self._file: BinaryIO | None = None
+        self._read_file: BinaryIO | None = None
+        self._write_file: BinaryIO | None = None
 
     @property
     def server_arg(self) -> str:
@@ -450,10 +460,16 @@ class _WindowsNamedPipeTransport(_IPCTransport):
     ) -> None:  # pragma: no cover
         deadline = time.monotonic() + timeout
         last_err: OSError | None = None
+        # Open the read handle first; mpv must be listening before either
+        # CreateFile call succeeds. Use os.open (not the "rb" / "wb" modes of
+        # builtins.open) because Python's stdio mode strings imply O_TRUNC
+        # for write modes, which named pipes reject with EINVAL. os.open
+        # with bare O_RDONLY / O_WRONLY avoids that.
         while time.monotonic() < deadline:
             try:
-                self._file = open(self._pipe_name, "r+b", buffering=0)
-                return
+                fd = os.open(self._pipe_name, os.O_RDONLY | os.O_BINARY)
+                self._read_file = os.fdopen(fd, "rb", buffering=0)
+                break
             except FileNotFoundError as exc:
                 # mpv has not called CreateNamedPipe yet — retry.
                 last_err = exc
@@ -463,6 +479,32 @@ class _WindowsNamedPipeTransport(_IPCTransport):
                 else:
                     raise
             time.sleep(0.05)
+        if self._read_file is None:
+            self._raise_open_timeout(proc, timeout, last_err)
+        # Now open a separate write handle. mpv accepts a second client
+        # connection on the same pipe name; reads and writes go through
+        # independent kernel buffers.
+        while time.monotonic() < deadline:
+            try:
+                fd = os.open(self._pipe_name, os.O_WRONLY | os.O_BINARY)
+                self._write_file = os.fdopen(fd, "wb", buffering=0)
+                return
+            except FileNotFoundError as exc:
+                last_err = exc
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == self._ERROR_PIPE_BUSY:
+                    last_err = exc
+                else:
+                    raise
+            time.sleep(0.05)
+        self._raise_open_timeout(proc, timeout, last_err)
+
+    def _raise_open_timeout(
+        self,
+        proc: subprocess.Popen[bytes],
+        timeout: float,
+        last_err: OSError | None,
+    ) -> None:  # pragma: no cover
         detail = ""
         if proc.poll() is not None and proc.stderr is not None:
             stderr_bytes = proc.stderr.read()
@@ -474,33 +516,35 @@ class _WindowsNamedPipeTransport(_IPCTransport):
         )
 
     def sendall(self, data: bytes) -> None:  # pragma: no cover
-        if self._file is None:
+        if self._write_file is None:
             raise OSError("transport closed")
-        # Buffered=0 FileIO writes the buffer in one ReadFile/WriteFile call,
-        # but Win32 pipes can do partial writes under load — loop to drain.
+        # Buffered=0 FileIO writes the buffer in one WriteFile call, but Win32
+        # pipes can do partial writes under load — loop to drain.
         view = memoryview(data)
         while view:
-            written = self._file.write(view)
+            written = self._write_file.write(view)
             if not written:
                 raise OSError("named pipe closed during write")
             view = view[written:]
 
     def recv(self, n: int) -> bytes:  # pragma: no cover
-        if self._file is None:
+        if self._read_file is None:
             return b""
         try:
-            chunk = self._file.read(n)
+            chunk = self._read_file.read(n)
         except OSError:
             return b""
         return chunk or b""
 
     def close(self) -> None:
-        if self._file is not None:
-            try:
-                self._file.close()
-            except OSError:
-                pass
-            self._file = None
+        for attr in ("_read_file", "_write_file"):
+            f = getattr(self, attr, None)
+            if f is not None:
+                try:
+                    f.close()
+                except OSError:
+                    pass
+                setattr(self, attr, None)
 
 
 def _make_ipc_transport() -> _IPCTransport:

@@ -2,14 +2,17 @@
 # PyInstaller spec for the kamp server bundle.
 #
 # Bundles kamp_core + kamp_daemon (minus Bandcamp/Playwright) into a onedir
-# executable placed at kamp_ui/resources/kamp/kamp. electron-builder then
-# copies that directory into Kamp.app/Contents/Resources/kamp/ via extraResources.
+# executable placed at kamp_ui/resources/kamp/kamp (or kamp.exe on Windows).
+# electron-builder then copies that directory into Contents/Resources/kamp/
+# (mac) or resources/kamp/ (win) via extraResources.
 #
 # Build:
 #   poetry run pyinstaller \
 #     --distpath kamp_ui/resources \
 #     --workpath /tmp/pyinstaller-work \
 #     --clean -y kamp.spec
+
+import sys
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
@@ -40,14 +43,23 @@ hidden_imports = [
     "starlette.responses",
     "anyio",
     "anyio._backends._asyncio",
-    # watchdog macOS FSEvents backend
-    "watchdog.observers.fsevents",
-    # macOS tray (rumps) — included for menu-bar mode parity
-    "rumps",
     # explicit submodule collection for kamp packages
     *collect_submodules("kamp_core"),
     *collect_submodules("kamp_daemon"),
 ]
+
+# Platform-specific watchdog backend + macOS tray (rumps).
+# rumps is darwin-gated in pyproject.toml, so it isn't installed on Windows;
+# listing it unconditionally would emit a noisy PyInstaller warning there.
+if sys.platform == "darwin":
+    hidden_imports += [
+        "watchdog.observers.fsevents",
+        "rumps",
+    ]
+elif sys.platform == "win32":
+    hidden_imports += [
+        "watchdog.observers.read_directory_changes",
+    ]
 
 # ---------------------------------------------------------------------------
 # Excludes — dev/test tooling and unused GUI toolkits only.
@@ -73,7 +85,7 @@ datas = [
     *collect_data_files("uvicorn"),
     *collect_data_files("fastapi"),
     *collect_data_files("starlette"),
-    *collect_data_files("certifi"),   # TLS certs for requests / MusicBrainz
+    *collect_data_files("certifi"),  # TLS certs for requests / MusicBrainz
     # pyproject.toml is used by _get_version() as the canonical version source;
     # include it so the frozen app reports the correct version string.
     ("pyproject.toml", "."),

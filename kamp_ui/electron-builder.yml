@@ -13,8 +13,10 @@ files:
   # to Contents/Resources/ outside the ASAR, no double-packing).
   - '!resources/kamp/**'
   - '!resources/mpv'
+  - '!resources/mpv/**'
   - '!resources/mpv-libs/**'
   - '!resources/node'
+  - '!resources/node.exe'
   - '!resources/npm/**'
   - '!resources/icon_1024.png'
   - '!resources/now-playing-helper'
@@ -32,44 +34,40 @@ files:
   - '!extensions/kamp-groover/**'
 asarUnpack:
   - resources/**
-extraResources:
-  # PyInstaller onedir bundle → Contents/Resources/kamp/
-  - from: resources/kamp
-    to: kamp
-    filter:
-      - '**/*'
-  # Standalone mpv binary → Contents/Resources/mpv
-  - from: resources/mpv
-    to: mpv
-  # Bundled mpv dylibs → Contents/Resources/mpv-libs/
-  # dylibbundler rewrites mpv's load commands to @executable_path/mpv-libs/<lib>
-  # so this directory must be a sibling of the mpv binary in Contents/Resources/.
-  - from: resources/mpv-libs
-    to: mpv-libs
-    filter:
-      - '**/*'
-  # Swift Now Playing helper → Contents/Resources/now-playing-helper
-  - from: resources/now-playing-helper
-    to: now-playing-helper
-  # Swift Keychain helper → Contents/Resources/kamp-keychain-helper
-  - from: resources/kamp-keychain-helper
-    to: kamp-keychain-helper
-  # Node.js binary + npm CLI — required for extension install/uninstall in the
-  # packaged app where the user may not have Node.js on their machine.
-  - from: resources/node
-    to: node
-  - from: resources/npm
-    to: npm
-    filter:
-      - '**/*'
-  # npm's own bundled node_modules — copied as a separate entry so app-builder
-  # does not strip it (app-builder excludes node_modules from **/* by default).
-  - from: resources/npm/node_modules
-    to: npm/node_modules
-    filter:
-      - '**/*'
+# extraResources is declared per-platform below. electron-builder treats a
+# top-level extraResources entry as a fallback that is fully replaced by any
+# platform-specific block, so the mac and win lists are kept symmetric to
+# avoid surprises when adding new platforms.
 win:
   executableName: kamp
+  icon: build/icon.ico
+  extraResources:
+    # PyInstaller onedir bundle → resources\kamp\
+    - from: resources/kamp
+      to: kamp
+      filter:
+        - '**/*'
+    # mpv directory contains mpv.exe + sibling mingw runtime DLLs. Windows
+    # resolves DLLs from the executable's directory, so the whole folder
+    # ships intact (no rewriting needed, unlike macOS @executable_path).
+    - from: resources/mpv
+      to: mpv
+      filter:
+        - '**/*'
+    # Bundled Node + npm — required for community-extension install where
+    # the user may have no Node.js on their machine.
+    - from: resources/node.exe
+      to: node.exe
+    - from: resources/npm
+      to: npm
+      filter:
+        - '**/*'
+    # npm's own bundled node_modules — copied separately because app-builder
+    # excludes node_modules from **/* by default.
+    - from: resources/npm/node_modules
+      to: npm/node_modules
+      filter:
+        - '**/*'
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -97,6 +95,42 @@ mac:
     - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
     - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  extraResources:
+    # PyInstaller onedir bundle → Contents/Resources/kamp/
+    - from: resources/kamp
+      to: kamp
+      filter:
+        - '**/*'
+    # Standalone mpv binary → Contents/Resources/mpv
+    - from: resources/mpv
+      to: mpv
+    # Bundled mpv dylibs → Contents/Resources/mpv-libs/
+    # dylibbundler rewrites mpv's load commands to @executable_path/mpv-libs/<lib>
+    # so this directory must be a sibling of the mpv binary in Contents/Resources/.
+    - from: resources/mpv-libs
+      to: mpv-libs
+      filter:
+        - '**/*'
+    # Swift Now Playing helper → Contents/Resources/now-playing-helper
+    - from: resources/now-playing-helper
+      to: now-playing-helper
+    # Swift Keychain helper → Contents/Resources/kamp-keychain-helper
+    - from: resources/kamp-keychain-helper
+      to: kamp-keychain-helper
+    # Node.js binary + npm CLI — required for extension install/uninstall in the
+    # packaged app where the user may not have Node.js on their machine.
+    - from: resources/node
+      to: node
+    - from: resources/npm
+      to: npm
+      filter:
+        - '**/*'
+    # npm's own bundled node_modules — copied as a separate entry so app-builder
+    # does not strip it (app-builder excludes node_modules from **/* by default).
+    - from: resources/npm/node_modules
+      to: npm/node_modules
+      filter:
+        - '**/*'
 dmg:
   artifactName: ${name}-${version}-${arch}.${ext}
 linux:

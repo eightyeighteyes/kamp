@@ -204,9 +204,18 @@ async function startServer(): Promise<void> {
     return
   }
 
-  // When running from the .app bundle, point the server at the bundled mpv
-  // binary so it works on machines without Homebrew or mpv in PATH.
-  const mpvBin = app.isPackaged ? join(process.resourcesPath, 'mpv') : undefined
+  // When running from the packaged app, point the server at the bundled mpv
+  // binary so it works on machines without Homebrew or mpv in PATH. The
+  // macOS bundle ships a single Mach-O at Contents/Resources/mpv (deps live
+  // in the sibling mpv-libs/ folder, resolved via @executable_path). The
+  // Windows bundle ships mpv.exe alongside its mingw runtime DLLs in a
+  // resources\mpv\ subdirectory (Windows resolves DLLs from the executable's
+  // directory), so the env var must point at the .exe rather than the dir.
+  const mpvBin = app.isPackaged
+    ? process.platform === 'win32'
+      ? join(process.resourcesPath, 'mpv', 'mpv.exe')
+      : join(process.resourcesPath, 'mpv')
+    : undefined
 
   // detached: true puts the daemon in its own process group so that
   // stopServer() can kill the group (daemon + mpv) all at once.

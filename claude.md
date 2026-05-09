@@ -108,6 +108,30 @@ When building mpv from source, use the latest release tag (v0.41.0 as of 2026-04
 - **Iterate meson flag errors locally**, not in CI: clone mpv, run `meson setup`, check `meson.options` for valid option names, build with ninja, then run dylibbundler to verify final dylib count before pushing.
 - With the minimal flag set (audio-only), expect ~32 bundled dylibs (down from ~47 with Homebrew mpv). The video encoder libs (x264/x265/SVT-AV1/vmaf) come from Homebrew FFmpeg's transitive deps and cannot be avoided without building FFmpeg from source.
 
+### Windows (MSYS2 + mingw-w64) extras
+The macOS audio-only meson flag set is necessary but not sufficient on Windows. The Windows-specific video pipeline (Direct3D 9, D3D11, OpenGL, VAAPI, Caca, EGL/ANGLE) is auto-enabled by default and `video/vaapi.c` indirectly includes `video/out/gpu/d3d11_helpers.h`, which redefines `DXGI_DEBUG_D3D11` against newer mingw-w64 (`d3d11sdklayers.h`) — clean compile failure even though we don't want any video output. Add **all of these** to the Windows meson invocation: `-Dgl=disabled -Dgl-win32=disabled -Dgl-dxinterop=disabled -Dd3d11=disabled -Ddirect3d=disabled -Dd3d-hwaccel=disabled -Dd3d9-hwaccel=disabled -Dvaapi=disabled -Dvaapi-win32=disabled -Dvdpau=disabled -Degl-angle=disabled -Degl-angle-lib=disabled -Degl-angle-win32=disabled -Dcaca=disabled`. `dxva2` is **not** a valid option (do not add); `gl-dxinterop-d3d9` and `zimg-st428` are sub-features that cascade. After the build, the Windows analog of `otool -L` is MSYS2's `ldd` — copy every transitive `/mingw64/bin/*.dll` into the same directory as `mpv.exe` (Windows resolves DLLs from the executable's directory, no `@executable_path` rewriting needed).
+
+## GitHub Actions: upload-artifact LCA stripping
+
+`actions/upload-artifact@v4+` (v7 same generation) strips the **least common ancestor** of all `path:` entries from archive paths. A single-path upload preserves the path-relative-to-LCA layout fine, but multi-path uploads collapse to the deepest shared parent and the `kamp_ui/` (or other) prefix disappears from the archive.
+
+- Symptom: `download-artifact` (with no `path:`) extracts to `$GITHUB_WORKSPACE`, files land in the "wrong" directory, and downstream tools (`electron-builder`, scripts assuming a known layout) silently miss them.
+- Especially dangerous with `electron-builder`: missing `extraResources` sources log `file source doesn't exist from=...` but the build **still exits 0**, producing a silently-broken installer with a green CI conclusion.
+- Fix: either upload a **single path** (matches the macOS `bundle-${arch}` pattern in this repo), or set the download step's `path:` to the LCA so the archive layout restores correctly.
+- Defense in depth: any `package`-style job that consumes a bundle artifact should run a **pre-flight `Test-Path`/`test -f` check** for the required source files and fail loudly if any are missing. Don't rely on the packager to surface the problem.
+
+## PowerShell file encoding (Windows codepage trap)
+
+PowerShell on Windows reads `.ps1` and inline-script files via the system codepage (CP1252) by default, **not** UTF-8. Em-dashes (`—`, U+2014), curly quotes, and other non-ASCII text in `.ps1` sources or in YAML inline scripts that target `pwsh` get reinterpreted byte-by-byte and break the parser ("Unexpected token", "string is missing the terminator"). Use ASCII `--` and straight quotes in PowerShell sources and in any `run:` block on `windows-latest`. AST-parse new `.ps1` files locally before pushing: `[System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errs)`.
+
+## Runner-image fragility (windows-latest)
+
+Don't assume tools are preinstalled on `windows-latest` without checking the [runner-images](https://github.com/actions/runner-images) repo for the current image. Inkscape was on the image historically and is **not** at the time of writing — assuming `C:\Program Files\Inkscape\bin\inkscape.exe` works is a CI-only failure that won't surface in any local check. Prefer tools that are installable via MSYS2 pacman (`mingw-w64-x86_64-librsvg` for SVG → PNG) or that ship with the Python/Node toolchain we already require, both because they're version-pinnable and because they survive runner-image churn.
+
+## Python regex pitfall: backslash escapes in re.subn replacement
+
+`re.sub`/`re.subn` interpret backslash escapes in the **replacement string** as regex backreferences. When rewriting code that contains `\xNN` byte literals (e.g. `b"\x00\x18..."` for AcoustID encoded keys), passing the literal as the replacement raises `re.error: bad escape \x at position N`. Use the callback form: `pattern.subn(lambda _m: replacement, src, count=1)` — callbacks bypass backreference interpretation.
+
 ## CSS height animations in Electron
 
 `grid-template-rows: 0fr → 1fr`, `max-height`, JS-measured `scrollHeight`, and `scaleY` + `max-height` combos all produce inconsistent or jerky results in the Electron renderer. Do not attempt to animate `height` or `max-height` for show/hide transitions. Use `display: none` / `display: block` (instant toggle) instead. If a smooth reveal is ever required, reach for a JS animation library (e.g. Framer Motion) rather than CSS property animation.

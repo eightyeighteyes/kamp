@@ -1,4 +1,4 @@
-name: Build macOS App
+name: Build App
 
 on:
   workflow_dispatch: # manual trigger for testing
@@ -41,13 +41,7 @@ jobs:
         env:
           ACOUSTID_KEY: ${{ secrets.ACOUSTID_KEY }}
           ACOUSTID_SALT: ${{ secrets.ACOUSTID_SALT }}
-        run: |
-          ENCODED=$(python scripts/encode_acoustid_key.py "$ACOUSTID_KEY" "$ACOUSTID_SALT")
-          ENCODED_KEY=$(echo "$ENCODED" | sed -n '1p')
-          ENCODED_SALT=$(echo "$ENCODED" | sed -n '2p')
-          # macOS sed requires an explicit empty backup suffix (-i '')
-          sed -i '' "s|^_KEY: bytes = b\"\"|_KEY: bytes = ${ENCODED_KEY}|" kamp_daemon/acoustid.py
-          sed -i '' "s|^_SALT: bytes = b\"\"|_SALT: bytes = ${ENCODED_SALT}|" kamp_daemon/acoustid.py
+        run: python scripts/embed_acoustid_key.py
 
       - name: Build PyInstaller bundle
         run: |
@@ -412,3 +406,206 @@ jobs:
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
             kamp_ui/dist/*.dmg
+
+  build-bundle-windows:
+    runs-on: windows-latest
+    # PyInstaller (~3 min) + MSYS2 deps (~5 min) + mpv compile (~10-15 min)
+    # + node fetch (~1 min) + icon gen (~1 min). Match the macOS budget.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install Python dependencies (includes pyinstaller)
+        run: poetry install
+
+      - name: Embed AcoustID key
+        env:
+          ACOUSTID_KEY: ${{ secrets.ACOUSTID_KEY }}
+          ACOUSTID_SALT: ${{ secrets.ACOUSTID_SALT }}
+        run: python scripts/embed_acoustid_key.py
+
+      - name: Build PyInstaller bundle
+        run: |
+          poetry run pyinstaller `
+            --distpath kamp_ui/resources `
+            --workpath $env:TEMP\pyinstaller-work `
+            --clean -y `
+            kamp.spec
+          if (-not (Test-Path kamp_ui\resources\kamp\kamp.exe)) {
+            Write-Error "PyInstaller did not produce kamp.exe"
+            exit 1
+          }
+          $playwright = Get-ChildItem kamp_ui\resources\kamp\_internal\ -Filter "playwright*" -ErrorAction SilentlyContinue
+          if ($playwright) {
+            Write-Error "Playwright leaked into bundle: $($playwright.Name)"
+            exit 1
+          }
+          Write-Host "OK: kamp.exe built, Playwright excluded"
+
+      - name: Build minimal mpv from source (MSYS2 + mingw-w64)
+        # Mirrors the macOS source-build approach. Pinned to mpv v0.41.0 with
+        # the same audio-only feature set; uses the MSYS2 mingw-w64 toolchain
+        # preinstalled on windows-latest. Output: resources\mpv\mpv.exe + DLLs.
+        run: pwsh scripts/build_mpv_windows.ps1
+
+      - name: Bundle Node.js + npm for extension installs
+        run: pwsh scripts/fetch_node.ps1
+
+      - name: Generate icon.ico from SVG
+        # ImageMagick on windows-latest does not ship a reliable SVG delegate,
+        # and Inkscape is no longer guaranteed to be on the runner image.
+        # Use librsvg's rsvg-convert from MSYS2 (already on the box from the
+        # mpv build step's pacman; install explicitly here so this step is
+        # not coupled to a transitive dep) to render PNGs at standard Windows
+        # shell sizes, then merge them into a single multi-resolution .ico
+        # via ImageMagick (magick.exe is preinstalled on windows-latest).
+        run: |
+          & C:\msys64\usr\bin\bash.exe -lc 'pacman -S --needed --noconfirm mingw-w64-x86_64-librsvg'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to install mingw-w64-x86_64-librsvg via pacman"
+            exit 1
+          }
+          $rsvg = "C:\msys64\mingw64\bin\rsvg-convert.exe"
+          if (-not (Test-Path $rsvg)) {
+            Write-Error "rsvg-convert not found at $rsvg after pacman install"
+            exit 1
+          }
+          $svg = (Resolve-Path "kamp_ui/resources/icon_source.svg").Path
+          $build = "kamp_ui/build"
+          New-Item -ItemType Directory -Force -Path $build | Out-Null
+          $sizes = 16, 32, 48, 64, 128, 256
+          $pngs = foreach ($size in $sizes) {
+            $out = Join-Path $env:TEMP "kamp-icon-$size.png"
+            & $rsvg -w $size -h $size $svg -o $out
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $out)) {
+              Write-Error "rsvg-convert failed to render $size px PNG"
+              exit 1
+            }
+            $out
+          }
+          & magick convert @pngs "$build/icon.ico"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$build/icon.ico")) {
+            Write-Error "icon.ico generation failed"
+            exit 1
+          }
+          Write-Host "OK: $build/icon.ico ($((Get-Item "$build/icon.ico").Length) bytes)"
+
+      - name: Upload bundle artifact
+        # upload-artifact preserves workspace-relative paths, so multiple
+        # source paths recreate that layout on download. The package job
+        # downloads to GITHUB_WORKSPACE (no `path:` set) to restore both
+        # kamp_ui/resources/ and kamp_ui/build/icon.ico in one shot.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: bundle-win-x64
+          path: |
+            kamp_ui/resources/
+            kamp_ui/build/icon.ico
+          retention-days: 1
+
+  package-windows:
+    needs: build-bundle-windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Download bundle artifact
+        # upload-artifact strips the least common ancestor of all `path:` entries
+        # from archive paths -- with `kamp_ui/resources/` + `kamp_ui/build/icon.ico`
+        # the LCA is `kamp_ui/`, so the artifact stores `resources/...` and
+        # `build/icon.ico`. Setting download path to `kamp_ui` restores the
+        # layout electron-builder expects (`kamp_ui/resources/kamp/kamp.exe`).
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: bundle-win-x64
+          path: kamp_ui
+
+      - name: Verify bundle layout
+        # Pre-flight: if extraResources sources are missing, electron-builder
+        # silently produces a daemon-less installer (it logs "file source
+        # doesn't exist" but still succeeds). Fail loudly here instead.
+        run: |
+          $required = @(
+            'kamp_ui\resources\kamp\kamp.exe',
+            'kamp_ui\resources\mpv\mpv.exe',
+            'kamp_ui\resources\node.exe',
+            'kamp_ui\resources\npm\bin\npm-cli.js',
+            'kamp_ui\build\icon.ico'
+          )
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            Write-Error "Bundle artifact missing files:`n  $($missing -join "`n  ")"
+            exit 1
+          }
+          Write-Host "OK: bundle layout intact ($($required.Count) required paths present)"
+
+      - name: Cache electron-builder binaries
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+        with:
+          path: ~\AppData\Local\electron-builder\Cache
+          key: electron-builder-cache-win-x64-${{ hashFiles('kamp_ui/package-lock.json') }}
+          restore-keys: |
+            electron-builder-cache-win-x64-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: kamp_ui/package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+        working-directory: kamp_ui
+
+      - name: Build NSIS installer
+        # No code signing in this task -- KAMP-278 produces an unsigned
+        # installer. Code signing is tracked separately.
+        env:
+          DEBUG: electron-builder
+        run: npm run build:win
+        working-directory: kamp_ui
+
+      - name: Verify installer artifact
+        run: |
+          $exe = Get-ChildItem kamp_ui\dist\*.exe | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No NSIS installer produced under kamp_ui\dist"
+            exit 1
+          }
+          Write-Host "-> Installer: $($exe.Name) ($([math]::Round($exe.Length / 1MB, 1)) MB)"
+
+      - name: Compute artifact name
+        id: artifact
+        shell: bash
+        run: |
+          safe="${{ github.ref_name }}"
+          safe="${safe//\//-}"
+          echo "name=Kamp-${safe}-win-x64" >> "$GITHUB_OUTPUT"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: kamp_ui/dist/*.exe
+          retention-days: 30
+
+      - name: Upload installer to GitHub release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            kamp_ui/dist/*.exe

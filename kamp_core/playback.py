@@ -569,6 +569,11 @@ _JobObjectExtendedLimitInformation = 9
 _CREATE_NO_WINDOW = 0x08000000
 
 
+def _win_last_error() -> int:
+    """Wrapper for ctypes.get_last_error() — win32-only in typeshed."""
+    return ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
+
+
 class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
     _fields_ = [
         ("PerProcessUserTimeLimit", ctypes.c_int64),
@@ -646,7 +651,7 @@ class _WindowsJobObject:
 
         handle = kernel32.CreateJobObjectW(None, None)
         if not handle:
-            raise OSError(f"CreateJobObjectW failed (error {ctypes.get_last_error()})")
+            raise OSError(f"CreateJobObjectW failed (error {_win_last_error()})")
 
         info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         # BREAKAWAY_OK lets descendants escape this Job if they ever need to;
@@ -661,7 +666,7 @@ class _WindowsJobObject:
             ctypes.byref(info),
             ctypes.sizeof(info),
         ):
-            last_error = ctypes.get_last_error()
+            last_error = _win_last_error()
             kernel32.CloseHandle(handle)
             raise OSError(f"SetInformationJobObject failed (error {last_error})")
 
@@ -677,7 +682,7 @@ class _WindowsJobObject:
             self._handle, wintypes.HANDLE(proc_handle)
         ):
             raise OSError(
-                f"AssignProcessToJobObject failed (error {ctypes.get_last_error()})"
+                f"AssignProcessToJobObject failed (error {_win_last_error()})"
             )
 
     def close(self) -> None:  # pragma: no cover

@@ -1029,10 +1029,13 @@ class TestMpvPlaybackEngine:
         fake_job_class.assert_called_once_with()
         fake_job.assign.assert_called_once_with(0xCAFE)
         assert engine._job is fake_job
-        # CREATE_BREAKAWAY_FROM_JOB (0x01000000) detaches mpv from any outer
-        # Electron Job before joining ours.
+        # CREATE_NO_WINDOW (0x08000000) suppresses the console window mpv
+        # would otherwise pop. We do NOT pass CREATE_BREAKAWAY_FROM_JOB
+        # because Electron's outer Job typically forbids it; nested Jobs
+        # work on Win8+ and give us the cleanup we need.
         _, popen_kwargs = mock_popen.call_args
-        assert popen_kwargs["creationflags"] & 0x01000000
+        assert popen_kwargs["creationflags"] & 0x08000000
+        assert not (popen_kwargs["creationflags"] & 0x01000000)
 
     def test_start_mpv_skips_job_on_posix(
         self, monkeypatch: pytest.MonkeyPatch

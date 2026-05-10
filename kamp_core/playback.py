@@ -567,7 +567,6 @@ _JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
 _JobObjectExtendedLimitInformation = 9
 # Process creation flags (winbase.h).
 _CREATE_NO_WINDOW = 0x08000000
-_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
@@ -761,12 +760,16 @@ class MpvPlaybackEngine:
     def _start_mpv(self) -> None:  # pragma: no cover
         """Launch mpv and connect to its IPC channel."""
         # Create the Job Object before Popen so we can assign mpv immediately
-        # after it spawns. CREATE_BREAKAWAY_FROM_JOB on Popen detaches mpv from
-        # any outer Electron Job before it joins ours; Job creation is
-        # best-effort — log and continue if it fails.
+        # after it spawns. We rely on nested Jobs (Win8+) rather than
+        # CREATE_BREAKAWAY_FROM_JOB — breakaway requires the parent's Job to
+        # set BREAKAWAY_OK, which Electron's default Job does not, and Popen
+        # would fail with ERROR_ACCESS_DENIED. Nested Jobs let mpv be in both
+        # Electron's outer Job and ours; either closing kills mpv, which is
+        # exactly the cleanup we want. Job creation is best-effort — log and
+        # continue if it fails.
         creationflags = 0
         if sys.platform == "win32":
-            creationflags = _CREATE_NO_WINDOW | _CREATE_BREAKAWAY_FROM_JOB
+            creationflags = _CREATE_NO_WINDOW
             try:
                 self._job = _WindowsJobObject()
             except OSError as exc:

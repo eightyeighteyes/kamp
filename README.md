@@ -100,6 +100,18 @@ All configuration is stored in the SQLite database alongside library and playbac
 
 If you have an existing `config.toml` from a prior install, kamp migrates it automatically on the first startup and leaves the file in place as a backup.
 
+### Credential storage
+
+Bandcamp and Last.fm session credentials are kept out of the application database where possible:
+
+| Platform | Backend | Notes |
+| --- | --- | --- |
+| macOS    | Data Protection Keychain (Login Keychain in dev/unsigned builds) | Per-user, encrypted at rest, survives app updates. |
+| Linux    | `keyring` (Secret Service via libsecret, GNOME Keyring, KWallet, …) | Whatever backend the desktop session provides. |
+| Windows  | DPAPI (`CryptProtectData`) wrapping the SQLite `sessions` row | Windows Credential Manager has a 2560-byte per-credential limit that the Bandcamp session blob exceeds, so kamp DPAPI-encrypts the row in place. The encryption key is tied to your Windows user account; copying `library.db` to another machine or user does not yield readable credentials. |
+
+If no keychain backend is available the credential lands in the database column as plaintext (with a warning logged) — kamp prefers a working session to a failed login.
+
 ### View or update from the command line
 
 ```bash

@@ -141,3 +141,12 @@ Don't assume tools are preinstalled on `windows-latest` without checking the [ru
 
 ## Shared debounce and high-volume FSEvents
 `_LibraryHandler._schedule()` (in `watcher.py`) is shared between FSEvents from the library directory and explicit `trigger_scan()` calls. During a large batch sync, continuous FSEvents from files being moved in reset the debounce timer faster than the `_MAX_SETTLE_SECONDS` cap fires. To guarantee a scan fires after each pipeline completion, bypass the debounce entirely: call `_on_library_change` directly in a `threading.Thread` from `on_pipeline_complete` instead of routing through `lib_watcher.trigger_scan()`.
+
+## Windows credential storage
+The `keyring` package's `WinVaultKeyring` backend (Windows Credential Manager) caps each credential at **2560 bytes** (`CRED_MAX_CREDENTIAL_BLOB_SIZE = 5 * 512`). The Bandcamp session blob — full cookie jar plus username and metadata — exceeds this, and `CredWrite` fails with `OSError(1783, 'CredWrite', 'The stub received bad data.')` (Win32 error 1783 = `RPC_S_INVALID_TAG`, which for `CredWrite` almost always means the blob exceeds the limit). The error type sits **outside** the keyring exception hierarchy, so `except keyring.errors.KeyringError` does not catch it — without a broader `except Exception` clause it propagates up and turns the FastAPI handler's `try/except` into a 422 (KAMP-282).
+
+Workaround in `kamp_core/win_credential.py`: wrap the JSON blob with **DPAPI** (`CryptProtectData` / `CryptUnprotectData`) and store the resulting ciphertext in the SQLite `sessions.session_json` column. DPAPI has no size limit, the encryption key is tied to the current Windows user account, and the ctypes wiring matches the `macos_keychain.py` pattern (no extra dependency). The wrapped value is detected on read via the `dpapi-v1:` prefix; legacy plaintext rows still work via the same code path. Schema migration v12 → v13 wraps any plaintext rows already on disk on first launch.
+
+Two further notes for future Windows work on this code path:
+- The non-mac branches of `set_session`/`get_session`/`clear_session` in `library.py` should always have a final `except Exception` arm in addition to the typed keyring catches — the keyring exception hierarchy does not cover backend bugs.
+- Don't add `pywin32` for Credential Manager work — `keyring` 25.x's WinVault and our DPAPI wrapper both use ctypes directly, so the dependency is unnecessary.

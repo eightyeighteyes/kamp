@@ -128,7 +128,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 12
+        assert version == 13
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1134,7 +1134,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 12
+        assert version == 13
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1191,7 +1191,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 12
+        assert version == 13
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1550,7 +1550,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 12
+        assert version == 13
         assert row is not None
         assert row[0] == 0
 
@@ -1663,7 +1663,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 12
+        assert version == 13
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -1844,7 +1844,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 12
+        assert version == 13
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -1935,7 +1935,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 12
+        assert version == 13
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -1943,7 +1943,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 12
+        assert version == 13
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -2433,6 +2433,262 @@ class TestSessionManagementKeyringErrors:
 
 
 # ---------------------------------------------------------------------------
+# Session management — Windows DPAPI wrapping of the DB fallback
+# ---------------------------------------------------------------------------
+
+
+class _FakeDPAPI:
+    """In-memory stand-in for kamp_core.win_credential.
+
+    Lets tests exercise the DPAPI code path on macOS / Linux runners
+    without depending on the real Win32 API.  The "ciphertext" is just
+    the prefix + base64 of the plaintext bytes — opaque enough to
+    distinguish from the original JSON, simple enough to verify by eye
+    in test failures.
+    """
+
+    DPAPI_PREFIX = "dpapi-v1:"
+
+    @staticmethod
+    def _encode(s: str) -> str:
+        import base64
+
+        return _FakeDPAPI.DPAPI_PREFIX + base64.b64encode(s.encode("utf-8")).decode(
+            "ascii"
+        )
+
+    @staticmethod
+    def _decode(s: str) -> str:
+        import base64
+
+        return base64.b64decode(s[len(_FakeDPAPI.DPAPI_PREFIX) :]).decode("utf-8")
+
+    def protect_str(self, plaintext: str) -> str:
+        return self._encode(plaintext)
+
+    def unprotect_str(self, text: str) -> str | None:
+        if not text.startswith(self.DPAPI_PREFIX):
+            return None
+        return self._decode(text)
+
+    def is_dpapi_blob(self, text: str) -> bool:
+        return text.startswith(self.DPAPI_PREFIX)
+
+
+class TestSessionManagementWindowsDPAPI:
+    """Tests the DPAPI wrap/unwrap path used by the Windows DB fallback.
+
+    Uses :class:`_FakeDPAPI` so the test runs on every OS — the real
+    ctypes round-trip is covered separately in ``test_win_credential.py``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def force_db_fallback(self, mocker: MockerFixture) -> _FakeDPAPI:
+        """Force the no-keychain DB-fallback path and inject a fake DPAPI."""
+        mocker.patch("kamp_core.library._mac_kc", None)
+        # Pretend keyring has no backend so set_session falls through to DB.
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.NoKeyringError(),
+        )
+        mocker.patch(
+            "kamp_core.library.keyring.get_password",
+            side_effect=keyring.errors.NoKeyringError(),
+        )
+        mocker.patch("kamp_core.library.keyring.delete_password")
+        fake = _FakeDPAPI()
+        mocker.patch("kamp_core.library._win_cred", fake)
+        return fake
+
+    def _make_index(self, tmp_path: Path) -> LibraryIndex:
+        return LibraryIndex(tmp_path / "library.db")
+
+    def test_set_session_writes_dpapi_wrapped_to_db(self, tmp_path: Path) -> None:
+        """KAMP-280 AC #3: sessions DB row is opaque ciphertext, not plaintext JSON."""
+        index = self._make_index(tmp_path)
+        data = {"cookies": [{"name": "session", "value": "secret-cookie-value"}]}
+        index.set_session("bandcamp", data)
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is not None
+        stored = row["session_json"]
+        assert stored is not None
+        assert stored.startswith(
+            _FakeDPAPI.DPAPI_PREFIX
+        ), "DB row should be DPAPI-wrapped, not plaintext"
+        assert (
+            "secret-cookie-value" not in stored
+        ), "raw cookie value must not appear anywhere in the stored row"
+        index.close()
+
+    def test_get_session_unwraps_dpapi_row(self, tmp_path: Path) -> None:
+        """Round-trip: write encrypted, read decrypted."""
+        index = self._make_index(tmp_path)
+        data = {"cookies": [{"name": "session", "value": "v"}], "username": "alice"}
+        index.set_session("bandcamp", data)
+
+        assert index.get_session("bandcamp") == data
+        index.close()
+
+    def test_get_session_handles_legacy_plaintext_row(self, tmp_path: Path) -> None:
+        """Pre-DPAPI installs may still have plaintext rows; reading them must work."""
+        import json as _json
+
+        index = self._make_index(tmp_path)
+        # Bypass set_session and write a legacy plaintext row directly.
+        index._conn.execute(
+            "INSERT INTO sessions (service, session_json, updated_at)"
+            " VALUES (?, ?, ?)",
+            ("bandcamp", _json.dumps({"cookies": []}), 1.0),
+        )
+        index._conn.commit()
+
+        assert index.get_session("bandcamp") == {"cookies": []}
+        index.close()
+
+    def test_set_session_falls_back_to_plaintext_when_dpapi_raises(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """A DPAPI failure must not block writing — a session row beats no row."""
+        mocker.patch(
+            "kamp_core.library._win_cred.protect_str",
+            side_effect=OSError("CryptProtectData failed"),
+        )
+
+        index = self._make_index(tmp_path)
+        data = {"cookies": [{"name": "x", "value": "y"}]}
+        index.set_session("bandcamp", data)  # must not raise
+
+        # Even on DPAPI failure, the row should still be present (plaintext).
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is not None
+        assert row["session_json"] is not None
+        index.close()
+
+
+# ---------------------------------------------------------------------------
+# Migration v12 → v13: encrypt residual plaintext rows on Windows
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV12ToV13:
+    """v12 left rows in the DB on Windows when keyring couldn't store them.
+
+    v13 wraps any such residual plaintext rows with DPAPI on first
+    open, so the on-disk credential is no longer readable as plaintext
+    (KAMP-280 AC #3).  Cross-platform — we mock both keyring and DPAPI.
+    """
+
+    @pytest.fixture(autouse=True)
+    def force_db_fallback(self, mocker: MockerFixture) -> _FakeDPAPI:
+        mocker.patch("kamp_core.library._mac_kc", None)
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=keyring.errors.NoKeyringError(),
+        )
+        mocker.patch(
+            "kamp_core.library.keyring.get_password",
+            side_effect=keyring.errors.NoKeyringError(),
+        )
+        mocker.patch("kamp_core.library.keyring.delete_password")
+        fake = _FakeDPAPI()
+        mocker.patch("kamp_core.library._win_cred", fake)
+        return fake
+
+    def _build_v12_db(self, db_path: Path) -> None:
+        """Create a v12 database with a plaintext sessions row (the Windows shape)."""
+        import json as _json
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (12)")
+        conn.execute("""
+            CREATE TABLE sessions (
+                service      TEXT NOT NULL PRIMARY KEY,
+                session_json TEXT,
+                updated_at   REAL NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE settings (
+                key   TEXT NOT NULL PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO sessions (service, session_json, updated_at) VALUES (?, ?, ?)",
+            ("bandcamp", _json.dumps({"cookies": [{"name": "x"}]}), 1.0),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_migration_wraps_plaintext_row_with_dpapi(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v12_db(db_path)
+
+        index = LibraryIndex(db_path)
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row["session_json"] is not None
+        assert row["session_json"].startswith(
+            _FakeDPAPI.DPAPI_PREFIX
+        ), "v13 migration should have wrapped the plaintext row"
+        # And the round-trip still works through get_session.
+        assert index.get_session("bandcamp") == {"cookies": [{"name": "x"}]}
+        index.close()
+
+    def test_migration_skips_already_wrapped_rows(self, tmp_path: Path) -> None:
+        """If a row is already DPAPI-wrapped (paranoia), don't double-wrap."""
+        import json as _json
+
+        db_path = tmp_path / "library.db"
+        # Build a v12 DB with an already-wrapped row (simulating a partial
+        # prior migration or a manual repair).
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (12)")
+        conn.execute("""
+            CREATE TABLE sessions (
+                service      TEXT NOT NULL PRIMARY KEY,
+                session_json TEXT,
+                updated_at   REAL NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE settings (
+                key   TEXT NOT NULL PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        already_wrapped = _FakeDPAPI().protect_str(_json.dumps({"cookies": []}))
+        conn.execute(
+            "INSERT INTO sessions (service, session_json, updated_at) VALUES (?, ?, ?)",
+            ("bandcamp", already_wrapped, 1.0),
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        # Still a single DPAPI prefix — not wrapped twice.
+        assert row["session_json"] == already_wrapped
+        index.close()
+
+
+# ---------------------------------------------------------------------------
 # Migration v11 → v12: credentials moved from DB to keychain
 # ---------------------------------------------------------------------------
 
@@ -2514,7 +2770,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 12
+        assert version == 13
 
         index.close()
 

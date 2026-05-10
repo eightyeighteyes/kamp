@@ -26,6 +26,15 @@ if sys.platform == "darwin":
         _mac_kc = None  # type: ignore[assignment]
 else:
     _mac_kc = None  # type: ignore[assignment]
+
+if sys.platform == "win32":
+    try:
+        from . import win_credential as _win_cred
+    except Exception:
+        _win_cred = None  # type: ignore[assignment]
+else:
+    _win_cred = None  # type: ignore[assignment]
+
 import mutagen.flac
 import mutagen.id3 as id3
 import mutagen.mp4
@@ -33,9 +42,55 @@ import mutagen.oggvorbis
 
 logger = logging.getLogger(__name__)
 
+
+def _maybe_protect(plaintext: str) -> str:
+    """DPAPI-wrap *plaintext* on Windows, return as-is elsewhere.
+
+    On Windows the SQLite ``sessions`` row sits in
+    ``%APPDATA%\\kamp\\library.db`` in a form readable by anyone with
+    file access; DPAPI ties the encryption key to the current Windows
+    user account so a copy of the DB cannot be decrypted off-machine
+    (KAMP-280 AC #3).  If DPAPI itself fails we still write the row —
+    a failed login is worse than a non-encrypted credential — and log
+    a warning.
+    """
+    if _win_cred is None:
+        return plaintext
+    try:
+        return _win_cred.protect_str(plaintext)
+    except Exception as exc:
+        logger.warning(
+            "DPAPI protect failed (%s: %s); storing plaintext fallback",
+            type(exc).__name__,
+            exc,
+        )
+        return plaintext
+
+
+def _maybe_unprotect(text: str) -> str:
+    """Strip DPAPI wrapping from *text* if it carries the DPAPI prefix.
+
+    Returns the input unchanged when the value is plaintext (legacy
+    rows that pre-date the DPAPI rollout) or when DPAPI is unavailable
+    on the current platform.
+    """
+    if _win_cred is None:
+        return text
+    try:
+        unwrapped = _win_cred.unprotect_str(text)
+    except Exception as exc:
+        logger.warning(
+            "DPAPI unprotect failed (%s: %s); treating as plaintext",
+            type(exc).__name__,
+            exc,
+        )
+        return text
+    return unwrapped if unwrapped is not None else text
+
+
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 12
+_SCHEMA_VERSION = 13
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -438,7 +493,44 @@ class LibraryIndex:
                 except keyring.errors.NoKeyringError:
                     # No keyring on this platform; leave remaining rows in DB.
                     break
+                except Exception as exc:
+                    # On Windows, large blobs (e.g. the Bandcamp session)
+                    # exceed CRED_MAX_CREDENTIAL_BLOB_SIZE and CredWrite raises
+                    # OSError outside the keyring exception hierarchy.  Leave
+                    # the row in the DB column so the v13 migration can wrap
+                    # it with DPAPI.  See KAMP-280 / KAMP-282.
+                    logger.warning(
+                        "v11->v12: keyring write failed for service=%s (%s: %s);"
+                        " leaving in DB fallback",
+                        row["service"],
+                        type(exc).__name__,
+                        exc,
+                    )
+                    continue
             self._conn.execute("UPDATE schema_version SET version = 12")
+            self._conn.commit()
+            version = 12
+
+        if version < 13:
+            # v12 -> v13: encrypt any plaintext credential rows with DPAPI on
+            # Windows.  No-op on other platforms (the keyring backends there
+            # already encrypt at rest).  See KAMP-280.
+            if _win_cred is not None:
+                rows = self._conn.execute(
+                    "SELECT service, session_json FROM sessions"
+                    " WHERE session_json IS NOT NULL"
+                ).fetchall()
+                for row in rows:
+                    if _win_cred.is_dpapi_blob(row["session_json"]):
+                        continue  # already wrapped (paranoia)
+                    wrapped = _maybe_protect(row["session_json"])
+                    if wrapped == row["session_json"]:
+                        continue  # protect failed, already logged
+                    self._conn.execute(
+                        "UPDATE sessions SET session_json = ? WHERE service = ?",
+                        (wrapped, row["service"]),
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 13")
             self._conn.commit()
 
     def _rebuild_fts(self) -> None:
@@ -516,7 +608,7 @@ class LibraryIndex:
                 )
                 return None
             logger.debug("get_session: DB fallback hit for service=%s", service)
-            return dict(json.loads(row["session_json"]))  # type: ignore[no-any-return]
+            return dict(json.loads(_maybe_unprotect(row["session_json"])))  # type: ignore[no-any-return]
 
         # --- keyring path (non-macOS)
         _MAX_RETRIES = 3
@@ -581,7 +673,7 @@ class LibraryIndex:
             )
             return None
         logger.debug("get_session: DB fallback hit for service=%s", service)
-        return dict(json.loads(row["session_json"]))  # type: ignore[no-any-return]
+        return dict(json.loads(_maybe_unprotect(row["session_json"])))  # type: ignore[no-any-return]
 
     def set_session(self, service: str, data: dict[str, Any]) -> None:
         """Persist session data for *service*, replacing any existing entry.
@@ -658,6 +750,11 @@ class LibraryIndex:
                     exc,
                 )
 
+        # On Windows, wrap the DB fallback with DPAPI so the SQLite row is
+        # not readable as plaintext (KAMP-280 AC #3).  No-op when the
+        # credential lives in the OS keychain (session_json is None).
+        if session_json is not None:
+            session_json = _maybe_protect(session_json)
         self._conn.execute(
             """
             INSERT INTO sessions (service, session_json, updated_at)

@@ -12,7 +12,7 @@ import {
 import { join, resolve } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, ChildProcess, execFileSync } from 'child_process'
 import { createInterface } from 'readline'
 import * as http from 'http'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -241,10 +241,23 @@ async function startServer(): Promise<void> {
 function stopServer(): void {
   if (serverProcess?.pid) {
     try {
-      // Negative PID kills the entire process group (server + all children).
-      process.kill(-serverProcess.pid, 'SIGKILL')
+      if (process.platform === 'win32') {
+        // process.kill(-pid) is POSIX-only — Node ignores the negative sign on
+        // Windows and the daemon orphans (KAMP-283). taskkill /T recursively
+        // kills the process tree (daemon + sandbox helpers + mpv as belt-and-
+        // suspenders for the daemon-side Job Object); /F is forced (SIGKILL-
+        // equivalent). Synchronous because process.on('exit') is one of the
+        // call sites and won't run async work.
+        execFileSync('taskkill', ['/PID', String(serverProcess.pid), '/T', '/F'], {
+          stdio: 'ignore'
+        })
+      } else {
+        // Negative PID kills the entire process group (daemon + children).
+        process.kill(-serverProcess.pid, 'SIGKILL')
+      }
     } catch {
-      // Process may have already exited.
+      // Process may have already exited; taskkill exits non-zero in that case
+      // and execFileSync throws. Either way, nothing to clean up here.
     }
     serverProcess = null
   }

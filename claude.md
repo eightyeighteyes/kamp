@@ -16,11 +16,14 @@
 - Before opening a PR, run all CI steps (testing, linting, type checks, etc) locally
 - Before opening a PR, scan through README.md to make sure it's still valid (nothing it says has drifted from what the application does)
 - When merging a branch, squash commits.
-- Task lifecycle: when work begins on a task, move it to In Progress. When the user confirms it is tested and complete, squash merge the PR and move the task to Done.
+- Task lifecycle: task management is done through Jira. When work begins on a task, move it to In Progress. When the user confirms it is tested and complete, squash merge the PR and move the task to Done.
 - Prefer running single tests, and not the whole test suite, for performance; use `--no-cov` when running a single file to skip the coverage threshold check (e.g. `poetry run pytest tests/test_foo.py -v --no-cov`)
 - Update documentation (README.md) after new features are validated
 - Document rationale in comments: succinctly explain *why* decisions are made
 - After completing a feature, before closing a pull request, retrospect about the development experience and update claude.md with lessons learned.
+
+# Agents
+- When designing a plan, query your available agents and interrogate all relevant agents for enhancements to your plan.
 
 # Lessons Learned
 ## Mutagen
@@ -138,32 +141,3 @@ Don't assume tools are preinstalled on `windows-latest` without checking the [ru
 
 ## Shared debounce and high-volume FSEvents
 `_LibraryHandler._schedule()` (in `watcher.py`) is shared between FSEvents from the library directory and explicit `trigger_scan()` calls. During a large batch sync, continuous FSEvents from files being moved in reset the debounce timer faster than the `_MAX_SETTLE_SECONDS` cap fires. To guarantee a scan fires after each pipeline completion, bypass the debounce entirely: call `_on_library_change` directly in a `threading.Thread` from `on_pipeline_complete` instead of routing through `lib_watcher.trigger_scan()`.
-
-<!-- BACKLOG.MD MCP GUIDELINES START -->
-
-<CRITICAL_INSTRUCTION>
-
-## BACKLOG WORKFLOW INSTRUCTIONS
-
-This project uses Backlog.md MCP for all task and project management activities.
-
-**CRITICAL GUIDANCE**
-
-- If your client supports MCP resources, read `backlog://workflow/overview` to understand when and how to use Backlog for this project.
-- If your client only supports tools or the above request fails, call `backlog.get_backlog_instructions()` to load the tool-oriented overview. Use the `instruction` selector when you need `task-creation`, `task-execution`, or `task-finalization`.
-
-- **First time working here?** Read the overview resource IMMEDIATELY to learn the workflow
-- **Already familiar?** You should have the overview cached ("## Backlog.md Overview (MCP)")
-- **When to read it**: BEFORE creating tasks, or when you're unsure whether to track work
-
-These guides cover:
-- Decision framework for when to create tasks
-- Search-first workflow to avoid duplicates
-- Links to detailed guides for task creation, execution, and finalization
-- MCP tools reference
-
-You MUST read the overview resource to understand the complete workflow. The information is NOT summarized here.
-
-</CRITICAL_INSTRUCTION>
-
-<!-- BACKLOG.MD MCP GUIDELINES END -->

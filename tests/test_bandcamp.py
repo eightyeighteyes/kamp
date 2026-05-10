@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pytest_mock import MockerFixture
 
 from kamp_daemon.bandcamp import (
     BandcampAPIError,
@@ -835,6 +836,18 @@ class TestNeedsLoginError:
 
 
 class TestMakeRequestsSession:
+    """Direct ``requests.Session`` path — exercised on macOS / Linux dev.
+
+    Force ``sys.platform`` to ``"linux"`` so the path runs identically on
+    every CI runner including Windows (where ``_needs_proxy_session`` would
+    otherwise return ``_ProxySession`` and these assertions about
+    ``session.cookies`` would no longer apply).  See KAMP-290.
+    """
+
+    @pytest.fixture(autouse=True)
+    def force_direct_path(self, mocker: MockerFixture) -> None:
+        mocker.patch("kamp_daemon.bandcamp.sys.platform", "linux")
+
     def test_loads_cookies_from_session_data(self) -> None:
         session = _make_requests_session(_make_session_data())
         assert session.cookies.get("js_logged_in", domain=".bandcamp.com") == "1"
@@ -1397,22 +1410,67 @@ class TestIsFrozen:
 
 
 class TestMakeRequestsSessionFrozen:
-    def test_returns_proxy_session_when_frozen(self) -> None:
+    def test_returns_proxy_session_when_frozen(self, mocker: MockerFixture) -> None:
         import sys
 
         from kamp_daemon.bandcamp import _ProxySession, _make_requests_session
 
+        # Pin platform to linux so we are isolating the frozen-only signal.
+        mocker.patch("kamp_daemon.bandcamp.sys.platform", "linux")
         with patch.object(sys, "frozen", True, create=True):
             sess = _make_requests_session({"cookies": []})
 
         assert isinstance(sess, _ProxySession)
 
-    def test_returns_requests_session_when_not_frozen(self) -> None:
+    def test_returns_requests_session_when_not_frozen(
+        self, mocker: MockerFixture
+    ) -> None:
         import requests
 
         from kamp_daemon.bandcamp import _make_requests_session
 
+        # Pin platform to linux so this exercises the dev/non-Windows path.
+        mocker.patch("kamp_daemon.bandcamp.sys.platform", "linux")
         sess = _make_requests_session({"cookies": []})
+        assert isinstance(sess, requests.Session)
+
+
+class TestMakeRequestsSessionWindowsDev:
+    """KAMP-290: Windows dev must use the proxy too, not bare requests.
+
+    The Python 3.11 .venv on Windows ships an OpenSSL whose JA3/JA4
+    fingerprint Cloudflare flags for ``bandcamp.com``, returning an HTML
+    anti-bot interstitial instead of the JSON API body.  We force the same
+    Electron proxy path used in the bundled app so the request goes out
+    with Chromium's TLS handshake.  Linux / macOS dev are unaffected.
+    """
+
+    def test_windows_dev_returns_proxy_session(self, mocker: MockerFixture) -> None:
+        from kamp_daemon.bandcamp import _ProxySession, _make_requests_session
+
+        # sys.frozen is False (the default for an interpreter); we are only
+        # toggling sys.platform here.  This is the dev-mode signal.
+        mocker.patch("kamp_daemon.bandcamp.sys.platform", "win32")
+
+        sess = _make_requests_session(_make_session_data())
+        assert isinstance(sess, _ProxySession)
+
+    def test_macos_dev_returns_direct_session(self, mocker: MockerFixture) -> None:
+        import requests
+
+        from kamp_daemon.bandcamp import _make_requests_session
+
+        mocker.patch("kamp_daemon.bandcamp.sys.platform", "darwin")
+        sess = _make_requests_session(_make_session_data())
+        assert isinstance(sess, requests.Session)
+
+    def test_linux_dev_returns_direct_session(self, mocker: MockerFixture) -> None:
+        import requests
+
+        from kamp_daemon.bandcamp import _make_requests_session
+
+        mocker.patch("kamp_daemon.bandcamp.sys.platform", "linux")
+        sess = _make_requests_session(_make_session_data())
         assert isinstance(sess, requests.Session)
 
 

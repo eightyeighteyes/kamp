@@ -79,6 +79,24 @@ def _is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def _needs_proxy_session() -> bool:
+    """Return True when bandcamp.com requests must route through Electron.
+
+    Two situations require the proxy:
+
+    * **Bundled app (any OS):** PyInstaller ships its own OpenSSL whose JA3/JA4
+      fingerprint Cloudflare flags as non-browser.  See KAMP-127.
+    * **Windows dev:** the Python 3.11 .venv on Windows links against an
+      OpenSSL build whose fingerprint Cloudflare also flags.  This is **not**
+      hypothetical -- the previous "dev mode is safe" assumption only held on
+      macOS, where dev Python uses the system SecureTransport / LibreSSL.
+      See KAMP-290.
+
+    macOS and Linux dev continue to use a direct ``requests.Session``.
+    """
+    return _is_frozen() or sys.platform == "win32"
+
+
 class _ProxyResponse:
     """Minimal requests.Response lookalike backed by a proxy-fetch result.
 
@@ -344,16 +362,18 @@ def _make_requests_session(
 ) -> Union[_requests.Session, _ProxySession]:
     """Build an HTTP session authenticated with cookies from *session_data*.
 
-    In the PyInstaller bundle (``sys.frozen`` is True), returns a ``_ProxySession``
-    that routes all requests through the local kamp server, which forwards them
-    via Electron's net module (Chromium TLS, real browser fingerprint).  In dev,
-    returns a normal ``requests.Session`` with the cookies loaded directly.
+    Returns a :class:`_ProxySession` (routing through Electron's ``net``
+    module, i.e. Chromium TLS with a real browser fingerprint) when
+    :func:`_needs_proxy_session` reports True -- that covers the
+    PyInstaller bundle on every OS plus Windows dev, where the .venv
+    Python's OpenSSL is also fingerprinted by Cloudflare.  Otherwise
+    returns a plain :class:`requests.Session` with the cookies loaded
+    directly from *session_data*.
     """
-    if _is_frozen():
-        # In the bundled app, Electron's session.defaultSession holds the
-        # Bandcamp cookies (set during the interactive login flow) and
-        # _ProxySession routes requests through Electron's net module which
-        # automatically attaches them.
+    if _needs_proxy_session():
+        # Electron's session.defaultSession does *not* need to be pre-populated
+        # with cookies: the proxy-fetch handler in kamp_ui/src/main/index.ts
+        # pulls them from the daemon's session storage on every call.
         return _ProxySession()
 
     session = _requests.Session()

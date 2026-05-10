@@ -70,10 +70,17 @@ If the same sub-problem fails twice in a row, stop and check in before attemptin
 
 **Concrete example (TASK-9 media keys):** next/prev media keys failed six times across multiple sessions because each attempt looked like a fixable bug. The real constraint — `MPRemoteCommandCenter` requires a CFRunLoop on the main thread; asyncio/uvicorn does not run one — was architectural and unfixable by implementation tweaks. Stopping after the second failure, diagnosing the root cause, and creating a task would have saved a full week of token spend. When a sub-problem fails twice: write up what was tried, name the constraint, create a backlog task, and move on.
 
-## Cloudflare TLS fingerprinting in the built app
-PyInstaller bundles its own OpenSSL, which has a different JA3/JA4 TLS fingerprint than a real browser. Cloudflare detects this and serves JS challenge pages (HTTP 200, ~3 KB HTML) instead of the expected response — **even for authenticated JSON API endpoints**, not just HTML page loads. This only manifests in the built `.app`; in dev the system Python uses macOS SecureTransport or a different OpenSSL version that Cloudflare doesn't flag.
+## Cloudflare TLS fingerprinting
+PyInstaller bundles its own OpenSSL, which has a different JA3/JA4 TLS fingerprint than a real browser. Cloudflare detects this and serves JS challenge pages (HTTP 200, ~3 KB HTML body starting with `<!DOCTYPE html>` and a path under `/_fs-ch-...`) instead of the expected response — **even for authenticated JSON API endpoints**, not just HTML page loads.
 
-The only reliable fix for any `bandcamp.com` request in the built app is to route it through Electron's `net` module (Chromium's network stack), which has a real browser TLS fingerprint and already holds the `cf_clearance` cookie. See TASK-127. Do not attempt to fix this by changing User-Agent, tweaking cipher suites, or using a different requests library — the check is at the TLS layer before HTTP headers are read.
+The set of environments that trigger the challenge is broader than originally believed:
+
+- **PyInstaller bundle on any OS** — always affected (KAMP-127).
+- **Windows dev** — also affected (KAMP-290). The Python 3.11 `.venv` on Windows links against a Python-bundled OpenSSL whose fingerprint Cloudflare flags, just like the PyInstaller version.
+- **macOS dev** — not affected. The system Python on macOS uses SecureTransport / LibreSSL, which Cloudflare accepts.
+- **Linux dev** — not affected (at the time of writing; system OpenSSL is generally OK).
+
+The only reliable fix for any `bandcamp.com` request in an affected environment is to route through Electron's `net` module (Chromium's network stack), which has a real browser TLS fingerprint and pulls fresh cookies from the daemon on every call. The gate in `kamp_daemon/bandcamp.py::_needs_proxy_session` is `_is_frozen() or sys.platform == "win32"`. Do not attempt to fix this by changing User-Agent, tweaking cipher suites, or using a different requests library — the check is at the TLS layer before HTTP headers are read.
 
 ## Data Protection Keychain and PyInstaller binaries
 `keychain-access-groups` in a hardened-runtime entitlements file causes macOS to SIGKILL the binary at exec time (before dyld runs) when the binary has no bound `Info.plist` (`Info.plist=not bound` in `codesign -d`). PyInstaller onedir executables are standalone Mach-O files — they have no bundle identity, so macOS cannot validate the entitlement. The binary dies with `EXC_CRASH (SIGKILL - Code Signature Invalid)` and `codeSigningID: ""` in the crash report, even though `codesign --verify` says "valid on disk". Do not add `keychain-access-groups` to standalone (non-bundle) binary entitlements. DPC requires either a compiled launcher with a bound `Info.plist`, or an `--identifier` and `--entitlements` pair where the identifier matches a real bundle ID registered with the team. The DPC code path in `macos_keychain.py` is correct and will activate automatically once the binary has a proper bundle identity; for now it falls back to Login Keychain on `errSecMissingEntitlement`.

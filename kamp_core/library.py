@@ -552,6 +552,17 @@ class LibraryIndex:
                     exc,
                 )
                 break
+            except Exception as exc:
+                # Backend may raise OSError/RuntimeError outside the keyring
+                # exception hierarchy (e.g. ctypes failures from WinVaultKeyring).
+                # Fall through to the DB row instead of letting it propagate.
+                logger.warning(
+                    "get_session: keychain read raised unexpected %s for service=%s: %s",
+                    type(exc).__name__,
+                    service,
+                    exc,
+                )
+                break
         else:
             logger.warning(
                 "get_session: keychain still locked after %d retries for service=%s;"
@@ -633,6 +644,19 @@ class LibraryIndex:
                     type(exc).__name__,
                     exc,
                 )
+            except Exception as exc:
+                # Backend may raise OSError/RuntimeError outside the keyring
+                # exception hierarchy (e.g. ctypes failures from WinVaultKeyring).
+                # Without this branch the exception bubbles out of set_session
+                # and turns the bandcamp login-complete handler into a 422.
+                # See KAMP-282.
+                logger.warning(
+                    "set_session: keychain write raised unexpected %s for service=%s"
+                    " (%s); credential stored in DB fallback",
+                    type(exc).__name__,
+                    service,
+                    exc,
+                )
 
         self._conn.execute(
             """
@@ -668,6 +692,14 @@ class LibraryIndex:
                     "clear_session: keychain delete failed for service=%s (%s: %s)",
                     service,
                     type(exc).__name__,
+                    exc,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "clear_session: keychain delete raised unexpected %s for"
+                    " service=%s: %s",
+                    type(exc).__name__,
+                    service,
                     exc,
                 )
         self._conn.execute("DELETE FROM sessions WHERE service = ?", (service,))

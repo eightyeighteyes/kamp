@@ -2360,6 +2360,77 @@ class TestSessionManagementKeyringErrors:
         index.clear_session("bandcamp")  # must not raise
         index.close()
 
+    def test_set_session_falls_back_to_db_on_unexpected_exception(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """KAMP-282: backends may raise outside the keyring exception hierarchy.
+
+        WinVaultKeyring is ctypes-based and can surface ``OSError`` (or any
+        platform-specific subclass) directly.  Without the broad ``except``
+        in ``set_session`` such exceptions propagated out and turned the
+        Bandcamp ``login-complete`` handler into a 422.  This test pins the
+        hardened behaviour: an unexpected exception type must not propagate;
+        the credential must land in the DB fallback.
+        """
+        mocker.patch(
+            "kamp_core.library.keyring.set_password",
+            side_effect=OSError("ctypes call failed"),
+        )
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library.keyring.delete_password")
+
+        index = self._make_index(tmp_path)
+        data = {"cookies": [{"name": "js_logged_in", "value": "1"}]}
+        index.set_session("bandcamp", data)  # must not raise
+
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is not None
+        assert row["session_json"] is not None
+        index.close()
+
+    def test_get_session_falls_back_to_db_on_unexpected_exception(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Counterpart to set_session: read path must also tolerate OSError etc."""
+        mocker.patch(
+            "kamp_core.library.keyring.get_password",
+            side_effect=OSError("ctypes call failed"),
+        )
+        mocker.patch("kamp_core.library.keyring.set_password")
+        mocker.patch("kamp_core.library.keyring.delete_password")
+        sleep_mock = mocker.patch("kamp_core.library._time.sleep")
+
+        index = self._make_index(tmp_path)
+        # Pre-populate the DB row so the fallback has something to return.
+        index._conn.execute(
+            "INSERT INTO sessions (service, session_json, updated_at)"
+            " VALUES ('bandcamp', ?, 0)",
+            ('{"cookies": []}',),
+        )
+        index._conn.commit()
+        result = index.get_session("bandcamp")
+
+        assert result == {"cookies": []}
+        sleep_mock.assert_not_called()
+        index.close()
+
+    def test_clear_session_does_not_raise_on_unexpected_exception(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """clear_session must swallow OSError and still purge the DB row."""
+        mocker.patch(
+            "kamp_core.library.keyring.delete_password",
+            side_effect=OSError("ctypes call failed"),
+        )
+        mocker.patch("kamp_core.library.keyring.get_password", return_value=None)
+        mocker.patch("kamp_core.library.keyring.set_password")
+
+        index = self._make_index(tmp_path)
+        index.clear_session("bandcamp")  # must not raise
+        index.close()
+
 
 # ---------------------------------------------------------------------------
 # Migration v11 → v12: credentials moved from DB to keychain

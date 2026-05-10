@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import logging
 import threading as _threading
 import uuid as _uuid
 from collections.abc import Callable
@@ -25,6 +26,8 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from kamp_core.library import LibraryIndex, LibraryScanner, Track, extract_art
 from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
@@ -774,6 +777,15 @@ def create_app(
         try:
             on_bandcamp_login_complete({"cookies": req.cookies, "origins": req.origins})
         except Exception as exc:
+            # Redacted payload summary — names only, never cookie values, so we
+            # can diagnose Windows-vs-macOS shape divergence without leaking the
+            # session.  See KAMP-282.
+            cookie_names = [str(c.get("name", "<noname>")) for c in req.cookies]
+            logger.exception(
+                "bandcamp login-complete callback failed: cookie_names=%s origins_count=%d",
+                cookie_names,
+                len(req.origins),
+            )
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         # Read username back from session (populated by the callback when
         # the API call succeeds) and surface it in the config state.

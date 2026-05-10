@@ -1879,6 +1879,85 @@ class TestBandcampStatus:
         assert data["bandcamp.connected"] is True
         assert data["bandcamp.username"] == "johndoe"
 
+    def test_login_complete_accepts_full_electron_cookie_shape(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Regression for KAMP-282: the full Electron payload shape must validate.
+
+        The renderer (`kamp_ui/src/main/index.ts`) sends every field Chromium's
+        cookie store returns — including a float `expires`, capitalised
+        `sameSite`, and `httpOnly`/`secure` booleans.  The Pydantic model is
+        permissive (`list[dict[str, Any]]`) and the handler must accept it.
+        """
+        cookies = [
+            {
+                "name": "session",
+                "value": "abc123",
+                "domain": ".bandcamp.com",
+                "path": "/",
+                "expires": 1893456000.123,  # float, not int
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "Lax",
+            },
+            {
+                "name": "js_logged_in",
+                "value": "1",
+                "domain": ".bandcamp.com",
+                "path": "/",
+                "expires": -1,  # session cookie
+                "httpOnly": False,
+                "secure": False,
+                "sameSite": "Lax",
+            },
+        ]
+        captured: dict[str, Any] = {}
+
+        def _capture(payload: dict[str, Any]) -> None:
+            captured["payload"] = payload
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"bandcamp.connected": False, "bandcamp.username": None},
+            on_bandcamp_login_complete=_capture,
+        )
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/bandcamp/login-complete",
+            json={"cookies": cookies, "origins": []},
+        )
+        assert resp.status_code == 200, resp.text
+        assert captured["payload"]["cookies"] == cookies
+
+    def test_login_complete_returns_422_when_callback_raises(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Callback exceptions surface as 422 with the message in `detail`.
+
+        Documents the contract instrumented for KAMP-282 — the handler must
+        log the traceback (verified by capturing logs) but still return 422
+        with the exception message so the renderer can show it.
+        """
+
+        def _boom(payload: dict[str, Any]) -> None:
+            raise RuntimeError("simulated keyring backend failure")
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_bandcamp_login_complete=_boom,
+        )
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/bandcamp/login-complete",
+            json={"cookies": [{"name": "x", "value": "y"}], "origins": []},
+        )
+        assert resp.status_code == 422
+        assert "simulated keyring backend failure" in resp.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Bandcamp manual sync endpoint

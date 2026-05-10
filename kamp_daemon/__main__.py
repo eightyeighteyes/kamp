@@ -573,6 +573,16 @@ def _cmd_daemon(
         install_path,
     )
 
+    # Surface the active credential backend so platform-specific failures
+    # (e.g. WinVaultKeyring vs fail.Keyring on Windows) are visible in logs.
+    # See KAMP-280 / KAMP-282.
+    try:
+        import keyring as _keyring
+
+        _logger.info("keyring backend: %s", _keyring.get_keyring().__class__.__name__)
+    except Exception as _exc:
+        _logger.warning("keyring backend unavailable: %s", _exc)
+
     # --- HTTP server component initialisation (formerly _cmd_server) ---
 
     _raw_lib = library_path or config.paths.library

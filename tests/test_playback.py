@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -994,6 +995,103 @@ class TestMpvPlaybackEngine:
             engine = MpvPlaybackEngine()
         engine._proc = None
         engine.shutdown()  # should not raise
+
+    # ------------------------------------------------------------------
+    # KAMP-283: Windows Job Object — bind mpv lifetime to the daemon so
+    # the kernel kills mpv when the daemon process exits (clean shutdown,
+    # crash, or End-Task). All four tests stub _start_mpv's collaborators
+    # so the real subprocess.Popen / kernel32 calls never run under test.
+    # ------------------------------------------------------------------
+
+    def test_start_mpv_creates_job_and_assigns_mpv_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("kamp_core.playback.sys.platform", "win32")
+
+        fake_proc = MagicMock()
+        fake_proc._handle = 0xCAFE
+        fake_job = MagicMock()
+        fake_job_class = MagicMock(return_value=fake_job)
+
+        with (
+            patch(
+                "kamp_core.playback.subprocess.Popen", return_value=fake_proc
+            ) as mock_popen,
+            patch("kamp_core.playback._WindowsJobObject", fake_job_class),
+            patch(
+                "kamp_core.playback._make_ipc_transport",
+                return_value=MagicMock(),
+            ),
+            patch("kamp_core.playback.threading.Thread"),
+        ):
+            engine = MpvPlaybackEngine()
+
+        fake_job_class.assert_called_once_with()
+        fake_job.assign.assert_called_once_with(0xCAFE)
+        assert engine._job is fake_job
+        # CREATE_BREAKAWAY_FROM_JOB (0x01000000) detaches mpv from any outer
+        # Electron Job before joining ours.
+        _, popen_kwargs = mock_popen.call_args
+        assert popen_kwargs["creationflags"] & 0x01000000
+
+    def test_start_mpv_skips_job_on_posix(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("kamp_core.playback.sys.platform", "darwin")
+        fake_job_class = MagicMock()
+
+        with (
+            patch("kamp_core.playback.subprocess.Popen") as mock_popen,
+            patch("kamp_core.playback._WindowsJobObject", fake_job_class),
+            patch(
+                "kamp_core.playback._make_ipc_transport",
+                return_value=MagicMock(),
+            ),
+            patch("kamp_core.playback.threading.Thread"),
+        ):
+            engine = MpvPlaybackEngine()
+
+        fake_job_class.assert_not_called()
+        assert engine._job is None
+        _, popen_kwargs = mock_popen.call_args
+        assert popen_kwargs.get("creationflags", 0) == 0
+
+    def test_start_mpv_continues_when_job_creation_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setattr("kamp_core.playback.sys.platform", "win32")
+        fake_job_class = MagicMock(side_effect=OSError("simulated failure"))
+
+        with (
+            patch("kamp_core.playback.subprocess.Popen") as mock_popen,
+            patch("kamp_core.playback._WindowsJobObject", fake_job_class),
+            patch(
+                "kamp_core.playback._make_ipc_transport",
+                return_value=MagicMock(),
+            ),
+            patch("kamp_core.playback.threading.Thread"),
+            caplog.at_level(logging.WARNING, logger="kamp_core.playback"),
+        ):
+            engine = MpvPlaybackEngine()
+
+        assert engine._job is None
+        mock_popen.assert_called_once()
+        assert any(
+            "Job Object" in rec.message for rec in caplog.records
+        ), "expected a warning about Job Object failure"
+
+    def test_shutdown_closes_job_object(self) -> None:
+        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
+            engine = MpvPlaybackEngine()
+        mock_job = MagicMock()
+        engine._job = mock_job
+
+        engine.shutdown()
+
+        mock_job.close.assert_called_once()
+        assert engine._job is None
 
     def test_volume_getter_returns_state_volume(self) -> None:
         engine, _ = _make_engine()

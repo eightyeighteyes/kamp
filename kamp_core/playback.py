@@ -7,6 +7,7 @@ updated by a background reader thread that consumes mpv's event stream.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
 import random
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 from abc import ABC, abstractmethod
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -559,6 +561,142 @@ class _WindowsNamedPipeTransport(_IPCTransport):
             self._conn = None
 
 
+# Win32 Job Object constants (winnt.h).
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
+_JobObjectExtendedLimitInformation = 9
+# Process creation flags (winbase.h).
+_CREATE_NO_WINDOW = 0x08000000
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+
+class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),  # ULONG_PTR
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _IO_COUNTERS(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    ]
+
+
+class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+        ("IoInfo", _IO_COUNTERS),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+class _WindowsJobObject:
+    """Win32 Job Object that auto-kills assigned children when the handle closes.
+
+    Windows does not propagate parent death the way POSIX does — when the
+    daemon dies, child processes (mpv) survive as orphans. Wrapping mpv in a
+    Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE makes the kernel
+    terminate every process in the Job when the last handle to it closes,
+    which the kernel does automatically when the daemon process exits — clean
+    shutdown, crash, or End-Task all release the handle.
+
+    Defined unconditionally so this module imports on POSIX; the win32-only
+    ctypes calls only run when an instance is constructed (which only happens
+    on win32, gated by MpvPlaybackEngine._start_mpv).
+    """
+
+    def __init__(self) -> None:  # pragma: no cover
+        # ctypes.WinDLL is win32-only in typeshed; this constructor only runs
+        # on Windows, but mypy on POSIX CI doesn't know that, hence the ignore.
+        kernel32: Any = ctypes.WinDLL(  # type: ignore[attr-defined,unused-ignore]
+            "kernel32", use_last_error=True
+        )
+
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+        ]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise OSError(f"CreateJobObjectW failed (error {ctypes.get_last_error()})")
+
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        # BREAKAWAY_OK lets descendants escape this Job if they ever need to;
+        # KILL_ON_JOB_CLOSE is the actual orphan-killer.
+        info.BasicLimitInformation.LimitFlags = (
+            _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | _JOB_OBJECT_LIMIT_BREAKAWAY_OK
+        )
+
+        if not kernel32.SetInformationJobObject(
+            handle,
+            _JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            last_error = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            raise OSError(f"SetInformationJobObject failed (error {last_error})")
+
+        self._handle: Any = handle
+        self._kernel32: Any = kernel32
+        self._closed = False
+
+    def assign(self, proc_handle: int) -> None:  # pragma: no cover
+        """Assign an existing process handle to this Job Object."""
+        if self._closed:
+            raise OSError("Job Object already closed")
+        if not self._kernel32.AssignProcessToJobObject(
+            self._handle, wintypes.HANDLE(proc_handle)
+        ):
+            raise OSError(
+                f"AssignProcessToJobObject failed (error {ctypes.get_last_error()})"
+            )
+
+    def close(self) -> None:  # pragma: no cover
+        """Release the Job handle. Idempotent.
+
+        Closing the last handle triggers KILL_ON_JOB_CLOSE on any process
+        still in the Job, so this is also the explicit orphan-cleanup path
+        on graceful shutdown.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._kernel32.CloseHandle(self._handle)
+        except OSError:
+            pass
+
+
 def _make_ipc_transport() -> _IPCTransport:
     """Return the IPC transport appropriate for the current platform."""
     if sys.platform == "win32":
@@ -598,6 +736,10 @@ class MpvPlaybackEngine:
         self.on_play_state_changed: Callable[[], None] | None = None
         self._mpv_bin = mpv_bin
         self._proc: subprocess.Popen[bytes] | None = None
+        # Win32 Job Object that the spawned mpv is assigned to so it dies
+        # with the daemon (KAMP-283). Win32-only; None on POSIX or if the
+        # Job Object API is unavailable.
+        self._job: _WindowsJobObject | None = None
         self._ipc: _IPCTransport = _make_ipc_transport()
         self._reader_thread: threading.Thread | None = None
         # RLock so the reader thread can re-acquire the lock inside callbacks
@@ -618,6 +760,23 @@ class MpvPlaybackEngine:
 
     def _start_mpv(self) -> None:  # pragma: no cover
         """Launch mpv and connect to its IPC channel."""
+        # Create the Job Object before Popen so we can assign mpv immediately
+        # after it spawns. CREATE_BREAKAWAY_FROM_JOB on Popen detaches mpv from
+        # any outer Electron Job before it joins ours; Job creation is
+        # best-effort — log and continue if it fails.
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = _CREATE_NO_WINDOW | _CREATE_BREAKAWAY_FROM_JOB
+            try:
+                self._job = _WindowsJobObject()
+            except OSError as exc:
+                logger.warning(
+                    "Could not create Win32 Job Object; mpv may survive "
+                    "daemon exit. (%s)",
+                    exc,
+                )
+                self._job = None
+
         self._proc = subprocess.Popen(
             [
                 self._mpv_bin,
@@ -634,7 +793,21 @@ class MpvPlaybackEngine:
             stdout=subprocess.DEVNULL,
             # Capture stderr so we can surface it if mpv fails to start.
             stderr=subprocess.PIPE,
+            creationflags=creationflags,
         )
+
+        if self._job is not None:
+            try:
+                # Popen._handle is the Win32 process HANDLE; underscore-prefixed
+                # but stable since Python 3.7. getattr keeps mypy happy on POSIX.
+                self._job.assign(int(getattr(self._proc, "_handle")))
+            except OSError as exc:
+                logger.warning(
+                    "Could not assign mpv to Win32 Job Object; mpv may "
+                    "survive daemon exit. (%s)",
+                    exc,
+                )
+
         try:
             self._ipc.open(timeout=5.0, proc=self._proc)
         except RuntimeError as exc:
@@ -765,6 +938,11 @@ class MpvPlaybackEngine:
         if self._proc is not None:
             self._proc.terminate()
             self._proc = None
+        # Releasing the Job handle triggers KILL_ON_JOB_CLOSE, a backstop in
+        # case mpv didn't exit on terminate(). Win32-only; None on POSIX.
+        if self._job is not None:
+            self._job.close()
+            self._job = None
         # Closing the transport unblocks the reader thread's blocking recv()
         # so the daemon shuts down cleanly. Tolerate cleanup errors so a
         # crashing transport never aborts daemon shutdown.

@@ -571,7 +571,9 @@ _CREATE_NO_WINDOW = 0x08000000
 
 def _win_last_error() -> int:
     """Wrapper for ctypes.get_last_error() — win32-only in typeshed."""
-    return ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
+    # attr-defined suppresses the POSIX-typeshed gate; the int() cast narrows
+    # the otherwise-Any return so strict mypy doesn't flag no-any-return.
+    return int(ctypes.get_last_error())  # type: ignore[attr-defined,unused-ignore]
 
 
 class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):

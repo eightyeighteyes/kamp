@@ -64,6 +64,10 @@ omit = [
     "kamp_daemon/ext/sandbox/_linux.py",
     # macOS-only module; raises ImportError on Linux so tests are skipped there.
     "kamp_core/macos_keychain.py",
+    # Windows-only module (DPAPI ctypes wrapper); raises ImportError on Linux
+    # and macOS so the body is never executed in CI.  Real coverage comes
+    # from tests/test_win_credential.py on Windows runners.
+    "kamp_core/win_credential.py",
 ]
 
 [tool.coverage.report]

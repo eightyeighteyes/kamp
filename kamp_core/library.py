@@ -610,58 +610,70 @@ class LibraryIndex:
             logger.debug("get_session: DB fallback hit for service=%s", service)
             return dict(json.loads(_maybe_unprotect(row["session_json"])))  # type: ignore[no-any-return]
 
-        # --- keyring path (non-macOS)
-        _MAX_RETRIES = 3
-        for attempt in range(_MAX_RETRIES):
-            try:
-                raw = keyring.get_password("kamp", service)
-                if raw is not None:
-                    logger.debug("get_session: keychain hit for service=%s", service)
-                    return json.loads(raw)  # type: ignore[no-any-return]
-                logger.debug(
-                    "get_session: keychain returned no entry for service=%s", service
-                )
-                break  # key not present — no point retrying
-            except keyring.errors.NoKeyringError:
-                break
-            except keyring.errors.KeyringLocked as exc:
-                delay = 0.5 * (2**attempt)
-                logger.debug(
-                    "get_session: keychain locked for service=%s"
-                    " (attempt %d/%d, retry in %.1fs): %s",
-                    service,
-                    attempt + 1,
+        # --- keyring path (non-macOS, non-Windows-DPAPI) -----
+        # On Windows we skip the OS keyring entirely: WinVaultKeyring caps
+        # credentials at 2560 bytes which the Bandcamp blob exceeds, so the
+        # call always fails for that service.  DPAPI in the DB fallback
+        # provides equivalent per-user encryption without the size limit.
+        # See KAMP-280 / KAMP-282.
+        if _win_cred is None:
+            _MAX_RETRIES = 3
+            for attempt in range(_MAX_RETRIES):
+                try:
+                    raw = keyring.get_password("kamp", service)
+                    if raw is not None:
+                        logger.debug(
+                            "get_session: keychain hit for service=%s", service
+                        )
+                        return json.loads(raw)  # type: ignore[no-any-return]
+                    logger.debug(
+                        "get_session: keychain returned no entry for service=%s",
+                        service,
+                    )
+                    break  # key not present — no point retrying
+                except keyring.errors.NoKeyringError:
+                    break
+                except keyring.errors.KeyringLocked as exc:
+                    delay = 0.5 * (2**attempt)
+                    logger.debug(
+                        "get_session: keychain locked for service=%s"
+                        " (attempt %d/%d, retry in %.1fs): %s",
+                        service,
+                        attempt + 1,
+                        _MAX_RETRIES,
+                        delay,
+                        exc,
+                    )
+                    _time.sleep(delay)
+                except keyring.errors.KeyringError as exc:
+                    logger.warning(
+                        "get_session: keychain read failed for service=%s (%s: %s)",
+                        service,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    break
+                except Exception as exc:
+                    # Backend may raise OSError/RuntimeError outside the keyring
+                    # exception hierarchy (e.g. ctypes failures from
+                    # WinVaultKeyring).  Fall through to the DB row instead of
+                    # letting it propagate.
+                    logger.warning(
+                        "get_session: keychain read raised unexpected %s"
+                        " for service=%s: %s",
+                        type(exc).__name__,
+                        service,
+                        exc,
+                    )
+                    break
+            else:
+                logger.warning(
+                    "get_session: keychain still locked after %d retries for"
+                    " service=%s; credentials may appear missing until the"
+                    " keychain unlocks",
                     _MAX_RETRIES,
-                    delay,
-                    exc,
-                )
-                _time.sleep(delay)
-            except keyring.errors.KeyringError as exc:
-                logger.warning(
-                    "get_session: keychain read failed for service=%s (%s: %s)",
                     service,
-                    type(exc).__name__,
-                    exc,
                 )
-                break
-            except Exception as exc:
-                # Backend may raise OSError/RuntimeError outside the keyring
-                # exception hierarchy (e.g. ctypes failures from WinVaultKeyring).
-                # Fall through to the DB row instead of letting it propagate.
-                logger.warning(
-                    "get_session: keychain read raised unexpected %s for service=%s: %s",
-                    type(exc).__name__,
-                    service,
-                    exc,
-                )
-                break
-        else:
-            logger.warning(
-                "get_session: keychain still locked after %d retries for service=%s;"
-                " credentials may appear missing until the keychain unlocks",
-                _MAX_RETRIES,
-                service,
-            )
 
         # --- DB fallback -------------------------------------
         row = self._conn.execute(
@@ -710,7 +722,9 @@ class LibraryIndex:
                     type(exc).__name__,
                     exc,
                 )
-        else:
+        elif _win_cred is None:
+            # Windows skips this branch — DPAPI-wrapped DB row is the
+            # storage path there (see KAMP-280).
             try:
                 keyring.set_password("kamp", service, payload)
                 verified = keyring.get_password("kamp", service)
@@ -779,7 +793,9 @@ class LibraryIndex:
                     type(exc).__name__,
                     exc,
                 )
-        else:
+        elif _win_cred is None:
+            # Windows skips OS keyring entirely (see KAMP-280); the DELETE
+            # below removes the DPAPI-wrapped row.
             try:
                 keyring.delete_password("kamp", service)
             except (keyring.errors.NoKeyringError, keyring.errors.PasswordDeleteError):

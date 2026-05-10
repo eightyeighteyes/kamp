@@ -1863,6 +1863,10 @@ class TestSessionManagement:
     def no_keyring(self, mocker: MockerFixture) -> None:
         """Simulate a platform without a keyring backend."""
         mocker.patch("kamp_core.library._mac_kc", None)
+        # Force the Linux/keyring code path even on Windows runners (where
+        # _win_cred is otherwise the real DPAPI module and would short-circuit
+        # the keyring branch entirely).  See KAMP-280.
+        mocker.patch("kamp_core.library._win_cred", None)
         err = keyring.errors.NoKeyringError()
         mocker.patch("kamp_core.library.keyring.get_password", side_effect=err)
         mocker.patch("kamp_core.library.keyring.set_password", side_effect=err)
@@ -2127,6 +2131,8 @@ class TestSessionManagementKeyring:
     def mock_keyring(self, mocker: MockerFixture) -> dict[str, str]:
         """In-memory keyring store; returns the backing dict for inspection."""
         mocker.patch("kamp_core.library._mac_kc", None)
+        # Force Linux/keyring path on Windows runners (KAMP-280).
+        mocker.patch("kamp_core.library._win_cred", None)
         store: dict[str, str] = {}
 
         def _set(app: str, service: str, value: str) -> None:
@@ -2212,6 +2218,8 @@ class TestSessionManagementKeyringErrors:
     def force_keyring_path(self, mocker: MockerFixture) -> None:
         """Disable the macOS Data Protection Keychain so these tests exercise keyring."""
         mocker.patch("kamp_core.library._mac_kc", None)
+        # Force Linux/keyring path on Windows runners (KAMP-280).
+        mocker.patch("kamp_core.library._win_cred", None)
 
     def _make_index(self, tmp_path: Path) -> "LibraryIndex":
         return LibraryIndex(tmp_path / "library.db")
@@ -2569,6 +2577,48 @@ class TestSessionManagementWindowsDPAPI:
         assert row["session_json"] is not None
         index.close()
 
+    def test_set_session_does_not_call_keyring_on_windows(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """KAMP-280: when DPAPI is available, skip the OS keyring entirely.
+
+        WinVaultKeyring's 2560-byte size limit means CredWrite will always
+        fail for the Bandcamp blob; calling it just produces a noisy WARNING
+        log line on every login.  With DPAPI available we go straight to
+        the encrypted DB row.
+        """
+        # Reset the keyring mock from the autouse fixture so we can assert
+        # call counts cleanly.
+        mock_set = mocker.patch("kamp_core.library.keyring.set_password")
+        mock_get = mocker.patch(
+            "kamp_core.library.keyring.get_password", return_value=None
+        )
+
+        index = self._make_index(tmp_path)
+        index.set_session("bandcamp", {"cookies": [{"name": "x", "value": "y"}]})
+
+        mock_set.assert_not_called()
+        mock_get.assert_not_called()
+        index.close()
+
+    def test_clear_session_does_not_call_keyring_on_windows(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """clear_session also skips OS keyring when DPAPI is available."""
+        mock_delete = mocker.patch("kamp_core.library.keyring.delete_password")
+
+        index = self._make_index(tmp_path)
+        index.set_session("bandcamp", {"cookies": []})
+        index.clear_session("bandcamp")
+
+        mock_delete.assert_not_called()
+        # And the DB row is gone.
+        row = index._conn.execute(
+            "SELECT session_json FROM sessions WHERE service = 'bandcamp'"
+        ).fetchone()
+        assert row is None
+        index.close()
+
 
 # ---------------------------------------------------------------------------
 # Migration v12 → v13: encrypt residual plaintext rows on Windows
@@ -2698,6 +2748,8 @@ class TestMigrationV11ToV12:
     def force_keyring_path(self, mocker: MockerFixture) -> None:
         """Disable the macOS Data Protection Keychain so v11→v12 migration uses keyring."""
         mocker.patch("kamp_core.library._mac_kc", None)
+        # Force Linux/keyring path on Windows runners (KAMP-280).
+        mocker.patch("kamp_core.library._win_cred", None)
 
     def _build_v11_db(self, db_path: Path) -> None:
         """Create a v11 database with a sessions row containing plaintext JSON."""

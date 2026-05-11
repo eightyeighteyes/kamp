@@ -116,25 +116,39 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
 # Config keys that accept filesystem paths — validated on write.
 _PATH_CONFIG_KEYS: frozenset[str] = frozenset({"paths.watch_folder", "paths.library"})
 
-# Filesystem roots that must never be accepted as a config path value.
+# Filesystem roots that must never be accepted as a config path value. Entries are
+# platform-specific. Bare drive roots on Windows (C:\, D:\, ...) are rejected
+# separately in the validator via a len(parts) == 1 check so we don't have to
+# enumerate every drive letter.
 _FORBIDDEN_PATH_ROOTS: frozenset[Path] = frozenset(
     Path(p).resolve()
     for p in (
-        "/",
-        "/System",
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/etc",
-        "/private/etc",
-        "/var",
-        "/private/var",
-        "/Library",
-        "/Applications",
-        "/dev",
-        "/proc",
-        "/sys",
+        (
+            r"C:\Windows",
+            r"C:\Windows\System32",
+            r"C:\Program Files",
+            r"C:\Program Files (x86)",
+            r"C:\ProgramData",
+            r"C:\Users",
+        )
+        if sys.platform == "win32"
+        else (
+            "/",
+            "/System",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/etc",
+            "/private/etc",
+            "/var",
+            "/private/var",
+            "/Library",
+            "/Applications",
+            "/dev",
+            "/proc",
+            "/sys",
+        )
     )
 )
 
@@ -381,6 +395,12 @@ def config_set(db: "LibraryIndex", key: str, value: str) -> None:
             # traversal; deny-list below blocks system roots and their subtrees.
             resolved = Path(value).expanduser().resolve()  # noqa: S603
             if resolved in _FORBIDDEN_PATH_ROOTS:
+                raise ValueError(
+                    f"Path {value!r} is not allowed as a value for {key!r}"
+                )
+            # Bare drive root on Windows (C:\, D:\, ...). Reject by structure
+            # since we can't enumerate every drive letter.
+            if sys.platform == "win32" and len(resolved.parts) == 1:
                 raise ValueError(
                     f"Path {value!r} is not allowed as a value for {key!r}"
                 )

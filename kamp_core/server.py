@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import sys
 import threading as _threading
 import uuid as _uuid
 from collections.abc import Callable
@@ -137,25 +138,39 @@ class LibraryPathRequest(BaseModel):
 
 
 # Paths that must never be accepted as a library root, regardless of whether they
-# exist and are directories. Covers macOS and Linux system directories.
+# exist and are directories. Entries are platform-specific: POSIX system roots on
+# macOS/Linux, Windows system roots on Windows. Bare drive roots on Windows (e.g.
+# C:\, D:\) are rejected separately in the validator via a len(parts) == 1 check
+# so we don't have to enumerate every possible drive letter.
 _FORBIDDEN_LIBRARY_ROOTS: frozenset[Path] = frozenset(
     Path(p).resolve()
     for p in (
-        "/",
-        "/System",
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/etc",
-        "/private/etc",
-        "/var",
-        "/private/var",
-        "/Library",
-        "/Applications",
-        "/dev",
-        "/proc",
-        "/sys",
+        (
+            r"C:\Windows",
+            r"C:\Windows\System32",
+            r"C:\Program Files",
+            r"C:\Program Files (x86)",
+            r"C:\ProgramData",
+            r"C:\Users",
+        )
+        if sys.platform == "win32"
+        else (
+            "/",
+            "/System",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/etc",
+            "/private/etc",
+            "/var",
+            "/private/var",
+            "/Library",
+            "/Applications",
+            "/dev",
+            "/proc",
+            "/sys",
+        )
     )
 )
 
@@ -633,6 +648,13 @@ def create_app(
         # would break legitimate use cases (external drives, network mounts).
         candidate = Path(raw).expanduser().resolve()  # noqa: S603
         if candidate in _FORBIDDEN_LIBRARY_ROOTS:
+            raise HTTPException(
+                status_code=422, detail="Path is not allowed as a library root"
+            )
+        # Bare drive root on Windows (C:\, D:\, ...). Can't enumerate every drive
+        # letter, so reject by structure: a resolved absolute path with a single
+        # part is an anchor with no further component.
+        if sys.platform == "win32" and len(candidate.parts) == 1:
             raise HTTPException(
                 status_code=422, detail="Path is not allowed as a library root"
             )

@@ -310,23 +310,30 @@ class TestConfigSet:
         with pytest.raises(ValueError, match="requires an absolute path"):
             config_set(db, "paths.watch_folder", "../escape")
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="forbidden roots list is POSIX-specific; Windows hardening "
-        "(C:\\Windows, etc.) is tracked as a follow-up",
-    )
     @pytest.mark.parametrize(
         "forbidden",
-        [
-            "/",
-            "/etc",
-            "/private/etc",
-            "/System",
-            "/usr",
-            "/bin",
-            "/Library",
-            "/Applications",
-        ],
+        (
+            [
+                r"C:\Windows",
+                r"C:\Windows\System32",
+                r"C:\Program Files",
+                r"C:\Program Files (x86)",
+                r"C:\ProgramData",
+                r"C:\Users",
+                "C:\\",
+            ]
+            if sys.platform == "win32"
+            else [
+                "/",
+                "/etc",
+                "/private/etc",
+                "/System",
+                "/usr",
+                "/bin",
+                "/Library",
+                "/Applications",
+            ]
+        ),
     )
     def test_path_key_forbidden_root_raises(
         self, db: LibraryIndex, forbidden: str

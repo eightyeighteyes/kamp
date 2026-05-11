@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -1269,7 +1270,19 @@ class TestSetLibraryPathEndpoint:
 
     @pytest.mark.parametrize(
         "forbidden",
-        ["/", "/etc", "/System", "/usr", "/bin", "/Library", "/Applications"],
+        (
+            [
+                r"C:\Windows",
+                r"C:\Windows\System32",
+                r"C:\Program Files",
+                r"C:\Program Files (x86)",
+                r"C:\ProgramData",
+                r"C:\Users",
+                "C:\\",
+            ]
+            if sys.platform == "win32"
+            else ["/", "/etc", "/System", "/usr", "/bin", "/Library", "/Applications"]
+        ),
     )
     def test_forbidden_system_roots_return_422(
         self,

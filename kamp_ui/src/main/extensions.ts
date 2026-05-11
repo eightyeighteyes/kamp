@@ -133,7 +133,11 @@ function npmPrefixDir(): string {
  */
 function bundledNodeAndNpm(): [string, string] | null {
   if (!app.isPackaged) return null
-  const node = join(process.resourcesPath, 'node')
+  // Windows ships the binary as node.exe (per fetch_node.ps1 / electron-builder
+  // win.extraResources); execFile with an absolute path requires the explicit
+  // .exe suffix because shell: false bypasses PATHEXT resolution.
+  const nodeName = process.platform === 'win32' ? 'node.exe' : 'node'
+  const node = join(process.resourcesPath, nodeName)
   const npmCli = join(process.resourcesPath, 'npm', 'bin', 'npm-cli.js')
   if (existsSync(node) && existsSync(npmCli)) return [node, npmCli]
   return null

@@ -138,6 +138,24 @@ PowerShell on Windows reads `.ps1` and inline-script files via the system codepa
 
 Don't assume tools are preinstalled on `windows-latest` without checking the [runner-images](https://github.com/actions/runner-images) repo for the current image. Inkscape was on the image historically and is **not** at the time of writing — assuming `C:\Program Files\Inkscape\bin\inkscape.exe` works is a CI-only failure that won't surface in any local check. Prefer tools that are installable via MSYS2 pacman (`mingw-w64-x86_64-librsvg` for SVG → PNG) or that ship with the Python/Node toolchain we already require, both because they're version-pinnable and because they survive runner-image churn.
 
+## Cross-platform bundled-asset filename divergence
+
+When bundled binaries land at different on-disk names per platform (e.g. `<resourcesPath>/node` on macOS vs `<resourcesPath>\node.exe` on Windows, per `electron-builder.yml` `extraResources` and `scripts/fetch_node.*`), every runtime consumer that constructs a path to those assets needs a platform branch. `child_process.execFile` with an absolute path on Windows does **not** auto-resolve `.exe` via PATHEXT — that only applies when the executable is on PATH and resolved via shell. With `shell: false` (the `execFile` default) and an absolute path, the explicit `.exe` suffix is required.
+
+KAMP-287 shipped a Windows installer where `bundledNodeAndNpm()` in `kamp_ui/src/main/extensions.ts` looked for `<resourcesPath>\node`, returned null, and silently fell back to a bare `npm` on PATH — breaking community-extension install on any machine without Node preinstalled. The bug went unnoticed because `kamp_ui` has no unit-test runner; nothing exercised the bundled path during build. When adding any new platform to the packaging matrix, audit every `process.resourcesPath` / `path.join` site that names a bundled binary.
+
+## Verifying packaged Windows behavior without a clean machine
+
+Windows Sandbox is the ideal clean-Windows sim but requires Win11 Pro/Enterprise/Education — **not available on Win11 Home**. On Home, the cheapest realistic substitute for testing `process.resourcesPath`-style code paths is to strip Node (or whatever bundled binary is being tested) from `$env:PATH` in the shell you launch the app from, then run the installed `.exe` from that same shell:
+
+```powershell
+$env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'nodejs|npm' }) -join ';'
+Get-Command npm  # must error before launching
+& "$env:LOCALAPPDATA\Programs\Kamp\Kamp.exe"
+```
+
+This forces the bundled-path branch because the system fallback is unreachable. Equivalent to a clean machine for the code under test; differs only in environmental cruft (registry/user keys) that doesn't reach `execFile`. Pair with the CI-built artifact from `workflow_dispatch` on `build-app.yml` if local Electron builds fail.
+
 ## Python regex pitfall: backslash escapes in re.subn replacement
 
 `re.sub`/`re.subn` interpret backslash escapes in the **replacement string** as regex backreferences. When rewriting code that contains `\xNN` byte literals (e.g. `b"\x00\x18..."` for AcoustID encoded keys), passing the literal as the replacement raises `re.error: bad escape \x at position N`. Use the callback form: `pattern.subn(lambda _m: replacement, src, count=1)` — callbacks bypass backreference interpretation.

@@ -9,8 +9,14 @@ import {
   net,
   screen as electronScreen
 } from 'electron'
-import { join, resolve } from 'path'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { dirname, join, resolve } from 'path'
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync
+} from 'fs'
 import { homedir } from 'os'
 import { spawn, ChildProcess, execFileSync } from 'child_process'
 import { createInterface } from 'readline'
@@ -94,6 +100,17 @@ function findNowPlayingBinary(): string | null {
   return null
 }
 
+// Per-launch helper log so a packaged install (no visible stderr) is still
+// observable. Truncates on every spawn — we only care about the most recent
+// run, not history. Path mirrors the auth token's data dir.
+function helperLogPath(): string {
+  const dir =
+    process.platform === 'win32'
+      ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'kamp')
+      : join(homedir(), '.local', 'share', 'kamp')
+  return join(dir, 'now-playing-helper.log')
+}
+
 function sendToHelper(msg: object): void {
   if (!_helper?.stdin?.writable) return
   _helper.stdin.write(JSON.stringify(msg) + '\n')
@@ -114,7 +131,17 @@ function startNowPlayingHelper(): void {
     console.warn('[kamp] now-playing-helper binary not found — media keys disabled')
     return
   }
-  _helper = spawn(binary, [], { stdio: ['pipe', 'pipe', 'inherit'] })
+  _helper = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] })
+  // Tee the helper's stderr to a per-launch log file so packaged installs
+  // (no visible stderr) remain debuggable. Truncate on every spawn.
+  try {
+    const logPath = helperLogPath()
+    mkdirSync(dirname(logPath), { recursive: true })
+    const logStream = createWriteStream(logPath, { flags: 'w' })
+    _helper.stderr?.pipe(logStream)
+  } catch (e) {
+    console.warn('[kamp] could not open helper log:', e)
+  }
   _helper.on('exit', () => {
     _helper = null
     if (_heartbeatInterval) {

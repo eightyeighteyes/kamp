@@ -44,8 +44,8 @@ use windows::Win32::System::WinRT::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostMessageW,
-    RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_QUIT, WNDCLASSW,
+    RegisterClassW, TranslateMessage, MSG, WM_APP, WM_QUIT, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 // ---------------------------------------------------------------------------
@@ -152,12 +152,15 @@ struct SmtcState {
 
 impl SmtcState {
     fn new(hwnd: HWND) -> Result<Self> {
-        // Get SMTC for this window via the interop factory.  Per WinRT
-        // convention, ISystemMediaTransportControlsInterop hangs off the
-        // SystemMediaTransportControls activation factory.
+        // Stage markers in stderr so a future E_INVALIDARG (or other HRESULT)
+        // lands on a known phase rather than a bare "parameter is incorrect"
+        // with no context.
+        eprintln!("[now-playing-helper] init: interop factory");
         let interop: ISystemMediaTransportControlsInterop =
             windows::core::factory::<SystemMediaTransportControls, ISystemMediaTransportControlsInterop>()?;
+        eprintln!("[now-playing-helper] init: GetForWindow");
         let controls: SystemMediaTransportControls = unsafe { interop.GetForWindow(hwnd)? };
+        eprintln!("[now-playing-helper] init: SMTC owned");
 
         controls.SetIsEnabled(true)?;
         controls.SetIsPlayEnabled(true)?;
@@ -367,7 +370,7 @@ unsafe extern "system" fn wnd_proc(
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-fn create_message_window() -> Result<HWND> {
+fn create_helper_window() -> Result<HWND> {
     unsafe {
         let hinstance = GetModuleHandleW(PCWSTR::null())?.into();
         let class_name = HSTRING::from("KampNowPlayingHelper");
@@ -381,16 +384,27 @@ fn create_message_window() -> Result<HWND> {
         if atom == 0 {
             return Err(windows::core::Error::from_win32());
         }
+        // SMTC's ISystemMediaTransportControlsInterop::GetForWindow rejects
+        // message-only windows (HWND_MESSAGE parent) with E_INVALIDARG and
+        // requires a real top-level window per Microsoft's docs. The window
+        // doesn't need to be visible — invoking ShowWindow is unnecessary —
+        // but it must be top-level (parent = None).
+        //
+        // Style choices keep it out of the user's way:
+        //   WS_POPUP         — no border, no title bar, no system menu
+        //   WS_EX_TOOLWINDOW — excluded from Alt+Tab and the taskbar
+        //   WS_EX_NOACTIVATE — never steals focus
+        let title = HSTRING::from("Kamp Now Playing");
         let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             PCWSTR(class_name.as_ptr()),
-            PCWSTR::null(),
-            WINDOW_STYLE(0),
+            PCWSTR(title.as_ptr()),
+            WS_POPUP,
             0,
             0,
             0,
             0,
-            Some(HWND_MESSAGE),
+            None,
             None,
             Some(hinstance),
             None,
@@ -513,7 +527,7 @@ fn main() -> Result<()> {
         RoInitialize(RO_INIT_SINGLETHREADED)?;
     }
 
-    let hwnd = create_message_window()?;
+    let hwnd = create_helper_window()?;
     UI_HWND
         .set(hwnd.0 as isize)
         .expect("UI_HWND set twice");

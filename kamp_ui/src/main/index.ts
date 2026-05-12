@@ -10,13 +10,7 @@ import {
   screen as electronScreen
 } from 'electron'
 import { dirname, join, resolve } from 'path'
-import {
-  createWriteStream,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync
-} from 'fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { spawn, ChildProcess, execFileSync } from 'child_process'
 import { createInterface } from 'readline'

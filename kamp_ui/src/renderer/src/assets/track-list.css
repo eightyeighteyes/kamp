@@ -220,9 +220,10 @@
 }
 
 .track-row-fav {
-  font-size: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--accent);
-  text-align: center;
 }
 
 .track-row-num {

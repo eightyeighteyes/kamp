@@ -5,6 +5,7 @@ import type { Album, Track } from '../api/client'
 import { SortControl } from './SortControl'
 import { AlbumContextMenu } from './AlbumContextMenu'
 import { TrackContextMenu } from './TrackContextMenu'
+import { FavoriteIcon } from './TransportIcons'
 
 type AlbumMenu = { x: number; y: number; album: Album }
 type TrackMenu = { x: number; y: number; filePath: string; favorite: boolean }
@@ -101,8 +102,8 @@ function SearchTrackRow({
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >
-      <span className="search-track-fav" aria-hidden="true">
-        {track.favorite ? '♥' : ''}
+      <span className="search-track-fav">
+        {track.favorite && <FavoriteIcon active size={10} />}
       </span>
       <span className="search-track-title">{track.title}</span>
       <span className="search-track-meta">

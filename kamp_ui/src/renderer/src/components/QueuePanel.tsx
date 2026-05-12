@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { QueueContextMenu } from './QueueContextMenu'
+import { FavoriteIcon } from './TransportIcons'
 
 const QUEUE_DROP_TYPES = new Set(['text/kamp-track-path', 'text/kamp-album', 'text/kamp-queue-idx'])
 function isQueueDrop(types: DOMStringList | readonly string[]): boolean {
@@ -217,8 +218,8 @@ export function QueuePanel(): React.JSX.Element {
                   })
                 }}
               >
-                <span className="queue-track-fav" aria-hidden="true">
-                  {track.favorite ? '♥' : ''}
+                <span className="queue-track-fav">
+                  {track.favorite && <FavoriteIcon active size={10} />}
                 </span>
                 <span className="queue-track-num">{idx + 1}</span>
                 <span className="queue-track-title">{track.title}</span>

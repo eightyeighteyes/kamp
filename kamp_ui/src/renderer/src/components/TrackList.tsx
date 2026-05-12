@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useStore } from '../store'
 import { artUrl } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
+import { FavoriteIcon } from './TransportIcons'
 
 type ContextMenu = { x: number; y: number; filePath: string; favorite: boolean }
 
@@ -118,8 +119,8 @@ export function TrackList(): React.JSX.Element | null {
                   })
                 }}
               >
-                <span className="track-row-fav" aria-hidden="true">
-                  {track.favorite ? '♥' : ''}
+                <span className="track-row-fav">
+                  {track.favorite && <FavoriteIcon active size={10} />}
                 </span>
                 <span className="track-row-num">
                   {isCurrent ? (playing ? '▶' : '▐▐') : track.track_number}

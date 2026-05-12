@@ -80,9 +80,10 @@
 .queue-track-fav {
   grid-row: 1 / 3;
   align-self: center;
-  font-size: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--accent);
-  text-align: center;
 }
 
 .queue-track-num {

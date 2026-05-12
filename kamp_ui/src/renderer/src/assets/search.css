@@ -176,9 +176,10 @@
 .search-track-fav {
   width: 12px;
   flex-shrink: 0;
-  font-size: 9px;
-  color: var(--error);
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
 }
 
 .search-track-title {

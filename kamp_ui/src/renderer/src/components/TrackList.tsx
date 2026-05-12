@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { useStore } from '../store'
 import { artUrl } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
-import { FavoriteIcon, PlayIcon, PauseIcon } from './TransportIcons'
+import { FavoriteIcon, PlayIcon, PauseIcon, QueueAddIcon, PlayNextIcon } from './TransportIcons'
 
 type ContextMenu = { x: number; y: number; filePath: string; favorite: boolean }
 
@@ -29,6 +29,8 @@ export function TrackList(): React.JSX.Element | null {
   const playTrack = useStore((s) => s.playTrack)
   const togglePlayPause = useStore((s) => s.togglePlayPause)
   const setAlbumFavorite = useStore((s) => s.setAlbumFavorite)
+  const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
+  const playAlbumNext = useStore((s) => s.playAlbumNext)
 
   const [menu, setMenu] = useState<ContextMenu | null>(null)
 
@@ -102,17 +104,35 @@ export function TrackList(): React.JSX.Element | null {
           </h2>
           {album.year && <div className="track-list-album-year">{album.year}</div>}
         </div>
-        <button
-          className="play-all-btn"
-          aria-label={isCurrentAlbum && playing ? 'Pause' : 'Play all'}
-          onClick={() =>
-            isCurrentAlbum
-              ? togglePlayPause()
-              : playTrack(album.album_artist, album.album, 0, album.file_path)
-          }
-        >
-          {isCurrentAlbum && playing ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
-        </button>
+        <div className="album-controls">
+          <button
+            className="album-secondary-btn"
+            title="Add to queue"
+            aria-label="Add album to queue"
+            onClick={() => void addAlbumToQueue(album.album_artist, album.album, album.file_path)}
+          >
+            <QueueAddIcon size={16} />
+          </button>
+          <button
+            className="album-secondary-btn"
+            title="Play next"
+            aria-label="Play album next"
+            onClick={() => void playAlbumNext(album.album_artist, album.album, album.file_path)}
+          >
+            <PlayNextIcon size={16} />
+          </button>
+          <button
+            className="play-all-btn"
+            aria-label={isCurrentAlbum && playing ? 'Pause' : 'Play all'}
+            onClick={() =>
+              isCurrentAlbum
+                ? togglePlayPause()
+                : playTrack(album.album_artist, album.album, 0, album.file_path)
+            }
+          >
+            {isCurrentAlbum && playing ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
+          </button>
+        </div>
       </div>
 
       <div className="track-list-divider" />

@@ -2,6 +2,7 @@ import React from 'react'
 import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
+import { PlayNextIcon, QueueAddIcon } from './TransportIcons'
 
 interface Props {
   x: number
@@ -25,7 +26,10 @@ export function TrackContextMenu({ x, y, filePath, favorite, onClose }: Props): 
           onClose()
         }}
       >
-        ▶ Play Next
+        <span style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}>
+          <PlayNextIcon size={12} />
+        </span>
+        Play Next
       </button>
       <button
         className="track-context-menu-item"
@@ -34,7 +38,10 @@ export function TrackContextMenu({ x, y, filePath, favorite, onClose }: Props): 
           onClose()
         }}
       >
-        + Add to Queue
+        <span style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}>
+          <QueueAddIcon size={12} />
+        </span>
+        Add to Queue
       </button>
       <button
         className="track-context-menu-item"

@@ -95,6 +95,27 @@ export function QueueIcon({ size = 20 }: IconProps): React.JSX.Element {
   )
 }
 
+export function QueueAddIcon({ size = 20 }: IconProps): React.JSX.Element {
+  return (
+    <svg width={size} height={size} {...STROKE_PROPS}>
+      <line x1="3" y1="7" x2="15" y2="7" />
+      <line x1="3" y1="12" x2="15" y2="12" />
+      <line x1="3" y1="17" x2="11" y2="17" />
+      <line x1="18" y1="14" x2="18" y2="20" />
+      <line x1="15" y1="17" x2="21" y2="17" />
+    </svg>
+  )
+}
+
+export function PlayNextIcon({ size = 20 }: IconProps): React.JSX.Element {
+  return (
+    <svg width={size} height={size} {...FILL_PROPS}>
+      <rect x="3" y="5" width="2" height="14" />
+      <path d="M7 5 L18 12 L7 19 Z" />
+    </svg>
+  )
+}
+
 interface FavoriteIconProps {
   active: boolean
   size?: number

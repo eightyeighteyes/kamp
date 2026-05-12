@@ -27,6 +27,29 @@ export function TransportBar(): React.JSX.Element {
   const pointerDown = useRef(false)
   const displayPosition = scrubPos !== null ? scrubPos : position
 
+  // Force-clear scrub state when the track changes. Without this, a pointerup
+  // event that didn't reach the slider (release outside its bounds, OS-level
+  // capture glitch, etc.) would leave scrubPos wedged at the user's last seek
+  // target — the slider would then ignore every fresh server position forever
+  // and "stick at the seek position until restart" (KAMP-284 follow-up bug,
+  // surfaced after non-gapless EOF transitions: server reports position=0 for
+  // the new track but the slider keeps showing the wedged scrub value).
+  //
+  // Pattern: "adjust state during rendering" per React docs — store the prior
+  // value in state and compare during render. Avoids the useEffect cascade
+  // warning and runs synchronously so the very first render after a track
+  // change already shows the server position.
+  const currentPath = current_track?.file_path ?? null
+  const [prevPath, setPrevPath] = useState<string | null>(currentPath)
+  if (prevPath !== currentPath) {
+    setPrevPath(currentPath)
+    setScrubPos(null)
+    // pointerDown.current is intentionally not touched here — a fresh
+    // onPointerDown will set it true again, and pointerUp/pointerCancel
+    // remain the canonical clear sites. Mutating a ref during render is
+    // disallowed by the React Compiler lint anyway.
+  }
+
   return (
     <div className="transport-bar">
       <div className="transport-track-info">
@@ -98,9 +121,20 @@ export function TransportBar(): React.JSX.Element {
           max={duration || 1}
           step={0.5}
           value={displayPosition}
-          onPointerDown={() => {
+          onPointerDown={(e) => {
             pointerDown.current = true
             setScrubPos(position)
+            // Pin pointer events to the slider so pointerup is guaranteed to
+            // fire here even if the user releases the pointer outside the
+            // slider bounds. Without this, scrubPos can wedge — the
+            // track-change reset above (currentPath comparison) is the
+            // escape hatch for any wedge that still slips through.
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId)
+            } catch {
+              // Some browsers reject setPointerCapture on non-trusted events
+              // (synthetic pointer events from automation, etc.) — ignore.
+            }
           }}
           onChange={(e) => {
             const val = parseFloat(e.target.value)
@@ -108,6 +142,13 @@ export function TransportBar(): React.JSX.Element {
             if (pointerDown.current) seek(val)
           }}
           onPointerUp={() => {
+            pointerDown.current = false
+            setScrubPos(null)
+          }}
+          onPointerCancel={() => {
+            // Touch-cancel, OS-level capture loss, or a programmatic
+            // releasePointerCapture call — treat exactly like pointerup so
+            // the slider can never stay wedged on scrubPos.
             pointerDown.current = false
             setScrubPos(null)
           }}

@@ -49,10 +49,32 @@ export function TrackList(): React.JSX.Element | null {
       {/* Overlay spans the full view so the gradient covers both hero and the top of the track list */}
       <div className="track-list-hero-overlay" />
 
-      {/* Back button floats over the hero */}
-      <button className="back-btn" onClick={() => selectAlbum(null)} aria-label="Back to albums">
-        ←
-      </button>
+      {/* Breadcrumb floats over the hero */}
+      <nav className="breadcrumb" aria-label="Navigation">
+        <button
+          onClick={() => {
+            selectAlbum(null)
+            selectArtist(null)
+          }}
+        >
+          Library
+        </button>
+        <span className="breadcrumb-sep" aria-hidden="true">
+          ›
+        </span>
+        <button
+          onClick={() => {
+            selectAlbum(null)
+            selectArtist(album.album_artist)
+          }}
+        >
+          {album.album_artist}
+        </button>
+        <span className="breadcrumb-sep" aria-hidden="true">
+          ›
+        </span>
+        <span>{album.album}</span>
+      </nav>
 
       {/* Static identity block — does not scroll */}
       <div className="track-list-identity">

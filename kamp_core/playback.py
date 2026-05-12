@@ -369,6 +369,12 @@ class _UnixSocketTransport(_IPCTransport):
         self._tmpdir = tempfile.mkdtemp(prefix="kamp-mpv-")
         self._sock_path = str(Path(self._tmpdir) / "mpv.sock")
         self._sock: socket.socket | None = None
+        # Serializes concurrent sendall callers (FastAPI routes vs. reader-thread
+        # callbacks that issue follow-up commands). MpvPlaybackEngine._lock no
+        # longer wraps _send_command (KAMP-284), so this transport-local lock is
+        # what guarantees that two threads' JSON frames don't interleave on the
+        # wire. Mirrors _WindowsNamedPipeTransport._write_lock.
+        self._write_lock = threading.Lock()
 
     @property
     def server_arg(self) -> str:
@@ -400,9 +406,13 @@ class _UnixSocketTransport(_IPCTransport):
         self._sock = sock
 
     def sendall(self, data: bytes) -> None:  # pragma: no cover
-        if self._sock is None:
-            raise OSError("transport closed")
-        self._sock.sendall(data)
+        # Snapshot the socket under the write lock so a concurrent close() that
+        # nulls _sock cannot land between the None-check and the sendall call.
+        with self._write_lock:
+            sock = self._sock
+            if sock is None:
+                raise OSError("transport closed")
+            sock.sendall(data)
 
     def recv(self, n: int) -> bytes:  # pragma: no cover
         if self._sock is None:
@@ -413,12 +423,19 @@ class _UnixSocketTransport(_IPCTransport):
             return b""
 
     def close(self) -> None:
-        if self._sock is not None:
+        # Take the write lock just long enough to detach the socket so any
+        # concurrent sendall() either sees the live socket and completes, or
+        # sees None and raises OSError("transport closed"). The actual
+        # socket.close() runs outside the lock so a slow close cannot stall
+        # an unrelated send.
+        with self._write_lock:
+            sock = self._sock
+            self._sock = None
+        if sock is not None:
             try:
-                self._sock.close()
+                sock.close()
             except OSError:
                 pass
-            self._sock = None
         if self._tmpdir:
             shutil.rmtree(self._tmpdir, ignore_errors=True)
             self._tmpdir = ""
@@ -459,8 +476,9 @@ class _WindowsNamedPipeTransport(_IPCTransport):
         self._pipe_name = rf"\\.\pipe\kamp-mpv-{secrets.token_hex(8)}"
         self._conn: Any = None
         # send_bytes is overlapped but not self-thread-safe; serialize writes.
-        # MpvPlaybackEngine._lock already wraps _send_command, but a
-        # transport-local lock keeps the contract local to this class.
+        # Since KAMP-284 narrowed MpvPlaybackEngine._lock, this transport-local
+        # lock is the sole guarantee that two threads' frames don't interleave
+        # on the wire. Also covers the close-vs-sendall TOCTOU on _conn.
         self._write_lock = threading.Lock()
         # recv_bytes returns one whole frame per call (mpv writes one
         # newline-terminated JSON message per WriteFile). Buffer leftovers so
@@ -523,11 +541,14 @@ class _WindowsNamedPipeTransport(_IPCTransport):
         )
 
     def sendall(self, data: bytes) -> None:  # pragma: no cover
-        if self._conn is None:
-            raise OSError("transport closed")
+        # Snapshot _conn under the write lock so a concurrent close() that
+        # nulls it cannot land between the None-check and send_bytes.
         with self._write_lock:
+            conn = self._conn
+            if conn is None:
+                raise OSError("transport closed")
             try:
-                self._conn.send_bytes(data)
+                conn.send_bytes(data)
             except (BrokenPipeError, EOFError) as exc:
                 raise OSError(str(exc)) from exc
 
@@ -553,12 +574,18 @@ class _WindowsNamedPipeTransport(_IPCTransport):
         return chunk
 
     def close(self) -> None:
-        if self._conn is not None:
+        # Detach _conn under the write lock so any concurrent sendall() either
+        # completes on the live handle or raises OSError("transport closed").
+        # The PipeConnection.close() call itself runs outside the lock to avoid
+        # stalling unrelated sends behind a slow close.
+        with self._write_lock:
+            conn = self._conn
+            self._conn = None
+        if conn is not None:
             try:
-                self._conn.close()
+                conn.close()
             except OSError:
                 pass
-            self._conn = None
 
 
 # Win32 Job Object constants (winnt.h).
@@ -733,11 +760,33 @@ class MpvPlaybackEngine:
     transport-specific endpoint (a temporary Unix socket on macOS/Linux, a
     Win32 named pipe on Windows). A background thread reads the event stream
     and updates self.state. Commands are sent synchronously via _send_command.
+
+    Locking contract (KAMP-284). ``self._lock`` guards the pair
+    ``(self._lookahead_path, the playlist slot it names in mpv)``. Every site
+    that reads ``_lookahead_path`` and conditionally issues
+    ``playlist-remove <slot>`` — ``seek``, ``preload_next``, ``play``,
+    ``load_paused``, and the ``end-file/eof`` handler — must perform the read,
+    the mutation, and the matching IPC send while holding ``_lock``. No user
+    callback and no unrelated ``sendall`` may execute under ``_lock``; the
+    transports own their own write serialization so JSON frames cannot
+    interleave on the wire. Race A (KAMP-261) is prevented by this scope
+    alone: two parallel "I see lookahead, going to remove it" critical
+    sections are impossible because both sit under the same ``_lock``.
+
+    Known boundary glitch: a ``seek`` issued at the exact instant of a
+    natural-EOF transition can land on the new track because the ``seek``
+    command itself is sent outside ``_lock`` (the ``_lookahead_path`` check
+    is not). ``file-loaded`` resets ``state.position = 0`` on the new track,
+    so the misdirected seek is visible for at most one frame.
     """
 
     def __init__(self, mpv_bin: str = "mpv") -> None:
         self.state = PlaybackState()
-        self.on_track_end: Callable[[], None] | None = None
+        # had_lookahead is True when mpv transitioned gaplessly (slot 1 became
+        # slot 0) at this eof; False when mpv went idle. The callback uses this
+        # to decide whether to issue engine.play(next_path) — calling play()
+        # after a gapless transition would clobber it with loadfile replace.
+        self.on_track_end: Callable[[bool], None] | None = None
         self.on_file_loaded: Callable[[], None] | None = None
         self.on_play_state_changed: Callable[[], None] | None = None
         self._mpv_bin = mpv_bin
@@ -748,13 +797,10 @@ class MpvPlaybackEngine:
         self._job: _WindowsJobObject | None = None
         self._ipc: _IPCTransport = _make_ipc_transport()
         self._reader_thread: threading.Thread | None = None
-        # RLock so the reader thread can re-acquire the lock inside callbacks
-        # (e.g. on_track_end → engine.play() → _send_command) while still
-        # holding it across the end-file handler to prevent Race A: a concurrent
-        # seek() on the main thread sending playlist-remove 1 while the reader
-        # thread is already sending playlist-remove 0, which empties mpv's
-        # playlist and stops time-pos events.
-        self._lock = threading.RLock()
+        # See class docstring for the locking contract. Plain Lock (not RLock):
+        # no callback ever runs under this lock, so reentry is impossible and
+        # an RLock would only mask accidental re-acquisitions.
+        self._lock = threading.Lock()
         # One-shot seek applied on the next file-loaded event (set by load_paused).
         # Stored here rather than in on_file_loaded so it doesn't clobber the
         # external callback chain wired up after engine creation.
@@ -843,9 +889,24 @@ class MpvPlaybackEngine:
 
     def play(self, path: Path) -> None:
         # loadfile replace clears mpv's entire playlist, including any lookahead.
-        self._lookahead_path = None
-        self._send_command("loadfile", str(path), "replace")
-        # Explicitly unpause so calling play() after pause() always starts playback.
+        # _lookahead_path mutation and the IPC send are paired under _lock so a
+        # concurrent end-file/eof handler cannot observe a stale lookahead value.
+        # state.position / state.duration are reset HERE (synchronously) so any
+        # WS notification fired by a caller — e.g. _on_track_end_notify's
+        # app.state.notify_track_changed() right after this returns — captures
+        # the new track at 0:00 instead of the finishing track's stale final
+        # position. mpv's later file-loaded event will redundantly re-set these
+        # to the same values, but the timing matters: the reader thread is
+        # single-threaded, so file-loaded cannot be processed until the entire
+        # on_track_end chain returns, by which point a stale notify has already
+        # gone out.
+        logger.info("engine.play: loading %s", path)
+        with self._lock:
+            self._lookahead_path = None
+            self.state.position = 0.0
+            self.state.duration = 0.0
+            self._send_command("loadfile", str(path), "replace")
+        # Pause-toggle is unrelated to the lookahead slot; send outside the lock.
         self._send_command("set_property", "pause", False)
 
     def load_paused(self, path: Path, position: float = 0.0) -> None:
@@ -860,9 +921,13 @@ class MpvPlaybackEngine:
         in ``on_file_loaded`` so it doesn't overwrite callbacks wired externally.
         """
         # loadfile replace clears mpv's entire playlist, including any lookahead.
-        self._lookahead_path = None
+        # See play() for the locking + state-reset rationale.
         self._pending_seek = position if position > 0 else None
-        self._send_command("loadfile", str(path), "replace")
+        with self._lock:
+            self._lookahead_path = None
+            self.state.position = 0.0
+            self.state.duration = 0.0
+            self._send_command("loadfile", str(path), "replace")
         self._send_command("set_property", "pause", True)
 
     def preload_next(self, next_track: "Track | None") -> None:
@@ -877,26 +942,33 @@ class MpvPlaybackEngine:
         update (set path first) is intentionally avoided: if the old lookahead played
         gaplessly before the removal landed in mpv, on_track_end would skip
         engine.play() and queue.next() would advance past the wrong track.
+
+        The entire body runs under _lock so the guard-window check, the
+        _lookahead_path mutation, and the playlist-remove/loadfile send happen
+        atomically with respect to a concurrent end-file/eof handler.
         """
         path = next_track.file_path if next_track is not None else None
-        if path == self._lookahead_path:
-            return
-        if self._lookahead_path is not None:
-            self._lookahead_path = None  # clear before sending remove (see docstring)
-            self._send_command("playlist-remove", 1)
-        if path is not None:
-            # Skip the append when we're within the gapless danger window.
-            # mpv would trigger an immediate EOF transition the moment the
-            # file lands in slot 1, stopping time-pos events and leaving the
-            # queue in a half-transitioned state.  on_track_end will start
-            # the next track via engine.play() when the current track ends.
-            if (
-                self.state.duration > 0
-                and self.state.position > self.state.duration - _GAPLESS_GUARD_SECS
-            ):
+        with self._lock:
+            if path == self._lookahead_path:
                 return
-            self._send_command("loadfile", str(path), "append")
-            self._lookahead_path = path
+            if self._lookahead_path is not None:
+                self._lookahead_path = (
+                    None  # clear before sending remove (see docstring)
+                )
+                self._send_command("playlist-remove", 1)
+            if path is not None:
+                # Skip the append when we're within the gapless danger window.
+                # mpv would trigger an immediate EOF transition the moment the
+                # file lands in slot 1, stopping time-pos events and leaving the
+                # queue in a half-transitioned state.  on_track_end will start
+                # the next track via engine.play() when the current track ends.
+                if (
+                    self.state.duration > 0
+                    and self.state.position > self.state.duration - _GAPLESS_GUARD_SECS
+                ):
+                    return
+                self._send_command("loadfile", str(path), "append")
+                self._lookahead_path = path
 
     @property
     def has_lookahead(self) -> bool:
@@ -912,8 +984,13 @@ class MpvPlaybackEngine:
     def seek(self, position: float) -> None:
         # Hold _lock so this check+clear is atomic with the end-file handler's
         # playlist-remove 0 + _lookahead_path = None sequence on the reader
-        # thread (Race A prevention).  The seek command itself is sent outside
-        # the lock — it does not touch _lookahead_path.
+        # thread (Race A prevention). The seek command itself is sent outside
+        # the lock — it does not touch _lookahead_path. The "boundary glitch"
+        # named in the class docstring lives here: a seek issued at the exact
+        # instant of natural EOF can land on the new track because there is no
+        # lock held between the playlist-remove 1 send and the seek send.
+        # file-loaded resets state.position to 0 immediately, so the
+        # misdirected seek is visible for at most one frame.
         with self._lock:
             # Only remove the lookahead when the seek target lands within the
             # gapless danger window.  Seeking to an early/middle position carries
@@ -966,13 +1043,18 @@ class MpvPlaybackEngine:
     # ------------------------------------------------------------------
 
     def _send_command(self, *args: object) -> None:
-        """Serialize and send a command to mpv over the IPC channel."""
+        """Serialize and send a command to mpv over the IPC channel.
+
+        Does not take ``_lock``; the transport owns its own write lock so JSON
+        frames cannot interleave on the wire. Callers that pair a state
+        mutation with a specific IPC send (``play``, ``preload_next``, the
+        end-file handler, etc.) hold ``_lock`` around the pair themselves.
+        """
         msg = json.dumps({"command": list(args)}) + "\n"
-        with self._lock:
-            try:
-                self._ipc.sendall(msg.encode())
-            except OSError:
-                logger.warning("Failed to send command to mpv: %s", args)
+        try:
+            self._ipc.sendall(msg.encode())
+        except OSError:
+            logger.warning("Failed to send command to mpv: %s", args)
 
     def _read_loop(self) -> None:  # pragma: no cover
         """Background thread: read JSON events from mpv and dispatch them."""
@@ -984,11 +1066,24 @@ class MpvPlaybackEngine:
             buf += chunk
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
+                event: Any = None
                 try:
                     event = json.loads(line)
                     self._handle_event(event)
                 except json.JSONDecodeError:
                     pass
+                except Exception:
+                    # The reader thread is the ONLY producer of state.position /
+                    # state.duration updates and the ONLY driver of
+                    # on_file_loaded / on_track_end. If it dies, the UI silently
+                    # freezes until daemon restart (KAMP-284 regression).
+                    # Swallow anything a handler or user callback throws, log
+                    # loudly, and keep reading.
+                    logger.exception(
+                        "mpv reader: unhandled exception in _handle_event(%r); "
+                        "continuing",
+                        event if event is not None else line,
+                    )
 
     def _handle_event(self, event: dict[str, object]) -> None:
         """Update state and fire callbacks in response to an mpv event."""
@@ -1022,21 +1117,41 @@ class MpvPlaybackEngine:
 
         elif name == "end-file":
             if event.get("reason") == "eof":
-                # Hold _lock across the entire block so a concurrent seek() on
-                # the main thread cannot send playlist-remove 1 while we are
-                # sending playlist-remove 0 (Race A: double-remove empties mpv's
+                # Hold _lock across the read+send+clear so a concurrent seek()
+                # cannot send playlist-remove 1 while we are sending
+                # playlist-remove 0 (Race A: double-remove empties mpv's
                 # playlist, sending it idle and stopping time-pos events).
-                # _lock is an RLock so on_track_end → engine.play() →
-                # _send_command can re-acquire it on the same thread.
+                # _lookahead_path is cleared INSIDE the lock so callers seeing
+                # has_lookahead==False after this point reflect mpv's true
+                # state. The user callback is invoked OUTSIDE the lock so a
+                # slow callback (e.g. Last.fm scrobble) cannot block FastAPI
+                # threads on seek/pause/resume (KAMP-284).
                 with self._lock:
-                    # When a lookahead was present, mpv already transitioned
-                    # gaplessly and the finished entry sits at slot 0.  Remove it
-                    # now to maintain the invariant (current = slot 0, lookahead = slot 1).
-                    if self._lookahead_path is not None:
+                    had_lookahead = self._lookahead_path is not None
+                    if had_lookahead:
+                        # When a lookahead was present, mpv already transitioned
+                        # gaplessly and the finished entry sits at slot 0.
+                        # Remove it now to restore the invariant
+                        # (current = slot 0, lookahead = slot 1).
                         self._send_command("playlist-remove", 0)
-                    # Fire on_track_end while _lookahead_path is still set so that
-                    # has_lookahead returns True inside the callback — _on_track_end
-                    # checks this to avoid calling engine.play() redundantly.
-                    if self.on_track_end is not None:
-                        self.on_track_end()
+                        # mpv has already transitioned to the new track, but
+                        # state.position/duration still reflect the finishing
+                        # track — file-loaded for the new track can't be
+                        # processed until this whole callback chain returns
+                        # (single-threaded reader). Reset synchronously so any
+                        # WS notify the callback fires (e.g.
+                        # _on_track_end_notify's notify_track_changed) ships
+                        # the new track at 0:00 instead of a stale position.
+                        self.state.position = 0.0
+                        self.state.duration = 0.0
                     self._lookahead_path = None
+                logger.info("eof: had_lookahead=%s firing on_track_end", had_lookahead)
+                # had_lookahead tells the callback whether mpv already advanced
+                # so it can skip calling engine.play(next_path) — calling play()
+                # after a gapless transition would clobber it with loadfile
+                # replace.
+                if self.on_track_end is not None:
+                    self.on_track_end(had_lookahead)
+                logger.info(
+                    "eof: on_track_end returned (had_lookahead=%s)", had_lookahead
+                )

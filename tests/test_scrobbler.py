@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -9,7 +11,7 @@ import pytest
 
 from kamp_core.library import Track
 from kamp_core import scrobbler as _mod
-from kamp_core.scrobbler import Scrobbler, authenticate
+from kamp_core.scrobbler import Scrobbler, _ScrobbleJob, authenticate
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,10 +43,24 @@ def _track(
 
 
 def _make_scrobbler() -> tuple[Scrobbler, MagicMock]:
-    """Return a Scrobbler and its mocked pylast network."""
+    """Return a Scrobbler and its mocked pylast network.
+
+    The scrobbler's HTTP work runs on a worker thread in production (KAMP-284),
+    but unit tests assert synchronously. Wrap ``_tx_queue.put`` so each test
+    sees a drained queue immediately after the action. The dedicated
+    ``test_call_returns_immediately`` case bypasses this wrapper to validate
+    the actual async path.
+    """
     mock_network = MagicMock()
     with patch("kamp_core.scrobbler.pylast.LastFMNetwork", return_value=mock_network):
         s = Scrobbler(session_key="test-session-key")
+    _orig_put = s._tx_queue.put
+
+    def _draining_put(job: _ScrobbleJob) -> None:
+        _orig_put(job)
+        s.flush()
+
+    s._tx_queue.put = _draining_put  # type: ignore[method-assign,assignment]
     return s, mock_network
 
 
@@ -365,3 +381,80 @@ class TestOnTrackEnded:
         s.on_track_changed(t)
         s.on_track_ended(t)
         assert net.scrobble.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Worker-thread async behaviour — explicit, no draining helper (KAMP-284)
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncWorker:
+    """The caller (engine reader thread, state-saver thread) must NEVER block
+    on Last.fm latency. These tests stand up the real async worker and prove
+    the contract by hanging pylast on the worker side.
+    """
+
+    def _make_async_scrobbler(self) -> tuple[Scrobbler, MagicMock]:
+        """Like _make_scrobbler but WITHOUT the draining put-wrapper."""
+        mock_network = MagicMock()
+        with patch(
+            "kamp_core.scrobbler.pylast.LastFMNetwork", return_value=mock_network
+        ):
+            s = Scrobbler(session_key="test-session-key")
+        return s, mock_network
+
+    def test_on_track_ended_returns_immediately_when_http_is_slow(self) -> None:
+        """The whole point of the worker (KAMP-284): a 5s Last.fm response
+        must not delay the engine's reader thread by more than a few ms."""
+        s, net = self._make_async_scrobbler()
+        net.scrobble.side_effect = lambda **_: time.sleep(5.0)
+        t = _track()
+        s.on_track_changed(t)
+        start = time.monotonic()
+        s.on_track_ended(t)
+        elapsed = time.monotonic() - start
+        # Generous bound: production needs sub-100ms; we just need to prove
+        # we're not waiting on the side_effect's 5s sleep.
+        assert elapsed < 0.2, f"on_track_ended took {elapsed:.3f}s; expected <0.2s"
+
+    def test_on_track_changed_returns_immediately_when_http_is_slow(self) -> None:
+        s, net = self._make_async_scrobbler()
+        net.update_now_playing.side_effect = lambda **_: time.sleep(5.0)
+        t = _track()
+        start = time.monotonic()
+        s.on_track_changed(t)
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.2, f"on_track_changed took {elapsed:.3f}s; expected <0.2s"
+
+    def test_flush_blocks_until_worker_drains(self) -> None:
+        """flush() is the test-side synchronization primitive — it must block
+        until the worker has processed every queued job."""
+        s, net = self._make_async_scrobbler()
+        gate = threading.Event()
+        observed_order: list[str] = []
+
+        def _slow_scrobble(**_: object) -> None:
+            gate.wait(timeout=2.0)
+            observed_order.append("worker_done")
+
+        net.scrobble.side_effect = _slow_scrobble
+        t = _track()
+        s.on_track_changed(t)
+        s.on_track_ended(t)
+        # The worker is currently parked in _slow_scrobble waiting on the gate.
+        # Releasing the gate, then flush() must wait for the worker to finish.
+        gate.set()
+        s.flush()
+        observed_order.append("flush_returned")
+        assert observed_order == ["worker_done", "flush_returned"]
+
+    def test_shutdown_drains_pending_work(self) -> None:
+        """shutdown() drains the queue best-effort within the timeout."""
+        s, net = self._make_async_scrobbler()
+        t = _track()
+        s.on_track_changed(t)
+        s.on_track_ended(t)
+        s.shutdown(timeout=2.0)
+        # All enqueued HTTP work completed before the worker exited.
+        net.update_now_playing.assert_called()
+        net.scrobble.assert_called()

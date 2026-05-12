@@ -1314,14 +1314,34 @@ class TestMpvPlaybackEngine:
         engine._handle_event({"event": "end-file", "reason": "eof"})
         assert engine._lookahead_path is None
 
-    def test_on_track_end_called_while_lookahead_still_set(self) -> None:
-        """has_lookahead must be True inside the on_track_end callback."""
+    def test_on_track_end_receives_had_lookahead_true_after_gapless(self) -> None:
+        """on_track_end's had_lookahead arg must be True when a lookahead was armed."""
         engine, _ = _make_engine()
         engine.preload_next(_track(2))
         observed: list[bool] = []
-        engine.on_track_end = lambda: observed.append(engine.has_lookahead)
+        engine.on_track_end = lambda had_lookahead: observed.append(had_lookahead)
         engine._handle_event({"event": "end-file", "reason": "eof"})
         assert observed == [True]
+
+    def test_on_track_end_receives_had_lookahead_false_without_preload(self) -> None:
+        """Without a preloaded lookahead, had_lookahead must be False."""
+        engine, _ = _make_engine()
+        observed: list[bool] = []
+        engine.on_track_end = lambda had_lookahead: observed.append(had_lookahead)
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        assert observed == [False]
+
+    def test_lookahead_cleared_before_on_track_end_fires(self) -> None:
+        """has_lookahead must read False inside on_track_end — the engine
+        clears _lookahead_path under the lock before firing the callback so
+        a callback that queries the property sees mpv's true current state.
+        """
+        engine, _ = _make_engine()
+        engine.preload_next(_track(2))
+        observed: list[bool] = []
+        engine.on_track_end = lambda _: observed.append(engine.has_lookahead)
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        assert observed == [False]
 
     def test_handle_event_pause_with_non_bool_data_is_ignored(self) -> None:
         engine, _ = _make_engine()

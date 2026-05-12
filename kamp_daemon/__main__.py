@@ -660,17 +660,21 @@ def _cmd_daemon(
     # play-state WebSocket events and forwards them to the helper via stdin.
 
     # Advance the queue automatically at end-of-track; stop cleanly at the end.
-    def _on_track_end() -> None:
+    # had_lookahead is supplied by the engine and is True when mpv transitioned
+    # gaplessly (slot 1 became slot 0). Querying engine.has_lookahead here would
+    # race because the engine clears _lookahead_path under its lock before
+    # firing this callback (KAMP-284).
+    def _on_track_end(had_lookahead: bool) -> None:
         finished = queue.current()
         track = queue.next()
         # Record natural EOF so last_played sort stays accurate.
         if finished is not None:
             index.record_played(finished.file_path)
         if track:
-            if not engine.has_lookahead:
+            if not had_lookahead:
                 # No gapless transition was queued — start the next track manually.
                 engine.play(track.file_path)
-            # If has_lookahead: mpv already transitioned gaplessly.  file-loaded
+            # If had_lookahead: mpv already transitioned gaplessly.  file-loaded
             # will fire shortly and preload_next will queue the new next track.
         else:
             engine.stop()
@@ -699,11 +703,11 @@ def _cmd_daemon(
     # finishing track.  Wrap the callback that was just set above.
     _orig_on_track_end = engine.on_track_end
 
-    def _on_track_end_scrobble() -> None:
+    def _on_track_end_scrobble(had_lookahead: bool) -> None:
         if _scrobbler_ref[0] is not None:
             _scrobbler_ref[0].on_track_ended(queue.current())
         if _orig_on_track_end is not None:
-            _orig_on_track_end()
+            _orig_on_track_end(had_lookahead)
 
     engine.on_track_end = _on_track_end_scrobble
 
@@ -766,10 +770,16 @@ def _cmd_daemon(
     def _on_lastfm_connect(username: str, password: str) -> None:
         session_key = _lastfm_authenticate(username, password)
         index.set_session("lastfm", {"session_key": session_key, "username": username})
+        # Stop any previous scrobbler's HTTP worker before replacing it so we
+        # don't leak threads across repeated connect/disconnect cycles.
+        if _scrobbler_ref[0] is not None:
+            _scrobbler_ref[0].shutdown(timeout=2.0)
         _scrobbler_ref[0] = Scrobbler(session_key)
 
     def _on_lastfm_disconnect() -> None:
         index.clear_session("lastfm")
+        if _scrobbler_ref[0] is not None:
+            _scrobbler_ref[0].shutdown(timeout=2.0)
         _scrobbler_ref[0] = None
 
     def _on_bandcamp_login_complete(payload: dict[str, object]) -> None:
@@ -895,9 +905,9 @@ def _cmd_daemon(
     # Done here (after app creation) so app.state is guaranteed to be available.
     _original_on_track_end = engine.on_track_end
 
-    def _on_track_end_notify() -> None:
+    def _on_track_end_notify(had_lookahead: bool) -> None:
         if _original_on_track_end is not None:
-            _original_on_track_end()
+            _original_on_track_end(had_lookahead)
         app.state.notify_track_changed()
 
     engine.on_track_end = _on_track_end_notify
@@ -1014,6 +1024,11 @@ def _cmd_daemon(
 
     if lib_watcher is not None:
         lib_watcher.stop()
+    # Stop the scrobbler's HTTP worker thread BEFORE the engine so any final
+    # scrobble queued by a closing on_track_ended has a chance to land. The
+    # 2-second join cap makes a hung Last.fm endpoint never stall shutdown.
+    if _scrobbler_ref[0] is not None:
+        _scrobbler_ref[0].shutdown(timeout=2.0)
     engine.shutdown()
     index.close()
 

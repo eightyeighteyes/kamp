@@ -4,6 +4,7 @@ import { getTracksForAlbum } from '../api/client'
 import type { Album } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
+import { PlayNextIcon, QueueAddIcon } from './TransportIcons'
 
 interface Props {
   x: number
@@ -26,7 +27,12 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           onClose()
         }}
       >
-        ▶ Play Next
+        <span
+          style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}
+        >
+          <PlayNextIcon size={12} />
+        </span>
+        Play Next
       </button>
       <button
         className="track-context-menu-item"
@@ -35,7 +41,12 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           onClose()
         }}
       >
-        + Add to Queue
+        <span
+          style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}
+        >
+          <QueueAddIcon size={12} />
+        </span>
+        Add to Queue
       </button>
       <button
         className="track-context-menu-item"

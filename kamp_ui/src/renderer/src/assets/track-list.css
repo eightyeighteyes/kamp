@@ -225,6 +225,31 @@
   filter: brightness(1.12);
 }
 
+.album-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.album-secondary-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.1s, background 0.1s;
+}
+
+.album-secondary-btn:hover {
+  color: var(--accent);
+  background: var(--surface-hover);
+}
+
 .track-list-divider {
   margin: 8px 0 0 0;
   flex-shrink: 0;

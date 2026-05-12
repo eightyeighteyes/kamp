@@ -48,25 +48,10 @@ Copy-Item -Force $built $dest
 $size = "{0:N0}" -f (Get-Item $dest).Length
 Write-Host "[now-playing] Binary: $dest ($size bytes)"
 
-# Smoke-test the binary so we don't silently ship a corrupt build. The helper
-# is a long-running process driven by stdin, so we can't run it with --version;
-# instead, verify it starts and exits cleanly when stdin is closed immediately.
-Write-Host "[now-playing] Smoke test: spawn with closed stdin..."
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = (Resolve-Path $dest).Path
-$psi.RedirectStandardInput = $true
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
-$psi.UseShellExecute = $false
-$proc = [System.Diagnostics.Process]::Start($psi)
-$proc.StandardInput.Close()
-if (-not $proc.WaitForExit(5000)) {
-    $proc.Kill()
-    throw "Helper did not exit within 5s after stdin close"
-}
-if ($proc.ExitCode -ne 0) {
-    $err = $proc.StandardError.ReadToEnd()
-    throw "Helper exited with code $($proc.ExitCode). stderr: $err"
-}
-Write-Host "[now-playing] Smoke test OK"
+# No smoke test: SMTC's GetForWindow requires an interactive Windows session
+# (the Shell host is per-user, not present in GitHub Actions Session 0), so
+# any spawn-and-exit check would fail with HRESULT 0x80070057 (E_INVALIDARG)
+# even on a well-formed binary. Bundle-layout verification downstream
+# (.github/workflows/build-app.yml "Verify bundle layout" step) catches a
+# missing or zero-byte artifact, which is the realistic CI failure mode.
 Write-Host "[now-playing] Done"

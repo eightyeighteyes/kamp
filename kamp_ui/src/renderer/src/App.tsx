@@ -101,6 +101,7 @@ export default function App(): React.JSX.Element {
   const artistPanelVisible = useStore((s) => s.artistPanelVisible)
   const toggleArtistPanel = useStore((s) => s.toggleArtistPanel)
   const openPrefs = useStore((s) => s.openPrefs)
+  const selectArtist = useStore((s) => s.selectArtist)
 
   const layout = usePanelLayout()
   const extState = useExtensionState()
@@ -448,6 +449,8 @@ export default function App(): React.JSX.Element {
     } else if (panel.kind === 'builtin' && panel.id === 'kamp.library') {
       void setActiveView('library')
       setActiveExtPanel(null)
+      const { selectedArtist, selectedAlbum } = useStore.getState().library
+      if (selectedArtist !== null || selectedAlbum !== null) selectArtist(null)
     } else if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing') {
       void setActiveView('now-playing')
       setActiveExtPanel(null)

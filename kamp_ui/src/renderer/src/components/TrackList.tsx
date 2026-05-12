@@ -28,6 +28,7 @@ export function TrackList(): React.JSX.Element | null {
   const selectArtist = useStore((s) => s.selectArtist)
   const playTrack = useStore((s) => s.playTrack)
   const togglePlayPause = useStore((s) => s.togglePlayPause)
+  const setAlbumFavorite = useStore((s) => s.setAlbumFavorite)
 
   const [menu, setMenu] = useState<ContextMenu | null>(null)
 
@@ -79,6 +80,13 @@ export function TrackList(): React.JSX.Element | null {
       {/* Static identity block — does not scroll */}
       <div className="track-list-identity">
         <div className="track-list-identity-text">
+          <button
+            className="track-list-album-fav-btn"
+            aria-label={album.favorite ? 'Remove from favorites' : 'Add to favorites'}
+            onClick={() => setAlbumFavorite(album.album_artist, album.album, !album.favorite)}
+          >
+            <FavoriteIcon active={album.favorite} size={36} />
+          </button>
           <h1 className="track-list-album-title">{album.album}</h1>
           <h2 className="track-list-album-artist">
             <button

@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { artUrl } from '../api/client'
 import type { Album } from '../api/client'
 import { AlbumContextMenu } from './AlbumContextMenu'
+import { FavoriteIcon } from './TransportIcons'
 
 type MenuPos = { x: number; y: number }
 
@@ -246,6 +247,11 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
           />
         )}
         {playing && isActive && <div className="now-playing-badge">▶</div>}
+        {album.favorite && (
+          <div className="album-fav-badge">
+            <FavoriteIcon active size={14} />
+          </div>
+        )}
         {isNew && highlightStyle === 'shiny' && <span className="shiny-sweep" aria-hidden="true" />}
         {isNew && highlightStyle === 'boring' && (
           <span className="boring-hover" aria-hidden="true">

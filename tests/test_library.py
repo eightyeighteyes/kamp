@@ -128,7 +128,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 13
+        assert version == 14
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1134,7 +1134,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 13
+        assert version == 14
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1191,7 +1191,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 13
+        assert version == 14
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1550,7 +1550,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 13
+        assert version == 14
         assert row is not None
         assert row[0] == 0
 
@@ -1663,9 +1663,99 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 13
+        assert version == 14
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
+
+
+# ---------------------------------------------------------------------------
+# Album favorites (KAMP-293)
+# ---------------------------------------------------------------------------
+
+
+class TestAlbumFavorite:
+    """Tests for LibraryIndex.toggle_album_favorite() and AlbumInfo.favorite."""
+
+    def _make_index_with_album(self, tmp_path: Path) -> LibraryIndex:
+        index = LibraryIndex(tmp_path / "library.db")
+        p = tmp_path / "track.mp3"
+        _make_mp3(p, artist="A", album_artist="Artist", album="Album", title="T")
+        index.upsert_many(
+            [
+                Track(
+                    file_path=p,
+                    title="T",
+                    artist="A",
+                    album_artist="Artist",
+                    album="Album",
+                    year="2020",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                )
+            ]
+        )
+        return index
+
+    def test_album_favorite_defaults_to_false(self, tmp_path: Path) -> None:
+        index = self._make_index_with_album(tmp_path)
+        albums = index.albums()
+        index.close()
+        assert len(albums) == 1
+        assert albums[0].favorite is False
+
+    def test_toggle_album_favorite_sets_true(self, tmp_path: Path) -> None:
+        index = self._make_index_with_album(tmp_path)
+        index.toggle_album_favorite("Artist", "Album", True)
+        albums = index.albums()
+        index.close()
+        assert albums[0].favorite is True
+
+    def test_toggle_album_favorite_clears_flag(self, tmp_path: Path) -> None:
+        index = self._make_index_with_album(tmp_path)
+        index.toggle_album_favorite("Artist", "Album", True)
+        index.toggle_album_favorite("Artist", "Album", False)
+        albums = index.albums()
+        index.close()
+        assert albums[0].favorite is False
+
+    def test_album_favorite_persists_across_reopen(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        index = self._make_index_with_album(tmp_path)
+        index.toggle_album_favorite("Artist", "Album", True)
+        index.close()
+
+        index2 = LibraryIndex(db_path)
+        albums = index2.albums()
+        index2.close()
+        assert albums[0].favorite is True
+
+    def test_migration_v13_to_v14_creates_album_favorites_table(
+        self, tmp_path: Path
+    ) -> None:
+        """Existing v13 databases gain the album_favorites table on open."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        # Create a minimal v13 schema (executescript(_DDL) will add the rest via IF NOT EXISTS).
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (13)")
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        # album_favorites table must now exist
+        index._conn.execute("SELECT COUNT(*) FROM album_favorites").fetchone()
+        index.close()
+
+        assert version == 14
 
 
 # ---------------------------------------------------------------------------
@@ -1844,7 +1934,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 13
+        assert version == 14
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -1939,7 +2029,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 13
+        assert version == 14
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -1947,7 +2037,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 13
+        assert version == 14
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -2822,7 +2912,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 13
+        assert version == 14
 
         index.close()
 

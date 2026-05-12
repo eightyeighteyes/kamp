@@ -1507,6 +1507,46 @@ class TestFavoriteEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# Album favorite endpoint (KAMP-293)
+# ---------------------------------------------------------------------------
+
+
+class TestAlbumFavoriteEndpoint:
+    def test_set_album_favorite_endpoint(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post(
+            "/api/v1/albums/favorite",
+            json={"album_artist": "Artist", "album": "Album", "favorite": True},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        mock_index.toggle_album_favorite.assert_called_once_with(
+            "Artist", "Album", True
+        )
+
+    def test_album_out_includes_favorite_field(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.albums.return_value = [_album("Artist", "Album")]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        album = TestClient(app).get("/api/v1/albums").json()[0]
+        assert "favorite" in album
+        assert album["favorite"] is False
+
+    def test_album_out_reflects_favorited_album(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        a = _album("Artist", "Album")
+        a.favorite = True
+        mock_index.albums.return_value = [a]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        album = TestClient(app).get("/api/v1/albums").json()[0]
+        assert album["favorite"] is True
+
+
+# ---------------------------------------------------------------------------
 # Config endpoints
 # ---------------------------------------------------------------------------
 

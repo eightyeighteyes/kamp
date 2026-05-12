@@ -90,7 +90,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 13
+_SCHEMA_VERSION = 14
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -160,6 +160,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     service      TEXT NOT NULL PRIMARY KEY,
     session_json TEXT,
     updated_at   REAL NOT NULL
+);
+
+-- Albums marked as favorites by the user (KAMP-293).
+-- Stored independently of track-level favorites so album and track favorites
+-- can be toggled without affecting each other.
+CREATE TABLE IF NOT EXISTS album_favorites (
+    album_artist TEXT NOT NULL,
+    album        TEXT NOT NULL,
+    PRIMARY KEY (album_artist, album)
 );
 
 -- Application settings (replaces config.toml; see TASK-132).
@@ -284,6 +293,8 @@ class AlbumInfo:
     last_played_at: float | None = None
     # SUM(play_count) / COUNT(*) across tracks — exposed for the Top Albums module.
     play_count_avg: float = 0.0
+    # True when the user has favorited this album (KAMP-293).
+    favorite: bool = False
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -531,6 +542,19 @@ class LibraryIndex:
                         (wrapped, row["service"]),
                     )
             self._conn.execute("UPDATE schema_version SET version = 13")
+            self._conn.commit()
+            version = 13
+
+        if version < 14:
+            # v13 → v14: album_favorites table added (KAMP-293).
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS album_favorites (
+                    album_artist TEXT NOT NULL,
+                    album        TEXT NOT NULL,
+                    PRIMARY KEY (album_artist, album)
+                )
+            """)
+            self._conn.execute("UPDATE schema_version SET version = 14")
             self._conn.commit()
 
     def _rebuild_fts(self) -> None:
@@ -919,6 +943,22 @@ class LibraryIndex:
         )
         self._conn.commit()
 
+    def toggle_album_favorite(
+        self, album_artist: str, album: str, favorite: bool
+    ) -> None:
+        """Insert or delete the album from album_favorites."""
+        if favorite:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO album_favorites (album_artist, album) VALUES (?, ?)",
+                (album_artist, album),
+            )
+        else:
+            self._conn.execute(
+                "DELETE FROM album_favorites WHERE album_artist = ? AND album = ?",
+                (album_artist, album),
+            )
+        self._conn.commit()
+
     def albums(self, sort: str = "album_artist") -> list[AlbumInfo]:
         """Return one AlbumInfo per (album_artist, album) pair.
 
@@ -933,29 +973,36 @@ class LibraryIndex:
         order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
         rows = self._conn.execute(f"""
             SELECT album_artist, album, year, track_count, has_art,
-                   missing_album, file_path, art_version, sort_date_added, sort_last_played,
-                   sort_play_count_avg
+                   missing_album, file_path, art_version,
+                   sort_date_added, sort_last_played, sort_play_count_avg,
+                   is_favorite
             FROM (
-                SELECT album_artist, album, year, COUNT(*) AS track_count,
-                       MAX(embedded_art) AS has_art,
+                SELECT t.album_artist, t.album, t.year, COUNT(*) AS track_count,
+                       MAX(t.embedded_art) AS has_art,
                        0 AS missing_album, '' AS file_path,
-                       MIN(date_added) AS sort_date_added,
-                       MAX(last_played) AS sort_last_played,
-                       MAX(file_mtime) AS art_version,
-                       CAST(SUM(play_count) AS REAL) / COUNT(*) AS sort_play_count_avg
-                FROM tracks
-                WHERE album != ''
-                GROUP BY album_artist, album
+                       MIN(t.date_added) AS sort_date_added,
+                       MAX(t.last_played) AS sort_last_played,
+                       MAX(t.file_mtime) AS art_version,
+                       CAST(SUM(t.play_count) AS REAL) / COUNT(*) AS sort_play_count_avg,
+                       MAX(CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END) AS is_favorite
+                FROM tracks t
+                LEFT JOIN album_favorites af
+                    ON af.album_artist = t.album_artist AND af.album = t.album
+                WHERE t.album != ''
+                GROUP BY t.album_artist, t.album
                 UNION ALL
-                SELECT album_artist, title AS album, year, 1 AS track_count,
-                       embedded_art AS has_art,
-                       1 AS missing_album, file_path,
-                       date_added AS sort_date_added,
-                       last_played AS sort_last_played,
-                       file_mtime AS art_version,
-                       CAST(play_count AS REAL) AS sort_play_count_avg
-                FROM tracks
-                WHERE album = ''
+                SELECT t.album_artist, t.title AS album, t.year, 1 AS track_count,
+                       t.embedded_art AS has_art,
+                       1 AS missing_album, t.file_path,
+                       t.date_added AS sort_date_added,
+                       t.last_played AS sort_last_played,
+                       t.file_mtime AS art_version,
+                       CAST(t.play_count AS REAL) AS sort_play_count_avg,
+                       CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END AS is_favorite
+                FROM tracks t
+                LEFT JOIN album_favorites af
+                    ON af.album_artist = t.album_artist AND af.album = t.title
+                WHERE t.album = ''
             )
             ORDER BY {order_by}
             """).fetchall()  # noqa: S608 — order_by is from a whitelist, not user input
@@ -972,6 +1019,7 @@ class LibraryIndex:
                 added_at=r["sort_date_added"],
                 last_played_at=r["sort_last_played"],
                 play_count_avg=r["sort_play_count_avg"] or 0.0,
+                favorite=bool(r["is_favorite"]),
             )
             for r in rows
         ]

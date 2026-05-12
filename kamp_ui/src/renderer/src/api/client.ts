@@ -41,6 +41,8 @@ export type Album = {
   last_played_at: number | null
   // SUM(play_count) / COUNT(*) across tracks — used by the Top Albums module.
   play_count_avg: number
+  // True when the user has favorited this album (KAMP-293).
+  favorite: boolean
 }
 
 export type PlayerState = {
@@ -314,6 +316,11 @@ export const clearRemainingQueue = (position: number): Promise<unknown> =>
   post('/api/v1/player/queue/clear-remaining', { position })
 export const setTrackFavorite = (filePath: string, favorite: boolean): Promise<unknown> =>
   post('/api/v1/tracks/favorite', { file_path: filePath, favorite })
+export const setAlbumFavorite = (
+  albumArtist: string,
+  album: string,
+  favorite: boolean
+): Promise<unknown> => post('/api/v1/albums/favorite', { album_artist: albumArtist, album, favorite })
 
 // ---------------------------------------------------------------------------
 // WebSocket state stream

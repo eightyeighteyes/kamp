@@ -93,6 +93,8 @@ class AlbumOut(BaseModel):
     last_played_at: float | None = None
     # SUM(play_count) / COUNT(*) across tracks — used by the Top Albums module.
     play_count_avg: float = 0.0
+    # True when the user has favorited this album (KAMP-293).
+    favorite: bool = False
 
 
 class PlayerStateOut(BaseModel):
@@ -177,6 +179,12 @@ _FORBIDDEN_LIBRARY_ROOTS: frozenset[Path] = frozenset(
 
 class FavoriteRequest(BaseModel):
     file_path: str
+    favorite: bool
+
+
+class AlbumFavoriteRequest(BaseModel):
+    album_artist: str
+    album: str
     favorite: bool
 
 
@@ -475,6 +483,7 @@ def create_app(
                 added_at=a.added_at,
                 last_played_at=a.last_played_at,
                 play_count_avg=a.play_count_avg,
+                favorite=a.favorite,
             )
             for a in index.albums(sort=sort)
         ]
@@ -509,6 +518,11 @@ def create_app(
         # Keep the in-memory queue in sync so the next player-state snapshot
         # reflects the new favorite value without requiring a queue reload.
         queue.update_favorite(p, req.favorite)
+        return {"ok": True}
+
+    @app.post("/api/v1/albums/favorite")
+    def set_album_favorite(req: AlbumFavoriteRequest) -> dict[str, Any]:
+        index.toggle_album_favorite(req.album_artist, req.album, req.favorite)
         return {"ok": True}
 
     @app.get("/api/v1/album-art")
@@ -561,6 +575,7 @@ def create_app(
                 art_version=a.art_version,
                 added_at=a.added_at,
                 play_count_avg=a.play_count_avg,
+                favorite=a.favorite,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys

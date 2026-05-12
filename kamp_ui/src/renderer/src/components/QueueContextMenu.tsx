@@ -51,7 +51,8 @@ export function QueueContextMenu({
                 art_version: null,
                 added_at: null,
                 last_played_at: null,
-                play_count_avg: 0
+                play_count_avg: 0,
+                favorite: false
               }
               void setActiveView('library')
               void selectAlbum(found)

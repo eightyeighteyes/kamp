@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.18.0](https://github.com/eightyeighteyes/kamp/compare/v1.17.0...v1.18.0) (2026-05-13)
+
+
+### Features
+
+* **ci:** Windows code signing via Azure Trusted Signing (KAMP-279) ([#385](https://github.com/eightyeighteyes/kamp/issues/385)) ([e2d4c99](https://github.com/eightyeighteyes/kamp/commit/e2d4c99e64aa867e68862a5bc623dfe64586dd14))
+* **search:** boost favorite tracks and albums to top of results (KAMP-295) ([#383](https://github.com/eightyeighteyes/kamp/issues/383)) ([0fc8ebe](https://github.com/eightyeighteyes/kamp/commit/0fc8ebeaa412d215e6cb09f6482da8c46aaba161))
+* **ui:** album favorites — heart button + card badge (KAMP-293) ([#382](https://github.com/eightyeighteyes/kamp/issues/382)) ([8345de3](https://github.com/eightyeighteyes/kamp/commit/8345de37008751a21ac23b7c6560c4d24bc29235))
+* **ui:** breadcrumb nav in album view (KAMP-236) ([#379](https://github.com/eightyeighteyes/kamp/issues/379)) ([54a5e7c](https://github.com/eightyeighteyes/kamp/commit/54a5e7c5e1ec6002c381b51a4f98064c5d1ad95b))
+* **ui:** clicking Library tab resets to All Artists (KAMP-297) ([#381](https://github.com/eightyeighteyes/kamp/issues/381)) ([e159d17](https://github.com/eightyeighteyes/kamp/commit/e159d17f2f7d4167cd47e376db38b5fb345d0cb3))
+* **ui:** play button toggles pause on current album (KAMP-296) ([#380](https://github.com/eightyeighteyes/kamp/issues/380)) ([57935f6](https://github.com/eightyeighteyes/kamp/commit/57935f628abdd246ae0c8e67832eb5b08093cf95))
+* **ui:** queue and play-next buttons on album page (KAMP-298) ([#384](https://github.com/eightyeighteyes/kamp/issues/384)) ([6fffcec](https://github.com/eightyeighteyes/kamp/commit/6fffceced9165ba1a654117a5e6435252a4b9936))
+* **ui:** replace ♥ glyphs with shared FavoriteIcon SVG (KAMP-234) ([#378](https://github.com/eightyeighteyes/kamp/issues/378)) ([b9824e8](https://github.com/eightyeighteyes/kamp/commit/b9824e8735cf674bd1fc13175eb38638e1b41dcd))
+* **windows:** bootstrap dev env + Windows CI (KAMP-281, KAMP-36) ([#361](https://github.com/eightyeighteyes/kamp/issues/361)) ([ad2416e](https://github.com/eightyeighteyes/kamp/commit/ad2416e8d17b53144dabf4f256f874b85c77275c))
+* **windows:** build pipeline for NSIS installer (KAMP-278) ([#363](https://github.com/eightyeighteyes/kamp/issues/363)) ([86fff9b](https://github.com/eightyeighteyes/kamp/commit/86fff9b49a69e571c1e45abeff0ecc253be7359d))
+* **windows:** DPAPI credential storage + login fix (KAMP-280/282) ([#367](https://github.com/eightyeighteyes/kamp/issues/367)) ([ccfbbd0](https://github.com/eightyeighteyes/kamp/commit/ccfbbd0f67478887262e43b5afdc647aa20055d7))
+* **windows:** SMTC media keys + Now Playing widget (KAMP-56) ([#375](https://github.com/eightyeighteyes/kamp/issues/375)) ([1e21ca2](https://github.com/eightyeighteyes/kamp/commit/1e21ca2149485f278f62e714969432464213e65a))
+
+
+### Bug Fixes
+
+* **daemon:** suppress album-art access-log noise (KAMP-288) ([#369](https://github.com/eightyeighteyes/kamp/issues/369)) ([f3016b7](https://github.com/eightyeighteyes/kamp/commit/f3016b711d73602f28e60c69d4add452db00456e))
+* **playback:** narrow mpv-engine lock + async scrobbler + state-reset (KAMP-284) ([#376](https://github.com/eightyeighteyes/kamp/issues/376)) ([2c48709](https://github.com/eightyeighteyes/kamp/commit/2c48709cd92f64f6cf89f138b249d6845bdb62c8))
+* **ui:** replace transport-bar system glyphs with inline SVGs (KAMP-291) ([#377](https://github.com/eightyeighteyes/kamp/issues/377)) ([293fe25](https://github.com/eightyeighteyes/kamp/commit/293fe25a01e19919c4c7dc47294ef8b2b05d9f0a))
+* **windows:** block Windows system roots in library/watch-folder validation (KAMP-285) ([#372](https://github.com/eightyeighteyes/kamp/issues/372)) ([8c4d298](https://github.com/eightyeighteyes/kamp/commit/8c4d2981110dd24dc84172628e1305c81afcc71a))
+* **windows:** bundled node binary resolution on win32 (KAMP-287) ([#374](https://github.com/eightyeighteyes/kamp/issues/374)) ([ebceb72](https://github.com/eightyeighteyes/kamp/commit/ebceb72b752e280aaee61f0ba094f9505c441fc5))
+* **windows:** kill orphan mpv via Job Object (KAMP-283) ([#365](https://github.com/eightyeighteyes/kamp/issues/365)) ([3e28f2f](https://github.com/eightyeighteyes/kamp/commit/3e28f2fec29334584a96455669c0a9fadbc5f102))
+* **windows:** route Bandcamp API through Electron proxy in dev too (KAMP-290) ([#368](https://github.com/eightyeighteyes/kamp/issues/368)) ([60128ff](https://github.com/eightyeighteyes/kamp/commit/60128ff840aa41fa0bcd38d0a22a7a9c9bc09af3))
+* **windows:** set NSIS install dir to "Kamp" (KAMP-286) ([#371](https://github.com/eightyeighteyes/kamp/issues/371)) ([c10aab5](https://github.com/eightyeighteyes/kamp/commit/c10aab530d0cca7506e2ba27a754a496bf5ee013))
+* **windows:** suppress native title bar (KAMP-289) ([#370](https://github.com/eightyeighteyes/kamp/issues/370)) ([1317e13](https://github.com/eightyeighteyes/kamp/commit/1317e1313d0e6dd973fda713cd75e07c78f0067e))
+
+
+### Documentation
+
+* **windows:** defer code signing, capture option matrix (KAMP-279) ([#364](https://github.com/eightyeighteyes/kamp/issues/364)) ([a82ceae](https://github.com/eightyeighteyes/kamp/commit/a82ceae6c61915d57a4024de4b2346650c6b4233))
+
 ## [1.17.0](https://github.com/eightyeighteyes/kamp/compare/v1.16.0...v1.17.0) (2026-05-05)
 
 

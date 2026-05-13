@@ -42,6 +42,14 @@ asarUnpack:
 win:
   executableName: kamp
   icon: build/icon.ico
+  # Azure Trusted Signing — auth uses DefaultAzureCredential which reads
+  # AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET from the environment.
+  # See docs/code-signing.md for setup instructions.
+  azureSignOptions:
+    publisherName: "${env.AZURE_PUBLISHER_NAME}"
+    endpoint: "${env.AZURE_CODE_SIGNING_ENDPOINT}"
+    codeSigningAccountName: "${env.AZURE_CODE_SIGNING_ACCOUNT_NAME}"
+    certificateProfileName: "${env.AZURE_CERT_PROFILE_NAME}"
   extraResources:
     # PyInstaller onedir bundle → resources\kamp\
     - from: resources/kamp

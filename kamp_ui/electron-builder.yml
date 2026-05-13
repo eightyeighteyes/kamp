@@ -46,10 +46,10 @@ win:
   # AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET from the environment.
   # See docs/code-signing.md for setup instructions.
   azureSignOptions:
-    publisherName: "${env.AZURE_PUBLISHER_NAME}"
-    endpoint: "${env.AZURE_CODE_SIGNING_ENDPOINT}"
-    codeSigningAccountName: "${env.AZURE_CODE_SIGNING_ACCOUNT_NAME}"
-    certificateProfileName: "${env.AZURE_CERT_PROFILE_NAME}"
+    publisherName: "Theodore Terry"
+    endpoint: "https://eus.codesigning.azure.net/"
+    codeSigningAccountName: "kamp-signing"
+    certificateProfileName: "kamp-public"
   extraResources:
     # PyInstaller onedir bundle → resources\kamp\
     - from: resources/kamp

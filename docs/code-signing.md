@@ -172,15 +172,28 @@ track, which requires a registered business.
 
 ### What you're collecting
 
+Three GitHub secrets (the auth credentials — kept out of the repo):
+
 | GitHub Secret | What it is |
 |---|---|
 | `AZURE_TENANT_ID` | Microsoft Entra ID (Azure AD) tenant / directory ID |
 | `AZURE_CLIENT_ID` | Service principal (App Registration) client ID |
 | `AZURE_CLIENT_SECRET` | Service principal client secret |
-| `AZURE_CODE_SIGNING_ENDPOINT` | Regional endpoint URL for your Trusted Signing account |
-| `AZURE_CODE_SIGNING_ACCOUNT_NAME` | Name of your Trusted Signing account resource |
-| `AZURE_CERT_PROFILE_NAME` | Name of your certificate profile |
-| `AZURE_PUBLISHER_NAME` | Your verified publisher name — the CN that appears in signed binaries; available after identity verification completes |
+
+Four non-secret config values hardcoded in `kamp_ui/electron-builder.yml` (not secrets —
+fine to commit):
+
+| Field | What it is |
+|---|---|
+| `endpoint` | Regional endpoint URL for your Trusted Signing account |
+| `codeSigningAccountName` | Name of your Trusted Signing account resource |
+| `certificateProfileName` | Name of your certificate profile |
+| `publisherName` | Your verified publisher name — the CN that appears in signed binaries; available after identity verification completes |
+
+> **Why hardcode instead of env vars?** electron-builder does not apply `${env.VAR}` interpolation
+> inside `azureSignOptions` fields — the literal string is passed verbatim to the Azure signing
+> DLIB, causing a `UriFormatException` at runtime. Only `DefaultAzureCredential`'s three env vars
+> (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`) are read from the environment.
 
 ---
 
@@ -255,7 +268,7 @@ principal role set up in step 7.)
    - **Organization** — for signing under a business name; requires business registration documents
 4. Fill in your legal name, address, country, and email exactly as on your government ID
 5. Upload the requested ID document when prompted
-6. Submit — verification typically takes **1–5 business days**
+6. Submit — verification is typically automated and completes within seconds to minutes, though it can take up to 1 business day
 
 **After verification,** return to the Identity validation page. The verified publisher name shown
 there (the CN that will appear in signed binaries and in the SmartScreen prompt) is your
@@ -311,21 +324,33 @@ identity that GitHub Actions uses when calling the signing API.
 
 ---
 
-### Step 8 — Add the secrets to GitHub
+### Step 8 — Add secrets to GitHub and update electron-builder.yml
+
+**GitHub secrets (three):**
 
 1. Go to your repository on GitHub
 2. **Settings → Secrets and variables → Actions**
-3. Click **New repository secret** for each of the seven values:
+3. Click **New repository secret** for each of the three auth values:
 
 | Name | Value |
 |---|---|
 | `AZURE_TENANT_ID` | Directory (tenant) ID from step 6 |
 | `AZURE_CLIENT_ID` | Application (client) ID from step 6 |
 | `AZURE_CLIENT_SECRET` | Client secret value from step 6 |
-| `AZURE_CODE_SIGNING_ENDPOINT` | Regional endpoint URL from step 3 |
-| `AZURE_CODE_SIGNING_ACCOUNT_NAME` | Account name from step 3 |
-| `AZURE_CERT_PROFILE_NAME` | Profile name from step 5 |
-| `AZURE_PUBLISHER_NAME` | Verified publisher name from step 4 |
+
+**electron-builder.yml (four hardcoded values):**
+
+Open `kamp_ui/electron-builder.yml` and fill in the `azureSignOptions` block under `win:`:
+
+```yaml
+  azureSignOptions:
+    publisherName: "Your Verified Name"   # from step 4 identity validation page
+    endpoint: "https://eus.codesigning.azure.net/"  # from step 3 region table
+    codeSigningAccountName: "your-account-name"     # from step 3
+    certificateProfileName: "your-profile-name"     # from step 5
+```
+
+Commit and push this change — these values are not secrets.
 
 ---
 

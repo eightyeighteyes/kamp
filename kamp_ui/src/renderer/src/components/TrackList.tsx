@@ -71,44 +71,41 @@ export function TrackList(): React.JSX.Element | null {
       <div className="track-list-hero-overlay" />
 
       {/* Breadcrumb floats over the hero */}
-      <nav
-        className={`breadcrumb${albumEditMode ? ' breadcrumb--edit' : ''}`}
-        aria-label="Navigation"
-      >
-        <div className="breadcrumb-nav-items">
-          <button
-            onClick={() => {
-              selectAlbum(null)
-              selectArtist(null)
-            }}
-          >
-            Library
-          </button>
-          <span className="breadcrumb-sep" aria-hidden="true">
-            ›
-          </span>
-          <button
-            onClick={() => {
-              selectAlbum(null)
-              selectArtist(album.album_artist)
-            }}
-          >
-            {album.album_artist}
-          </button>
-          <span className="breadcrumb-sep" aria-hidden="true">
-            ›
-          </span>
-          <span>{album.album}</span>
-        </div>
+      <nav className="breadcrumb" aria-label="Navigation">
         <button
-          className={`breadcrumb-edit-btn${albumEditMode ? ' active' : ''}`}
-          aria-pressed={albumEditMode}
-          onClick={() => setAlbumEditMode(!albumEditMode)}
+          onClick={() => {
+            selectAlbum(null)
+            selectArtist(null)
+          }}
         >
-          <PencilIcon size={11} />
-          {albumEditMode ? 'Done' : 'Edit tags'}
+          Library
         </button>
+        <span className="breadcrumb-sep" aria-hidden="true">
+          ›
+        </span>
+        <button
+          onClick={() => {
+            selectAlbum(null)
+            selectArtist(album.album_artist)
+          }}
+        >
+          {album.album_artist}
+        </button>
+        <span className="breadcrumb-sep" aria-hidden="true">
+          ›
+        </span>
+        <span>{album.album}</span>
       </nav>
+
+      {/* Edit toggle — separate pill, right side of the hero row */}
+      <button
+        className={`breadcrumb-edit-btn${albumEditMode ? ' active' : ''}`}
+        aria-pressed={albumEditMode}
+        onClick={() => setAlbumEditMode(!albumEditMode)}
+      >
+        <PencilIcon size={11} />
+        {albumEditMode ? 'Done' : 'Edit tags'}
+      </button>
 
       {/* Screen-reader announcement for edit-mode transitions */}
       <div aria-live="polite" className="sr-only">

@@ -1,9 +1,16 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { artUrl } from '../api/client'
 import type { Track } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
-import { FavoriteIcon, PlayIcon, PauseIcon, QueueAddIcon, PlayNextIcon } from './TransportIcons'
+import {
+  FavoriteIcon,
+  PencilIcon,
+  PlayIcon,
+  PauseIcon,
+  QueueAddIcon,
+  PlayNextIcon
+} from './TransportIcons'
 
 type ContextMenu = { x: number; y: number; track: Track }
 
@@ -33,6 +40,16 @@ export function TrackList(): React.JSX.Element | null {
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
   const playAlbumNext = useStore((s) => s.playAlbumNext)
 
+  const albumEditMode = useStore((s) => s.albumEditMode)
+  const setAlbumEditMode = useStore((s) => s.setAlbumEditMode)
+  const albumTitleRef = useRef<HTMLHeadingElement>(null)
+
+  // Focus the album title heading when entering edit mode so screen readers
+  // receive the live-region announcement in context.
+  useEffect(() => {
+    if (albumEditMode) albumTitleRef.current?.focus()
+  }, [albumEditMode])
+
   const [menu, setMenu] = useState<ContextMenu | null>(null)
 
   if (!album) return null
@@ -41,7 +58,7 @@ export function TrackList(): React.JSX.Element | null {
     currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
   return (
-    <div className="track-list-view">
+    <div className={`track-list-view${albumEditMode ? ' track-list-view--edit' : ''}`}>
       {/* Hero: full-width art — image intentionally taller than hero to bleed into track list */}
       <div className={`track-list-hero${album.has_art ? ' has-art' : ''}`}>
         {album.has_art && (
@@ -54,31 +71,49 @@ export function TrackList(): React.JSX.Element | null {
       <div className="track-list-hero-overlay" />
 
       {/* Breadcrumb floats over the hero */}
-      <nav className="breadcrumb" aria-label="Navigation">
+      <nav
+        className={`breadcrumb${albumEditMode ? ' breadcrumb--edit' : ''}`}
+        aria-label="Navigation"
+      >
+        <div className="breadcrumb-nav-items">
+          <button
+            onClick={() => {
+              selectAlbum(null)
+              selectArtist(null)
+            }}
+          >
+            Library
+          </button>
+          <span className="breadcrumb-sep" aria-hidden="true">
+            ›
+          </span>
+          <button
+            onClick={() => {
+              selectAlbum(null)
+              selectArtist(album.album_artist)
+            }}
+          >
+            {album.album_artist}
+          </button>
+          <span className="breadcrumb-sep" aria-hidden="true">
+            ›
+          </span>
+          <span>{album.album}</span>
+        </div>
         <button
-          onClick={() => {
-            selectAlbum(null)
-            selectArtist(null)
-          }}
+          className={`breadcrumb-edit-btn${albumEditMode ? ' active' : ''}`}
+          aria-pressed={albumEditMode}
+          onClick={() => setAlbumEditMode(!albumEditMode)}
         >
-          Library
+          <PencilIcon size={11} />
+          {albumEditMode ? 'Done' : 'Edit tags'}
         </button>
-        <span className="breadcrumb-sep" aria-hidden="true">
-          ›
-        </span>
-        <button
-          onClick={() => {
-            selectAlbum(null)
-            selectArtist(album.album_artist)
-          }}
-        >
-          {album.album_artist}
-        </button>
-        <span className="breadcrumb-sep" aria-hidden="true">
-          ›
-        </span>
-        <span>{album.album}</span>
       </nav>
+
+      {/* Screen-reader announcement for edit-mode transitions */}
+      <div aria-live="polite" className="sr-only">
+        {albumEditMode ? 'Edit mode on. Album, artist, and track titles are editable.' : ''}
+      </div>
 
       {/* Static identity block — does not scroll */}
       <div className="track-list-identity">
@@ -91,7 +126,9 @@ export function TrackList(): React.JSX.Element | null {
           >
             <FavoriteIcon active={album.favorite} size={36} />
           </button>
-          <h1 className="track-list-album-title">{album.album}</h1>
+          <h1 ref={albumTitleRef} className="track-list-album-title" tabIndex={-1}>
+            {album.album}
+          </h1>
           <h2 className="track-list-album-artist">
             <button
               className="track-list-artist-link"

@@ -68,15 +68,18 @@
   );
 }
 
-/* Breadcrumb floats over the hero */
+/* Breadcrumb floats over the hero — spans full width so the edit button
+   can be right-aligned opposite the nav items. */
 .breadcrumb {
   position: absolute;
   top: 12px;
   left: 12px;
+  right: 12px;
   z-index: 10;
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: space-between;
+  gap: 8px;
   background: rgba(20, 20, 20, 0.55);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -84,11 +87,20 @@
   border-radius: 20px;
   font-size: 13px;
   font-weight: 500;
-  padding: 5px 12px;
-  white-space: nowrap;
+  padding: 5px 6px 5px 12px;
   transition:
     background 0.15s,
     border-color 0.15s;
+}
+
+/* Groups Library › Artist › Album; allows truncation on narrow windows */
+.breadcrumb-nav-items {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .breadcrumb button {
@@ -117,8 +129,77 @@
 }
 
 /* Current page — album name, not interactive */
-.breadcrumb > span:last-child {
+.breadcrumb-nav-items > span:last-child {
   color: #ffffff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Edit / Done toggle button — ghost resting, chip active */
+.breadcrumb-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  padding: 3px 10px 3px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    border-color 0.15s,
+    background 0.15s,
+    filter 0.15s;
+}
+
+.breadcrumb-edit-btn:hover {
+  color: var(--accent);
+  border-color: rgba(124, 134, 225, 0.4);
+}
+
+.breadcrumb-edit-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.breadcrumb-edit-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.breadcrumb-edit-btn.active:hover {
+  filter: brightness(1.1);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .breadcrumb-edit-btn {
+    transition: none;
+  }
+}
+
+/* 2px accent border traces the content card while edit mode is active */
+.track-list-view--edit {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* Visually hidden, readable by screen readers */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* Scrollable body — transparent so the art can bleed through the top rows. */

@@ -53,6 +53,7 @@ type PlayerStore = {
   dismissedHighlightKeys: Set<string>
   topAlbumsCount: number
   baseKampEditMode: boolean
+  albumEditMode: boolean
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
   searchQuery: string
   searchResults: SearchResult | null
@@ -82,6 +83,7 @@ type PlayerStore = {
   dismissHighlight: (album: Album) => void
   setTopAlbumsCount: (n: number) => void
   toggleBaseKampEditMode: () => void
+  setAlbumEditMode: (mode: boolean) => void
   loadLibrary: () => Promise<void>
   loadUiState: () => Promise<void>
   selectArtist: (artist: string | null) => void
@@ -209,6 +211,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     return saved ? parseInt(saved) : 10
   })(),
   baseKampEditMode: localStorage.getItem('kamp:base-kamp-edit-mode') === 'true',
+  albumEditMode: false,
   sortOrder: 'album_artist',
   searchQuery: '',
   searchResults: null,
@@ -375,6 +378,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ baseKampEditMode: next })
   },
 
+  setAlbumEditMode: (mode) => set({ albumEditMode: mode }),
+
   loadUiState: async () => {
     try {
       const ui = await api.getUiState()
@@ -436,7 +441,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set((s) => ({ library: { ...s.library, selectedArtist: artist, selectedAlbum: null } })),
 
   selectAlbum: async (album) => {
-    set((s) => ({ library: { ...s.library, selectedAlbum: album } }))
+    set((s) => ({ library: { ...s.library, selectedAlbum: album }, albumEditMode: false }))
     if (album) await get().loadTracks(album.album_artist, album.album, album.file_path)
   },
 

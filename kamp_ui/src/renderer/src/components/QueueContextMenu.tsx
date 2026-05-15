@@ -80,8 +80,8 @@ export function QueueContextMenu({
                 onClose()
               }}
             >
-              <FavoriteIcon active={!!favorite} size={14} />
-              <span style={{ marginLeft: 6 }}>{favorite ? 'Unfavorite' : 'Favorite'}</span>
+              <FavoriteIcon active={!favorite} size={14} />
+              <span style={{ marginLeft: 6 }}>{favorite ? 'Remove from Favorites' : 'Add to Favorites'}</span>
             </button>
           )}
           <div className="track-context-menu-divider" />

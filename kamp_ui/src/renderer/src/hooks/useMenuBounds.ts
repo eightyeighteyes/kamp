@@ -13,17 +13,19 @@ import type React from 'react'
  * @param trigger Changing this value re-runs the clamp (pass the menu state
  *                object or open boolean — falsy value means menu is closed).
  */
+const MARGIN = 8
+
 export function useMenuBounds(ref: React.RefObject<HTMLElement | null>, trigger: unknown): void {
   useLayoutEffect(() => {
     if (!trigger) return
     const el = ref.current
     if (!el) return
     const rect = el.getBoundingClientRect()
-    if (rect.right > window.innerWidth) {
-      el.style.left = `${el.offsetLeft - (rect.right - window.innerWidth)}px`
+    if (rect.right > window.innerWidth - MARGIN) {
+      el.style.left = `${el.offsetLeft - (rect.right - (window.innerWidth - MARGIN))}px`
     }
-    if (rect.bottom > window.innerHeight) {
-      el.style.top = `${el.offsetTop - (rect.bottom - window.innerHeight)}px`
+    if (rect.bottom > window.innerHeight - MARGIN) {
+      el.style.top = `${el.offsetTop - (rect.bottom - (window.innerHeight - MARGIN))}px`
     }
   }, [ref, trigger])
 }

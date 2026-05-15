@@ -3,8 +3,8 @@
   "version": "1.18.0",
   "description": "kamp music player",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": "88eyes",
+  "homepage": "https://kamp.fm",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",

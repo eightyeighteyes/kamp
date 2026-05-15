@@ -385,6 +385,63 @@
   text-overflow: ellipsis;
 }
 
+.track-row-title--input {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  outline: none;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  line-height: inherit;
+  /* Horizontal inset only — no vertical padding so the row height doesn't reflow */
+  padding: 0 4px;
+  margin: 0 -4px;
+  width: 100%;
+  min-width: 0;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.track-row-title--input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+  background: var(--surface-hover);
+}
+
+.track-row-title--input:disabled,
+.track-row-title--input[readonly] {
+  opacity: 0.45;
+  cursor: default;
+  border-color: transparent;
+  background: transparent;
+}
+
+.track-row-title--input.saving {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+  opacity: 0.7;
+  cursor: wait;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .track-row-title--input.saving {
+    animation: saving-pulse 1s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes saving-pulse {
+  from {
+    opacity: 0.7;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 .track-row-artist {
   font-size: 11px;
   color: var(--text-dim);

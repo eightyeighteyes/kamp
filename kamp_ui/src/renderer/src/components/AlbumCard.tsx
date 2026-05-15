@@ -246,7 +246,11 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
             onError={() => setArtLoaded(false)}
           />
         )}
-        {playing && isActive && <div className="now-playing-badge"><PlayIcon size={10} /></div>}
+        {playing && isActive && (
+          <div className="now-playing-badge">
+            <PlayIcon size={10} />
+          </div>
+        )}
         {isNew && highlightStyle === 'shiny' && <span className="shiny-sweep" aria-hidden="true" />}
         {isNew && highlightStyle === 'boring' && (
           <span className="boring-hover" aria-hidden="true">

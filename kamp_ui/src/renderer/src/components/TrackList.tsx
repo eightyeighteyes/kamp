@@ -178,7 +178,15 @@ export function TrackList(): React.JSX.Element | null {
                   {track.favorite && <FavoriteIcon active size={10} />}
                 </span>
                 <span className="track-row-num">
-                  {isCurrent ? (playing ? <PlayIcon size={11} /> : <PauseIcon size={11} />) : track.track_number}
+                  {isCurrent ? (
+                    playing ? (
+                      <PlayIcon size={11} />
+                    ) : (
+                      <PauseIcon size={11} />
+                    )
+                  ) : (
+                    track.track_number
+                  )}
                 </span>
                 <span className="track-row-title">{track.title}</span>
                 <span className="track-row-artist">{track.artist}</span>

@@ -58,7 +58,11 @@ function ListRow({ album }: { album: Album }): React.JSX.Element {
             alt=""
           />
         )}
-        {playing && isActive && <div className="module-list-playing-badge"><PlayIcon size={16} /></div>}
+        {playing && isActive && (
+          <div className="module-list-playing-badge">
+            <PlayIcon size={16} />
+          </div>
+        )}
       </div>
       <div className="module-list-info">
         <div className="module-list-title">

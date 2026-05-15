@@ -108,7 +108,7 @@ export function QueueContextMenu({
                   display: 'inline-flex'
                 }}
               >
-                <FavoriteIcon active={!!favorite} size={12} />
+                <FavoriteIcon active={!favorite} size={12} />
               </span>
               {favorite ? 'Remove from Favorites' : 'Add to Favorites'}
             </button>

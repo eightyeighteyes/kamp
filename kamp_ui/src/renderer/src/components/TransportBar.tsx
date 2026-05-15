@@ -82,9 +82,7 @@ export function TransportBar(): React.JSX.Element {
 
       <button
         className={`transport-btn favorite-btn${current_track?.favorite ? ' active' : ''}`}
-        onClick={() =>
-          current_track && void setFavorite(current_track, !current_track.favorite)
-        }
+        onClick={() => current_track && void setFavorite(current_track, !current_track.favorite)}
         disabled={!current_track}
         title={current_track?.favorite ? 'Remove from favorites' : 'Add to favorites'}
         aria-pressed={current_track?.favorite ?? false}

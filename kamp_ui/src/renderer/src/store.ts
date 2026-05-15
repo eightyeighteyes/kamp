@@ -583,9 +583,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
       searchResults: s.searchResults
         ? {
             ...s.searchResults,
-            tracks: s.searchResults.tracks.map((t) =>
-              t.id === track.id ? { ...t, favorite } : t
-            )
+            tracks: s.searchResults.tracks.map((t) => (t.id === track.id ? { ...t, favorite } : t))
           }
         : s.searchResults
     }))

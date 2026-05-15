@@ -193,12 +193,7 @@ export function TrackList(): React.JSX.Element | null {
       </div>
 
       {menu && (
-        <TrackContextMenu
-          x={menu.x}
-          y={menu.y}
-          track={menu.track}
-          onClose={() => setMenu(null)}
-        />
+        <TrackContextMenu x={menu.x} y={menu.y} track={menu.track} onClose={() => setMenu(null)} />
       )}
     </div>
   )

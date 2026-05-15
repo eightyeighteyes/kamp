@@ -190,6 +190,13 @@
   border: 0;
 }
 
+/* 2px accent border on the track rows section signals edit mode.
+   Inset on .track-list-body (not the full view) so all four edges are
+   visible below the hero rather than mostly hidden behind it. */
+.track-list-view--edit .track-list-body {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
 /* Scrollable body — transparent so the art can bleed through the top rows. */
 .track-list-body {
   flex: 1;

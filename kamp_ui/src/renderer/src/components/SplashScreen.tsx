@@ -1,6 +1,12 @@
 import React from 'react'
 
-export function SplashScreen({ hiding }: { hiding: boolean }): React.JSX.Element {
+export function SplashScreen({
+  hiding,
+  slowStart
+}: {
+  hiding: boolean
+  slowStart?: boolean
+}): React.JSX.Element {
   return (
     <div className={`splash-screen${hiding ? ' splash-hiding' : ''}`}>
       <svg
@@ -136,6 +142,13 @@ export function SplashScreen({ hiding }: { hiding: boolean }): React.JSX.Element
         <circle cx="113" cy="173" r="3" fill="none" stroke="#c4aa78" strokeWidth="1.2" />
         <circle cx="113" cy="173" r="1.5" fill="#c4aa78" />
       </svg>
+      {slowStart && (
+        <p className="splash-slow-message">
+          Starting up — antivirus software may be scanning Kamp on first launch.
+          <br />
+          This can take 1–2 minutes.
+        </p>
+      )}
     </div>
   )
 }

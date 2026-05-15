@@ -5,6 +5,7 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: {
+      isPackaged: boolean
       openDirectory: () => Promise<string | null>
       onOpenPreferences: (callback: () => void) => () => void
       bandcamp: {

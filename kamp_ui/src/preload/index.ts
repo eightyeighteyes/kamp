@@ -5,6 +5,8 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { buildKampAPI, onBandcampSyncStatus, onPipelineStage } from './kampAPI'
 
+const isPackaged: boolean = ipcRenderer.sendSync('kamp:is-packaged')
+
 function _kampTokenFilePath(): string {
   if (process.platform === 'win32') {
     return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'kamp', '.token')
@@ -22,6 +24,7 @@ function _readKampToken(): string | null {
 
 // Custom APIs for renderer
 const api = {
+  isPackaged,
   openDirectory: (): Promise<string | null> => ipcRenderer.invoke('open-directory'),
   onOpenPreferences: (callback: () => void): (() => void) => {
     const handler = (): void => callback()

@@ -569,6 +569,10 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  ipcMain.on('kamp:is-packaged', (event) => {
+    event.returnValue = app.isPackaged
+  })
+
   // Forward player state from the preload to the Now Playing helper.
   // The preload sends this on every track.changed / play_state.changed WS event
   // and once on WS open (initial fetch), so the helper stays in sync.

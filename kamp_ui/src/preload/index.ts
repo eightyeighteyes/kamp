@@ -5,7 +5,9 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { buildKampAPI, onBandcampSyncStatus, onPipelineStage } from './kampAPI'
 
-const isPackaged: boolean = ipcRenderer.sendSync('kamp:is-packaged')
+// In packaged apps the preload runs from inside app.asar; in dev it runs
+// directly from the filesystem. The .asar extension in __dirname is definitive.
+const isPackaged: boolean = __dirname.includes('.asar')
 
 function _kampTokenFilePath(): string {
   if (process.platform === 'win32') {

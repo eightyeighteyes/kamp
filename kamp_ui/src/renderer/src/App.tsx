@@ -146,6 +146,11 @@ export default function App(): React.JSX.Element {
         setSplashHiding(true)
         splashFadeRef.current = setTimeout(() => setSplashGone(true), 500)
       }, 1000)
+    } else {
+      // Reset a mid-fade splash so it stays fully visible while retrying.
+      // No-op if splashGone is already true (splash is not in the DOM).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSplashHiding(false)
     }
     return () => {
       clearTimeout(splashLingerRef.current)

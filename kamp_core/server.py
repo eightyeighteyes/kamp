@@ -39,6 +39,7 @@ from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
 
 
 class TrackOut(BaseModel):
+    id: int
     title: str
     artist: str
     album_artist: str
@@ -57,6 +58,7 @@ class TrackOut(BaseModel):
     @classmethod
     def from_track(cls, t: Track) -> "TrackOut":
         return cls(
+            id=t.id,
             title=t.title,
             artist=t.artist,
             album_artist=t.album_artist,

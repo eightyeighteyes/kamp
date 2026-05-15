@@ -122,7 +122,7 @@ type PlayerStore = {
   skipToQueueTrack: (position: number) => Promise<void>
   clearQueue: () => Promise<void>
   clearRemainingQueue: (position: number) => Promise<void>
-  setFavorite: (filePath: string, favorite: boolean) => Promise<void>
+  setFavorite: (track: Track, favorite: boolean) => Promise<void>
   setAlbumFavorite: (albumArtist: string, album: string, favorite: boolean) => Promise<void>
   refreshOpenAlbum: () => Promise<void>
   scanLibrary: () => Promise<void>
@@ -393,7 +393,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ player: state })
     // When the track changes (e.g. auto-advance at end-of-track), the queue
     // position has moved server-side — reload so the panel stays in sync.
-    if (state.current_track?.file_path !== prevTrack?.file_path) {
+    if (state.current_track?.id !== prevTrack?.id) {
       void get().loadQueue()
     }
   },
@@ -550,10 +550,18 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void get().loadQueue()
   },
 
-  setFavorite: async (filePath, favorite) => {
-    await api.setTrackFavorite(filePath, favorite)
+  setFavorite: async (track, favorite) => {
+    try {
+      await api.setTrackFavorite(track, favorite)
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('404')) {
+        // Track no longer at its expected path — library may have been updated.
+        await get().refreshOpenAlbum()
+      }
+      return
+    }
     // Keep the player state in sync if the favorited track is currently playing.
-    if (get().player.current_track?.file_path === filePath) {
+    if (get().player.current_track?.id === track.id) {
       set((s) => ({
         player: {
           ...s.player,
@@ -566,7 +574,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
       queue: s.queue
         ? {
             ...s.queue,
-            tracks: s.queue.tracks.map((t) => (t.file_path === filePath ? { ...t, favorite } : t))
+            tracks: s.queue.tracks.map((t) => (t.id === track.id ? { ...t, favorite } : t))
           }
         : s.queue
     }))
@@ -575,9 +583,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
       searchResults: s.searchResults
         ? {
             ...s.searchResults,
-            tracks: s.searchResults.tracks.map((t) =>
-              t.file_path === filePath ? { ...t, favorite } : t
-            )
+            tracks: s.searchResults.tracks.map((t) => (t.id === track.id ? { ...t, favorite } : t))
           }
         : s.searchResults
     }))

@@ -8,7 +8,7 @@ import { TrackContextMenu } from './TrackContextMenu'
 import { FavoriteIcon } from './TransportIcons'
 
 type AlbumMenu = { x: number; y: number; album: Album }
-type TrackMenu = { x: number; y: number; filePath: string; favorite: boolean }
+type TrackMenu = { x: number; y: number; track: Track }
 
 function SearchAlbumCard({
   album,
@@ -163,17 +163,12 @@ export function SearchView(): React.JSX.Element {
           <div className="search-track-list">
             {results.tracks.map((track) => (
               <SearchTrackRow
-                key={track.file_path}
+                key={track.id}
                 track={track}
                 onContextMenu={(e, t) => {
                   e.preventDefault()
                   setAlbumMenu(null)
-                  setTrackMenu({
-                    x: e.clientX,
-                    y: e.clientY,
-                    filePath: t.file_path,
-                    favorite: t.favorite
-                  })
+                  setTrackMenu({ x: e.clientX, y: e.clientY, track: t })
                 }}
               />
             ))}
@@ -194,8 +189,7 @@ export function SearchView(): React.JSX.Element {
         <TrackContextMenu
           x={trackMenu.x}
           y={trackMenu.y}
-          filePath={trackMenu.filePath}
-          favorite={trackMenu.favorite}
+          track={trackMenu.track}
           onClose={() => setTrackMenu(null)}
         />
       )}

@@ -3,16 +3,16 @@ import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
 import { PlayNextIcon, QueueAddIcon } from './TransportIcons'
+import type { Track } from '../api/client'
 
 interface Props {
   x: number
   y: number
-  filePath: string
-  favorite: boolean
+  track: Track
   onClose: () => void
 }
 
-export function TrackContextMenu({ x, y, filePath, favorite, onClose }: Props): React.JSX.Element {
+export function TrackContextMenu({ x, y, track, onClose }: Props): React.JSX.Element {
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
   const setFavorite = useStore((s) => s.setFavorite)
@@ -22,7 +22,7 @@ export function TrackContextMenu({ x, y, filePath, favorite, onClose }: Props): 
       <button
         className="track-context-menu-item"
         onClick={() => {
-          void playNext(filePath)
+          void playNext(track.file_path)
           onClose()
         }}
       >
@@ -36,7 +36,7 @@ export function TrackContextMenu({ x, y, filePath, favorite, onClose }: Props): 
       <button
         className="track-context-menu-item"
         onClick={() => {
-          void addToQueue(filePath)
+          void addToQueue(track.file_path)
           onClose()
         }}
       >
@@ -50,7 +50,7 @@ export function TrackContextMenu({ x, y, filePath, favorite, onClose }: Props): 
       <button
         className="track-context-menu-item"
         onClick={() => {
-          void setFavorite(filePath, !favorite)
+          void setFavorite(track, !track.favorite)
           onClose()
         }}
       >
@@ -58,7 +58,7 @@ export function TrackContextMenu({ x, y, filePath, favorite, onClose }: Props): 
           width="12"
           height="12"
           viewBox="0 0 24 24"
-          fill={favorite ? 'currentColor' : 'none'}
+          fill={track.favorite ? 'currentColor' : 'none'}
           stroke="currentColor"
           strokeWidth="2"
           strokeLinecap="round"
@@ -67,12 +67,12 @@ export function TrackContextMenu({ x, y, filePath, favorite, onClose }: Props): 
         >
           <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
         </svg>
-        {favorite ? 'Remove from Favorites' : 'Add to Favorites'}
+        {track.favorite ? 'Remove from Favorites' : 'Add to Favorites'}
       </button>
       <button
         className="track-context-menu-item"
         onClick={() => {
-          window.api.showItemInFolder(filePath)
+          window.api.showItemInFolder(track.file_path)
           onClose()
         }}
       >

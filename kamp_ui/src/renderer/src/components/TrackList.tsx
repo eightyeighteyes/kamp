@@ -1,10 +1,11 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
 import { artUrl } from '../api/client'
+import type { Track } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
 import { FavoriteIcon, PlayIcon, PauseIcon, QueueAddIcon, PlayNextIcon } from './TransportIcons'
 
-type ContextMenu = { x: number; y: number; filePath: string; favorite: boolean }
+type ContextMenu = { x: number; y: number; track: Track }
 
 function HeroImage({ src }: { src: string }): React.JSX.Element {
   const [loaded, setLoaded] = useState(false)
@@ -141,10 +142,10 @@ export function TrackList(): React.JSX.Element | null {
       <div className="track-list-body">
         <ol className="track-rows">
           {tracks.map((track, i) => {
-            const isCurrent = isCurrentAlbum && currentTrack?.track_number === track.track_number
+            const isCurrent = currentTrack?.id === track.id
             return (
               <li
-                key={`${track.disc_number}-${track.track_number}`}
+                key={track.id}
                 className={`track-row${isCurrent ? ' current' : ''}`}
                 tabIndex={0}
                 onDoubleClick={() => {
@@ -166,12 +167,7 @@ export function TrackList(): React.JSX.Element | null {
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault()
-                  setMenu({
-                    x: e.clientX,
-                    y: e.clientY,
-                    filePath: track.file_path,
-                    favorite: track.favorite
-                  })
+                  setMenu({ x: e.clientX, y: e.clientY, track })
                 }}
               >
                 <span className="track-row-fav">
@@ -200,8 +196,7 @@ export function TrackList(): React.JSX.Element | null {
         <TrackContextMenu
           x={menu.x}
           y={menu.y}
-          filePath={menu.filePath}
-          favorite={menu.favorite}
+          track={menu.track}
           onClose={() => setMenu(null)}
         />
       )}

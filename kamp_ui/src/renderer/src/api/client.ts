@@ -7,6 +7,7 @@
  */
 
 export type Track = {
+  id: number
   title: string
   artist: string
   album_artist: string
@@ -314,8 +315,8 @@ export const skipToQueueTrack = (position: number): Promise<unknown> =>
 export const clearQueue = (): Promise<unknown> => post('/api/v1/player/queue/clear', {})
 export const clearRemainingQueue = (position: number): Promise<unknown> =>
   post('/api/v1/player/queue/clear-remaining', { position })
-export const setTrackFavorite = (filePath: string, favorite: boolean): Promise<unknown> =>
-  post('/api/v1/tracks/favorite', { file_path: filePath, favorite })
+export const setTrackFavorite = (track: Track, favorite: boolean): Promise<unknown> =>
+  post('/api/v1/tracks/favorite', { file_path: track.file_path, favorite })
 export const setAlbumFavorite = (
   albumArtist: string,
   album: string,

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { QueueContextMenu } from './QueueContextMenu'
 import { FavoriteIcon } from './TransportIcons'
+import type { Track } from '../api/client'
 
 const QUEUE_DROP_TYPES = new Set(['text/kamp-track-path', 'text/kamp-album', 'text/kamp-queue-idx'])
 function isQueueDrop(types: DOMStringList | readonly string[]): boolean {
@@ -12,10 +13,7 @@ type ContextMenu = {
   x: number
   y: number
   trackIdx: number | null
-  albumArtist?: string
-  album?: string
-  filePath?: string
-  favorite?: boolean
+  track?: Track
 }
 
 export function QueuePanel(): React.JSX.Element {
@@ -181,7 +179,7 @@ export function QueuePanel(): React.JSX.Element {
             const isUnplayed = position >= 0 && idx > position
             return (
               <li
-                key={track.file_path}
+                key={track.id}
                 ref={isCurrent ? activeRef : null}
                 className={`queue-track-row${isCurrent ? ' current' : ''}${isPlayed ? ' played' : ''}`}
                 draggable={!isCurrent}
@@ -211,10 +209,7 @@ export function QueuePanel(): React.JSX.Element {
                     x: e.clientX,
                     y: e.clientY,
                     trackIdx: isUnplayed ? idx : null,
-                    albumArtist: track.album_artist,
-                    album: track.album,
-                    filePath: track.file_path,
-                    favorite: track.favorite
+                    track
                   })
                 }}
               >
@@ -233,11 +228,8 @@ export function QueuePanel(): React.JSX.Element {
         <QueueContextMenu
           x={menu.x}
           y={menu.y}
-          albumArtist={menu.albumArtist}
-          album={menu.album}
           trackIdx={menu.trackIdx}
-          filePath={menu.filePath}
-          favorite={menu.favorite}
+          track={menu.track}
           onClose={() => setMenu(null)}
         />
       )}

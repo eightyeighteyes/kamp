@@ -12,6 +12,7 @@
 
 .prefs-dialog {
   width: 520px;
+  height: 560px;
   max-height: calc(100vh - 80px);
   background: var(--surface);
   border: 1px solid var(--border);

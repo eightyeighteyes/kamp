@@ -67,8 +67,10 @@ export function EditableTrackTitle({
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
           e.preventDefault()
+          e.stopPropagation()
           inputRef.current?.blur()
         } else if (e.key === 'Escape') {
+          e.stopPropagation()
           setValue(title)
           inputRef.current?.blur()
         }

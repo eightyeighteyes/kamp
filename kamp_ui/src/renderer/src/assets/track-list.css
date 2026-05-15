@@ -131,8 +131,10 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: none;
-  border: 1px solid transparent;
+  background: rgba(20, 20, 20, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 20px;
   padding: 5px 13px 5px 10px;
   font-size: 12px;
@@ -148,7 +150,7 @@
 
 .breadcrumb-edit-btn:hover {
   color: var(--accent);
-  border-color: rgba(124, 134, 225, 0.4);
+  border-color: rgba(124, 134, 225, 0.5);
 }
 
 .breadcrumb-edit-btn:focus-visible {

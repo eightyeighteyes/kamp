@@ -66,6 +66,7 @@ def mock_engine() -> MagicMock:
 def mock_queue() -> MagicMock:
     queue = MagicMock()
     queue.current.return_value = None
+    queue.peek_next.return_value = None
     queue.queue_tracks.return_value = ([], -1)
     return queue
 

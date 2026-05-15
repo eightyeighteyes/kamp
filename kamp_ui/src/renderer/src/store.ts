@@ -126,6 +126,11 @@ type PlayerStore = {
   clearRemainingQueue: (position: number) => Promise<void>
   setFavorite: (track: Track, favorite: boolean) => Promise<void>
   setAlbumFavorite: (albumArtist: string, album: string, favorite: boolean) => Promise<void>
+  patchTrackTitle: (
+    trackId: number,
+    title: string,
+    overwrite?: boolean
+  ) => Promise<api.TrackTagsCollision | null>
   refreshOpenAlbum: () => Promise<void>
   scanLibrary: () => Promise<void>
   setLibraryPath: (path: string) => Promise<void>
@@ -147,7 +152,8 @@ const initialPlayer: PlayerState = {
   position: 0,
   duration: 0,
   volume: 100,
-  current_track: null
+  current_track: null,
+  next_track: null
 }
 
 export const useStore = create<PlayerStore>((set, get) => ({
@@ -594,6 +600,13 @@ export const useStore = create<PlayerStore>((set, get) => ({
     }))
     // Reload the open album track list so the heart in track rows updates.
     await get().refreshOpenAlbum()
+  },
+
+  patchTrackTitle: async (trackId, title, overwrite = false) => {
+    const result = await api.patchTrackTags(trackId, title, overwrite)
+    if ('collision' in result) return result
+    await get().refreshOpenAlbum()
+    return null
   },
 
   setAlbumFavorite: async (albumArtist, album, favorite) => {

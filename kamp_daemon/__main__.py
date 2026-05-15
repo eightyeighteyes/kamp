@@ -974,6 +974,14 @@ def _cmd_daemon(
         lib_watcher = LibraryWatcher(lib_path, _on_library_change)
         lib_watcher.start()
 
+    def _on_track_file_moved(old_path: "Path", new_path: "Path") -> None:
+        """Suppress watcher events for a tag-edit move and trigger an immediate scan."""
+        if lib_watcher is not None:
+            lib_watcher.suppress_paths({old_path, new_path})
+            lib_watcher.scan_now()
+
+    app.state.on_track_file_moved = _on_track_file_moved
+
     # --- Start uvicorn in a background thread ---
     # uvicorn.Server.serve() detects it is not on the main thread and skips
     # installing its own signal handlers, so there is no conflict with

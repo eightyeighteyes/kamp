@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 from pathlib import Path
 
@@ -12,9 +11,13 @@ import mutagen.id3 as _id3
 import mutagen.mp4
 import mutagen.oggvorbis
 
-logger = logging.getLogger(__name__)
+from kamp_core.path_utils import (
+    make_path_vars,
+    render_destination,
+    sanitize_path_component as _sanitize,
+)
 
-_UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+logger = logging.getLogger(__name__)
 
 
 class MoveError(Exception):
@@ -54,25 +57,10 @@ def move_to_library(
 
 def _destination(src: Path, library_root: Path, path_template: str) -> Path:
     tags = _read_tags(src)
-    # Sanitize string values before rendering so that unsafe characters (especially '/')
-    # in tag fields like title don't get interpreted as path separators.
-    safe_tags = {k: _sanitize(v) if isinstance(v, str) else v for k, v in tags.items()}
     try:
-        rendered = path_template.format(**safe_tags)
-    except (KeyError, ValueError) as exc:
+        return render_destination(tags, library_root, path_template)
+    except ValueError as exc:
         raise MoveError(f"Path template error for {src}: {exc}") from exc
-
-    # Sanitize each path component as a second layer of defence.
-    parts = Path(rendered).parts
-    safe_parts = [_sanitize(p) for p in parts]
-    return library_root.joinpath(*safe_parts)
-
-
-def _sanitize(name: str) -> str:
-    """Strip characters that are unsafe in file/directory names."""
-    sanitized = _UNSAFE_CHARS.sub("_", name)
-    # Trim trailing dots and spaces (Windows compatibility)
-    return sanitized.strip(". ")
 
 
 def _read_tags(path: Path) -> dict[str, object]:
@@ -156,29 +144,7 @@ def _read_tags(path: Path) -> dict[str, object]:
     except Exception:
         pass
 
-    return _make_vars(artist, album_artist, album, year, track, disc, title, ext)
-
-
-def _make_vars(
-    artist: str,
-    album_artist: str,
-    album: str,
-    year: str,
-    track: int,
-    disc: int,
-    title: str,
-    ext: str,
-) -> dict[str, object]:
-    return {
-        "artist": artist or "Unknown Artist",
-        "album_artist": album_artist or artist or "Unknown Artist",
-        "album": album or "Unknown Album",
-        "year": year or "0000",
-        "track": track,
-        "disc": disc,
-        "title": title or "Unknown Title",
-        "ext": ext,
-    }
+    return make_path_vars(artist, album_artist, album, year, track, disc, title, ext)
 
 
 def _cleanup_watch_folder(watch_dir: Path) -> None:

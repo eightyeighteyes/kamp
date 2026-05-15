@@ -52,6 +52,7 @@ export type PlayerState = {
   duration: number
   volume: number
   current_track: Track | null
+  next_track: Track | null
 }
 
 export type ScanResult = {
@@ -317,6 +318,41 @@ export const clearRemainingQueue = (position: number): Promise<unknown> =>
   post('/api/v1/player/queue/clear-remaining', { position })
 export const setTrackFavorite = (track: Track, favorite: boolean): Promise<unknown> =>
   post('/api/v1/tracks/favorite', { file_path: track.file_path, favorite })
+
+export type TrackTagsCollision = {
+  collision: true
+  target_path: string
+  existing_track_id: number | null
+}
+
+export async function patchTrackTags(
+  trackId: number,
+  title: string,
+  overwrite = false
+): Promise<Track | TrackTagsCollision> {
+  const res = await fetch(`${BASE_URL}/api/v1/tracks/${trackId}/tags`, {
+    method: 'PATCH',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ title, overwrite })
+  })
+  if (res.status === 409) {
+    const detail = (await res.json()) as {
+      detail: { target_path: string; existing_track_id: number | null }
+    }
+    return { collision: true, ...detail.detail }
+  }
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`
+    try {
+      const json = (await res.json()) as { detail?: string }
+      if (json.detail && typeof json.detail === 'string') message = json.detail
+    } catch {
+      // ignore
+    }
+    throw new Error(message)
+  }
+  return res.json() as Promise<Track>
+}
 export const setAlbumFavorite = (
   albumArtist: string,
   album: string,

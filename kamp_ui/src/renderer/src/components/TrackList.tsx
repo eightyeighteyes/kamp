@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { artUrl } from '../api/client'
-import type { Track } from '../api/client'
+import type { Track, TrackTagsCollision } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
+import { EditableTrackTitle } from './EditableTrackTitle'
+import { CollisionModal } from './CollisionModal'
 import {
   FavoriteIcon,
   PencilIcon,
@@ -42,7 +44,16 @@ export function TrackList(): React.JSX.Element | null {
 
   const albumEditMode = useStore((s) => s.albumEditMode)
   const setAlbumEditMode = useStore((s) => s.setAlbumEditMode)
+  const patchTrackTitle = useStore((s) => s.patchTrackTitle)
+  const nextTrack = useStore((s) => s.player.next_track)
+  const lockedIds = new Set(
+    [currentTrack?.id, nextTrack?.id].filter((id): id is number => id != null)
+  )
+
   const albumTitleRef = useRef<HTMLHeadingElement>(null)
+  const [collision, setCollision] = useState<
+    (TrackTagsCollision & { pendingTrackId: number; pendingTitle: string }) | null
+  >(null)
 
   // Focus the album title heading when entering edit mode so screen readers
   // receive the live-region announcement in context.
@@ -218,7 +229,18 @@ export function TrackList(): React.JSX.Element | null {
                     track.track_number
                   )}
                 </span>
-                <span className="track-row-title">{track.title}</span>
+                <EditableTrackTitle
+                  trackId={track.id}
+                  title={track.title}
+                  editMode={albumEditMode}
+                  locked={lockedIds.has(track.id)}
+                  onSave={async (trackId, newTitle) => {
+                    const result = await patchTrackTitle(trackId, newTitle)
+                    if (result?.collision) {
+                      setCollision({ ...result, pendingTrackId: trackId, pendingTitle: newTitle })
+                    }
+                  }}
+                />
                 <span className="track-row-artist">{track.artist}</span>
               </li>
             )
@@ -228,6 +250,18 @@ export function TrackList(): React.JSX.Element | null {
 
       {menu && (
         <TrackContextMenu x={menu.x} y={menu.y} track={menu.track} onClose={() => setMenu(null)} />
+      )}
+      {collision && (
+        <CollisionModal
+          targetPath={collision.target_path}
+          onOverwrite={() => {
+            const { pendingTrackId, pendingTitle } = collision
+            setCollision(null)
+            void patchTrackTitle(pendingTrackId, pendingTitle, true)
+          }}
+          onSkip={() => setCollision(null)}
+          onCancel={() => setCollision(null)}
+        />
       )}
     </div>
   )

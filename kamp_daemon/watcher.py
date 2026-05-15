@@ -386,10 +386,14 @@ class _LibraryHandler(FileSystemEventHandler):
         # Monotonic time of the first event in the current debounce window.
         # Reset to None when the timer fires or is cancelled.
         self._batch_start: float | None = None
+        # Paths suppressed until a given monotonic time.  Populated by
+        # LibraryWatcher.suppress_paths() before a tag-edit file move so that
+        # the resulting FSEvents don't trigger a spurious extra scan.
+        self._suppressed_paths: dict[Path, float] = {}
 
     def on_created(self, event: FileSystemEvent) -> None:
         if isinstance(event, FileCreatedEvent) and self._is_audio(event.src_path):
-            self._schedule()
+            self._schedule(Path(os.fsdecode(event.src_path)))
 
     def on_modified(self, event: FileSystemEvent) -> None:
         # FSEvents on macOS coalesces file renames (shutil.move on the same
@@ -397,29 +401,38 @@ class _LibraryHandler(FileSystemEventHandler):
         # emitting FileCreatedEvent for the moved file.  Schedule a rescan on
         # any directory modification so pipeline-ingested tracks are picked up.
         if event.is_directory:
-            self._schedule()
+            self._schedule(Path(os.fsdecode(event.src_path)))
 
     def on_deleted(self, event: FileSystemEvent) -> None:
         # Directory deletions (e.g. entire album folder removed) are caught here
         # in addition to individual audio file deletions.
         if isinstance(event, (FileDeletedEvent, DirDeletedEvent)):
-            self._schedule()
+            self._schedule(Path(os.fsdecode(event.src_path)))
 
     def on_moved(self, event: FileSystemEvent) -> None:
         # Catch both individual audio file moves and whole directory moves (e.g.
         # album folder dragged out of the library).
         if isinstance(event, DirMovedEvent):
-            self._schedule()
+            self._schedule(Path(os.fsdecode(event.dest_path)))
         elif isinstance(event, FileMovedEvent) and (
             self._is_audio(event.src_path) or self._is_audio(event.dest_path)
         ):
-            self._schedule()
+            self._schedule(Path(os.fsdecode(event.dest_path)))
 
     def _is_audio(self, path: bytes | str) -> bool:
         return Path(os.fsdecode(path)).suffix.lower() in AUDIO_EXTENSIONS
 
-    def _schedule(self) -> None:
+    def _schedule(self, trigger_path: Path | None = None) -> None:
         with self._lock:
+            # Skip if the triggering path (or its parent directory) is suppressed.
+            # Populated by LibraryWatcher.suppress_paths() before a tag-edit move.
+            if trigger_path is not None:
+                now_check = time.monotonic()
+                for candidate in (trigger_path, trigger_path.parent):
+                    cutoff = self._suppressed_paths.get(candidate)
+                    if cutoff is not None and now_check < cutoff:
+                        logger.debug("Suppressed library rescan for %s", trigger_path)
+                        return
             now = time.monotonic()
             if self._batch_start is None:
                 self._batch_start = now
@@ -476,6 +489,28 @@ class LibraryWatcher:
         they finish processing, without waiting for FSEvents delivery.
         """
         self._handler._schedule()
+
+    def suppress_paths(self, paths: set[Path], ttl: float = 30.0) -> None:
+        """Tell the watcher to ignore FSEvents for *paths* (and their parents) for *ttl* seconds.
+
+        Call this before moving a file during a tag-edit operation so the
+        resulting filesystem events don't trigger a redundant rescan.
+        """
+        cutoff = time.monotonic() + ttl
+        with self._handler._lock:
+            for p in paths:
+                self._handler._suppressed_paths[p] = cutoff
+                self._handler._suppressed_paths[p.parent] = cutoff
+
+    def scan_now(self) -> None:
+        """Trigger an immediate scan, bypassing the debounce timer.
+
+        Used after a tag-edit file move so the UI stays consistent without
+        waiting for the debounce window to expire.
+        """
+        threading.Thread(
+            target=self._handler._fire, daemon=True, name="library-scan-now"
+        ).start()
 
     def stop(self) -> None:
         self._handler.cancel_pending()

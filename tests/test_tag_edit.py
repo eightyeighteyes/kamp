@@ -104,7 +104,9 @@ class TestRenderDestination:
         tags_upper = make_path_vars("Art", "Art", "Alb", "2024", 1, 1, "Norway", "mp3")
         p_lower = render_destination(tags_lower, tmp_path, _TEMPLATE)
         p_upper = render_destination(tags_upper, tmp_path, _TEMPLATE)
-        assert p_lower != p_upper
+        # Compare as strings: WindowsPath equality is case-insensitive, but we want
+        # to verify the rendered strings actually differ in case.
+        assert str(p_lower) != str(p_upper)
 
 
 # ---------------------------------------------------------------------------

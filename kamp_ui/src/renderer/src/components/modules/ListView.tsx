@@ -3,6 +3,7 @@ import type { Album } from '../../api/client'
 import { artUrl } from '../../api/client'
 import { useStore } from '../../store'
 import { AlbumContextMenu } from '../AlbumContextMenu'
+import { PlayIcon } from '../TransportIcons'
 
 type MenuPos = { x: number; y: number }
 
@@ -57,7 +58,11 @@ function ListRow({ album }: { album: Album }): React.JSX.Element {
             alt=""
           />
         )}
-        {playing && isActive && <div className="module-list-playing-badge">▶</div>}
+        {playing && isActive && (
+          <div className="module-list-playing-badge">
+            <PlayIcon size={16} />
+          </div>
+        )}
       </div>
       <div className="module-list-info">
         <div className="module-list-title">

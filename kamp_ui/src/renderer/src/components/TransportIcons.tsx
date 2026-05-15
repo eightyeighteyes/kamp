@@ -116,6 +116,24 @@ export function PlayNextIcon({ size = 20 }: IconProps): React.JSX.Element {
   )
 }
 
+export function GoToAlbumIcon({ size = 16 }: IconProps): React.JSX.Element {
+  return (
+    <svg width={size} height={size} {...STROKE_PROPS}>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  )
+}
+
+export function GoToArtistIcon({ size = 16 }: IconProps): React.JSX.Element {
+  return (
+    <svg width={size} height={size} {...STROKE_PROPS}>
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  )
+}
+
 interface FavoriteIconProps {
   active: boolean
   size?: number

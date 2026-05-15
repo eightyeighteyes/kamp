@@ -297,6 +297,9 @@
 
 .track-row.current .track-row-num {
   color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 .track-row-title {

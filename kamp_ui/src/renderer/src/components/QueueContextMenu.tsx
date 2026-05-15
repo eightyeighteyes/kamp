@@ -1,7 +1,7 @@
 import React from 'react'
 import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
-import { FavoriteIcon } from './TransportIcons'
+import { FavoriteIcon, GoToAlbumIcon, GoToArtistIcon } from './TransportIcons'
 
 interface Props {
   x: number
@@ -60,7 +60,17 @@ export function QueueContextMenu({
               onClose()
             }}
           >
-            ⌾ Go to Album
+            <span
+              style={{
+                marginRight: 6,
+                verticalAlign: 'middle',
+                flexShrink: 0,
+                display: 'inline-flex'
+              }}
+            >
+              <GoToAlbumIcon size={12} />
+            </span>
+            Go to Album
           </button>
           <button
             className="track-context-menu-item"
@@ -70,7 +80,17 @@ export function QueueContextMenu({
               onClose()
             }}
           >
-            ♫ Go to Artist
+            <span
+              style={{
+                marginRight: 6,
+                verticalAlign: 'middle',
+                flexShrink: 0,
+                display: 'inline-flex'
+              }}
+            >
+              <GoToArtistIcon size={12} />
+            </span>
+            Go to Artist
           </button>
           {filePath && (
             <button
@@ -80,10 +100,17 @@ export function QueueContextMenu({
                 onClose()
               }}
             >
-              <FavoriteIcon active={!favorite} size={14} />
-              <span style={{ marginLeft: 6 }}>
-                {favorite ? 'Remove from Favorites' : 'Add to Favorites'}
+              <span
+                style={{
+                  marginRight: 6,
+                  verticalAlign: 'middle',
+                  flexShrink: 0,
+                  display: 'inline-flex'
+                }}
+              >
+                <FavoriteIcon active={!!favorite} size={12} />
               </span>
+              {favorite ? 'Remove from Favorites' : 'Add to Favorites'}
             </button>
           )}
           <div className="track-context-menu-divider" />

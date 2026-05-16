@@ -870,18 +870,32 @@ def create_app(
                 os.rename(str(src), str(dst))
 
             # Files are now under new_album_dir; write tags and bulk-update DB.
+            # The directory rename already succeeded, so every file is at its new
+            # path regardless of whether tag-writing succeeds.  Always include the
+            # pair in db_pairs (DB must reflect the new path) and update the queue,
+            # but report tag-write failures in failed[] rather than moved[].
             new_mtime = _t.time()
             db_pairs = []
             for i, (track, (old_path, _)) in enumerate(zip(tracks, track_dest)):
                 _broadcast({"type": "album.rename.progress", "done": i, "total": total})
                 new_path = new_album_dir / old_path.relative_to(old_album_dir)
                 new_artist = new_album_artist if track.artist == album_artist else None
+                tag_write_ok = True
                 try:
                     write_album_tags_to_file(
                         new_path, new_album, new_album_artist, artist=new_artist
                     )
-                except Exception:
+                except Exception as exc:
                     logger.exception("tag write failed for %s", new_path)
+                    tag_write_ok = False
+                    failed.append(
+                        AlbumTagsTrackResult(
+                            track_id=track.id,
+                            old_path=str(old_path),
+                            new_path=str(new_path),
+                            error=str(exc),
+                        )
+                    )
                 db_pairs.append((old_path, new_path))
                 moved_path_pairs.append((old_path, new_path))
                 queue.update_track_album_tags(
@@ -891,9 +905,10 @@ def create_app(
                     new_album_artist,
                     new_artist=new_artist,
                 )
-                updated = index.get_track_by_id(track.id)
-                if updated is not None:
-                    moved.append(TrackOut.from_track(updated))
+                if tag_write_ok:
+                    updated = index.get_track_by_id(track.id)
+                    if updated is not None:
+                        moved.append(TrackOut.from_track(updated))
 
             index.rename_album_tracks_bulk(
                 db_pairs,

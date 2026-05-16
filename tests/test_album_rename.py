@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mutagen.id3 as id3
 import pytest
@@ -83,6 +83,38 @@ class TestWriteAlbumTagsToFile:
         assert str(tags["TPE1"]) == "Activity Monitor"
         assert str(tags["TPE2"]) == "Activity Monitor"
         assert str(tags["TALB"]) == "Migjorn"
+
+    def test_updates_flac_album_artist_and_per_track_artist(
+        self, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "track.flac"
+        f.write_bytes(b"fLaC")
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_core.library.mutagen.flac.FLAC", return_value=mock_audio):
+            write_album_tags_to_file(f, "New Album", "New Artist", artist="New Artist")
+
+        assert mock_audio.tags["ALBUM"] == ["New Album"]
+        assert mock_audio.tags["ALBUMARTIST"] == ["New Artist"]
+        assert mock_audio.tags["ARTIST"] == ["New Artist"]
+        mock_audio.save.assert_called_once()
+
+    def test_updates_ogg_album_artist_and_per_track_artist(
+        self, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "track.ogg"
+        f.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch(
+            "kamp_core.library.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            write_album_tags_to_file(f, "New Album", "New Artist", artist="New Artist")
+
+        assert mock_audio.tags["ALBUM"] == ["New Album"]
+        assert mock_audio.tags["ALBUMARTIST"] == ["New Artist"]
+        assert mock_audio.tags["ARTIST"] == ["New Artist"]
+        mock_audio.save.assert_called_once()
 
     def test_raises_on_unsupported_format(self, tmp_path: Path) -> None:
         f = tmp_path / "track.wav"
@@ -203,6 +235,7 @@ class TestPatchAlbumTagsEndpoint:
         tracks: list[Track],
         engine: MagicMock,
         queue: MagicMock,
+        config_values: dict | None = None,
     ) -> tuple[TestClient, LibraryIndex]:
         db = LibraryIndex(tmp_path / "db.sqlite")
         for track in tracks:
@@ -212,6 +245,7 @@ class TestPatchAlbumTagsEndpoint:
             engine=engine,
             queue=queue,
             library_path=tmp_path,
+            config_values=config_values,
         )
         return TestClient(app, raise_server_exceptions=False), db
 
@@ -248,6 +282,115 @@ class TestPatchAlbumTagsEndpoint:
         new_folder = tmp_path / "Artist" / "2024 - New Album"
         assert new_folder.is_dir()
         assert len(list(new_folder.glob("*.mp3"))) == 3
+
+    def test_tag_only_path_updates_db_and_fts(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """When the path template has no album/artist dir, files stay put (tag-only path)."""
+        # Flat template: all files land directly in tmp_path regardless of album/artist.
+        flat_template = "{track:02d} - {title}.{ext}"
+        pairs = _make_album(tmp_path, "Artist", "Old Album", "2024", 2)
+        # Move files to flat layout so they match the template.
+        flat_files = []
+        for mp3, track in pairs:
+            flat = tmp_path / mp3.name
+            mp3.rename(flat)
+            flat_files.append((flat, track))
+        tracks = [
+            _sample_track(
+                flat,
+                title=t.title,
+                album_artist="Artist",
+                album="Old Album",
+                year="2024",
+                track_number=t.track_number,
+            )
+            for flat, t in flat_files
+        ]
+
+        client, db = self._client_with_album(
+            tmp_path,
+            tracks,
+            _mock_engine,
+            _mock_queue,
+            config_values={"library.path_template": flat_template},
+        )
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Artist", "album": "Old Album"},
+            json={"album": "New Album"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["failed"] == []
+
+        # Files are unchanged on disk (same location).
+        for flat, _ in flat_files:
+            assert flat.exists()
+
+        # DB and FTS reflect the new album name.
+        rows = db.tracks_for_album("Artist", "New Album")
+        assert len(rows) == 2
+        assert db.tracks_for_album("Artist", "Old Album") == []
+        assert len(db.search("New Album")) == 2
+        assert db.search("Old Album") == []
+
+    def test_tag_only_path_updates_artist_tag_and_fts(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """Tag-only path also updates per-track artist when artist == old album_artist."""
+        flat_template = "{track:02d} - {title}.{ext}"
+        pairs = _make_album(tmp_path, "Docks", "Migjorn", "2020", 2)
+        flat_files = []
+        for mp3, track in pairs:
+            # Set TPE1 == album_artist on each file.
+            tags = id3.ID3(str(mp3))
+            tags["TPE1"] = id3.TPE1(encoding=3, text="Docks")
+            tags.save(str(mp3))
+            flat = tmp_path / mp3.name
+            mp3.rename(flat)
+            flat_files.append((flat, track))
+        tracks = [
+            _sample_track(
+                flat,
+                artist="Docks",
+                album_artist="Docks",
+                album="Migjorn",
+                year="2020",
+                title=t.title,
+                track_number=t.track_number,
+            )
+            for flat, t in flat_files
+        ]
+
+        client, db = self._client_with_album(
+            tmp_path,
+            tracks,
+            _mock_engine,
+            _mock_queue,
+            config_values={"library.path_template": flat_template},
+        )
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Docks", "album": "Migjorn"},
+            json={"album_artist": "Activity Monitor"},
+        )
+        assert resp.status_code == 200
+
+        # DB artist column updated.
+        for flat, _ in flat_files:
+            row = db.get_track_by_path(flat)
+            assert row is not None
+            assert row.artist == "Activity Monitor"
+
+        # FTS updated.
+        assert db.search("Activity Monitor") != []
+        assert db.search("Docks") == []
+
+        # File tag updated.
+        for flat, _ in flat_files:
+            file_tags = id3.ID3(str(flat))
+            assert str(file_tags["TPE1"]) == "Activity Monitor"
 
     def test_rename_album_artist_restructures_folders(
         self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock

@@ -1,9 +1,8 @@
 import React, { useEffect, useRef } from 'react'
-import type { Album, Track } from '../api/client'
+import type { Track } from '../api/client'
 import { TagIcon, ChevronIcon } from './TransportIcons'
 
 interface AlbumMetaPanelProps {
-  album: Album
   tracks: Track[]
   editMode: boolean
   expanded: boolean
@@ -78,7 +77,6 @@ function MetaField({
 }
 
 export function AlbumMetaPanel({
-  album,
   tracks,
   editMode,
   expanded,
@@ -89,6 +87,7 @@ export function AlbumMetaPanel({
 
   const [genre, setGenre] = React.useState(() => commonValue(tracks, 'genre'))
   const [label, setLabel] = React.useState(() => commonValue(tracks, 'label'))
+  const [year, setYear] = React.useState(() => commonValue(tracks, 'year'))
   // Track the last-seen tracks reference so we can sync on external changes
   // (e.g. after a save) without using an effect.
   const [syncedTracks, setSyncedTracks] = React.useState(tracks)
@@ -96,6 +95,7 @@ export function AlbumMetaPanel({
     setSyncedTracks(tracks)
     setGenre(commonValue(tracks, 'genre'))
     setLabel(commonValue(tracks, 'label'))
+    setYear(commonValue(tracks, 'year'))
   }
 
   // Instant show/hide — Electron's renderer produces jank with CSS/JS height
@@ -106,7 +106,6 @@ export function AlbumMetaPanel({
     el.style.display = expanded ? 'block' : 'none'
   }, [expanded])
 
-  const year = album.year
   const mbId = tracks[0]?.mb_release_id ?? ''
   const hasContent = hasAnyMeta(tracks, year)
 
@@ -118,6 +117,11 @@ export function AlbumMetaPanel({
   const handleSaveLabel = (): void => {
     const current = commonValue(tracks, 'label')
     if (label !== current) void onSave({ label })
+  }
+
+  const handleSaveYear = (): void => {
+    const current = commonValue(tracks, 'year')
+    if (year !== current) void onSave({ year })
   }
 
   return (
@@ -142,7 +146,15 @@ export function AlbumMetaPanel({
         aria-hidden={!expanded}
       >
         <dl className="album-meta-rows">
-          {year && <MetaField label="YEAR" value={year} editMode={false} />}
+          {year && (
+            <MetaField
+              label="YEAR"
+              value={year}
+              editMode={editMode}
+              onChange={setYear}
+              onBlur={handleSaveYear}
+            />
+          )}
           <MetaField
             label="GENRE"
             value={genre}

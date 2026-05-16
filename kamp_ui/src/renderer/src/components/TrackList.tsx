@@ -254,7 +254,6 @@ export function TrackList(): React.JSX.Element | null {
       <div className="track-list-divider" />
 
       <AlbumMetaPanel
-        album={album}
         tracks={tracks}
         editMode={albumEditMode}
         expanded={albumMetaExpanded}

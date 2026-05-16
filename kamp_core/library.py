@@ -1858,7 +1858,11 @@ def _read_mp3_tags(path: Path) -> Track:
 
     def _str(frame_key: str) -> str:
         frame = tags.get(frame_key)
-        return str(frame) if frame else ""
+        if not frame:
+            return ""
+        # ID3 text frames may encode multiple values separated by \x00.
+        # Replace with " / " for human-readable display.
+        return str(frame).replace("\x00", " / ")
 
     artist = _str("TPE1")
     return Track(

@@ -3287,6 +3287,20 @@ class TestGenreLabelTagReaders:
         assert track.genre == "Jazz"
         assert track.label == "Blue Note"
 
+    def test_read_mp3_tags_label_null_byte_separator_becomes_slash(
+        self, tmp_path: Path
+    ) -> None:
+        """ID3 multi-value fields separated by \\x00 should display as ' / '."""
+        mp3 = tmp_path / "multi.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        # Simulate a TPUB frame with two values joined by the ID3 null separator.
+        tags["TPUB"] = id3.TPUB(encoding=3, text="FFRR\x00Mo Wax")
+        tags.save(str(mp3))
+
+        track = _read_mp3_tags(mp3)
+        assert track.label == "FFRR / Mo Wax"
+
     def test_read_mp3_tags_genre_label_empty_when_absent(self, tmp_path: Path) -> None:
         mp3 = tmp_path / "no_meta.mp3"
         mp3.write_bytes(b"\xff\xfb" * 64)

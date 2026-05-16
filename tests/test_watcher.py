@@ -283,6 +283,36 @@ class TestStartupScan:
 
 
 class TestInFlight:
+    def test_enqueue_skips_path_already_in_flight(self, config: Config) -> None:
+        """_enqueue is a no-op when the path is already in _in_flight."""
+        handler = _make_handler(config)
+        path = config.paths.watch_folder / "my-album"
+        handler._in_flight.add(path)
+
+        submitted: list[Path] = []
+        with patch.object(
+            handler._pipeline_pool, "submit", lambda *a: submitted.append(a[1])
+        ):
+            handler._enqueue(path)
+
+        assert submitted == []
+        # The path must stay in _in_flight (we didn't touch it)
+        assert path in handler._in_flight
+
+    def test_enqueue_normal_adds_to_in_flight_and_submits(self, config: Config) -> None:
+        """_enqueue adds the path to _in_flight and submits work to the pool."""
+        handler = _make_handler(config)
+        path = config.paths.watch_folder / "my-album"
+
+        submitted: list[Path] = []
+        with patch.object(
+            handler._pipeline_pool, "submit", lambda *a: submitted.append(a[1])
+        ):
+            handler._enqueue(path)
+
+        assert submitted == [path]
+        assert path in handler._in_flight
+
     def test_in_flight_path_is_not_rescheduled(self, config: Config) -> None:
         """_schedule is a no-op for a path currently being processed."""
         handler = _make_handler(config)
@@ -451,6 +481,16 @@ class TestOnCreated:
 
         mock_schedule.assert_not_called()
 
+    def test_non_file_created_event_is_ignored(self, config: Config) -> None:
+        """A non-directory, non-FileCreatedEvent (e.g. FileModifiedEvent) is ignored."""
+        handler = _make_handler(config)
+        event = FileModifiedEvent(str(config.paths.watch_folder / "track.mp3"))
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_created(event)
+
+        mock_schedule.assert_not_called()
+
 
 class TestOnModifiedFileEvent:
     def test_file_modified_event_is_ignored(self, config: Config) -> None:
@@ -474,6 +514,18 @@ class TestScanStagingRootOSError:
         # Patch at the class level — PosixPath C-methods can't be patched on instances
         with patch("pathlib.Path.iterdir", side_effect=OSError("no access")):
             handler._scan_watch_root()  # must not raise
+
+    def test_scan_watch_root_returns_early_when_watch_root_is_none(
+        self, config: Config
+    ) -> None:
+        """_scan_watch_root is a no-op when watch_root is None (no folder configured yet)."""
+        handler = _make_handler(config)
+        handler._watch_root = None
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler._scan_watch_root()
+
+        mock_schedule.assert_not_called()
 
 
 class TestScheduleTimer:
@@ -511,6 +563,15 @@ class TestWaitForStableSize:
 
         with patch("kamp_daemon.watcher.time.sleep"):
             _wait_for_stable_size(f)  # must not hang
+
+    def test_returns_when_deadline_exceeded(self, tmp_path: Path) -> None:
+        """_wait_for_stable_size returns without blocking when timeout is already past."""
+        from kamp_daemon.watcher import _wait_for_stable_size
+
+        f = tmp_path / "track.mp3"
+        f.write_bytes(b"x" * 100)
+        # timeout=-1 puts the deadline in the past; the while loop exits immediately
+        _wait_for_stable_size(f, timeout=-1.0)
 
     def test_returns_when_file_disappears(self, tmp_path: Path) -> None:
         """_wait_for_stable_size returns if the file is deleted mid-wait."""
@@ -604,7 +665,9 @@ class TestDuplicateRunPrevention:
         extracted_dir = config.paths.watch_folder / "album"
         extracted_dir.mkdir()
 
-        def _fake_run(path: Path, cfg: object, _on_directory: object = None) -> None:
+        def _fake_run(
+            path: Path, cfg: object, _on_directory: object = None, **kw: object
+        ) -> None:
             if callable(_on_directory):
                 _on_directory(extracted_dir)
             # Simulate the pipeline still running — try to schedule the directory
@@ -818,6 +881,68 @@ class TestWatcherReload:
         assert reschedule_calls == [1]
         assert watcher._config.paths.watch_folder == new_watch_folder
 
+    def test_reload_triggers_start_when_not_yet_started(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """reload() calls start() when the watcher was never started (onboarding path)."""
+        no_folder_config = Config(
+            paths=PathsConfig(watch_folder=None, library=config.paths.library),
+            musicbrainz=config.musicbrainz,
+            artwork=config.artwork,
+            library=config.library,
+        )
+        watcher = Watcher(no_folder_config)
+        start_calls: list[int] = []
+        monkeypatch.setattr(watcher, "start", lambda: start_calls.append(1))
+
+        watcher.reload(config)
+
+        assert start_calls == [1]
+
+    def test_reload_returns_early_when_new_watch_folder_is_none(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """reload() does nothing when the new config has no watch folder."""
+        watcher = self._patched_watcher(config, monkeypatch)
+        unschedule_calls: list[int] = []
+        monkeypatch.setattr(
+            watcher._observer, "unschedule_all", lambda: unschedule_calls.append(1)
+        )
+        new_config = Config(
+            paths=PathsConfig(watch_folder=None, library=config.paths.library),
+            musicbrainz=config.musicbrainz,
+            artwork=config.artwork,
+            library=config.library,
+        )
+        watcher.reload(new_config)
+
+        # Observer was unscheduled but then returned early — no reschedule
+        assert unschedule_calls == [1]
+        assert watcher._config.paths.watch_folder is None
+
+
+class TestWatcherStartNoFolder:
+    def test_start_returns_early_when_no_watch_folder(
+        self, config: Config, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """start() is a no-op when no watch folder is configured."""
+        no_folder_config = Config(
+            paths=PathsConfig(watch_folder=None, library=config.paths.library),
+            musicbrainz=config.musicbrainz,
+            artwork=config.artwork,
+            library=config.library,
+        )
+        watcher = Watcher(no_folder_config)
+        schedule_calls: list[int] = []
+        monkeypatch.setattr(
+            watcher._observer, "schedule", lambda *a, **kw: schedule_calls.append(1)
+        )
+
+        watcher.start()
+
+        assert schedule_calls == []
+        assert not watcher._started
+
 
 class TestStageCallback:
     def test_stage_callback_forwarded_to_run(
@@ -1010,6 +1135,17 @@ class TestLibraryHandler:
 
         mock_schedule.assert_called_once()
 
+    def test_on_deleted_ignores_non_delete_event(self, tmp_path: Path) -> None:
+        """on_deleted ignores events that are not FileDeletedEvent or DirDeletedEvent."""
+        handler = _make_library_handler(tmp_path)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_deleted(
+                FileModifiedEvent(str(tmp_path / "library" / "track.mp3"))
+            )
+
+        mock_schedule.assert_not_called()
+
     def test_fires_scan_on_directory_moved_out(self, tmp_path: Path) -> None:
         """Moving an entire album directory out of the library triggers a re-scan."""
         on_scan = MagicMock()
@@ -1024,6 +1160,20 @@ class TestLibraryHandler:
             )
 
         mock_schedule.assert_called_once()
+
+    def test_on_moved_ignores_non_audio_non_dir_event(self, tmp_path: Path) -> None:
+        """on_moved ignores events that are neither DirMovedEvent nor audio FileMovedEvent."""
+        handler = _make_library_handler(tmp_path)
+
+        with patch.object(handler, "_schedule") as mock_schedule:
+            handler.on_moved(
+                FileMovedEvent(
+                    str(tmp_path / "library" / "cover.jpg"),
+                    str(tmp_path / "library" / "artwork.jpg"),
+                )
+            )
+
+        mock_schedule.assert_not_called()
 
     def test_fires_scan_on_directory_modified(self, tmp_path: Path) -> None:
         """DirModifiedEvent schedules a re-scan.
@@ -1123,6 +1273,96 @@ class TestLibraryHandler:
             time.sleep(0.1)
 
         on_scan.assert_called_once()
+
+
+class TestLibraryHandlerSuppression:
+    def test_suppressed_path_skips_schedule(self, tmp_path: Path) -> None:
+        """FSEvents for a suppressed path must not trigger a rescan."""
+        import time as _time
+
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+        audio = tmp_path / "library" / "track.mp3"
+
+        handler._suppressed_paths[audio] = _time.monotonic() + 30.0
+        with patch.object(handler, "_schedule", wraps=handler._schedule) as spy:
+            handler.on_created(FileCreatedEvent(str(audio)))
+        # _schedule called but returned early — on_scan must not be scheduled
+        spy.assert_called_once()
+        on_scan.assert_not_called()
+
+    def test_suppressed_parent_skips_schedule(self, tmp_path: Path) -> None:
+        """FSEvents on the parent directory of a suppressed path are also skipped."""
+        import time as _time
+
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+        audio = tmp_path / "library" / "track.mp3"
+
+        # Suppress the parent directory (what the server actually does).
+        handler._suppressed_paths[audio.parent] = _time.monotonic() + 30.0
+        with patch.object(handler, "_schedule", wraps=handler._schedule) as spy:
+            handler.on_created(FileCreatedEvent(str(audio)))
+        spy.assert_called_once()
+        on_scan.assert_not_called()
+
+    def test_expired_suppression_does_not_skip_schedule(self, tmp_path: Path) -> None:
+        """Expired suppressions do not block rescans."""
+        import time as _time
+
+        on_scan = MagicMock()
+        handler = _make_library_handler(tmp_path, on_scan)
+        audio = tmp_path / "library" / "track.mp3"
+
+        # TTL already in the past.
+        handler._suppressed_paths[audio] = _time.monotonic() - 1.0
+        with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.0):
+            with patch("kamp_daemon.watcher._MAX_SETTLE_SECONDS", 0.0):
+                handler.on_created(FileCreatedEvent(str(audio)))
+                _time.sleep(0.05)
+        on_scan.assert_called_once()
+
+
+class TestLibraryWatcherSuppressAndScanNow:
+    def test_suppress_paths_sets_cutoffs(self, tmp_path: Path) -> None:
+        lib = tmp_path / "library"
+        lib.mkdir()
+        on_change = MagicMock()
+        watcher = LibraryWatcher(lib, on_change)
+        p = lib / "track.mp3"
+        watcher.suppress_paths({p}, ttl=10.0)
+        import time as _time
+
+        now = _time.monotonic()
+        assert watcher._handler._suppressed_paths[p] > now
+        assert watcher._handler._suppressed_paths[p.parent] > now
+
+    def test_scan_now_calls_on_scan(self, tmp_path: Path) -> None:
+        lib = tmp_path / "library"
+        lib.mkdir()
+        on_change = MagicMock()
+        watcher = LibraryWatcher(lib, on_change)
+        watcher.scan_now()
+        import time as _time
+
+        _time.sleep(0.05)
+        on_change.assert_called_once()
+
+    def test_trigger_scan_without_path_runs_schedule_body(self, tmp_path: Path) -> None:
+        """trigger_scan() calls _schedule(None) — covers the trigger_path-is-None branch."""
+        import time as _time
+
+        lib = tmp_path / "library"
+        lib.mkdir()
+        on_change = MagicMock()
+        watcher = LibraryWatcher(lib, on_change)
+
+        with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.0):
+            with patch("kamp_daemon.watcher._MAX_SETTLE_SECONDS", 0.0):
+                watcher.trigger_scan()
+                _time.sleep(0.05)
+
+        on_change.assert_called_once()
 
 
 class TestLibraryWatcher:

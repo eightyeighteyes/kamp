@@ -105,6 +105,7 @@ class PlayerStateOut(BaseModel):
     duration: float
     volume: int
     current_track: TrackOut | None
+    next_track: TrackOut | None = None
 
 
 class PlayRequest(BaseModel):
@@ -251,6 +252,11 @@ class BandcampProxyFetchRequest(BaseModel):
     method: str = "GET"
     headers: dict[str, str] = {}
     body: str | None = None
+
+
+class TrackTagsRequest(BaseModel):
+    title: str
+    overwrite: bool = False
 
 
 class BandcampProxyFetchResult(BaseModel):
@@ -415,6 +421,9 @@ def create_app(
     app.state.notify_play_state_changed = _notify_play_state_changed
     app.state.notify_bandcamp_sync_status = _notify_bandcamp_sync_status
     app.state.notify_pipeline_stage = _notify_pipeline_stage
+    # Wired by the daemon after create_app() to suppress watcher events and
+    # trigger a direct scan following a tag-edit file move.
+    app.state.on_track_file_moved = None
 
     # Wire play-state change callback directly — the engine fires it from its
     # background reader thread whenever mpv's pause property flips.
@@ -458,12 +467,14 @@ def create_app(
 
     def _state_snapshot() -> PlayerStateOut:
         current = queue.current()
+        nxt = queue.peek_next()
         return PlayerStateOut(
             playing=engine.state.playing,
             position=engine.state.position,
             duration=engine.state.duration,
             volume=engine.state.volume,
             current_track=TrackOut.from_track(current) if current else None,
+            next_track=TrackOut.from_track(nxt) if nxt else None,
         )
 
     # -----------------------------------------------------------------------
@@ -509,6 +520,121 @@ def create_app(
         return [
             TrackOut.from_track(t) for t in index.tracks_for_album(album_artist, album)
         ]
+
+    @app.patch("/api/v1/tracks/{track_id}/tags")
+    def patch_track_tags(track_id: int, req: "TrackTagsRequest") -> TrackOut:
+        """Edit a track's title tag and rename the file on disk to match.
+
+        Returns the updated track on success.  Returns 403 if the track is
+        currently playing or queued as the gapless lookahead.  Returns 404 if
+        the track is not in the library.  Returns 409 with collision details if
+        the computed target path already exists on disk; send the request again
+        with overwrite=true to replace it.
+        """
+        import shutil
+        import time as _t
+
+        from kamp_core.library import write_title_to_file
+        from kamp_core.path_utils import make_path_vars, render_destination
+
+        track = index.get_track_by_id(track_id)
+        if track is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+
+        # Currently-playing and gapless-lookahead are locked in this slice.
+        current = queue.current()
+        lookahead = queue.peek_next()
+        if (current and current.id == track_id) or (
+            lookahead and lookahead.id == track_id
+        ):
+            raise HTTPException(status_code=403, detail="Pause to edit this track")
+
+        lib_path: Path | None = _state["library_path"]
+        if lib_path is None:
+            raise HTTPException(status_code=503, detail="Library path not configured")
+
+        path_template: str = (
+            _state["config"].get("library.path_template")
+            or "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
+        )
+
+        tags = make_path_vars(
+            artist=track.artist,
+            album_artist=track.album_artist,
+            album=track.album,
+            year=track.year,
+            track=track.track_number,
+            disc=track.disc_number,
+            title=req.title,
+            ext=track.ext,
+        )
+        old_path = track.file_path
+        try:
+            new_path = render_destination(tags, lib_path, path_template)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        if str(old_path) == str(new_path):
+            # Path unchanged — just update the title tag and DB.
+            write_title_to_file(old_path, req.title)
+            index.move_track(old_path, old_path, req.title, _t.time())
+            queue.update_track_path(old_path, old_path, req.title)
+            _notify_library_changed()
+            updated = index.get_track_by_id(track_id)
+            return TrackOut.from_track(updated)  # type: ignore[arg-type]
+
+        # Detect case-only renames before the existence check: on case-insensitive
+        # filesystems (HFS+, APFS, NTFS) new_path.exists() returns True for the
+        # same inode, which would incorrectly trigger a 409 collision.
+        # Use str() for both comparisons — WindowsPath.__eq__ is case-insensitive,
+        # which would mis-classify a case-only rename as "same path" above.
+        is_case_only = str(old_path).lower() == str(new_path).lower() and str(
+            old_path
+        ) != str(new_path)
+
+        if not is_case_only and new_path.exists():
+            if not req.overwrite:
+                existing = index.get_track_by_path(new_path)
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "target_path": str(new_path),
+                        "existing_track_id": existing.id if existing else None,
+                    },
+                )
+            # Overwrite requested: remove the conflicting DB entry.
+            # (new_path != old_path is guaranteed here: old_path == new_path returns early above)
+            index.remove_track(new_path)
+
+        # Order: write tags → move file → update DB.
+        write_title_to_file(old_path, req.title)
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        if is_case_only:
+            # Two-step via a temp name so the OS doesn't silently treat it as a no-op.
+            tmp_path = old_path.with_suffix(f".kamp_rename{old_path.suffix}")
+            shutil.move(str(old_path), tmp_path)
+            shutil.move(str(tmp_path), new_path)
+        else:
+            shutil.move(str(old_path), new_path)
+
+        new_mtime = _t.time()
+        index.move_track(old_path, new_path, req.title, new_mtime)
+
+        # Patch the in-memory queue so mpv's next file reference and the
+        # player-state snapshot both use the new path immediately.
+        queue.update_track_path(old_path, new_path, req.title)
+
+        # Suppress FSEvents from this move and fire a reconciliation scan.
+        notify_track_moved = getattr(app.state, "on_track_file_moved", None)
+        if notify_track_moved is not None:
+            try:
+                notify_track_moved(old_path, new_path)
+            except Exception:
+                logger.exception("on_track_file_moved callback raised")
+
+        _notify_library_changed()
+        updated = index.get_track_by_id(track_id)
+        return TrackOut.from_track(updated)  # type: ignore[arg-type]
 
     @app.post("/api/v1/tracks/favorite")
     def set_track_favorite(req: FavoriteRequest) -> dict[str, Any]:

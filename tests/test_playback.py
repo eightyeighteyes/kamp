@@ -234,6 +234,26 @@ class TestPlaybackQueue:
         q.update_favorite(Path("/nonexistent.mp3"), True)  # should not raise
         assert all(not t.favorite for t in q._tracks)
 
+    def test_update_track_path_patches_matching_track(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        old_path = tracks[1].file_path
+        new_path = Path("/new/path/track.mp3")
+        q.update_track_path(old_path, new_path, "New Title")
+        assert q._tracks[0].file_path == tracks[0].file_path
+        assert q._tracks[1].file_path == new_path
+        assert q._tracks[1].title == "New Title"
+        assert q._tracks[2].file_path == tracks[2].file_path
+
+    def test_update_track_path_no_match_is_noop(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(2)]
+        q.load(tracks)
+        original_paths = [t.file_path for t in q._tracks]
+        q.update_track_path(Path("/nonexistent.mp3"), Path("/other.mp3"), "X")
+        assert [t.file_path for t in q._tracks] == original_paths
+
     def test_shuffle_randomises_order(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(20)]

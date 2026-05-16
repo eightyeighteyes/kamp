@@ -909,6 +909,26 @@ class LibraryIndex:
         self._rebuild_fts()
         self._conn.commit()
 
+    def move_track(
+        self,
+        old_path: Path,
+        new_path: Path,
+        new_title: str,
+        new_mtime: float,
+    ) -> None:
+        """Update file_path and title for a track, preserving id and all stats.
+
+        Called by the tag-edit endpoint after a file is physically moved on
+        disk.  The row's primary stats (date_added, play_count, last_played,
+        favorite, mb IDs) are intentionally unchanged.
+        """
+        self._conn.execute(
+            "UPDATE tracks SET file_path = ?, title = ?, file_mtime = ? WHERE file_path = ?",
+            (str(new_path), new_title, new_mtime, str(old_path)),
+        )
+        self._rebuild_fts()
+        self._conn.commit()
+
     def remove_track(self, file_path: Path) -> None:
         """Remove the track with the given file path from the index."""
         self._conn.execute("DELETE FROM tracks WHERE file_path = ?", (str(file_path),))
@@ -1057,6 +1077,22 @@ class LibraryIndex:
         """Return the track for *path*, or None if not indexed."""
         row = self._conn.execute(
             "SELECT * FROM tracks WHERE file_path = ?", (str(path),)
+        ).fetchone()
+        return _row_to_track(row) if row else None
+
+    def get_track_by_id(self, track_id: int) -> "Track | None":
+        """Return the track with *track_id*, or None if not indexed."""
+        row = self._conn.execute(
+            "SELECT * FROM tracks WHERE id = ?", (track_id,)
+        ).fetchone()
+        return _row_to_track(row) if row else None
+
+    def get_track_by_recording_id(self, mb_recording_id: str) -> "Track | None":
+        """Return the first track with *mb_recording_id*, or None."""
+        if not mb_recording_id:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM tracks WHERE mb_recording_id = ?", (mb_recording_id,)
         ).fetchone()
         return _row_to_track(row) if row else None
 
@@ -1602,6 +1638,38 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
     )
 
 
+def write_title_to_file(path: Path, title: str) -> None:
+    """Write a new title tag to an audio file without touching other tags."""
+    suffix = path.suffix.lower()
+    if suffix == ".mp3":
+        try:
+            tags = id3.ID3(str(path))
+        except Exception:
+            tags = id3.ID3()
+        tags["TIT2"] = id3.TIT2(encoding=3, text=title)
+        tags.save(str(path))
+    elif suffix == ".m4a":
+        audio = mutagen.mp4.MP4(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags["\xa9nam"] = [title]  # type: ignore[index]
+        audio.save()
+    elif suffix == ".flac":
+        audio = mutagen.flac.FLAC(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags["TITLE"] = [title]  # type: ignore[index]
+        audio.save()
+    elif suffix == ".ogg":
+        audio = mutagen.oggvorbis.OggVorbis(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags["TITLE"] = [title]  # type: ignore[index]
+        audio.save()
+    else:
+        raise ValueError(f"Unsupported format for title write: {path.suffix}")
+
+
 def _read_tags(path: Path) -> Track | None:
     """Dispatch to the appropriate tag reader; return None on unrecognised format.
 
@@ -1691,16 +1759,50 @@ class LibraryScanner:
                 logger.warning("Skipped unreadable file: %s", path)
             if on_progress is not None:
                 on_progress(current, total, track)
-        self._index.upsert_many(tracks_to_upsert)
 
-        newly_added = [t for t in tracks_to_upsert if t.file_path in to_add]
-        added = len(newly_added)
-        updated = len([t for t in tracks_to_upsert if t.file_path in to_update])
+        # Defence in depth: if a "new" file shares a mb_recording_id with a
+        # track that is about to be removed (i.e. the file was moved outside
+        # Kamp), update the existing row's path rather than creating a duplicate.
+        removed_paths = in_index - on_disk
+        removed_by_mbid: dict[str, Track] = {}
+        for p in removed_paths:
+            t = self._index.get_track_by_path(p)
+            if t is not None and t.mb_recording_id:
+                removed_by_mbid[t.mb_recording_id] = t
+
+        reconciled_old_paths: set[Path] = set()
+        reconciled_new_paths: set[Path] = set()
+        for track in tracks_to_upsert:
+            if track.file_path not in to_add or not track.mb_recording_id:
+                continue
+            old = removed_by_mbid.get(track.mb_recording_id)
+            if old is None:
+                continue
+            self._index.move_track(
+                old.file_path, track.file_path, track.title, track.file_mtime or 0.0
+            )
+            logger.info(
+                "Reconciled moved track by recording id: %s → %s",
+                old.file_path,
+                track.file_path,
+            )
+            reconciled_old_paths.add(old.file_path)
+            reconciled_new_paths.add(track.file_path)
+
+        upsert_subset = [
+            t for t in tracks_to_upsert if t.file_path not in reconciled_new_paths
+        ]
+        self._index.upsert_many(upsert_subset)
+
+        newly_added = [t for t in upsert_subset if t.file_path in to_add]
+        added = len(newly_added) + len(reconciled_new_paths)
+        updated = len([t for t in upsert_subset if t.file_path in to_update])
 
         removed = 0
-        for path in in_index - on_disk:
-            self._index.remove_track(path)
-            removed += 1
+        for path in removed_paths:
+            if path not in reconciled_old_paths:
+                self._index.remove_track(path)
+                removed += 1
 
         unchanged = len(on_disk & in_index) - len(to_update)
 

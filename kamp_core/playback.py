@@ -78,6 +78,18 @@ class PlaybackQueue:
             if t.file_path == file_path:
                 t.favorite = favorite
 
+    def update_track_path(self, old_path: Path, new_path: Path, new_title: str) -> None:
+        """Patch file_path and title in place after a tag-edit file rename.
+
+        Called immediately after the rename so mpv's next file reference and
+        the player-state snapshot both use the new path.  The queue position
+        is preserved — the user hears no gap.
+        """
+        for t in self._tracks:
+            if t.file_path == old_path:
+                t.file_path = new_path
+                t.title = new_title
+
     def current(self) -> Track | None:
         if not self._tracks or self._pos < 0:
             return None

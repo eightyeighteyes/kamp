@@ -963,6 +963,28 @@ class LibraryIndex:
         self._rebuild_fts()
         self._conn.commit()
 
+    def rename_album_tracks_bulk(
+        self,
+        path_pairs: list[tuple[Path, Path]],
+        new_album: str,
+        new_album_artist: str,
+        new_mtime: float,
+    ) -> None:
+        """Update all tracks in the album in one transaction with a single FTS rebuild.
+
+        Used after a directory-level rename where all files move atomically and only
+        the DB rows need to be re-pointed.  Stats columns are untouched.
+        """
+        for old_path, new_path in path_pairs:
+            self._conn.execute(
+                """UPDATE tracks
+                   SET file_path = ?, album = ?, album_artist = ?, file_mtime = ?
+                   WHERE file_path = ?""",
+                (str(new_path), new_album, new_album_artist, new_mtime, str(old_path)),
+            )
+        self._rebuild_fts()
+        self._conn.commit()
+
     def remove_track(self, file_path: Path) -> None:
         """Remove the track with the given file path from the index."""
         self._conn.execute("DELETE FROM tracks WHERE file_path = ?", (str(file_path),))

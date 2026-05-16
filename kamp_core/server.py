@@ -708,21 +708,18 @@ def create_app(
     def patch_album_tags(
         album_artist: str, album: str, req: "AlbumTagsRequest"
     ) -> "AlbumTagsOut":
-        """Rename album title and/or album artist, fanning out to every track in the album.
+        """Rename album title and/or album artist across every track in the album.
 
-        For each track: writes tags to the file, moves it to the new computed path,
-        and updates the DB row.  Broadcasts album.rename.progress events over WebSocket
-        during the batch so the renderer can show "Renaming N of M…".
+        The album directory is renamed atomically with os.rename() — no per-file
+        moves.  Tag writes and DB updates happen after the rename.
 
-        Collision handling (files that already exist at the target path):
-        - Default (overwrite=False, skip_conflicts=False): pre-flight detects collisions
-          and returns 409 without moving anything.
-        - overwrite=True: existing files are replaced.
-        - skip_conflicts=True: colliding files are left at their old location; the rest
-          of the album is renamed normally.
-        - If Cancel is chosen by the user after a 409, already-moved files (from a prior
-          partial attempt) remain at their new locations — this is documented behaviour.
+        Collision: if the target directory already exists, returns 409.
+        - overwrite=True: moves each file from the old dir into the existing target,
+          overwriting any same-name files (merge).
+        - skip_conflicts=True: moves only files whose names don't already exist in
+          the target (partial merge).
         """
+        import os
         import shutil
         import time as _t
 
@@ -745,27 +742,13 @@ def create_app(
         if lib_path is None:
             raise HTTPException(status_code=503, detail="Library path not configured")
 
-        # Pre-flight: ensure the disk has enough headroom for the worst case
-        # (all files copied before the originals are removed).
-        try:
-            usage = shutil.disk_usage(lib_path)
-            total_size = sum(
-                t.file_path.stat().st_size for t in tracks if t.file_path.exists()
-            )
-            if usage.free < total_size * 1.1:
-                raise HTTPException(status_code=507, detail="Insufficient disk space")
-        except (OSError, AttributeError):
-            pass  # non-fatal: proceed and let individual moves fail
-
         path_template: str = (
             _state["config"].get("library.path_template")
             or "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
         )
 
-        # Compute all destination paths upfront so we can detect collisions before
-        # any files are moved (avoids leaving the album half-renamed on 409).
-        dest_map: dict[int, tuple[Path, Path]] = {}  # track_id → (old_path, new_path)
-        collisions: list[str] = []
+        # Compute the target path for each track and derive the album directories.
+        track_dest: list[tuple[Path, Path]] = []  # (old_path, new_path)
         for track in tracks:
             tags = make_path_vars(
                 artist=track.artist,
@@ -777,136 +760,172 @@ def create_app(
                 title=track.title,
                 ext=track.ext,
             )
-            old_path = track.file_path
             try:
                 new_path = render_destination(tags, lib_path, path_template)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc))
+            track_dest.append((track.file_path, new_path))
 
-            is_case_only = str(old_path).lower() == str(new_path).lower() and str(
-                old_path
-            ) != str(new_path)
-            if (
-                str(old_path) != str(new_path)
-                and not is_case_only
-                and new_path.exists()
-            ):
-                collisions.append(str(new_path))
+        old_paths = [op for op, _ in track_dest]
+        new_paths = [np for _, np in track_dest]
 
-            dest_map[track.id] = (old_path, new_path)
+        # Album directory = common ancestor of all track paths.
+        old_album_dir = Path(os.path.commonpath([str(p) for p in old_paths]))
+        new_album_dir = Path(os.path.commonpath([str(p) for p in new_paths]))
 
-        if collisions and not req.overwrite and not req.skip_conflicts:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "collision_count": len(collisions),
-                    "first_path": collisions[0],
-                },
-            )
-
-        # Fan-out: write tags, move file, update DB — one track at a time.
+        total = len(tracks)
         moved: list[TrackOut] = []
         skipped: list[str] = []
         failed: list[AlbumTagsTrackResult] = []
-        total = len(tracks)
         notify_album_tracks_moved = getattr(app.state, "on_album_tracks_moved", None)
-        # Collect moves to notify the watcher after ALL writes are done.
-        # Calling scan_now() mid-loop would race with subsequent rename_album_track()
-        # write transactions — deferred notification eliminates the contention.
         moved_path_pairs: list[tuple[Path, Path]] = []
 
-        for i, track in enumerate(tracks):
-            _broadcast({"type": "album.rename.progress", "done": i, "total": total})
-            old_path, new_path = dest_map[track.id]
-
-            is_case_only = str(old_path).lower() == str(new_path).lower() and str(
-                old_path
-            ) != str(new_path)
-            collision = (
-                str(old_path) != str(new_path)
-                and not is_case_only
-                and new_path.exists()
-            )
-
-            if collision and req.skip_conflicts:
-                skipped.append(str(old_path))
-                continue
-
-            try:
-                write_album_tags_to_file(old_path, new_album, new_album_artist)
-
-                if str(old_path) != str(new_path):
-                    if collision and req.overwrite:
-                        index.remove_track(new_path)
-                    new_path.parent.mkdir(parents=True, exist_ok=True)
-                    if is_case_only:
-                        tmp_path = old_path.with_suffix(
-                            f".kamp_rename{old_path.suffix}"
+        if old_album_dir == new_album_dir:
+            # Tags changed but the path template produces the same directory.
+            # Write tags in-place and update the DB — no filesystem move needed.
+            _broadcast({"type": "album.rename.progress", "done": 0, "total": total})
+            new_mtime = _t.time()
+            db_pairs: list[tuple[Path, Path]] = []
+            for i, (track, (old_path, new_path)) in enumerate(zip(tracks, track_dest)):
+                _broadcast({"type": "album.rename.progress", "done": i, "total": total})
+                try:
+                    write_album_tags_to_file(old_path, new_album, new_album_artist)
+                    db_pairs.append((old_path, new_path))
+                    queue.update_track_album_tags(
+                        old_path, new_path, new_album, new_album_artist
+                    )
+                    updated = index.get_track_by_id(track.id)
+                    if updated is not None:
+                        moved.append(TrackOut.from_track(updated))
+                except Exception as exc:
+                    logger.exception("tag write failed for %s", old_path)
+                    failed.append(
+                        AlbumTagsTrackResult(
+                            track_id=track.id,
+                            old_path=str(old_path),
+                            new_path=str(new_path),
+                            error=str(exc),
                         )
-                        shutil.move(str(old_path), tmp_path)
-                        shutil.move(str(tmp_path), new_path)
-                    else:
-                        shutil.move(str(old_path), new_path)
-
-                new_mtime = _t.time()
-                index.rename_album_track(
-                    old_path, new_path, new_album, new_album_artist, new_mtime
+                    )
+            if db_pairs:
+                index.rename_album_tracks_bulk(
+                    db_pairs, new_album, new_album_artist, new_mtime
                 )
+
+        elif not new_album_dir.exists():
+            # Happy path: target directory does not exist — atomic directory rename.
+            _broadcast({"type": "album.rename.progress", "done": 0, "total": total})
+            new_album_dir.parent.mkdir(parents=True, exist_ok=True)
+            is_case_only = str(old_album_dir).lower() == str(
+                new_album_dir
+            ).lower() and str(old_album_dir) != str(new_album_dir)
+            if is_case_only:
+                tmp_dir = old_album_dir.with_name(f"kamp_tmp_{old_album_dir.name}")
+                os.rename(str(old_album_dir), str(tmp_dir))
+                os.rename(str(tmp_dir), str(new_album_dir))
+            else:
+                os.rename(str(old_album_dir), str(new_album_dir))
+
+            # Files are now under new_album_dir; write tags and bulk-update DB.
+            new_mtime = _t.time()
+            db_pairs = []
+            for i, (track, (old_path, _)) in enumerate(zip(tracks, track_dest)):
+                _broadcast({"type": "album.rename.progress", "done": i, "total": total})
+                new_path = new_album_dir / old_path.relative_to(old_album_dir)
+                try:
+                    write_album_tags_to_file(new_path, new_album, new_album_artist)
+                except Exception:
+                    logger.exception("tag write failed for %s", new_path)
+                db_pairs.append((old_path, new_path))
+                moved_path_pairs.append((old_path, new_path))
                 queue.update_track_album_tags(
                     old_path, new_path, new_album, new_album_artist
                 )
-
-                if str(old_path) != str(new_path):
-                    moved_path_pairs.append((old_path, new_path))
-
                 updated = index.get_track_by_id(track.id)
                 if updated is not None:
                     moved.append(TrackOut.from_track(updated))
 
-            except Exception as exc:
-                logger.exception(
-                    "album rename failed for track %d (%s)", track.id, old_path
+            index.rename_album_tracks_bulk(
+                db_pairs, new_album, new_album_artist, new_mtime
+            )
+
+            # Clean up the old parent (artist dir) if it is now empty.
+            old_parent = old_album_dir.parent
+            if old_parent != lib_path and lib_path in old_parent.parents:
+                _scrub_os_metadata(old_parent)
+                try:
+                    old_parent.rmdir()
+                except OSError:
+                    pass
+
+        else:
+            # Target directory already exists — collision.
+            if not req.overwrite and not req.skip_conflicts:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "collision_count": sum(1 for _ in new_album_dir.iterdir()),
+                        "first_path": str(new_album_dir),
+                    },
                 )
-                failed.append(
-                    AlbumTagsTrackResult(
-                        track_id=track.id,
-                        old_path=str(old_path),
-                        new_path=str(new_path),
-                        error=str(exc),
+            # Merge: move individual files into the existing target directory.
+            new_mtime = _t.time()
+            db_pairs = []
+            for i, (track, (old_path, new_path)) in enumerate(zip(tracks, track_dest)):
+                _broadcast({"type": "album.rename.progress", "done": i, "total": total})
+                # new_path here is the per-file destination inside new_album_dir.
+                if new_path.exists() and req.skip_conflicts:
+                    skipped.append(str(old_path))
+                    continue
+                try:
+                    write_album_tags_to_file(old_path, new_album, new_album_artist)
+                    if old_path != new_path:
+                        if new_path.exists() and req.overwrite:
+                            index.remove_track(new_path)
+                        new_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(old_path), str(new_path))
+                    db_pairs.append((old_path, new_path))
+                    moved_path_pairs.append((old_path, new_path))
+                    queue.update_track_album_tags(
+                        old_path, new_path, new_album, new_album_artist
                     )
+                    updated = index.get_track_by_id(track.id)
+                    if updated is not None:
+                        moved.append(TrackOut.from_track(updated))
+                except Exception as exc:
+                    logger.exception(
+                        "album merge failed for track %d (%s)", track.id, old_path
+                    )
+                    failed.append(
+                        AlbumTagsTrackResult(
+                            track_id=track.id,
+                            old_path=str(old_path),
+                            new_path=str(new_path),
+                            error=str(exc),
+                        )
+                    )
+            if db_pairs:
+                index.rename_album_tracks_bulk(
+                    db_pairs, new_album, new_album_artist, new_mtime
                 )
+            # Remove old album dir if all files were moved out.
+            _scrub_os_metadata(old_album_dir)
+            try:
+                old_album_dir.rmdir()
+                old_parent = old_album_dir.parent
+                if old_parent != lib_path and lib_path in old_parent.parents:
+                    _scrub_os_metadata(old_parent)
+                    old_parent.rmdir()
+            except OSError:
+                pass
 
         _broadcast({"type": "album.rename.progress", "done": total, "total": total})
 
-        # All DB writes are done — notify the watcher with one batched call so
-        # suppressions are registered and exactly one scan_now() fires.
         if notify_album_tracks_moved is not None and moved_path_pairs:
             try:
                 notify_album_tracks_moved(moved_path_pairs)
             except Exception:
                 logger.exception("on_album_tracks_moved callback raised")
-
-        # Remove empty directories left behind by the moves.
-        # Collect unique old album directories from every track that was actually moved
-        # (skipped and failed tracks may still have files there, so rmdir would fail
-        # harmlessly and we just stop climbing for that directory).
-        old_dirs: set[Path] = {
-            dest_map[t.id][0].parent
-            for t in tracks
-            if str(dest_map[t.id][0]) != str(dest_map[t.id][1])
-        }
-        # Process deepest directories first so parents are checked after children.
-        for d in sorted(old_dirs, key=lambda p: len(p.parts), reverse=True):
-            candidate = d
-            # Climb toward the library root, removing each level only if empty.
-            # Never remove the library root itself.
-            while candidate != lib_path and lib_path in candidate.parents:
-                _scrub_os_metadata(candidate)
-                try:
-                    candidate.rmdir()
-                except OSError:
-                    break  # not empty (or already gone) — stop climbing
-                candidate = candidate.parent
 
         _notify_library_changed()
         return AlbumTagsOut(moved=moved, skipped=skipped, failed=failed)

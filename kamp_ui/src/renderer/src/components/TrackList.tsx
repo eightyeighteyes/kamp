@@ -15,7 +15,13 @@ import {
   PlayNextIcon
 } from './TransportIcons'
 
+const TOAST_TTL = 10_000 // ms
+
 type ContextMenu = { x: number; y: number; track: Track }
+type AlbumRenameToast = {
+  message: string
+  undo: () => Promise<AlbumTagsCollision | null>
+}
 
 function HeroImage({ src }: { src: string }): React.JSX.Element {
   const [loaded, setLoaded] = useState(false)
@@ -54,12 +60,20 @@ export function TrackList(): React.JSX.Element | null {
   )
 
   const albumTitleRef = useRef<HTMLHeadingElement>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [collision, setCollision] = useState<
     (TrackTagsCollision & { pendingTrackId: number; pendingTitle: string }) | null
   >(null)
   const [albumCollision, setAlbumCollision] = useState<
     (AlbumTagsCollision & { pendingOpts: Parameters<typeof patchAlbumTags>[2] }) | null
   >(null)
+  const [albumRenameToast, setAlbumRenameToast] = useState<AlbumRenameToast | null>(null)
+
+  const showRenameToast = (toast: AlbumRenameToast): void => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    setAlbumRenameToast(toast)
+    toastTimerRef.current = setTimeout(() => setAlbumRenameToast(null), TOAST_TTL)
+  }
 
   // Focus the album title heading when entering edit mode so screen readers
   // receive the live-region announcement in context.
@@ -146,11 +160,17 @@ export function TrackList(): React.JSX.Element | null {
             disabled={albumRenameProgress !== null}
             className="track-list-album-title"
             onSave={async (newAlbum) => {
-              const result = await patchAlbumTags(album.album_artist, album.album, {
-                album: newAlbum
-              })
+              const oldAlbum = album.album
+              const oldArtist = album.album_artist
+              const count = album.track_count
+              const result = await patchAlbumTags(oldArtist, oldAlbum, { album: newAlbum })
               if (result?.collision) {
                 setAlbumCollision({ ...result, pendingOpts: { album: newAlbum } })
+              } else {
+                showRenameToast({
+                  message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
+                  undo: () => patchAlbumTags(oldArtist, newAlbum, { album: oldAlbum })
+                })
               }
             }}
             renderStatic={(val) => (
@@ -165,11 +185,17 @@ export function TrackList(): React.JSX.Element | null {
             disabled={albumRenameProgress !== null}
             className="track-list-album-artist-input"
             onSave={async (newArtist) => {
-              const result = await patchAlbumTags(album.album_artist, album.album, {
-                album_artist: newArtist
-              })
+              const oldArtist = album.album_artist
+              const oldAlbum = album.album
+              const count = album.track_count
+              const result = await patchAlbumTags(oldArtist, oldAlbum, { album_artist: newArtist })
               if (result?.collision) {
                 setAlbumCollision({ ...result, pendingOpts: { album_artist: newArtist } })
+              } else {
+                showRenameToast({
+                  message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
+                  undo: () => patchAlbumTags(newArtist, oldAlbum, { album_artist: oldArtist })
+                })
               }
             }}
             renderStatic={(val) => (
@@ -190,11 +216,6 @@ export function TrackList(): React.JSX.Element | null {
           {albumRenameProgress && (
             <div className="album-rename-progress" aria-live="polite">
               Renaming {albumRenameProgress.done} of {albumRenameProgress.total}…
-            </div>
-          )}
-          {albumEditMode && !albumRenameProgress && (
-            <div className="album-rename-hint" aria-hidden="true">
-              {album.track_count} {album.track_count === 1 ? 'file' : 'files'} will be reorganized
             </div>
           )}
         </div>
@@ -329,6 +350,22 @@ export function TrackList(): React.JSX.Element | null {
           }}
           onCancel={() => setAlbumCollision(null)}
         />
+      )}
+      {albumRenameToast && (
+        <div className="album-rename-toast" role="status">
+          <span className="album-rename-toast-text">{albumRenameToast.message}</span>
+          <button
+            className="album-rename-toast-undo"
+            onClick={() => {
+              setAlbumRenameToast(null)
+              if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+              void albumRenameToast.undo()
+            }}
+          >
+            Undo
+          </button>
+          <div className="album-rename-toast-bar" style={{ animationDuration: `${TOAST_TTL}ms` }} />
+        </div>
       )}
     </div>
   )

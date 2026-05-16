@@ -282,6 +282,172 @@
   margin-bottom: 0;
 }
 
+/* Editable album / artist fields in edit mode ------------------------------ */
+
+/* Base reset: strip OS chrome, inherit all typography from the surrounding
+   heading/text so the input is visually indistinguishable from the label
+   except for the dashed border affordance. */
+.editable-album-field {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  /* 1px dashed = resting affordance per design spec */
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  border-radius: 3px;
+  outline: none;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  text-shadow: inherit;
+  /* Nudge left so the text aligns with the static heading text, accounting
+     for the padding + border that the heading element doesn't have. */
+  padding: 2px 6px;
+  margin-left: -7px;
+  width: calc(100% + 7px);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    background 150ms ease;
+}
+
+.editable-album-field:hover {
+  border-color: rgba(255, 255, 255, 0.45);
+  border-style: solid;
+}
+
+.editable-album-field:focus {
+  border-style: solid;
+  border-width: 2px;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+  background: rgba(255, 255, 255, 0.04);
+  /* Re-nudge to compensate for the extra 1px border */
+  margin-left: -8px;
+  width: calc(100% + 8px);
+  padding: 1px 5px;
+}
+
+.editable-album-field:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.editable-album-field.saving {
+  opacity: 0.7;
+  border-style: solid;
+  border-color: var(--accent);
+  cursor: wait;
+}
+
+@keyframes album-field-shake {
+  0%, 100% { transform: translateX(0); }
+  20%       { transform: translateX(-5px); }
+  60%       { transform: translateX(5px); }
+  80%       { transform: translateX(-3px); }
+}
+
+.editable-album-field.shake {
+  animation: album-field-shake 0.35s ease-in-out;
+}
+
+/* Artist input inherits the h2 / button typography */
+.track-list-album-artist-input {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent);
+  line-height: 1.4;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  margin-bottom: 4px;
+}
+
+/* Album rename progress ---------------------------------------------------- */
+
+.album-rename-progress {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Album rename toast ------------------------------------------------------- */
+
+.album-rename-toast {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+  min-width: 240px;
+  /* Slide in from the bottom right */
+  animation: toast-in 0.22s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.album-rename-toast-text {
+  flex: 1;
+  color: var(--text);
+}
+
+.album-rename-toast-undo {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.album-rename-toast-undo:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+}
+
+.album-rename-toast-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 0 0 8px 8px;
+  /* Shrink from 100% to 0 over the TTL — animation-duration set inline */
+  animation: toast-bar-shrink linear forwards;
+  transform-origin: left;
+}
+
+@keyframes toast-bar-shrink {
+  from { width: 100%; }
+  to   { width: 0%; }
+}
+
 .play-all-btn {
   display: inline-flex;
   align-items: center;

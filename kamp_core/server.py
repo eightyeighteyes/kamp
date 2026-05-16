@@ -769,9 +769,11 @@ def create_app(
         old_paths = [op for op, _ in track_dest]
         new_paths = [np for _, np in track_dest]
 
-        # Album directory = common ancestor of all track paths.
-        old_album_dir = Path(os.path.commonpath([str(p) for p in old_paths]))
-        new_album_dir = Path(os.path.commonpath([str(p) for p in new_paths]))
+        # Album directory = common ancestor of the directories containing the tracks.
+        # Using .parent before commonpath avoids returning a file path for single-track albums
+        # (commonpath(['/a/b/f.mp3']) == '/a/b/f.mp3', not '/a/b').
+        old_album_dir = Path(os.path.commonpath([str(p.parent) for p in old_paths]))
+        new_album_dir = Path(os.path.commonpath([str(p.parent) for p in new_paths]))
 
         total = len(tracks)
         moved: list[TrackOut] = []
@@ -815,16 +817,44 @@ def create_app(
         elif not new_album_dir.exists():
             # Happy path: target directory does not exist — atomic directory rename.
             _broadcast({"type": "album.rename.progress", "done": 0, "total": total})
-            new_album_dir.parent.mkdir(parents=True, exist_ok=True)
-            is_case_only = str(old_album_dir).lower() == str(
-                new_album_dir
-            ).lower() and str(old_album_dir) != str(new_album_dir)
-            if is_case_only:
-                tmp_dir = old_album_dir.with_name(f"kamp_tmp_{old_album_dir.name}")
-                os.rename(str(old_album_dir), str(tmp_dir))
-                os.rename(str(tmp_dir), str(new_album_dir))
+
+            old_artist_dir = old_album_dir.parent
+            new_artist_dir = new_album_dir.parent
+
+            # When only the artist component changes and the old artist directory
+            # contains nothing else, rename at the artist level in one syscall.
+            # This matches the user's expectation: "Artist A/" → "Artist B/" directly,
+            # rather than mkdir("Artist B"), rename album dir, rmdir("Artist A").
+            try:
+                exclusive = not any(
+                    e.name not in _OS_METADATA_NAMES and e.name != old_album_dir.name
+                    for e in old_artist_dir.iterdir()
+                )
+            except OSError:
+                exclusive = False
+
+            rename_at_artist_level = (
+                old_album_dir.name == new_album_dir.name  # only artist dir changed
+                and old_artist_dir != new_artist_dir
+                and not new_artist_dir.exists()
+                and old_artist_dir != lib_path
+                and lib_path in old_artist_dir.parents
+                and exclusive
+            )
+
+            if rename_at_artist_level:
+                src, dst = old_artist_dir, new_artist_dir
             else:
-                os.rename(str(old_album_dir), str(new_album_dir))
+                new_album_dir.parent.mkdir(parents=True, exist_ok=True)
+                src, dst = old_album_dir, new_album_dir
+
+            is_case_only = str(src).lower() == str(dst).lower() and str(src) != str(dst)
+            if is_case_only:
+                tmp = src.with_name(f"kamp_tmp_{src.name}")
+                os.rename(str(src), str(tmp))
+                os.rename(str(tmp), str(dst))
+            else:
+                os.rename(str(src), str(dst))
 
             # Files are now under new_album_dir; write tags and bulk-update DB.
             new_mtime = _t.time()
@@ -849,12 +879,12 @@ def create_app(
                 db_pairs, new_album, new_album_artist, new_mtime
             )
 
-            # Clean up the old parent (artist dir) if it is now empty.
-            old_parent = old_album_dir.parent
-            if old_parent != lib_path and lib_path in old_parent.parents:
-                _scrub_os_metadata(old_parent)
+            # Album-level rename: clean up old artist dir if now empty.
+            # (Artist-level rename already removed it by renaming the dir itself.)
+            if not rename_at_artist_level:
+                _scrub_os_metadata(old_artist_dir)
                 try:
-                    old_parent.rmdir()
+                    old_artist_dir.rmdir()
                 except OSError:
                     pass
 

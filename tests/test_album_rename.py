@@ -537,3 +537,68 @@ class TestPatchAlbumTagsEndpoint:
         assert resp.status_code == 200
         queue_tracks, _ = queue.queue_tracks()
         assert all(t.album_artist == "New Artist" for t in queue_tracks)
+
+    def test_single_track_album_artist_rename(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """Single-track albums must use directory rename, not per-file move."""
+        pairs = _make_album(tmp_path, "Old Artist", "Album", "2024", 1)
+        client, _ = self._client_with_album(
+            tmp_path, [t for _, t in pairs], _mock_engine, _mock_queue
+        )
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Old Artist", "album": "Album"},
+            json={"album_artist": "New Artist"},
+        )
+        assert resp.status_code == 200
+        assert not (tmp_path / "Old Artist").exists()
+        assert (tmp_path / "New Artist" / "2024 - Album" / "01 - Track 01.mp3").exists()
+
+    def test_artist_rename_renames_artist_dir_directly(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """When the artist dir contains only this album, rename it in one step.
+
+        The sequence must be: Artist A/ → Artist B/ atomically.
+        No intermediate Artist B/ creation then Artist A/ deletion.
+        """
+        pairs = _make_album(tmp_path, "Old Artist", "Album", "2024", 2)
+        client, _ = self._client_with_album(
+            tmp_path, [t for _, t in pairs], _mock_engine, _mock_queue
+        )
+        old_artist_dir = tmp_path / "Old Artist"
+        new_artist_dir = tmp_path / "New Artist"
+
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Old Artist", "album": "Album"},
+            json={"album_artist": "New Artist"},
+        )
+        assert resp.status_code == 200
+        assert not old_artist_dir.exists()
+        assert (new_artist_dir / "2024 - Album").is_dir()
+
+    def test_artist_rename_with_other_albums_uses_album_dir_rename(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """When the artist has other albums, only the target album dir moves."""
+        pairs = _make_album(tmp_path, "Old Artist", "Album A", "2024", 2)
+        # Create a second album by Old Artist that is NOT being renamed.
+        other_dir = tmp_path / "Old Artist" / "2024 - Album B"
+        other_dir.mkdir(parents=True)
+        (other_dir / "01 - Track.mp3").write_bytes(b"\xff\xfb" * 64)
+
+        client, _ = self._client_with_album(
+            tmp_path, [t for _, t in pairs], _mock_engine, _mock_queue
+        )
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Old Artist", "album": "Album A"},
+            json={"album_artist": "New Artist"},
+        )
+        assert resp.status_code == 200
+        # Old artist dir stays — it still has Album B.
+        assert (tmp_path / "Old Artist" / "2024 - Album B").is_dir()
+        # The renamed album is under the new artist.
+        assert (tmp_path / "New Artist" / "2024 - Album A").is_dir()

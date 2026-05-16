@@ -2168,10 +2168,11 @@ class TestSessionManagement:
         index.close()
 
         by_ext = {r[0]: r[1] for r in rows}
-        assert by_ext["flac"] is None, "FLAC mtime should be nulled by migration"
-        assert by_ext["ogg"] is None, "OGG mtime should be nulled by migration"
-        assert by_ext["mp3"] == 3333.0, "MP3 mtime should be unchanged"
-        assert by_ext["m4a"] == 4444.0, "M4A mtime should be unchanged"
+        # v9 nulls FLAC/OGG; v17 subsequently nulls ALL tracks for genre/label rescan.
+        assert by_ext["flac"] is None, "FLAC mtime nulled"
+        assert by_ext["ogg"] is None, "OGG mtime nulled"
+        assert by_ext["mp3"] is None, "MP3 mtime nulled by v17 genre/label rescan"
+        assert by_ext["m4a"] is None, "M4A mtime nulled by v17 genre/label rescan"
 
     def test_migration_v9_to_v10_nulls_missing_album_artist_mtimes(
         self, tmp_path: Path
@@ -2237,13 +2238,14 @@ class TestSessionManagement:
         index.close()
 
         by_path = {r[0]: r[1] for r in rows}
+        # v10 nulls tracks with missing album_artist; v17 nulls all remaining.
         assert (
             by_path["/music/solo.mp3"] is None
         ), "missing album_artist should be nulled"
         assert (
-            by_path["/music/untagged.mp3"] == 2222.0
-        ), "fully untagged mtime unchanged"
-        assert by_path["/music/tagged.mp3"] == 3333.0, "already-tagged mtime unchanged"
+            by_path["/music/untagged.mp3"] is None
+        ), "nulled by v17 genre/label rescan"
+        assert by_path["/music/tagged.mp3"] is None, "nulled by v17 genre/label rescan"
 
 
 @pytest.mark.skipif(
@@ -3663,6 +3665,19 @@ class TestMigrationV16ToV17:
         ).fetchone()
         assert row["genre"] == ""
         assert row["label"] == ""
+        index.close()
+
+    def test_migration_nulls_file_mtime_for_rescan(self, tmp_path: Path) -> None:
+        """v17 must null file_mtime on existing rows so genre/label are populated."""
+        db_path = tmp_path / "library.db"
+        self._build_v16_db(db_path)
+
+        index = LibraryIndex(db_path)
+
+        row = index._conn.execute(
+            "SELECT file_mtime FROM tracks WHERE file_path = '/music/01.mp3'"
+        ).fetchone()
+        assert row["file_mtime"] is None, "file_mtime should be nulled to force rescan"
         index.close()
 
     def test_migration_idempotent_on_new_db(self, tmp_path: Path) -> None:

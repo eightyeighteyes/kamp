@@ -634,6 +634,9 @@ class LibraryIndex:
                 self._conn.execute(
                     "ALTER TABLE tracks ADD COLUMN label TEXT NOT NULL DEFAULT ''"
                 )
+            # Null file_mtime so all existing tracks are rescanned and pick
+            # up genre/label on the next library scan.
+            self._conn.execute("UPDATE tracks SET file_mtime = NULL")
             self._conn.execute("UPDATE schema_version SET version = 17")
             self._conn.commit()
 

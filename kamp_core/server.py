@@ -790,11 +790,20 @@ def create_app(
             db_pairs: list[tuple[Path, Path]] = []
             for i, (track, (old_path, new_path)) in enumerate(zip(tracks, track_dest)):
                 _broadcast({"type": "album.rename.progress", "done": i, "total": total})
+                # When the per-track artist matches the old album_artist, update it
+                # too — keeps TPE1/artist in sync with TPE2/album_artist.
+                new_artist = new_album_artist if track.artist == album_artist else None
                 try:
-                    write_album_tags_to_file(old_path, new_album, new_album_artist)
+                    write_album_tags_to_file(
+                        old_path, new_album, new_album_artist, artist=new_artist
+                    )
                     db_pairs.append((old_path, new_path))
                     queue.update_track_album_tags(
-                        old_path, new_path, new_album, new_album_artist
+                        old_path,
+                        new_path,
+                        new_album,
+                        new_album_artist,
+                        new_artist=new_artist,
                     )
                     updated = index.get_track_by_id(track.id)
                     if updated is not None:
@@ -811,7 +820,11 @@ def create_app(
                     )
             if db_pairs:
                 index.rename_album_tracks_bulk(
-                    db_pairs, new_album, new_album_artist, new_mtime
+                    db_pairs,
+                    new_album,
+                    new_album_artist,
+                    new_mtime,
+                    old_album_artist=album_artist,
                 )
 
         elif not new_album_dir.exists():
@@ -862,21 +875,32 @@ def create_app(
             for i, (track, (old_path, _)) in enumerate(zip(tracks, track_dest)):
                 _broadcast({"type": "album.rename.progress", "done": i, "total": total})
                 new_path = new_album_dir / old_path.relative_to(old_album_dir)
+                new_artist = new_album_artist if track.artist == album_artist else None
                 try:
-                    write_album_tags_to_file(new_path, new_album, new_album_artist)
+                    write_album_tags_to_file(
+                        new_path, new_album, new_album_artist, artist=new_artist
+                    )
                 except Exception:
                     logger.exception("tag write failed for %s", new_path)
                 db_pairs.append((old_path, new_path))
                 moved_path_pairs.append((old_path, new_path))
                 queue.update_track_album_tags(
-                    old_path, new_path, new_album, new_album_artist
+                    old_path,
+                    new_path,
+                    new_album,
+                    new_album_artist,
+                    new_artist=new_artist,
                 )
                 updated = index.get_track_by_id(track.id)
                 if updated is not None:
                     moved.append(TrackOut.from_track(updated))
 
             index.rename_album_tracks_bulk(
-                db_pairs, new_album, new_album_artist, new_mtime
+                db_pairs,
+                new_album,
+                new_album_artist,
+                new_mtime,
+                old_album_artist=album_artist,
             )
 
             # Album-level rename: clean up old artist dir if now empty.
@@ -907,8 +931,11 @@ def create_app(
                 if new_path.exists() and req.skip_conflicts:
                     skipped.append(str(old_path))
                     continue
+                new_artist = new_album_artist if track.artist == album_artist else None
                 try:
-                    write_album_tags_to_file(old_path, new_album, new_album_artist)
+                    write_album_tags_to_file(
+                        old_path, new_album, new_album_artist, artist=new_artist
+                    )
                     if old_path != new_path:
                         if new_path.exists() and req.overwrite:
                             index.remove_track(new_path)
@@ -917,7 +944,11 @@ def create_app(
                     db_pairs.append((old_path, new_path))
                     moved_path_pairs.append((old_path, new_path))
                     queue.update_track_album_tags(
-                        old_path, new_path, new_album, new_album_artist
+                        old_path,
+                        new_path,
+                        new_album,
+                        new_album_artist,
+                        new_artist=new_artist,
                     )
                     updated = index.get_track_by_id(track.id)
                     if updated is not None:
@@ -936,7 +967,11 @@ def create_app(
                     )
             if db_pairs:
                 index.rename_album_tracks_bulk(
-                    db_pairs, new_album, new_album_artist, new_mtime
+                    db_pairs,
+                    new_album,
+                    new_album_artist,
+                    new_mtime,
+                    old_album_artist=album_artist,
                 )
             # Remove old album dir if all files were moved out.
             _scrub_os_metadata(old_album_dir)

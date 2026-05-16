@@ -969,18 +969,36 @@ class LibraryIndex:
         new_album: str,
         new_album_artist: str,
         new_mtime: float,
+        old_album_artist: str | None = None,
     ) -> None:
         """Update all tracks in the album in one transaction with a single FTS rebuild.
 
         Used after a directory-level rename where all files move atomically and only
         the DB rows need to be re-pointed.  Stats columns are untouched.
+
+        old_album_artist, when provided, also updates the per-track artist column
+        for any row where artist = old_album_artist (i.e. single-artist albums
+        where TPE1 == TPE2).
         """
         for old_path, new_path in path_pairs:
             self._conn.execute(
                 """UPDATE tracks
-                   SET file_path = ?, album = ?, album_artist = ?, file_mtime = ?
+                   SET file_path = ?,
+                       album = ?,
+                       album_artist = ?,
+                       artist = CASE WHEN ? IS NOT NULL AND artist = ? THEN ? ELSE artist END,
+                       file_mtime = ?
                    WHERE file_path = ?""",
-                (str(new_path), new_album, new_album_artist, new_mtime, str(old_path)),
+                (
+                    str(new_path),
+                    new_album,
+                    new_album_artist,
+                    old_album_artist,
+                    old_album_artist,
+                    new_album_artist,
+                    new_mtime,
+                    str(old_path),
+                ),
             )
         self._rebuild_fts()
         self._conn.commit()
@@ -1726,8 +1744,15 @@ def write_title_to_file(path: Path, title: str) -> None:
         raise ValueError(f"Unsupported format for title write: {path.suffix}")
 
 
-def write_album_tags_to_file(path: Path, album: str, album_artist: str) -> None:
-    """Write album and album_artist tags to an audio file without touching other tags."""
+def write_album_tags_to_file(
+    path: Path, album: str, album_artist: str, artist: str | None = None
+) -> None:
+    """Write album and album_artist tags to an audio file without touching other tags.
+
+    artist, when provided, also updates the per-track artist tag (TPE1 / ©ART /
+    ARTIST).  Pass it when track.artist matched the old album_artist so that
+    renaming a single-artist album keeps the per-track tag in sync.
+    """
     suffix = path.suffix.lower()
     if suffix == ".mp3":
         try:
@@ -1736,6 +1761,8 @@ def write_album_tags_to_file(path: Path, album: str, album_artist: str) -> None:
             tags = id3.ID3()
         tags["TALB"] = id3.TALB(encoding=3, text=album)
         tags["TPE2"] = id3.TPE2(encoding=3, text=album_artist)
+        if artist is not None:
+            tags["TPE1"] = id3.TPE1(encoding=3, text=artist)
         tags.save(str(path))
     elif suffix == ".m4a":
         audio = mutagen.mp4.MP4(str(path))
@@ -1743,6 +1770,8 @@ def write_album_tags_to_file(path: Path, album: str, album_artist: str) -> None:
             audio.add_tags()
         audio.tags["\xa9alb"] = [album]  # type: ignore[index]
         audio.tags["aART"] = [album_artist]  # type: ignore[index]
+        if artist is not None:
+            audio.tags["\xa9ART"] = [artist]  # type: ignore[index]
         audio.save()
     elif suffix == ".flac":
         audio = mutagen.flac.FLAC(str(path))
@@ -1750,6 +1779,8 @@ def write_album_tags_to_file(path: Path, album: str, album_artist: str) -> None:
             audio.add_tags()
         audio.tags["ALBUM"] = [album]  # type: ignore[index]
         audio.tags["ALBUMARTIST"] = [album_artist]  # type: ignore[index]
+        if artist is not None:
+            audio.tags["ARTIST"] = [artist]  # type: ignore[index]
         audio.save()
     elif suffix == ".ogg":
         audio = mutagen.oggvorbis.OggVorbis(str(path))
@@ -1757,6 +1788,8 @@ def write_album_tags_to_file(path: Path, album: str, album_artist: str) -> None:
             audio.add_tags()
         audio.tags["ALBUM"] = [album]  # type: ignore[index]
         audio.tags["ALBUMARTIST"] = [album_artist]  # type: ignore[index]
+        if artist is not None:
+            audio.tags["ARTIST"] = [artist]  # type: ignore[index]
         audio.save()
     else:
         raise ValueError(f"Unsupported format for album tag write: {path.suffix}")

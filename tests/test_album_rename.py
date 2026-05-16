@@ -67,6 +67,23 @@ class TestWriteAlbumTagsToFile:
         assert str(tags["TALB"]) == "New Album"
         assert str(tags["TPE2"]) == "New Artist"
 
+    def test_updates_per_track_artist_when_provided(self, tmp_path: Path) -> None:
+        f = tmp_path / "track.mp3"
+        _make_mp3(f, album="Migjorn", album_artist="Docks")
+        # Simulate TPE1 already set
+        tags = id3.ID3(str(f))
+        tags["TPE1"] = id3.TPE1(encoding=3, text="Docks")
+        tags.save(str(f))
+
+        write_album_tags_to_file(
+            f, "Migjorn", "Activity Monitor", artist="Activity Monitor"
+        )
+
+        tags = id3.ID3(str(f))
+        assert str(tags["TPE1"]) == "Activity Monitor"
+        assert str(tags["TPE2"]) == "Activity Monitor"
+        assert str(tags["TALB"]) == "Migjorn"
+
     def test_raises_on_unsupported_format(self, tmp_path: Path) -> None:
         f = tmp_path / "track.wav"
         f.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ")
@@ -602,3 +619,56 @@ class TestPatchAlbumTagsEndpoint:
         assert (tmp_path / "Old Artist" / "2024 - Album B").is_dir()
         # The renamed album is under the new artist.
         assert (tmp_path / "New Artist" / "2024 - Album A").is_dir()
+
+    def test_artist_rename_updates_per_track_artist_and_fts(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """Renaming album_artist also updates TPE1/artist so FTS finds the new name."""
+        pairs = _make_album(tmp_path, "Docks", "Migjorn", "2020", 2)
+        # Give each track TPE1 == album_artist (single-artist album).
+        for mp3, _ in pairs:
+            tags = id3.ID3(str(mp3))
+            tags["TPE1"] = id3.TPE1(encoding=3, text="Docks")
+            tags.save(str(mp3))
+        tracks = [
+            _sample_track(
+                mp3,
+                artist="Docks",
+                album_artist="Docks",
+                album="Migjorn",
+                year="2020",
+                title=t.title,
+                track_number=t.track_number,
+            )
+            for mp3, t in pairs
+        ]
+
+        client, db = self._client_with_album(
+            tmp_path, tracks, _mock_engine, _mock_queue
+        )
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Docks", "album": "Migjorn"},
+            json={"album_artist": "Activity Monitor"},
+        )
+        assert resp.status_code == 200
+
+        # DB artist column updated for tracks where artist == old album_artist.
+        for mp3, _ in pairs:
+            new_mp3 = tmp_path / "Activity Monitor" / "2020 - Migjorn" / mp3.name
+            updated = db.get_track_by_path(new_mp3)
+            assert updated is not None
+            assert updated.artist == "Activity Monitor"
+
+        # FTS: searching old name returns nothing; new name returns the tracks.
+        assert db.search("Docks") == []
+        results = db.search("Activity Monitor")
+        assert len(results) == 2
+
+        # File tag also updated.
+        for _, track in pairs:
+            new_mp3 = (
+                tmp_path / "Activity Monitor" / "2020 - Migjorn" / track.file_path.name
+            )
+            file_tags = id3.ID3(str(new_mp3))
+            assert str(file_tags["TPE1"]) == "Activity Monitor"

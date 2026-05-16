@@ -6,6 +6,7 @@ import { TrackContextMenu } from './TrackContextMenu'
 import { EditableTrackTitle } from './EditableTrackTitle'
 import { EditableAlbumField } from './EditableAlbumField'
 import { CollisionModal } from './CollisionModal'
+import { AlbumMetaPanel } from './AlbumMetaPanel'
 import {
   FavoriteIcon,
   PencilIcon,
@@ -51,6 +52,9 @@ export function TrackList(): React.JSX.Element | null {
 
   const albumEditMode = useStore((s) => s.albumEditMode)
   const setAlbumEditMode = useStore((s) => s.setAlbumEditMode)
+  const albumMetaExpanded = useStore((s) => s.albumMetaExpanded)
+  const setAlbumMetaExpanded = useStore((s) => s.setAlbumMetaExpanded)
+  const patchAlbumMeta = useStore((s) => s.patchAlbumMeta)
   const patchTrackTitle = useStore((s) => s.patchTrackTitle)
   const patchAlbumTags = useStore((s) => s.patchAlbumTags)
   const albumRenameProgress = useStore((s) => s.albumRenameProgress)
@@ -248,6 +252,15 @@ export function TrackList(): React.JSX.Element | null {
       </div>
 
       <div className="track-list-divider" />
+
+      <AlbumMetaPanel
+        album={album}
+        tracks={tracks}
+        editMode={albumEditMode}
+        expanded={albumMetaExpanded}
+        onToggle={() => setAlbumMetaExpanded(!albumMetaExpanded)}
+        onSave={(opts) => patchAlbumMeta(album.album_artist, album.album, opts)}
+      />
 
       {/* Scrollable body */}
       <div className="track-list-body">

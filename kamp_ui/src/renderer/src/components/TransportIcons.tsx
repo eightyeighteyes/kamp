@@ -143,6 +143,23 @@ export function PencilIcon({ size = 16 }: IconProps): React.JSX.Element {
   )
 }
 
+export function TagIcon({ size = 16 }: IconProps): React.JSX.Element {
+  return (
+    <svg width={size} height={size} {...STROKE_PROPS}>
+      <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+      <circle cx="7" cy="7" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
+export function ChevronIcon({ size = 16 }: IconProps): React.JSX.Element {
+  return (
+    <svg width={size} height={size} {...STROKE_PROPS}>
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  )
+}
+
 interface FavoriteIconProps {
   active: boolean
   size?: number

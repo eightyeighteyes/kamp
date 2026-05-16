@@ -177,6 +177,8 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
     album_artist = ""
     year = ""
     track_number = 0
+    genre = ""
+    label = ""
     suffix = path.suffix.lower()
 
     try:
@@ -191,6 +193,8 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
             if trck:
                 parts = str(trck).split("/")
                 track_number = int(parts[0]) if parts[0].isdigit() else 0
+            genre = str(tags.get("TCON")) if tags.get("TCON") else ""
+            label = str(tags.get("TPUB")) if tags.get("TPUB") else ""
         elif suffix == ".m4a":
             audio = mutagen.mp4.MP4(str(path))
             if audio.tags is not None:
@@ -212,6 +216,16 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
                 trkn_v = t.get("trkn")
                 if trkn_v:
                     track_number = trkn_v[0][0]  # type: ignore[index]
+                gen_v = t.get("\xa9gen")
+                genre = str(gen_v[0]) if gen_v else ""
+                lbl_v = t.get("----:com.apple.iTunes:LABEL")
+                if lbl_v:
+                    raw = lbl_v[0]
+                    label = (
+                        raw.decode()
+                        if isinstance(raw, (bytes, bytearray))
+                        else str(raw)
+                    )
         elif suffix == ".flac":
             audio_f = mutagen.flac.FLAC(str(path))
             if audio_f.tags is not None:
@@ -230,6 +244,10 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
                 if trck_v2:
                     t_s = trck_v2[0].split("/")[0]
                     track_number = int(t_s) if t_s.isdigit() else 0
+                gen_v2 = tf.get("GENRE")
+                genre = gen_v2[0] if gen_v2 else ""
+                lbl_v2 = tf.get("LABEL") or tf.get("ORGANIZATION")
+                label = lbl_v2[0] if lbl_v2 else ""
         elif suffix == ".ogg":
             audio_o = mutagen.oggvorbis.OggVorbis(str(path))
             if audio_o.tags is not None:
@@ -248,6 +266,10 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
                 if trck_v3:
                     t_s3 = trck_v3[0].split("/")[0]
                     track_number = int(t_s3) if t_s3.isdigit() else 0
+                gen_v3 = to.get("GENRE")
+                genre = gen_v3[0] if gen_v3 else ""
+                lbl_v3 = to.get("LABEL") or to.get("ORGANIZATION")
+                label = lbl_v3[0] if lbl_v3 else ""
     except Exception as exc:
         logger.debug("Could not read tags from %s: %s", path, exc)
 
@@ -263,6 +285,8 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
         year=year,
         track_number=track_number,
         mbid="",
+        genre=genre,
+        label=label,
     )
 
 

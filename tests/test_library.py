@@ -21,6 +21,7 @@ from kamp_core.library import (
     ScanResult,
     Track,
     extract_art,
+    write_meta_tags_to_file,
     _read_mp3_tags,
     _read_m4a_tags,
     _read_vorbis_tags,
@@ -128,7 +129,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 16
+        assert version == 17
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1201,7 +1202,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 16
+        assert version == 17
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1258,7 +1259,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 16
+        assert version == 17
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1617,7 +1618,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 16
+        assert version == 17
         assert row is not None
         assert row[0] == 0
 
@@ -1730,7 +1731,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 16
+        assert version == 17
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -1822,7 +1823,7 @@ class TestAlbumFavorite:
         index._conn.execute("SELECT COUNT(*) FROM album_favorites").fetchone()
         index.close()
 
-        assert version == 16
+        assert version == 17
 
 
 # ---------------------------------------------------------------------------
@@ -2001,7 +2002,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 16
+        assert version == 17
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2096,7 +2097,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 16
+        assert version == 17
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2104,7 +2105,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 16
+        assert version == 17
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -2979,7 +2980,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 16
+        assert version == 17
 
         index.close()
 
@@ -3261,4 +3262,414 @@ class TestMarkProcessedBy:
         index.mark_processed_by("kamp.musicbrainz", mbid)
 
         assert not index.has_been_processed_by("kamp.coverart", mbid)
+        index.close()
+
+
+# ---------------------------------------------------------------------------
+# Genre and label tag readers (KAMP-303)
+# ---------------------------------------------------------------------------
+
+
+class TestGenreLabelTagReaders:
+    """_read_mp3_tags, _read_m4a_tags, _read_vorbis_tags read genre and label."""
+
+    def test_read_mp3_tags_genre_and_label(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "track.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TCON"] = id3.TCON(encoding=3, text="Jazz")
+        tags["TPUB"] = id3.TPUB(encoding=3, text="Blue Note")
+        tags.save(str(mp3))
+
+        track = _read_mp3_tags(mp3)
+        assert track.genre == "Jazz"
+        assert track.label == "Blue Note"
+
+    def test_read_mp3_tags_genre_label_empty_when_absent(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "no_meta.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        track = _read_mp3_tags(mp3)
+        assert track.genre == ""
+        assert track.label == ""
+
+    def test_read_m4a_tags_genre_and_label(self, tmp_path: Path) -> None:
+        import mutagen.mp4
+
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {
+            "\xa9gen": ["Electronic"],
+            "----:com.apple.iTunes:LABEL": [mutagen.mp4.MP4FreeForm(b"Warp Records")],
+        }
+        with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
+            track = _read_m4a_tags(m4a)
+        assert track.genre == "Electronic"
+        assert track.label == "Warp Records"
+
+    def test_read_m4a_tags_genre_label_empty_when_absent(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "no_meta.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
+            track = _read_m4a_tags(m4a)
+        assert track.genre == ""
+        assert track.label == ""
+
+    def test_read_flac_tags_genre_and_label(self, tmp_path: Path) -> None:
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 8)
+        mock_audio = MagicMock()
+        mock_audio.tags = {"GENRE": ["Classical"], "LABEL": ["ECM Records"]}
+        mock_audio.pictures = []
+        with patch("kamp_core.library.mutagen.flac.FLAC", return_value=mock_audio):
+            track = _read_vorbis_tags(flac, is_flac=True)
+        assert track.genre == "Classical"
+        assert track.label == "ECM Records"
+
+    def test_read_flac_tags_label_falls_back_to_organization(
+        self, tmp_path: Path
+    ) -> None:
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 8)
+        mock_audio = MagicMock()
+        mock_audio.tags = {"ORGANIZATION": ["Sub Pop"]}
+        mock_audio.pictures = []
+        with patch("kamp_core.library.mutagen.flac.FLAC", return_value=mock_audio):
+            track = _read_vorbis_tags(flac, is_flac=True)
+        assert track.label == "Sub Pop"
+
+    def test_read_ogg_tags_genre_and_label(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"\x00" * 8)
+        mock_audio = MagicMock()
+        mock_audio.tags = {"GENRE": ["Ambient"], "LABEL": ["4AD"]}
+        mock_audio.pictures = []
+        with patch(
+            "kamp_core.library.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            track = _read_vorbis_tags(ogg, is_flac=False)
+        assert track.genre == "Ambient"
+        assert track.label == "4AD"
+
+
+# ---------------------------------------------------------------------------
+# write_meta_tags_to_file (KAMP-303)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteMetaTagsToFile:
+    """write_meta_tags_to_file writes genre/label/year to each format."""
+
+    def test_writes_genre_and_label_to_mp3(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "track.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        write_meta_tags_to_file(mp3, genre="Blues", label="Chess Records", year="1958")
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TCON"]) == "Blues"
+        assert str(tags["TPUB"]) == "Chess Records"
+        assert str(tags["TDRC"]) == "1958"
+
+    def test_writes_genre_and_label_to_m4a(self, tmp_path: Path) -> None:
+        import mutagen.mp4
+
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
+            write_meta_tags_to_file(m4a, genre="Soul", label="Motown", year="1965")
+
+        assert mock_audio.tags["\xa9gen"] == ["Soul"]
+        assert mock_audio.tags["\xa9day"] == ["1965"]
+        label_val = mock_audio.tags["----:com.apple.iTunes:LABEL"][0]
+        assert isinstance(label_val, mutagen.mp4.MP4FreeForm)
+        assert bytes(label_val) == b"Motown"
+        mock_audio.save.assert_called_once()
+
+    def test_writes_genre_and_label_to_flac(self, tmp_path: Path) -> None:
+        import mutagen.flac
+
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 8)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_core.library.mutagen.flac.FLAC", return_value=mock_audio):
+            write_meta_tags_to_file(flac, genre="Folk", label="Folkways", year="1970")
+
+        assert mock_audio.tags["GENRE"] == ["Folk"]
+        assert mock_audio.tags["LABEL"] == ["Folkways"]
+        assert mock_audio.tags["DATE"] == ["1970"]
+        mock_audio.save.assert_called_once()
+
+    def test_writes_genre_and_label_to_ogg(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"\x00" * 8)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch(
+            "kamp_core.library.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            write_meta_tags_to_file(ogg, genre="Punk", label="SST", year="1984")
+
+        assert mock_audio.tags["GENRE"] == ["Punk"]
+        assert mock_audio.tags["LABEL"] == ["SST"]
+        assert mock_audio.tags["DATE"] == ["1984"]
+        mock_audio.save.assert_called_once()
+
+    def test_only_writes_provided_fields(self, tmp_path: Path) -> None:
+        """Fields not passed (None) must not be written to the file."""
+        mp3 = tmp_path / "track.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TCON"] = id3.TCON(encoding=3, text="Original")
+        tags.save(str(mp3))
+
+        write_meta_tags_to_file(mp3, label="New Label")  # genre/year not passed
+
+        result = id3.ID3(str(mp3))
+        assert str(result["TCON"]) == "Original"  # unchanged
+        assert str(result["TPUB"]) == "New Label"
+        assert result.get("TDRC") is None
+
+    def test_raises_for_unsupported_format(self, tmp_path: Path) -> None:
+        wav = tmp_path / "track.wav"
+        wav.write_bytes(b"\x00" * 8)
+        with pytest.raises(ValueError, match="Unsupported format"):
+            write_meta_tags_to_file(wav, genre="Rock")
+
+    def test_creates_id3_header_when_absent(self, tmp_path: Path) -> None:
+        """File with no ID3 header should get one created."""
+        mp3 = tmp_path / "bare.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)  # no ID3 header
+
+        write_meta_tags_to_file(mp3, genre="Metal")
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TCON"]) == "Metal"
+
+
+# ---------------------------------------------------------------------------
+# LibraryIndex.update_album_meta (KAMP-303)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateAlbumMeta:
+    """LibraryIndex.update_album_meta persists genre/label/year to the DB."""
+
+    def _make_index_with_track(self, tmp_path: Path) -> tuple[LibraryIndex, Track]:
+        index = LibraryIndex(tmp_path / "library.db")
+        track = Track(
+            file_path=tmp_path / "01.mp3",
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album="Record",
+            year="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="",
+            label="",
+        )
+        index.upsert_many([track])
+        return index, track
+
+    def test_update_genre_persisted(self, tmp_path: Path) -> None:
+        index, _ = self._make_index_with_track(tmp_path)
+        tracks = index.update_album_meta("Artist", "Record", genre="Rock")
+        assert len(tracks) == 1
+        assert tracks[0].genre == "Rock"
+        index.close()
+
+    def test_update_label_persisted(self, tmp_path: Path) -> None:
+        index, _ = self._make_index_with_track(tmp_path)
+        tracks = index.update_album_meta("Artist", "Record", label="Rough Trade")
+        assert tracks[0].label == "Rough Trade"
+        index.close()
+
+    def test_update_year_persisted(self, tmp_path: Path) -> None:
+        index, _ = self._make_index_with_track(tmp_path)
+        tracks = index.update_album_meta("Artist", "Record", year="2024")
+        assert tracks[0].year == "2024"
+        index.close()
+
+    def test_update_only_supplied_fields(self, tmp_path: Path) -> None:
+        """Unspecified fields (None) must not be overwritten."""
+        index = LibraryIndex(tmp_path / "library.db")
+        track = Track(
+            file_path=tmp_path / "01.mp3",
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album="Record",
+            year="1990",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="Jazz",
+            label="Blue Note",
+        )
+        index.upsert_many([track])
+        tracks = index.update_album_meta("Artist", "Record", label="ECM")
+        assert tracks[0].genre == "Jazz"  # unchanged
+        assert tracks[0].label == "ECM"
+        assert tracks[0].year == "1990"  # unchanged
+        index.close()
+
+    def test_no_fields_returns_existing_tracks(self, tmp_path: Path) -> None:
+        """Calling with no kwargs must return existing tracks without a DB write."""
+        index, _ = self._make_index_with_track(tmp_path)
+        tracks = index.update_album_meta("Artist", "Record")
+        assert len(tracks) == 1
+        index.close()
+
+
+# ---------------------------------------------------------------------------
+# Migration v16 → v17 (KAMP-303)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV16ToV17:
+    """v16 → v17 adds genre and label columns to the tracks table."""
+
+    def _build_v16_db(self, db_path: Path) -> None:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (16)")
+        conn.execute("""
+            CREATE TABLE tracks (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path         TEXT    NOT NULL UNIQUE,
+                title             TEXT    NOT NULL DEFAULT '',
+                artist            TEXT    NOT NULL DEFAULT '',
+                album_artist      TEXT    NOT NULL DEFAULT '',
+                album             TEXT    NOT NULL DEFAULT '',
+                year              TEXT    NOT NULL DEFAULT '',
+                track_number      INTEGER NOT NULL DEFAULT 0,
+                disc_number       INTEGER NOT NULL DEFAULT 1,
+                ext               TEXT    NOT NULL DEFAULT '',
+                embedded_art      INTEGER NOT NULL DEFAULT 0,
+                mb_release_id     TEXT    NOT NULL DEFAULT '',
+                mb_recording_id   TEXT    NOT NULL DEFAULT '',
+                file_mtime        REAL,
+                date_added        REAL,
+                favorite          INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE album_favorites (
+                album_artist TEXT NOT NULL,
+                album        TEXT NOT NULL,
+                PRIMARY KEY (album_artist, album)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE settings (
+                key   TEXT NOT NULL PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE sessions (
+                service      TEXT NOT NULL PRIMARY KEY,
+                session_json TEXT,
+                updated_at   REAL NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE deferred_ops (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                op_type      TEXT    NOT NULL,
+                track_id     INTEGER NOT NULL UNIQUE,
+                payload_json TEXT    NOT NULL,
+                created_at   REAL    NOT NULL,
+                attempts     INTEGER NOT NULL DEFAULT 0,
+                last_error   TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
+                title, artist, album_artist, album, content=tracks, content_rowid=id
+            )
+        """)
+        conn.execute(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album) "
+            "VALUES ('/music/01.mp3', 'Song', 'Artist', 'Artist', 'Record')"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_migration_adds_genre_column(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v16_db(db_path)
+
+        index = LibraryIndex(db_path)
+
+        cols = {
+            row[1]
+            for row in index._conn.execute("PRAGMA table_info(tracks)").fetchall()
+        }
+        assert "genre" in cols
+        index.close()
+
+    def test_migration_adds_label_column(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v16_db(db_path)
+
+        index = LibraryIndex(db_path)
+
+        cols = {
+            row[1]
+            for row in index._conn.execute("PRAGMA table_info(tracks)").fetchall()
+        }
+        assert "label" in cols
+        index.close()
+
+    def test_migration_bumps_schema_version_to_17(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v16_db(db_path)
+
+        index = LibraryIndex(db_path)
+
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        assert version == 17
+        index.close()
+
+    def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v16_db(db_path)
+
+        index = LibraryIndex(db_path)
+
+        row = index._conn.execute(
+            "SELECT genre, label FROM tracks WHERE file_path = '/music/01.mp3'"
+        ).fetchone()
+        assert row["genre"] == ""
+        assert row["label"] == ""
+        index.close()
+
+    def test_migration_idempotent_on_new_db(self, tmp_path: Path) -> None:
+        """New DBs (from _DDL) already have genre/label; migration must not fail."""
+        index = LibraryIndex(tmp_path / "library.db")
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        assert version == 17
         index.close()

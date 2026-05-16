@@ -20,6 +20,8 @@ export type Track = {
   embedded_art: boolean
   mb_release_id: string
   mb_recording_id: string
+  genre: string
+  label: string
   favorite: boolean
   play_count: number
 }
@@ -404,6 +406,19 @@ export async function patchAlbumTags(
     throw new Error(message)
   }
   return res.json() as Promise<AlbumTagsResult>
+}
+
+export type AlbumMetaResult = {
+  tracks: Track[]
+}
+
+export const patchAlbumMeta = (
+  albumArtist: string,
+  album: string,
+  opts: { genre?: string; label?: string; year?: string }
+): Promise<AlbumMetaResult> => {
+  const params = new URLSearchParams({ album_artist: albumArtist, album })
+  return patch(`/api/v1/albums/meta?${params}`, opts)
 }
 
 // ---------------------------------------------------------------------------

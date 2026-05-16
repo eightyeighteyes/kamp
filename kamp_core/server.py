@@ -52,6 +52,8 @@ class TrackOut(BaseModel):
     embedded_art: bool
     mb_release_id: str
     mb_recording_id: str
+    genre: str
+    label: str
     favorite: bool
     play_count: int
 
@@ -71,6 +73,8 @@ class TrackOut(BaseModel):
             embedded_art=t.embedded_art,
             mb_release_id=t.mb_release_id,
             mb_recording_id=t.mb_recording_id,
+            genre=t.genre,
+            label=t.label,
             favorite=t.favorite,
             play_count=t.play_count,
         )
@@ -290,6 +294,16 @@ class AlbumTagsOut(BaseModel):
     # Paths of files left at their original location due to skip_conflicts.
     skipped: list[str]
     failed: list[AlbumTagsTrackResult]
+
+
+class AlbumMetaRequest(BaseModel):
+    genre: str | None = None
+    label: str | None = None
+    year: str | None = None
+
+
+class AlbumMetaOut(BaseModel):
+    tracks: list[TrackOut]
 
 
 class BandcampProxyFetchResult(BaseModel):
@@ -1241,6 +1255,51 @@ def create_app(
         return AlbumTagsOut(
             moved=moved, deferred=deferred, skipped=skipped, failed=failed
         )
+
+    @app.patch("/api/v1/albums/meta")
+    def patch_album_meta(
+        album_artist: str, album: str, req: "AlbumMetaRequest"
+    ) -> "AlbumMetaOut":
+        """Write genre, label, and/or year to every track in an album.
+
+        Tag-only: no files are moved or renamed.  Only the fields present in
+        the request body are written; omitted fields are left unchanged.
+        """
+        from kamp_core.library import write_meta_tags_to_file
+
+        tracks = index.tracks_for_album(album_artist, album)
+        if not tracks:
+            raise HTTPException(status_code=404, detail="Album not found")
+
+        if req.genre is None and req.label is None and req.year is None:
+            raise HTTPException(status_code=400, detail="No changes requested")
+
+        for track in tracks:
+            try:
+                write_meta_tags_to_file(
+                    track.file_path,
+                    genre=req.genre,
+                    label=req.label,
+                    year=req.year,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "meta tag write failed for track %d (%s)", track.id, track.file_path
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to write tags to {track.file_path}: {exc}",
+                ) from exc
+
+        updated = index.update_album_meta(
+            album_artist,
+            album,
+            genre=req.genre,
+            label=req.label,
+            year=req.year,
+        )
+        _notify_library_changed()
+        return AlbumMetaOut(tracks=[TrackOut.from_track(t) for t in updated])
 
     @app.get("/api/v1/album-art")
     def get_album_art(

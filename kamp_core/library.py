@@ -90,7 +90,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 16
+_SCHEMA_VERSION = 17
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -115,7 +115,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     last_played      REAL,    -- Unix timestamp of last natural EOF; NULL until played
     favorite         INTEGER NOT NULL DEFAULT 0,
     play_count       INTEGER NOT NULL DEFAULT 0,
-    file_mtime       REAL     -- st_mtime at last scan; NULL until v6 migration backfill
+    file_mtime       REAL,    -- st_mtime at last scan; NULL until v6 migration backfill
+    genre            TEXT    NOT NULL DEFAULT '',
+    label            TEXT    NOT NULL DEFAULT ''
 );
 
 -- FTS5 virtual table for full-text search across track metadata.
@@ -278,6 +280,8 @@ class Track:
     embedded_art: bool
     mb_release_id: str
     mb_recording_id: str
+    genre: str = field(default="")
+    label: str = field(default="")
     id: int = field(default=0, compare=False)
     date_added: float | None = field(default=None, compare=False)
     last_played: float | None = field(default=None, compare=False)
@@ -611,6 +615,27 @@ class LibraryIndex:
             """)
             self._conn.execute("UPDATE schema_version SET version = 16")
             self._conn.commit()
+            version = 16
+
+        if version < 17:
+            # v16 → v17: genre and label columns added (KAMP-303).
+            # Guard each ALTER with a PRAGMA check: new databases created
+            # from the current _DDL already have these columns, so the
+            # ALTER would fail with "duplicate column name".
+            existing = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if "genre" not in existing:
+                self._conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN genre TEXT NOT NULL DEFAULT ''"
+                )
+            if "label" not in existing:
+                self._conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN label TEXT NOT NULL DEFAULT ''"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 17")
+            self._conn.commit()
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -940,8 +965,9 @@ class LibraryIndex:
             INSERT INTO tracks
                 (file_path, title, artist, album_artist, album, year,
                  track_number, disc_number, ext, embedded_art,
-                 mb_release_id, mb_recording_id, date_added, file_mtime)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 mb_release_id, mb_recording_id, date_added, file_mtime,
+                 genre, label)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path) DO UPDATE SET
                 title           = excluded.title,
                 artist          = excluded.artist,
@@ -954,7 +980,9 @@ class LibraryIndex:
                 embedded_art    = excluded.embedded_art,
                 mb_release_id   = excluded.mb_release_id,
                 mb_recording_id = excluded.mb_recording_id,
-                file_mtime      = excluded.file_mtime
+                file_mtime      = excluded.file_mtime,
+                genre           = excluded.genre,
+                label           = excluded.label
                 -- date_added intentionally omitted: preserve original scan date on re-scan
                 -- last_played intentionally omitted: managed exclusively by record_played()
             """,
@@ -1194,6 +1222,42 @@ class LibraryIndex:
             (int(favorite), str(file_path)),
         )
         self._conn.commit()
+
+    def update_album_meta(
+        self,
+        album_artist: str,
+        album: str,
+        *,
+        genre: str | None = None,
+        label: str | None = None,
+        year: str | None = None,
+    ) -> list[Track]:
+        """Write genre, label, and/or year to every track in *album*.
+
+        Returns the updated Track objects.  Only the provided (non-None) fields
+        are changed; the others are left as-is in the database.
+        """
+        sets: list[str] = []
+        params: list[object] = []
+        if genre is not None:
+            sets.append("genre = ?")
+            params.append(genre)
+        if label is not None:
+            sets.append("label = ?")
+            params.append(label)
+        if year is not None:
+            sets.append("year = ?")
+            params.append(year)
+        if not sets:
+            return self.tracks_for_album(album_artist, album)
+        params.extend([album_artist, album])
+        self._conn.execute(
+            f"UPDATE tracks SET {', '.join(sets)}"
+            " WHERE album_artist = ? AND album = ?",
+            params,
+        )
+        self._conn.commit()
+        return self.tracks_for_album(album_artist, album)
 
     def toggle_album_favorite(
         self, album_artist: str, album: str, favorite: bool
@@ -1660,6 +1724,8 @@ def _track_to_params(
     str,
     float | None,
     float | None,
+    str,
+    str,
 ]:
     return (
         str(t.file_path),
@@ -1676,6 +1742,8 @@ def _track_to_params(
         t.mb_recording_id,
         t.date_added,
         t.file_mtime,
+        t.genre,
+        t.label,
     )
 
 
@@ -1706,6 +1774,8 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         embedded_art=bool(row["embedded_art"]),
         mb_release_id=row["mb_release_id"],
         mb_recording_id=row["mb_recording_id"],
+        genre=row["genre"],
+        label=row["label"],
         date_added=row["date_added"],
         last_played=row["last_played"],
         favorite=bool(row["favorite"]),
@@ -1801,6 +1871,8 @@ def _read_mp3_tags(path: Path) -> Track:
         embedded_art=any(k.startswith("APIC") for k in tags),
         mb_release_id=_str("TXXX:MusicBrainz Release Id"),
         mb_recording_id=_str("TXXX:MusicBrainz Track Id"),
+        genre=_str("TCON"),
+        label=_str("TPUB"),
     )
 
 
@@ -1838,6 +1910,8 @@ def _read_m4a_tags(path: Path) -> Track:
         embedded_art=bool(tags.get("covr")),
         mb_release_id=_s("----:com.apple.iTunes:MusicBrainz Release Id"),
         mb_recording_id=_s("----:com.apple.iTunes:MusicBrainz Track Id"),
+        genre=_s("\xa9gen"),
+        label=_s("----:com.apple.iTunes:LABEL"),
     )
 
 
@@ -1879,6 +1953,8 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
         embedded_art=bool(pictures),
         mb_release_id=_s("MUSICBRAINZ_ALBUMID"),
         mb_recording_id=_s("MUSICBRAINZ_TRACKID"),
+        genre=_s("GENRE"),
+        label=_s("LABEL") or _s("ORGANIZATION"),
     )
 
 
@@ -1963,6 +2039,70 @@ def write_album_tags_to_file(
         audio.save()
     else:
         raise ValueError(f"Unsupported format for album tag write: {path.suffix}")
+
+
+def write_meta_tags_to_file(
+    path: Path,
+    *,
+    genre: str | None = None,
+    label: str | None = None,
+    year: str | None = None,
+) -> None:
+    """Write genre, label, and/or year tags to an audio file without moving it.
+
+    Only the fields that are not None are written; the others are left
+    unchanged on disk.  This is a tag-only operation — no file rename occurs.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".mp3":
+        try:
+            tags = id3.ID3(str(path))
+        except Exception:
+            tags = id3.ID3()
+        if genre is not None:
+            tags["TCON"] = id3.TCON(encoding=3, text=genre)
+        if label is not None:
+            tags["TPUB"] = id3.TPUB(encoding=3, text=label)
+        if year is not None:
+            tags["TDRC"] = id3.TDRC(encoding=3, text=year)
+        tags.save(str(path))
+    elif suffix == ".m4a":
+        audio = mutagen.mp4.MP4(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        if genre is not None:
+            audio.tags["\xa9gen"] = [genre]  # type: ignore[index]
+        if label is not None:
+            audio.tags["----:com.apple.iTunes:LABEL"] = [  # type: ignore[index]
+                mutagen.mp4.MP4FreeForm(label.encode())
+            ]
+        if year is not None:
+            audio.tags["\xa9day"] = [year]  # type: ignore[index]
+        audio.save()
+    elif suffix == ".flac":
+        audio = mutagen.flac.FLAC(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        if genre is not None:
+            audio.tags["GENRE"] = [genre]  # type: ignore[index]
+        if label is not None:
+            audio.tags["LABEL"] = [label]  # type: ignore[index]
+        if year is not None:
+            audio.tags["DATE"] = [year]  # type: ignore[index]
+        audio.save()
+    elif suffix == ".ogg":
+        audio = mutagen.oggvorbis.OggVorbis(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        if genre is not None:
+            audio.tags["GENRE"] = [genre]  # type: ignore[index]
+        if label is not None:
+            audio.tags["LABEL"] = [label]  # type: ignore[index]
+        if year is not None:
+            audio.tags["DATE"] = [year]  # type: ignore[index]
+        audio.save()
+    else:
+        raise ValueError(f"Unsupported format for meta tag write: {path.suffix}")
 
 
 def _read_tags(path: Path) -> Track | None:

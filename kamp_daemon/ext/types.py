@@ -31,6 +31,8 @@ class TrackMetadata:
     release_group_mbid: str = (
         ""  # MusicBrainz release-group MBID; Cover Art Archive fallback
     )
+    genre: str = ""
+    label: str = ""
 
 
 @dataclass

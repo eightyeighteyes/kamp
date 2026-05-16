@@ -2656,3 +2656,167 @@ class TestCORSMiddleware:
         client = self._make_client(mock_index, mock_engine, mock_queue, dev_mode=True)
         resp = self._preflight(client, "http://192.168.1.10:5173")
         assert "access-control-allow-origin" not in resp.headers
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/v1/albums/meta (KAMP-303)
+# ---------------------------------------------------------------------------
+
+
+class TestPatchAlbumMetaEndpoint:
+    """PATCH /api/v1/albums/meta writes genre/label/year tags to album tracks."""
+
+    def _make_track(self, n: int = 1) -> Track:
+        return Track(
+            file_path=Path(f"/music/{n:02d}.mp3"),
+            title=f"Track {n}",
+            artist="Artist",
+            album_artist="Artist",
+            album="Record",
+            year="2020",
+            track_number=n,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="",
+            label="",
+        )
+
+    def test_patch_genre_writes_tag_and_returns_updated_tracks(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = self._make_track()
+        updated = Track(**{**track.__dict__, "genre": "Jazz"})
+        mock_index.tracks_for_album.return_value = [track]
+        mock_index.update_album_meta.return_value = [updated]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        with patch("kamp_core.library.write_meta_tags_to_file"):
+            resp = TestClient(app).patch(
+                "/api/v1/albums/meta",
+                params={"album_artist": "Artist", "album": "Record"},
+                json={"genre": "Jazz"},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["tracks"]) == 1
+        assert data["tracks"][0]["genre"] == "Jazz"
+
+    def test_patch_label_and_year_persisted(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = self._make_track()
+        updated = Track(**{**track.__dict__, "label": "ECM", "year": "1975"})
+        mock_index.tracks_for_album.return_value = [track]
+        mock_index.update_album_meta.return_value = [updated]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        with patch("kamp_core.library.write_meta_tags_to_file"):
+            resp = TestClient(app).patch(
+                "/api/v1/albums/meta",
+                params={"album_artist": "Artist", "album": "Record"},
+                json={"label": "ECM", "year": "1975"},
+            )
+
+        assert resp.status_code == 200
+        mock_index.update_album_meta.assert_called_once_with(
+            "Artist", "Record", genre=None, label="ECM", year="1975"
+        )
+
+    def test_returns_404_for_unknown_album(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        mock_index.tracks_for_album.return_value = []
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/albums/meta",
+            params={"album_artist": "Ghost", "album": "Void"},
+            json={"genre": "Noise"},
+        )
+        assert resp.status_code == 404
+
+    def test_returns_400_when_no_fields_provided(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = self._make_track()
+        mock_index.tracks_for_album.return_value = [track]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/albums/meta",
+            params={"album_artist": "Artist", "album": "Record"},
+            json={},
+        )
+        assert resp.status_code == 400
+
+    def test_returns_500_when_tag_write_fails(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = self._make_track()
+        mock_index.tracks_for_album.return_value = [track]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        with patch(
+            "kamp_core.library.write_meta_tags_to_file",
+            side_effect=OSError("permission denied"),
+        ):
+            resp = TestClient(app).patch(
+                "/api/v1/albums/meta",
+                params={"album_artist": "Artist", "album": "Record"},
+                json={"genre": "Rock"},
+            )
+        assert resp.status_code == 500
+
+    def test_track_out_includes_genre_and_label(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """TrackOut model must expose genre and label fields."""
+        track = Track(
+            file_path=Path("/music/01.mp3"),
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album="Record",
+            year="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="Reggae",
+            label="Trojan",
+        )
+        mock_index.tracks_for_album.return_value = [track]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        tracks_resp = TestClient(app).get(
+            "/api/v1/tracks",
+            params={"album_artist": "Artist", "album": "Record"},
+        )
+        assert tracks_resp.status_code == 200
+        t = tracks_resp.json()[0]
+        assert t["genre"] == "Reggae"
+        assert t["label"] == "Trojan"

@@ -55,6 +55,7 @@ type PlayerStore = {
   topAlbumsCount: number
   baseKampEditMode: boolean
   albumEditMode: boolean
+  albumMetaExpanded: boolean
   albumRenameProgress: { done: number; total: number } | null
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
   searchQuery: string
@@ -86,6 +87,12 @@ type PlayerStore = {
   setTopAlbumsCount: (n: number) => void
   toggleBaseKampEditMode: () => void
   setAlbumEditMode: (mode: boolean) => void
+  setAlbumMetaExpanded: (expanded: boolean) => void
+  patchAlbumMeta: (
+    albumArtist: string,
+    album: string,
+    opts: { genre?: string; label?: string; year?: string }
+  ) => Promise<void>
   loadLibrary: () => Promise<void>
   loadUiState: () => Promise<void>
   selectArtist: (artist: string | null) => void
@@ -228,6 +235,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   })(),
   baseKampEditMode: localStorage.getItem('kamp:base-kamp-edit-mode') === 'true',
   albumEditMode: false,
+  albumMetaExpanded: localStorage.getItem('kamp:meta-expanded') === 'true',
   albumRenameProgress: null,
   sortOrder: 'album_artist',
   searchQuery: '',
@@ -396,7 +404,21 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ baseKampEditMode: next })
   },
 
-  setAlbumEditMode: (mode) => set({ albumEditMode: mode }),
+  setAlbumEditMode: (mode) => {
+    // Auto-expand the liner notes panel when entering edit mode so the
+    // editable fields are always visible without a separate interaction.
+    if (mode && !get().albumMetaExpanded) {
+      localStorage.setItem('kamp:meta-expanded', 'true')
+      set({ albumEditMode: mode, albumMetaExpanded: true })
+    } else {
+      set({ albumEditMode: mode })
+    }
+  },
+
+  setAlbumMetaExpanded: (expanded) => {
+    localStorage.setItem('kamp:meta-expanded', String(expanded))
+    set({ albumMetaExpanded: expanded })
+  },
 
   loadUiState: async () => {
     try {
@@ -664,6 +686,20 @@ export const useStore = create<PlayerStore>((set, get) => ({
       await get().loadTracks(newArtist, newAlbum)
     }
     return null
+  },
+
+  patchAlbumMeta: async (albumArtist, album, opts) => {
+    const result = await api.patchAlbumMeta(albumArtist, album, opts)
+    // Refresh the open track list so genre/label/year values update in the panel.
+    const { library } = get()
+    if (
+      library.selectedAlbum?.album_artist === albumArtist &&
+      library.selectedAlbum?.album === album
+    ) {
+      set((s) => ({
+        library: { ...s.library, tracks: result.tracks }
+      }))
+    }
   },
 
   setAlbumFavorite: async (albumArtist, album, favorite) => {

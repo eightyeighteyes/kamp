@@ -304,6 +304,30 @@ _ALLOWED_PROXY_HOSTS: frozenset[str] = frozenset(
 )
 
 
+# OS metadata filenames that macOS (and Windows) drop into every directory.
+# These make rmdir() fail even on "empty" folders, so we remove them first.
+_OS_METADATA_NAMES: frozenset[str] = frozenset(
+    {".DS_Store", "Thumbs.db", "desktop.ini", ".Spotlight-V100", ".Trashes"}
+)
+
+
+def _scrub_os_metadata(directory: Path) -> None:
+    """Remove known OS-generated metadata files from *directory*.
+
+    Called before rmdir() so that Finder-created .DS_Store files don't prevent
+    cleanup of otherwise-empty album/artist directories after a rename.
+    """
+    try:
+        for entry in directory.iterdir():
+            if entry.name in _OS_METADATA_NAMES:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
 def _validate_library_path(file_path: str, library_path: Path | None) -> Path:
     """Resolve *file_path* and verify it lies within *library_path*.
 
@@ -828,6 +852,9 @@ def create_app(
                 index.rename_album_track(
                     old_path, new_path, new_album, new_album_artist, new_mtime
                 )
+                queue.update_track_album_tags(
+                    old_path, new_path, new_album, new_album_artist
+                )
 
                 if str(old_path) != str(new_path):
                     moved_path_pairs.append((old_path, new_path))
@@ -874,6 +901,7 @@ def create_app(
             # Climb toward the library root, removing each level only if empty.
             # Never remove the library root itself.
             while candidate != lib_path and lib_path in candidate.parents:
+                _scrub_os_metadata(candidate)
                 try:
                     candidate.rmdir()
                 except OSError:

@@ -489,3 +489,51 @@ class TestPatchAlbumTagsEndpoint:
         assert resp.status_code == 200
         # Skipped file still lives in the old dir — dir must not be removed.
         assert old_album_dir.is_dir()
+
+    def test_ds_store_in_old_dir_does_not_block_cleanup(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """macOS Finder drops .DS_Store in every visited directory; cleanup must remove it."""
+        pairs = _make_album(tmp_path, "Old Artist", "Album", "2024", 2)
+        client, _ = self._client_with_album(
+            tmp_path, [t for _, t in pairs], _mock_engine, _mock_queue
+        )
+        # Simulate Finder leaving metadata in the album and artist directories.
+        (tmp_path / "Old Artist" / "2024 - Album" / ".DS_Store").write_bytes(b"")
+        (tmp_path / "Old Artist" / ".DS_Store").write_bytes(b"")
+
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Old Artist", "album": "Album"},
+            json={"album_artist": "New Artist"},
+        )
+        assert resp.status_code == 200
+        assert not (tmp_path / "Old Artist").exists()
+
+    def test_queue_album_artist_updated_after_rename(
+        self, tmp_path: Path, _mock_engine: MagicMock
+    ) -> None:
+        """Queued tracks must reflect the new album_artist after an album-level rename."""
+        from kamp_core.playback import PlaybackQueue
+
+        pairs = _make_album(tmp_path, "Old Artist", "Album", "2024", 2)
+        tracks = [t for _, t in pairs]
+        queue: PlaybackQueue = PlaybackQueue()
+        queue.load(tracks, start_index=0)
+
+        db = LibraryIndex(tmp_path / "db.sqlite")
+        for t in tracks:
+            db.upsert_track(t)
+        app = create_app(
+            index=db, engine=_mock_engine, queue=queue, library_path=tmp_path
+        )
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Old Artist", "album": "Album"},
+            json={"album_artist": "New Artist"},
+        )
+        assert resp.status_code == 200
+        queue_tracks, _ = queue.queue_tracks()
+        assert all(t.album_artist == "New Artist" for t in queue_tracks)

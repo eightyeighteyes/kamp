@@ -90,6 +90,24 @@ class PlaybackQueue:
                 t.file_path = new_path
                 t.title = new_title
 
+    def update_track_album_tags(
+        self,
+        old_path: Path,
+        new_path: Path,
+        new_album: str,
+        new_album_artist: str,
+    ) -> None:
+        """Patch file_path, album, and album_artist after an album-level rename.
+
+        Called once per track during PATCH /api/v1/albums/tags so the queue
+        display reflects the new artist/album without a full queue reload.
+        """
+        for t in self._tracks:
+            if t.file_path == old_path:
+                t.file_path = new_path
+                t.album = new_album
+                t.album_artist = new_album_artist
+
     def current(self) -> Track | None:
         if not self._tracks or self._pos < 0:
             return None

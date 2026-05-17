@@ -165,8 +165,12 @@ export function Oscilloscope(): React.JSX.Element {
       lastTsRef.current = timestamp
 
       pixelAccumRef.current += (dt / 1000) * SCROLL_PX_PER_SEC
-      const steps = Math.min(Math.floor(pixelAccumRef.current), w)
-      pixelAccumRef.current -= steps
+      const rawSteps = Math.floor(pixelAccumRef.current)
+      const steps = Math.min(rawSteps, w)
+      // Subtract raw (uncapped) steps so the accumulator always holds the
+      // fractional remainder in [0, 1) — used below for sub-pixel rendering.
+      pixelAccumRef.current -= rawSteps
+      const frac = pixelAccumRef.current
 
       if (steps > 0) {
         const seed = seedRef.current
@@ -205,10 +209,11 @@ export function Oscilloscope(): React.JSX.Element {
       ctx.strokeStyle = accentRef.current
       ctx.lineWidth = 1.5
       ctx.setLineDash([])
+      ctx.translate(-frac, 0)
       ctx.beginPath()
       const midY = h / 2
-      for (let x = 0; x < w; x++) {
-        const py = midY - buf[x]
+      for (let x = 0; x <= w; x++) {
+        const py = midY - buf[Math.min(x, w - 1)]
         if (x === 0) ctx.moveTo(x, py)
         else ctx.lineTo(x, py)
       }

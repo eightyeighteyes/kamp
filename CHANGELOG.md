@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.19.0](https://github.com/eightyeighteyes/kamp/compare/v1.18.0...v1.19.0) (2026-05-16)
+
+
+### Features
+
+* **KAMP-303:** Liner Notes panel — genre, label, and year in album view ([#399](https://github.com/eightyeighteyes/kamp/issues/399)) ([464bb11](https://github.com/eightyeighteyes/kamp/commit/464bb11e314dbc6035ccf8c7035b0909160cc008))
+* **KAMP-308:** album title and artist rename with cascading file fan-out ([#397](https://github.com/eightyeighteyes/kamp/issues/397)) ([eaa1162](https://github.com/eightyeighteyes/kamp/commit/eaa11627d949660ad3d77a952d2e7586c131b3f6))
+* **KAMP-309:** defer tag/rename ops for currently-playing tracks ([#398](https://github.com/eightyeighteyes/kamp/issues/398)) ([567c196](https://github.com/eightyeighteyes/kamp/commit/567c196ab568d29a554f1202ff7c9473b99faa82))
+* rename track file on disk after tag edit (KAMP-307) ([#396](https://github.com/eightyeighteyes/kamp/issues/396)) ([72e1d37](https://github.com/eightyeighteyes/kamp/commit/72e1d372020be30563e437cf6946658d9c45cbe5))
+* **ui:** add Status Rail to nav bar, visible on all views (KAMP-302) ([#390](https://github.com/eightyeighteyes/kamp/issues/390)) ([9768c50](https://github.com/eightyeighteyes/kamp/commit/9768c503d8ace5d289a7263c114a456395d73c01))
+* **ui:** Edit/Done toggle on album-page breadcrumb (KAMP-305) ([#395](https://github.com/eightyeighteyes/kamp/issues/395)) ([ec5d54d](https://github.com/eightyeighteyes/kamp/commit/ec5d54d3075a5651b10f34057f45dbc313379d28))
+
+
+### Bug Fixes
+
+* **ui:** hide artist panel on all non-library views (KAMP-310) ([#391](https://github.com/eightyeighteyes/kamp/issues/391)) ([ac8601e](https://github.com/eightyeighteyes/kamp/commit/ac8601e01758d7575946cabf3d5e6d0a69d68f3c))
+* **ui:** pin preferences dialog to fixed height so geometry doesn't shift between tabs (KAMP-233) ([#388](https://github.com/eightyeighteyes/kamp/issues/388)) ([f154b18](https://github.com/eightyeighteyes/kamp/commit/f154b18ed9d39e1d9635e92c419a2e232d714b58))
+* **ui:** remove translateY lift on album-card hover (KAMP-299) ([#386](https://github.com/eightyeighteyes/kamp/issues/386)) ([3013457](https://github.com/eightyeighteyes/kamp/commit/30134578f2f81a8ab426491f208874cc0a05944e))
+* **ui:** replace glyph play/pause/favorite icons with SVGs (KAMP-301) ([#389](https://github.com/eightyeighteyes/kamp/issues/389)) ([26918ef](https://github.com/eightyeighteyes/kamp/commit/26918efd8b217b28854ccbe0941f62384ce257a4))
+* **ui:** retry indefinitely in packaged mode to survive Defender cold start (KAMP-300) ([#392](https://github.com/eightyeighteyes/kamp/issues/392)) ([39d3b86](https://github.com/eightyeighteyes/kamp/commit/39d3b862f7be473e71766feb5a35e36e819d0a72))
+* **ui:** set correct publisher and homepage in package.json (KAMP-311) ([#393](https://github.com/eightyeighteyes/kamp/issues/393)) ([ac81ea8](https://github.com/eightyeighteyes/kamp/commit/ac81ea8170393450641d14cab42f6e912c020976))
+
 ## [1.18.0](https://github.com/eightyeighteyes/kamp/compare/v1.17.0...v1.18.0) (2026-05-13)
 
 

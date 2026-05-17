@@ -25,8 +25,8 @@ const DB_RANGE = 60 // 0 - (-60)
 // 18 dB/sec linear decay rate (per spec).
 const DECAY_DB_PER_SEC = 18
 
-// Pixel step per segment: 3px width + 2px gap.
-const SEGMENT_STEP_PX = 5
+// Pixel step per segment: 6px width + 4px gap.
+const SEGMENT_STEP_PX = 10
 
 // Hold duration before the peak indicator begins fading (ms).
 const PEAK_HOLD_MS = 1500

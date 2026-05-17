@@ -21,6 +21,7 @@ import {
   type DrawFn
 } from './StereoRackContext'
 import { VUMeterPair } from './VUMeter'
+import { Oscilloscope } from './Oscilloscope'
 
 // displayStyle is required by ModuleProps but unused — StereoRack has a fixed layout.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -113,8 +114,9 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
     <StereoRackContext.Provider value={contextValue}>
       <div className="stereo-rack-module">
         <div className="stereo-rack-top">
-          <VUMeterPair />
-          {/* Oscilloscope mounts between the meters in KAMP-324 */}
+          <VUMeterPair>
+            <Oscilloscope />
+          </VUMeterPair>
         </div>
         {/* TrackDisplay mounts here in KAMP-325 */}
       </div>

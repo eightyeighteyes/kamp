@@ -117,6 +117,18 @@
   transition: opacity 300ms ease;
 }
 
+/* ============================================================
+   Oscilloscope
+   ============================================================ */
+
+.oscilloscope {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  /* JS reads getComputedStyle(canvas).color to derive the stroke rgba. */
+  color: var(--accent);
+}
+
 /* ------------------------------------------------------------------
    Idle / paused state — applied when nothing is playing
    ------------------------------------------------------------------ */

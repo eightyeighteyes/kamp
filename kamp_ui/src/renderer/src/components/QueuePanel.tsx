@@ -179,7 +179,7 @@ export function QueuePanel(): React.JSX.Element {
             const isUnplayed = position >= 0 && idx > position
             return (
               <li
-                key={track.id}
+                key={idx}
                 ref={isCurrent ? activeRef : null}
                 className={`queue-track-row${isCurrent ? ' current' : ''}${isPlayed ? ' played' : ''}`}
                 draggable={!isCurrent}

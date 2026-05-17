@@ -19,8 +19,8 @@ function formatTime(seconds: number): string {
 // TrackLeft — with marquee scroll state machine
 // ---------------------------------------------------------------------------
 
-// idle → ellipsis-1 → ellipsis-2 → ellipsis-3 → scrolling → idle (loop)
-type ScrollPhase = 'idle' | 'ellipsis-1' | 'ellipsis-2' | 'ellipsis-3' | 'scrolling'
+// idle → ellipsis-1 → ellipsis-2 → ellipsis-3 → scrolling → end-hold → idle (loop)
+type ScrollPhase = 'idle' | 'ellipsis-1' | 'ellipsis-2' | 'ellipsis-3' | 'scrolling' | 'end-hold'
 
 // px/sec scroll rate
 const SCROLL_RATE = 40
@@ -28,6 +28,8 @@ const SCROLL_RATE = 40
 const IDLE_DELAY_MS = 1200
 // ms per ellipsis step
 const ELLIPSIS_STEP_MS = 400
+// ms to rest at the end of the string before snapping back
+const END_HOLD_MS = 1000
 
 type TrackLeftProps = {
   artist: string
@@ -95,20 +97,24 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
     }, IDLE_DELAY_MS)
   }, [])
 
-  // Wire transitionend so the scroll loops: reset (no transition) → rAF → restart.
-  // The rAF gap ensures the browser sees the reset and the next transition as separate
-  // paints — without it the snap-back may animate instead of jumping instantly.
+  // Wire transitionend: hold at the end for END_HOLD_MS, then snap back and restart.
+  // The rAF between the snap-back and the next start() ensures the browser sees the
+  // reset and the next transition as separate paints — without it the snap-back animates.
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
     const onEnd = (e: TransitionEvent): void => {
       if (e.propertyName !== 'transform') return
       if (phaseRef.current !== 'scrolling') return
-      el.style.transition = 'none'
-      el.style.transform = 'translateX(0)'
-      if (ellipsisRef.current) ellipsisRef.current.textContent = ''
-      phaseRef.current = 'idle'
-      requestAnimationFrame(() => start())
+      phaseRef.current = 'end-hold'
+      timerRef.current = setTimeout(() => {
+        if (!scrollRef.current) return
+        scrollRef.current.style.transition = 'none'
+        scrollRef.current.style.transform = 'translateX(0)'
+        if (ellipsisRef.current) ellipsisRef.current.textContent = ''
+        phaseRef.current = 'idle'
+        requestAnimationFrame(() => start())
+      }, END_HOLD_MS)
     }
     el.addEventListener('transitionend', onEnd)
     return () => el.removeEventListener('transitionend', onEnd)

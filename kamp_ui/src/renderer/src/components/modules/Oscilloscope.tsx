@@ -95,11 +95,13 @@ export function Oscilloscope(): React.JSX.Element {
       if (!ctx) return
       ctx.scale(dpr, dpr)
       ctxRef.current = ctx
-      sizeRef.current = { w: rect.width, h: rect.height }
+      // Use integer logical dimensions so typed-array indices are always integers.
+      const w = Math.floor(rect.width)
+      const h = Math.floor(rect.height)
+      sizeRef.current = { w, h }
       // Resize ring buffer, preserving as much history as possible.
-      const newW = rect.width | 0
-      if (!bufferRef.current || bufferRef.current.length !== newW) {
-        bufferRef.current = resizeBuffer(bufferRef.current, newW)
+      if (!bufferRef.current || bufferRef.current.length !== w) {
+        bufferRef.current = resizeBuffer(bufferRef.current, w)
       }
     }
 

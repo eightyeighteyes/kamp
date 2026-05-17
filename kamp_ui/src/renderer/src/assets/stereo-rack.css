@@ -180,6 +180,19 @@
   white-space: nowrap;
 }
 
+/* One text copy inside the scroll wrapper */
+.track-copy {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Gap between the two copies. Width must match MARQUEE_GAP_PX in TrackDisplay.tsx. */
+.track-gap {
+  display: inline-block;
+  width: 60px;
+  flex-shrink: 0;
+}
+
 /* Hidden duplicate used to measure full text width without overflow:hidden clipping it */
 .track-measure {
   position: absolute;

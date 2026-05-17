@@ -439,8 +439,8 @@ export type DeferredOpCompletedMessage = {
 }
 export type AudioLevelMessage = {
   type: 'audio.level'
-  level_db: number
-  peak_db: number
+  left_db: number
+  right_db: number
 }
 export type ServerMessage =
   | StateMessage
@@ -478,7 +478,7 @@ export function connectStateStream(
       else if (msg.type === 'album.rename.progress') onAlbumRenameProgress?.(msg.done, msg.total)
       else if (msg.type === 'deferred_op.completed')
         onDeferredOpCompleted?.(msg.track_id, msg.op_id)
-      else if (msg.type === 'audio.level') onAudioLevel?.(msg.level_db, msg.peak_db)
+      else if (msg.type === 'audio.level') onAudioLevel?.(msg.left_db, msg.right_db)
     } catch {
       // malformed message — ignore
     }

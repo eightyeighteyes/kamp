@@ -135,9 +135,11 @@ export function VUMeterPair({ children }: { children?: React.ReactNode }): React
   const { registerDraw, unregisterDraw } = useStereoRack()
 
   useEffect(() => {
-    registerDraw('vu-meters', (levelDb, peakDb, timestamp) => {
-      lRef.current?.draw(levelDb, peakDb, timestamp)
-      rRef.current?.draw(levelDb, peakDb, timestamp)
+    // The rAF loop passes leftDb as the first arg and rightDb as the second.
+    // Route each to the correct meter so L and R show their own channels.
+    registerDraw('vu-meters', (leftDb, rightDb, timestamp) => {
+      lRef.current?.draw(leftDb, rightDb, timestamp)
+      rRef.current?.draw(rightDb, leftDb, timestamp)
     })
     return () => unregisterDraw('vu-meters')
   }, [registerDraw, unregisterDraw])

@@ -902,7 +902,10 @@ class MpvPlaybackEngine:
                 # ebur128 filter exposes lavfi.r128.M (momentary LUFS) via
                 # af-metadata; polled at 20 Hz by _level_poll_loop to emit
                 # audio.level WebSocket events to the Stereo Rack module.
-                "--af=lavfi=ebur128=metadata=1",
+                # %18% is mpv's percent-encoding for a value containing '=':
+                # without it, mpv's option parser treats 'ebur128' as a
+                # lavfi sub-option name and rejects it.
+                "--af=lavfi=graph=%18%ebur128=metadata=1",
             ],
             stdout=subprocess.DEVNULL,
             # Capture stderr so we can surface it if mpv fails to start.

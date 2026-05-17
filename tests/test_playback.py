@@ -1386,7 +1386,7 @@ class TestMpvPlaybackEngine:
             MpvPlaybackEngine()
         popen_args, _ = mock_popen.call_args
         cmd = popen_args[0]
-        assert "--af=lavfi=ebur128=metadata=1" in cmd
+        assert "--af=lavfi=graph=%18%ebur128=metadata=1" in cmd
 
     def test_on_audio_level_fires_with_parsed_lufs(self) -> None:
         """A valid af-metadata response emits (level_db, peak_db) via on_audio_level."""

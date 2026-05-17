@@ -23,8 +23,11 @@ const DB_RANGE = 60
 const PAUSE_DECAY_MS = 800
 const PAUSE_DECAY_TARGET = -120
 
-// Base phase advance per frame — ~1 oscillation per second at 60fps.
-const PHASE_RATE_BASE = (2 * Math.PI) / 60
+// Target scroll rate in pixels per second (matches nominal 60fps → 1px/frame).
+const SCROLL_PX_PER_SEC = 60
+
+// Oscillation cycles per pixel scrolled — 1 full cycle every 60px.
+const CYCLES_PER_PX = 1 / 60
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,8 +64,11 @@ export function Oscilloscope(): React.JSX.Element {
 
   // Scrolling history: one amplitude sample per logical pixel column.
   const bufferRef = useRef<Float32Array | null>(null)
-  // Phase accumulator for synthesized oscillation.
+  // Phase accumulator for synthesized oscillation (radians).
   const phaseRef = useRef<number>(0)
+  // Sub-pixel accumulator and last timestamp for time-based advancement.
+  const pixelAccumRef = useRef<number>(0)
+  const lastTsRef = useRef<number>(0)
 
   // Pause decay
   const isPausedRef = useRef<boolean>(false)
@@ -154,22 +160,31 @@ export function Oscilloscope(): React.JSX.Element {
       const maxAmp = h / 2 - 4
       const amp = Math.max(0, Math.min(maxAmp, ((levelDb - DB_MIN) / DB_RANGE) * maxAmp))
 
-      // --- Synthesize one new sample and push onto the right edge ---
-      const seed = seedRef.current
-      // Per-track oscillation rate: base ± 20% for variety.
-      const phaseRate = PHASE_RATE_BASE * (0.8 + ((seed & 0xf) / 0xf) * 0.4)
-      // Seeded harmonic phase offsets.
-      const p0 = ((seed & 0xff) / 255) * Math.PI * 2
-      const p1 = (((seed >> 8) & 0xff) / 255) * Math.PI * 2
-      const phase = phaseRef.current
-      const sample =
-        (0.6 * Math.sin(phase) + 0.3 * Math.sin(2 * phase + p0) + 0.1 * Math.sin(3 * phase + p1)) *
-        amp
+      // --- Time-based scroll: advance proportional to elapsed time ---
+      const dt = lastTsRef.current === 0 ? 0 : timestamp - lastTsRef.current
+      lastTsRef.current = timestamp
 
-      // Shift history left by one pixel, append new sample at the right.
-      buf.copyWithin(0, 1)
-      buf[w - 1] = sample
-      phaseRef.current = phase + phaseRate
+      pixelAccumRef.current += (dt / 1000) * SCROLL_PX_PER_SEC
+      const steps = Math.min(Math.floor(pixelAccumRef.current), w)
+      pixelAccumRef.current -= steps
+
+      if (steps > 0) {
+        const seed = seedRef.current
+        // Phase advance per pixel — seeded ±20% for per-track character.
+        const phasePerStep = 2 * Math.PI * CYCLES_PER_PX * (0.8 + ((seed & 0xf) / 0xf) * 0.4)
+        const p0 = ((seed & 0xff) / 255) * Math.PI * 2
+        const p1 = (((seed >> 8) & 0xff) / 255) * Math.PI * 2
+
+        buf.copyWithin(0, steps)
+
+        let ph = phaseRef.current
+        for (let i = 0; i < steps; i++) {
+          ph += phasePerStep
+          buf[w - steps + i] =
+            (0.6 * Math.sin(ph) + 0.3 * Math.sin(2 * ph + p0) + 0.1 * Math.sin(3 * ph + p1)) * amp
+        }
+        phaseRef.current = ph
+      }
 
       // --- Draw ---
       ctx.clearRect(0, 0, w, h)

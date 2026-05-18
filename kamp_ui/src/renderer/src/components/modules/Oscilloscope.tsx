@@ -1,56 +1,95 @@
 /**
- * Oscilloscope — scrolling waveform history canvas for StereoRackModule.
+ * Oscilloscope — standing-wave canvas for StereoRackModule.
  *
- * Maintains a Float32Array ring buffer (one sample per logical pixel column).
- * Each rAF frame a new synthesized sample is pushed at the right edge and
- * the history shifts left, building up a scrolling waveform. Amplitude is
- * driven by levelDb; a seeded phase rate gives each track a distinct feel.
- * On pause the amplitude decays toward zero over 800ms so the trace sinks
- * to the zero-line.
+ * Each pixel in the buffer evolves independently via an AR(1) (autoregressive)
+ * temporal update every frame. Spatial smoothing turns the raw per-pixel noise
+ * into smooth wave crests — but only above an amplitude threshold, so silence
+ * retains the fine-grained noise texture rather than collapsing to a flat line.
+ *
+ * Signal character comes from real measurements:
+ *   Amplitude  → RMS dBFS (perceptual power-curve mapping)
+ *   Tightness  → Crest factor (percussive = loose/spiky; sustained = smooth)
+ *   Smoothing  → Amplitude-adaptive (quiet = 2 passes; loud = 1 pass; noise floor = 0)
+ *
+ * Phosphor glow: the path is stroked twice — a wide dim outer bloom followed by
+ * a narrow bright inner core — to mimic a CRT phosphor trace.
  *
  * Canvas is HiDPI-aware (DPR scaling) and adapts via ResizeObserver.
  */
 import React, { useEffect, useRef } from 'react'
+import { useStore } from '../../store'
 import { useStereoRack } from './StereoRackContext'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const DB_MIN = -60
-const DB_RANGE = 60
+// Perceptual amplitude mapping.
+const DB_FLOOR = -40.0
+const DB_CEIL = -3.0
+const AMP_GAMMA = 2.0
 
 const PAUSE_DECAY_MS = 800
 const PAUSE_DECAY_TARGET = -120
 
-// Duration of the cold boot VU sweep — oscilloscope uses clean sine for this window.
+// Duration of the cold boot VU sweep — oscilloscope shows a clean sine here.
 const COLD_BOOT_VU_MS = 800
 
-// Target scroll rate in pixels per second.
-const SCROLL_PX_PER_SEC = 240
+// Cycles per pixel for the cold boot sine — 4 full cycles across 240px.
+const COLD_BOOT_WAVELENGTH_PX = 60
 
-// Oscillation cycles per pixel scrolled — 1 full cycle every 60px.
-const CYCLES_PER_PX = 1 / 60
+// Per-frame AR(1) tightness driven by crest factor.
+// At 60fps: 0.984^60 ≈ 0.38 (memory half-life ~1.6s, compressed/sustained)
+//           0.970^60 ≈ 0.16 (memory half-life ~0.75s, percussive/dynamic)
+const TIGHT_MIN_FRAME = 0.97
+const TIGHT_MAX_FRAME = 0.984
+
+// Crest factor reference points for the tightness mapping.
+const CREST_LOW = 8.0
+const CREST_HIGH = 30.0
+const DEFAULT_CREST = 14.0
+
+// Innovation scale: per-pixel step = (rand-0.5)*2 * effectiveAmp * INNOVATION_SCALE
+const INNOVATION_SCALE = 0.15
+
+// Minimum noise floor (pixels). Ensures the trace never fully flattens at
+// silence — preserves the CRT noise texture during dead air and pause.
+const NOISE_FLOOR_AMP = 1.5
+
+// Amplitude-adaptive smoothing thresholds.
+// Below SMOOTH_THRESHOLD: 0 passes (raw noise floor texture)
+// SMOOTH_THRESHOLD..55% of maxAmp: 2 passes (smooth waveform)
+// Above 55% of maxAmp: 1 pass (retains texture for "loud and noisy" feel)
+const SMOOTH_THRESHOLD = 3.0
+const SMOOTH_PASSES = 2
+
+// Phosphor glow: two strokes on the same path.
+const GLOW_LINE_WIDTH = 4
+const GLOW_ALPHA = 0.15
+const TRACE_LINE_WIDTH = 1.5
+const TRACE_ALPHA = 0.88
+
+// Peak follower decay per frame at 60fps.
+// 0.92^60 ≈ 0.007 — visible rhythmic pulse: 73% at 100ms, ~20% at 500ms.
+const PEAK_DECAY = 0.92
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function hashString(s: string): number {
-  let h = 5381
-  for (let i = 0; i < s.length; i++) {
-    h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0
-  }
-  return h
-}
-
-function resizeBuffer(prev: Float32Array | null, newW: number): Float32Array {
+function resizeBuffers(
+  prevBuf: Float32Array | null,
+  prevSmooth: Float32Array | null,
+  newW: number
+): [Float32Array, Float32Array] {
   const buf = new Float32Array(newW)
-  if (prev && prev.length > 0) {
-    const copyLen = Math.min(prev.length, newW)
-    buf.set(prev.subarray(prev.length - copyLen), newW - copyLen)
+  if (prevBuf && prevBuf.length > 0) {
+    const copyLen = Math.min(prevBuf.length, newW)
+    buf.set(prevBuf.subarray(prevBuf.length - copyLen), newW - copyLen)
   }
-  return buf
+  // Reuse the scratch buffer if it already has the right length.
+  const smooth = prevSmooth?.length === newW ? prevSmooth : new Float32Array(newW)
+  return [buf, smooth]
 }
 
 // ---------------------------------------------------------------------------
@@ -58,37 +97,38 @@ function resizeBuffer(prev: Float32Array | null, newW: number): Float32Array {
 // ---------------------------------------------------------------------------
 
 export function Oscilloscope(): React.JSX.Element {
-  const { registerDraw, unregisterDraw, isPaused, trackMeta, coldBootRef, deadAirRef } =
-    useStereoRack()
+  const { registerDraw, unregisterDraw, isPaused, coldBootRef, deadAirRef } = useStereoRack()
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
   const sizeRef = useRef({ w: 0, h: 0 })
+  // Kept for any consumers that read accentRef directly (e.g., CSS compat).
   const accentRef = useRef<string>('rgba(255,255,255,0.85)')
+  // Parsed RGB components for hot-path use (avoids per-frame string build from CSS).
+  const accentRgbRef = useRef({ r: 255, g: 255, b: 255 })
 
-  // Scrolling history: one amplitude sample per logical pixel column.
+  // Standing-wave buffer: one normalized value [-1, 1] per logical pixel column.
+  // Amplitude is applied at draw time (buf[x] * displayAmp) so a transient makes
+  // the entire waveform scale up in a single frame rather than building over many.
   const bufferRef = useRef<Float32Array | null>(null)
-  // Phase accumulator for synthesized oscillation (radians).
-  const phaseRef = useRef<number>(0)
-  // Sub-pixel accumulator and last timestamp for time-based advancement.
-  const pixelAccumRef = useRef<number>(0)
-  const lastTsRef = useRef<number>(0)
+  // Scratch buffer for spatial smoothing — avoids directional bias from in-place updates.
+  const smoothBufRef = useRef<Float32Array | null>(null)
+
+  // Per-frame tightness [TIGHT_MIN_FRAME, TIGHT_MAX_FRAME], updated from crest factor.
+  const tightnessRef = useRef<number>(0.978)
+  // Peak follower: instant attack, frame-by-frame decay. Captures transients that
+  // RMS averaging would dilute (e.g. a snare hit in a 50ms window).
+  const peakEnvRef = useRef<number>(0)
 
   // Pause decay
   const isPausedRef = useRef<boolean>(false)
   const pauseStartTsRef = useRef<number>(-1)
-  const levelAtPauseRef = useRef<number>(DB_MIN)
-
-  const seedRef = useRef<number>(0)
+  const levelAtPauseRef = useRef<number>(DB_FLOOR)
 
   useEffect(() => {
     if (isPaused) pauseStartTsRef.current = -1
     isPausedRef.current = isPaused
   }, [isPaused])
-
-  useEffect(() => {
-    seedRef.current = trackMeta ? hashString(trackMeta.artist + trackMeta.title) : 0
-  }, [trackMeta])
 
   // HiDPI canvas setup + ResizeObserver.
   useEffect(() => {
@@ -105,23 +145,25 @@ export function Oscilloscope(): React.JSX.Element {
       if (!ctx) return
       ctx.scale(dpr, dpr)
       ctxRef.current = ctx
-      // Use integer logical dimensions so typed-array indices are always integers.
       const w = Math.floor(rect.width)
       const h = Math.floor(rect.height)
       sizeRef.current = { w, h }
-      // Resize ring buffer, preserving as much history as possible.
       if (!bufferRef.current || bufferRef.current.length !== w) {
-        bufferRef.current = resizeBuffer(bufferRef.current, w)
+        ;[bufferRef.current, smoothBufRef.current] = resizeBuffers(
+          bufferRef.current,
+          smoothBufRef.current,
+          w
+        )
       }
     }
 
     setup()
 
-    // Read accent color via the CSS `color` property set on .oscilloscope.
     const raw = getComputedStyle(canvas).color
     const m = raw.match(/\d+/g)
     if (m && m.length >= 3) {
       accentRef.current = `rgba(${m[0]},${m[1]},${m[2]},0.85)`
+      accentRgbRef.current = { r: +m[0], g: +m[1], b: +m[2] }
     }
 
     const ro = new ResizeObserver(setup)
@@ -131,9 +173,7 @@ export function Oscilloscope(): React.JSX.Element {
 
   // Register the per-frame draw callback with the rAF loop.
   useEffect(() => {
-    let lastLiveLevel = DB_MIN
-    // Tracks previous cold boot active state so we can reset phase on entry.
-    let coldBootWasActive = false
+    let lastLiveLevel = DB_FLOOR
 
     registerDraw('oscilloscope', (leftDb, rightDb, timestamp) => {
       const ctx = ctxRef.current
@@ -141,49 +181,19 @@ export function Oscilloscope(): React.JSX.Element {
       const { w, h } = sizeRef.current
       if (w === 0 || h === 0) return
 
-      // --- Dead air: thermal noise polyline, skip ring buffer entirely ---
-      if (deadAirRef.current) {
-        ctx.clearRect(0, 0, w, h)
-        ctx.save()
-        ctx.strokeStyle = 'rgba(255,255,255,0.08)'
-        ctx.lineWidth = 1
-        ctx.setLineDash([4, 6])
-        ctx.beginPath()
-        ctx.moveTo(0, h / 2)
-        ctx.lineTo(w, h / 2)
-        ctx.stroke()
-        ctx.restore()
-
-        ctx.save()
-        ctx.strokeStyle = accentRef.current
-        ctx.lineWidth = 1.5
-        ctx.setLineDash([])
-        ctx.beginPath()
-        const midY = h / 2
-        for (let x = 0; x <= w; x++) {
-          const py = midY + (Math.random() - 0.5) * 2
-          if (x === 0) ctx.moveTo(x, py)
-          else ctx.lineTo(x, py)
-        }
-        ctx.stroke()
-        ctx.restore()
-        return
-      }
-
-      // Ensure the buffer matches the current canvas width.
       if (!bufferRef.current || bufferRef.current.length !== w) {
-        bufferRef.current = resizeBuffer(bufferRef.current, w)
+        ;[bufferRef.current, smoothBufRef.current] = resizeBuffers(
+          bufferRef.current,
+          smoothBufRef.current,
+          w
+        )
       }
       const buf = bufferRef.current
+      const smooth = smoothBufRef.current!
 
       // --- Cold boot sine override ---
       const cbStart = coldBootRef.current.startTs
       const inColdBoot = cbStart !== null && cbStart >= 0 && timestamp - cbStart < COLD_BOOT_VU_MS
-      // Reset phase to 0 on the first cold boot frame for a clean sine sweep.
-      if (inColdBoot && !coldBootWasActive) {
-        phaseRef.current = 0
-      }
-      coldBootWasActive = inColdBoot
 
       // --- Effective level ---
       let levelDb: number
@@ -202,74 +212,98 @@ export function Oscilloscope(): React.JSX.Element {
 
       // --- Map dBFS → amplitude (pixels) ---
       const maxAmp = h / 2 - 4
-      const amp = Math.max(0, Math.min(maxAmp, ((levelDb - DB_MIN) / DB_RANGE) * maxAmp))
+      // RMS level → pixel amplitude (used for zero-line opacity).
+      const rmsNorm = Math.max(0, Math.min(1, (levelDb - DB_FLOOR) / (DB_CEIL - DB_FLOOR)))
+      const rmsAmp = Math.pow(rmsNorm, AMP_GAMMA) * maxAmp
 
-      // --- Time-based scroll: advance proportional to elapsed time ---
-      const dt = lastTsRef.current === 0 ? 0 : timestamp - lastTsRef.current
-      lastTsRef.current = timestamp
+      // Peak follower: instant attack, per-frame decay.
+      // peakDb captures transients (e.g. snare hits) that 50ms RMS windows dilute.
+      const peakDb = useStore.getState().peakDb ?? levelDb
+      const peakNorm = Math.max(0, Math.min(1, (peakDb - DB_FLOOR) / (DB_CEIL - DB_FLOOR)))
+      const rawPeakAmp = Math.pow(peakNorm, AMP_GAMMA) * maxAmp
+      const envAmp = Math.max(peakEnvRef.current * PEAK_DECAY, rawPeakAmp)
+      peakEnvRef.current = envAmp
 
-      pixelAccumRef.current += (dt / 1000) * SCROLL_PX_PER_SEC
-      const rawSteps = Math.floor(pixelAccumRef.current)
-      const steps = Math.min(rawSteps, w)
-      // Subtract raw (uncapped) steps so the accumulator always holds the
-      // fractional remainder in [0, 1) — used below for sub-pixel rendering.
-      pixelAccumRef.current -= rawSteps
-      const frac = pixelAccumRef.current
+      // --- AR(1) per-pixel update ---
+      if (inColdBoot) {
+        // Stateless normalized sine — draw step applies envAmp as scale,
+        // so the trace fades in as the cold boot VU sweep ramps up.
+        for (let i = 0; i < w; i++) {
+          buf[i] = Math.sin((i / COLD_BOOT_WAVELENGTH_PX) * 2 * Math.PI)
+        }
+        // The sine is already band-limited — no spatial smoothing needed.
+      } else {
+        // Crest-driven tightness: high crest (percussive) → loose/spiky;
+        // low crest (compressed/sustained) → smooth/slow.
+        const crest = useStore.getState().crestDb ?? DEFAULT_CREST
+        const crestT = Math.max(0, Math.min(1, (crest - CREST_LOW) / (CREST_HIGH - CREST_LOW)))
+        const tightness = TIGHT_MAX_FRAME - crestT * (TIGHT_MAX_FRAME - TIGHT_MIN_FRAME)
+        tightnessRef.current = tightness
 
-      if (steps > 0) {
-        buf.copyWithin(0, steps)
-        let ph = phaseRef.current
-
-        if (inColdBoot) {
-          // Clean sine: exactly 1 cycle per 60px, no seed variation or harmonics.
-          const phasePerStep = 2 * Math.PI * CYCLES_PER_PX
-          for (let i = 0; i < steps; i++) {
-            ph += phasePerStep
-            buf[w - steps + i] = Math.sin(ph) * amp
-          }
-        } else {
-          const seed = seedRef.current
-          // Phase advance per pixel — seeded ±20% for per-track character.
-          const phasePerStep = 2 * Math.PI * CYCLES_PER_PX * (0.8 + ((seed & 0xf) / 0xf) * 0.4)
-          const p0 = ((seed & 0xff) / 255) * Math.PI * 2
-          const p1 = (((seed >> 8) & 0xff) / 255) * Math.PI * 2
-          for (let i = 0; i < steps; i++) {
-            ph += phasePerStep
-            buf[w - steps + i] =
-              (0.6 * Math.sin(ph) + 0.3 * Math.sin(2 * ph + p0) + 0.1 * Math.sin(3 * ph + p1)) * amp
-          }
+        // Buffer is normalized to [-1, 1]; amplitude is applied at draw time.
+        // Fixed innovation keeps the trace textured at all amplitudes — including
+        // silence — preserving the dead-air noise texture.
+        for (let i = 0; i < w; i++) {
+          let v = buf[i] * tightness + (Math.random() - 0.5) * 2 * INNOVATION_SCALE
+          if (v > 1) v = 1
+          if (v < -1) v = -1
+          buf[i] = v
         }
 
-        phaseRef.current = ph
+        // Amplitude-adaptive spatial smoothing with a scratch buffer.
+        //   envAmp < SMOOTH_THRESHOLD → 0 passes: raw noisy texture (silence/dead air)
+        //   SMOOTH_THRESHOLD..55% maxAmp → 2 passes: smooth waveform (quiet signal)
+        //   > 55% maxAmp → 1 pass: retains texture ("loud and noisy" feel)
+        const smoothPasses =
+          envAmp < SMOOTH_THRESHOLD ? 0 : envAmp > maxAmp * 0.55 ? 1 : SMOOTH_PASSES
+
+        for (let pass = 0; pass < smoothPasses; pass++) {
+          smooth[0] = buf[0] * 0.75 + buf[1] * 0.25
+          smooth[w - 1] = buf[w - 2] * 0.25 + buf[w - 1] * 0.75
+          for (let i = 1; i < w - 1; i++) {
+            smooth[i] = buf[i - 1] * 0.25 + buf[i] * 0.5 + buf[i + 1] * 0.25
+          }
+          buf.set(smooth)
+        }
       }
 
       // --- Draw ---
       ctx.clearRect(0, 0, w, h)
 
-      // Zero-line
+      // Zero-line: brighter at silence (acts as resting visual), dim at full signal.
+      const zeroOpacity = Math.max(0.04, 0.22 - (rmsAmp / maxAmp) * 0.18)
       ctx.save()
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)'
-      ctx.lineWidth = 1
-      ctx.setLineDash([4, 6])
+      ctx.strokeStyle = `rgba(255,255,255,${zeroOpacity})`
+      ctx.lineWidth = 0.75
+      ctx.setLineDash([3, 7])
       ctx.beginPath()
       ctx.moveTo(0, h / 2)
       ctx.lineTo(w, h / 2)
       ctx.stroke()
       ctx.restore()
 
-      // Waveform history polyline
-      ctx.save()
-      ctx.strokeStyle = accentRef.current
-      ctx.lineWidth = 1.5
-      ctx.setLineDash([])
-      ctx.translate(-frac, 0)
-      ctx.beginPath()
+      // Waveform: build path once, stroke twice for phosphor glow.
+      // displayAmp scales normalized buf[-1,1] to pixels; NOISE_FLOOR_AMP
+      // keeps the trace visible at silence rather than collapsing to a dot.
+      const displayAmp = Math.max(envAmp, NOISE_FLOOR_AMP)
+      const { r, g, b } = accentRgbRef.current
       const midY = h / 2
-      for (let x = 0; x <= w; x++) {
-        const py = midY - buf[Math.min(x, w - 1)]
+      ctx.save()
+      ctx.setLineDash([])
+      ctx.lineJoin = 'round'
+      ctx.beginPath()
+      for (let x = 0; x < w; x++) {
+        const py = midY - buf[x] * displayAmp
         if (x === 0) ctx.moveTo(x, py)
         else ctx.lineTo(x, py)
       }
+      // Outer glow (wide dim bloom)
+      ctx.strokeStyle = `rgba(${r},${g},${b},${GLOW_ALPHA})`
+      ctx.lineWidth = GLOW_LINE_WIDTH
+      ctx.stroke()
+      // Inner trace (bright pinpoint core)
+      ctx.strokeStyle = `rgba(${r},${g},${b},${TRACE_ALPHA})`
+      ctx.lineWidth = TRACE_LINE_WIDTH
       ctx.stroke()
       ctx.restore()
     })

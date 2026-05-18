@@ -41,6 +41,8 @@ type PlayerStore = {
 
   leftDb: number | null
   rightDb: number | null
+  crestDb: number | null
+  peakDb: number | null
 
   configuredLibraryPath: string | null
   activeView: 'library' | 'now-playing' | 'home'
@@ -69,7 +71,7 @@ type PlayerStore = {
   queue: QueueState | null
 
   // Actions
-  setAudioLevel: (leftDb: number, rightDb: number) => void
+  setAudioLevel: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void
   setServerStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void
   toggleQueuePanel: () => void
   toggleArtistPanel: () => void
@@ -194,6 +196,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
   scanProgress: null,
   leftDb: null,
   rightDb: null,
+  crestDb: null,
+  peakDb: null,
   configuredLibraryPath: null,
   activeView: 'library',
   moduleOrder: (() => {
@@ -256,7 +260,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   prefsInitialTab: 'general',
   deferredOps: {},
 
-  setAudioLevel: (leftDb, rightDb) => set({ leftDb, rightDb }),
+  setAudioLevel: (leftDb, rightDb, crestDb, peakDb) => set({ leftDb, rightDb, crestDb, peakDb }),
 
   setServerStatus: (status) => set({ serverStatus: status }),
 

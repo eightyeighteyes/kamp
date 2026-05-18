@@ -384,7 +384,7 @@ function TrackLeft({
     artist ? (
       <>
         <span className="track-artist">{artist}</span>
-        <span className="track-sep"> &mdash; </span>
+        <span className="track-sep">&nbsp;&mdash;&nbsp;</span>
         <span className="track-title">
           {title}
           {withEllipsis && <span ref={ellipsisRef} />}

@@ -89,7 +89,11 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
       return
     }
 
-    if (copyBRef.current) copyBRef.current.style.display = 'inline-flex'
+    // Do NOT show copy B here. Showing it early (before the transition fires) adds
+    // width to the flex container and causes a layout reflow during the idle/ellipsis
+    // period. When the scrolling-1 transition is then applied, the element's layout
+    // origin has shifted — producing a visible one-frame jump at scroll start.
+    // Copy B is shown just before the transition fires (see innermost timer below).
     textWidthRef.current = textW
     overflowPxRef.current = textW - containerW
 
@@ -106,9 +110,21 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
             if (!scrollRef.current) return
             phaseRef.current = 'scrolling-1'
             if (ellipsisRef.current) ellipsisRef.current.textContent = ''
-            const dur = overflowPxRef.current / SCROLL_RATE
-            scrollEl.style.transition = `transform ${dur}s linear`
-            scrollEl.style.transform = `translateX(-${overflowPxRef.current}px)`
+            // Show copy B now, immediately before the transition. Force a synchronous
+            // layout flush via getBoundingClientRect() so the browser commits the
+            // copy-B reflow before we set the transition property. Without the flush,
+            // the transition may start from a stale pre-reflow paint position,
+            // producing the same jump we avoided above.
+            if (copyBRef.current) copyBRef.current.style.display = 'inline-flex'
+            void scrollEl.getBoundingClientRect()
+            // Defer the transition one rAF so the committed reflow is the "from"
+            // state the compositor sees when it starts interpolating.
+            requestAnimationFrame(() => {
+              if (!scrollRef.current) return
+              const dur = overflowPxRef.current / SCROLL_RATE
+              scrollEl.style.transition = `transform ${dur}s linear`
+              scrollEl.style.transform = `translateX(-${overflowPxRef.current}px)`
+            })
           }, ELLIPSIS_STEP_MS)
         }, ELLIPSIS_STEP_MS)
       }, ELLIPSIS_STEP_MS)
@@ -120,6 +136,9 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
     if (!el) return
 
     const onEnd = (e: TransitionEvent): void => {
+      // Guard against bubbled transitionend events from child elements (e.g. the
+      // ellipsis span or future descendants that may acquire transform transitions).
+      if (e.target !== el) return
       if (e.propertyName !== 'transform') return
 
       if (phaseRef.current === 'scrolling-1') {

@@ -135,10 +135,7 @@ export const VUMeter = forwardRef<VUMeterHandle, VUMeterProps>(function VUMeter(
       // --- Map dB → segment count ---
       const count = Math.max(
         0,
-        Math.min(
-          nSeg,
-          Math.round(((displayLevelRef.current - DB_MIN) / DB_RANGE) * nSeg)
-        )
+        Math.min(nSeg, Math.round(((displayLevelRef.current - DB_MIN) / DB_RANGE) * nSeg))
       )
 
       // --- Toggle .active directly on DOM elements (no React state) ---

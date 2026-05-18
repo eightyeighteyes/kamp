@@ -193,13 +193,6 @@
   flex-shrink: 0;
 }
 
-/* Hidden duplicate used to measure full text width without overflow:hidden clipping it */
-.track-measure {
-  position: absolute;
-  visibility: hidden;
-  white-space: nowrap;
-  pointer-events: none;
-}
 
 .track-artist {
   color: rgba(255, 255, 255, 0.85);

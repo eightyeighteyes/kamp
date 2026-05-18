@@ -21,8 +21,7 @@ function formatTime(seconds: number): string {
 
 // Full cycle:
 //   idle (1.2s) → ellipsis-1/2/3 (400ms each) → scrolling-1 (to end of text)
-//   → end-hold (1s) → scrolling-2 (wrap to copy-B start, imperceptible snap)
-//   → idle (1.2s) → ...
+//   → end-hold (1s) → scrolling-2 (wrap to copy-B start) → idle (1.2s) → ...
 type ScrollPhase =
   | 'idle'
   | 'ellipsis-1'
@@ -33,9 +32,9 @@ type ScrollPhase =
   | 'scrolling-2'
 
 const SCROLL_RATE = 40 // px/s
-const IDLE_DELAY_MS = 1200 // ms idle before ellipsis phase
-const ELLIPSIS_STEP_MS = 400 // ms per dot
-const END_HOLD_MS = 1000 // ms to rest at end before wrap continues
+const IDLE_DELAY_MS = 1200
+const ELLIPSIS_STEP_MS = 400
+const END_HOLD_MS = 1000
 // Gap between the two text copies. Must stay in sync with .track-gap width in CSS.
 const MARQUEE_GAP_PX = 60
 
@@ -49,15 +48,15 @@ type TrackLeftProps = {
 function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): React.JSX.Element {
   const containerRef = useRef<HTMLSpanElement | null>(null)
   const scrollRef = useRef<HTMLSpanElement | null>(null)
-  const measureRef = useRef<HTMLSpanElement | null>(null)
   const ellipsisRef = useRef<HTMLSpanElement | null>(null)
   const copyBRef = useRef<HTMLSpanElement | null>(null)
 
   const phaseRef = useRef<ScrollPhase>('idle')
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  // Distance from origin to "end of text aligned with right edge of container"
+  // Distance to scroll in phase 1: end of copy A aligns with container right edge.
   const overflowPxRef = useRef<number>(0)
-  // Full single-copy text width — needed for the phase-2 scroll target
+  // Actual rendered width of one copy — measured from scrollWidth with copy B hidden.
+  // Stored so the phase-2 transitionend handler can compute the exact target.
   const textWidthRef = useRef<number>(0)
 
   const cancel = useCallback((): void => {
@@ -75,15 +74,19 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
 
   const start = useCallback((): void => {
     const container = containerRef.current
-    const measure = measureRef.current
     const scrollEl = scrollRef.current
-    if (!container || !measure || !scrollEl) return
+    if (!container || !scrollEl) return
 
+    // With copy B hidden, scrollWidth = copyA_width + gap.
+    // Reading scrollWidth directly from the layout avoids the sub-pixel discrepancy
+    // that arises from measuring a flat-text span vs. multiple inline-flex children.
     const containerW = container.getBoundingClientRect().width
-    const textW = measure.getBoundingClientRect().width
+    const scrollW = scrollEl.scrollWidth // integer, copy B must be display:none here
+    const textW = scrollW - MARQUEE_GAP_PX
+
     if (textW <= containerW) {
-      if (copyBRef.current) copyBRef.current.style.display = 'none'
-      return // fits — no scroll needed
+      // Fits — leave copy B hidden, no scroll needed.
+      return
     }
 
     if (copyBRef.current) copyBRef.current.style.display = 'inline-flex'
@@ -112,7 +115,6 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
     }, IDLE_DELAY_MS)
   }, [])
 
-  // Handle both transition ends — phase 1 (end of text) and phase 2 (wrap seam).
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
@@ -121,24 +123,28 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
       if (e.propertyName !== 'transform') return
 
       if (phaseRef.current === 'scrolling-1') {
-        // Reached end of text — hold, then continue scrolling into the copy-B start.
+        // Reached end of copy A — hold, then continue into copy B.
         phaseRef.current = 'end-hold'
         timerRef.current = setTimeout(() => {
           const s = scrollRef.current
           if (!s) return
-          // Phase 2: scroll from end-of-text to copy-B start (the imperceptible seam).
           phaseRef.current = 'scrolling-2'
+          // Target: textWidth + gap. At this position, copy B's left edge is exactly
+          // at the container's left edge — computed from the same scrollWidth measurement
+          // used in start(), so the target is guaranteed to align with no overshoot.
           const target = textWidthRef.current + MARQUEE_GAP_PX
           const remaining = target - overflowPxRef.current
           s.style.transition = `transform ${remaining / SCROLL_RATE}s linear`
           s.style.transform = `translateX(-${target}px)`
         }, END_HOLD_MS)
       } else if (phaseRef.current === 'scrolling-2') {
-        // Reached copy-B start — visually identical to origin, so snap is imperceptible.
+        // Copy B's start is at the left edge — same visual as origin, so snap is
+        // imperceptible. Hide copy B before start() so scrollWidth reads correctly.
         el.style.transition = 'none'
         el.style.transform = 'translateX(0)'
+        if (copyBRef.current) copyBRef.current.style.display = 'none'
         phaseRef.current = 'idle'
-        // rAF gap: ensure the browser commits the reset before the next transition starts.
+        // rAF gap: browser must commit the reset before the next transition starts.
         requestAnimationFrame(() => start())
       }
     }
@@ -147,7 +153,6 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
     return () => el.removeEventListener('transitionend', onEnd)
   }, [start])
 
-  // Restart on title/artist change and on container resize.
   useEffect(() => {
     cancel()
     start()
@@ -164,51 +169,35 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
     }
   }, [title, artist, cancel, start])
 
-  // Preempt scrolling when whimsy replaces left-cluster content.
   useEffect(() => {
     if (whimsyActive) cancel()
   }, [whimsyActive, cancel])
 
-  const fullText = artist ? `${artist} — ${title}` : title
-
-  const primaryContent = artist ? (
-    <>
-      <span className="track-artist">{artist}</span>
-      <span className="track-sep"> &mdash; </span>
+  const content = (withEllipsis: boolean): React.JSX.Element =>
+    artist ? (
+      <>
+        <span className="track-artist">{artist}</span>
+        <span className="track-sep"> &mdash; </span>
+        <span className="track-title">
+          {title}
+          {withEllipsis && <span ref={ellipsisRef} />}
+        </span>
+      </>
+    ) : (
       <span className="track-title">
         {title}
-        <span ref={ellipsisRef} />
+        {withEllipsis && <span ref={ellipsisRef} />}
       </span>
-    </>
-  ) : (
-    <span className="track-title">
-      {title}
-      <span ref={ellipsisRef} />
-    </span>
-  )
-
-  const copyContent = artist ? (
-    <>
-      <span className="track-artist">{artist}</span>
-      <span className="track-sep"> &mdash; </span>
-      <span className="track-title">{title}</span>
-    </>
-  ) : (
-    <span className="track-title">{title}</span>
-  )
+    )
 
   return (
     <span className="track-left" ref={containerRef}>
       <span className="track-scroll-inner" ref={scrollRef}>
-        <span className="track-copy">{primaryContent}</span>
+        <span className="track-copy">{content(true)}</span>
         <span className="track-gap" />
         <span className="track-copy" aria-hidden="true" ref={copyBRef} style={{ display: 'none' }}>
-          {copyContent}
+          {content(false)}
         </span>
-      </span>
-      {/* Measuring span — sits outside overflow:hidden so its width is unclipped */}
-      <span className="track-measure" ref={measureRef} aria-hidden="true">
-        {fullText}
       </span>
     </span>
   )

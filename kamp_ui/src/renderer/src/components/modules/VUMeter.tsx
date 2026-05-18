@@ -8,31 +8,28 @@
  * Imperative draw + decay: KAMP-322 (this file)
  * Peak hold:               KAMP-323 (this file)
  */
-import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useStereoRack } from './StereoRackContext'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const NUM_SEGMENTS = 24
+// Default segment count for a 240px-wide bar (6px segment + 4px gap = 10px each).
+const DEFAULT_NUM_SEGMENTS = 24
 
-// Linear mapping: -60 dBFS → 0 segments, 0 dBFS → 24 segments.
-// Calibration against real audio happens in KAMP-327 (integration task).
+// Linear mapping: -60 dBFS → 0 segments, 0 dBFS → N segments.
 const DB_MIN = -60
 const DB_RANGE = 60 // 0 - (-60)
 
 // 18 dB/sec linear decay rate (per spec).
 const DECAY_DB_PER_SEC = 18
 
-// Pixel step per segment: 6px width + 4px gap.
+// Physical width of one segment slot: 6px segment + 4px gap.
 const SEGMENT_STEP_PX = 10
 
 // Hold duration before the peak indicator begins fading (ms).
 const PEAK_HOLD_MS = 1500
-
-// Pre-built index array — stable reference avoids re-creating on every render.
-const SEGMENT_INDICES = Array.from({ length: NUM_SEGMENTS }, (_, i) => i)
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -61,8 +58,15 @@ export const VUMeter = forwardRef<VUMeterHandle, VUMeterProps>(function VUMeter(
   const { isPlaying, isPaused } = useStereoRack()
   const isIdle = !isPlaying
 
+  // Dynamic segment count — ResizeObserver recalculates when bar width changes.
+  // numSegmentsRef is read by the draw function; numSegments state drives the render.
+  const [numSegments, setNumSegments] = useState(DEFAULT_NUM_SEGMENTS)
+  const numSegmentsRef = useRef(DEFAULT_NUM_SEGMENTS)
+
   // Refs to DOM segment elements for direct class manipulation.
-  const segmentRefs = useRef<(HTMLSpanElement | null)[]>(Array(NUM_SEGMENTS).fill(null))
+  // Array grows/shrinks automatically as segments mount/unmount via ref callbacks.
+  const segmentRefs = useRef<(HTMLSpanElement | null)[]>(Array(DEFAULT_NUM_SEGMENTS).fill(null))
+  const barRef = useRef<HTMLDivElement>(null)
 
   // Per-frame mutable state — never in React state.
   const displayLevelRef = useRef<number>(-Infinity)
@@ -95,8 +99,36 @@ export const VUMeter = forwardRef<VUMeterHandle, VUMeterProps>(function VUMeter(
     return () => el.removeEventListener('transitionend', onEnd)
   }, [])
 
+  // ResizeObserver — recalculate segment count whenever bar width changes.
+  // Each slot is SEGMENT_STEP_PX wide (segment + gap); the last segment has no
+  // trailing gap, so add one gap back before dividing.
+  useEffect(() => {
+    const bar = barRef.current
+    if (!bar) return
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0].contentRect.width
+      const count = Math.max(1, Math.floor((w + 4) / SEGMENT_STEP_PX))
+      if (count !== numSegmentsRef.current) {
+        numSegmentsRef.current = count
+        setNumSegments(count)
+        // Stale peak hold position is meaningless after a resize — clear it.
+        peakSegmentRef.current = 0
+        peakTimestampRef.current = 0
+        const peakEl = peakElRef.current
+        if (peakEl) {
+          peakEl.classList.remove('fading')
+          peakEl.style.opacity = '0'
+        }
+      }
+    })
+    ro.observe(bar)
+    return () => ro.disconnect()
+  }, [])
+
   useImperativeHandle(ref, () => ({
     draw(levelDb, _peakDb, timestamp) {
+      const nSeg = numSegmentsRef.current
+
       // --- Decay / snap-up ---
       const lastTs = lastTimestampRef.current
       // Skip decay on the very first frame to avoid a huge initial delta.
@@ -111,15 +143,12 @@ export const VUMeter = forwardRef<VUMeterHandle, VUMeterProps>(function VUMeter(
       // --- Map dB → segment count ---
       const count = Math.max(
         0,
-        Math.min(
-          NUM_SEGMENTS,
-          Math.round(((displayLevelRef.current - DB_MIN) / DB_RANGE) * NUM_SEGMENTS)
-        )
+        Math.min(nSeg, Math.round(((displayLevelRef.current - DB_MIN) / DB_RANGE) * nSeg))
       )
 
       // --- Toggle .active directly on DOM elements (no React state) ---
       const segs = segmentRefs.current
-      for (let i = 0; i < NUM_SEGMENTS; i++) {
+      for (let i = 0; i < nSeg; i++) {
         const el = segs[i]
         if (!el) continue
         if (i < count) {
@@ -161,8 +190,8 @@ export const VUMeter = forwardRef<VUMeterHandle, VUMeterProps>(function VUMeter(
 
   return (
     <div className={`vu-meter vu-meter--${channel.toLowerCase()}${isIdle ? ' is-idle' : ''}`}>
-      <div className="vu-bar">
-        {SEGMENT_INDICES.map((i) => (
+      <div className="vu-bar" ref={barRef}>
+        {Array.from({ length: numSegments }, (_, i) => (
           <span
             key={i}
             className="vu-segment"

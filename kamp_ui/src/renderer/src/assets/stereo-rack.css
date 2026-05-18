@@ -147,7 +147,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 28px;
+  min-height: 28px;
   padding: 0 10px;
   background: rgba(255, 255, 255, 0.03);
   border-radius: 4px;
@@ -214,6 +214,13 @@
   align-items: center;
   white-space: nowrap;
   color: rgba(255, 255, 255, 0.50);
+}
+
+/* First-track-of-day date line — shown for 8s on new calendar day (KAMP-332) */
+.track-date-line {
+  display: none; /* toggled imperatively */
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.35);
 }
 
 /* Cold boot INIT overlay — shown in place of track-scroll-inner during calibration */

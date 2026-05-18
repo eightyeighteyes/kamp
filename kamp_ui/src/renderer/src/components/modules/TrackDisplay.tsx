@@ -6,6 +6,17 @@ import { useStereoRack } from './StereoRackContext'
 // Helpers
 // ---------------------------------------------------------------------------
 
+const LAST_PLAY_DATE_KEY = 'stereo-rack:lastPlayDate'
+const DATE_LINE_MS = 8000
+
+const DAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT']
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+
+function formatTodayDate(): string {
+  const now = new Date()
+  return `${DAYS[now.getDay()]} ${now.getDate().toString().padStart(2, '0')} ${MONTHS[now.getMonth()]}`
+}
+
 function formatTime(seconds: number): string {
   const s = Math.floor(seconds)
   const mm = Math.floor(s / 60)
@@ -54,6 +65,8 @@ type TrackLeftProps = {
   coldBoot?: boolean
   // Replaces content with blinking underscore cursor (KAMP-330).
   isDeadAir?: boolean
+  // Triggers first-track-of-day date line check (KAMP-332).
+  isPlaying?: boolean
 }
 
 function TrackLeft({
@@ -61,7 +74,8 @@ function TrackLeft({
   title,
   whimsyActive = false,
   coldBoot = false,
-  isDeadAir = false
+  isDeadAir = false,
+  isPlaying = false
 }: TrackLeftProps): React.JSX.Element {
   const containerRef = useRef<HTMLSpanElement | null>(null)
   const scrollRef = useRef<HTMLSpanElement | null>(null)
@@ -85,6 +99,12 @@ function TrackLeft({
   // Dead air cursor timer (alternating timeouts, stored as setInterval ref per spec).
   const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const deadAirWasActiveRef = useRef(false)
+
+  // First-track-of-day date line (KAMP-332).
+  const dateLineRef = useRef<HTMLSpanElement | null>(null)
+  const dateLineTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Boolean ref read by the dismiss callback; avoids stale-closure double-clear.
+  const dateLineActiveRef = useRef(false)
 
   const cancel = useCallback((): void => {
     clearTimeout(timerRef.current)
@@ -219,11 +239,26 @@ function TrackLeft({
     if (whimsyActive) cancel()
   }, [whimsyActive, cancel])
 
+  const dismissDateLine = useCallback((): void => {
+    if (!dateLineActiveRef.current) return
+    clearTimeout(dateLineTimerRef.current)
+    dateLineTimerRef.current = undefined
+    dateLineActiveRef.current = false
+    const el = dateLineRef.current
+    const container = containerRef.current
+    if (el) el.style.display = 'none'
+    if (container) {
+      container.style.flexDirection = ''
+      container.style.alignItems = ''
+    }
+  }, [])
+
   // Cold boot: blink twice then show INIT HH:MM for ~1.6s.
   // Sequence driven by the frame loop; we just react to the flag transitions.
   useEffect(() => {
     if (coldBoot) {
       coldBootWasActiveRef.current = true
+      dismissDateLine()
       cancel()
 
       const scrollEl = scrollRef.current
@@ -271,13 +306,37 @@ function TrackLeft({
       }
       start()
     }
-  }, [coldBoot, cancel, start])
+  }, [coldBoot, cancel, start, dismissDateLine])
+
+  // First-track-of-day: on each play start, update localStorage and show date
+  // line for 8s if the calendar date has changed since the last session.
+  useEffect(() => {
+    if (!isPlaying) return
+    const today = new Date().toISOString().slice(0, 10)
+    const stored = localStorage.getItem(LAST_PLAY_DATE_KEY)
+    localStorage.setItem(LAST_PLAY_DATE_KEY, today)
+    if (stored === today) return
+
+    const el = dateLineRef.current
+    const container = containerRef.current
+    if (!el || !container) return
+
+    dismissDateLine()
+    dateLineActiveRef.current = true
+    container.style.flexDirection = 'column'
+    container.style.alignItems = 'flex-start'
+    el.textContent = formatTodayDate()
+    el.style.display = 'block'
+
+    dateLineTimerRef.current = setTimeout(dismissDateLine, DATE_LINE_MS)
+  }, [isPlaying, dismissDateLine])
 
   // Dead air: show blinking underscore cursor, hide normal content.
   // Cursor blinks 600ms on / 400ms off via alternating timeouts (setInterval ref).
   useEffect(() => {
     if (isDeadAir) {
       deadAirWasActiveRef.current = true
+      dismissDateLine()
       cancel()
       const scrollEl = scrollRef.current
       const cursorEl = cursorRef.current
@@ -309,13 +368,14 @@ function TrackLeft({
       if (scrollEl) scrollEl.style.display = ''
       start()
     }
-  }, [isDeadAir, cancel, start])
+  }, [isDeadAir, cancel, start, dismissDateLine])
 
   // Cleanup timers on unmount.
   useEffect(
     () => () => {
       clearTimeout(coldBootTimerRef.current)
       clearTimeout(cursorTimerRef.current)
+      clearTimeout(dateLineTimerRef.current)
     },
     []
   )
@@ -348,6 +408,7 @@ function TrackLeft({
       </span>
       <span ref={initOverlayRef} className="track-init-overlay" style={{ display: 'none' }} />
       <span ref={cursorRef} className="track-dead-air-cursor" style={{ display: 'none' }} />
+      <span ref={dateLineRef} className="track-date-line" style={{ display: 'none' }} />
     </span>
   )
 }
@@ -413,6 +474,7 @@ export function TrackDisplay(): React.JSX.Element {
             title={trackMeta?.title ?? ''}
             coldBoot={whimsyFlags.coldBoot}
             isDeadAir={isDeadAir}
+            isPlaying={isPlaying}
           />
           <TrackRight
             position={position}

@@ -38,18 +38,29 @@ const END_HOLD_MS = 1000
 // Gap between the two text copies. Must stay in sync with .track-gap width in CSS.
 const MARQUEE_GAP_PX = 60
 
+// Cold boot blink sequence: 2 off/on cycles at 150ms each = 600ms total.
+const COLD_BOOT_BLINK_MS = 150
+
 type TrackLeftProps = {
   artist: string
   title: string
   // Freeze scrolling when whimsy replaces left-cluster content (wired in KAMP-321).
   whimsyActive?: boolean
+  // Triggers cold-boot blink + INIT stamp animation (KAMP-328).
+  coldBoot?: boolean
 }
 
-function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): React.JSX.Element {
+function TrackLeft({
+  artist,
+  title,
+  whimsyActive = false,
+  coldBoot = false
+}: TrackLeftProps): React.JSX.Element {
   const containerRef = useRef<HTMLSpanElement | null>(null)
   const scrollRef = useRef<HTMLSpanElement | null>(null)
   const ellipsisRef = useRef<HTMLSpanElement | null>(null)
   const copyBRef = useRef<HTMLSpanElement | null>(null)
+  const initOverlayRef = useRef<HTMLSpanElement | null>(null)
 
   const phaseRef = useRef<ScrollPhase>('idle')
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -58,6 +69,10 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
   // Actual rendered width of one copy — measured from scrollWidth with copy B hidden.
   // Stored so the phase-2 transitionend handler can compute the exact target.
   const textWidthRef = useRef<number>(0)
+
+  // Cold boot timer and "was active" gate to prevent double-start on re-renders.
+  const coldBootTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const coldBootWasActiveRef = useRef(false)
 
   const cancel = useCallback((): void => {
     clearTimeout(timerRef.current)
@@ -192,6 +207,63 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
     if (whimsyActive) cancel()
   }, [whimsyActive, cancel])
 
+  // Cold boot: blink twice then show INIT HH:MM for ~1.6s.
+  // Sequence driven by the frame loop; we just react to the flag transitions.
+  useEffect(() => {
+    if (coldBoot) {
+      coldBootWasActiveRef.current = true
+      cancel()
+
+      const scrollEl = scrollRef.current
+      const initEl = initOverlayRef.current
+      if (!scrollEl) return
+
+      // 2 off/on blink cycles (4 × 150ms = 600ms), then INIT display.
+      scrollEl.style.opacity = '0'
+      coldBootTimerRef.current = setTimeout(() => {
+        scrollEl.style.opacity = '1'
+        coldBootTimerRef.current = setTimeout(() => {
+          scrollEl.style.opacity = '0'
+          coldBootTimerRef.current = setTimeout(() => {
+            scrollEl.style.opacity = '1'
+            coldBootTimerRef.current = setTimeout(() => {
+              // INIT phase: swap scroll inner for overlay text.
+              scrollEl.style.display = 'none'
+              scrollEl.style.opacity = '1' // reset for restore
+              if (initEl) {
+                const now = new Date()
+                const hh = now.getHours().toString().padStart(2, '0')
+                const mm = now.getMinutes().toString().padStart(2, '0')
+                initEl.textContent = `INIT ${hh}:${mm}`
+                initEl.style.display = 'inline-flex'
+              }
+              // Holds until coldBoot transitions to false (frame loop at ~2200ms).
+            }, COLD_BOOT_BLINK_MS)
+          }, COLD_BOOT_BLINK_MS)
+        }, COLD_BOOT_BLINK_MS)
+      }, COLD_BOOT_BLINK_MS)
+    } else if (coldBootWasActiveRef.current) {
+      // Cold boot ended — restore scroll inner and restart scroll machine.
+      coldBootWasActiveRef.current = false
+      clearTimeout(coldBootTimerRef.current)
+      coldBootTimerRef.current = undefined
+      const scrollEl = scrollRef.current
+      const initEl = initOverlayRef.current
+      if (initEl) {
+        initEl.style.display = 'none'
+        initEl.textContent = ''
+      }
+      if (scrollEl) {
+        scrollEl.style.display = ''
+        scrollEl.style.opacity = '1'
+      }
+      start()
+    }
+  }, [coldBoot, cancel, start])
+
+  // Cleanup cold boot timers on unmount.
+  useEffect(() => () => clearTimeout(coldBootTimerRef.current), [])
+
   const content = (withEllipsis: boolean): React.JSX.Element =>
     artist ? (
       <>
@@ -218,6 +290,7 @@ function TrackLeft({ artist, title, whimsyActive = false }: TrackLeftProps): Rea
           {content(false)}
         </span>
       </span>
+      <span ref={initOverlayRef} className="track-init-overlay" style={{ display: 'none' }} />
     </span>
   )
 }
@@ -245,14 +318,18 @@ function TrackRight({ position, duration, year, format }: TrackRightProps): Reac
 // ---------------------------------------------------------------------------
 
 export function TrackDisplay(): React.JSX.Element {
-  const { isPlaying, trackMeta } = useStereoRack()
+  const { isPlaying, trackMeta, whimsyFlags } = useStereoRack()
   const position = useStore((s) => s.player.position)
 
   return (
     <div className={`track-display${isPlaying ? '' : ' is-idle'}`}>
       {trackMeta && (
         <>
-          <TrackLeft artist={trackMeta.artist} title={trackMeta.title} />
+          <TrackLeft
+            artist={trackMeta.artist}
+            title={trackMeta.title}
+            coldBoot={whimsyFlags.coldBoot}
+          />
           <TrackRight
             position={position}
             duration={trackMeta.duration}

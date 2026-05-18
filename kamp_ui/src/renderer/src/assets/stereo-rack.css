@@ -208,6 +208,14 @@
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* Cold boot INIT overlay — shown in place of track-scroll-inner during calibration */
+.track-init-overlay {
+  display: none; /* toggled imperatively */
+  align-items: center;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.85);
+}
+
 /* Right cluster */
 .track-right {
   display: flex;

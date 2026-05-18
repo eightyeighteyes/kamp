@@ -23,6 +23,9 @@ const DB_RANGE = 60
 const PAUSE_DECAY_MS = 800
 const PAUSE_DECAY_TARGET = -120
 
+// Duration of the cold boot VU sweep — oscilloscope uses clean sine for this window.
+const COLD_BOOT_VU_MS = 800
+
 // Target scroll rate in pixels per second.
 const SCROLL_PX_PER_SEC = 240
 
@@ -55,7 +58,7 @@ function resizeBuffer(prev: Float32Array | null, newW: number): Float32Array {
 // ---------------------------------------------------------------------------
 
 export function Oscilloscope(): React.JSX.Element {
-  const { registerDraw, unregisterDraw, isPaused, trackMeta } = useStereoRack()
+  const { registerDraw, unregisterDraw, isPaused, trackMeta, coldBootRef } = useStereoRack()
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
@@ -128,6 +131,8 @@ export function Oscilloscope(): React.JSX.Element {
   // Register the per-frame draw callback with the rAF loop.
   useEffect(() => {
     let lastLiveLevel = DB_MIN
+    // Tracks previous cold boot active state so we can reset phase on entry.
+    let coldBootWasActive = false
 
     registerDraw('oscilloscope', (leftDb, rightDb, timestamp) => {
       const ctx = ctxRef.current
@@ -140,6 +145,15 @@ export function Oscilloscope(): React.JSX.Element {
         bufferRef.current = resizeBuffer(bufferRef.current, w)
       }
       const buf = bufferRef.current
+
+      // --- Cold boot sine override ---
+      const cbStart = coldBootRef.current.startTs
+      const inColdBoot = cbStart !== null && cbStart >= 0 && timestamp - cbStart < COLD_BOOT_VU_MS
+      // Reset phase to 0 on the first cold boot frame for a clean sine sweep.
+      if (inColdBoot && !coldBootWasActive) {
+        phaseRef.current = 0
+      }
+      coldBootWasActive = inColdBoot
 
       // --- Effective level ---
       let levelDb: number
@@ -173,20 +187,29 @@ export function Oscilloscope(): React.JSX.Element {
       const frac = pixelAccumRef.current
 
       if (steps > 0) {
-        const seed = seedRef.current
-        // Phase advance per pixel — seeded ±20% for per-track character.
-        const phasePerStep = 2 * Math.PI * CYCLES_PER_PX * (0.8 + ((seed & 0xf) / 0xf) * 0.4)
-        const p0 = ((seed & 0xff) / 255) * Math.PI * 2
-        const p1 = (((seed >> 8) & 0xff) / 255) * Math.PI * 2
-
         buf.copyWithin(0, steps)
-
         let ph = phaseRef.current
-        for (let i = 0; i < steps; i++) {
-          ph += phasePerStep
-          buf[w - steps + i] =
-            (0.6 * Math.sin(ph) + 0.3 * Math.sin(2 * ph + p0) + 0.1 * Math.sin(3 * ph + p1)) * amp
+
+        if (inColdBoot) {
+          // Clean sine: exactly 1 cycle per 60px, no seed variation or harmonics.
+          const phasePerStep = 2 * Math.PI * CYCLES_PER_PX
+          for (let i = 0; i < steps; i++) {
+            ph += phasePerStep
+            buf[w - steps + i] = Math.sin(ph) * amp
+          }
+        } else {
+          const seed = seedRef.current
+          // Phase advance per pixel — seeded ±20% for per-track character.
+          const phasePerStep = 2 * Math.PI * CYCLES_PER_PX * (0.8 + ((seed & 0xf) / 0xf) * 0.4)
+          const p0 = ((seed & 0xff) / 255) * Math.PI * 2
+          const p1 = (((seed >> 8) & 0xff) / 255) * Math.PI * 2
+          for (let i = 0; i < steps; i++) {
+            ph += phasePerStep
+            buf[w - steps + i] =
+              (0.6 * Math.sin(ph) + 0.3 * Math.sin(2 * ph + p0) + 0.1 * Math.sin(3 * ph + p1)) * amp
+          }
         }
+
         phaseRef.current = ph
       }
 
@@ -222,7 +245,7 @@ export function Oscilloscope(): React.JSX.Element {
     })
 
     return () => unregisterDraw('oscilloscope')
-  }, [registerDraw, unregisterDraw])
+  }, [registerDraw, unregisterDraw, coldBootRef])
 
   return <canvas ref={canvasRef} className="oscilloscope" />
 }

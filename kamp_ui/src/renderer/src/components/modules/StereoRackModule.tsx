@@ -6,6 +6,9 @@
  *  - A single rAF loop that reads levelDb/peakDb from the Zustand store via
  *    getState() and calls every registered draw function each frame.
  *  - visibilitychange wiring so the loop pauses when the tab is hidden.
+ *  - Cold boot calibration sequence (KAMP-328): on the first play event after
+ *    app launch, overrides levelDb with a 0→24→0 segment sweep for 800ms and
+ *    signals child components to run their whimsy animations.
  *
  * Per-frame mutable state (level, peak, decay accumulators, whimsy timers)
  * lives in the child components' useRefs — this shell intentionally holds none.
@@ -24,6 +27,14 @@ import { VUMeterPair } from './VUMeter'
 import { Oscilloscope } from './Oscilloscope'
 import { TrackDisplay } from './TrackDisplay'
 
+// VU sweep duration (ms): 0 → 24 → 0 segments via sin arc.
+const COLD_BOOT_VU_MS = 800
+// Total cold boot duration (ms): VU/oscilloscope end at 800ms, TrackDisplay
+// INIT display ends at ~2100ms; 2200ms gives a 100ms settling buffer.
+const COLD_BOOT_END_MS = 2200
+const DB_MIN = -60
+const DB_RANGE = 60
+
 // displayStyle is required by ModuleProps but unused — StereoRack has a fixed layout.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.Element {
@@ -39,15 +50,81 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
     drawsRef.current.delete(id)
   }, [])
 
-  // rAF loop — reads store state directly each frame (no subscription needed;
-  // getState() is synchronous and always returns the latest snapshot).
   const rafIdRef = useRef<number>(0)
 
+  // Discrete playback state — changes are infrequent so React state is fine here.
+  const player = useStore((s) => s.player)
+  const isPlaying = player.playing
+  const isPaused = !player.playing && player.current_track !== null
+
+  const trackMeta = useMemo((): TrackMeta | null => {
+    const t = player.current_track
+    if (!t) return null
+    return {
+      artist: t.artist || t.album_artist,
+      title: t.title,
+      year: t.year,
+      format: t.ext.replace(/^\./, '').toUpperCase(),
+      duration: player.duration
+    }
+  }, [player.current_track, player.duration])
+
+  // Whimsy flags — updated discretely by delight-layer tasks (KAMP-321+).
+  const [whimsyFlags, setWhimsyFlagsState] = useState<WhimsyFlags>({
+    coldBootDone: false,
+    coldBoot: false,
+    konamiActive: false,
+    firstTrackOfDayShown: false
+  })
+
+  const setWhimsyFlags = useCallback((patch: Partial<WhimsyFlags>) => {
+    setWhimsyFlagsState((prev) => ({ ...prev, ...patch }))
+  }, [])
+
+  // Cold boot calibration sequence (KAMP-328).
+  // startTs === null   → not active
+  // startTs === -1     → armed; first rAF tick stamps the real timestamp
+  // startTs >= 0       → active; elapsed = timestamp − startTs
+  const coldBootRef = useRef<{ startTs: number | null }>({ startTs: null })
+
+  // Stable ref to setWhimsyFlags — lets the rAF closure call it without
+  // being a dependency (avoids re-creating the loop on each render).
+  const setWhimsyFlagsRef = useRef(setWhimsyFlags)
+  useEffect(() => {
+    setWhimsyFlagsRef.current = setWhimsyFlags
+  }, [setWhimsyFlags])
+
+  // rAF loop — reads store state directly each frame (no subscription needed;
+  // getState() is synchronous and always returns the latest snapshot).
   useEffect(() => {
     const frame = (timestamp: number): void => {
+      // Stamp the real start timestamp on the first frame after arming.
+      if (coldBootRef.current.startTs === -1) {
+        coldBootRef.current = { startTs: timestamp }
+      }
+
       const { leftDb, rightDb } = useStore.getState()
-      const level = leftDb ?? -Infinity
-      const peak = rightDb ?? -Infinity
+      let level = leftDb ?? -Infinity
+      let peak = rightDb ?? -Infinity
+
+      const cbStart = coldBootRef.current.startTs
+      if (cbStart !== null) {
+        const elapsed = timestamp - cbStart
+        if (elapsed < COLD_BOOT_VU_MS) {
+          // Sin arc maps [0, 800ms] → segment count [0, 24, 0].
+          // Reverse-mapped to dBFS so VU draw fn produces the correct count.
+          const t = elapsed / COLD_BOOT_VU_MS
+          const sweepLevel = DB_MIN + Math.sin(t * Math.PI) * DB_RANGE
+          level = sweepLevel
+          peak = sweepLevel
+        } else if (elapsed >= COLD_BOOT_END_MS) {
+          coldBootRef.current = { startTs: null }
+          setWhimsyFlagsRef.current({ coldBoot: false, coldBootDone: true })
+        }
+        // Between COLD_BOOT_VU_MS and COLD_BOOT_END_MS: real audio resumes for
+        // VU/oscilloscope while TrackDisplay holds the INIT stamp.
+      }
+
       drawsRef.current.forEach((draw) => draw(level, peak, timestamp))
       rafIdRef.current = requestAnimationFrame(frame)
     }
@@ -70,33 +147,22 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
     }
   }, [])
 
-  // Discrete playback state — changes are infrequent so React state is fine here.
-  const player = useStore((s) => s.player)
-  const isPlaying = player.playing
-  const isPaused = !player.playing && player.current_track !== null
-
-  const trackMeta = useMemo((): TrackMeta | null => {
-    const t = player.current_track
-    if (!t) return null
-    return {
-      artist: t.artist || t.album_artist,
-      title: t.title,
-      year: t.year,
-      format: t.ext.replace(/^\./, '').toUpperCase(),
-      duration: player.duration
-    }
-  }, [player.current_track, player.duration])
-
-  // Whimsy flags — updated discretely by delight-layer tasks (KAMP-321+).
-  const [whimsyFlags, setWhimsyFlagsState] = useState<WhimsyFlags>({
-    coldBootDone: false,
-    konamiActive: false,
-    firstTrackOfDayShown: false
-  })
-
-  const setWhimsyFlags = useCallback((patch: Partial<WhimsyFlags>) => {
-    setWhimsyFlagsState((prev) => ({ ...prev, ...patch }))
-  }, [])
+  // Arm the cold boot sequence on the first play event after app launch.
+  // Subscribes to the store directly (not via isPlaying) so setState is called
+  // from a subscription callback rather than synchronously in the effect body.
+  // localStorage gate ensures it fires once per app lifetime, not per session.
+  useEffect(() => {
+    let triggered = false
+    const unsub = useStore.subscribe((state) => {
+      if (triggered || !state.player.playing) return
+      if (localStorage.getItem('stereo-rack:coldBootSeen')) return
+      triggered = true
+      localStorage.setItem('stereo-rack:coldBootSeen', '1')
+      coldBootRef.current = { startTs: -1 }
+      setWhimsyFlags({ coldBoot: true })
+    })
+    return unsub
+  }, [setWhimsyFlags])
 
   const contextValue = useMemo<StereoRackContextValue>(
     () => ({
@@ -105,10 +171,20 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
       trackMeta,
       whimsyFlags,
       setWhimsyFlags,
+      coldBootRef,
       registerDraw,
       unregisterDraw
     }),
-    [isPlaying, isPaused, trackMeta, whimsyFlags, setWhimsyFlags, registerDraw, unregisterDraw]
+    [
+      isPlaying,
+      isPaused,
+      trackMeta,
+      whimsyFlags,
+      setWhimsyFlags,
+      coldBootRef,
+      registerDraw,
+      unregisterDraw
+    ]
   )
 
   return (

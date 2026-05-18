@@ -131,6 +131,7 @@
 
 .oscilloscope {
   width: 240px;
+  height: 100%;
   flex-shrink: 0;
   display: block;
   /* JS reads getComputedStyle(canvas).color to derive the stroke rgba. */

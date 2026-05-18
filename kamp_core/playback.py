@@ -796,11 +796,12 @@ _OBSERVED: list[tuple[int, str]] = [
     (3, "pause"),
 ]
 
-# Per-channel RMS at ~20 Hz (2205-sample frames at 44.1 kHz).
-# measure_overall=none and measure_perchannel=RMS_level keep stdout minimal.
+# Per-channel RMS + Crest_factor at ~20 Hz (2205-sample frames at 44.1 kHz).
+# Crest_factor (peak/RMS in dB) distinguishes percussive from sustained content.
+# measure_overall=none keeps stdout minimal.
 _LEVEL_FILTER_GRAPH = (
     "asetnsamples=n=2205:p=0"
-    ",astats=metadata=1:reset=1:measure_perchannel=RMS_level:measure_overall=none"
+    ",astats=metadata=1:reset=1:measure_perchannel=RMS_level+Crest_factor+Peak_level:measure_overall=none"
     ",ametadata=print"
 )
 
@@ -846,8 +847,8 @@ class MpvPlaybackEngine:
         self.on_track_end: Callable[[bool], None] | None = None
         self.on_file_loaded: Callable[[], None] | None = None
         self.on_play_state_changed: Callable[[], None] | None = None
-        # Called with (left_db, right_db); for mono, both values are identical.
-        self.on_audio_level: Callable[[float, float], None] | None = None
+        # Called with (left_db, right_db, crest_db, peak_db); for mono, left==right.
+        self.on_audio_level: Callable[[float, float, float, float], None] | None = None
         self._mpv_bin = mpv_bin
         self._proc: subprocess.Popen[bytes] | None = None
         # Win32 Job Object that the spawned mpv is assigned to so it dies
@@ -963,47 +964,73 @@ class MpvPlaybackEngine:
         """Background thread: parse ametadata=print output from mpv's stdout.
 
         mpv surfaces AV_LOG_VERBOSE messages on stdout when launched with
-        --msg-level=ffmpeg=v. The astats filter emits per-channel RMS at ~20 Hz
-        (2205-sample frames). Each audio frame produces a header line followed
-        by one RMS_level line per channel:
+        --msg-level=ffmpeg=v. The astats filter emits per-channel RMS,
+        Crest_factor, and Peak_level at ~20 Hz (2205-sample frames). Each
+        frame produces a header followed by metric lines per channel:
 
             [ffmpeg] Parsed_ametadata_0: frame:3    pts:6615  pts_time:0.15
             [ffmpeg] Parsed_ametadata_0: lavfi.astats.1.RMS_level=-18.5
+            [ffmpeg] Parsed_ametadata_0: lavfi.astats.1.Crest_factor=12.3
+            [ffmpeg] Parsed_ametadata_0: lavfi.astats.1.Peak_level=-6.1
             [ffmpeg] Parsed_ametadata_0: lavfi.astats.2.RMS_level=-19.1
+            [ffmpeg] Parsed_ametadata_0: lavfi.astats.2.Crest_factor=11.8
+            [ffmpeg] Parsed_ametadata_0: lavfi.astats.2.Peak_level=-7.3
 
         Channels are accumulated until the next frame header, then emitted as
-        (left_db, right_db). Mono files produce only channel 1; we mirror it to
-        both outputs. Pausing silences the filter graph — no lines appear during
-        pause and no special handling is needed.
+        (left_db, right_db, crest_db, peak_db). Mono files produce only
+        channel 1; we mirror it to both outputs. Crest_factor channels are
+        averaged. Peak_level takes the max across channels.
+        Pausing silences the filter graph — no lines appear during pause.
         """
         channels: dict[int, float] = {}
+        crest_channels: dict[int, float] = {}
+        peak_channels: dict[int, float] = {}
+        _DEFAULT_CREST = 14.0  # typical music default when data is missing
 
         def _emit() -> None:
             if not channels or self.on_audio_level is None:
                 return
             left = channels.get(1, -120.0)
             right = channels.get(2, left)  # mirror channel 1 for mono
-            self.on_audio_level(left, right)
+            crest_vals = list(crest_channels.values())
+            crest_db = (
+                sum(crest_vals) / len(crest_vals) if crest_vals else _DEFAULT_CREST
+            )
+            peak_db = max(peak_channels.values()) if peak_channels else max(left, right)
+            self.on_audio_level(left, right, crest_db, peak_db)
 
         for raw_line in stream:
             line = raw_line.decode(errors="replace").strip()
             if _FRAME_HDR_RE.match(line):
                 _emit()
                 channels = {}
+                crest_channels = {}
+                peak_channels = {}
             else:
                 m = _AMETADATA_RE.match(line)
                 if m:
                     key, raw_val = m.group(1), m.group(2)
-                    if key.startswith("lavfi.astats.") and key.endswith(".RMS_level"):
+                    if key.startswith("lavfi.astats."):
                         parts = key.split(".")
                         try:
                             ch = int(parts[2])
                         except (ValueError, IndexError):
                             continue
-                        try:
-                            channels[ch] = max(float(raw_val), -120.0)
-                        except ValueError:
-                            channels[ch] = -120.0
+                        if key.endswith(".RMS_level"):
+                            try:
+                                channels[ch] = max(float(raw_val), -120.0)
+                            except ValueError:
+                                channels[ch] = -120.0
+                        elif key.endswith(".Crest_factor"):
+                            try:
+                                crest_channels[ch] = float(raw_val)
+                            except ValueError:
+                                pass
+                        elif key.endswith(".Peak_level"):
+                            try:
+                                peak_channels[ch] = max(float(raw_val), -120.0)
+                            except ValueError:
+                                pass
         _emit()  # flush final frame
 
     # ------------------------------------------------------------------

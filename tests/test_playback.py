@@ -1438,10 +1438,32 @@ class TestMpvPlaybackEngine:
         assert popen_kwargs.get("stdout") == _sp.PIPE
 
     def test_stdout_reader_fires_stereo_on_audio_level(self) -> None:
-        """_stdout_reader_loop emits (left_db, right_db) from astats per-channel output."""
+        """_stdout_reader_loop emits (left_db, right_db, crest_db, peak_db) from astats output."""
         engine, _ = _make_engine()
-        received: list[tuple[float, float]] = []
-        engine.on_audio_level = lambda l, r: received.append((l, r))
+        received: list[tuple[float, float, float, float]] = []
+        engine.on_audio_level = lambda l, r, c, p: received.append((l, r, c, p))
+        lines = (
+            b"[ffmpeg] Parsed_ametadata_0: frame:0    pts:0       pts_time:0\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.1.RMS_level=-18.5\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.1.Crest_factor=12.3\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.1.Peak_level=-6.1\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.2.RMS_level=-19.1\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.2.Crest_factor=11.7\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.2.Peak_level=-7.3\n"
+            b"[ffmpeg] Parsed_ametadata_0: frame:1    pts:2205    pts_time:0.05\n"
+        )
+        engine._stdout_reader_loop(io.BytesIO(lines))
+        assert len(received) == 1
+        assert received[0][0] == pytest.approx(-18.5)  # left
+        assert received[0][1] == pytest.approx(-19.1)  # right
+        assert received[0][2] == pytest.approx(12.0)  # crest avg(12.3, 11.7)
+        assert received[0][3] == pytest.approx(-6.1)  # peak max(-6.1, -7.3)
+
+    def test_stdout_reader_crest_defaults_when_missing(self) -> None:
+        """crest_db defaults to 14.0 when no Crest_factor lines appear."""
+        engine, _ = _make_engine()
+        received: list[tuple[float, float, float, float]] = []
+        engine.on_audio_level = lambda l, r, c, p: received.append((l, r, c, p))
         lines = (
             b"[ffmpeg] Parsed_ametadata_0: frame:0    pts:0       pts_time:0\n"
             b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.1.RMS_level=-18.5\n"
@@ -1450,27 +1472,49 @@ class TestMpvPlaybackEngine:
         )
         engine._stdout_reader_loop(io.BytesIO(lines))
         assert len(received) == 1
-        assert received[0][0] == pytest.approx(-18.5)  # left
-        assert received[0][1] == pytest.approx(-19.1)  # right
+        assert received[0][2] == pytest.approx(14.0)  # DEFAULT_CREST
+        assert received[0][3] == pytest.approx(
+            -18.5
+        )  # peak falls back to max(left, right)
+
+    def test_stdout_reader_peak_level_parsed(self) -> None:
+        """Peak_level is parsed separately from RMS and emitted as peak_db."""
+        engine, _ = _make_engine()
+        received: list[tuple[float, float, float, float]] = []
+        engine.on_audio_level = lambda l, r, c, p: received.append((l, r, c, p))
+        lines = (
+            b"[ffmpeg] Parsed_ametadata_0: frame:0    pts:0       pts_time:0\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.1.RMS_level=-20.0\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.1.Peak_level=-3.0\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.2.RMS_level=-20.0\n"
+            b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.2.Peak_level=nan_bad\n"
+            b"[ffmpeg] Parsed_ametadata_0: frame:1    pts:2205    pts_time:0.05\n"
+        )
+        engine._stdout_reader_loop(io.BytesIO(lines))
+        assert len(received) == 1
+        # Only channel 1 peak parsed (channel 2 malformed); max of one entry = -3.0
+        assert received[0][3] == pytest.approx(-3.0)
 
     def test_stdout_reader_mirrors_channel_1_for_mono(self) -> None:
         """Mono files (channel 1 only) must mirror left to right."""
         engine, _ = _make_engine()
-        received: list[tuple[float, float]] = []
-        engine.on_audio_level = lambda l, r: received.append((l, r))
+        received: list[tuple[float, float, float, float]] = []
+        engine.on_audio_level = lambda l, r, c, p: received.append((l, r, c, p))
         lines = (
             b"[ffmpeg] Parsed_ametadata_0: frame:0    pts:0       pts_time:0\n"
             b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.1.RMS_level=-22.0\n"
             b"[ffmpeg] Parsed_ametadata_0: frame:1    pts:2205    pts_time:0.05\n"
         )
         engine._stdout_reader_loop(io.BytesIO(lines))
-        assert received == [(-22.0, -22.0)]
+        assert len(received) == 1
+        assert received[0][0] == pytest.approx(-22.0)
+        assert received[0][1] == pytest.approx(-22.0)
 
     def test_stdout_reader_ignores_non_rms_keys(self) -> None:
-        """Non-RMS_level astats keys and unrelated lines must not fire on_audio_level."""
+        """Non-RMS/Crest astats keys and unrelated lines must not fire on_audio_level."""
         engine, _ = _make_engine()
-        received: list[tuple[float, float]] = []
-        engine.on_audio_level = lambda l, r: received.append((l, r))
+        received: list[tuple[float, float, float, float]] = []
+        engine.on_audio_level = lambda l, r, c, p: received.append((l, r, c, p))
         lines = (
             b"[ffmpeg] Parsed_ametadata_0: frame:0    pts:0       pts_time:0\n"
             b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.1.Peak_level=-14.0\n"
@@ -1482,15 +1526,17 @@ class TestMpvPlaybackEngine:
     def test_stdout_reader_handles_malformed_float(self) -> None:
         """A non-numeric RMS_level value clamps to -120.0."""
         engine, _ = _make_engine()
-        received: list[tuple[float, float]] = []
-        engine.on_audio_level = lambda l, r: received.append((l, r))
+        received: list[tuple[float, float, float, float]] = []
+        engine.on_audio_level = lambda l, r, c, p: received.append((l, r, c, p))
         lines = (
             b"[ffmpeg] Parsed_ametadata_0: frame:0    pts:0       pts_time:0\n"
             b"[ffmpeg] Parsed_ametadata_0: lavfi.astats.1.RMS_level=nan_bad\n"
             b"[ffmpeg] Parsed_ametadata_0: frame:1    pts:2205    pts_time:0.05\n"
         )
         engine._stdout_reader_loop(io.BytesIO(lines))
-        assert received == [(-120.0, -120.0)]
+        assert len(received) == 1
+        assert received[0][0] == pytest.approx(-120.0)
+        assert received[0][1] == pytest.approx(-120.0)
 
     def test_stdout_reader_no_error_when_callback_is_none(self) -> None:
         """_stdout_reader_loop must not raise when on_audio_level is None."""
@@ -1506,8 +1552,8 @@ class TestMpvPlaybackEngine:
     def test_no_level_poll_branch_in_handle_event(self) -> None:
         """Events with request_id=9999 (old poll id) must not trigger on_audio_level."""
         engine, _ = _make_engine()
-        received: list[tuple[float, float]] = []
-        engine.on_audio_level = lambda lvl, pk: received.append((lvl, pk))
+        received: list[tuple[float, float, float, float]] = []
+        engine.on_audio_level = lambda lvl, pk, c, p: received.append((lvl, pk, c, p))
         engine._handle_event(
             {"request_id": 9999, "error": "success", "data": {"lavfi.r128.M": "-18.5"}}
         )

@@ -1124,11 +1124,13 @@ class TestPlayerWebSocket:
         c = TestClient(app)
         with c.websocket_connect("/api/v1/ws") as ws:
             ws.receive_json()  # consume initial player.state
-            mock_engine.on_audio_level(-18.5, -19.1)
+            mock_engine.on_audio_level(-18.5, -19.1, 12.4, -6.1)
             msg = ws.receive_json()
         assert msg["type"] == "audio.level"
         assert msg["left_db"] == pytest.approx(-18.5)
         assert msg["right_db"] == pytest.approx(-19.1)
+        assert msg["crest_db"] == pytest.approx(12.4)
+        assert msg["peak_db"] == pytest.approx(-6.1)
 
     def test_play_endpoint_fires_track_changed(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

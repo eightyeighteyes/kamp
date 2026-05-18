@@ -163,15 +163,36 @@
   opacity: 0.5;
 }
 
-/* Left cluster — clipped; scroll added in KAMP-326 */
+/* Left cluster */
 .track-left {
+  position: relative; /* contains .track-measure */
   display: flex;
   align-items: center;
   overflow: hidden;
-  white-space: nowrap;
   min-width: 0;
   flex: 1;
 }
+
+/* Scrolling wrapper — transform applied imperatively by the state machine */
+.track-scroll-inner {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+/* One text copy inside the scroll wrapper */
+.track-copy {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Gap between the two copies. Width must match MARQUEE_GAP_PX in TrackDisplay.tsx. */
+.track-gap {
+  display: inline-block;
+  width: 60px;
+  flex-shrink: 0;
+}
+
 
 .track-artist {
   color: rgba(255, 255, 255, 0.85);
@@ -185,7 +206,6 @@
 
 .track-title {
   color: rgba(255, 255, 255, 0.85);
-  overflow: hidden;
 }
 
 /* Right cluster */

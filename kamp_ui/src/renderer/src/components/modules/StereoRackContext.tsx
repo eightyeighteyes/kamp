@@ -39,6 +39,13 @@ export type StereoRackContextValue = {
    * `startTs >= 0`      → active; elapsed = current timestamp − startTs
    */
   coldBootRef: MutableRefObject<{ startTs: number | null }>
+  /** True when no track is loaded or playback has been paused for >60s. */
+  isDeadAir: boolean
+  /**
+   * Mutable ref mirroring isDeadAir — read by rAF draw callbacks to avoid
+   * React state subscription overhead inside the per-frame hot path.
+   */
+  deadAirRef: MutableRefObject<boolean>
   /** Register a per-frame draw callback. Call from a useEffect on mount. */
   registerDraw: (id: string, fn: DrawFn) => void
   /** Unregister a draw callback. Call from the useEffect cleanup. */

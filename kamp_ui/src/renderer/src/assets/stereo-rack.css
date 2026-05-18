@@ -208,6 +208,14 @@
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* Dead air cursor — blinking underscore shown when no track / idle >60s */
+.track-dead-air-cursor {
+  display: none; /* toggled imperatively */
+  align-items: center;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.50);
+}
+
 /* Cold boot INIT overlay — shown in place of track-scroll-inner during calibration */
 .track-init-overlay {
   display: none; /* toggled imperatively */

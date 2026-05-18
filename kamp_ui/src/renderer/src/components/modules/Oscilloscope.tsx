@@ -58,7 +58,8 @@ function resizeBuffer(prev: Float32Array | null, newW: number): Float32Array {
 // ---------------------------------------------------------------------------
 
 export function Oscilloscope(): React.JSX.Element {
-  const { registerDraw, unregisterDraw, isPaused, trackMeta, coldBootRef } = useStereoRack()
+  const { registerDraw, unregisterDraw, isPaused, trackMeta, coldBootRef, deadAirRef } =
+    useStereoRack()
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
@@ -139,6 +140,35 @@ export function Oscilloscope(): React.JSX.Element {
       if (!ctx) return
       const { w, h } = sizeRef.current
       if (w === 0 || h === 0) return
+
+      // --- Dead air: thermal noise polyline, skip ring buffer entirely ---
+      if (deadAirRef.current) {
+        ctx.clearRect(0, 0, w, h)
+        ctx.save()
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)'
+        ctx.lineWidth = 1
+        ctx.setLineDash([4, 6])
+        ctx.beginPath()
+        ctx.moveTo(0, h / 2)
+        ctx.lineTo(w, h / 2)
+        ctx.stroke()
+        ctx.restore()
+
+        ctx.save()
+        ctx.strokeStyle = accentRef.current
+        ctx.lineWidth = 1.5
+        ctx.setLineDash([])
+        ctx.beginPath()
+        const midY = h / 2
+        for (let x = 0; x <= w; x++) {
+          const py = midY + (Math.random() - 0.5) * 2
+          if (x === 0) ctx.moveTo(x, py)
+          else ctx.lineTo(x, py)
+        }
+        ctx.stroke()
+        ctx.restore()
+        return
+      }
 
       // Ensure the buffer matches the current canvas width.
       if (!bufferRef.current || bufferRef.current.length !== w) {
@@ -245,7 +275,7 @@ export function Oscilloscope(): React.JSX.Element {
     })
 
     return () => unregisterDraw('oscilloscope')
-  }, [registerDraw, unregisterDraw, coldBootRef])
+  }, [registerDraw, unregisterDraw, coldBootRef, deadAirRef])
 
   return <canvas ref={canvasRef} className="oscilloscope" />
 }

@@ -41,6 +41,10 @@ const MARQUEE_GAP_PX = 60
 // Cold boot blink sequence: 2 off/on cycles at 150ms each = 600ms total.
 const COLD_BOOT_BLINK_MS = 150
 
+// Dead air cursor: visible 600ms, hidden 400ms.
+const CURSOR_ON_MS = 600
+const CURSOR_OFF_MS = 400
+
 type TrackLeftProps = {
   artist: string
   title: string
@@ -48,19 +52,23 @@ type TrackLeftProps = {
   whimsyActive?: boolean
   // Triggers cold-boot blink + INIT stamp animation (KAMP-328).
   coldBoot?: boolean
+  // Replaces content with blinking underscore cursor (KAMP-330).
+  isDeadAir?: boolean
 }
 
 function TrackLeft({
   artist,
   title,
   whimsyActive = false,
-  coldBoot = false
+  coldBoot = false,
+  isDeadAir = false
 }: TrackLeftProps): React.JSX.Element {
   const containerRef = useRef<HTMLSpanElement | null>(null)
   const scrollRef = useRef<HTMLSpanElement | null>(null)
   const ellipsisRef = useRef<HTMLSpanElement | null>(null)
   const copyBRef = useRef<HTMLSpanElement | null>(null)
   const initOverlayRef = useRef<HTMLSpanElement | null>(null)
+  const cursorRef = useRef<HTMLSpanElement | null>(null)
 
   const phaseRef = useRef<ScrollPhase>('idle')
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -73,6 +81,10 @@ function TrackLeft({
   // Cold boot timer and "was active" gate to prevent double-start on re-renders.
   const coldBootTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const coldBootWasActiveRef = useRef(false)
+
+  // Dead air cursor timer (alternating timeouts, stored as setInterval ref per spec).
+  const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const deadAirWasActiveRef = useRef(false)
 
   const cancel = useCallback((): void => {
     clearTimeout(timerRef.current)
@@ -261,8 +273,52 @@ function TrackLeft({
     }
   }, [coldBoot, cancel, start])
 
-  // Cleanup cold boot timers on unmount.
-  useEffect(() => () => clearTimeout(coldBootTimerRef.current), [])
+  // Dead air: show blinking underscore cursor, hide normal content.
+  // Cursor blinks 600ms on / 400ms off via alternating timeouts (setInterval ref).
+  useEffect(() => {
+    if (isDeadAir) {
+      deadAirWasActiveRef.current = true
+      cancel()
+      const scrollEl = scrollRef.current
+      const cursorEl = cursorRef.current
+      if (scrollEl) scrollEl.style.display = 'none'
+      if (!cursorEl) return
+
+      cursorEl.style.display = 'inline-flex'
+      cursorEl.textContent = '_'
+
+      const blink = (visible: boolean): void => {
+        if (cursorEl) cursorEl.textContent = visible ? '_' : ''
+        cursorTimerRef.current = setTimeout(
+          () => blink(!visible),
+          visible ? CURSOR_ON_MS : CURSOR_OFF_MS
+        )
+      }
+      cursorTimerRef.current = setTimeout(() => blink(false), CURSOR_ON_MS)
+    } else if (deadAirWasActiveRef.current) {
+      // Dead air ended — restore scroll inner and restart scroll machine.
+      deadAirWasActiveRef.current = false
+      clearTimeout(cursorTimerRef.current)
+      cursorTimerRef.current = undefined
+      const scrollEl = scrollRef.current
+      const cursorEl = cursorRef.current
+      if (cursorEl) {
+        cursorEl.style.display = 'none'
+        cursorEl.textContent = ''
+      }
+      if (scrollEl) scrollEl.style.display = ''
+      start()
+    }
+  }, [isDeadAir, cancel, start])
+
+  // Cleanup timers on unmount.
+  useEffect(
+    () => () => {
+      clearTimeout(coldBootTimerRef.current)
+      clearTimeout(cursorTimerRef.current)
+    },
+    []
+  )
 
   const content = (withEllipsis: boolean): React.JSX.Element =>
     artist ? (
@@ -291,6 +347,7 @@ function TrackLeft({
         </span>
       </span>
       <span ref={initOverlayRef} className="track-init-overlay" style={{ display: 'none' }} />
+      <span ref={cursorRef} className="track-dead-air-cursor" style={{ display: 'none' }} />
     </span>
   )
 }
@@ -299,9 +356,31 @@ function TrackLeft({
 // TrackRight
 // ---------------------------------------------------------------------------
 
-type TrackRightProps = { position: number; duration: number; year: string; format: string }
+type TrackRightProps = {
+  position: number
+  duration: number
+  year: string
+  format: string
+  isDeadAir?: boolean
+}
 
-function TrackRight({ position, duration, year, format }: TrackRightProps): React.JSX.Element {
+function TrackRight({
+  position,
+  duration,
+  year,
+  format,
+  isDeadAir = false
+}: TrackRightProps): React.JSX.Element {
+  if (isDeadAir) {
+    return (
+      <span className="track-right">
+        <span className="track-time">--:--</span>
+        <span className="track-timesep">/</span>
+        <span className="track-time">--:--</span>
+      </span>
+    )
+  }
+
   return (
     <span className="track-right">
       <span className="track-time">{formatTime(position)}</span>
@@ -318,23 +397,29 @@ function TrackRight({ position, duration, year, format }: TrackRightProps): Reac
 // ---------------------------------------------------------------------------
 
 export function TrackDisplay(): React.JSX.Element {
-  const { isPlaying, trackMeta, whimsyFlags } = useStereoRack()
+  const { isPlaying, trackMeta, whimsyFlags, isDeadAir } = useStereoRack()
   const position = useStore((s) => s.player.position)
+
+  // Show content when a track is loaded or dead air is active (dead air renders
+  // its own placeholder content — the cursor and blank time fields).
+  const showContent = isDeadAir || trackMeta !== null
 
   return (
     <div className={`track-display${isPlaying ? '' : ' is-idle'}`}>
-      {trackMeta && (
+      {showContent && (
         <>
           <TrackLeft
-            artist={trackMeta.artist}
-            title={trackMeta.title}
+            artist={trackMeta?.artist ?? ''}
+            title={trackMeta?.title ?? ''}
             coldBoot={whimsyFlags.coldBoot}
+            isDeadAir={isDeadAir}
           />
           <TrackRight
             position={position}
-            duration={trackMeta.duration}
-            year={trackMeta.year}
-            format={trackMeta.format}
+            duration={trackMeta?.duration ?? 0}
+            year={trackMeta?.year ?? ''}
+            format={trackMeta?.format ?? ''}
+            isDeadAir={isDeadAir}
           />
         </>
       )}

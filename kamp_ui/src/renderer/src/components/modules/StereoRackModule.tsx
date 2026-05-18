@@ -9,6 +9,8 @@
  *  - Cold boot calibration sequence (KAMP-328): on the first play event after
  *    app launch, overrides levelDb with a 0→24→0 segment sweep for 800ms and
  *    signals child components to run their whimsy animations.
+ *  - Dead air detection (KAMP-330): tracks pause idle duration per rAF frame;
+ *    signals isDeadAir when no track is loaded or paused for >60s.
  *
  * Per-frame mutable state (level, peak, decay accumulators, whimsy timers)
  * lives in the child components' useRefs — this shell intentionally holds none.
@@ -34,6 +36,9 @@ const COLD_BOOT_VU_MS = 800
 const COLD_BOOT_END_MS = 2200
 const DB_MIN = -60
 const DB_RANGE = 60
+
+// Dead air activates after this many milliseconds of continuous pause.
+const DEAD_AIR_IDLE_MS = 60_000
 
 // displayStyle is required by ModuleProps but unused — StereoRack has a fixed layout.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -94,18 +99,46 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
     setWhimsyFlagsRef.current = setWhimsyFlags
   }, [setWhimsyFlags])
 
+  // Dead air state (KAMP-330): no track loaded OR paused for >60s.
+  const [isDeadAir, setIsDeadAir] = useState(false)
+  const deadAirRef = useRef(false)
+  const setDeadAirRef = useRef(setIsDeadAir)
+  useEffect(() => {
+    setDeadAirRef.current = setIsDeadAir
+  }, [])
+
   // rAF loop — reads store state directly each frame (no subscription needed;
   // getState() is synchronous and always returns the latest snapshot).
   useEffect(() => {
+    // Pause idle tracking — local to this closure, no React state involved.
+    let pauseStartTs = -1
+    let idleElapsedMs = 0
+
     const frame = (timestamp: number): void => {
       // Stamp the real start timestamp on the first frame after arming.
       if (coldBootRef.current.startTs === -1) {
         coldBootRef.current = { startTs: timestamp }
       }
 
-      const { leftDb, rightDb } = useStore.getState()
+      const { leftDb, rightDb, player } = useStore.getState()
       let level = leftDb ?? -Infinity
       let peak = rightDb ?? -Infinity
+
+      // --- Dead air idle tracking ---
+      const paused = !player.playing && player.current_track !== null
+      const noTrack = player.current_track === null
+      if (paused) {
+        if (pauseStartTs < 0) pauseStartTs = timestamp
+        idleElapsedMs = timestamp - pauseStartTs
+      } else {
+        pauseStartTs = -1
+        idleElapsedMs = 0
+      }
+      const shouldBeDeadAir = noTrack || idleElapsedMs > DEAD_AIR_IDLE_MS
+      if (shouldBeDeadAir !== deadAirRef.current) {
+        deadAirRef.current = shouldBeDeadAir
+        setDeadAirRef.current(shouldBeDeadAir)
+      }
 
       const cbStart = coldBootRef.current.startTs
       if (cbStart !== null) {
@@ -172,6 +205,8 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
       whimsyFlags,
       setWhimsyFlags,
       coldBootRef,
+      isDeadAir,
+      deadAirRef,
       registerDraw,
       unregisterDraw
     }),
@@ -182,6 +217,8 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
       whimsyFlags,
       setWhimsyFlags,
       coldBootRef,
+      isDeadAir,
+      deadAirRef,
       registerDraw,
       unregisterDraw
     ]

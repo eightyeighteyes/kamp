@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.20.0](https://github.com/eightyeighteyes/kamp/compare/v1.19.0...v1.20.0) (2026-05-18)
+
+
+### Features
+
+* **KAMP-319:** real-time per-channel audio levels via mpv stdout ([#400](https://github.com/eightyeighteyes/kamp/issues/400)) ([a601f4a](https://github.com/eightyeighteyes/kamp/commit/a601f4a987bd75f3d50fb163c775449efbb38b59))
+* **KAMP-320:** StereoRackModule shell — context, rAF loop, Zustand level subscription ([#409](https://github.com/eightyeighteyes/kamp/issues/409)) ([ed53c0b](https://github.com/eightyeighteyes/kamp/commit/ed53c0b3ae5d4f8e85237adc7bf0aa6cc047e6a8))
+* **KAMP-321:** VUMeter component — 24-segment layout, zone coloring, design tokens ([#410](https://github.com/eightyeighteyes/kamp/issues/410)) ([536d7a3](https://github.com/eightyeighteyes/kamp/commit/536d7a329efdb020e03e1b4cd9c691ce885f014d))
+* **KAMP-322:** VU meter imperative draw — levelDb → segments, 18dB/sec decay ([#411](https://github.com/eightyeighteyes/kamp/issues/411)) ([0ccd92c](https://github.com/eightyeighteyes/kamp/commit/0ccd92c5172bad666626fdb7e89a749497eef6c7))
+* **KAMP-323:** VU meter peak hold — 1.5s hold, 600ms CSS fade ([#412](https://github.com/eightyeighteyes/kamp/issues/412)) ([e9c0a55](https://github.com/eightyeighteyes/kamp/commit/e9c0a55b96e25840d6cadd66cacea7f76341bc4e))
+* **KAMP-324:** Oscilloscope canvas — HiDPI, ResizeObserver, parametric waveform ([#413](https://github.com/eightyeighteyes/kamp/issues/413)) ([5c5f082](https://github.com/eightyeighteyes/kamp/commit/5c5f082c73b28afa54dbef938d5660e92848d62e))
+* **KAMP-325:** TrackDisplay layout — monospace 11px, artist/title/time, format badge ([#414](https://github.com/eightyeighteyes/kamp/issues/414)) ([d531f46](https://github.com/eightyeighteyes/kamp/commit/d531f46a5b428ae51f7c16cb28e41fce490a04f8))
+* **KAMP-326:** TrackDisplay scroll state machine ([#415](https://github.com/eightyeighteyes/kamp/issues/415)) ([8965b18](https://github.com/eightyeighteyes/kamp/commit/8965b1841757d09c51eb7266eb064a100da64ca3))
+* **KAMP-327:** Container query compact variant — VU stacking, oscilloscope collapse ([#419](https://github.com/eightyeighteyes/kamp/issues/419)) ([97d4e68](https://github.com/eightyeighteyes/kamp/commit/97d4e68f373ec9b66aaae069c59e59a2237af3f2))
+* **KAMP-328:** Cold Boot Calibration — VU sweep, oscilloscope sine, INIT stamp ([#416](https://github.com/eightyeighteyes/kamp/issues/416)) ([a1a75c6](https://github.com/eightyeighteyes/kamp/commit/a1a75c696efccc88b8cd1e9b3620f038f8672cec))
+* **KAMP-330:** Dead Air — thermal noise, blinking cursor, --:-- display ([#417](https://github.com/eightyeighteyes/kamp/issues/417)) ([fcc0dde](https://github.com/eightyeighteyes/kamp/commit/fcc0ddee602fbba6868bc7a58dcd3a1e50928733))
+* **KAMP-332:** First Track of the Day — localStorage date compare, 8s date line ([#418](https://github.com/eightyeighteyes/kamp/issues/418)) ([02eafdf](https://github.com/eightyeighteyes/kamp/commit/02eafdf8ce6d8be2de40bead9ea1343a64007fdb))
+
 ## [1.19.0](https://github.com/eightyeighteyes/kamp/compare/v1.18.0...v1.19.0) (2026-05-16)
 
 

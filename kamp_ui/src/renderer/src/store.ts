@@ -212,7 +212,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
   activeView: 'library',
   moduleOrder: (() => {
     const saved = localStorage.getItem('kamp:module-order')
-    return saved ? (JSON.parse(saved) as string[]) : ['kamp.stereo-rack', 'kamp.new-arrivals', 'kamp.last-played']
+    return saved
+      ? (JSON.parse(saved) as string[])
+      : ['kamp.stereo-rack', 'kamp.new-arrivals', 'kamp.last-played']
   })(),
   hiddenModules: (() => {
     const saved = localStorage.getItem('kamp:hidden-modules')

@@ -76,8 +76,8 @@ const STYLE_PARAMS: Record<string, TraceParams> = {
 }
 
 // Trippy echo ring buffer — snapshots of y-positions saved every N frames.
-const TRIPPY_SNAPSHOT_FRAMES = 4  // one snapshot per 4 frames ≈ 15fps at 60fps
-const TRIPPY_MAX_SNAPSHOTS = 12   // ~800ms of history at 15fps
+const TRIPPY_SNAPSHOT_FRAMES = 4 // one snapshot per 4 frames ≈ 15fps at 60fps
+const TRIPPY_MAX_SNAPSHOTS = 12 // ~800ms of history at 15fps
 
 // Peak follower decay per frame at 60fps.
 // 0.92^60 ≈ 0.007 — visible rhythmic pulse: 73% at 100ms, ~20% at 500ms.

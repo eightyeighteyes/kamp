@@ -22,6 +22,7 @@
 
 .mb-modal {
   width: min(680px, 92vw);
+  height: 80vh;
   max-height: 80vh;
   /* Grid lets the body row take whatever space the actual header/footer leave,
      without a hardcoded magic number that breaks when header height changes. */

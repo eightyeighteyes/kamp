@@ -101,12 +101,12 @@
 .mb-cmp-row__values {
   display: flex;
   flex-direction: column;
-  gap: 2px;
   min-width: 0;
 }
 
 .mb-cmp-row__local {
   font-size: 12px;
+  line-height: 24px;
   color: var(--text-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -119,6 +119,7 @@
 
 .mb-cmp-row__mb {
   font-size: 12px;
+  line-height: 24px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -140,7 +141,7 @@
   border: 1px solid var(--border);
   overflow: hidden;
   flex-shrink: 0;
-  align-self: center;
+  align-self: start;
   width: 44px;
 }
 

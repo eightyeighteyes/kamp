@@ -57,25 +57,25 @@ export function StereoRackConfig(): React.JSX.Element {
           value={trackSize}
           onChange={(e) => setTrackSize(e.target.value as TrackDisplaySize)}
         >
-          <option value="teeny">Teeny</option>
-          <option value="less-teeny">Less teeny</option>
-          <option value="large-print">Large print</option>
+          <option value="teeny">teeny</option>
+          <option value="less-teeny">less teeny</option>
+          <option value="large-print">large print</option>
         </select>
       </label>
       <label className="module-config-field">
         <span>Plasma</span>
         <select value={plasmaMode} onChange={(e) => setPlasmaMode(e.target.value as PlasmaMode)}>
-          <option value="sometimes">Sometimes</option>
-          <option value="always">Always</option>
-          <option value="never">Never</option>
+          <option value="sometimes">sometimes</option>
+          <option value="always">always</option>
+          <option value="never">never</option>
         </select>
       </label>
       <label className="module-config-field">
         <span>Trace style</span>
         <select value={traceStyle} onChange={(e) => setTraceStyle(e.target.value as TraceStyle)}>
-          <option value="glowy">Glowy</option>
-          <option value="clean">Clean</option>
-          <option value="trippy">Trippy</option>
+          <option value="glowy">glowy</option>
+          <option value="clean">clean</option>
+          <option value="trippy">trippy</option>
         </select>
       </label>
     </div>

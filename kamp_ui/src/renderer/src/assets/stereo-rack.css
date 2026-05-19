@@ -208,6 +208,12 @@
   flex-shrink: 0;
 }
 
+/* transport.css sets font-size: 11px on .track-artist globally. Use a more
+   specific selector to ensure the stereo rack preference variable wins. */
+.stereo-rack-module .track-artist {
+  font-size: var(--sr-track-font-size, 11px);
+}
+
 .track-sep {
   color: rgba(255, 255, 255, 0.40);
   flex-shrink: 0;

@@ -15,10 +15,11 @@ type SelectionState = {
 export type MBApplyPayload = {
   album: Record<FieldId, 'local' | 'mb'>
   tracks: Record<TrackKey, 'local' | 'mb'>
+  release: MusicBrainzRelease
 }
 
 type Props = {
-  release: MusicBrainzRelease
+  candidates: MusicBrainzRelease[]
   localTracks: Track[]
   onApply: (payload: MBApplyPayload) => void
   onClose: () => void
@@ -97,17 +98,19 @@ const FIELD_LABELS: Record<FieldId, string> = {
 }
 
 export function MusicBrainzModal({
-  release,
+  candidates,
   localTracks,
   onApply,
   onClose
 }: Props): React.JSX.Element {
   const localAlbum = localTracks[0]
 
+  const [candidateIndex, setCandidateIndex] = useState(0)
+  const release = candidates[candidateIndex]
+
   const [sel, setSel] = useState<SelectionState>(() => defaultSelection(release, localTracks))
 
-  // Reset selection when the release prop changes (KAMP-231 candidate switch).
-  // Uses the "derived state from props" render-time pattern to avoid an effect.
+  // Reset selection when the active candidate changes (render-time derived state pattern).
   const [prevRelease, setPrevRelease] = useState(release)
   if (release !== prevRelease) {
     setPrevRelease(release)
@@ -168,9 +171,36 @@ export function MusicBrainzModal({
           <h2 id="mb-modal-title" className="mb-modal__title">
             MusicBrainz — {release.title}
           </h2>
-          {release.release_type && (
-            <span className="mb-modal__release-type">{release.release_type}</span>
-          )}
+          <div className="mb-modal__header-right">
+            {candidates.length > 1 && (
+              <div className="mb-modal__nav" role="group" aria-label="Switch candidate">
+                <button
+                  className="mb-modal__nav-btn"
+                  type="button"
+                  aria-label="Previous candidate"
+                  disabled={candidateIndex === 0}
+                  onClick={() => setCandidateIndex((i) => i - 1)}
+                >
+                  ‹
+                </button>
+                <span className="mb-modal__nav-count">
+                  {candidateIndex + 1} / {candidates.length}
+                </span>
+                <button
+                  className="mb-modal__nav-btn"
+                  type="button"
+                  aria-label="Next candidate"
+                  disabled={candidateIndex === candidates.length - 1}
+                  onClick={() => setCandidateIndex((i) => i + 1)}
+                >
+                  ›
+                </button>
+              </div>
+            )}
+            {release.release_type && (
+              <span className="mb-modal__release-type">{release.release_type}</span>
+            )}
+          </div>
         </div>
 
         {/* Body */}
@@ -255,7 +285,7 @@ export function MusicBrainzModal({
           <button
             className="mb-modal__btn mb-modal__btn--accent"
             type="button"
-            onClick={() => onApply({ album: sel.album, tracks: sel.tracks })}
+            onClick={() => onApply({ album: sel.album, tracks: sel.tracks, release })}
           >
             Apply selected
           </button>

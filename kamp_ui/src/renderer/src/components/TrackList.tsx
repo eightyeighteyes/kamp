@@ -139,9 +139,7 @@ export function TrackList(): React.JSX.Element | null {
     if (!album) return
     setMbState({ status: 'idle' })
 
-    const mbRelease =
-      (mbState as Extract<MBFetchState, { status: 'ready' }>).candidates?.[0] ?? null
-    if (!mbRelease) return
+    const mbRelease = payload.release
 
     // 1. Album meta (year, label, mb_release_id)
     const metaOpts: { year?: string; label?: string; mb_release_id?: string } = {
@@ -462,7 +460,7 @@ export function TrackList(): React.JSX.Element | null {
       )}
       {mbState.status === 'ready' && (
         <MusicBrainzModal
-          release={mbState.candidates[0]}
+          candidates={mbState.candidates}
           localTracks={tracks}
           onApply={(payload) => void handleMBApply(payload)}
           onClose={() => setMbState({ status: 'idle' })}

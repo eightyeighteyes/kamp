@@ -42,6 +42,13 @@
   margin: 0;
 }
 
+.mb-modal__header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .mb-modal__release-type {
   font-size: 11px;
   font-weight: 500;
@@ -49,6 +56,42 @@
   background: var(--surface-hover);
   border-radius: 10px;
   padding: 2px 8px;
+}
+
+/* Candidate navigation */
+.mb-modal__nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mb-modal__nav-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  transition: color 0.1s, background 0.1s;
+}
+
+.mb-modal__nav-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.mb-modal__nav-btn:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.mb-modal__nav-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 28px;
+  text-align: center;
 }
 
 /* Body — scrollable. Max-height reserves space for header (~57px) + footer (~57px).

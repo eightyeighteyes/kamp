@@ -233,3 +233,17 @@
   object-fit: contain;
   background: var(--surface-hover);
 }
+
+/* COV external search link */
+.art-modal__cov-link {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.art-modal__cov-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+}

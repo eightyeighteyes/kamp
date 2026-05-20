@@ -265,7 +265,7 @@ export function ItunesArtModal({
             <div className="art-modal__confirm">
               <img
                 className="art-modal__confirm-img"
-                src={state.candidates[state.selectedIndex].preview_url}
+                src={state.candidates[state.selectedIndex].artwork_url_template.replace('{size}', '600x600bb')}
                 alt={state.candidates[state.selectedIndex].title}
               />
               <div className="art-modal__confirm-meta">

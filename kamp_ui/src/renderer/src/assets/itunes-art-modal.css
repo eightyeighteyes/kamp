@@ -104,8 +104,13 @@
 }
 
 @keyframes art-thumb-pulse {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .art-thumb__broken {
@@ -210,4 +215,21 @@
   opacity: 0.45;
   cursor: not-allowed;
   filter: none;
+}
+
+/* Local file picker */
+.art-modal__file-input {
+  display: none;
+}
+
+.art-modal__choose-file-btn {
+  margin-right: auto;
+  flex-shrink: 0;
+}
+
+/* Local file preview — same layout as iTunes confirm, object-fit contain
+   so portrait/landscape images aren't cropped */
+.art-modal__confirm-img--local {
+  object-fit: contain;
+  background: var(--surface-hover);
 }

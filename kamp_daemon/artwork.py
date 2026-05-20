@@ -443,6 +443,18 @@ def _detect_mime(data: bytes) -> str:
     return "image/jpeg"
 
 
+def validate_image_bytes(data: bytes) -> None:
+    """Raise :exc:`ArtworkError` if *data* is not a decodable image.
+
+    Uses PIL header validation only — fast enough for upload checks.
+    """
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.verify()
+    except Exception as exc:
+        raise ArtworkError(f"Not a valid image: {exc}") from exc
+
+
 def search_itunes(album_artist: str, album: str) -> list[ItunesCandidate]:
     """Search the iTunes Search API for album art candidates.
 

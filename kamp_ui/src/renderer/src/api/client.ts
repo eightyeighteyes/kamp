@@ -585,7 +585,7 @@ export async function searchAlbumArt(
   const params = new URLSearchParams({ album_artist: albumArtist, album })
   const res = await fetch(`${BASE_URL}/api/v1/albums/art/search?${params}`, {
     headers: _authHeaders(),
-    signal,
+    signal
   })
   if (!res.ok) throw new Error(`art search failed: ${res.status}`)
   const data = await res.json()
@@ -600,7 +600,7 @@ export async function applyAlbumArt(
   const res = await fetch(`${BASE_URL}/api/v1/albums/art/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-    body: JSON.stringify({ album_artist: albumArtist, album, artwork_url: artworkUrl }),
+    body: JSON.stringify({ album_artist: albumArtist, album, artwork_url: artworkUrl })
   })
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))

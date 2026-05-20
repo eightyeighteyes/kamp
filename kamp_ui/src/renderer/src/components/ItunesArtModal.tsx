@@ -10,7 +10,12 @@ type ModalState =
   | { kind: 'results'; candidates: ItunesArtCandidate[]; selectedIndex: number | null }
   | { kind: 'confirming'; candidates: ItunesArtCandidate[]; selectedIndex: number }
   | { kind: 'applying'; candidates: ItunesArtCandidate[]; selectedIndex: number }
-  | { kind: 'apply_error'; candidates: ItunesArtCandidate[]; selectedIndex: number; message: string }
+  | {
+      kind: 'apply_error'
+      candidates: ItunesArtCandidate[]
+      selectedIndex: number
+      message: string
+    }
 
 type Props = {
   albumArtist: string
@@ -44,7 +49,11 @@ function ArtThumbnail({
     >
       <div className="art-thumb__img-wrap">
         {imgState === 'loading' && <div className="art-thumb__skeleton" />}
-        {imgState === 'error' && <div className="art-thumb__broken" aria-label="Image unavailable">?</div>}
+        {imgState === 'error' && (
+          <div className="art-thumb__broken" aria-label="Image unavailable">
+            ?
+          </div>
+        )}
         <img
           className={`art-thumb__img${imgState === 'loaded' ? ' art-thumb__img--loaded' : ''}`}
           src={candidate.preview_url}
@@ -92,7 +101,10 @@ export function ItunesArtModal({
     return () => controller.abort()
   }, [albumArtist, album])
 
-  const handleApply = async (candidates: ItunesArtCandidate[], selectedIndex: number): Promise<void> => {
+  const handleApply = async (
+    candidates: ItunesArtCandidate[],
+    selectedIndex: number
+  ): Promise<void> => {
     setState({ kind: 'applying', candidates, selectedIndex })
     const candidate = candidates[selectedIndex]
     const artworkUrl = resolveArtUrl(candidate.artwork_url_template, '600x600bb')
@@ -110,13 +122,15 @@ export function ItunesArtModal({
   }
 
   const resultCount =
-    state.kind === 'results' || state.kind === 'confirming' || state.kind === 'applying' || state.kind === 'apply_error'
+    state.kind === 'results' ||
+    state.kind === 'confirming' ||
+    state.kind === 'applying' ||
+    state.kind === 'apply_error'
       ? state.candidates.length
       : null
 
-  const countLabel = resultCount != null
-    ? `${resultCount} result${resultCount === 1 ? '' : 's'}`
-    : ''
+  const countLabel =
+    resultCount != null ? `${resultCount} result${resultCount === 1 ? '' : 's'}` : ''
 
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose} onKeyDown={handleKeyDown}>
@@ -133,9 +147,7 @@ export function ItunesArtModal({
             Album Art — {albumArtist} · {album}
           </h2>
           <div className="mb-modal__header-right">
-            {countLabel && (
-              <span className="art-modal__count">{countLabel}</span>
-            )}
+            {countLabel && <span className="art-modal__count">{countLabel}</span>}
             <button
               className="mb-modal__close-btn"
               type="button"
@@ -157,14 +169,18 @@ export function ItunesArtModal({
 
           {state.kind === 'no_results' && (
             <div className="art-modal__empty">
-              <div className="art-modal__empty-icon" aria-hidden="true">◎</div>
+              <div className="art-modal__empty-icon" aria-hidden="true">
+                ◎
+              </div>
               <p className="art-modal__empty-msg">No album art found</p>
             </div>
           )}
 
           {state.kind === 'error' && (
             <div className="art-modal__empty">
-              <div className="art-modal__empty-icon" aria-hidden="true">◎</div>
+              <div className="art-modal__empty-icon" aria-hidden="true">
+                ◎
+              </div>
               <p className="art-modal__empty-msg">Could not reach album art provider</p>
             </div>
           )}
@@ -184,7 +200,9 @@ export function ItunesArtModal({
             </div>
           )}
 
-          {(state.kind === 'confirming' || state.kind === 'applying' || state.kind === 'apply_error') && (
+          {(state.kind === 'confirming' ||
+            state.kind === 'applying' ||
+            state.kind === 'apply_error') && (
             <div className="art-modal__confirm">
               {state.candidates.length === 1 ? (
                 <img
@@ -221,7 +239,11 @@ export function ItunesArtModal({
           )}
           <div className="art-modal__footer-actions">
             {state.kind === 'no_results' || state.kind === 'error' ? (
-              <button className="mb-modal__btn mb-modal__btn--ghost" type="button" onClick={onClose}>
+              <button
+                className="mb-modal__btn mb-modal__btn--ghost"
+                type="button"
+                onClick={onClose}
+              >
                 Close
               </button>
             ) : (
@@ -241,11 +263,17 @@ export function ItunesArtModal({
                     Back
                   </button>
                 )}
-                {(state.kind !== 'confirming' && state.kind !== 'applying' && state.kind !== 'apply_error') && (
-                  <button className="mb-modal__btn mb-modal__btn--ghost" type="button" onClick={onClose}>
-                    Cancel
-                  </button>
-                )}
+                {state.kind !== 'confirming' &&
+                  state.kind !== 'applying' &&
+                  state.kind !== 'apply_error' && (
+                    <button
+                      className="mb-modal__btn mb-modal__btn--ghost"
+                      type="button"
+                      onClick={onClose}
+                    >
+                      Cancel
+                    </button>
+                  )}
                 {state.kind === 'apply_error' && (
                   <>
                     <button
@@ -277,7 +305,11 @@ export function ItunesArtModal({
                     disabled={state.selectedIndex === null}
                     onClick={() => {
                       if (state.selectedIndex !== null)
-                        setState({ kind: 'confirming', candidates: state.candidates, selectedIndex: state.selectedIndex })
+                        setState({
+                          kind: 'confirming',
+                          candidates: state.candidates,
+                          selectedIndex: state.selectedIndex
+                        })
                     }}
                   >
                     Apply selected

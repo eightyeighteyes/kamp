@@ -422,7 +422,7 @@ export function AlbumArtModal({
                         })
                     }}
                   >
-                    Apply selected
+                    Select
                   </button>
                 )}
                 {state.kind === 'confirming' && (

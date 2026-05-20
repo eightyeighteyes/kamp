@@ -36,6 +36,7 @@
   overflow-y: auto;
   min-height: 0;
   padding: 16px 20px;
+  position: relative;
 }
 
 /* Empty / error / searching states */
@@ -166,8 +167,10 @@
 }
 
 .art-modal__confirm-img {
-  width: 200px;
-  height: 200px;
+  width: 600px;
+  height: 600px;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: cover;
   border-radius: 6px;
   display: block;
@@ -197,11 +200,14 @@
   max-width: 320px;
 }
 
-/* Footer */
+/* "Replaces existing art" warning — absolute in body lower-left */
 .art-modal__replace-note {
+  position: absolute;
+  bottom: 10px;
+  left: 20px;
   font-size: 11px;
-  color: var(--text-dim);
-  margin-right: auto;
+  color: var(--mb-warning);
+  pointer-events: none;
 }
 
 .art-modal__footer-actions {
@@ -232,4 +238,19 @@
 .art-modal__confirm-img--local {
   object-fit: contain;
   background: var(--surface-hover);
+}
+
+/* COV external search link */
+.art-modal__cov-link {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.art-modal__cov-link:hover {
+  color: var(--text);
+  text-decoration: underline;
 }

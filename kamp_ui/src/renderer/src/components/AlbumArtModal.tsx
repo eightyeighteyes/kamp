@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import type { Album, ItunesArtCandidate } from '../api/client'
 import { applyAlbumArt, applyAlbumArtLocal, searchAlbumArt } from '../api/client'
-import '../assets/itunes-art-modal.css'
+import '../assets/album-art-modal.css'
 
 type ItunesState =
   | { kind: 'searching' }
@@ -77,7 +77,7 @@ function ArtThumbnail({
   )
 }
 
-export function ItunesArtModal({
+export function AlbumArtModal({
   albumArtist,
   album,
   hasExistingArt,
@@ -189,6 +189,8 @@ export function ItunesArtModal({
 
   const isApplying = state.kind === 'applying' || state.kind === 'local_applying'
 
+  const covUrl = `https://covers.musichoarders.xyz/?sources=applemusic,qobuz,spotify&artist=${encodeURIComponent(albumArtist)}&album=${encodeURIComponent(album)}`
+
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose} onKeyDown={handleKeyDown}>
       <div
@@ -263,7 +265,10 @@ export function ItunesArtModal({
             <div className="art-modal__confirm">
               <img
                 className="art-modal__confirm-img"
-                src={state.candidates[state.selectedIndex].preview_url}
+                src={state.candidates[state.selectedIndex].artwork_url_template.replace(
+                  '{size}',
+                  '600x600bb'
+                )}
                 alt={state.candidates[state.selectedIndex].title}
               />
               <div className="art-modal__confirm-meta">
@@ -297,17 +302,17 @@ export function ItunesArtModal({
               )}
             </div>
           )}
-        </div>
 
-        {/* Footer */}
-        <div className="mb-modal__footer">
           {hasExistingArt &&
             (state.kind === 'confirming' ||
               state.kind === 'results' ||
               state.kind === 'local_confirming') && (
               <span className="art-modal__replace-note">Replaces existing art</span>
             )}
+        </div>
 
+        {/* Footer */}
+        <div className="mb-modal__footer">
           {/* Hidden native file input — triggered by the Choose File button */}
           <input
             ref={fileInputRef}
@@ -324,6 +329,12 @@ export function ItunesArtModal({
             >
               Choose file…
             </button>
+          )}
+
+          {!isApplying && (
+            <a className="art-modal__cov-link" href={covUrl} target="_blank" rel="noreferrer">
+              Search for album art at covers.musichoarders.xyz
+            </a>
           )}
 
           <div className="art-modal__footer-actions">
@@ -411,7 +422,7 @@ export function ItunesArtModal({
                         })
                     }}
                   >
-                    Apply selected
+                    Select
                   </button>
                 )}
                 {state.kind === 'confirming' && (

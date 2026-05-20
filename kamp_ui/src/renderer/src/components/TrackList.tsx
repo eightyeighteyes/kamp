@@ -14,7 +14,7 @@ import { CollisionModal } from './CollisionModal'
 import { AlbumMetaPanel } from './AlbumMetaPanel'
 import { MusicBrainzModal } from './MusicBrainzModal'
 import type { MBApplyPayload } from './MusicBrainzModal'
-import { ItunesArtModal } from './ItunesArtModal'
+import { AlbumArtModal } from './AlbumArtModal'
 import {
   FavoriteIcon,
   PencilIcon,
@@ -483,7 +483,7 @@ export function TrackList(): React.JSX.Element | null {
         />
       )}
       {artSearchOpen && (
-        <ItunesArtModal
+        <AlbumArtModal
           albumArtist={album.album_artist}
           album={album.album}
           hasExistingArt={album.has_art}

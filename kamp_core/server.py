@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import re
 import sys
 import threading as _threading
 import uuid as _uuid
@@ -332,6 +333,26 @@ class MusicBrainzReleaseOut(BaseModel):
 class MusicBrainzLookupOut(BaseModel):
     # Ranked best-first. KAMP-230 always uses candidates[0]; KAMP-231 adds a picker.
     candidates: list[MusicBrainzReleaseOut]
+
+
+class ItunesCandidateOut(BaseModel):
+    title: str
+    artist: str
+    preview_url: str
+    # mzstatic URL with "{size}" placeholder (e.g. "200x200bb") for the client
+    # to substitute the desired resolution before calling the apply endpoint.
+    artwork_url_template: str
+
+
+class ItunesSearchOut(BaseModel):
+    candidates: list[ItunesCandidateOut]
+
+
+class ItunesApplyRequest(BaseModel):
+    album_artist: str
+    album: str
+    # Full-res mzstatic URL built by the frontend from artwork_url_template.
+    artwork_url: str
 
 
 class BandcampProxyFetchResult(BaseModel):
@@ -1443,6 +1464,148 @@ def create_app(
             )
 
         return MusicBrainzLookupOut(candidates=[_to_release_out(r) for r in releases])
+
+    @app.get("/api/v1/albums/art/search", response_model=ItunesSearchOut)
+    async def search_album_art(album_artist: str, album: str) -> ItunesSearchOut:
+        """Search iTunes for album art candidates matching *album_artist* and *album*.
+
+        Returns up to 10 candidates with 200×200 preview URLs and artwork URL
+        templates that the frontend resolves to a full-resolution image before
+        calling the apply endpoint.  An empty candidate list (200 OK) means
+        iTunes returned no results — this is not an error.
+        Returns 404 if the album is not in the library.
+        Returns 502 if the iTunes API is unreachable.
+        """
+        from kamp_daemon.artwork import (  # noqa: PLC0415 — lazy to avoid circular import
+            ArtworkError,
+            search_itunes,
+        )
+
+        tracks = index.tracks_for_album(album_artist, album)
+        if not tracks:
+            raise HTTPException(status_code=404, detail="Album not found")
+
+        try:
+            candidates = await asyncio.get_event_loop().run_in_executor(
+                None, search_itunes, album_artist, album
+            )
+        except ArtworkError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        return ItunesSearchOut(
+            candidates=[
+                ItunesCandidateOut(
+                    title=c.title,
+                    artist=c.artist,
+                    preview_url=c.preview_url,
+                    artwork_url_template=c.artwork_url_template,
+                )
+                for c in candidates
+            ]
+        )
+
+    # Regex for validating that an artwork_url targets Apple's CDN — prevents SSRF.
+    _MZSTATIC_HOST_RE = re.compile(r"^[a-z0-9-]+\.mzstatic\.com$")
+
+    @app.post("/api/v1/albums/art/apply", response_model=AlbumOut)
+    async def apply_album_art(body: ItunesApplyRequest) -> AlbumOut:
+        """Download *artwork_url* and embed it into every track of the album.
+
+        The URL must target mzstatic.com (Apple's iTunes CDN).  If any track is
+        currently playing or in the gapless-lookahead slot, returns 409 — try
+        again after playback moves on.
+
+        Returns 400 if the URL is not an mzstatic.com URL.
+        Returns 404 if the album is not in the library.
+        Returns 409 if any track in the album is currently locked by playback.
+        Returns 422 if the downloaded image is below the configured minimum dimension.
+        Returns 502 if the image download fails.
+        Returns the updated AlbumOut (with new has_art and art_version) on success.
+        """
+        from kamp_daemon.artwork import (  # noqa: PLC0415
+            ArtworkError,
+            _embed,
+            fetch_itunes_image,
+        )
+
+        # SSRF guard — only mzstatic.com URLs are permitted.
+        parsed = urlparse(body.artwork_url)
+        if not (
+            parsed.scheme in ("http", "https")
+            and parsed.netloc
+            and _MZSTATIC_HOST_RE.match(parsed.netloc)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="artwork_url must be an https://….mzstatic.com URL",
+            )
+
+        tracks = index.tracks_for_album(body.album_artist, body.album)
+        if not tracks:
+            raise HTTPException(status_code=404, detail="Album not found")
+
+        def _is_track_locked(tid: int) -> bool:
+            c = queue.current()
+            la = queue.peek_next()
+            return (c is not None and c.id == tid) or (la is not None and la.id == tid)
+
+        if any(_is_track_locked(t.id) for t in tracks):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A track in this album is currently playing. "
+                    "Art cannot be embedded while a file is open. Try again after playback moves on."
+                ),
+            )
+
+        config: dict[str, Any] = _state.get("config") or {}
+        min_dim: int = int(config.get("artwork.min_dimension", 500))
+        max_b: int = int(config.get("artwork.max_bytes", 5_000_000))
+
+        try:
+            image_bytes = await asyncio.get_event_loop().run_in_executor(
+                None, fetch_itunes_image, body.artwork_url, min_dim, max_b
+            )
+        except ArtworkError as exc:
+            msg = str(exc)
+            status = 422 if "below minimum" in msg else 502
+            raise HTTPException(status_code=status, detail=msg) from exc
+
+        successful_paths: list[Path] = []
+        for track in tracks:
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, _embed, track.file_path, image_bytes
+                )
+                successful_paths.append(track.file_path)
+            except Exception:
+                logger.exception("Failed to embed art in %s", track.file_path)
+
+        if successful_paths:
+            index.mark_album_art_embedded(
+                body.album_artist, body.album, successful_paths
+            )
+
+        _notify_library_changed()
+
+        albums = index.albums()
+        for a in albums:
+            if a.album_artist == body.album_artist and a.album == body.album:
+                return AlbumOut(
+                    album_artist=a.album_artist,
+                    album=a.album,
+                    year=a.year,
+                    track_count=a.track_count,
+                    has_art=a.has_art,
+                    missing_album=a.missing_album,
+                    file_path=a.file_path,
+                    art_version=a.art_version,
+                    added_at=a.added_at,
+                    last_played_at=a.last_played_at,
+                    play_count_avg=a.play_count_avg,
+                    favorite=a.favorite,
+                )
+        raise HTTPException(status_code=404, detail="Album not found after apply")
 
     @app.get("/api/v1/album-art")
     def get_album_art(

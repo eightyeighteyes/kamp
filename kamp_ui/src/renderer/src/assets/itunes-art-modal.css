@@ -1,0 +1,213 @@
+/* iTunes album art search modal (KAMP-341) --------------------------------- */
+
+.art-modal {
+  width: min(720px, 92vw);
+  height: 80vh;
+  max-height: 80vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+/* Close button reused from mb-modal; ensure it exists if not already in scope */
+.mb-modal__close-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.mb-modal__close-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.art-modal__count {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-right: 8px;
+}
+
+/* Body */
+.art-modal__body {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 16px 20px;
+}
+
+/* Empty / error / searching states */
+.art-modal__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+}
+
+.art-modal__empty-icon {
+  font-size: 48px;
+  opacity: 0.12;
+  line-height: 1;
+}
+
+.art-modal__empty-msg {
+  font-size: 13px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+/* Thumbnail grid */
+.art-modal__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 12px;
+}
+
+/* Individual thumbnail card */
+.art-thumb {
+  background: none;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 6px;
+  text-align: left;
+  transition: border-color 0.1s;
+}
+
+.art-thumb:hover {
+  border-color: var(--border);
+}
+
+.art-thumb--selected {
+  border-color: var(--accent);
+}
+
+.art-thumb__img-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  margin-bottom: 6px;
+}
+
+.art-thumb__skeleton {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-hover);
+  animation: art-thumb-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes art-thumb-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.art-thumb__broken {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  color: var(--text-dim);
+  opacity: 0.3;
+}
+
+.art-thumb__img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.art-thumb__img--loaded {
+  opacity: 1;
+}
+
+.art-thumb__artist {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 0 0 2px;
+}
+
+.art-thumb__title {
+  font-size: 10px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 0;
+}
+
+/* Confirm state (single result or after clicking a thumb) */
+.art-modal__confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding-top: 16px;
+}
+
+.art-modal__confirm-img {
+  width: 200px;
+  height: 200px;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+}
+
+.art-modal__confirm-meta {
+  text-align: center;
+}
+
+.art-modal__confirm-artist {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0 0 4px;
+}
+
+.art-modal__confirm-title {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+  margin: 0;
+}
+
+.art-modal__apply-error {
+  font-size: 11px;
+  color: var(--error);
+  text-align: center;
+  max-width: 320px;
+}
+
+/* Footer */
+.art-modal__replace-note {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-right: auto;
+}
+
+.art-modal__footer-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.mb-modal__btn--accent:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
+}

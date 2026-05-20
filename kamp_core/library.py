@@ -1266,6 +1266,29 @@ class LibraryIndex:
         self._conn.commit()
         return self.tracks_for_album(album_artist, album)
 
+    def mark_album_art_embedded(
+        self, album_artist: str, album: str, file_paths: list[Path]
+    ) -> None:
+        """Mark successfully art-embedded tracks as having art and update their mtime.
+
+        Sets ``embedded_art=1`` and ``file_mtime`` to the current time for
+        every track whose path appears in *file_paths*.  Only tracks matching
+        both the album identity and the given paths are touched — other tracks
+        in the album (e.g. those skipped due to a playback lock) are left as-is.
+        """
+        import time
+
+        now = time.time()
+        str_paths = [str(p) for p in file_paths]
+        placeholders = ",".join("?" * len(str_paths))
+        self._conn.execute(
+            f"UPDATE tracks SET embedded_art = 1, file_mtime = ?"
+            f" WHERE album_artist = ? AND album = ?"
+            f" AND file_path IN ({placeholders})",
+            [now, album_artist, album, *str_paths],
+        )
+        self._conn.commit()
+
     def update_track_mb_recording_id(
         self, track_id: int, mb_recording_id: str
     ) -> Track | None:

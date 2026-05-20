@@ -14,6 +14,7 @@ import { CollisionModal } from './CollisionModal'
 import { AlbumMetaPanel } from './AlbumMetaPanel'
 import { MusicBrainzModal } from './MusicBrainzModal'
 import type { MBApplyPayload } from './MusicBrainzModal'
+import { ItunesArtModal } from './ItunesArtModal'
 import {
   FavoriteIcon,
   PencilIcon,
@@ -85,6 +86,7 @@ export function TrackList(): React.JSX.Element | null {
   >(null)
   const [albumRenameToast, setAlbumRenameToast] = useState<AlbumRenameToast | null>(null)
   const [mbState, setMbState] = useState<MBFetchState>({ status: 'idle' })
+  const [artSearchOpen, setArtSearchOpen] = useState(false)
 
   // Reset MB state when navigating to a different album (derived state from props).
   // Using the render-time pattern avoids a setState-in-effect lint violation.
@@ -93,6 +95,7 @@ export function TrackList(): React.JSX.Element | null {
   if (albumKey !== prevAlbumKey) {
     setPrevAlbumKey(albumKey)
     setMbState({ status: 'idle' })
+    setArtSearchOpen(false)
   }
 
   const showRenameToast = (toast: AlbumRenameToast): void => {
@@ -265,6 +268,18 @@ export function TrackList(): React.JSX.Element | null {
               style={{ animationDuration: `${tracks.length * 1.5}s` }}
             />
           )}
+        </button>
+      )}
+
+      {/* iTunes album art fetch pill — only visible in edit mode */}
+      {albumEditMode && (
+        <button
+          className="breadcrumb-edit-btn mb-pill"
+          title="Fetch album art"
+          onClick={() => setArtSearchOpen(true)}
+          type="button"
+        >
+          Fetch Album Art
         </button>
       )}
 
@@ -464,6 +479,18 @@ export function TrackList(): React.JSX.Element | null {
           localTracks={tracks}
           onApply={(payload) => void handleMBApply(payload)}
           onClose={() => setMbState({ status: 'idle' })}
+        />
+      )}
+      {artSearchOpen && (
+        <ItunesArtModal
+          albumArtist={album.album_artist}
+          album={album.album}
+          hasExistingArt={album.has_art}
+          onClose={() => setArtSearchOpen(false)}
+          onApplied={() => {
+            setArtSearchOpen(false)
+            void refreshOpenAlbum()
+          }}
         />
       )}
       {collision && (

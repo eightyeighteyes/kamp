@@ -564,3 +564,47 @@ export function connectStateStream(
     ws.close()
   }
 }
+
+// ---------------------------------------------------------------------------
+// iTunes album art search / apply (KAMP-341)
+// ---------------------------------------------------------------------------
+
+export type ItunesArtCandidate = {
+  title: string
+  artist: string
+  preview_url: string
+  // mzstatic URL with "{size}" placeholder (e.g. replace with "600x600bb")
+  artwork_url_template: string
+}
+
+export async function searchAlbumArt(
+  albumArtist: string,
+  album: string,
+  signal: AbortSignal
+): Promise<ItunesArtCandidate[]> {
+  const params = new URLSearchParams({ album_artist: albumArtist, album })
+  const res = await fetch(`${BASE_URL}/api/v1/albums/art/search?${params}`, {
+    headers: _authHeaders(),
+    signal,
+  })
+  if (!res.ok) throw new Error(`art search failed: ${res.status}`)
+  const data = await res.json()
+  return data.candidates as ItunesArtCandidate[]
+}
+
+export async function applyAlbumArt(
+  albumArtist: string,
+  album: string,
+  artworkUrl: string
+): Promise<Album> {
+  const res = await fetch(`${BASE_URL}/api/v1/albums/art/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+    body: JSON.stringify({ album_artist: albumArtist, album, artwork_url: artworkUrl }),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(detail?.detail ?? res.statusText)
+  }
+  return res.json() as Promise<Album>
+}

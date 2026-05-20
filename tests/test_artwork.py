@@ -14,6 +14,7 @@ import mutagen.id3 as id3
 
 from kamp_daemon.artwork import (
     ArtworkError,
+    ItunesCandidate,
     _compress_to_max_bytes,
     _detect_mime,
     _embed_m4a,
@@ -21,8 +22,10 @@ from kamp_daemon.artwork import (
     _embed_ogg,
     _load_local_artwork,
     fetch_and_embed,
+    fetch_itunes_image,
     find_local_artwork,
     has_embedded_art,
+    search_itunes,
 )
 
 # ---------------------------------------------------------------------------
@@ -917,3 +920,162 @@ class TestHasEmbeddedArt:
                 has_embedded_art(mp3, min_dimension=self._MIN, max_bytes=self._MAX)
                 is False
             )
+
+
+# ---------------------------------------------------------------------------
+# iTunes art search / fetch
+# ---------------------------------------------------------------------------
+
+_ITUNES_FIXTURE = {
+    "resultCount": 2,
+    "results": [
+        {
+            "wrapperType": "collection",
+            "collectionType": "Album",
+            "artistName": "Joan Jett & The Blackhearts",
+            "collectionName": "Up Your Alley",
+            "artworkUrl100": (
+                "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/49/f7/8b/"
+                "49f78bb0-c748-1c5c-e634-b1cad8fbe803/074644414622.jpg/100x100bb.jpg"
+            ),
+        },
+        {
+            "wrapperType": "collection",
+            "collectionType": "Album",
+            "artistName": "Joan Jett & The Blackhearts",
+            "collectionName": "Up Your Alley (Remaster)",
+            "artworkUrl100": (
+                "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/ab/cd/ef/"
+                "abcdef012345.jpg/100x100bb.jpg"
+            ),
+        },
+    ],
+}
+
+_ITUNES_BASE = (
+    "https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/49/f7/8b/"
+    "49f78bb0-c748-1c5c-e634-b1cad8fbe803/074644414622.jpg/"
+)
+
+
+class TestSearchItunes:
+    def _mock_itunes(self, data: dict) -> MagicMock:
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = data
+        return MagicMock(return_value=resp)
+
+    def test_returns_candidates_on_success(self) -> None:
+        mock_get = self._mock_itunes(_ITUNES_FIXTURE)
+        with patch("kamp_daemon.artwork.requests.get", mock_get):
+            candidates = search_itunes("Joan Jett", "Up Your Alley")
+
+        assert len(candidates) == 2
+        assert isinstance(candidates[0], ItunesCandidate)
+        assert candidates[0].artist == "Joan Jett & The Blackhearts"
+        assert candidates[0].title == "Up Your Alley"
+
+    def test_url_template_uses_size_placeholder(self) -> None:
+        mock_get = self._mock_itunes(_ITUNES_FIXTURE)
+        with patch("kamp_daemon.artwork.requests.get", mock_get):
+            candidates = search_itunes("Joan Jett", "Up Your Alley")
+
+        template = candidates[0].artwork_url_template
+        assert "{size}" in template
+        assert "100x100bb" not in template
+        assert template == _ITUNES_BASE + "{size}.jpg"
+
+    def test_preview_url_is_200x200(self) -> None:
+        mock_get = self._mock_itunes(_ITUNES_FIXTURE)
+        with patch("kamp_daemon.artwork.requests.get", mock_get):
+            candidates = search_itunes("Joan Jett", "Up Your Alley")
+
+        assert candidates[0].preview_url == _ITUNES_BASE + "200x200bb.jpg"
+
+    def test_returns_empty_list_on_no_results(self) -> None:
+        mock_get = self._mock_itunes({"resultCount": 0, "results": []})
+        with patch("kamp_daemon.artwork.requests.get", mock_get):
+            candidates = search_itunes("Unknown Artist", "Obscure Album")
+
+        assert candidates == []
+
+    def test_raises_artwork_error_on_network_failure(self) -> None:
+        with patch(
+            "kamp_daemon.artwork.requests.get",
+            side_effect=req_lib.ConnectionError("timeout"),
+        ):
+            with pytest.raises(ArtworkError, match="Could not search iTunes"):
+                search_itunes("Joan Jett", "Up Your Alley")
+
+    def test_raises_artwork_error_on_http_error(self) -> None:
+        resp = MagicMock()
+        resp.raise_for_status.side_effect = req_lib.HTTPError(
+            response=MagicMock(status_code=429)
+        )
+        with patch("kamp_daemon.artwork.requests.get", return_value=resp):
+            with pytest.raises(ArtworkError, match="Could not search iTunes"):
+                search_itunes("Joan Jett", "Up Your Alley")
+
+    def test_encodes_search_term_via_params(self) -> None:
+        """Confirms requests.get is called with params= so encoding is correct."""
+        mock_get = self._mock_itunes({"resultCount": 0, "results": []})
+        with patch("kamp_daemon.artwork.requests.get", mock_get):
+            search_itunes("Joan Jett & The Blackhearts", "Up Your Alley")
+
+        call_kwargs = mock_get.call_args
+        assert "params" in call_kwargs.kwargs or (
+            len(call_kwargs.args) > 1 and "params" in str(call_kwargs)
+        )
+
+
+class TestFetchItunesImage:
+    def _mock_image_get(self, image_bytes: bytes) -> MagicMock:
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.content = image_bytes
+        return MagicMock(return_value=resp)
+
+    def test_returns_bytes_on_success(self) -> None:
+        image_bytes = _make_jpeg(600, 600)
+        mock_get = self._mock_image_get(image_bytes)
+        with patch("kamp_daemon.artwork.requests.get", mock_get):
+            result = fetch_itunes_image(
+                "https://is1-ssl.mzstatic.com/foo/600x600bb.jpg",
+                min_dimension=500,
+                max_bytes=5_000_000,
+            )
+        assert result == image_bytes
+
+    def test_raises_when_image_below_min_dimension(self) -> None:
+        image_bytes = _make_jpeg(300, 300)
+        mock_get = self._mock_image_get(image_bytes)
+        with patch("kamp_daemon.artwork.requests.get", mock_get):
+            with pytest.raises(ArtworkError, match="below minimum"):
+                fetch_itunes_image(
+                    "https://is1-ssl.mzstatic.com/foo/300x300bb.jpg",
+                    min_dimension=500,
+                    max_bytes=5_000_000,
+                )
+
+    def test_compresses_oversized_image(self) -> None:
+        image_bytes = _make_jpeg(600, 600)
+        mock_get = self._mock_image_get(image_bytes)
+        with patch("kamp_daemon.artwork.requests.get", mock_get):
+            result = fetch_itunes_image(
+                "https://is1-ssl.mzstatic.com/foo/600x600bb.jpg",
+                min_dimension=100,
+                max_bytes=1_000,  # very small limit forces compression
+            )
+        assert len(result) <= 1_000
+
+    def test_raises_on_network_error(self) -> None:
+        with patch(
+            "kamp_daemon.artwork.requests.get",
+            side_effect=req_lib.ConnectionError("timeout"),
+        ):
+            with pytest.raises(ArtworkError, match="Could not download"):
+                fetch_itunes_image(
+                    "https://is1-ssl.mzstatic.com/foo/600x600bb.jpg",
+                    min_dimension=500,
+                    max_bytes=5_000_000,
+                )

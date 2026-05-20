@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,18 @@ logger = logging.getLogger(__name__)
 COVER_ART_ARCHIVE_URL = "https://coverartarchive.org/release/{mbid}"
 RELEASE_GROUP_ART_URL = "https://coverartarchive.org/release-group/{mbid}"
 
+_ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
+_ITUNES_SIZE_RE = re.compile(r"\d+x\d+bb")
+
 _PREFERRED_ART_NAMES = ("cover", "folder", "artwork", "front")
+
+
+@dataclass
+class ItunesCandidate:
+    title: str
+    artist: str
+    artwork_url_template: str  # mzstatic URL with "{size}" placeholder
+    preview_url: str  # 200x200bb ready-to-use URL
 
 
 class ArtworkError(Exception):
@@ -428,3 +441,83 @@ def _detect_mime(data: bytes) -> str:
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         return "image/png"
     return "image/jpeg"
+
+
+def search_itunes(album_artist: str, album: str) -> list[ItunesCandidate]:
+    """Search the iTunes Search API for album art candidates.
+
+    Returns up to 10 candidates with preview URLs (200×200) and URL templates
+    that can be resolved to any size by replacing the ``{size}`` placeholder.
+    Returns an empty list when iTunes has no matching albums.
+    Raises :exc:`ArtworkError` on network or HTTP errors.
+    """
+    try:
+        resp = requests.get(
+            _ITUNES_SEARCH_URL,
+            params={
+                "term": f"{album_artist} {album}",
+                "entity": "album",
+                "limit": 10,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise ArtworkError(f"Could not search iTunes for album art: {exc}") from exc
+
+    data: dict[str, Any] = resp.json()
+    candidates: list[ItunesCandidate] = []
+    for result in data.get("results", []):
+        raw_url: str = result.get("artworkUrl100", "")
+        if not raw_url:
+            continue
+        template = _ITUNES_SIZE_RE.sub("{size}", raw_url)
+        preview_url = _ITUNES_SIZE_RE.sub("200x200bb", raw_url)
+        candidates.append(
+            ItunesCandidate(
+                title=result.get("collectionName", ""),
+                artist=result.get("artistName", ""),
+                artwork_url_template=template,
+                preview_url=preview_url,
+            )
+        )
+    return candidates
+
+
+def fetch_itunes_image(url: str, min_dimension: int, max_bytes: int) -> bytes:
+    """Download an iTunes album art image and validate it meets quality requirements.
+
+    Raises :exc:`ArtworkError` if the image is below *min_dimension* on either
+    axis, if the network request fails, or if the download cannot be compressed
+    to fit within *max_bytes*.
+    """
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise ArtworkError(
+            f"Could not download iTunes image from {url}: {exc}"
+        ) from exc
+
+    raw = resp.content
+    try:
+        img = Image.open(io.BytesIO(raw))
+        w, h = img.size
+    except Exception as exc:
+        raise ArtworkError(f"Could not decode image from {url}: {exc}") from exc
+
+    if w < min_dimension or h < min_dimension:
+        raise ArtworkError(
+            f"iTunes image {url} is {w}×{h}, below minimum {min_dimension}px"
+        )
+
+    if len(raw) > max_bytes:
+        compressed = _compress_to_max_bytes(img, min_dimension, max_bytes)
+        if len(compressed) > max_bytes:
+            raise ArtworkError(
+                f"iTunes image {url} ({len(raw)} bytes) could not be compressed"
+                f" to fit within {max_bytes} bytes"
+            )
+        return compressed
+
+    return raw

@@ -3702,3 +3702,92 @@ class TestMigrationV16ToV17:
         ]
         assert version == 17
         index.close()
+
+
+# ---------------------------------------------------------------------------
+# mark_album_art_embedded (KAMP-341)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkAlbumArtEmbedded:
+    """LibraryIndex.mark_album_art_embedded sets embedded_art and file_mtime."""
+
+    def _make_track(self, tmp_path: Path, name: str, album: str = "Record") -> Track:
+        return Track(
+            file_path=tmp_path / name,
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album=album,
+            year="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="",
+            label="",
+        )
+
+    def test_sets_embedded_art_for_given_paths(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = self._make_track(tmp_path, "01.mp3")
+        t2 = self._make_track(tmp_path, "02.mp3")
+        index.upsert_many([t1, t2])
+
+        index.mark_album_art_embedded("Artist", "Record", [t1.file_path, t2.file_path])
+
+        rows = index._conn.execute(
+            "SELECT embedded_art FROM tracks WHERE album = 'Record'"
+        ).fetchall()
+        assert all(r["embedded_art"] == 1 for r in rows)
+        index.close()
+
+    def test_sets_file_mtime_to_approx_now(self, tmp_path: Path) -> None:
+        import time
+
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = self._make_track(tmp_path, "01.mp3")
+        index.upsert_many([t1])
+
+        before = time.time()
+        index.mark_album_art_embedded("Artist", "Record", [t1.file_path])
+        after = time.time()
+
+        row = index._conn.execute(
+            "SELECT file_mtime FROM tracks WHERE file_path = ?",
+            (str(t1.file_path),),
+        ).fetchone()
+        assert row["file_mtime"] is not None
+        assert before <= row["file_mtime"] <= after
+        index.close()
+
+    def test_only_updates_given_paths(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = self._make_track(tmp_path, "01.mp3")
+        t2 = self._make_track(tmp_path, "02.mp3")
+        index.upsert_many([t1, t2])
+
+        index.mark_album_art_embedded("Artist", "Record", [t1.file_path])
+
+        row = index._conn.execute(
+            "SELECT embedded_art FROM tracks WHERE file_path = ?",
+            (str(t2.file_path),),
+        ).fetchone()
+        assert row["embedded_art"] == 0  # t2 not in the list
+        index.close()
+
+    def test_does_not_affect_other_albums(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = self._make_track(tmp_path, "01.mp3", album="Record")
+        t2 = self._make_track(tmp_path, "02.mp3", album="OtherRecord")
+        index.upsert_many([t1, t2])
+
+        index.mark_album_art_embedded("Artist", "Record", [t1.file_path])
+
+        row = index._conn.execute(
+            "SELECT embedded_art FROM tracks WHERE album = 'OtherRecord'"
+        ).fetchone()
+        assert row["embedded_art"] == 0
+        index.close()

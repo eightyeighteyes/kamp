@@ -25,7 +25,16 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    WebSocket,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -1597,6 +1606,105 @@ def create_app(
         albums = index.albums()
         for a in albums:
             if a.album_artist == body.album_artist and a.album == body.album:
+                return AlbumOut(
+                    album_artist=a.album_artist,
+                    album=a.album,
+                    year=a.year,
+                    track_count=a.track_count,
+                    has_art=a.has_art,
+                    missing_album=a.missing_album,
+                    file_path=a.file_path,
+                    art_version=a.art_version,
+                    added_at=a.added_at,
+                    last_played_at=a.last_played_at,
+                    play_count_avg=a.play_count_avg,
+                    favorite=a.favorite,
+                )
+        raise HTTPException(status_code=404, detail="Album not found after apply")
+
+    @app.post("/api/v1/albums/art/apply-local", response_model=AlbumOut)
+    async def apply_album_art_local(
+        album_artist: str = Form(...),
+        album: str = Form(...),
+        file: UploadFile = File(...),
+    ) -> AlbumOut:
+        """Embed a user-supplied image file into every track of the album.
+
+        Accepts multipart/form-data with album_artist, album, and file fields.
+        Returns 404 if the album is not in the library.
+        Returns 409 if any track is currently playing.
+        Returns 422 if the uploaded file is not a valid image.
+        Returns the updated AlbumOut on success.
+        """
+        from kamp_daemon.artwork import (  # noqa: PLC0415
+            ArtworkError,
+            _compress_to_max_bytes,
+            _embed,
+            validate_image_bytes,
+        )
+
+        content_type = file.content_type or ""
+        if not content_type.startswith("image/"):
+            raise HTTPException(
+                status_code=422, detail="Uploaded file must be an image"
+            )
+
+        image_data = await file.read()
+
+        try:
+            validate_image_bytes(image_data)
+        except ArtworkError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        tracks = index.tracks_for_album(album_artist, album)
+        if not tracks:
+            raise HTTPException(status_code=404, detail="Album not found")
+
+        def _is_track_locked(tid: int) -> bool:
+            c = queue.current()
+            la = queue.peek_next()
+            return (c is not None and c.id == tid) or (la is not None and la.id == tid)
+
+        if any(_is_track_locked(t.id) for t in tracks):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A track in this album is currently playing. "
+                    "Art cannot be embedded while a file is open. Try again after playback moves on."
+                ),
+            )
+
+        config: dict[str, Any] = _state.get("config") or {}
+        max_b: int = int(config.get("artwork.max_bytes", 5_000_000))
+        min_dim: int = int(config.get("artwork.min_dimension", 500))
+
+        image_bytes = image_data
+        if len(image_bytes) > max_b:
+            import io as _io  # noqa: PLC0415
+
+            from PIL import Image as _Image  # noqa: PLC0415
+
+            img = _Image.open(_io.BytesIO(image_bytes))
+            image_bytes = _compress_to_max_bytes(img, min_dim, max_b)
+
+        successful_paths: list[Path] = []
+        for track in tracks:
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, _embed, track.file_path, image_bytes
+                )
+                successful_paths.append(track.file_path)
+            except Exception:
+                logger.exception("Failed to embed art in %s", track.file_path)
+
+        if successful_paths:
+            index.mark_album_art_embedded(album_artist, album, successful_paths)
+
+        _notify_library_changed()
+
+        albums = index.albums()
+        for a in albums:
+            if a.album_artist == album_artist and a.album == album:
                 return AlbumOut(
                     album_artist=a.album_artist,
                     album=a.album,

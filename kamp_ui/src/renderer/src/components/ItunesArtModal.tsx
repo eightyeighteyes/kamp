@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react'
 import type { Album, ItunesArtCandidate } from '../api/client'
-import { applyAlbumArt, searchAlbumArt } from '../api/client'
+import { applyAlbumArt, applyAlbumArtLocal, searchAlbumArt } from '../api/client'
 import '../assets/itunes-art-modal.css'
 
-type ModalState =
+type ItunesState =
   | { kind: 'searching' }
   | { kind: 'no_results' }
   | { kind: 'error'; message: string }
@@ -16,6 +16,19 @@ type ModalState =
       selectedIndex: number
       message: string
     }
+
+type LocalState =
+  | { kind: 'local_confirming'; file: File }
+  | { kind: 'local_applying'; file: File }
+  | { kind: 'local_apply_error'; file: File; message: string }
+
+type ModalState = ItunesState | LocalState
+
+function isLocalState(s: ModalState): s is LocalState {
+  return (
+    s.kind === 'local_confirming' || s.kind === 'local_applying' || s.kind === 'local_apply_error'
+  )
+}
 
 type Props = {
   albumArtist: string
@@ -73,6 +86,10 @@ export function ItunesArtModal({
 }: Props): React.JSX.Element {
   const [state, setState] = useState<ModalState>({ kind: 'searching' })
   const abortRef = useRef<AbortController | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const previewImgRef = useRef<HTMLImageElement>(null)
+  // Track the previous iTunes state so "Back" from local_confirming restores it.
+  const prevItunesStateRef = useRef<ItunesState>({ kind: 'searching' })
 
   useEffect(() => {
     const controller = new AbortController()
@@ -81,21 +98,41 @@ export function ItunesArtModal({
     searchAlbumArt(albumArtist, album, controller.signal)
       .then((candidates) => {
         if (controller.signal.aborted) return
+        let next: ItunesState
         if (candidates.length === 0) {
-          setState({ kind: 'no_results' })
+          next = { kind: 'no_results' }
         } else if (candidates.length === 1) {
-          setState({ kind: 'confirming', candidates, selectedIndex: 0 })
+          next = { kind: 'confirming', candidates, selectedIndex: 0 }
         } else {
-          setState({ kind: 'results', candidates, selectedIndex: null })
+          next = { kind: 'results', candidates, selectedIndex: null }
         }
+        prevItunesStateRef.current = next
+        setState(next)
       })
       .catch((err: Error) => {
         if (controller.signal.aborted) return
-        setState({ kind: 'error', message: err.message })
+        const next: ItunesState = { kind: 'error', message: err.message }
+        prevItunesStateRef.current = next
+        setState(next)
       })
 
     return () => controller.abort()
   }, [albumArtist, album])
+
+  // Create a blob URL for local file preview, set it imperatively on the img element,
+  // and revoke it on cleanup. Using setAttribute (not a JSX src prop) keeps the
+  // user-controlled File object out of the JSX attribute data flow.
+  const localFile = isLocalState(state) ? state.file : null
+  useEffect(() => {
+    const img = previewImgRef.current
+    if (!localFile) return
+    const url = URL.createObjectURL(localFile)
+    img?.setAttribute('src', url)
+    return () => {
+      img?.removeAttribute('src')
+      URL.revokeObjectURL(url)
+    }
+  }, [localFile])
 
   const handleApply = async (
     candidates: ItunesArtCandidate[],
@@ -112,6 +149,29 @@ export function ItunesArtModal({
     }
   }
 
+  const handleApplyLocal = async (file: File): Promise<void> => {
+    setState({ kind: 'local_applying', file })
+    try {
+      const updatedAlbum = await applyAlbumArtLocal(albumArtist, album, file)
+      onApplied(updatedAlbum)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Apply failed'
+      setState({ kind: 'local_apply_error', file, message })
+    }
+  }
+
+  const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>): void => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    // Save current iTunes state so Back can restore it.
+    if (!isLocalState(state)) {
+      prevItunesStateRef.current = state
+    }
+    setState({ kind: 'local_confirming', file })
+    // Reset input value so the same file can be re-selected after cancelling.
+    e.target.value = ''
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent): void => {
     if (e.key === 'Escape') onClose()
   }
@@ -126,6 +186,8 @@ export function ItunesArtModal({
 
   const countLabel =
     resultCount != null ? `${resultCount} result${resultCount === 1 ? '' : 's'}` : ''
+
+  const isApplying = state.kind === 'applying' || state.kind === 'local_applying'
 
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose} onKeyDown={handleKeyDown}>
@@ -199,19 +261,11 @@ export function ItunesArtModal({
             state.kind === 'applying' ||
             state.kind === 'apply_error') && (
             <div className="art-modal__confirm">
-              {state.candidates.length === 1 ? (
-                <img
-                  className="art-modal__confirm-img"
-                  src={state.candidates[state.selectedIndex].preview_url}
-                  alt={state.candidates[state.selectedIndex].title}
-                />
-              ) : (
-                <img
-                  className="art-modal__confirm-img"
-                  src={state.candidates[state.selectedIndex].preview_url}
-                  alt={state.candidates[state.selectedIndex].title}
-                />
-              )}
+              <img
+                className="art-modal__confirm-img"
+                src={state.candidates[state.selectedIndex].preview_url}
+                alt={state.candidates[state.selectedIndex].title}
+              />
               <div className="art-modal__confirm-meta">
                 <p className="art-modal__confirm-artist">
                   {state.candidates[state.selectedIndex].artist}
@@ -225,13 +279,53 @@ export function ItunesArtModal({
               )}
             </div>
           )}
+
+          {(state.kind === 'local_confirming' ||
+            state.kind === 'local_applying' ||
+            state.kind === 'local_apply_error') && (
+            <div className="art-modal__confirm">
+              <img
+                ref={previewImgRef}
+                className="art-modal__confirm-img art-modal__confirm-img--local"
+                alt={state.file.name}
+              />
+              <div className="art-modal__confirm-meta">
+                <p className="art-modal__confirm-title">{state.file.name}</p>
+              </div>
+              {state.kind === 'local_apply_error' && (
+                <p className="art-modal__apply-error">{state.message}</p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Footer */}
         <div className="mb-modal__footer">
-          {hasExistingArt && (state.kind === 'confirming' || state.kind === 'results') && (
-            <span className="art-modal__replace-note">Replaces existing art</span>
+          {hasExistingArt &&
+            (state.kind === 'confirming' ||
+              state.kind === 'results' ||
+              state.kind === 'local_confirming') && (
+              <span className="art-modal__replace-note">Replaces existing art</span>
+            )}
+
+          {/* Hidden native file input — triggered by the Choose File button */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="art-modal__file-input"
+            onChange={handleFileChosen}
+          />
+          {!isApplying && (
+            <button
+              className="mb-modal__btn mb-modal__btn--ghost art-modal__choose-file-btn"
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Choose file…
+            </button>
           )}
+
           <div className="art-modal__footer-actions">
             {state.kind === 'no_results' || state.kind === 'error' ? (
               <button
@@ -258,9 +352,19 @@ export function ItunesArtModal({
                     Back
                   </button>
                 )}
+                {(state.kind === 'local_confirming' || state.kind === 'local_apply_error') && (
+                  <button
+                    className="mb-modal__btn mb-modal__btn--ghost"
+                    type="button"
+                    onClick={() => setState(prevItunesStateRef.current)}
+                  >
+                    Back
+                  </button>
+                )}
                 {state.kind !== 'confirming' &&
                   state.kind !== 'applying' &&
-                  state.kind !== 'apply_error' && (
+                  state.kind !== 'apply_error' &&
+                  !isLocalState(state) && (
                     <button
                       className="mb-modal__btn mb-modal__btn--ghost"
                       type="button"
@@ -323,6 +427,31 @@ export function ItunesArtModal({
                   <button className="mb-modal__btn mb-modal__btn--accent" type="button" disabled>
                     Applying…
                   </button>
+                )}
+                {state.kind === 'local_confirming' && (
+                  <button
+                    className="mb-modal__btn mb-modal__btn--accent"
+                    type="button"
+                    onClick={() => void handleApplyLocal(state.file)}
+                  >
+                    Apply
+                  </button>
+                )}
+                {state.kind === 'local_applying' && (
+                  <button className="mb-modal__btn mb-modal__btn--accent" type="button" disabled>
+                    Applying…
+                  </button>
+                )}
+                {state.kind === 'local_apply_error' && (
+                  <>
+                    <button
+                      className="mb-modal__btn mb-modal__btn--accent"
+                      type="button"
+                      onClick={() => void handleApplyLocal(state.file)}
+                    >
+                      Retry
+                    </button>
+                  </>
                 )}
               </>
             )}

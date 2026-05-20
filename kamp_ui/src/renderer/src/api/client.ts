@@ -612,3 +612,24 @@ export async function applyAlbumArt(
   }
   return res.json() as Promise<Album>
 }
+
+export async function applyAlbumArtLocal(
+  albumArtist: string,
+  album: string,
+  file: File
+): Promise<Album> {
+  const form = new FormData()
+  form.append('album_artist', albumArtist)
+  form.append('album', album)
+  form.append('file', file)
+  const res = await fetch(`${BASE_URL}/api/v1/albums/art/apply-local`, {
+    method: 'POST',
+    headers: _authHeaders(),
+    body: form
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(detail?.detail ?? res.statusText)
+  }
+  return res.json() as Promise<Album>
+}

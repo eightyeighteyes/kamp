@@ -3171,3 +3171,120 @@ class TestItunesArtApplyEndpoint:
             res = c.post("/api/v1/albums/art/apply", json=self._valid_payload())
 
         assert res.status_code == 502
+
+
+class TestApplyLocalAlbumArt:
+    def _make_jpeg_bytes(self, w: int = 600, h: int = 600) -> bytes:
+        import io
+
+        from PIL import Image
+
+        img = Image.new("RGB", (w, h), color=(0, 64, 128))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        return buf.getvalue()
+
+    def _make_app(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        has_art: bool = False,
+    ) -> TestClient:
+        mock_index.tracks_for_album.return_value = [_track(1)]
+        mock_index.albums.return_value = [
+            AlbumInfo(
+                album_artist="Joan Jett",
+                album="Up Your Alley",
+                year="1988",
+                track_count=1,
+                has_art=has_art,
+                art_version=99.0,
+            )
+        ]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        return TestClient(app)
+
+    def test_happy_path_returns_album_out(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        c = self._make_app(mock_index, mock_engine, mock_queue, has_art=True)
+        image_bytes = self._make_jpeg_bytes()
+
+        with patch("kamp_daemon.artwork._embed"):
+            res = c.post(
+                "/api/v1/albums/art/apply-local",
+                data={"album_artist": "Joan Jett", "album": "Up Your Alley"},
+                files={"file": ("cover.jpg", image_bytes, "image/jpeg")},
+            )
+
+        assert res.status_code == 200
+        body = res.json()
+        assert body["album"] == "Up Your Alley"
+        assert body["has_art"] is True
+        mock_index.mark_album_art_embedded.assert_called_once()
+
+    def test_returns_404_when_album_not_found(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = []
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        res = c.post(
+            "/api/v1/albums/art/apply-local",
+            data={"album_artist": "Unknown", "album": "Ghost"},
+            files={"file": ("cover.jpg", self._make_jpeg_bytes(), "image/jpeg")},
+        )
+
+        assert res.status_code == 404
+
+    def test_returns_409_when_track_is_locked(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        locked = _track(1)
+        mock_index.tracks_for_album.return_value = [locked]
+        mock_queue.current.return_value = locked
+        mock_queue.peek_next.return_value = None
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        res = c.post(
+            "/api/v1/albums/art/apply-local",
+            data={"album_artist": "Joan Jett", "album": "Up Your Alley"},
+            files={"file": ("cover.jpg", self._make_jpeg_bytes(), "image/jpeg")},
+        )
+
+        assert res.status_code == 409
+
+    def test_returns_422_for_non_image_content_type(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = [_track(1)]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        res = c.post(
+            "/api/v1/albums/art/apply-local",
+            data={"album_artist": "Joan Jett", "album": "Up Your Alley"},
+            files={"file": ("notes.txt", b"hello world", "text/plain")},
+        )
+
+        assert res.status_code == 422
+
+    def test_returns_422_for_corrupt_image_bytes(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = [_track(1)]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        res = c.post(
+            "/api/v1/albums/art/apply-local",
+            data={"album_artist": "Joan Jett", "album": "Up Your Alley"},
+            files={
+                "file": ("cover.jpg", b"\xff\xd8\xff not a real jpeg", "image/jpeg")
+            },
+        )
+
+        assert res.status_code == 422

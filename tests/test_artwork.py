@@ -25,7 +25,9 @@ from kamp_daemon.artwork import (
     fetch_itunes_image,
     find_local_artwork,
     has_embedded_art,
+    read_cover_file,
     search_itunes,
+    write_cover_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -1079,3 +1081,44 @@ class TestFetchItunesImage:
                     min_dimension=500,
                     max_bytes=5_000_000,
                 )
+
+
+class TestCoverFile:
+    def test_write_jpeg_creates_cover_jpg(self, tmp_path: Path) -> None:
+        """JPEG bytes are written to cover.jpg."""
+        dest = write_cover_file(b"\xff\xd8\xff", "image/jpeg", tmp_path)
+        assert dest == tmp_path / "cover.jpg"
+        assert dest.read_bytes() == b"\xff\xd8\xff"
+
+    def test_write_png_creates_cover_png(self, tmp_path: Path) -> None:
+        """PNG bytes are written to cover.png."""
+        dest = write_cover_file(b"\x89PNG", "image/png", tmp_path)
+        assert dest == tmp_path / "cover.png"
+        assert dest.read_bytes() == b"\x89PNG"
+
+    def test_write_unknown_mime_defaults_to_cover_jpg(self, tmp_path: Path) -> None:
+        """An unrecognised MIME type falls back to cover.jpg."""
+        dest = write_cover_file(b"data", "image/webp", tmp_path)
+        assert dest == tmp_path / "cover.jpg"
+
+    def test_read_returns_jpg_bytes(self, tmp_path: Path) -> None:
+        """cover.jpg is returned with image/jpeg MIME type."""
+        (tmp_path / "cover.jpg").write_bytes(b"\xff\xd8\xff")
+        assert read_cover_file(tmp_path) == (b"\xff\xd8\xff", "image/jpeg")
+
+    def test_read_returns_png_bytes_when_no_jpg(self, tmp_path: Path) -> None:
+        """cover.png is returned when cover.jpg is absent."""
+        (tmp_path / "cover.png").write_bytes(b"\x89PNG")
+        assert read_cover_file(tmp_path) == (b"\x89PNG", "image/png")
+
+    def test_read_prefers_jpg_over_png(self, tmp_path: Path) -> None:
+        """cover.jpg is preferred when both cover.jpg and cover.png exist."""
+        (tmp_path / "cover.jpg").write_bytes(b"jpg-data")
+        (tmp_path / "cover.png").write_bytes(b"png-data")
+        result = read_cover_file(tmp_path)
+        assert result is not None
+        assert result == (b"jpg-data", "image/jpeg")
+
+    def test_read_returns_none_when_absent(self, tmp_path: Path) -> None:
+        """None is returned when no cover file exists in the directory."""
+        assert read_cover_file(tmp_path) is None

@@ -219,6 +219,7 @@ export type ConfigValues = {
   'musicbrainz.trust-musicbrainz-when-tags-conflict': boolean | null
   'artwork.min_dimension': number | null
   'artwork.max_bytes': number | null
+  'artwork.save_format': string | null
   'library.path_template': string | null
   'bandcamp.connected': boolean | null
   'bandcamp.username': string | null

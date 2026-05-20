@@ -48,6 +48,7 @@ class MusicBrainzConfig:
 class ArtworkConfig:
     min_dimension: int
     max_bytes: int
+    save_format: str = "embedded"  # "embedded" | "cover-file"
 
 
 @dataclass
@@ -89,6 +90,7 @@ _CONFIG_DEFAULTS: dict[str, str] = {
     "musicbrainz.trust-musicbrainz-when-tags-conflict": "false",
     "artwork.min_dimension": "1000",
     "artwork.max_bytes": "1000000",
+    "artwork.save_format": "embedded",
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
     "bandcamp.format": "mp3-v0",
     "bandcamp.poll_interval_minutes": "0",
@@ -105,6 +107,7 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "musicbrainz.trust-musicbrainz-when-tags-conflict": bool,
     "artwork.min_dimension": int,
     "artwork.max_bytes": int,
+    "artwork.save_format": str,
     "library.path_template": str,
     "bandcamp.format": str,
     "bandcamp.poll_interval_minutes": int,
@@ -165,6 +168,7 @@ _DEPRECATED_KEYS: frozenset[str] = frozenset(_DEPRECATED_KEY_MESSAGES)
 
 # Keys whose values must come from a fixed set of choices.
 _CONFIG_KEY_CHOICES: dict[str, frozenset[str]] = {
+    "artwork.save_format": frozenset({"embedded", "cover-file"}),
     "bandcamp.format": frozenset(
         {"mp3-v0", "mp3-320", "flac", "aac-hi", "vorbis", "alac", "wav"}
     ),
@@ -309,6 +313,7 @@ class Config:
             artwork=ArtworkConfig(
                 min_dimension=_int("artwork.min_dimension"),
                 max_bytes=_int("artwork.max_bytes"),
+                save_format=_get("artwork.save_format"),
             ),
             library=LibraryConfig(
                 path_template=_get("library.path_template"),

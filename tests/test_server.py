@@ -338,6 +338,74 @@ class TestAlbumArtEndpoint:
         cc = res.headers.get("cache-control", "")
         assert "no-store" in cc
 
+    def test_cover_file_preference_serves_cover_file(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """save_format=cover-file: cover file is served when present."""
+        track = _track(1)
+        track.embedded_art = False
+        mock_index.tracks_for_album.return_value = [track]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"artwork.save_format": "cover-file"},
+        )
+        c = TestClient(app)
+        with patch(
+            "kamp_daemon.artwork.read_cover_file",
+            return_value=(b"COVERDATA", "image/jpeg"),
+        ):
+            res = c.get("/api/v1/album-art?album_artist=Artist&album=Album")
+        assert res.status_code == 200
+        assert res.content == b"COVERDATA"
+
+    def test_cover_file_preference_falls_back_to_embedded(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """save_format=cover-file: embedded art is used when no cover file exists."""
+        track = _track(1)
+        track.embedded_art = True
+        mock_index.tracks_for_album.return_value = [track]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"artwork.save_format": "cover-file"},
+        )
+        c = TestClient(app)
+        with (
+            patch("kamp_daemon.artwork.read_cover_file", return_value=None),
+            patch(
+                "kamp_core.server.extract_art", return_value=(b"EMBEDDED", "image/jpeg")
+            ),
+        ):
+            res = c.get("/api/v1/album-art?album_artist=Artist&album=Album")
+        assert res.status_code == 200
+        assert res.content == b"EMBEDDED"
+
+    def test_embedded_preference_falls_back_to_cover_file(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """save_format=embedded: cover file is used when no embedded art exists."""
+        track = _track(1)
+        track.embedded_art = False
+        mock_index.tracks_for_album.return_value = [track]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"artwork.save_format": "embedded"},
+        )
+        c = TestClient(app)
+        with patch(
+            "kamp_daemon.artwork.read_cover_file",
+            return_value=(b"COVERDATA", "image/jpeg"),
+        ):
+            res = c.get("/api/v1/album-art?album_artist=Artist&album=Album")
+        assert res.status_code == 200
+        assert res.content == b"COVERDATA"
+
 
 class TestArtistsEndpoint:
     def test_returns_empty_list_when_no_artists(self, client: TestClient) -> None:
@@ -3172,6 +3240,42 @@ class TestItunesArtApplyEndpoint:
 
         assert res.status_code == 502
 
+    def test_cover_file_mode_writes_cover_file_not_embed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """In cover-file mode, art is written to a cover file instead of embedded."""
+        image_bytes = self._make_jpeg_bytes()
+        c = self._make_app(mock_index, mock_engine, mock_queue, has_art=True)
+        # Re-create with cover-file preference.
+        mock_index.tracks_for_album.return_value = [_track(1)]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"artwork.save_format": "cover-file"},
+        )
+        mock_index.albums.return_value = [
+            AlbumInfo(
+                album_artist="Joan Jett",
+                album="Up Your Alley",
+                year="1988",
+                track_count=1,
+                has_art=True,
+                art_version=12345.0,
+            )
+        ]
+        c = TestClient(app)
+
+        with (
+            patch("kamp_daemon.artwork.fetch_itunes_image", return_value=image_bytes),
+            patch("kamp_daemon.artwork.write_cover_file") as mock_write,
+        ):
+            res = c.post("/api/v1/albums/art/apply", json=self._valid_payload())
+
+        assert res.status_code == 200
+        mock_write.assert_called_once()
+        mock_index.mark_album_art_embedded.assert_not_called()
+
 
 class TestApplyLocalAlbumArt:
     def _make_jpeg_bytes(self, w: int = 600, h: int = 600) -> bytes:
@@ -3288,3 +3392,38 @@ class TestApplyLocalAlbumArt:
         )
 
         assert res.status_code == 422
+
+    def test_cover_file_mode_writes_cover_file_not_embed(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """In cover-file mode, art is written to a cover file instead of embedded."""
+        image_bytes = self._make_jpeg_bytes()
+        mock_index.tracks_for_album.return_value = [_track(1)]
+        mock_index.albums.return_value = [
+            AlbumInfo(
+                album_artist="Joan Jett",
+                album="Up Your Alley",
+                year="1988",
+                track_count=1,
+                has_art=True,
+                art_version=99.0,
+            )
+        ]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"artwork.save_format": "cover-file"},
+        )
+        c = TestClient(app)
+
+        with patch("kamp_daemon.artwork.write_cover_file") as mock_write:
+            res = c.post(
+                "/api/v1/albums/art/apply-local",
+                data={"album_artist": "Joan Jett", "album": "Up Your Alley"},
+                files={"file": ("cover.jpg", image_bytes, "image/jpeg")},
+            )
+
+        assert res.status_code == 200
+        mock_write.assert_called_once()
+        mock_index.mark_album_art_embedded.assert_not_called()

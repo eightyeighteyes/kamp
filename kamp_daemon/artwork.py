@@ -133,6 +133,30 @@ def find_local_artwork(directory: Path) -> Path | None:
     return sorted(candidates)[0]
 
 
+_MIME_TO_COVER_FILENAME: dict[str, str] = {
+    "image/jpeg": "cover.jpg",
+    "image/png": "cover.png",
+}
+_COVER_FILENAMES = ("cover.jpg", "cover.png")
+
+
+def write_cover_file(image_bytes: bytes, mime_type: str, album_dir: Path) -> Path:
+    """Write *image_bytes* to *album_dir*/cover.jpg (or .png) and return the path."""
+    filename = _MIME_TO_COVER_FILENAME.get(mime_type, "cover.jpg")
+    dest = album_dir / filename
+    dest.write_bytes(image_bytes)
+    return dest
+
+
+def read_cover_file(album_dir: Path) -> tuple[bytes, str] | None:
+    """Return (bytes, mime_type) for a cover file in *album_dir*, or None."""
+    for filename, mime in zip(_COVER_FILENAMES, ("image/jpeg", "image/png")):
+        p = album_dir / filename
+        if p.is_file():
+            return p.read_bytes(), mime
+    return None
+
+
 def _load_local_artwork(path: Path, min_dimension: int, max_bytes: int) -> bytes | None:
     """Load *path* and return qualifying image bytes, resizing if necessary.
 

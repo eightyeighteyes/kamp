@@ -21,6 +21,7 @@ const RESTART_KEYS = new Set([
 ])
 
 const BANDCAMP_FORMATS = ['mp3-v0', 'mp3-320', 'flac', 'aac-hi', 'vorbis', 'alac', 'wav']
+const ARTWORK_SAVE_FORMATS = ['embedded', 'cover-file']
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -1169,6 +1170,13 @@ export function PreferencesDialog({
                       type="number"
                       unit="bytes"
                       initialValue={str('artwork.max_bytes')}
+                      onSave={handleSave}
+                    />
+                    <SelectRow
+                      label="Save format"
+                      configKey="artwork.save_format"
+                      options={ARTWORK_SAVE_FORMATS}
+                      initialValue={str('artwork.save_format') || 'embedded'}
                       onSave={handleSave}
                     />
                   </div>

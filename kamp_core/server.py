@@ -1535,6 +1535,7 @@ def create_app(
             ArtworkError,
             _embed,
             fetch_itunes_image,
+            write_cover_file,
         )
 
         # SSRF guard — only mzstatic.com URLs are permitted.
@@ -1570,6 +1571,7 @@ def create_app(
         config: dict[str, Any] = _state.get("config") or {}
         min_dim: int = int(config.get("artwork.min_dimension", 500))
         max_b: int = int(config.get("artwork.max_bytes", 5_000_000))
+        save_format: str = config.get("artwork.save_format", "embedded")
 
         # Resolve template to the user's configured minimum dimension so we always
         # request exactly the quality they require (Apple CDN resizes on demand).
@@ -1586,20 +1588,29 @@ def create_app(
             status = 422 if "below minimum" in msg else 502
             raise HTTPException(status_code=status, detail=msg) from exc
 
-        successful_paths: list[Path] = []
-        for track in tracks:
+        if save_format == "cover-file":
+            album_dir = tracks[0].file_path.parent
             try:
                 await asyncio.get_event_loop().run_in_executor(
-                    None, _embed, track.file_path, image_bytes
+                    None, write_cover_file, image_bytes, "image/jpeg", album_dir
                 )
-                successful_paths.append(track.file_path)
             except Exception:
-                logger.exception("Failed to embed art in %s", track.file_path)
+                logger.exception("Failed to write cover file to %s", album_dir)
+        else:
+            successful_paths: list[Path] = []
+            for track in tracks:
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, _embed, track.file_path, image_bytes
+                    )
+                    successful_paths.append(track.file_path)
+                except Exception:
+                    logger.exception("Failed to embed art in %s", track.file_path)
 
-        if successful_paths:
-            index.mark_album_art_embedded(
-                body.album_artist, body.album, successful_paths
-            )
+            if successful_paths:
+                index.mark_album_art_embedded(
+                    body.album_artist, body.album, successful_paths
+                )
 
         _notify_library_changed()
 
@@ -1641,6 +1652,7 @@ def create_app(
             _compress_to_max_bytes,
             _embed,
             validate_image_bytes,
+            write_cover_file,
         )
 
         content_type = file.content_type or ""
@@ -1677,7 +1689,9 @@ def create_app(
         config: dict[str, Any] = _state.get("config") or {}
         max_b: int = int(config.get("artwork.max_bytes", 5_000_000))
         min_dim: int = int(config.get("artwork.min_dimension", 500))
+        save_format: str = config.get("artwork.save_format", "embedded")
 
+        cover_mime = content_type
         image_bytes = image_data
         if len(image_bytes) > max_b:
             import io as _io  # noqa: PLC0415
@@ -1686,19 +1700,29 @@ def create_app(
 
             img = _Image.open(_io.BytesIO(image_bytes))
             image_bytes = _compress_to_max_bytes(img, min_dim, max_b)
+            cover_mime = "image/jpeg"  # _compress_to_max_bytes always outputs JPEG
 
-        successful_paths: list[Path] = []
-        for track in tracks:
+        if save_format == "cover-file":
+            album_dir = tracks[0].file_path.parent
             try:
                 await asyncio.get_event_loop().run_in_executor(
-                    None, _embed, track.file_path, image_bytes
+                    None, write_cover_file, image_bytes, cover_mime, album_dir
                 )
-                successful_paths.append(track.file_path)
             except Exception:
-                logger.exception("Failed to embed art in %s", track.file_path)
+                logger.exception("Failed to write cover file to %s", album_dir)
+        else:
+            successful_paths: list[Path] = []
+            for track in tracks:
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, _embed, track.file_path, image_bytes
+                    )
+                    successful_paths.append(track.file_path)
+                except Exception:
+                    logger.exception("Failed to embed art in %s", track.file_path)
 
-        if successful_paths:
-            index.mark_album_art_embedded(album_artist, album, successful_paths)
+            if successful_paths:
+                index.mark_album_art_embedded(album_artist, album, successful_paths)
 
         _notify_library_changed()
 
@@ -1725,6 +1749,8 @@ def create_app(
     def get_album_art(
         album_artist: str, album: str, file_path: str = "", v: str = ""
     ) -> Response:
+        from kamp_daemon.artwork import read_cover_file  # noqa: PLC0415
+
         # file_path overrides (album_artist, album) for missing-album tracks.
         if file_path:
             p = _validate_library_path(file_path, _state["library_path"])
@@ -1732,22 +1758,47 @@ def create_app(
             tracks = [track] if track else []
         else:
             tracks = index.tracks_for_album(album_artist, album)
-        for track in tracks:
-            if track.embedded_art:
-                result = extract_art(track.file_path)
-                if result:
-                    data, mime = result
-                    # When a version stamp is present the URL encodes the content
-                    # identity, so the response is safe to cache indefinitely.
-                    # Without a stamp we can't guarantee freshness, so opt out.
-                    cache_control = (
-                        "public, max-age=31536000, immutable" if v else "no-store"
-                    )
-                    return Response(
-                        content=data,
-                        media_type=mime,
-                        headers={"Cache-Control": cache_control},
-                    )
+
+        config: dict[str, Any] = _state.get("config") or {}
+        save_format: str = config.get("artwork.save_format", "embedded")
+
+        # When a version stamp is present the URL encodes content identity,
+        # so the response is safe to cache indefinitely.
+        cache_control = "public, max-age=31536000, immutable" if v else "no-store"
+
+        def _embedded_response() -> Response | None:
+            for track in tracks:
+                if track.embedded_art:
+                    result = extract_art(track.file_path)
+                    if result:
+                        data, mime = result
+                        return Response(
+                            content=data,
+                            media_type=mime,
+                            headers={"Cache-Control": cache_control},
+                        )
+            return None
+
+        def _cover_file_response() -> Response | None:
+            if not tracks:
+                return None
+            result = read_cover_file(tracks[0].file_path.parent)
+            if result:
+                data, mime = result
+                return Response(
+                    content=data,
+                    media_type=mime,
+                    headers={"Cache-Control": cache_control},
+                )
+            return None
+
+        if save_format == "cover-file":
+            resp = _cover_file_response() or _embedded_response()
+        else:
+            resp = _embedded_response() or _cover_file_response()
+
+        if resp is not None:
+            return resp
         raise HTTPException(status_code=404, detail="No art found")
 
     @app.get("/api/v1/search", response_model=SearchOut)

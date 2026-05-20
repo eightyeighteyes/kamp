@@ -329,12 +329,7 @@ export function ItunesArtModal({
           )}
 
           {!isApplying && (
-            <a
-              className="art-modal__cov-link"
-              href={covUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
+            <a className="art-modal__cov-link" href={covUrl} target="_blank" rel="noreferrer">
               Search for album art at covers.musichoarders.xyz
             </a>
           )}

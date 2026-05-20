@@ -18,9 +18,9 @@ type ItunesState =
     }
 
 type LocalState =
-  | { kind: 'local_confirming'; file: File; previewUrl: string }
-  | { kind: 'local_applying'; file: File; previewUrl: string }
-  | { kind: 'local_apply_error'; file: File; previewUrl: string; message: string }
+  | { kind: 'local_confirming'; file: File }
+  | { kind: 'local_applying'; file: File }
+  | { kind: 'local_apply_error'; file: File; message: string }
 
 type ModalState = ItunesState | LocalState
 
@@ -87,6 +87,7 @@ export function ItunesArtModal({
   const [state, setState] = useState<ModalState>({ kind: 'searching' })
   const abortRef = useRef<AbortController | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const previewImgRef = useRef<HTMLImageElement>(null)
   // Track the previous iTunes state so "Back" from local_confirming restores it.
   const prevItunesStateRef = useRef<ItunesState>({ kind: 'searching' })
 
@@ -118,16 +119,20 @@ export function ItunesArtModal({
     return () => controller.abort()
   }, [albumArtist, album])
 
-  // Revoke object URL whenever we leave a local state to avoid memory leaks.
+  // Create a blob URL for local file preview, set it imperatively on the img element,
+  // and revoke it on cleanup. Using setAttribute (not a JSX src prop) keeps the
+  // user-controlled File object out of the JSX attribute data flow.
+  const localFile = isLocalState(state) ? state.file : null
   useEffect(() => {
+    const img = previewImgRef.current
+    if (!localFile) return
+    const url = URL.createObjectURL(localFile)
+    img?.setAttribute('src', url)
     return () => {
-      if (isLocalState(state)) {
-        URL.revokeObjectURL(state.previewUrl)
-      }
+      img?.removeAttribute('src')
+      URL.revokeObjectURL(url)
     }
-    // Only run cleanup when state.kind changes, not on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.kind])
+  }, [localFile])
 
   const handleApply = async (
     candidates: ItunesArtCandidate[],
@@ -144,14 +149,14 @@ export function ItunesArtModal({
     }
   }
 
-  const handleApplyLocal = async (file: File, previewUrl: string): Promise<void> => {
-    setState({ kind: 'local_applying', file, previewUrl })
+  const handleApplyLocal = async (file: File): Promise<void> => {
+    setState({ kind: 'local_applying', file })
     try {
       const updatedAlbum = await applyAlbumArtLocal(albumArtist, album, file)
       onApplied(updatedAlbum)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Apply failed'
-      setState({ kind: 'local_apply_error', file, previewUrl, message })
+      setState({ kind: 'local_apply_error', file, message })
     }
   }
 
@@ -162,8 +167,7 @@ export function ItunesArtModal({
     if (!isLocalState(state)) {
       prevItunesStateRef.current = state
     }
-    const previewUrl = URL.createObjectURL(file)
-    setState({ kind: 'local_confirming', file, previewUrl })
+    setState({ kind: 'local_confirming', file })
     // Reset input value so the same file can be re-selected after cancelling.
     e.target.value = ''
   }
@@ -281,9 +285,8 @@ export function ItunesArtModal({
             state.kind === 'local_apply_error') && (
             <div className="art-modal__confirm">
               <img
+                ref={previewImgRef}
                 className="art-modal__confirm-img art-modal__confirm-img--local"
-                // URL.createObjectURL always returns blob: — validate before rendering.
-                src={state.previewUrl.startsWith('blob:') ? state.previewUrl : ''}
                 alt={state.file.name}
               />
               <div className="art-modal__confirm-meta">
@@ -429,7 +432,7 @@ export function ItunesArtModal({
                   <button
                     className="mb-modal__btn mb-modal__btn--accent"
                     type="button"
-                    onClick={() => void handleApplyLocal(state.file, state.previewUrl)}
+                    onClick={() => void handleApplyLocal(state.file)}
                   >
                     Apply
                   </button>
@@ -444,7 +447,7 @@ export function ItunesArtModal({
                     <button
                       className="mb-modal__btn mb-modal__btn--accent"
                       type="button"
-                      onClick={() => void handleApplyLocal(state.file, state.previewUrl)}
+                      onClick={() => void handleApplyLocal(state.file)}
                     >
                       Retry
                     </button>

@@ -17,6 +17,10 @@ declare global {
       pipeline: {
         onStage: (callback: (stage: string) => void) => () => void
       }
+      onUpdateAvailable: (
+        callback: (data: { version: string; notes: string }) => void
+      ) => () => void
+      dismissUpdate: (version: string) => Promise<void>
       getApiToken: () => string | null
       showItemInFolder: (filePath: string) => void
     }

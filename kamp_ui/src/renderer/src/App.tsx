@@ -18,6 +18,7 @@ import { SplashScreen } from './components/SplashScreen'
 import { TransportBar } from './components/TransportBar'
 import { SandboxedExtensionLoader } from './components/SandboxedExtensionLoader'
 import { ExtensionPermissionPrompt } from './components/ExtensionPermissionPrompt'
+import { UpdateBanner } from './components/UpdateBanner'
 import { registerBuiltInPanel, usePanelLayout } from './hooks/usePanelLayout'
 import { useExtensionState } from './hooks/useExtensionState'
 import type { UnifiedPanel } from './hooks/usePanelLayout'
@@ -107,6 +108,7 @@ export default function App(): React.JSX.Element {
   const toggleArtistPanel = useStore((s) => s.toggleArtistPanel)
   const openPrefs = useStore((s) => s.openPrefs)
   const selectArtist = useStore((s) => s.selectArtist)
+  const setUpdateAvailable = useStore((s) => s.setUpdateAvailable)
 
   const layout = usePanelLayout()
   const extState = useExtensionState()
@@ -175,6 +177,12 @@ export default function App(): React.JSX.Element {
     }
     return () => clearTimeout(slowStartTimerRef.current)
   }, [serverStatus])
+
+  // Subscribe to update notifications pushed from the main process.
+  useEffect(
+    () => window.api.onUpdateAvailable((data) => setUpdateAvailable(data)),
+    [setUpdateAvailable]
+  )
 
   // Determine onboarding requirement once the splash clears (by which time
   // loadConfig has had ~1.5s to complete and configuredLibraryPath is stable).
@@ -584,6 +592,7 @@ export default function App(): React.JSX.Element {
         {!showSetup && isPanelVisible(rightPanel) && <SlotPanel panel={rightPanel!} />}
       </div>
       {bottomPanel && <SlotPanel panel={bottomPanel} />}
+      <UpdateBanner />
       {!splashGone && <SplashScreen hiding={splashHiding} slowStart={slowStart} />}
       <PreferencesDialog
         extensions={allExtensions}

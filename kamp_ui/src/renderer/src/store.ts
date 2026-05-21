@@ -179,6 +179,10 @@ type PlayerStore = {
   setConfigValue: (key: string, value: string) => Promise<void>
   openPrefs: (tab?: 'general' | 'services' | 'extensions') => void
   closePrefs: () => void
+
+  // Update notification
+  updateAvailable: { version: string; notes: string } | null
+  setUpdateAvailable: (data: { version: string; notes: string } | null) => void
 }
 
 const initialPlayer: PlayerState = {
@@ -276,6 +280,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   configValues: null,
   prefsOpen: false,
   prefsInitialTab: 'general',
+  updateAvailable: null,
   deferredOps: {},
 
   setAudioLevel: (leftDb, rightDb, crestDb, peakDb) => set({ leftDb, rightDb, crestDb, peakDb }),
@@ -804,6 +809,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   openPrefs: (tab) => set({ prefsOpen: true, prefsInitialTab: tab ?? 'general' }),
   closePrefs: () => set({ prefsOpen: false }),
+  setUpdateAvailable: (data) => set({ updateAvailable: data }),
 
   scanLibrary: async () => {
     set({ scanStatus: 'scanning', scanError: null, scanProgress: null })

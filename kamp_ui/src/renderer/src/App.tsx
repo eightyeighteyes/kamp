@@ -545,7 +545,7 @@ export default function App(): React.JSX.Element {
   const isPanelVisible = (p: UnifiedPanel | undefined): boolean => {
     if (!p) return false
     if (p.id === 'kamp.queue') return queueVisible
-    if (p.id === 'kamp.artist-list') return artistPanelVisible
+    if (p.id === 'kamp.artist-list') return activeView === 'library' && artistPanelVisible
     return true
   }
 

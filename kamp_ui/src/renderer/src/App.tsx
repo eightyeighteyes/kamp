@@ -179,7 +179,10 @@ export default function App(): React.JSX.Element {
   }, [serverStatus])
 
   // Subscribe to update notifications pushed from the main process.
-  useEffect(() => window.api.onUpdateAvailable((data) => setUpdateAvailable(data)), [setUpdateAvailable])
+  useEffect(
+    () => window.api.onUpdateAvailable((data) => setUpdateAvailable(data)),
+    [setUpdateAvailable]
+  )
 
   // Determine onboarding requirement once the splash clears (by which time
   // loadConfig has had ~1.5s to complete and configuredLibraryPath is stable).

@@ -70,8 +70,7 @@ const api = {
     ipcRenderer.on('update:available', handler)
     return () => ipcRenderer.off('update:available', handler)
   },
-  dismissUpdate: (version: string): Promise<void> =>
-    ipcRenderer.invoke('update:dismiss', version),
+  dismissUpdate: (version: string): Promise<void> => ipcRenderer.invoke('update:dismiss', version),
   // Re-reads from disk so Electron picks up a fresh token after daemon restart.
   getApiToken: (): string | null => _readKampToken(),
   showItemInFolder: (filePath: string): void =>

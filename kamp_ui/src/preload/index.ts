@@ -68,6 +68,12 @@ const api = {
       data: { version: string; notes: string }
     ): void => callback(data)
     ipcRenderer.on('update:available', handler)
+    // Also pull any update that resolved before this listener was registered.
+    void ipcRenderer
+      .invoke('update:get-pending')
+      .then((pending: { version: string; notes: string } | null) => {
+        if (pending) callback(pending)
+      })
     return () => ipcRenderer.off('update:available', handler)
   },
   dismissUpdate: (version: string): Promise<void> => ipcRenderer.invoke('update:dismiss', version),

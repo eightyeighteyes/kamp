@@ -343,21 +343,41 @@ function semverGt(a: string, b: string): boolean {
   return aPatch > bPatch
 }
 
+// Stored so the renderer can pull it via 'update:get-pending' on mount,
+// avoiding the race between net.fetch resolving and ipcRenderer.on subscribing.
+let _pendingUpdate: ReleaseEntry | null = null
+
 async function checkForUpdate(win: BrowserWindow): Promise<void> {
   try {
     const fake = process.env['KAMP_FAKE_UPDATE'] === '1'
+    console.log('[kamp update] checking (fake=%s, installed=%s)', fake, app.getVersion())
     const res = await net.fetch('https://kamp.fm/releases.json')
-    if (!res.ok) return
+    if (!res.ok) {
+      console.log('[kamp update] fetch failed: HTTP %d', res.status)
+      return
+    }
     const releases = (await res.json()) as ReleaseEntry[]
-    if (!releases.length) return
+    if (!releases.length) {
+      console.log('[kamp update] releases.json is empty')
+      return
+    }
     const latest = releases[0]
     const installed = app.getVersion()
-    if (!fake && !semverGt(latest.version, installed)) return
+    console.log('[kamp update] latest=%s installed=%s', latest.version, installed)
+    if (!fake && !semverGt(latest.version, installed)) {
+      console.log('[kamp update] already on latest version')
+      return
+    }
     const state = readUpdateState()
-    if (!fake && state?.dismissedVersion === latest.version) return
-    win.webContents.send('update:available', { version: latest.version, notes: latest.notes })
-  } catch {
-    // Non-critical — silently skip on network or parse error.
+    if (!fake && state?.dismissedVersion === latest.version) {
+      console.log('[kamp update] %s already dismissed', latest.version)
+      return
+    }
+    _pendingUpdate = { version: latest.version, notes: latest.notes }
+    console.log('[kamp update] sending update:available for %s', latest.version)
+    win.webContents.send('update:available', _pendingUpdate)
+  } catch (err) {
+    console.error('[kamp update] error:', err)
   }
 }
 
@@ -880,6 +900,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('update:dismiss', (_event, version: string) => {
     writeUpdateState({ dismissedVersion: version })
   })
+
+  // Renderer calls this on mount so it can pick up an update that resolved
+  // before ipcRenderer.on('update:available') was registered (timing race).
+  ipcMain.handle('update:get-pending', () => _pendingUpdate)
 
   ipcMain.handle('open-directory', async () => {
     const result = await dialog.showOpenDialog({

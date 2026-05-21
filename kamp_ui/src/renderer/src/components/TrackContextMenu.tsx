@@ -2,7 +2,7 @@ import React from 'react'
 import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
-import { PlayNextIcon, QueueAddIcon } from './TransportIcons'
+import { FavoriteIcon, PlayNextIcon, QueueAddIcon } from './TransportIcons'
 import type { Track } from '../api/client'
 
 interface Props {
@@ -54,19 +54,11 @@ export function TrackContextMenu({ x, y, track, onClose }: Props): React.JSX.Ele
           onClose()
         }}
       >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill={track.favorite ? 'currentColor' : 'none'}
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0 }}
+        <span
+          style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}
         >
-          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-        </svg>
+          <FavoriteIcon active={!track.favorite} size={12} />
+        </span>
         {track.favorite ? 'Remove from Favorites' : 'Add to Favorites'}
       </button>
       <button

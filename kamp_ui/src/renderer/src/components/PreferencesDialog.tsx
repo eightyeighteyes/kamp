@@ -1198,9 +1198,7 @@ export function PreferencesDialog({
                       >
                         Join Discord
                       </button>
-                      <p className="prefs-hint">
-                        Give feedback and connect with other Kamp users.
-                      </p>
+                      <p className="prefs-hint">Give feedback and connect with other Kamp users.</p>
                     </div>
                   </div>
                 </>

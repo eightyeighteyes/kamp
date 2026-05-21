@@ -1,6 +1,11 @@
-import React, { useState } from 'react'
+import React, { lazy, Suspense, useState } from 'react'
 import { useStore } from '../store'
-import { UpdateNotesModal } from './UpdateNotesModal'
+
+// Lazy-loaded so react-markdown (and its unified/remark/rehype chain) is only
+// evaluated when the user opens the modal, not on every app startup.
+const UpdateNotesModal = lazy(() =>
+  import('./UpdateNotesModal').then((m) => ({ default: m.UpdateNotesModal }))
+)
 
 export function UpdateBanner(): React.JSX.Element | null {
   const updateAvailable = useStore((s) => s.updateAvailable)
@@ -26,12 +31,14 @@ export function UpdateBanner(): React.JSX.Element | null {
         </button>
       </div>
       {notesOpen && (
-        <UpdateNotesModal
-          version={updateAvailable.version}
-          notes={updateAvailable.notes}
-          onClose={() => setNotesOpen(false)}
-          onDismiss={dismiss}
-        />
+        <Suspense fallback={null}>
+          <UpdateNotesModal
+            version={updateAvailable.version}
+            notes={updateAvailable.notes}
+            onClose={() => setNotesOpen(false)}
+            onDismiss={dismiss}
+          />
+        </Suspense>
       )}
     </>
   )

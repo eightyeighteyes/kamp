@@ -897,6 +897,10 @@ app.whenReady().then(async () => {
     shell.showItemInFolder(filePath)
   })
 
+  ipcMain.on('shell:open-external', (_event, url: string) => {
+    void shell.openExternal(url)
+  })
+
   ipcMain.handle('update:dismiss', (_event, version: string) => {
     writeUpdateState({ dismissedVersion: version })
   })

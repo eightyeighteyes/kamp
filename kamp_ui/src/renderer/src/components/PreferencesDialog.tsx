@@ -1187,6 +1187,22 @@ export function PreferencesDialog({
                       onSave={handleArtworkSave}
                     />
                   </div>
+
+                  {/* ABOUT */}
+                  <div className="prefs-section">
+                    <div className="prefs-section-label">About</div>
+                    <div className="prefs-row">
+                      <button
+                        className="prefs-choose-btn"
+                        onClick={() => window.api.openExternal('https://discord.gg/VRkRnmAcNj')}
+                      >
+                        Join Discord
+                      </button>
+                      <p className="prefs-hint">
+                        Give feedback and connect with other Kamp users.
+                      </p>
+                    </div>
+                  </div>
                 </>
               )}
             </>

@@ -23,6 +23,7 @@ declare global {
       dismissUpdate: (version: string) => Promise<void>
       getApiToken: () => string | null
       showItemInFolder: (filePath: string) => void
+      openExternal: (url: string) => void
     }
     KampAPI: KampAPI
   }

@@ -14,32 +14,91 @@ const STEP_TITLES: Record<OnboardingStep, string> = {
   'almost-done': 'Almost Done'
 }
 
-const STATIC_STRINGS = [
-  'Almost done…',
-  'Just a little bit longer…',
+// Movement 1: shown sequentially, each exactly once, before anything else.
+const USAGE_TIPS = [
   "In the Library, press 'A' to show or hide the Artist panel",
   "The 'Now Playing' tab shows off your album art",
   "Press 'Q' at any time to show or hide the Queue panel",
+  'Drag albums from the Library straight into the Queue.',
+  'Right click albums to favorite them or slot them in the queue.',
+  'Base Kamp is configurable. Make it yours with the gear icon.',
+  'A ten dollar digital album sale is worth 3000 streams to an artist. Your support matters.'
+]
+
+// Movement 2 filler: general waiting strings mixed into the random pool after tips are done.
+const FILLER_STRINGS = [
+  'Almost done…',
+  'Just a little bit longer…',
   'Good things are worth waiting for…',
   'What are you gonna listen to first?'
 ]
 
-function buildDynamicStrings(progress: ScanProgress | null): string[] {
+// Movement 3 stingers: combined with a stat root each time a finalizing string is shown.
+const FINALIZING_STINGERS = [
+  ' waiting to be adored.',
+  '… so far…',
+  ' and counting.',
+  ". I'm not even kidding.",
+  ', every one a keeper.',
+  '. Seriously.',
+  ', all of them skip-proof.',
+  ', each one deserving of praise.',
+  ". You've got a lot of listening ahead of you.",
+  ". That's a lot.",
+  ' ready for a spin.',
+  ". We're almost done here.",
+  ' waiting for the needle to drop.',
+  ' currently charming your hard drive.',
+  ', all thriller, no filler.',
+  ' about to melt your face.',
+  ' waiting for your love.',
+  ' ready to rock the party.',
+  ". Calm down. We're nearly there.",
+  ". It's a love affair.",
+  ". This is so going to be worth it when we're done."
+]
+
+type DynamicString = { id: string; text: string }
+
+function buildDynamicStrings(progress: ScanProgress | null): DynamicString[] {
   if (!progress?.active) return []
-  const strings: string[] = []
+  const out: DynamicString[] = []
+  const add = (id: string, text: string): void => {
+    out.push({ id, text })
+  }
   if (progress.current_file && progress.current_artist)
-    strings.push(`My favorite song is ${progress.current_file} by ${progress.current_artist}…`)
-  if (progress.top_artist) strings.push(`${progress.top_artist}? Exquisite taste.`)
+    add('fav-song', `My favorite song is ${progress.current_file} by ${progress.current_artist}…`)
   if (progress.current_artist)
-    strings.push(`Ooooh, I haven't heard ${progress.current_artist} in ages!`)
+    add('exquisite-taste', `${progress.current_artist}? Exquisite taste.`)
+  if (progress.current_artist)
+    add('havent-heard', `Ooooh, I haven't heard ${progress.current_artist} in ages!`)
   if (progress.current_artist && progress.current_file)
-    strings.push(`${progress.current_artist}'s "${progress.current_file}"? Killer song.`)
+    add('killer-song', `${progress.current_artist}'s "${progress.current_file}"? Killer song.`)
   if (progress.current_artist)
-    strings.push(`I'd sell my left kidney to see ${progress.current_artist} live…`)
+    add('left-kidney', `I'd sell my left kidney to see ${progress.current_artist} live…`)
   if (progress.current_artist)
-    strings.push(
+    add(
+      'underrated',
       `Nobody will say it out loud, but ${progress.current_artist} is totally underrated.`
     )
+  if (progress.top_artist)
+    add('carrying', `${progress.top_artist} has been carrying this library for a while now, huh.`)
+  if (progress.current_artist)
+    add(
+      'tiny-venue',
+      `If ${progress.current_artist} played a tiny venue tomorrow, you'd already have a ticket.`
+    )
+  return out
+}
+
+function buildFinalizingStrings(progress: ScanProgress | null): string[] {
+  if (!progress?.active) return []
+  const stinger = (): string =>
+    FINALIZING_STINGERS[Math.floor(Math.random() * FINALIZING_STINGERS.length)]
+  const strings: string[] = []
+  if (progress.num_albums) strings.push(`${progress.num_albums} albums${stinger()}`)
+  if (progress.current > 0) strings.push(`${progress.current} songs${stinger()}`)
+  if (progress.num_artists) strings.push(`${progress.num_artists} artists${stinger()}`)
   return strings
 }
 
@@ -80,7 +139,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
   const [lastfmUsername, setLastfmUsername] = useState('')
   const [lastfmPassword, setLastfmPassword] = useState('')
   const [lastfmBusy, setLastfmBusy] = useState(false)
-  const [currentString, setCurrentString] = useState(STATIC_STRINGS[0])
+  const [currentString, setCurrentString] = useState(USAGE_TIPS[0])
   const [stringVisible, setStringVisible] = useState(true)
   const [showAllSet, setShowAllSet] = useState(false)
   // Fade transition state for content changes
@@ -137,26 +196,51 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
 
   // Keep refs so the rotation interval can read the latest values without
   // needing them as dependencies (which would restart the interval on every poll tick).
-  const dynamicStringsRef = useRef<string[]>([])
-  const stringPosRef = useRef(0)
+  const dynamicStringsRef = useRef<DynamicString[]>([])
+  const scanProgressRef = useRef<typeof scanProgress>(null)
+  // USAGE_TIPS[0] is the initial displayed value, so start at 1.
+  const tipIndexRef = useRef(1)
+  // Dynamic strings are one-shots; track shown template IDs so they never repeat.
+  const shownDynamicRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     dynamicStringsRef.current = buildDynamicStrings(scanProgress)
+    scanProgressRef.current = scanProgress
   }, [scanProgress])
 
-  // Rotate the 'Almost done' strings every 4s with a fade.
-  // The next string is snapshotted during the fade-out so live scanProgress
-  // updates between rotations never mutate the currently visible string.
+  // Rotate the 'Almost done' strings every 3s with a fade.
+  // Movement 1: USAGE_TIPS play sequentially, each once.
+  // Movement 2: dynamic strings are one-shots keyed by template ID; popped once shown.
+  // Movement 3: finalizing strings cycle continuously (fresh random stinger each rotation).
+  // FILLER_STRINGS are a last resort when no dynamic or finalizing strings are available yet.
   useEffect(() => {
     if (step !== 'almost-done') return
     const t = setInterval(() => {
       setStringVisible(false)
       setTimeout(() => {
-        const pool = [...STATIC_STRINGS, ...dynamicStringsRef.current]
-        stringPosRef.current = (stringPosRef.current + 1) % pool.length
-        setCurrentString(pool[stringPosRef.current])
+        let next: string
+        if (tipIndexRef.current < USAGE_TIPS.length) {
+          next = USAGE_TIPS[tipIndexRef.current]
+          tipIndexRef.current++
+        } else {
+          const unseenDynamic = dynamicStringsRef.current.filter(
+            (s) => !shownDynamicRef.current.has(s.id)
+          )
+          // Rebuild finalizing strings here so each rotation gets a fresh random stinger.
+          const finalizing = buildFinalizingStrings(scanProgressRef.current)
+          if (unseenDynamic.length > 0 || finalizing.length > 0) {
+            const dynTexts = unseenDynamic.map((s) => s.text)
+            const pool = [...dynTexts, ...finalizing]
+            const idx = Math.floor(Math.random() * pool.length)
+            next = pool[idx]
+            if (idx < dynTexts.length) shownDynamicRef.current.add(unseenDynamic[idx].id)
+          } else {
+            next = FILLER_STRINGS[Math.floor(Math.random() * FILLER_STRINGS.length)]
+          }
+        }
+        setCurrentString(next)
         setStringVisible(true)
       }, 350)
-    }, 3000)
+    }, 5000)
     return () => clearInterval(t)
   }, [step])
 

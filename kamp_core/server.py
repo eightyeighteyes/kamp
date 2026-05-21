@@ -482,6 +482,8 @@ def create_app(
             "current_file": None,
             "current_artist": None,
             "top_artist": None,
+            "num_albums": 0,
+            "num_artists": 0,
         },
         "ui_active_view": ui_active_view,
         "ui_sort_order": ui_sort_order,
@@ -1844,8 +1846,9 @@ def create_app(
         if _state["library_path"] is None:
             raise HTTPException(status_code=503, detail="Library path not configured")
 
-        # Running artist frequency map, accumulated across all on_progress calls.
+        # Running artist frequency map and unique album set, accumulated across all on_progress calls.
         artist_counts: dict[str, int] = {}
+        albums_seen: set[tuple[str, str]] = set()
 
         def _on_progress(current: int, total: int, track: Track | None) -> None:
             current_file: str | None = None
@@ -1857,6 +1860,8 @@ def create_app(
                     artist_counts[current_artist] = (
                         artist_counts.get(current_artist, 0) + 1
                     )
+                if track.album.strip():
+                    albums_seen.add((track.album_artist, track.album))
             top_artist = (
                 max(artist_counts, key=lambda a: artist_counts[a])
                 if artist_counts
@@ -1869,6 +1874,8 @@ def create_app(
                 "current_file": current_file,
                 "current_artist": current_artist,
                 "top_artist": top_artist,
+                "num_albums": len(albums_seen),
+                "num_artists": len(artist_counts),
             }
 
         _state["scan_progress"] = {
@@ -1878,6 +1885,8 @@ def create_app(
             "current_file": None,
             "current_artist": None,
             "top_artist": None,
+            "num_albums": 0,
+            "num_artists": 0,
         }
         try:
             result = LibraryScanner(index).scan(
@@ -1891,6 +1900,8 @@ def create_app(
                 "current_file": None,
                 "current_artist": None,
                 "top_artist": None,
+                "num_albums": 0,
+                "num_artists": 0,
             }
 
         return ScanResult(

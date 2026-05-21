@@ -694,6 +694,8 @@ class TestScanProgressEndpoint:
         assert data["active"] is False
         assert data["current"] == 0
         assert data["total"] == 0
+        assert data["num_albums"] == 0
+        assert data["num_artists"] == 0
 
     def test_progress_callback_updates_state(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -771,6 +773,8 @@ class TestScanProgressEndpoint:
         assert data["current_file"] == "Tha"
         assert data["current_artist"] == "Aphex Twin"
         assert data["top_artist"] == "Aphex Twin"
+        assert data["num_artists"] == 1
+        assert data["num_albums"] == 1
 
 
 # ---------------------------------------------------------------------------

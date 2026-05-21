@@ -208,6 +208,8 @@ export type ScanProgress = {
   current_file?: string | null
   current_artist?: string | null
   top_artist?: string | null
+  num_albums?: number | null
+  num_artists?: number | null
 }
 
 export const getScanProgress = (): Promise<ScanProgress> => get('/api/v1/library/scan/progress')

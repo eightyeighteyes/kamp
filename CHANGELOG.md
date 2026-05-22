@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.20.0](https://github.com/eightyeighteyes/kamp/compare/v1.19.0...v1.20.0) (2026-05-21)
+
+
+### Features
+
+* **KAMP-230:** MusicBrainz fetch & compare in album edit mode ([#426](https://github.com/eightyeighteyes/kamp/issues/426)) ([93fafaa](https://github.com/eightyeighteyes/kamp/commit/93fafaa2620ef778b484a19045d2774304207abf))
+* **KAMP-231:** MusicBrainz candidate navigation ([#427](https://github.com/eightyeighteyes/kamp/issues/427)) ([edd4ce0](https://github.com/eightyeighteyes/kamp/commit/edd4ce0506c2ab0fa938289d4de16ac278035aa0))
+* **KAMP-273:** add bonus dynamic and static strings for onboarding ([#436](https://github.com/eightyeighteyes/kamp/issues/436)) ([4f4ebe4](https://github.com/eightyeighteyes/kamp/commit/4f4ebe4b48def444fc822e690eb6696d42c3e7d5))
+* **KAMP-319:** real-time per-channel audio levels via mpv stdout ([#400](https://github.com/eightyeighteyes/kamp/issues/400)) ([a601f4a](https://github.com/eightyeighteyes/kamp/commit/a601f4a987bd75f3d50fb163c775449efbb38b59))
+* **KAMP-320:** StereoRackModule shell — context, rAF loop, Zustand level subscription ([#409](https://github.com/eightyeighteyes/kamp/issues/409)) ([ed53c0b](https://github.com/eightyeighteyes/kamp/commit/ed53c0b3ae5d4f8e85237adc7bf0aa6cc047e6a8))
+* **KAMP-321:** VUMeter component — 24-segment layout, zone coloring, design tokens ([#410](https://github.com/eightyeighteyes/kamp/issues/410)) ([536d7a3](https://github.com/eightyeighteyes/kamp/commit/536d7a329efdb020e03e1b4cd9c691ce885f014d))
+* **KAMP-322:** VU meter imperative draw — levelDb → segments, 18dB/sec decay ([#411](https://github.com/eightyeighteyes/kamp/issues/411)) ([0ccd92c](https://github.com/eightyeighteyes/kamp/commit/0ccd92c5172bad666626fdb7e89a749497eef6c7))
+* **KAMP-323:** VU meter peak hold — 1.5s hold, 600ms CSS fade ([#412](https://github.com/eightyeighteyes/kamp/issues/412)) ([e9c0a55](https://github.com/eightyeighteyes/kamp/commit/e9c0a55b96e25840d6cadd66cacea7f76341bc4e))
+* **KAMP-324:** Oscilloscope canvas — HiDPI, ResizeObserver, parametric waveform ([#413](https://github.com/eightyeighteyes/kamp/issues/413)) ([5c5f082](https://github.com/eightyeighteyes/kamp/commit/5c5f082c73b28afa54dbef938d5660e92848d62e))
+* **KAMP-325:** TrackDisplay layout — monospace 11px, artist/title/time, format badge ([#414](https://github.com/eightyeighteyes/kamp/issues/414)) ([d531f46](https://github.com/eightyeighteyes/kamp/commit/d531f46a5b428ae51f7c16cb28e41fce490a04f8))
+* **KAMP-326:** TrackDisplay scroll state machine ([#415](https://github.com/eightyeighteyes/kamp/issues/415)) ([8965b18](https://github.com/eightyeighteyes/kamp/commit/8965b1841757d09c51eb7266eb064a100da64ca3))
+* **KAMP-327:** Container query compact variant — VU stacking, oscilloscope collapse ([#419](https://github.com/eightyeighteyes/kamp/issues/419)) ([97d4e68](https://github.com/eightyeighteyes/kamp/commit/97d4e68f373ec9b66aaae069c59e59a2237af3f2))
+* **KAMP-328:** Cold Boot Calibration — VU sweep, oscilloscope sine, INIT stamp ([#416](https://github.com/eightyeighteyes/kamp/issues/416)) ([a1a75c6](https://github.com/eightyeighteyes/kamp/commit/a1a75c696efccc88b8cd1e9b3620f038f8672cec))
+* **KAMP-329:** Pause Pendulum — oscilloscope drift, half-rate cursor blink, VU decay ([#421](https://github.com/eightyeighteyes/kamp/issues/421)) ([723208b](https://github.com/eightyeighteyes/kamp/commit/723208b55fd37c524bbefbbfd01b5b38e154c943))
+* **KAMP-330:** Dead Air — thermal noise, blinking cursor, --:-- display ([#417](https://github.com/eightyeighteyes/kamp/issues/417)) ([fcc0dde](https://github.com/eightyeighteyes/kamp/commit/fcc0ddee602fbba6868bc7a58dcd3a1e50928733))
+* **KAMP-332:** First Track of the Day — localStorage date compare, 8s date line ([#418](https://github.com/eightyeighteyes/kamp/issues/418)) ([02eafdf](https://github.com/eightyeighteyes/kamp/commit/02eafdf8ce6d8be2de40bead9ea1343a64007fdb))
+* **KAMP-334:** Stereo Rack polish — remove bottom pad, add to default setup ([#423](https://github.com/eightyeighteyes/kamp/issues/423)) ([e0446e9](https://github.com/eightyeighteyes/kamp/commit/e0446e9d886e9506c101a4e590ee73be3df9d74d))
+* **KAMP-336:** Stereo Rack preferences ([#422](https://github.com/eightyeighteyes/kamp/issues/422)) ([c847f2b](https://github.com/eightyeighteyes/kamp/commit/c847f2bcdce2c3815fdfa5007eaeaa6d0f2bf2a0))
+* **KAMP-339:** clear search when navigating to a view tab ([#425](https://github.com/eightyeighteyes/kamp/issues/425)) ([b1d5d58](https://github.com/eightyeighteyes/kamp/commit/b1d5d58b7adaddcd22c7720b13b2fd96e8e27491))
+* **KAMP-341:** fetch album art from iTunes Search API ([#430](https://github.com/eightyeighteyes/kamp/issues/430)) ([98428b8](https://github.com/eightyeighteyes/kamp/commit/98428b8dfaba41fefbe01c22d99c18a43ecb9c6c))
+* **KAMP-342/348:** in-app update notification banner and release notes modal ([#439](https://github.com/eightyeighteyes/kamp/issues/439)) ([4862ba3](https://github.com/eightyeighteyes/kamp/commit/4862ba3cd60795255abbd0eba02912eb82396b3b))
+* **KAMP-344:** local file album art ([#432](https://github.com/eightyeighteyes/kamp/issues/432)) ([ec51d09](https://github.com/eightyeighteyes/kamp/commit/ec51d098b33eda4b57af2691ace45ab05a38f95a))
+* **KAMP-345:** COV link in album art modal ([#433](https://github.com/eightyeighteyes/kamp/issues/433)) ([5cef5eb](https://github.com/eightyeighteyes/kamp/commit/5cef5ebcaddae36f7cc96a29341368118fc10e60))
+* **KAMP-347:** add Discord link to Preferences About section ([#441](https://github.com/eightyeighteyes/kamp/issues/441)) ([ad99abb](https://github.com/eightyeighteyes/kamp/commit/ad99abbc68e8b23d554655a76689bef6ec79e3ef))
+* **KAMP-82:** save album art as cover file or embedded per preference ([#435](https://github.com/eightyeighteyes/kamp/issues/435)) ([45661e2](https://github.com/eightyeighteyes/kamp/commit/45661e2028d8576feef8e201b77988e87d341279))
+* oscilloscope standing-wave with transient reactivity ([#420](https://github.com/eightyeighteyes/kamp/issues/420)) ([a60f4f4](https://github.com/eightyeighteyes/kamp/commit/a60f4f42ec2567a1a1f2f0dc649a9e4c63db41a9))
+
+
+### Bug Fixes
+
+* **KAMP-317, KAMP-80:** rename MusicBrainz Release Id → Album Id (Picard canonical) ([#428](https://github.com/eightyeighteyes/kamp/issues/428)) ([8777a99](https://github.com/eightyeighteyes/kamp/commit/8777a99fd3e49574c5435753235be4b1e9c2ab54))
+* **KAMP-335:** start playback when add/play-next called with no track loaded ([#424](https://github.com/eightyeighteyes/kamp/issues/424)) ([f831b36](https://github.com/eightyeighteyes/kamp/commit/f831b36d01a4ac88ba7e06c0b5a31181c4c64766))
+* **KAMP-338:** gate artist panel render on library view ([#437](https://github.com/eightyeighteyes/kamp/issues/437)) ([abec303](https://github.com/eightyeighteyes/kamp/commit/abec303dc58c506ca03785e6f31b4e6ecd3f4b85))
+* **KAMP-341:** post-review corrections to album art fetch ([#431](https://github.com/eightyeighteyes/kamp/issues/431)) ([b6f37a1](https://github.com/eightyeighteyes/kamp/commit/b6f37a1253f7674b90db84ba8c6436251001dd25))
+* **KAMP-346:** use FavoriteIcon with inverted prop in album and track context menus ([#438](https://github.com/eightyeighteyes/kamp/issues/438)) ([b40a137](https://github.com/eightyeighteyes/kamp/commit/b40a1373f2b22ff49ca59ad6ab1e65fdd5854d3e))
+
+
+### Documentation
+
+* update readme ([#434](https://github.com/eightyeighteyes/kamp/issues/434)) ([f752bb8](https://github.com/eightyeighteyes/kamp/commit/f752bb8adfc4d1c051489b8b8adfe62add0123d3))
+
 ## [1.19.0](https://github.com/eightyeighteyes/kamp/compare/v1.18.0...v1.19.0) (2026-05-16)
 
 

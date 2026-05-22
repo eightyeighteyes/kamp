@@ -62,6 +62,7 @@ def test_frozen_bundle_without_env_var_uses_meipass(tmp_path):
         patch.dict("os.environ", without_kamp_mpv_bin, clear=True),
         patch.object(sys, "frozen", True, create=True),
         patch.object(sys, "_MEIPASS", str(internal), create=True),
+        patch("kamp_daemon.__main__.sys.platform", "darwin"),
         patch("kamp_daemon.__main__._HOMEBREW_MPV_PATHS", []),
         patch("kamp_daemon.__main__._WIN_MPV_PATHS", []),
     ):

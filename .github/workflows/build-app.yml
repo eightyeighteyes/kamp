@@ -1,7 +1,12 @@
 name: Build App
 
 on:
-  workflow_dispatch: # manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      debug_macos:
+        description: 'SSH into macOS 14 ARM runner with built bundle (tmate)'
+        type: boolean
+        default: false
   release:
     types: [published] # also fires alongside release.yml on each release
 
@@ -644,3 +649,42 @@ jobs:
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
             kamp_ui/dist/*.exe
+
+  # Manual debug job: SSH into a macOS 14 Apple Silicon runner with the freshly
+  # built ARM bundle to reproduce and investigate deployment-target crashes.
+  # Triggered via workflow_dispatch with the debug_macos input checked.
+  # bundle-arm64 is the raw kamp_ui/resources/ directory (NOT a DMG) — no mounting needed.
+  debug-macos:
+    needs: build-bundle
+    if: github.event_name == 'workflow_dispatch' && inputs.debug_macos == true
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Download ARM bundle artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: bundle-arm64
+          path: kamp_ui/resources/
+
+      - name: Restore execute permissions
+        run: |
+          chmod +x kamp_ui/resources/mpv \
+                   kamp_ui/resources/kamp/kamp
+          find kamp_ui/resources/mpv-libs -name "*.dylib" \
+            -exec chmod +x {} \; 2>/dev/null || true
+
+      - name: Show build diagnostics
+        run: |
+          echo "→ macOS version:"
+          sw_vers
+          echo "→ Deployment target stamped in mpv binary:"
+          vtool -show-build kamp_ui/resources/mpv
+          echo "→ mpv --version (fails if deployment target still wrong):"
+          kamp_ui/resources/mpv --version || true
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@c0afd6f790e3a5564914980036ebf83216678101  # v3
+        timeout-minutes: 45
+        with:
+          limit-access-to-actor: true

@@ -22,7 +22,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-latest   # Apple Silicon (arm64)
+            runner: macos-14   # Apple Silicon (arm64) — Xcode 15 / Swift 5.10, compatible with macOS 14+
           - arch: x64
             runner: macos-15-intel # Intel (x64)
     runs-on: ${{ matrix.runner }}
@@ -234,7 +234,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-latest
+            runner: macos-14
           - arch: x64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}

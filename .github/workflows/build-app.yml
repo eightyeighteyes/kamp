@@ -670,7 +670,9 @@ jobs:
       - name: Restore execute permissions
         run: |
           chmod +x kamp_ui/resources/mpv \
-                   kamp_ui/resources/kamp/kamp
+                   kamp_ui/resources/kamp/kamp \
+                   kamp_ui/resources/kamp-keychain-helper \
+                   kamp_ui/resources/now-playing-helper
           find kamp_ui/resources/mpv-libs -name "*.dylib" \
             -exec chmod +x {} \; 2>/dev/null || true
 

@@ -45,6 +45,7 @@ function HeroImage({ src }: { src: string }): React.JSX.Element {
       className={`track-list-hero-img${loaded ? ' loaded' : ''}`}
       src={src}
       alt=""
+      draggable={false}
       onLoad={() => setLoaded(true)}
       onError={() => setLoaded(false)}
     />

@@ -128,6 +128,9 @@ jobs:
           # unconditionally uses Metal APIs only present in macOS 14+. Building with
           # -Dvulkan=disabled prevents dylibbundler from bundling MoltenVK, removing
           # the source of the "missing symbol called" crash on macOS 13.
+          # libplacebo's GLSL preprocessor (tools/glsl_preproc/main.py) requires
+          # jinja2 at build time. Install for Homebrew's python (used by meson).
+          $(brew --prefix)/bin/python3 -m pip install jinja2 --break-system-packages
           LIBPLACEBO_VER=$(brew info --json libplacebo | python3 -c \
             "import sys,json; print(json.load(sys.stdin)[0]['versions']['stable'])")
           git clone --depth=1 --branch "v${LIBPLACEBO_VER}" \

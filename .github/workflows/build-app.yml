@@ -99,27 +99,36 @@ jobs:
         # dyld to abort on macOS 13.
         run: |
           brew install dylibbundler meson ninja libass libplacebo
-          git clone --depth=1 --branch n7.1 \
-            https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg-src
-          cd /tmp/ffmpeg-src
-          ./configure \
-            --prefix=/tmp/ffmpeg \
-            --arch=arm64 \
-            --extra-cflags="-arch arm64 -mmacosx-version-min=13.0" \
-            --extra-ldflags="-arch arm64 -mmacosx-version-min=13.0" \
-            --enable-shared \
-            --disable-static \
-            --disable-programs \
-            --disable-doc \
-            --disable-avfoundation
-          make -j$(sysctl -n hw.ncpu)
-          make install
-          echo "→ FFmpeg libavdevice deployment target (must show minos=13.0):"
-          vtool -show-build /tmp/ffmpeg/lib/libavdevice.dylib
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            # arm64 only: build FFmpeg outside Homebrew so MACOSX_DEPLOYMENT_TARGET
+            # is respected. Homebrew's superenv overrides it to 14.0. --disable-avfoundation
+            # removes the hard ref to _AVCaptureDeviceTypeContinuityCamera (macOS 14 only).
+            git clone --depth=1 --branch n7.1 \
+              https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg-src
+            cd /tmp/ffmpeg-src
+            ./configure \
+              --prefix=/tmp/ffmpeg \
+              --arch=arm64 \
+              --extra-cflags="-arch arm64 -mmacosx-version-min=13.0" \
+              --extra-ldflags="-arch arm64 -mmacosx-version-min=13.0" \
+              --enable-shared \
+              --disable-static \
+              --disable-programs \
+              --disable-doc \
+              --disable-avfoundation
+            make -j$(sysctl -n hw.ncpu)
+            make install
+            echo "→ FFmpeg libavdevice deployment target (must show minos=13.0):"
+            vtool -show-build /tmp/ffmpeg/lib/libavdevice.dylib
+            FFMPEG_PKG_PATH="/tmp/ffmpeg/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
+          else
+            brew install ffmpeg
+            FFMPEG_PKG_PATH="$(brew --prefix)/lib/pkgconfig"
+          fi
           git clone --depth=1 --branch v0.41.0 \
             https://github.com/mpv-player/mpv.git /tmp/mpv-src
           cd /tmp/mpv-src
-          PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" \
+          PKG_CONFIG_PATH="$FFMPEG_PKG_PATH" \
           meson setup build \
             -Dbuildtype=release \
             -Dvapoursynth=disabled \

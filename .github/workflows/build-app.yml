@@ -90,12 +90,36 @@ jobs:
         # (which embeds an unbundleable Python.framework) and drops the bundle
         # from ~47 to ~32 dylibs. libplacebo is a required dep in v0.41.0 and
         # has no disable flag; it pulls in shaderc/vulkan-loader transitively.
+        #
+        # FFmpeg is built from source outside Homebrew because Homebrew's superenv
+        # overrides MACOSX_DEPLOYMENT_TARGET to 14.0 regardless of the job-level
+        # env. Building manually with --extra-cflags="-mmacosx-version-min=13.0"
+        # and --disable-avfoundation removes the hard reference to the macOS 14-only
+        # _AVCaptureDeviceTypeContinuityCamera symbol in libavdevice, which causes
+        # dyld to abort on macOS 13.
         run: |
           brew install dylibbundler meson ninja libass libplacebo
-          brew install --build-from-source ffmpeg
+          git clone --depth=1 --branch n7.1 \
+            https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg-src
+          cd /tmp/ffmpeg-src
+          ./configure \
+            --prefix=/tmp/ffmpeg \
+            --arch=arm64 \
+            --extra-cflags="-arch arm64 -mmacosx-version-min=13.0" \
+            --extra-ldflags="-arch arm64 -mmacosx-version-min=13.0" \
+            --enable-shared \
+            --disable-static \
+            --disable-programs \
+            --disable-doc \
+            --disable-avfoundation
+          make -j$(sysctl -n hw.ncpu)
+          make install
+          echo "→ FFmpeg libavdevice deployment target (must show minos=13.0):"
+          vtool -show-build /tmp/ffmpeg/lib/libavdevice.dylib
           git clone --depth=1 --branch v0.41.0 \
             https://github.com/mpv-player/mpv.git /tmp/mpv-src
           cd /tmp/mpv-src
+          PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" \
           meson setup build \
             -Dbuildtype=release \
             -Dvapoursynth=disabled \
@@ -693,6 +717,11 @@ jobs:
           for f in kamp_ui/resources/mpv kamp_ui/resources/mpv-libs/*.dylib; do
             refs=$(nm -u "$f" 2>/dev/null | grep -i swift || true)
             [ -n "$refs" ] && echo "  $f:" && echo "$refs" | sed 's/^/    /'
+          done
+          echo "→ Deployment target (minos) for each bundled dylib:"
+          for f in kamp_ui/resources/mpv-libs/*.dylib; do
+            minos=$(vtool -show-build "$f" 2>/dev/null | awk '/minos/{print $2}')
+            echo "  $minos  $(basename "$f")"
           done
           echo "→ mpv --version (fails if deployment target still wrong):"
           kamp_ui/resources/mpv --version || true

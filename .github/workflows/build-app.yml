@@ -98,7 +98,7 @@ jobs:
         # _AVCaptureDeviceTypeContinuityCamera symbol in libavdevice, which causes
         # dyld to abort on macOS 13.
         run: |
-          brew install dylibbundler meson ninja libass libplacebo
+          brew install dylibbundler meson ninja libass
           # Build FFmpeg from source outside Homebrew on both architectures.
           # Homebrew's sonoma bottle targets macOS 14.0 on both arm64 and x86_64,
           # causing dyld to abort on macOS 13. Building manually with
@@ -123,10 +123,35 @@ jobs:
           make install
           echo "→ FFmpeg libavdevice deployment target (must show minos=13.0):"
           vtool -show-build /tmp/ffmpeg/lib/libavdevice.dylib
+          # Build libplacebo from source targeting macOS 13 with Vulkan/shaderc disabled.
+          # Homebrew's libplacebo bottle links against libvulkan (MoltenVK), which
+          # unconditionally uses Metal APIs only present in macOS 14+. Building with
+          # -Dvulkan=disabled prevents dylibbundler from bundling MoltenVK, removing
+          # the source of the "missing symbol called" crash on macOS 13.
+          LIBPLACEBO_VER=$(brew info --json libplacebo | python3 -c \
+            "import sys,json; print(json.load(sys.stdin)[0]['versions']['stable'])")
+          git clone --depth=1 --branch "v${LIBPLACEBO_VER}" \
+            https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo-src
+          cd /tmp/libplacebo-src
+          meson setup build \
+            -Dbuildtype=release \
+            -Dc_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dc_link_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dcpp_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dcpp_link_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dvulkan=disabled \
+            -Dshaderc=disabled \
+            -Dlcms=disabled \
+            -Ddemos=false \
+            --prefix=/tmp/libplacebo
+          ninja -C build
+          ninja -C build install
+          echo "→ libplacebo deployment target (must show minos=13.0):"
+          vtool -show-build /tmp/libplacebo/lib/libplacebo.dylib
           git clone --depth=1 --branch v0.41.0 \
             https://github.com/mpv-player/mpv.git /tmp/mpv-src
           cd /tmp/mpv-src
-          PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" \
+          PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig:/tmp/libplacebo/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" \
           meson setup build \
             -Dbuildtype=release \
             -Dvapoursynth=disabled \

@@ -1313,14 +1313,25 @@ def _resolve_kamp_binary() -> str:
 def _resolve_mpv_binary() -> str:
     """Return the absolute path to the mpv binary.
 
-    The .app bundle sets KAMP_MPV_BIN to the bundled binary path; check that
-    first. For launchd (macOS minimal PATH) or an Electron-spawned daemon on
-    Windows (stale parent-shell PATH), fall back to platform-typical install
-    locations before relying on PATH.
+    Electron sets KAMP_MPV_BIN to the bundled binary path before spawning the
+    daemon; trust it unconditionally when present. Skipping the existence check
+    means a bad path surfaces as FileNotFoundError: '/full/path/to/mpv' rather
+    than silently falling through to the bare 'mpv' string.
+
+    Without KAMP_MPV_BIN (e.g. a frozen bundle started outside Electron), infer
+    the path from sys._MEIPASS: kamp/_internal/ → ../../ → mpv[.exe]. Fall back
+    to platform-typical install locations, then PATH.
     """
     env_path = os.environ.get("KAMP_MPV_BIN")
-    if env_path and Path(env_path).exists():
+    if env_path:
         return env_path
+    # Frozen bundle without KAMP_MPV_BIN: infer from _internal/ layout.
+    # Contents/Resources/kamp/_internal/ → ../../ → Contents/Resources/mpv
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        name = Path("mpv", "mpv.exe") if sys.platform == "win32" else Path("mpv")
+        bundled = Path(sys._MEIPASS).parent.parent / name
+        if bundled.exists():
+            return str(bundled)
     fallback_paths = _WIN_MPV_PATHS if sys.platform == "win32" else _HOMEBREW_MPV_PATHS
     for path in fallback_paths:
         if Path(path).exists():

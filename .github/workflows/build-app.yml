@@ -1,7 +1,12 @@
 name: Build App
 
 on:
-  workflow_dispatch: # manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      debug_macos:
+        description: 'SSH into macOS 14 ARM runner with built bundle (tmate)'
+        type: boolean
+        default: false
   release:
     types: [published] # also fires alongside release.yml on each release
 
@@ -17,11 +22,16 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-latest   # Apple Silicon (arm64)
+            runner: macos-14   # Apple Silicon (arm64) — Xcode 15 / Swift 5.10, compatible with macOS 14+
           - arch: x64
             runner: macos-15-intel # Intel (x64)
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    env:
+      # Set the deployment target for the whole job so every compilation step
+      # (poetry install, PyInstaller, mpv meson) stamps minos=13.0 on any
+      # Mach-O it produces. Matches the minimum macOS version we support.
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
@@ -80,11 +90,73 @@ jobs:
         # (which embeds an unbundleable Python.framework) and drops the bundle
         # from ~47 to ~32 dylibs. libplacebo is a required dep in v0.41.0 and
         # has no disable flag; it pulls in shaderc/vulkan-loader transitively.
+        #
+        # FFmpeg is built from source outside Homebrew because Homebrew's superenv
+        # overrides MACOSX_DEPLOYMENT_TARGET to 14.0 regardless of the job-level
+        # env. Building manually with --extra-cflags="-mmacosx-version-min=13.0"
+        # and --disable-avfoundation removes the hard reference to the macOS 14-only
+        # _AVCaptureDeviceTypeContinuityCamera symbol in libavdevice, which causes
+        # dyld to abort on macOS 13.
         run: |
-          brew install dylibbundler meson ninja ffmpeg libass libplacebo
+          brew install dylibbundler meson ninja libass vulkan-headers
+          # Build FFmpeg from source outside Homebrew on both architectures.
+          # Homebrew's sonoma bottle targets macOS 14.0 on both arm64 and x86_64,
+          # causing dyld to abort on macOS 13. Building manually with
+          # -mmacosx-version-min=13.0 and --disable-avfoundation removes the hard
+          # reference to _AVCaptureDeviceTypeContinuityCamera (macOS 14-only symbol).
+          NATIVE_ARCH=$(uname -m)
+          git clone --depth=1 --branch n7.1 \
+            https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg-src
+          cd /tmp/ffmpeg-src
+          ./configure \
+            --prefix=/tmp/ffmpeg \
+            --arch="$NATIVE_ARCH" \
+            --extra-cflags="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            --extra-ldflags="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            --enable-shared \
+            --disable-static \
+            --disable-programs \
+            --disable-doc \
+            --disable-avfoundation \
+            --disable-x86asm
+          make -j$(sysctl -n hw.ncpu)
+          make install
+          echo "→ FFmpeg libavdevice deployment target (must show minos=13.0):"
+          vtool -show-build /tmp/ffmpeg/lib/libavdevice.dylib
+          # Build libplacebo from source targeting macOS 13 with Vulkan/shaderc disabled.
+          # Homebrew's libplacebo bottle links against libvulkan (MoltenVK), which
+          # unconditionally uses Metal APIs only present in macOS 14+. Building with
+          # -Dvulkan=disabled prevents dylibbundler from bundling MoltenVK, removing
+          # the source of the "missing symbol called" crash on macOS 13.
+          # libplacebo's GLSL preprocessor (tools/glsl_preproc/main.py) requires
+          # jinja2 at build time. Install for Homebrew's python (used by meson).
+          $(brew --prefix)/bin/python3 -m pip install jinja2 --break-system-packages
+          LIBPLACEBO_VER=$(brew info --json libplacebo | python3 -c \
+            "import sys,json; print(json.load(sys.stdin)[0]['versions']['stable'])")
+          git clone --depth=1 --branch "v${LIBPLACEBO_VER}" \
+            https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo-src
+          cd /tmp/libplacebo-src
+          git submodule update --init
+          meson setup build \
+            -Dbuildtype=release \
+            -Dc_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dc_link_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dcpp_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dcpp_link_args="-arch $NATIVE_ARCH -mmacosx-version-min=13.0" \
+            -Dvulkan=disabled \
+            -Dopengl=disabled \
+            -Dshaderc=disabled \
+            -Dlcms=disabled \
+            -Ddemos=false \
+            --prefix=/tmp/libplacebo
+          ninja -C build
+          ninja -C build install
+          echo "→ libplacebo deployment target (must show minos=13.0):"
+          vtool -show-build /tmp/libplacebo/lib/libplacebo.dylib
           git clone --depth=1 --branch v0.41.0 \
             https://github.com/mpv-player/mpv.git /tmp/mpv-src
           cd /tmp/mpv-src
+          PKG_CONFIG_PATH="/tmp/ffmpeg/lib/pkgconfig:/tmp/libplacebo/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" \
           meson setup build \
             -Dbuildtype=release \
             -Dvapoursynth=disabled \
@@ -105,7 +177,8 @@ jobs:
             -Dalsa=disabled \
             -Dvulkan=disabled \
             -Dshaderc=disabled \
-            -Dpipewire=disabled
+            -Dpipewire=disabled \
+            -Dcocoa=disabled
           ninja -C build
           cp build/mpv "$GITHUB_WORKSPACE/kamp_ui/resources/mpv"
           chmod +x "$GITHUB_WORKSPACE/kamp_ui/resources/mpv"
@@ -153,6 +226,29 @@ jobs:
             exit 1
           fi
           echo "OK: no non-audio dylibs in bundle"
+          echo "→ Verifying no Swift system dylibs were bundled:"
+          SWIFT_LIBS=$(ls kamp_ui/resources/mpv-libs/ | grep '^libswift' || true)
+          if [ -n "$SWIFT_LIBS" ]; then
+            echo "$SWIFT_LIBS"
+            echo "ERROR: Swift dylibs must not be bundled (OS-provided at /usr/lib/swift/)" >&2
+            exit 1
+          fi
+          echo "OK: no Swift dylibs bundled"
+          # Patch any bundled Homebrew Sonoma dylib (minos 14.0) down to 13.0.
+          # Most are pure C/C++ libs with no macOS 14-specific code; their minos=14.0
+          # reflects only the runner OS. On macOS 13, dyld installs "missing stubs"
+          # for all symbols in any library with minos > running OS — any call into
+          # the library aborts with "missing symbol called". vtool changes only the
+          # LC_BUILD_VERSION metadata; no code is altered.
+          for lib in kamp_ui/resources/mpv-libs/*.dylib; do
+            minos=$(vtool -show-build "$lib" 2>/dev/null | awk '/minos/{print $2}')
+            case "$minos" in
+              1[4-9].*|[2-9][0-9].*)
+                vtool -set-build-version macos 13.0 14.0 -output "$lib" "$lib"
+                echo "→ patched minos $minos→13.0: $(basename $lib)"
+                ;;
+            esac
+          done
 
       - name: Build Now Playing helper
         # Compile the Swift helper that owns the macOS Now Playing session and
@@ -220,7 +316,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-latest
+            runner: macos-14
           - arch: x64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
@@ -635,3 +731,56 @@ jobs:
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
             kamp_ui/dist/*.exe
+
+  # Manual debug job: SSH into an Apple Silicon runner with the freshly built
+  # ARM bundle to investigate deployment-target / Swift ABI crashes.
+  # Runs as a matrix across macOS 14 (standard) and macOS 13 (xlarge, ~10x cost)
+  # so one trigger shows diagnostic output from both OS versions in parallel.
+  # mpv --version in the log tells you if a Swift symbol is missing before SSH.
+  # bundle-arm64 is the raw kamp_ui/resources/ directory (NOT a DMG) — no mounting needed.
+  debug-macos:
+    needs: build-bundle
+    if: github.event_name == 'workflow_dispatch' && inputs.debug_macos == true
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Download ARM bundle artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: bundle-arm64
+          path: kamp_ui/resources/
+
+      - name: Restore execute permissions
+        run: |
+          chmod +x kamp_ui/resources/mpv \
+                   kamp_ui/resources/kamp/kamp \
+                   kamp_ui/resources/kamp-keychain-helper \
+                   kamp_ui/resources/now-playing-helper
+          find kamp_ui/resources/mpv-libs -name "*.dylib" \
+            -exec chmod +x {} \; 2>/dev/null || true
+
+      - name: Show build diagnostics
+        run: |
+          echo "→ macOS version:"
+          sw_vers
+          echo "→ Deployment target stamped in mpv binary:"
+          vtool -show-build kamp_ui/resources/mpv
+          echo "→ Checking for Swift symbol references in mpv and bundled dylibs:"
+          for f in kamp_ui/resources/mpv kamp_ui/resources/mpv-libs/*.dylib; do
+            refs=$(nm -u "$f" 2>/dev/null | grep -i swift || true)
+            [ -n "$refs" ] && echo "  $f:" && echo "$refs" | sed 's/^/    /'
+          done
+          echo "→ Deployment target (minos) for each bundled dylib:"
+          for f in kamp_ui/resources/mpv-libs/*.dylib; do
+            minos=$(vtool -show-build "$f" 2>/dev/null | awk '/minos/{print $2}')
+            echo "  $minos  $(basename "$f")"
+          done
+          echo "→ mpv --version (fails if deployment target still wrong):"
+          kamp_ui/resources/mpv --version || true
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@c0afd6f790e3a5564914980036ebf83216678101  # v3
+        timeout-minutes: 45
+        with:
+          limit-access-to-actor: true

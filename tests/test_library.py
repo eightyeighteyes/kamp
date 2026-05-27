@@ -129,7 +129,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 17
+        assert version == 18
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -475,13 +475,16 @@ class TestLibraryIndex:
     def test_save_and_load_queue_state(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         tracks = [tmp_path / "a.mp3", tmp_path / "b.mp3", tmp_path / "c.mp3"]
-        index.save_queue_state(tracks, pos=1, shuffle=True, repeat=False)
+        index.save_queue_state(
+            tracks, order=[2, 0, 1], pos=1, shuffle=True, repeat=False
+        )
         result = index.load_queue_state()
         index.close()
 
         assert result is not None
-        paths, pos, shuffle, repeat = result
+        paths, order, pos, shuffle, repeat = result
         assert paths == tracks
+        assert order == [2, 0, 1]
         assert pos == 1
         assert shuffle is True
         assert repeat is False
@@ -495,28 +498,59 @@ class TestLibraryIndex:
 
     def test_save_queue_state_overwrites_previous(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        index.save_queue_state([tmp_path / "a.mp3"], pos=0, shuffle=False, repeat=False)
         index.save_queue_state(
-            [tmp_path / "b.mp3", tmp_path / "c.mp3"], pos=1, shuffle=True, repeat=True
+            [tmp_path / "a.mp3"], order=[0], pos=0, shuffle=False, repeat=False
+        )
+        index.save_queue_state(
+            [tmp_path / "b.mp3", tmp_path / "c.mp3"],
+            order=[1, 0],
+            pos=1,
+            shuffle=True,
+            repeat=True,
         )
         result = index.load_queue_state()
         index.close()
 
         assert result is not None
-        paths, pos, shuffle, repeat = result
+        paths, order, pos, shuffle, repeat = result
         assert paths == [tmp_path / "b.mp3", tmp_path / "c.mp3"]
+        assert order == [1, 0]
         assert pos == 1
         assert shuffle is True
         assert repeat is True
 
     def test_clear_queue_state(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        index.save_queue_state([tmp_path / "a.mp3"], pos=0, shuffle=False, repeat=False)
+        index.save_queue_state(
+            [tmp_path / "a.mp3"], order=[0], pos=0, shuffle=False, repeat=False
+        )
         index.clear_queue_state()
         result = index.load_queue_state()
         index.close()
 
         assert result is None
+
+    def test_load_queue_state_legacy_empty_order_uses_natural_order(
+        self, tmp_path: Path
+    ) -> None:
+        # Simulate a pre-v18 DB row where order_json is '' (empty string).
+        import json, sqlite3
+
+        db_path = tmp_path / "legacy.db"
+        index = LibraryIndex(db_path)
+        # Force a raw insert with empty order_json to simulate the legacy format.
+        index._conn.execute(
+            "INSERT INTO queue_state (id, tracks, order_json, pos, shuffle, repeat) "
+            "VALUES (1, ?, '', 0, 0, 0)",
+            (json.dumps([str(tmp_path / "a.mp3"), str(tmp_path / "b.mp3")]),),
+        )
+        index._conn.commit()
+        result = index.load_queue_state()
+        index.close()
+
+        assert result is not None
+        paths, order, pos, shuffle, repeat = result
+        assert order == [0, 1]  # natural order as fallback
 
 
 # ---------------------------------------------------------------------------
@@ -1248,7 +1282,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 17
+        assert version == 18
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1305,7 +1339,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 17
+        assert version == 18
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1664,7 +1698,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 17
+        assert version == 18
         assert row is not None
         assert row[0] == 0
 
@@ -1777,7 +1811,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 17
+        assert version == 18
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -1869,7 +1903,7 @@ class TestAlbumFavorite:
         index._conn.execute("SELECT COUNT(*) FROM album_favorites").fetchone()
         index.close()
 
-        assert version == 17
+        assert version == 18
 
 
 # ---------------------------------------------------------------------------
@@ -2048,7 +2082,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 17
+        assert version == 18
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2143,7 +2177,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 17
+        assert version == 18
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2151,7 +2185,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 17
+        assert version == 18
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3028,7 +3062,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 17
+        assert version == 18
 
         index.close()
 
@@ -3711,7 +3745,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 17
+        assert version == 18
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -3746,7 +3780,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 17
+        assert version == 18
         index.close()
 
 

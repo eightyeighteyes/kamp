@@ -90,7 +90,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 17
+_SCHEMA_VERSION = 18
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -135,11 +135,12 @@ CREATE TABLE IF NOT EXISTS player_state (
 );
 
 CREATE TABLE IF NOT EXISTS queue_state (
-    id      INTEGER PRIMARY KEY CHECK (id = 1),  -- single-row table
-    tracks  TEXT    NOT NULL,                    -- JSON array of file paths in playback order
-    pos     INTEGER NOT NULL DEFAULT -1,
-    shuffle INTEGER NOT NULL DEFAULT 0,
-    repeat  INTEGER NOT NULL DEFAULT 0
+    id         INTEGER PRIMARY KEY CHECK (id = 1),  -- single-row table
+    tracks     TEXT    NOT NULL,                    -- JSON array of file paths in original load order
+    order_json TEXT    NOT NULL DEFAULT '',          -- JSON array of indices (playback permutation)
+    pos        INTEGER NOT NULL DEFAULT -1,
+    shuffle    INTEGER NOT NULL DEFAULT 0,
+    repeat     INTEGER NOT NULL DEFAULT 0
 );
 
 -- Append-only audit trail for all library.write mutations issued by extensions.
@@ -646,6 +647,25 @@ class LibraryIndex:
             # up genre/label on the next library scan.
             self._conn.execute("UPDATE tracks SET file_mtime = NULL")
             self._conn.execute("UPDATE schema_version SET version = 17")
+            self._conn.commit()
+            version = 17
+
+        if version < 18:
+            # v17 → v18: add order_json to queue_state so the original load
+            # order is preserved separately from the shuffled playback order
+            # (KAMP-353 bug fix).  Guard with PRAGMA so fresh DBs (which
+            # already have the column via _DDL) don't fail.
+            existing = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(queue_state)"
+                ).fetchall()
+            }
+            if "order_json" not in existing:
+                self._conn.execute(
+                    "ALTER TABLE queue_state ADD COLUMN order_json TEXT NOT NULL DEFAULT ''"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 18")
             self._conn.commit()
 
     def _rebuild_fts(self) -> None:
@@ -1496,37 +1516,50 @@ class LibraryIndex:
         return (Path(row["track_path"]), row["position"]) if row else None
 
     def save_queue_state(
-        self, tracks: list[Path], pos: int, shuffle: bool, repeat: bool
+        self,
+        tracks: list[Path],
+        order: list[int],
+        pos: int,
+        shuffle: bool,
+        repeat: bool,
     ) -> None:
-        """Persist the full queue in playback order alongside pos and flags."""
+        """Persist the queue in original load order with playback permutation."""
         import json
 
         payload = json.dumps([str(p) for p in tracks])
+        order_payload = json.dumps(order)
         self._conn.execute(
             """
-            INSERT INTO queue_state (id, tracks, pos, shuffle, repeat)
-            VALUES (1, ?, ?, ?, ?)
+            INSERT INTO queue_state (id, tracks, order_json, pos, shuffle, repeat)
+            VALUES (1, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                tracks  = excluded.tracks,
-                pos     = excluded.pos,
-                shuffle = excluded.shuffle,
-                repeat  = excluded.repeat
+                tracks     = excluded.tracks,
+                order_json = excluded.order_json,
+                pos        = excluded.pos,
+                shuffle    = excluded.shuffle,
+                repeat     = excluded.repeat
             """,
-            (payload, pos, int(shuffle), int(repeat)),
+            (payload, order_payload, pos, int(shuffle), int(repeat)),
         )
         self._conn.commit()
 
-    def load_queue_state(self) -> "tuple[list[Path], int, bool, bool] | None":
-        """Return (tracks_in_playback_order, pos, shuffle, repeat) or None."""
+    def load_queue_state(
+        self,
+    ) -> "tuple[list[Path], list[int], int, bool, bool] | None":
+        """Return (tracks_in_original_order, order, pos, shuffle, repeat) or None."""
         import json
 
         row = self._conn.execute(
-            "SELECT tracks, pos, shuffle, repeat FROM queue_state WHERE id = 1"
+            "SELECT tracks, order_json, pos, shuffle, repeat FROM queue_state WHERE id = 1"
         ).fetchone()
         if not row:
             return None
         paths = [Path(p) for p in json.loads(row["tracks"])]
-        return paths, row["pos"], bool(row["shuffle"]), bool(row["repeat"])
+        raw_order = row["order_json"]
+        order: list[int] = (
+            json.loads(raw_order) if raw_order else list(range(len(paths)))
+        )
+        return paths, order, row["pos"], bool(row["shuffle"]), bool(row["repeat"])
 
     def clear_queue_state(self) -> None:
         """Remove the persisted queue state (e.g. after the queue is exhausted)."""

@@ -628,21 +628,38 @@ def _cmd_daemon(
     saved_queue = index.load_queue_state()
     saved_player = index.load_player_state()
     if saved_queue and saved_player:
-        saved_paths, q_pos, q_shuffle, q_repeat = saved_queue
+        saved_paths, q_order, q_pos, q_shuffle, q_repeat = saved_queue
         _, saved_position = saved_player
-        # Resolve paths → Track objects; silently drop tracks removed from library.
-        resolved = []
-        missing_before = 0
+        # Resolve original-order paths → Track objects; silently drop missing.
+        # Build a mapping old_index → new_index so the playback permutation
+        # (q_order) can be remapped to the compacted resolved list.
+        resolved: list[Any] = []
+        old_to_new: dict[int, int] = {}
         for i, p in enumerate(saved_paths):
             t = index.get_track_by_path(p)
             if t is not None:
+                old_to_new[i] = len(resolved)
                 resolved.append(t)
-            elif i <= q_pos:
-                # Track was before or at the current position — shift pos back.
-                missing_before += 1
-        restored_pos = max(0, q_pos - missing_before)
+        # Remap the playback order, dropping references to deleted tracks.
+        new_order = [old_to_new[idx] for idx in q_order if idx in old_to_new]
+        # Find the new position of the current track; fall back to 0.
+        restored_pos = 0
+        if q_pos >= 0 and q_pos < len(q_order):
+            current_orig = q_order[q_pos]
+            if current_orig in old_to_new:
+                new_current = old_to_new[current_orig]
+                try:
+                    restored_pos = new_order.index(new_current)
+                except ValueError:
+                    restored_pos = 0
         if resolved:
-            queue.restore(resolved, restored_pos, q_shuffle, q_repeat)
+            queue.restore(
+                resolved,
+                order=new_order,
+                pos=restored_pos,
+                shuffle=q_shuffle,
+                repeat=q_repeat,
+            )
             current = queue.current()
             if current:
                 engine.load_paused(current.file_path, saved_position)
@@ -739,8 +756,8 @@ def _cmd_daemon(
             if current:
                 if tick % 5 == 0:
                     index.save_player_state(current.file_path, engine.state.position)
-                    q_paths, q_pos, q_shuffle, q_repeat = queue.get_state()
-                    index.save_queue_state(q_paths, q_pos, q_shuffle, q_repeat)
+                    q_paths, q_order, q_pos, q_shuffle, q_repeat = queue.get_state()
+                    index.save_queue_state(q_paths, q_order, q_pos, q_shuffle, q_repeat)
             tick += 1
 
     threading.Thread(target=_state_saver, daemon=True, name="state-saver").start()

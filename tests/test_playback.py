@@ -373,58 +373,88 @@ class TestPlaybackQueue:
         assert tracks == []
         assert pos == -1
 
-    def test_get_state_returns_paths_in_playback_order(self) -> None:
+    def test_get_state_returns_original_paths_and_order(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        paths, pos, shuffle, repeat = q.get_state()
+        paths, order, pos, shuffle, repeat = q.get_state()
         assert paths == [t.file_path for t in tracks]
+        assert order == [0, 1, 2]
         assert pos == 0
         assert shuffle is False
         assert repeat is False
 
-    def test_get_state_bakes_in_shuffle_order(self) -> None:
+    def test_get_state_with_shuffle_returns_original_paths(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(5)]
         q.load(tracks)
         q.set_shuffle(True)
-        paths, pos, shuffle, repeat = q.get_state()
-        # All paths present, shuffle flag set, current track first
-        assert set(paths) == {t.file_path for t in tracks}
-        assert paths[0] == tracks[0].file_path  # current anchored at pos 0
+        paths, order, pos, shuffle, repeat = q.get_state()
+        # paths must be in ORIGINAL load order, not shuffled
+        assert paths == [t.file_path for t in tracks]
+        # order[0] must be the original index of the currently playing track (0)
+        assert order[0] == 0
+        assert set(order) == {0, 1, 2, 3, 4}
         assert shuffle is True
         assert pos == 0
 
     def test_get_state_empty_queue(self) -> None:
         q = PlaybackQueue()
-        paths, pos, shuffle, repeat = q.get_state()
+        paths, order, pos, shuffle, repeat = q.get_state()
         assert paths == []
+        assert order == []
         assert pos == -1
 
     def test_restore_sets_all_fields(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
-        q.restore(tracks, pos=2, shuffle=True, repeat=True)
+        q.restore(tracks, order=[2, 0, 1], pos=0, shuffle=True, repeat=True)
         assert q.current() == tracks[2]
-        paths, pos, shuffle, repeat = q.get_state()
-        assert pos == 2
+        paths, order, pos, shuffle, repeat = q.get_state()
+        assert pos == 0
         assert shuffle is True
         assert repeat is True
 
     def test_restore_empty_list(self) -> None:
         q = PlaybackQueue()
-        q.restore([], pos=0, shuffle=False, repeat=False)
+        q.restore([], order=[], pos=0, shuffle=False, repeat=False)
         assert q.current() is None
-        paths, pos, shuffle, repeat = q.get_state()
+        paths, order, pos, shuffle, repeat = q.get_state()
         assert paths == []
+        assert order == []
         assert pos == -1
 
     def test_restore_then_next(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
-        q.restore(tracks, pos=0, shuffle=False, repeat=False)
+        q.restore(tracks, order=[0, 1, 2], pos=0, shuffle=False, repeat=False)
         nxt = q.next()
         assert nxt == tracks[1]
+
+    def test_original_order_preserved_after_restore_and_unshuffle(self) -> None:
+        # Regression: get_state/restore round-trip must preserve original order so
+        # toggling shuffle off returns to the real original queue, not the shuffled one.
+        tracks = [_track(i) for i in range(7)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_shuffle(True)
+        # Advance a couple positions so current track is not the first original track.
+        q.next()
+        q.next()
+        before_toggle = q.current()
+
+        # Simulate save/restore (what happens across a quit/restart).
+        paths, order, pos, shuffle, repeat = q.get_state()
+        q2 = PlaybackQueue()
+        resolved = [next(t for t in tracks if t.file_path == p) for p in paths]
+        q2.restore(resolved, order=order, pos=pos, shuffle=shuffle, repeat=repeat)
+
+        assert q2.current() == before_toggle
+
+        # Toggling shuffle off on the restored queue must produce the original order.
+        q2.set_shuffle(False)
+        queue_tracks, _ = q2.queue_tracks()
+        assert queue_tracks == tracks
 
     # ------------------------------------------------------------------
     # add_to_queue

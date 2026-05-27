@@ -230,14 +230,15 @@ class PlaybackQueue:
         """
         return [self._tracks[i] for i in self._order], self._pos
 
-    def get_state(self) -> tuple[list[Path], int, bool, bool]:
-        """Return (tracks_in_playback_order, pos, shuffle, repeat) for persistence.
+    def get_state(self) -> tuple[list[Path], list[int], int, bool, bool]:
+        """Return (original_paths, order, pos, shuffle, repeat) for persistence.
 
-        Tracks are returned in the current playback order so the shuffle
-        sequence can be faithfully restored without re-shuffling.
+        *original_paths* is _tracks in load order; *order* is the index
+        permutation (_order) so the shuffled sequence can be faithfully
+        restored and toggling shuffle off recovers the true original order.
         """
-        ordered_paths = [self._tracks[i].file_path for i in self._order]
-        return ordered_paths, self._pos, self._shuffle, self._repeat
+        original_paths = [t.file_path for t in self._tracks]
+        return original_paths, list(self._order), self._pos, self._shuffle, self._repeat
 
     @property
     def shuffle(self) -> bool:
@@ -248,15 +249,21 @@ class PlaybackQueue:
         return self._repeat
 
     def restore(
-        self, tracks: list[Track], pos: int, shuffle: bool, repeat: bool
+        self,
+        tracks: list[Track],
+        order: list[int],
+        pos: int,
+        shuffle: bool,
+        repeat: bool,
     ) -> None:
         """Restore queue from persisted state.
 
-        *tracks* must already be in playback order (as returned by get_state).
-        The order is taken as-is so shuffle sequences survive restarts.
+        *tracks* are in their original load order; *order* is the index
+        permutation that was active when the state was saved (may be shuffled).
+        An empty *order* is treated as natural order [0, 1, …, n-1].
         """
         self._tracks = list(tracks)
-        self._order = list(range(len(tracks)))
+        self._order = list(order) if order else list(range(len(tracks)))
         self._pos = pos if tracks else -1
         self._shuffle = shuffle
         self._repeat = repeat

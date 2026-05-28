@@ -46,6 +46,8 @@ export type Album = {
   play_count_avg: number
   // True when the user has favorited this album (KAMP-293).
   favorite: boolean
+  // True when any track in this album is individually favorited (KAMP-294).
+  has_favorite_track: boolean
 }
 
 export type PlayerState = {
@@ -189,7 +191,7 @@ export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
 
 export type UiState = {
   active_view: 'library' | 'now-playing' | 'home'
-  sort_order: 'album_artist' | 'album' | 'date_added' | 'last_played'
+  sort_order: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
   queue_panel_open: boolean
 }
 
@@ -198,7 +200,7 @@ export const setActiveViewApi = (
   view: 'library' | 'now-playing' | 'home'
 ): Promise<{ ok: boolean }> => post('/api/v1/ui/active-view', { view })
 export const setSortOrderApi = (
-  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
+  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
 ): Promise<{ ok: boolean }> => post('/api/v1/ui/sort-order', { sort_order: sortOrder })
 export const setQueuePanelApi = (open: boolean): Promise<{ ok: boolean }> =>
   post('/api/v1/ui/queue-panel', { open })

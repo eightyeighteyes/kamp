@@ -322,6 +322,8 @@ class AlbumInfo:
     play_count_avg: float = 0.0
     # True when the user has favorited this album (KAMP-293).
     favorite: bool = False
+    # True when any track in this album is individually favorited (KAMP-294).
+    has_favorite_track: bool = False
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -1366,7 +1368,7 @@ class LibraryIndex:
             SELECT album_artist, album, year, track_count, has_art,
                    missing_album, file_path, art_version,
                    sort_date_added, sort_last_played, sort_play_count_avg,
-                   is_favorite
+                   is_favorite, has_favorite_track
             FROM (
                 SELECT t.album_artist, t.album, t.year, COUNT(*) AS track_count,
                        MAX(t.embedded_art) AS has_art,
@@ -1375,7 +1377,8 @@ class LibraryIndex:
                        MAX(t.last_played) AS sort_last_played,
                        MAX(t.file_mtime) AS art_version,
                        CAST(SUM(t.play_count) AS REAL) / COUNT(*) AS sort_play_count_avg,
-                       MAX(CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END) AS is_favorite
+                       MAX(CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END) AS is_favorite,
+                       MAX(t.favorite) AS has_favorite_track
                 FROM tracks t
                 LEFT JOIN album_favorites af
                     ON af.album_artist = t.album_artist AND af.album = t.album
@@ -1389,7 +1392,8 @@ class LibraryIndex:
                        t.last_played AS sort_last_played,
                        t.file_mtime AS art_version,
                        CAST(t.play_count AS REAL) AS sort_play_count_avg,
-                       CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END AS is_favorite
+                       CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
+                       t.favorite AS has_favorite_track
                 FROM tracks t
                 LEFT JOIN album_favorites af
                     ON af.album_artist = t.album_artist AND af.album = t.title
@@ -1411,6 +1415,7 @@ class LibraryIndex:
                 last_played_at=r["sort_last_played"],
                 play_count_avg=r["sort_play_count_avg"] or 0.0,
                 favorite=bool(r["is_favorite"]),
+                has_favorite_track=bool(r["has_favorite_track"]),
             )
             for r in rows
         ]

@@ -299,6 +299,60 @@ class TestLibraryIndex:
 
         assert albums[0].has_art is True
 
+    def test_albums_has_favorite_track_false_by_default(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_track(_sample_track(tmp_path / "1.mp3"))
+        albums = index.albums()
+        index.close()
+
+        assert albums[0].has_favorite_track is False
+
+    def test_albums_has_favorite_track_true_when_any_track_favorited(
+        self, tmp_path: Path
+    ) -> None:
+        """has_favorite_track is True when at least one track in the album is favorited."""
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = _sample_track(tmp_path / "1.mp3")
+        t1.track_number = 1
+        t2 = _sample_track(tmp_path / "2.mp3")
+        t2.track_number = 2
+        index.upsert_many([t1, t2])
+        index.set_favorite(t1.file_path, favorite=True)
+        albums = index.albums()
+        index.close()
+
+        assert albums[0].has_favorite_track is True
+
+    def test_albums_has_favorite_track_false_when_no_tracks_favorited(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = _sample_track(tmp_path / "1.mp3")
+        t1.track_number = 1
+        t2 = _sample_track(tmp_path / "2.mp3")
+        t2.track_number = 2
+        index.upsert_many([t1, t2])
+        albums = index.albums()
+        index.close()
+
+        assert albums[0].has_favorite_track is False
+
+    def test_missing_album_has_favorite_track_reflects_track_favorite(
+        self, tmp_path: Path
+    ) -> None:
+        """has_favorite_track on missing-album entries uses the track's own favorite flag."""
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "standalone.mp3")
+        t.album = ""
+        t.title = "Standalone Track"
+        index.upsert_track(t)
+        index.set_favorite(t.file_path, favorite=True)
+        albums = index.albums()
+        index.close()
+
+        assert albums[0].missing_album is True
+        assert albums[0].has_favorite_track is True
+
     def test_missing_album_track_appears_as_own_entry(self, tmp_path: Path) -> None:
         """A track with no album tag should produce its own AlbumInfo entry."""
         index = LibraryIndex(tmp_path / "library.db")

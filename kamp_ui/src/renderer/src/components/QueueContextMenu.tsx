@@ -42,7 +42,8 @@ export function QueueContextMenu({ x, y, trackIdx, track, onClose }: Props): Rea
                 added_at: null,
                 last_played_at: null,
                 play_count_avg: 0,
-                favorite: false
+                favorite: false,
+                has_favorite_track: false
               }
               void setActiveView('library')
               void selectAlbum(found)

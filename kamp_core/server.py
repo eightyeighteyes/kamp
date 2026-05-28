@@ -111,6 +111,8 @@ class AlbumOut(BaseModel):
     play_count_avg: float = 0.0
     # True when the user has favorited this album (KAMP-293).
     favorite: bool = False
+    # True when any track in this album is individually favorited (KAMP-294).
+    has_favorite_track: bool = False
 
 
 class PlayerStateOut(BaseModel):
@@ -669,6 +671,7 @@ def create_app(
                 last_played_at=a.last_played_at,
                 play_count_avg=a.play_count_avg,
                 favorite=a.favorite,
+                has_favorite_track=a.has_favorite_track,
             )
             for a in index.albums(sort=sort)
         ]
@@ -1637,6 +1640,7 @@ def create_app(
                     last_played_at=a.last_played_at,
                     play_count_avg=a.play_count_avg,
                     favorite=a.favorite,
+                    has_favorite_track=a.has_favorite_track,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -1752,6 +1756,7 @@ def create_app(
                     last_played_at=a.last_played_at,
                     play_count_avg=a.play_count_avg,
                     favorite=a.favorite,
+                    has_favorite_track=a.has_favorite_track,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -1833,6 +1838,7 @@ def create_app(
                 added_at=a.added_at,
                 play_count_avg=a.play_count_avg,
                 favorite=a.favorite,
+                has_favorite_track=a.has_favorite_track,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys

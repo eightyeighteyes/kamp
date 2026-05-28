@@ -69,7 +69,8 @@ type PlayerStore = {
   albumEditMode: boolean
   albumMetaExpanded: boolean
   albumRenameProgress: { done: number; total: number } | null
-  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played'
+  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
+  libraryFilter: string[]
   searchQuery: string
   searchResults: SearchResult | null
   queueVisible: boolean
@@ -84,7 +85,10 @@ type PlayerStore = {
   toggleArtistPanel: () => void
   loadQueue: () => Promise<void>
   setSearchQuery: (q: string) => void
-  setSortOrder: (sort: 'album_artist' | 'album' | 'date_added' | 'last_played') => Promise<void>
+  setSortOrder: (
+    sort: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
+  ) => Promise<void>
+  setLibraryFilter: (filters: string[]) => void
   setActiveView: (view: 'library' | 'now-playing' | 'home') => Promise<void>
   setModuleOrder: (ids: string[]) => void
   hideModule: (id: string) => void
@@ -270,6 +274,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   albumMetaExpanded: localStorage.getItem('kamp:meta-expanded') === 'true',
   albumRenameProgress: null,
   sortOrder: 'album_artist',
+  libraryFilter: [],
   searchQuery: '',
   searchResults: null,
   queueVisible: false,
@@ -318,6 +323,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
     } catch {
       // Best-effort — preference is already applied locally.
     }
+  },
+
+  setLibraryFilter: (filters) => {
+    set({ libraryFilter: filters })
   },
 
   setSearchQuery: async (q) => {

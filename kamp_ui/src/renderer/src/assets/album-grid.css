@@ -7,50 +7,121 @@
 }
 
 .album-grid-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px 4px;
+  gap: 8px;
+  padding: 6px 16px;
+  /* Bleed past .main-content's 16px padding so the bar covers the full width */
+  margin: -16px -16px 0;
 }
 
-.sort-control {
+/* Shared toolbar dropdown styles ------------------------------------------- */
+
+.sort-anchor,
+.filter-anchor {
+  position: relative;
+}
+
+.toolbar-dropdown-trigger {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+  white-space: nowrap;
+}
+
+.toolbar-dropdown-trigger:hover {
+  background: var(--surface-hover);
+}
+
+.toolbar-dropdown-trigger.has-active {
+  border-color: var(--accent-dim);
+}
+
+.toolbar-dropdown-badge {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.dropdown-chevron {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.toolbar-dropdown-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  min-width: 160px;
+  padding: 4px;
+  z-index: 50;
+  white-space: nowrap;
+}
+
+.toolbar-dropdown-item {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
-}
-
-.sort-label {
-  color: var(--text-dim);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-right: 2px;
-}
-
-.sort-btn {
   background: none;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 4px;
   color: var(--text-dim);
   cursor: pointer;
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 5px 10px;
+  width: 100%;
+  text-align: left;
   transition:
     background 0.1s,
     color 0.1s;
 }
 
-.sort-btn:hover {
+.toolbar-dropdown-item:hover {
   background: var(--surface-hover);
   color: var(--text);
 }
 
-.sort-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+.toolbar-dropdown-item.active {
+  color: var(--accent);
 }
+
+.toolbar-dropdown-item.toolbar-dropdown-clear {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.toolbar-dropdown-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.dropdown-check {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: 10px;
+}
+
+/* Album grid --------------------------------------------------------------- */
 
 .album-grid {
   display: grid;

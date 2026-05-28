@@ -12,7 +12,7 @@ export const TOOLTIPS = {
   TRANSPORT_FAVORITE_REMOVE: 'Remove from favorites',
 
   // Library / track list actions
-  LIBRARY_FETCH_MB: 'Fetch from MusicBrainz',
+  LIBRARY_FETCH_MB: 'Fetch tags from MusicBrainz',
   LIBRARY_FETCH_ART: 'Fetch album art',
   LIBRARY_ADD_TO_QUEUE: 'Add to queue',
   LIBRARY_PLAY_NEXT: 'Play next',

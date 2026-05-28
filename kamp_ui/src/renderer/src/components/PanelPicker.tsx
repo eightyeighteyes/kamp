@@ -5,6 +5,8 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { isPanelCompatibleWithSlot } from '../hooks/usePanelLayout'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 import type { PanelLayoutApi, UnifiedPanel } from '../hooks/usePanelLayout'
 import type { SlotId } from '../../../shared/kampAPI'
 
@@ -27,6 +29,7 @@ function PanelRow({
   onHide: () => void
 }): React.JSX.Element {
   const slots: SlotId[] = ['main', 'left', 'right', 'bottom']
+  const tooltip = useTooltip()
 
   return (
     <div className="panel-picker-row">
@@ -37,7 +40,7 @@ function PanelRow({
           return (
             <button
               key={slot}
-              title={compatible ? SLOT_LABELS[slot] : `${SLOT_LABELS[slot]} (incompatible)`}
+              {...tooltip(compatible ? SLOT_LABELS[slot] : `${SLOT_LABELS[slot]} (incompatible)`)}
               className={
                 'panel-picker-slot-btn' +
                 (currentSlot === slot ? ' active' : '') +
@@ -71,6 +74,7 @@ function slotIcon(slot: SlotId): string {
 export function PanelPicker({ layout }: { layout: PanelLayoutApi }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const tooltip = useTooltip()
 
   // Close when clicking outside
   useEffect(() => {
@@ -97,7 +101,7 @@ export function PanelPicker({ layout }: { layout: PanelLayoutApi }): React.JSX.E
     <div className="panel-picker-anchor" ref={ref}>
       <button
         className={'panel-picker-trigger' + (open ? ' active' : '')}
-        title="Manage panels"
+        {...tooltip(TOOLTIPS.PANEL_PICKER_MANAGE)}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="true"

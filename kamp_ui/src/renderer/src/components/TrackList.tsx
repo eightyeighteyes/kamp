@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 import { artUrl, fetchMusicBrainzCandidates, patchTrackMeta } from '../api/client'
 import type {
   AlbumTagsCollision,
@@ -89,6 +91,7 @@ export function TrackList(): React.JSX.Element | null {
   const [albumRenameToast, setAlbumRenameToast] = useState<AlbumRenameToast | null>(null)
   const [mbState, setMbState] = useState<MBFetchState>({ status: 'idle' })
   const [artSearchOpen, setArtSearchOpen] = useState(false)
+  const tooltip = useTooltip()
 
   // Reset MB state when navigating to a different album (derived state from props).
   // Using the render-time pattern avoids a setState-in-effect lint violation.
@@ -245,7 +248,7 @@ export function TrackList(): React.JSX.Element | null {
         <button
           className={`breadcrumb-edit-btn mb-pill${mbState.status === 'loading' ? ' mb-pill--loading' : mbState.status === 'error' ? ' mb-pill--error' : ''}`}
           disabled={mbState.status === 'loading'}
-          title={mbState.status === 'error' ? mbState.message : 'Fetch from MusicBrainz'}
+          {...tooltip(mbState.status === 'error' ? mbState.message : TOOLTIPS.LIBRARY_FETCH_MB)}
           onClick={handleFetchMB}
           type="button"
         >
@@ -277,7 +280,7 @@ export function TrackList(): React.JSX.Element | null {
       {albumEditMode && (
         <button
           className="breadcrumb-edit-btn mb-pill mb-pill--second"
-          title="Fetch album art"
+          {...tooltip(TOOLTIPS.LIBRARY_FETCH_ART)}
           onClick={() => setArtSearchOpen(true)}
           type="button"
         >
@@ -295,6 +298,9 @@ export function TrackList(): React.JSX.Element | null {
         <div className="track-list-identity-text">
           <button
             className={`track-list-album-fav-btn favorite-btn${album.favorite ? ' active' : ''}`}
+            {...tooltip(
+              album.favorite ? TOOLTIPS.ALBUM_FAVORITE_REMOVE : TOOLTIPS.ALBUM_FAVORITE_ADD
+            )}
             aria-label={album.favorite ? 'Remove from favorites' : 'Add to favorites'}
             aria-pressed={album.favorite}
             onClick={() => setAlbumFavorite(album.album_artist, album.album, !album.favorite)}
@@ -369,7 +375,7 @@ export function TrackList(): React.JSX.Element | null {
         <div className="album-controls">
           <button
             className="album-secondary-btn"
-            title="Add to queue"
+            {...tooltip(TOOLTIPS.LIBRARY_ADD_TO_QUEUE)}
             aria-label="Add album to queue"
             onClick={() => void addAlbumToQueue(album.album_artist, album.album, album.file_path)}
           >
@@ -377,7 +383,7 @@ export function TrackList(): React.JSX.Element | null {
           </button>
           <button
             className="album-secondary-btn"
-            title="Play next"
+            {...tooltip(TOOLTIPS.LIBRARY_PLAY_NEXT)}
             aria-label="Play album next"
             onClick={() => void playAlbumNext(album.album_artist, album.album, album.file_path)}
           >

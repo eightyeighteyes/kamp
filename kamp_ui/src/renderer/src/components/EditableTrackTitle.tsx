@@ -1,4 +1,6 @@
 import React, { useRef, useState } from 'react'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 
 type Props = {
   trackId: number
@@ -20,6 +22,7 @@ export function EditableTrackTitle({
   const [saving, setSaving] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const cancelRef = useRef(false)
+  const tooltip = useTooltip()
 
   // Sync external title changes (e.g. after refreshOpenAlbum) back into local state.
   // Render-time update avoids the cascading-render issue of useEffect setState.
@@ -31,7 +34,7 @@ export function EditableTrackTitle({
   const pip = deferred ? (
     <span
       className="deferred-op-pip"
-      title="Will reorganize when playback ends"
+      {...tooltip(TOOLTIPS.META_WILL_REORGANIZE)}
       aria-label="Pending rename"
     />
   ) : null

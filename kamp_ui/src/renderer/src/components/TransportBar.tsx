@@ -1,5 +1,7 @@
 import React, { useRef, useState } from 'react'
 import { useStore } from '../store'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 import {
   FavoriteIcon,
   NextIcon,
@@ -42,6 +44,7 @@ export function TransportBar(): React.JSX.Element {
   // server position) can't fire a spurious second onChange and double-seek.
   const [scrubPos, setScrubPos] = useState<number | null>(null)
   const pointerDown = useRef(false)
+  const tooltip = useTooltip()
   const displayPosition = scrubPos !== null ? scrubPos : position
 
   // Force-clear scrub state when the track changes. Without this, a pointerup
@@ -91,28 +94,47 @@ export function TransportBar(): React.JSX.Element {
         className={`transport-btn favorite-btn${current_track?.favorite ? ' active' : ''}`}
         onClick={() => current_track && void setFavorite(current_track, !current_track.favorite)}
         disabled={!current_track}
-        title={current_track?.favorite ? 'Remove from favorites' : 'Add to favorites'}
+        {...tooltip(
+          current_track?.favorite
+            ? TOOLTIPS.TRANSPORT_FAVORITE_REMOVE
+            : TOOLTIPS.TRANSPORT_FAVORITE_ADD
+        )}
         aria-pressed={current_track?.favorite ?? false}
       >
         <FavoriteIcon active={current_track?.favorite ?? false} />
       </button>
 
       <div className="transport-controls">
-        <button className="transport-btn" onClick={prev} title="Previous (←)" aria-label="Previous">
+        <button
+          className="transport-btn"
+          onClick={prev}
+          {...tooltip(TOOLTIPS.TRANSPORT_PREV)}
+          aria-label="Previous"
+        >
           <PrevIcon />
         </button>
         <button
           className="transport-btn primary"
           onClick={togglePlayPause}
-          title={playing ? 'Pause (Space)' : 'Play (Space)'}
+          {...tooltip(playing ? TOOLTIPS.TRANSPORT_PAUSE : TOOLTIPS.TRANSPORT_PLAY)}
           aria-label={playing ? 'Pause' : 'Play'}
         >
           {playing ? <PauseIcon /> : <PlayIcon />}
         </button>
-        <button className="transport-btn" onClick={stop} title="Stop" aria-label="Stop">
+        <button
+          className="transport-btn"
+          onClick={stop}
+          {...tooltip(TOOLTIPS.TRANSPORT_STOP)}
+          aria-label="Stop"
+        >
           <StopIcon />
         </button>
-        <button className="transport-btn" onClick={next} title="Next (→)" aria-label="Next">
+        <button
+          className="transport-btn"
+          onClick={next}
+          {...tooltip(TOOLTIPS.TRANSPORT_NEXT)}
+          aria-label="Next"
+        >
           <NextIcon />
         </button>
       </div>
@@ -170,7 +192,7 @@ export function TransportBar(): React.JSX.Element {
         <button
           className={`transport-btn${shuffle ? ' active' : ''}`}
           onClick={() => void setShuffle(!shuffle)}
-          title="Shuffle"
+          {...tooltip(TOOLTIPS.TRANSPORT_SHUFFLE)}
           aria-label="Shuffle"
           aria-pressed={shuffle}
         >
@@ -179,7 +201,7 @@ export function TransportBar(): React.JSX.Element {
         <button
           className={`transport-btn${repeat ? ' active' : ''}`}
           onClick={() => void setRepeat(!repeat)}
-          title="Repeat"
+          {...tooltip(TOOLTIPS.TRANSPORT_REPEAT)}
           aria-label="Repeat"
           aria-pressed={repeat}
         >
@@ -188,7 +210,7 @@ export function TransportBar(): React.JSX.Element {
       </div>
 
       <div className="transport-volume">
-        <span className="volume-icon" title="Volume" aria-hidden="true">
+        <span className="volume-icon" aria-hidden="true">
           <VolumeIcon />
         </span>
         <input
@@ -206,7 +228,7 @@ export function TransportBar(): React.JSX.Element {
       <button
         className={`transport-btn queue-toggle-btn${queueVisible ? ' active' : ''}`}
         onClick={toggleQueuePanel}
-        title="Queue (Q)"
+        {...tooltip(TOOLTIPS.TRANSPORT_QUEUE)}
         aria-label="Queue"
         aria-pressed={queueVisible}
       >

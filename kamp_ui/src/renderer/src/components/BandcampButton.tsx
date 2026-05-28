@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 import { useMenuBounds } from '../hooks/useMenuBounds'
 
 export function BandcampButton(): React.JSX.Element | null {
@@ -8,6 +10,7 @@ export function BandcampButton(): React.JSX.Element | null {
   const [syncState, setSyncState] = useState<'idle' | 'syncing'>('idle')
   const [menuOpen, setMenuOpen] = useState(false)
   const anchorRef = useRef<HTMLDivElement>(null)
+  const tooltip = useTooltip()
   const menuRef = useRef<HTMLDivElement>(null)
   useMenuBounds(menuRef, menuOpen)
 
@@ -44,7 +47,7 @@ export function BandcampButton(): React.JSX.Element | null {
         className={`bandcamp-btn${syncState === 'syncing' ? ' bandcamp-btn--syncing' : ''}`}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
-        title={syncState === 'syncing' ? 'Bandcamp sync in progress…' : 'Sync Bandcamp library'}
+        {...tooltip(syncState === 'syncing' ? TOOLTIPS.BANDCAMP_SYNCING : TOOLTIPS.BANDCAMP_SYNC)}
       >
         {/* Bandcamp logo: parallelogram shape */}
         <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">

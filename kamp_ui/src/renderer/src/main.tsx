@@ -1,8 +1,10 @@
 import './assets/main.css'
+import './assets/tooltip.css'
 
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { TooltipProvider } from './components/TooltipProvider'
 import { theme } from '../../shared/theme'
 
 // Apply shared design tokens as CSS custom properties so the stylesheet can
@@ -16,6 +18,8 @@ document.documentElement.dataset.platform = window.electron.process.platform
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <TooltipProvider>
+      <App />
+    </TooltipProvider>
   </StrictMode>
 )

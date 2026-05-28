@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 import { MODULE_REGISTRY } from './modules/registry'
 import type { ModuleRegistration } from './modules/registry'
 import { ContextMenu } from './ContextMenu'
@@ -18,6 +20,7 @@ export function BaseKampView(): React.JSX.Element {
   const [menu, setMenu] = useState<Menu | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dragOverId, setDragOverId] = useState<string | null>(null)
+  const tooltip = useTooltip()
 
   const modules = moduleOrder
     .filter((id) => !hiddenModules.includes(id))
@@ -64,7 +67,7 @@ export function BaseKampView(): React.JSX.Element {
         <button
           className={`base-kamp-gear${editMode ? ' active' : ''}`}
           onClick={toggleEditMode}
-          title={editMode ? 'Done' : 'Customize'}
+          {...tooltip(editMode ? TOOLTIPS.PANEL_VIEW_DONE : TOOLTIPS.PANEL_VIEW_CUSTOMIZE)}
         >
           ⚙
         </button>
@@ -92,7 +95,7 @@ export function BaseKampView(): React.JSX.Element {
               <>
                 <button
                   className="base-kamp-drag-handle"
-                  title="Drag to reorder, right-click for options"
+                  {...tooltip(TOOLTIPS.PANEL_MODULE_DRAG)}
                   draggable
                   onDragStart={(e) => {
                     setDragId(mod.id)
@@ -119,7 +122,7 @@ export function BaseKampView(): React.JSX.Element {
                 </button>
                 <button
                   className="base-kamp-remove-btn"
-                  title="Remove Module"
+                  {...tooltip(TOOLTIPS.PANEL_MODULE_REMOVE)}
                   onClick={() => hideModule(mod.id)}
                 >
                   <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">

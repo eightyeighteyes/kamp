@@ -1,0 +1,63 @@
+.kamp-tooltip {
+  position: fixed;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  border-radius: 5px;
+  padding: 5px 9px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: 9000;
+  white-space: nowrap;
+}
+
+/* Default (above): centered horizontally, floated above the target */
+.kamp-tooltip[data-direction="above"] {
+  transform: translateX(-50%) translateY(calc(-100% - 8px));
+}
+
+/* Below: used when target is near the top of the window */
+.kamp-tooltip[data-direction="below"] {
+  transform: translateX(-50%) translateY(8px);
+}
+
+@keyframes tooltip-in-above {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(calc(-100% - 4px));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(calc(-100% - 8px));
+  }
+}
+
+@keyframes tooltip-in-below {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(8px);
+  }
+}
+
+@keyframes tooltip-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.kamp-tooltip[data-phase="visible"][data-direction="above"] {
+  animation: tooltip-in-above 150ms ease-out;
+}
+
+.kamp-tooltip[data-phase="visible"][data-direction="below"] {
+  animation: tooltip-in-below 150ms ease-out;
+}
+
+/* forwards: holds at opacity 0 until the portal node is removed from DOM */
+.kamp-tooltip[data-phase="fading"] {
+  animation: tooltip-out 300ms ease-in forwards;
+}

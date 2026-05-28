@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react'
+import { useTooltip } from '../hooks/useTooltip'
 
 export function PipelineIndicator(): React.JSX.Element | null {
   const [stage, setStage] = useState('')
+  const tooltip = useTooltip()
 
   useEffect(() => {
     return window.api.pipeline.onStage(setStage)
@@ -10,7 +12,7 @@ export function PipelineIndicator(): React.JSX.Element | null {
   return (
     <div
       className={`pipeline-indicator${stage ? ' pipeline-indicator--active' : ''}`}
-      title={stage || 'Idle'}
+      {...tooltip(stage || 'Idle')}
     >
       {/* Approximates SF Symbol "music.note.list": a note head + stem + three horizontal lines */}
       <svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" aria-hidden="true">

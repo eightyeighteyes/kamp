@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 import { artUrl } from '../api/client'
 
 export function NowPlayingView(): React.JSX.Element {
@@ -11,6 +13,7 @@ export function NowPlayingView(): React.JSX.Element {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const selectArtist = useStore((s) => s.selectArtist)
   const setActiveView = useStore((s) => s.setActiveView)
+  const tooltip = useTooltip()
 
   if (!current_track) {
     return (
@@ -57,7 +60,7 @@ export function NowPlayingView(): React.JSX.Element {
           {current_track.id in deferredOps && (
             <span
               className="deferred-op-pip"
-              title="Will reorganize when playback ends"
+              {...tooltip(TOOLTIPS.META_WILL_REORGANIZE)}
               aria-label="Pending rename"
             />
           )}

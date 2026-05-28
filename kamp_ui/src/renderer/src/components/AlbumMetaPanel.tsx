@@ -1,5 +1,7 @@
 import React, { useEffect, useRef } from 'react'
 import type { Track } from '../api/client'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 import { TagIcon, ChevronIcon } from './TransportIcons'
 
 interface AlbumMetaPanelProps {
@@ -42,6 +44,7 @@ function MetaField({
   onChange,
   onBlur
 }: MetaFieldProps): React.JSX.Element {
+  const tooltip = useTooltip()
   const isMixed = value === '(mixed)'
   const showInput = editMode && !readOnly && !isMixed
 
@@ -64,7 +67,7 @@ function MetaField({
         {readOnly && value && (
           <button
             className="meta-field-copy-btn"
-            title="Copy to clipboard"
+            {...tooltip(TOOLTIPS.META_COPY)}
             aria-label={`Copy ${label}`}
             onClick={() => void navigator.clipboard.writeText(value)}
           >

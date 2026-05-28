@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 import { QueueContextMenu } from './QueueContextMenu'
 import { FavoriteIcon } from './TransportIcons'
 import type { Track } from '../api/client'
@@ -29,6 +31,7 @@ export function QueuePanel(): React.JSX.Element {
   const listRef = useRef<HTMLOListElement>(null)
   const hasMounted = useRef(false)
   const [menu, setMenu] = useState<ContextMenu | null>(null)
+  const tooltip = useTooltip()
 
   const tracks = queue?.tracks ?? []
   const position = queue?.position ?? -1
@@ -115,7 +118,11 @@ export function QueuePanel(): React.JSX.Element {
     <aside className="queue-panel">
       <div className="queue-panel-header">
         <span className="queue-panel-label">QUEUE</span>
-        <button className="queue-close-btn" onClick={toggleQueuePanel} title="Close queue">
+        <button
+          className="queue-close-btn"
+          onClick={toggleQueuePanel}
+          {...tooltip(TOOLTIPS.QUEUE_CLOSE)}
+        >
           ✕
         </button>
       </div>

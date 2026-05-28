@@ -1,9 +1,12 @@
 import { forwardRef } from 'react'
 import { useStore } from '../store'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 
 export const SearchBar = forwardRef<HTMLInputElement>(function SearchBar(_, ref) {
   const query = useStore((s) => s.searchQuery)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
+  const tooltip = useTooltip()
 
   return (
     <div className="search-bar">
@@ -21,6 +24,7 @@ export const SearchBar = forwardRef<HTMLInputElement>(function SearchBar(_, ref)
         <button
           className="search-clear"
           onClick={() => void setSearchQuery('')}
+          {...tooltip(TOOLTIPS.SEARCH_CLEAR)}
           aria-label="Clear search"
         >
           ✕

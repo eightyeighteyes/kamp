@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import type { Album, ItunesArtCandidate } from '../api/client'
+import { useTooltip } from '../hooks/useTooltip'
 import { applyAlbumArt, applyAlbumArtLocal, searchAlbumArt } from '../api/client'
 import '../assets/album-art-modal.css'
 
@@ -48,13 +49,14 @@ function ArtThumbnail({
   onClick: () => void
 }): React.JSX.Element {
   const [imgState, setImgState] = useState<'loading' | 'loaded' | 'error'>('loading')
+  const tooltip = useTooltip()
 
   return (
     <button
       className={`art-thumb${selected ? ' art-thumb--selected' : ''}`}
       type="button"
       onClick={onClick}
-      title={`${candidate.artist} — ${candidate.title}`}
+      {...tooltip(`${candidate.artist} — ${candidate.title}`)}
     >
       <div className="art-thumb__img-wrap">
         {imgState === 'loading' && <div className="art-thumb__skeleton" />}

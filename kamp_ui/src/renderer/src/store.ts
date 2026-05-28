@@ -154,6 +154,7 @@ type PlayerStore = {
   skipToQueueTrack: (position: number) => Promise<void>
   clearQueue: () => Promise<void>
   clearRemainingQueue: (position: number) => Promise<void>
+  removeFromQueue: (indices: number[]) => Promise<void>
   setFavorite: (track: Track, favorite: boolean) => Promise<void>
   setFavorites: (tracks: Track[], favorite: boolean) => Promise<void>
   setAlbumFavorite: (albumArtist: string, album: string, favorite: boolean) => Promise<void>
@@ -661,6 +662,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   clearRemainingQueue: async (position) => {
     await api.clearRemainingQueue(position)
+    void get().loadQueue()
+  },
+
+  removeFromQueue: async (indices) => {
+    await api.removeFromQueue(indices)
     void get().loadQueue()
   },
 

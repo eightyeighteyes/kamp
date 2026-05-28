@@ -327,6 +327,8 @@ export const skipToQueueTrack = (position: number): Promise<unknown> =>
 export const clearQueue = (): Promise<unknown> => post('/api/v1/player/queue/clear', {})
 export const clearRemainingQueue = (position: number): Promise<unknown> =>
   post('/api/v1/player/queue/clear-remaining', { position })
+export const removeFromQueue = (indices: number[]): Promise<unknown> =>
+  post('/api/v1/player/queue/remove', { indices })
 export const setTrackFavorite = (track: Track, favorite: boolean): Promise<unknown> =>
   post('/api/v1/tracks/favorite', { file_path: track.file_path, favorite })
 

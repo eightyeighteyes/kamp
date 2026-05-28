@@ -183,6 +183,25 @@ export function RepeatIcon({ size = 20 }: IconProps): React.JSX.Element {
   )
 }
 
+export function RemoveFromQueueIcon({ size = 16 }: IconProps): React.JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M8.46447 15.5355L15.5355 8.46446" />
+      <path d="M8.46447 8.46447L15.5355 15.5355" />
+    </svg>
+  )
+}
+
 export function FavoriteIcon({ active, size = 16 }: FavoriteIconProps): React.JSX.Element {
   return (
     <svg

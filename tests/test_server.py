@@ -1038,6 +1038,13 @@ class TestQueueMutationEndpoints:
         assert resp.status_code == 200
         mock_queue.clear_remaining.assert_called_once_with(4)
 
+    def test_remove_from_queue_calls_remove_at_with_indices(
+        self, client: TestClient, mock_queue: MagicMock
+    ) -> None:
+        resp = client.post("/api/v1/player/queue/remove", json={"indices": [2, 4]})
+        assert resp.status_code == 200
+        mock_queue.remove_at.assert_called_once_with([2, 4])
+
     def test_skip_to_calls_engine_play(
         self, client: TestClient, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:

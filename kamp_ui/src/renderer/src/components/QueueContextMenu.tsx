@@ -1,7 +1,7 @@
 import React from 'react'
 import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
-import { FavoriteIcon, GoToAlbumIcon, GoToArtistIcon } from './TransportIcons'
+import { FavoriteIcon, GoToAlbumIcon, GoToArtistIcon, RemoveFromQueueIcon } from './TransportIcons'
 import type { Track } from '../api/client'
 
 interface Props {
@@ -10,6 +10,7 @@ interface Props {
   trackIdx: number | null
   track?: Track // right-clicked item — used for navigation only
   selectedTracks: Track[] // all selected items — used for bulk favorites
+  unplayedSelectedIndices: number[] // display indices of unplayed selected tracks
   onClose: () => void
 }
 
@@ -19,6 +20,7 @@ export function QueueContextMenu({
   trackIdx,
   track,
   selectedTracks,
+  unplayedSelectedIndices,
   onClose
 }: Props): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
@@ -27,6 +29,7 @@ export function QueueContextMenu({
   const setActiveView = useStore((s) => s.setActiveView)
   const clearQueue = useStore((s) => s.clearQueue)
   const clearRemainingQueue = useStore((s) => s.clearRemainingQueue)
+  const removeFromQueue = useStore((s) => s.removeFromQueue)
   const setFavorites = useStore((s) => s.setFavorites)
 
   // For the favorites label: apply to all selected; label reflects majority state.
@@ -112,6 +115,27 @@ export function QueueContextMenu({
                 <FavoriteIcon active={!allFavorited} size={12} />
               </span>
               {allFavorited ? 'Remove from Favorites' : 'Add to Favorites'}
+            </button>
+          )}
+          {unplayedSelectedIndices.length > 0 && (
+            <button
+              className="track-context-menu-item"
+              onClick={() => {
+                void removeFromQueue(unplayedSelectedIndices)
+                onClose()
+              }}
+            >
+              <span
+                style={{
+                  marginRight: 6,
+                  verticalAlign: 'middle',
+                  flexShrink: 0,
+                  display: 'inline-flex'
+                }}
+              >
+                <RemoveFromQueueIcon size={12} />
+              </span>
+              Remove from Queue
             </button>
           )}
           <div className="track-context-menu-divider" />

@@ -730,6 +730,108 @@ class TestPlaybackQueue:
         _, pos = q.queue_tracks()
         assert pos == 4  # shifted forward by 2
 
+    # ------------------------------------------------------------------
+    # remove_at
+    # ------------------------------------------------------------------
+
+    def test_remove_at_removes_single_unplayed_track(self) -> None:
+        # T0 T1 T2* T3 T4 — playing T2, remove T3
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=2)
+        q.remove_at([3])
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 4
+        assert ordered[pos] == tracks[2]
+        assert tracks[3] not in ordered
+        assert tracks[4] in ordered
+
+    def test_remove_at_removes_multiple_unplayed_tracks(self) -> None:
+        # T0 T1 T2* T3 T4 T5 — playing T2, remove T3 and T5
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(6)]
+        q.load(tracks, start_index=2)
+        q.remove_at([3, 5])
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 4
+        assert ordered[pos] == tracks[2]
+        assert tracks[3] not in ordered
+        assert tracks[4] in ordered
+        assert tracks[5] not in ordered
+
+    def test_remove_at_ignores_current_track_index(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(4)]
+        q.load(tracks, start_index=1)  # pos=1
+        q.remove_at([1])  # attempt to remove current — no-op
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 4
+        assert ordered[pos] == tracks[1]
+
+    def test_remove_at_ignores_past_track_indices(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=2)  # pos=2; T0 and T1 are past
+        q.remove_at([0, 1])
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 5  # nothing removed
+
+    def test_remove_at_mixed_removes_only_future_tracks(self) -> None:
+        # Selection spans past, current, and future; only future are removed
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(6)]
+        q.load(tracks, start_index=2)  # T0 T1 past, T2 current, T3 T4 T5 future
+        q.remove_at([0, 1, 2, 3, 4])  # 0/1/2 ignored; 3 and 4 removed
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 4  # T0 T1 T2 T5 remain
+        assert ordered[pos] == tracks[2]
+        assert tracks[3] not in ordered
+        assert tracks[4] not in ordered
+        assert tracks[5] in ordered
+
+    def test_remove_at_out_of_range_index_is_ignored(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks, start_index=0)
+        q.remove_at([99, -1])
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 3
+
+    def test_remove_at_empty_list_is_noop(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.remove_at([])
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 3
+
+    def test_remove_at_does_not_adjust_pos(self) -> None:
+        # Removing tracks after current must not change _pos
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=2)
+        q.remove_at([3, 4])
+        _, pos = q.queue_tracks()
+        assert pos == 2  # current track is still at display index 2
+
+    def test_remove_at_all_future_tracks(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(4)]
+        q.load(tracks, start_index=1)
+        q.remove_at([2, 3])
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 2  # past + current only
+        assert ordered[pos] == tracks[1]
+        assert q.next() is None
+
+    def test_remove_at_preserves_shuffle_flag(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=0)
+        q.set_shuffle(True)
+        q.remove_at([len(q.queue_tracks()[0]) - 1])  # remove last in display order
+        assert q.shuffle is True
+
 
 # ---------------------------------------------------------------------------
 # IPC transport (Unix socket / Windows named pipe)

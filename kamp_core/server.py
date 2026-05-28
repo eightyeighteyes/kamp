@@ -250,6 +250,10 @@ class InsertAlbumQueueRequest(BaseModel):
     file_path: str = ""  # non-empty for missing-album tracks
 
 
+class RemoveFromQueueRequest(BaseModel):
+    indices: list[int]
+
+
 class SkipToRequest(BaseModel):
     position: int
 
@@ -2423,6 +2427,12 @@ def create_app(
             queue.reorder(req.order)
         except (IndexError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        engine.preload_next(queue.peek_next())
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/remove")
+    def queue_remove(req: RemoveFromQueueRequest) -> dict[str, Any]:
+        queue.remove_at(req.indices)
         engine.preload_next(queue.peek_next())
         return {"ok": True}
 

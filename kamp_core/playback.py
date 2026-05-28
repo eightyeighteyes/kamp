@@ -389,6 +389,33 @@ class PlaybackQueue:
         if current_track_idx is not None:
             self._pos = self._order.index(current_track_idx)
 
+    def remove_at(self, display_indices: list[int]) -> None:
+        """Remove tracks at the given display positions.
+
+        Only indices strictly after _pos (unplayed tracks) are removed.
+        Current and past tracks are silently skipped, as are out-of-range
+        values. _pos is never adjusted because only later entries are removed.
+        """
+        n = len(self._order)
+        to_remove = sorted(
+            {i for i in display_indices if i > self._pos and 0 <= i < n},
+            reverse=True,
+        )
+        if not to_remove:
+            return
+        removed_slots: set[int] = set()
+        for disp_idx in to_remove:
+            removed_slots.add(self._order[disp_idx])
+            self._order.pop(disp_idx)
+        old_to_new: dict[int, int] = {}
+        new_tracks: list[Track] = []
+        for old_slot, track in enumerate(self._tracks):
+            if old_slot not in removed_slots:
+                old_to_new[old_slot] = len(new_tracks)
+                new_tracks.append(track)
+        self._tracks = new_tracks
+        self._order = [old_to_new[i] for i in self._order]
+
     def _shuffled_order(self, anchor_idx: int) -> None:
         """Shuffle _order placing anchor_idx first; maximises artist diversity.
 

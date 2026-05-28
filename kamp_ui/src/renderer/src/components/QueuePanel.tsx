@@ -28,6 +28,7 @@ type ContextMenu = {
   trackIdx: number | null
   track?: Track
   selectedTracks: Track[]
+  unplayedSelectedIndices: number[]
 }
 
 export function QueuePanel(): React.JSX.Element {
@@ -232,7 +233,13 @@ export function QueuePanel(): React.JSX.Element {
           className="queue-track-list"
           onContextMenu={(e) => {
             e.preventDefault()
-            setMenu({ x: e.clientX, y: e.clientY, trackIdx: null, selectedTracks: [] })
+            setMenu({
+              x: e.clientX,
+              y: e.clientY,
+              trackIdx: null,
+              selectedTracks: [],
+              unplayedSelectedIndices: []
+            })
           }}
           onDragOver={(e) => {
             if (!isQueueDrop(e.dataTransfer.types)) return
@@ -327,15 +334,16 @@ export function QueuePanel(): React.JSX.Element {
                     setSelectedIndices(nextIndices)
                     setAnchorIdx(idx)
                   }
-                  const selectedTracks = [...nextIndices]
-                    .sort((a, b) => a - b)
-                    .map((i) => tracks[i])
+                  const sortedIndices = [...nextIndices].sort((a, b) => a - b)
+                  const selectedTracks = sortedIndices.map((i) => tracks[i])
+                  const unplayedSelectedIndices = sortedIndices.filter((i) => i > position)
                   setMenu({
                     x: e.clientX,
                     y: e.clientY,
                     trackIdx: isUnplayed ? idx : null,
                     track,
-                    selectedTracks
+                    selectedTracks,
+                    unplayedSelectedIndices
                   })
                 }}
               >
@@ -357,6 +365,7 @@ export function QueuePanel(): React.JSX.Element {
           trackIdx={menu.trackIdx}
           track={menu.track}
           selectedTracks={menu.selectedTracks}
+          unplayedSelectedIndices={menu.unplayedSelectedIndices}
           onClose={() => setMenu(null)}
         />
       )}

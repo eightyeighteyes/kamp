@@ -438,12 +438,32 @@ html[data-platform='win32'] .view-tabs {
 /* Artist panel ------------------------------------------------------------- */
 
 .artist-panel {
-  width: var(--panel-w);
+  min-width: 200px;
   flex-shrink: 0;
+  position: relative;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.artist-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 10;
+}
+
+.artist-panel--resizing {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.artist-panel--resizing .artist-list li:hover {
+  background: none;
 }
 
 .panel-header {

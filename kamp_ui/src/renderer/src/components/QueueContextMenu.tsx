@@ -8,18 +8,29 @@ interface Props {
   x: number
   y: number
   trackIdx: number | null
-  track?: Track
+  track?: Track // right-clicked item — used for navigation only
+  selectedTracks: Track[] // all selected items — used for bulk favorites
   onClose: () => void
 }
 
-export function QueueContextMenu({ x, y, trackIdx, track, onClose }: Props): React.JSX.Element {
+export function QueueContextMenu({
+  x,
+  y,
+  trackIdx,
+  track,
+  selectedTracks,
+  onClose
+}: Props): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
   const selectAlbum = useStore((s) => s.selectAlbum)
   const selectArtist = useStore((s) => s.selectArtist)
   const setActiveView = useStore((s) => s.setActiveView)
   const clearQueue = useStore((s) => s.clearQueue)
   const clearRemainingQueue = useStore((s) => s.clearRemainingQueue)
-  const setFavorite = useStore((s) => s.setFavorite)
+  const setFavorites = useStore((s) => s.setFavorites)
+
+  // For the favorites label: apply to all selected; label reflects majority state.
+  const allFavorited = selectedTracks.length > 0 && selectedTracks.every((t) => t.favorite)
 
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
@@ -82,25 +93,27 @@ export function QueueContextMenu({ x, y, trackIdx, track, onClose }: Props): Rea
             </span>
             Go to Artist
           </button>
-          <button
-            className="track-context-menu-item"
-            onClick={() => {
-              void setFavorite(track, !track.favorite)
-              onClose()
-            }}
-          >
-            <span
-              style={{
-                marginRight: 6,
-                verticalAlign: 'middle',
-                flexShrink: 0,
-                display: 'inline-flex'
+          {selectedTracks.length > 0 && (
+            <button
+              className="track-context-menu-item"
+              onClick={() => {
+                void setFavorites(selectedTracks, !allFavorited)
+                onClose()
               }}
             >
-              <FavoriteIcon active={!track.favorite} size={12} />
-            </span>
-            {track.favorite ? 'Remove from Favorites' : 'Add to Favorites'}
-          </button>
+              <span
+                style={{
+                  marginRight: 6,
+                  verticalAlign: 'middle',
+                  flexShrink: 0,
+                  display: 'inline-flex'
+                }}
+              >
+                <FavoriteIcon active={!allFavorited} size={12} />
+              </span>
+              {allFavorited ? 'Remove from Favorites' : 'Add to Favorites'}
+            </button>
+          )}
           <div className="track-context-menu-divider" />
         </>
       )}

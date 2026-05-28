@@ -77,6 +77,14 @@
   opacity: 0.4;
 }
 
+.queue-track-row.selected {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.queue-track-row.dragging {
+  opacity: 0.4;
+}
+
 .queue-track-fav {
   grid-row: 1 / 3;
   align-self: center;

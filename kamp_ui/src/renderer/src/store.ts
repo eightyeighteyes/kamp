@@ -150,10 +150,12 @@ type PlayerStore = {
   insertIntoQueue: (filePath: string, index: number) => Promise<void>
   playNext: (filePath: string) => Promise<void>
   moveQueueTrack: (fromIndex: number, toIndex: number) => Promise<void>
+  reorderQueue: (order: number[]) => Promise<void>
   skipToQueueTrack: (position: number) => Promise<void>
   clearQueue: () => Promise<void>
   clearRemainingQueue: (position: number) => Promise<void>
   setFavorite: (track: Track, favorite: boolean) => Promise<void>
+  setFavorites: (tracks: Track[], favorite: boolean) => Promise<void>
   setAlbumFavorite: (albumArtist: string, album: string, favorite: boolean) => Promise<void>
   patchTrackTitle: (
     trackId: number,
@@ -642,6 +644,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void get().loadQueue()
   },
 
+  reorderQueue: async (order) => {
+    await api.reorderQueue(order)
+    void get().loadQueue()
+  },
+
   skipToQueueTrack: async (position) => {
     await api.skipToQueueTrack(position)
     void get().loadQueue()
@@ -695,6 +702,41 @@ export const useStore = create<PlayerStore>((set, get) => ({
         : s.searchResults
     }))
     // Reload the open album track list so the heart in track rows updates.
+    await get().refreshOpenAlbum()
+  },
+
+  setFavorites: async (tracks, favorite) => {
+    // allSettled so a partial 404 doesn't silently mis-patch state for succeeded tracks
+    const results = await Promise.allSettled(tracks.map((t) => api.setTrackFavorite(t, favorite)))
+    const succeededPaths = new Set(
+      tracks.filter((_, i) => results[i].status === 'fulfilled').map((t) => t.file_path)
+    )
+    if (succeededPaths.size === 0) return
+    const ids = new Set(tracks.filter((t) => succeededPaths.has(t.file_path)).map((t) => t.id))
+    if (get().player.current_track && ids.has(get().player.current_track!.id)) {
+      set((s) => ({
+        player: {
+          ...s.player,
+          current_track: s.player.current_track ? { ...s.player.current_track, favorite } : null
+        }
+      }))
+    }
+    set((s) => ({
+      queue: s.queue
+        ? {
+            ...s.queue,
+            tracks: s.queue.tracks.map((t) => (ids.has(t.id) ? { ...t, favorite } : t))
+          }
+        : s.queue
+    }))
+    set((s) => ({
+      searchResults: s.searchResults
+        ? {
+            ...s.searchResults,
+            tracks: s.searchResults.tracks.map((t) => (ids.has(t.id) ? { ...t, favorite } : t))
+          }
+        : s.searchResults
+    }))
     await get().refreshOpenAlbum()
   },
 

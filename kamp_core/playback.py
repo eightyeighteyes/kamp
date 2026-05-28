@@ -374,6 +374,21 @@ class PlaybackQueue:
         elif to_idx <= self._pos < from_idx:
             self._pos += 1
 
+    def reorder(self, new_order: list[int]) -> None:
+        """Rearrange the queue by a permutation of display indices.
+
+        new_order[i] is the old display position that should appear at
+        position i after reorder. Raises ValueError for invalid permutations.
+        Leaves _shuffle flag unchanged (consistent with move() for single-item drags).
+        """
+        n = len(self._order)
+        if sorted(new_order) != list(range(n)):
+            raise ValueError(f"Invalid permutation: {new_order}")
+        current_track_idx = self._order[self._pos] if self._pos >= 0 else None
+        self._order = [self._order[i] for i in new_order]
+        if current_track_idx is not None:
+            self._pos = self._order.index(current_track_idx)
+
     def _shuffled_order(self, anchor_idx: int) -> None:
         """Shuffle _order placing anchor_idx first; maximises artist diversity.
 

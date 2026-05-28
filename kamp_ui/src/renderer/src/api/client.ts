@@ -320,6 +320,8 @@ export const playNext = (filePath: string): Promise<unknown> =>
   post('/api/v1/player/queue/play-next', { file_path: filePath })
 export const moveQueueTrack = (fromIndex: number, toIndex: number): Promise<unknown> =>
   post('/api/v1/player/queue/move', { from_index: fromIndex, to_index: toIndex })
+export const reorderQueue = (order: number[]): Promise<unknown> =>
+  post('/api/v1/player/queue/reorder', { order })
 export const skipToQueueTrack = (position: number): Promise<unknown> =>
   post('/api/v1/player/queue/skip-to', { position })
 export const clearQueue = (): Promise<unknown> => post('/api/v1/player/queue/clear', {})

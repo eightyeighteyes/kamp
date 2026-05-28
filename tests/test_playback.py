@@ -584,6 +584,50 @@ class TestPlaybackQueue:
             q.move(0, 10)
 
     # ------------------------------------------------------------------
+    # reorder
+    # ------------------------------------------------------------------
+
+    def test_reorder_applies_permutation(self) -> None:
+        # Ticket example: [a,b,c,d,e,f,g], selection [2,4,6] dropped at 0 → [c,e,g,a,b,d,f]
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(7)]
+        q.load(ts)
+        q.reorder([2, 4, 6, 0, 1, 3, 5])
+        tracks, _ = q.queue_tracks()
+        assert tracks == [ts[2], ts[4], ts[6], ts[0], ts[1], ts[3], ts[5]]
+
+    def test_reorder_adjusts_pos_to_follow_current(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)
+        q.next()  # pos=1, current=ts[1]
+        q.reorder([3, 2, 1, 0])  # reverse
+        _, pos = q.queue_tracks()
+        assert pos == 2  # ts[1] is now at display index 2
+
+    def test_reorder_noop_with_identity_permutation(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)
+        q.next()
+        q.reorder([0, 1, 2])
+        tracks, pos = q.queue_tracks()
+        assert tracks == ts
+        assert pos == 1
+
+    def test_reorder_raises_on_invalid_permutation(self) -> None:
+        q = PlaybackQueue()
+        q.load([_track(i) for i in range(3)])
+        with pytest.raises(ValueError):
+            q.reorder([0, 1, 5])  # index 5 out of range
+
+    def test_reorder_raises_on_duplicate_indices(self) -> None:
+        q = PlaybackQueue()
+        q.load([_track(i) for i in range(3)])
+        with pytest.raises(ValueError):
+            q.reorder([0, 0, 2])  # duplicate
+
+    # ------------------------------------------------------------------
     # insert_at
     # ------------------------------------------------------------------
 

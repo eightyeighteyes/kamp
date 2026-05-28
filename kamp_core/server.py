@@ -228,6 +228,10 @@ class MoveQueueRequest(BaseModel):
     to_index: int
 
 
+class ReorderQueueRequest(BaseModel):
+    order: list[int]
+
+
 class InsertQueueRequest(BaseModel):
     file_path: str
     index: int
@@ -2409,6 +2413,15 @@ def create_app(
         try:
             queue.move(req.from_index, req.to_index)
         except IndexError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        engine.preload_next(queue.peek_next())
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/reorder")
+    def queue_reorder(req: ReorderQueueRequest) -> dict[str, Any]:
+        try:
+            queue.reorder(req.order)
+        except (IndexError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         engine.preload_next(queue.peek_next())
         return {"ok": True}

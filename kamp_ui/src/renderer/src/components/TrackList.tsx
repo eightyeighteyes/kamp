@@ -28,6 +28,10 @@ import {
 
 const TOAST_TTL = 10_000 // ms
 
+const HERO_DEFAULT = 45
+const HERO_MIN = 15
+const HERO_KEY = 'kamp:hero-height-pct'
+
 type ContextMenu = { x: number; y: number; track: Track }
 type AlbumRenameToast = {
   message: string
@@ -82,6 +86,15 @@ export function TrackList(): React.JSX.Element | null {
   const albumTitleRef = useRef<HTMLHeadingElement>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mbAbortRef = useRef<AbortController | null>(null)
+  const didDragRef = useRef(false)
+  const dragStartYRef = useRef(0)
+  const heroAtDragStartRef = useRef(HERO_DEFAULT)
+  const toggleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [heroHeightPct, setHeroHeightPct] = useState<number>(() => {
+    const saved = parseFloat(localStorage.getItem(HERO_KEY) ?? '')
+    return isNaN(saved) ? HERO_DEFAULT : Math.min(HERO_DEFAULT, Math.max(HERO_MIN, saved))
+  })
+  const [isResizing, setIsResizing] = useState(false)
   const [collision, setCollision] = useState<
     (TrackTagsCollision & { pendingTrackId: number; pendingTitle: string }) | null
   >(null)
@@ -103,6 +116,67 @@ export function TrackList(): React.JSX.Element | null {
     setArtSearchOpen(false)
   }
 
+  const handleResizeMouseDown = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    didDragRef.current = false
+    dragStartYRef.current = e.clientY
+    heroAtDragStartRef.current = heroHeightPct
+    setIsResizing(true)
+
+    const onMove = (ev: MouseEvent): void => {
+      const deltaVh = ((ev.clientY - dragStartYRef.current) / window.innerHeight) * 100
+      if (Math.abs(ev.clientY - dragStartYRef.current) > 4) didDragRef.current = true
+      if (!didDragRef.current) return
+      setHeroHeightPct(
+        Math.min(HERO_DEFAULT, Math.max(HERO_MIN, heroAtDragStartRef.current + deltaVh))
+      )
+    }
+
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setIsResizing(false)
+      if (didDragRef.current) {
+        setHeroHeightPct((h) => {
+          localStorage.setItem(HERO_KEY, String(Math.round(h)))
+          return h
+        })
+      }
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const handleResizeReset = (): void => {
+    // Cancel any pending toggle from the first click of this double-click
+    if (toggleTimeoutRef.current) {
+      clearTimeout(toggleTimeoutRef.current)
+      toggleTimeoutRef.current = null
+    }
+    setHeroHeightPct(HERO_DEFAULT)
+    localStorage.setItem(HERO_KEY, String(HERO_DEFAULT))
+  }
+
+  const handleToggle = (): void => {
+    if (didDragRef.current) {
+      didDragRef.current = false
+      return
+    }
+    // Debounce so the second click of a double-click can cancel this toggle
+    // before it fires — double-click resets the hero without toggling the panel.
+    if (toggleTimeoutRef.current) {
+      clearTimeout(toggleTimeoutRef.current)
+      toggleTimeoutRef.current = null
+      return
+    }
+    const next = !albumMetaExpanded
+    toggleTimeoutRef.current = setTimeout(() => {
+      toggleTimeoutRef.current = null
+      setAlbumMetaExpanded(next)
+    }, 200)
+  }
+
   const showRenameToast = (toast: AlbumRenameToast): void => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
     setAlbumRenameToast(toast)
@@ -122,6 +196,15 @@ export function TrackList(): React.JSX.Element | null {
       mbAbortRef.current = null
     }
   }, [albumKey])
+
+  // Clear resizing state and pending toggle on unmount.
+  // Document mousemove/mouseup listeners clean themselves up on the next mouseup.
+  useEffect(() => {
+    return () => {
+      if (toggleTimeoutRef.current) clearTimeout(toggleTimeoutRef.current)
+      setIsResizing(false)
+    }
+  }, [])
 
   const handleFetchMB = (): void => {
     if (!album) return
@@ -194,7 +277,10 @@ export function TrackList(): React.JSX.Element | null {
     currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
   return (
-    <div className={`track-list-view${albumEditMode ? ' track-list-view--edit' : ''}`}>
+    <div
+      className={`track-list-view${albumEditMode ? ' track-list-view--edit' : ''}${isResizing ? ' track-list-view--resizing' : ''}`}
+      style={{ '--hero-height-pct': heroHeightPct } as React.CSSProperties}
+    >
       {/* Hero: full-width art — image intentionally taller than hero to bleed into track list */}
       <div className={`track-list-hero${album.has_art ? ' has-art' : ''}`}>
         {album.has_art && (
@@ -409,8 +495,10 @@ export function TrackList(): React.JSX.Element | null {
         tracks={tracks}
         editMode={albumEditMode}
         expanded={albumMetaExpanded}
-        onToggle={() => setAlbumMetaExpanded(!albumMetaExpanded)}
+        onToggle={handleToggle}
         onSave={(opts) => patchAlbumMeta(album.album_artist, album.album, opts)}
+        onHandleMouseDown={handleResizeMouseDown}
+        onHandleDoubleClick={handleResizeReset}
       />
 
       {/* Scrollable body */}

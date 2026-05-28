@@ -17,11 +17,13 @@
 }
 
 /* Hero: full-width art. No overflow clipping — the image intentionally
-   bleeds past the hero boundary into the track list zone. */
+   bleeds past the hero boundary into the track list zone.
+   Height driven by --hero-height-pct (set inline from TrackList state);
+   no CSS transition — height changes during live drag or instant reset. */
 .track-list-hero {
   position: relative;
   flex-shrink: 0;
-  height: 45vh;
+  height: calc(var(--hero-height-pct, 45) * 1vh);
   background: linear-gradient(160deg, var(--surface) 0%, var(--bg) 100%);
 }
 
@@ -46,7 +48,9 @@
 }
 
 /* Overlay is a sibling of the hero (not inside it) so the gradient spans
-   the hero + part of the track list. Uses literal #141414 (= --bg) because
+   the hero + part of the track list. Stop positions scale with the hero via
+   --hero-height-pct so the same opacity profile lands at the hero boundary
+   regardless of resize position. Uses literal #141414 (= --bg) because
    CSS gradient interpolates custom properties through transparent-black,
    causing a gray band artifact. */
 .track-list-hero-overlay {
@@ -60,11 +64,11 @@
   background: linear-gradient(
     to bottom,
     transparent 0%,
-    transparent 15%,
-    rgba(20, 20, 20, 0.45) 45%,
-    rgba(20, 20, 20, 0.8) 63%,
-    rgba(20, 20, 20, 0.95) 75%,
-    #141414 85%
+    transparent       calc(var(--hero-height-pct, 45) / 45 * 15%),
+    rgba(20, 20, 20, 0.45) calc(var(--hero-height-pct, 45) / 45 * 45%),
+    rgba(20, 20, 20, 0.8)  calc(var(--hero-height-pct, 45) / 45 * 63%),
+    rgba(20, 20, 20, 0.95) calc(var(--hero-height-pct, 45) / 45 * 75%),
+    #141414                calc(var(--hero-height-pct, 45) / 45 * 85%)
   );
 }
 
@@ -805,7 +809,8 @@
 /* Liner Notes panel ------------------------------------------------------- */
 
 /* Full-width toggle row between the divider and the track list.
-   Styled like a section seam — low visual weight, clearly interactive. */
+   Doubles as a vertical resize handle for the hero — heavier border-top
+   and ns-resize cursor signal the drag affordance. */
 .album-meta-toggle {
   display: flex;
   align-items: center;
@@ -815,12 +820,24 @@
   padding: 7px 20px;
   background: none;
   border: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 2px solid rgba(255, 255, 255, 0.15);
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  cursor: pointer;
+  cursor: ns-resize;
   color: var(--text-dim);
   position: relative;
   z-index: 2;
+}
+
+.track-list-view--resizing {
+  user-select: none;
+}
+
+.track-list-view--resizing .track-row:hover {
+  background: none;
+}
+
+.track-list-view--resizing .album-meta-toggle:hover {
+  background: none;
 }
 
 .album-meta-toggle:hover {

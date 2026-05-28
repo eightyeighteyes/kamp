@@ -10,6 +10,8 @@ interface AlbumMetaPanelProps {
   expanded: boolean
   onToggle: () => void
   onSave: (opts: { genre?: string; label?: string; year?: string }) => Promise<void>
+  onHandleMouseDown?: (e: React.MouseEvent) => void
+  onHandleDoubleClick?: () => void
 }
 
 /**
@@ -84,7 +86,9 @@ export function AlbumMetaPanel({
   editMode,
   expanded,
   onToggle,
-  onSave
+  onSave,
+  onHandleMouseDown,
+  onHandleDoubleClick
 }: AlbumMetaPanelProps): React.JSX.Element {
   const panelRef = useRef<HTMLDivElement>(null)
 
@@ -134,6 +138,8 @@ export function AlbumMetaPanel({
         aria-expanded={expanded}
         aria-controls="album-meta-panel"
         onClick={onToggle}
+        onMouseDown={onHandleMouseDown}
+        onDoubleClick={onHandleDoubleClick}
       >
         <TagIcon size={11} />
         <span className="album-meta-toggle-label">

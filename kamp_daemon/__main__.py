@@ -1,8 +1,8 @@
 """Entry point for the kamp daemon.
 
 Excluded from coverage (see pyproject.toml [tool.coverage.run] omit list) because
-this module is pure CLI/daemon lifecycle glue: argparse dispatch, launchctl subprocess
-calls, and signal handlers. Meaningfully unit-testing it would require spawning
+this module is pure CLI/daemon lifecycle glue: argparse dispatch and signal handlers.
+Meaningfully unit-testing it would require spawning
 subprocesses or mocking the entire OS-level daemon lifecycle, with little marginal
 value over the integration tests already covering the underlying modules (Watcher,
 Syncer, Config, etc.).
@@ -17,11 +17,9 @@ import importlib.metadata
 import logging
 import os
 import platform
-import re
 import secrets
 import shutil
 import signal
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -39,7 +37,6 @@ from .daemon_core import DaemonCore, _PID_PATH
 
 # Stable Homebrew binary locations (Apple Silicon, then Intel). Checked in order
 # before falling back to PATH, to avoid pyenv shims shadowing the Homebrew install.
-_HOMEBREW_KAMP_PATHS = ["/opt/homebrew/bin/kamp", "/usr/local/bin/kamp"]
 _HOMEBREW_MPV_PATHS = ["/opt/homebrew/bin/mpv", "/usr/local/bin/mpv"]
 
 # Common Windows mpv install locations. Checked in order when the daemon is
@@ -52,10 +49,6 @@ _WIN_MPV_PATHS = [
     r"C:\ProgramData\chocolatey\bin\mpv.exe",
     r"C:\Program Files\mpv\mpv.exe",
 ]
-
-_SERVICE_LABEL = "com.kamp"
-_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{_SERVICE_LABEL}.plist"
-_LOG_PATH = _state_dir() / "daemon.log"
 
 # pyproject.toml lives one level above the package directory and is the canonical
 # version source kept up to date by release-please.  Prefer it over
@@ -160,18 +153,6 @@ def main() -> None:
         ),
     )
 
-    # service subcommands (macOS launchd)
-    install_parser = subparsers.add_parser(
-        "install-service",
-        help="Register kamp as a launchd user agent (macOS). Starts at login, runs in background.",
-    )
-    subparsers.add_parser(
-        "uninstall-service",
-        help="Remove the launchd user agent registration.",
-    )
-    subparsers.add_parser("stop", help="Stop the kamp service.")
-    subparsers.add_parser("play", help="Start the kamp service.")
-    subparsers.add_parser("status", help="Show whether kamp is running.")
     subparsers.add_parser(
         "logout",
         help="Delete saved Bandcamp session and sync state, requiring re-authentication on the next sync.",
@@ -276,22 +257,6 @@ def main() -> None:
 
     # Default to daemon when no subcommand given
     command = args.command or "daemon"
-
-    if command == "install-service":
-        _cmd_install_service(args.config)
-        return
-    if command == "uninstall-service":
-        _cmd_uninstall_service()
-        return
-    if command == "stop":
-        _cmd_stop()
-        return
-    if command == "play":
-        _cmd_play()
-        return
-    if command == "status":
-        _cmd_status()
-        return
 
     # rollback bypasses the daemon lifecycle — it only needs the library DB.
     if command == "rollback":
@@ -616,8 +581,8 @@ def _cmd_daemon(
         except Exception as _exc:
             _logger.warning("Failed to migrate bandcamp_session.json: %s", _exc)
 
-    # Resolve the full mpv path before creating the engine so launchd-managed
-    # instances (which run with a minimal PATH) can find the Homebrew binary.
+    # Resolve the full mpv path before creating the engine so the Electron-spawned
+    # daemon (which may run with a stale PATH) can find the Homebrew binary.
     engine = MpvPlaybackEngine(mpv_bin=_resolve_mpv_binary())
     queue: PlaybackQueue = PlaybackQueue()
 
@@ -1163,170 +1128,6 @@ def _cmd_daemon_signal(sig: int, action: str) -> None:
     print(f"Daemon pipeline {action}d.")
 
 
-def _launchd_domain() -> str:
-    """Return the launchd domain for the current user's GUI session (macOS).
-
-    bootstrap/bootout require an explicit domain; gui/<uid> is the correct
-    target for user agents in ~/Library/LaunchAgents.
-    """
-    return f"gui/{os.getuid()}"
-
-
-def _launchctl_list() -> subprocess.CompletedProcess[str]:
-    """Run `launchctl list <label>` and return the result."""
-    return subprocess.run(
-        ["launchctl", "list", _SERVICE_LABEL],
-        capture_output=True,
-        text=True,
-    )
-
-
-# Matches simple scalar entries in launchctl list output, e.g.:
-#     "PID" = 12345;
-#     "LastExitStatus" = 256;
-#     "Label" = "com.kamp";
-# Skips complex values (arrays, nested dicts) that span multiple lines.
-_LAUNCHCTL_ENTRY_RE = re.compile(r'^\s*"(\w+)"\s*=\s*(?:"([^"]*)"|([\w./\-]+));\s*$')
-
-
-def _parse_launchctl_info(output: str) -> dict[str, str]:
-    """Extract scalar key/value pairs from launchctl dict output."""
-    info: dict[str, str] = {}
-    for line in output.splitlines():
-        m = _LAUNCHCTL_ENTRY_RE.match(line)
-        if m:
-            # group(2) is a quoted string value; group(3) is an unquoted value
-            info[m.group(1)] = m.group(2) if m.group(2) is not None else m.group(3)
-    return info
-
-
-def _service_registered() -> bool:
-    """Return True if kamp is registered in the launchd namespace.
-
-    A non-zero exit from `launchctl list` means the label is unknown to launchd.
-    Zero exit means the service is registered (running or stopped).
-    """
-    return _launchctl_list().returncode == 0
-
-
-def _service_pid() -> int | None:
-    """Return the PID of the running kamp service, or None if not running.
-
-    Queries launchctl for the service label. A positive PID means the process is
-    alive; absent or 0 means the service is registered but not currently running.
-    """
-    result = _launchctl_list()
-    if result.returncode != 0:
-        return None
-    info = _parse_launchctl_info(result.stdout)
-    pid_str = info.get("PID", "")
-    if not pid_str.isdigit():
-        return None
-    pid = int(pid_str)
-    return pid if pid > 0 else None
-
-
-def _cmd_stop() -> None:
-    if not _PLIST_PATH.exists():
-        print("kamp is not installed as a service. Run kamp install-service first.")
-        return
-    if _service_pid() is None:
-        print("kamp is already stopped.")
-        return
-    # bootout stops and unregisters the service; use check=False so a
-    # non-zero exit (e.g. already unloaded) doesn't raise.
-    subprocess.run(
-        ["launchctl", "bootout", _launchd_domain(), str(_PLIST_PATH)], check=False
-    )
-    print("kamp stopped.")
-
-
-def _cmd_play() -> None:
-    if not _PLIST_PATH.exists():
-        print("kamp is not installed as a service. Run kamp install-service first.")
-        return
-    if _service_pid() is not None:
-        print("kamp is already running.")
-        return
-    if _service_registered():
-        # Registered but not running (PID = "-"): bootstrap would fail with EIO
-        # because the label is already in launchd's namespace. Use kickstart instead.
-        subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{_SERVICE_LABEL}"],
-            check=True,
-        )
-    else:
-        # Not registered at all: bootstrap from the plist.
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(_PLIST_PATH)], check=True
-        )
-    print("kamp started.")
-
-
-def _cmd_status() -> None:
-    if not _PLIST_PATH.exists():
-        print("kamp is not installed as a service.")
-        return
-    pid = _service_pid()
-    if pid is None:
-        result = _launchctl_list()
-        if result.returncode == 0:
-            # Registered but not running — surface the last exit code so the
-            # user can tell whether it crashed or was cleanly stopped.
-            info = _parse_launchctl_info(result.stdout)
-            last_exit = info.get("LastExitStatus", "0")
-            if last_exit != "0":
-                print(f"kamp is not running (crashed, last exit: {last_exit})")
-                print(f"  Logs → {_LOG_PATH}")
-                return
-        print("kamp is not running.")
-        return
-    ps = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "etime="],
-        capture_output=True,
-        text=True,
-    )
-    uptime = ps.stdout.strip() if ps.returncode == 0 else "unknown"
-    print(f"kamp is running (pid {pid}, uptime {uptime})")
-
-
-def _resolve_kamp_binary() -> str:
-    """Return the path to the kamp binary to embed in the launchd plist.
-
-    Prefers the Homebrew-managed binary over pyenv shims. Pyenv shims depend on
-    a specific Python environment; launchd runs with a minimal PATH/env, so shims
-    often fail to locate their backing interpreter or site-packages at runtime.
-    """
-    # Ask Homebrew for the canonical prefix — most reliable when brew is available.
-    try:
-        result = subprocess.run(
-            ["brew", "--prefix", "kamp"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        candidate = Path(result.stdout.strip()) / "bin" / "kamp"
-        if candidate.exists():
-            return str(candidate)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-
-    # Well-known Homebrew prefix locations (Apple Silicon / Intel).
-    for path in _HOMEBREW_KAMP_PATHS:
-        if Path(path).exists():
-            return path
-
-    # Fall back to PATH search, but warn loudly if it resolves to a pyenv shim.
-    found = shutil.which("kamp")
-    if found and ".pyenv/shims" in found:
-        print(
-            f"Warning: 'kamp' resolved to a pyenv shim ({found}).\n"
-            "The launchd service may fail after a Python environment change.\n"
-            "Fix: pip uninstall kamp && pyenv rehash, then re-run install-service."
-        )
-    return found or sys.argv[0]
-
-
 def _resolve_mpv_binary() -> str:
     """Return the absolute path to the mpv binary.
 
@@ -1354,68 +1155,6 @@ def _resolve_mpv_binary() -> str:
         if Path(path).exists():
             return path
     return shutil.which("mpv") or "mpv"
-
-
-def _cmd_install_service(config_path: Path) -> None:
-    from kamp_core.library import LibraryIndex
-
-    db = LibraryIndex(_state_dir() / "library.db")
-    try:
-        settings = db.get_all_settings()
-        if not settings and sys.stdin.isatty():
-            Config.first_run_setup(db)
-    finally:
-        db.close()
-    exec_path = _resolve_kamp_binary()
-    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>             <string>{_SERVICE_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{exec_path}</string>
-        <string>--config</string>
-        <string>{config_path}</string>
-        <string>daemon</string>
-    </array>
-    <key>RunAtLoad</key>         <true/>
-    <key>KeepAlive</key>         <true/>
-    <key>StandardOutPath</key>   <string>{_LOG_PATH}</string>
-    <key>StandardErrorPath</key> <string>{_LOG_PATH}</string>
-</dict>
-</plist>"""
-    _PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PLIST_PATH.write_text(plist)
-    # Bootout any stale registration before bootstrapping — launchctl returns
-    # error 5 (ENXIO) if the label is already registered, even with a new plist.
-    if _service_registered():
-        subprocess.run(
-            ["launchctl", "bootout", _launchd_domain(), str(_PLIST_PATH)], check=False
-        )
-    subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(_PLIST_PATH)], check=True
-    )
-    print("kamp installed and started.")
-    print(f"  Logs → {_LOG_PATH}")
-    print("\nUseful commands:")
-    print("  kamp stop             # pause the service")
-    print("  kamp play             # resume the service")
-    print("  kamp status           # check if it's running")
-    print("  kamp uninstall-service  # remove it permanently")
-
-
-def _cmd_uninstall_service() -> None:
-    if not _PLIST_PATH.exists():
-        print("Service is not installed.")
-        return
-    subprocess.run(
-        ["launchctl", "bootout", _launchd_domain(), str(_PLIST_PATH)], check=False
-    )
-    _PLIST_PATH.unlink()
-    print("Service removed.")
 
 
 if __name__ == "__main__":

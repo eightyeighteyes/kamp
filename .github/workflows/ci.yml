@@ -57,9 +57,9 @@ jobs:
 
       # Coverage threshold is enforced by the ubuntu-latest `python` job — that
       # is the canonical reference platform. Skip coverage here since several
-      # POSIX-only paths (launchd service install, SIGUSR1/SIGUSR2 handlers,
-      # st_mode chmod) are skipif'd on Windows and would otherwise pull total
-      # coverage below the 95% threshold for reasons unrelated to regressions.
+      # POSIX-only paths (SIGUSR1/SIGUSR2 handlers, st_mode chmod) are skipif'd
+      # on Windows and would otherwise pull total coverage below the 95%
+      # threshold for reasons unrelated to regressions.
       - name: Run tests (no-cov)
         run: poetry run pytest --no-cov
 

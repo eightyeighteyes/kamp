@@ -1,13 +1,33 @@
 /* Queue panel -------------------------------------------------------------- */
 
 .queue-panel {
-  width: 280px;
+  min-width: 280px;
   flex-shrink: 0;
+  position: relative;
   border-left: 1px solid var(--border);
   background: var(--surface);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.queue-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 10;
+}
+
+.queue-panel--resizing {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.queue-panel--resizing .queue-track-row:hover {
+  background: none;
 }
 
 .queue-panel-header {

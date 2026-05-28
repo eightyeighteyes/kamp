@@ -6,6 +6,9 @@ import { QueueContextMenu } from './QueueContextMenu'
 import { FavoriteIcon } from './TransportIcons'
 import type { Track } from '../api/client'
 
+const QUEUE_WIDTH_KEY = 'kamp:queue-width'
+const QUEUE_WIDTH_DEFAULT = 280
+
 const QUEUE_DROP_TYPES = new Set(['text/kamp-track-path', 'text/kamp-album', 'text/kamp-queue-idx'])
 function isQueueDrop(types: DOMStringList | readonly string[]): boolean {
   return Array.from(types).some((t) => QUEUE_DROP_TYPES.has(t))
@@ -56,6 +59,15 @@ export function QueuePanel(): React.JSX.Element {
   const [historyCollapsed, setHistoryCollapsed] = useState(
     () => localStorage.getItem('kamp:queue-history-collapsed') === 'true'
   )
+  const [queueWidth, setQueueWidth] = useState<number>(() => {
+    const saved = parseFloat(localStorage.getItem(QUEUE_WIDTH_KEY) ?? '')
+    const max = window.innerWidth * 0.33
+    return isNaN(saved) ? QUEUE_WIDTH_DEFAULT : Math.min(max, Math.max(QUEUE_WIDTH_DEFAULT, saved))
+  })
+  const [isResizing, setIsResizing] = useState(false)
+  const dragStartXRef = useRef(0)
+  const widthAtDragStartRef = useRef(QUEUE_WIDTH_DEFAULT)
+  const didDragRef = useRef(false)
 
   const tracks = queue?.tracks ?? []
   const position = queue?.position ?? -1
@@ -88,6 +100,61 @@ export function QueuePanel(): React.JSX.Element {
 
     setAnchorIdx(null)
   }, [tracks.length, position])
+
+  // Clamp width to 33% when the window shrinks.
+  useEffect(() => {
+    const onWindowResize = (): void => {
+      const max = window.innerWidth * 0.33
+      setQueueWidth((w) => {
+        if (w > max) {
+          localStorage.setItem(QUEUE_WIDTH_KEY, String(Math.round(max)))
+          return max
+        }
+        return w
+      })
+    }
+    window.addEventListener('resize', onWindowResize)
+    return () => window.removeEventListener('resize', onWindowResize)
+  }, [])
+
+  function handleResizeMouseDown(e: React.MouseEvent): void {
+    e.preventDefault()
+    didDragRef.current = false
+    dragStartXRef.current = e.clientX
+    widthAtDragStartRef.current = queueWidth
+    setIsResizing(true)
+
+    const onMove = (ev: MouseEvent): void => {
+      // Dragging left (smaller clientX) widens the panel.
+      const delta = dragStartXRef.current - ev.clientX
+      if (Math.abs(delta) > 4) didDragRef.current = true
+      if (!didDragRef.current) return
+      const max = window.innerWidth * 0.33
+      setQueueWidth(
+        Math.min(max, Math.max(QUEUE_WIDTH_DEFAULT, widthAtDragStartRef.current + delta))
+      )
+    }
+
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setIsResizing(false)
+      if (didDragRef.current) {
+        setQueueWidth((w) => {
+          localStorage.setItem(QUEUE_WIDTH_KEY, String(Math.round(w)))
+          return w
+        })
+      }
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  function handleResizeDoubleClick(): void {
+    setQueueWidth(QUEUE_WIDTH_DEFAULT)
+    localStorage.setItem(QUEUE_WIDTH_KEY, String(QUEUE_WIDTH_DEFAULT))
+  }
 
   function toggleHistoryCollapsed(): void {
     const next = !historyCollapsed
@@ -314,7 +381,15 @@ export function QueuePanel(): React.JSX.Element {
   const isPlaying = position >= 0 && position < tracks.length
 
   return (
-    <aside className="queue-panel">
+    <aside
+      className={`queue-panel${isResizing ? ' queue-panel--resizing' : ''}`}
+      style={{ width: queueWidth }}
+    >
+      <div
+        className="queue-resize-handle"
+        onMouseDown={handleResizeMouseDown}
+        onDoubleClick={handleResizeDoubleClick}
+      />
       <div className="queue-panel-header">
         <span className="queue-panel-label">QUEUE</span>
         <button

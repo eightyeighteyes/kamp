@@ -1,7 +1,13 @@
 import React from 'react'
 import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
-import { FavoriteIcon, GoToAlbumIcon, GoToArtistIcon, RemoveFromQueueIcon } from './TransportIcons'
+import {
+  FavoriteIcon,
+  GoToAlbumIcon,
+  GoToArtistIcon,
+  PlayNextIcon,
+  RemoveFromQueueIcon
+} from './TransportIcons'
 import type { Track } from '../api/client'
 
 interface Props {
@@ -11,6 +17,8 @@ interface Props {
   track?: Track // right-clicked item — used for navigation only
   selectedTracks: Track[] // all selected items — used for bulk favorites
   unplayedSelectedIndices: number[] // display indices of unplayed selected tracks
+  position: number // currently playing track's display index
+  onClearSelection: () => void
   onClose: () => void
 }
 
@@ -21,6 +29,8 @@ export function QueueContextMenu({
   track,
   selectedTracks,
   unplayedSelectedIndices,
+  position,
+  onClearSelection,
   onClose
 }: Props): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
@@ -30,6 +40,9 @@ export function QueueContextMenu({
   const clearQueue = useStore((s) => s.clearQueue)
   const clearRemainingQueue = useStore((s) => s.clearRemainingQueue)
   const removeFromQueue = useStore((s) => s.removeFromQueue)
+  const moveQueueTrack = useStore((s) => s.moveQueueTrack)
+  const reorderQueue = useStore((s) => s.reorderQueue)
+  const queueLength = useStore((s) => s.queue?.tracks.length ?? 0)
   const setFavorites = useStore((s) => s.setFavorites)
 
   // For the favorites label: apply to all selected; label reflects majority state.
@@ -115,6 +128,42 @@ export function QueueContextMenu({
                 <FavoriteIcon active={!allFavorited} size={12} />
               </span>
               {allFavorited ? 'Remove from Favorites' : 'Add to Favorites'}
+            </button>
+          )}
+          {unplayedSelectedIndices.length > 0 && position >= 0 && (
+            <button
+              className="track-context-menu-item"
+              onClick={() => {
+                if (unplayedSelectedIndices.length === 1) {
+                  void moveQueueTrack(unplayedSelectedIndices[0], position + 1)
+                } else {
+                  const selectedSet = new Set(unplayedSelectedIndices)
+                  const nonSelected = Array.from({ length: queueLength }, (_, i) => i).filter(
+                    (i) => !selectedSet.has(i)
+                  )
+                  const insertAt = nonSelected.indexOf(position) + 1
+                  const newOrder = [
+                    ...nonSelected.slice(0, insertAt),
+                    ...unplayedSelectedIndices,
+                    ...nonSelected.slice(insertAt)
+                  ]
+                  void reorderQueue(newOrder)
+                }
+                onClearSelection()
+                onClose()
+              }}
+            >
+              <span
+                style={{
+                  marginRight: 6,
+                  verticalAlign: 'middle',
+                  flexShrink: 0,
+                  display: 'inline-flex'
+                }}
+              >
+                <PlayNextIcon size={12} />
+              </span>
+              Queue Next
             </button>
           )}
           {unplayedSelectedIndices.length > 0 && (

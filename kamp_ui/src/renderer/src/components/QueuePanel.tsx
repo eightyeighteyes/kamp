@@ -366,6 +366,8 @@ export function QueuePanel(): React.JSX.Element {
           track={menu.track}
           selectedTracks={menu.selectedTracks}
           unplayedSelectedIndices={menu.unplayedSelectedIndices}
+          position={position}
+          onClearSelection={() => setSelectedIndices(new Set())}
           onClose={() => setMenu(null)}
         />
       )}

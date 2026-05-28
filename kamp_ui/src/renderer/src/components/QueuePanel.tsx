@@ -46,6 +46,9 @@ export function QueuePanel(): React.JSX.Element {
   const [menu, setMenu] = useState<ContextMenu | null>(null)
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
   const [anchorIdx, setAnchorIdx] = useState<number | null>(null)
+  // When clicking an already-selected row, defer collapsing the selection to mouseup
+  // so that a drag can start before the collapse fires. dragstart cancels it.
+  const pendingSingleSelect = useRef<number | null>(null)
   const tooltip = useTooltip()
 
   const tracks = queue?.tracks ?? []
@@ -91,7 +94,19 @@ export function QueuePanel(): React.JSX.Element {
         return next
       })
       setAnchorIdx(idx)
+    } else if (selectedIndices.has(idx) && selectedIndices.size > 1) {
+      // Plain click on an already-selected row: defer the collapse to mouseup so
+      // a drag can start with the full selection intact. dragstart will cancel it.
+      pendingSingleSelect.current = idx
     } else {
+      setSelectedIndices(new Set([idx]))
+      setAnchorIdx(idx)
+    }
+  }
+
+  function handleRowMouseUp(idx: number): void {
+    if (pendingSingleSelect.current === idx) {
+      pendingSingleSelect.current = null
       setSelectedIndices(new Set([idx]))
       setAnchorIdx(idx)
     }
@@ -252,8 +267,12 @@ export function QueuePanel(): React.JSX.Element {
                   .join(' ')}
                 draggable={!isCurrent}
                 onMouseDown={(e) => handleRowMouseDown(e, idx)}
+                onMouseUp={() => handleRowMouseUp(idx)}
                 onDragStart={(e) => {
                   if (isCurrent) return
+                  // A drag started — cancel any pending selection collapse so the full
+                  // selection is available for the multi-drag path below.
+                  pendingSingleSelect.current = null
                   // Filter the current playing track out of multi-drag —
                   // it is not draggable and including it would corrupt _pos.
                   const dragCandidates = [...selectedIndices].filter((i) => i !== position)

@@ -60,9 +60,29 @@
 /* Search results ----------------------------------------------------------- */
 
 .search-view {
-  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   height: 100%;
+}
+
+.search-view-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 24px;
+  flex-shrink: 0;
+}
+
+.search-view-content {
+  flex: 1;
+  min-height: 0;
+  padding: 20px 24px;
 }
 
 .search-empty {

@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { artUrl } from '../api/client'
 import type { Album, Track } from '../api/client'
 import { SortControl } from './SortControl'
+import { FilterControl } from './FilterControl'
 import { AlbumContextMenu } from './AlbumContextMenu'
 import { TrackContextMenu } from './TrackContextMenu'
 import { FavoriteIcon } from './TransportIcons'
@@ -121,60 +122,105 @@ function SearchTrackRow({
 export function SearchView(): React.JSX.Element {
   const results = useStore((s) => s.searchResults)
   const query = useStore((s) => s.searchQuery)
+  const libraryFilter = useStore((s) => s.libraryFilter)
+  const allAlbums = useStore((s) => s.library.albums)
 
   const [albumMenu, setAlbumMenu] = useState<AlbumMenu | null>(null)
   const [trackMenu, setTrackMenu] = useState<TrackMenu | null>(null)
 
-  if (!results) {
-    return <div className="search-empty">Searching…</div>
-  }
+  const top100Keys =
+    libraryFilter.includes('top_albums') && allAlbums.length > 0
+      ? new Set(
+          [...allAlbums]
+            .sort((a, b) => b.play_count_avg - a.play_count_avg)
+            .slice(0, 100)
+            .map((a) => `${a.album_artist}\0${a.album}`)
+        )
+      : null
 
-  const hasAlbums = results.albums.length > 0
-  const hasTracks = results.tracks.length > 0
+  const rawAlbums = results?.albums ?? []
+  const visibleAlbums =
+    libraryFilter.length > 0
+      ? rawAlbums.filter(
+          (a) =>
+            (libraryFilter.includes('favorite_album') && a.favorite) ||
+            (libraryFilter.includes('has_favorite_track') && a.has_favorite_track) ||
+            (libraryFilter.includes('unplayed') && a.last_played_at === null) ||
+            (libraryFilter.includes('top_albums') &&
+              top100Keys!.has(`${a.album_artist}\0${a.album}`))
+        )
+      : rawAlbums
 
-  if (!hasAlbums && !hasTracks) {
-    return <div className="search-empty">No results for &ldquo;{query}&rdquo;</div>
-  }
+  const albumMap = new Map<string, Album>()
+  allAlbums.forEach((a) => albumMap.set(`${a.album_artist}\0${a.album}`, a))
+
+  const rawTracks = results?.tracks ?? []
+  const visibleTracks =
+    libraryFilter.length > 0
+      ? rawTracks.filter((t) => {
+          const key = `${t.album_artist}\0${t.album}`
+          const album = t.album ? albumMap.get(key) : undefined
+          return (
+            (libraryFilter.includes('favorite_album') && album?.favorite === true) ||
+            (libraryFilter.includes('has_favorite_track') && t.favorite) ||
+            (libraryFilter.includes('unplayed') && t.play_count === 0) ||
+            (libraryFilter.includes('top_albums') && album !== undefined && top100Keys!.has(key))
+          )
+        })
+      : rawTracks
 
   return (
     <div className="search-view">
-      {hasAlbums && <SortControl />}
-      {hasAlbums && (
-        <section className="search-section">
-          <h2 className="search-section-title">Albums</h2>
-          <div className="search-album-grid">
-            {results.albums.map((album) => (
-              <SearchAlbumCard
-                key={`${album.album_artist}\0${album.album}`}
-                album={album}
-                onContextMenu={(e, a) => {
-                  e.preventDefault()
-                  setTrackMenu(null)
-                  setAlbumMenu({ x: e.clientX, y: e.clientY, album: a })
-                }}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-      {hasTracks && (
-        <section className="search-section">
-          <h2 className="search-section-title">Tracks</h2>
-          <div className="search-track-list">
-            {results.tracks.map((track) => (
-              <SearchTrackRow
-                key={track.id}
-                track={track}
-                onContextMenu={(e, t) => {
-                  e.preventDefault()
-                  setAlbumMenu(null)
-                  setTrackMenu({ x: e.clientX, y: e.clientY, track: t })
-                }}
-              />
-            ))}
-          </div>
-        </section>
-      )}
+      <div className="search-view-toolbar">
+        <SortControl />
+        <FilterControl />
+      </div>
+      <div className="search-view-content">
+        {!results ? (
+          <div className="search-empty">Searching…</div>
+        ) : !visibleAlbums.length && !visibleTracks.length ? (
+          <div className="search-empty">No results for &ldquo;{query}&rdquo;</div>
+        ) : (
+          <>
+            {visibleAlbums.length > 0 && (
+              <section className="search-section">
+                <h2 className="search-section-title">Albums</h2>
+                <div className="search-album-grid">
+                  {visibleAlbums.map((album) => (
+                    <SearchAlbumCard
+                      key={`${album.album_artist}\0${album.album}`}
+                      album={album}
+                      onContextMenu={(e, a) => {
+                        e.preventDefault()
+                        setTrackMenu(null)
+                        setAlbumMenu({ x: e.clientX, y: e.clientY, album: a })
+                      }}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+            {visibleTracks.length > 0 && (
+              <section className="search-section">
+                <h2 className="search-section-title">Tracks</h2>
+                <div className="search-track-list">
+                  {visibleTracks.map((track) => (
+                    <SearchTrackRow
+                      key={track.id}
+                      track={track}
+                      onContextMenu={(e, t) => {
+                        e.preventDefault()
+                        setAlbumMenu(null)
+                        setTrackMenu({ x: e.clientX, y: e.clientY, track: t })
+                      }}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
+        )}
+      </div>
 
       {albumMenu && (
         <AlbumContextMenu

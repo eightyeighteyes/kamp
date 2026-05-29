@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.21.0](https://github.com/eightyeighteyes/kamp/compare/v1.20.0...v1.21.0) (2026-05-29)
+
+
+### Features
+
+* **KAMP-260:** replace native title= with custom tooltip system ([#451](https://github.com/eightyeighteyes/kamp/issues/451)) ([27a1c02](https://github.com/eightyeighteyes/kamp/commit/27a1c027c3dff0c08d3f09fcd43f6b334cafbfad))
+* **KAMP-294:** library sort dropdown, sticky filter rail, and favorites filtering ([#450](https://github.com/eightyeighteyes/kamp/issues/450)) ([3551ec4](https://github.com/eightyeighteyes/kamp/commit/3551ec4b8d11f19df83074de138fbba03246fd8a))
+* **KAMP-349:** remove launchd service management dead code ([#452](https://github.com/eightyeighteyes/kamp/issues/452)) ([5883094](https://github.com/eightyeighteyes/kamp/commit/5883094879820bd20c00ee3859d3b02f3c86ad47))
+* **KAMP-353:** shuffle and repeat transport bar buttons ([#449](https://github.com/eightyeighteyes/kamp/issues/449)) ([60ea18b](https://github.com/eightyeighteyes/kamp/commit/60ea18bb4409e90e79ea83ded77d18f6f351b1df))
+* **KAMP-355:** remove single or selected tracks from queue ([#454](https://github.com/eightyeighteyes/kamp/issues/454)) ([2313ab7](https://github.com/eightyeighteyes/kamp/commit/2313ab76a6eb64aa03e589a2bde01a25533c2beb))
+* **KAMP-356:** multi-select queue ([#453](https://github.com/eightyeighteyes/kamp/issues/453)) ([dffc3a5](https://github.com/eightyeighteyes/kamp/commit/dffc3a5a8c7dc28746c717d681fda8ef9be8cf40))
+* **KAMP-358:** resizable album page hero via Liner Notes drag handle ([#457](https://github.com/eightyeighteyes/kamp/issues/457)) ([52036f7](https://github.com/eightyeighteyes/kamp/commit/52036f72fdab3b951fceee46e5f77b8f5f62bcd7))
+* **KAMP-359:** collapsible history section in queue panel ([#456](https://github.com/eightyeighteyes/kamp/issues/456)) ([ace843d](https://github.com/eightyeighteyes/kamp/commit/ace843da5755896feb7fbf867b91e4766143637f))
+* **KAMP-361:** Queue Next context menu item ([#455](https://github.com/eightyeighteyes/kamp/issues/455)) ([e34f648](https://github.com/eightyeighteyes/kamp/commit/e34f64869bc1b4205148c00e0465950435d3b489))
+* **KAMP-362:** resizable queue panel via left-edge drag handle ([#458](https://github.com/eightyeighteyes/kamp/issues/458)) ([f967e5f](https://github.com/eightyeighteyes/kamp/commit/f967e5f9dc68c3539fb3eae215e9dfd7f74d86b9))
+* **KAMP-363:** resizable artist panel via right-edge drag handle ([#459](https://github.com/eightyeighteyes/kamp/issues/459)) ([29a6739](https://github.com/eightyeighteyes/kamp/commit/29a6739622c311e2cc183f33b1e042037089d686))
+* **KAMP-364:** apply library filters to search view albums and tracks ([#462](https://github.com/eightyeighteyes/kamp/issues/462)) ([3213426](https://github.com/eightyeighteyes/kamp/commit/3213426f05fdbe06a5da21e2592d11c35e560910))
+* **KAMP-365:** update last_played on track start, not on EOF ([#460](https://github.com/eightyeighteyes/kamp/issues/460)) ([3cfaea3](https://github.com/eightyeighteyes/kamp/commit/3cfaea322cfa65270a61aa4cc13f2153569db145))
+
+
+### Bug Fixes
+
+* **KAMP-350:** set MACOSX_DEPLOYMENT_TARGET=11.0 for mpv; trust KAMP_MPV_BIN unconditionally ([#444](https://github.com/eightyeighteyes/kamp/issues/444)) ([4c29251](https://github.com/eightyeighteyes/kamp/commit/4c2925137e631ace6eb90f5c211b4bfc3a206121))
+* **KAMP-366:** remove animated scroll from history section ([#461](https://github.com/eightyeighteyes/kamp/issues/461)) ([6287a10](https://github.com/eightyeighteyes/kamp/commit/6287a109b5c773e42942085f67eebe726c3fac5c))
+* prevent hero image from being draggable on album page ([#446](https://github.com/eightyeighteyes/kamp/issues/446)) ([0a56dd7](https://github.com/eightyeighteyes/kamp/commit/0a56dd70b8912393a83ca441954568ee1e0065a5))
+
 ## [1.20.0](https://github.com/eightyeighteyes/kamp/compare/v1.19.0...v1.20.0) (2026-05-21)
 
 

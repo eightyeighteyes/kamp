@@ -447,7 +447,7 @@ class TestLibraryIndex:
         index = LibraryIndex(tmp_path / "library.db")
         t = _sample_track(tmp_path / "0.mp3")
         index.upsert_track(t)
-        index.record_played(tmp_path / "0.mp3")
+        index.record_track_started(tmp_path / "0.mp3")
         albums = index.albums(sort="last_played")
         index.close()
 
@@ -1519,7 +1519,7 @@ class TestAlbumsSort:
         index = self._make_index(tmp_path)
         # Only record play for one album; it should sort to the top.
         p3 = tmp_path / "c.mp3"
-        index.record_played(p3)  # Apostrophe played most recently
+        index.record_track_started(p3)  # Apostrophe played most recently
         albums = index.albums(sort="last_played")
         index.close()
         assert albums[0].album == "Apostrophe"
@@ -1600,9 +1600,8 @@ class TestAlbumsSort:
 class TestRecordPlayed:
     """Tests for LibraryIndex.record_played()."""
 
-    def test_sets_last_played_timestamp(self, tmp_path: Path) -> None:
-        import time
-
+    def test_does_not_set_last_played(self, tmp_path: Path) -> None:
+        """record_played increments play_count only; last_played is managed by record_track_started."""
         index = LibraryIndex(tmp_path / "library.db")
         p = tmp_path / "track.mp3"
         _make_mp3(p, artist="A", album_artist="A", album="B", title="T")
@@ -1625,9 +1624,7 @@ class TestRecordPlayed:
             ]
         )
 
-        before = time.time()
         index.record_played(p)
-        after = time.time()
 
         row = index._conn.execute(
             "SELECT last_played FROM tracks WHERE file_path = ?", (str(p),)
@@ -1635,7 +1632,7 @@ class TestRecordPlayed:
         index.close()
 
         assert row is not None
-        assert before <= row[0] <= after
+        assert row[0] is None
 
     def test_record_played_unknown_path_is_noop(self, tmp_path: Path) -> None:
         """Calling record_played for a path not in the index must not raise."""
@@ -1755,6 +1752,111 @@ class TestRecordPlayed:
         assert version == 18
         assert row is not None
         assert row[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# record_track_started
+# ---------------------------------------------------------------------------
+
+
+class TestRecordTrackStarted:
+    """Tests for LibraryIndex.record_track_started()."""
+
+    def _make_index_with_track(
+        self, tmp_path: Path, name: str = "track.mp3"
+    ) -> tuple[LibraryIndex, Path]:
+        index = LibraryIndex(tmp_path / "library.db")
+        p = tmp_path / name
+        _make_mp3(p, artist="A", album_artist="A", album="B", title="T")
+        index.upsert_many(
+            [
+                Track(
+                    file_path=p,
+                    title="T",
+                    artist="A",
+                    album_artist="A",
+                    album="B",
+                    year="",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                )
+            ]
+        )
+        return index, p
+
+    def test_sets_last_played_timestamp(self, tmp_path: Path) -> None:
+        import time
+
+        index, p = self._make_index_with_track(tmp_path)
+        before = time.time()
+        index.record_track_started(p)
+        after = time.time()
+
+        row = index._conn.execute(
+            "SELECT last_played FROM tracks WHERE file_path = ?", (str(p),)
+        ).fetchone()
+        index.close()
+
+        assert row is not None
+        assert before <= row[0] <= after
+
+    def test_does_not_affect_play_count(self, tmp_path: Path) -> None:
+        index, p = self._make_index_with_track(tmp_path)
+        index.record_track_started(p)
+        track = index.get_track_by_path(p)
+        index.close()
+        assert track is not None
+        assert track.play_count == 0
+
+    def test_unknown_path_is_noop(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.record_track_started(tmp_path / "ghost.mp3")  # must not raise
+        index.close()
+
+    def test_last_played_sort_reflects_record_track_started(
+        self, tmp_path: Path
+    ) -> None:
+        import time
+
+        index = LibraryIndex(tmp_path / "library.db")
+        p1 = tmp_path / "a.mp3"
+        p2 = tmp_path / "b.mp3"
+        for p, album in ((p1, "Alpha"), (p2, "Beta")):
+            _make_mp3(p, artist="X", album_artist="X", album=album, title="T")
+            index.upsert_many(
+                [
+                    Track(
+                        file_path=p,
+                        title="T",
+                        artist="X",
+                        album_artist="X",
+                        album=album,
+                        year="",
+                        track_number=1,
+                        disc_number=1,
+                        ext="mp3",
+                        embedded_art=False,
+                        mb_release_id="",
+                        mb_recording_id="",
+                    )
+                ]
+            )
+
+        index.record_track_started(p1)
+        time.sleep(0.01)
+        index.record_track_started(p2)
+
+        albums = index.albums(sort="last_played")
+        played = [a for a in albums if a.last_played_at is not None]
+        index.close()
+
+        assert len(played) == 2
+        assert played[0].album == "Beta"  # most recent
+        assert played[1].album == "Alpha"
 
 
 # ---------------------------------------------------------------------------

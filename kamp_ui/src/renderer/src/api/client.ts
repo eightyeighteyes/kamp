@@ -502,6 +502,7 @@ export async function patchTrackMeta(trackId: number, mbRecordingId: string): Pr
 // ---------------------------------------------------------------------------
 
 export type StateMessage = PlayerState & { type: 'player.state' }
+export type TrackChangedMessage = PlayerState & { type: 'track.changed' }
 export type LibraryChangedMessage = { type: 'library.changed' }
 export type AlbumRenameProgressMessage = {
   type: 'album.rename.progress'
@@ -522,6 +523,7 @@ export type AudioLevelMessage = {
 }
 export type ServerMessage =
   | StateMessage
+  | TrackChangedMessage
   | LibraryChangedMessage
   | AlbumRenameProgressMessage
   | DeferredOpCompletedMessage
@@ -542,7 +544,8 @@ export function connectStateStream(
   onLibraryChanged?: () => void,
   onAlbumRenameProgress?: (done: number, total: number) => void,
   onDeferredOpCompleted?: (trackId: number, opId: number) => void,
-  onAudioLevel?: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void
+  onAudioLevel?: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void,
+  onTrackChanged?: () => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 
@@ -552,6 +555,7 @@ export function connectStateStream(
     try {
       const msg = JSON.parse(event.data as string) as ServerMessage
       if (msg.type === 'player.state') onState(msg)
+      else if (msg.type === 'track.changed') onTrackChanged?.()
       else if (msg.type === 'library.changed') onLibraryChanged?.()
       else if (msg.type === 'album.rename.progress') onAlbumRenameProgress?.(msg.done, msg.total)
       else if (msg.type === 'deferred_op.completed')

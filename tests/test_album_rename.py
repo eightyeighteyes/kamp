@@ -205,6 +205,7 @@ class TestRenameAlbumTrack:
         index.upsert_track(track)
         index.set_favorite(p, True)
         index.record_played(p)
+        index.record_track_started(p)
 
         new_p = tmp_path / "moved.mp3"
         index.rename_album_track(p, new_p, "New Album", "New Artist", 1.0)

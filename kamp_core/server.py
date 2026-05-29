@@ -606,6 +606,36 @@ def create_app(
     # Signature: (pairs: list[tuple[Path, Path]]) -> None
     app.state.on_album_tracks_moved = None
 
+    # Pending debuff timer for last_played writes on skip endpoints (next/prev/skip-to).
+    # Stored as a mutable cell so endpoint closures can replace it without nonlocal.
+    _last_played_timer: list[_threading.Timer | None] = [None]
+
+    def _record_track_started_immediate(fp: Path) -> None:
+        """Write last_played now and cancel any pending debuff timer."""
+        if _last_played_timer[0] is not None:
+            _last_played_timer[0].cancel()
+            _last_played_timer[0] = None
+        index.record_track_started(fp)
+
+    def _record_track_started_debounced(fp: Path) -> None:
+        """Start a 5-second debuff timer; cancel any previous one first.
+
+        Used by next/prev/skip-to so rapidly-skipped tracks don't appear in
+        Last Played.  The timer fires _notify_track_changed() so the UI
+        re-fetches albums and picks up the newly-written last_played value.
+        """
+        if _last_played_timer[0] is not None:
+            _last_played_timer[0].cancel()
+
+        def _fire(file_path: Path = fp) -> None:
+            index.record_track_started(file_path)
+            _notify_track_changed()
+            _last_played_timer[0] = None
+
+        t = _threading.Timer(5.0, _fire)
+        _last_played_timer[0] = t
+        t.start()
+
     # Wire play-state change callback directly — the engine fires it from its
     # background reader thread whenever mpv's pause property flips.
     engine.on_play_state_changed = _notify_play_state_changed
@@ -2238,6 +2268,7 @@ def create_app(
         current = queue.current()
         if current:
             engine.play(current.file_path)
+            _record_track_started_immediate(current.file_path)
         _notify_track_changed()
         _drain_unlocked(old_current, old_lookahead)
         return {"ok": True}
@@ -2275,6 +2306,7 @@ def create_app(
         track = queue.next()
         if track:
             engine.play(track.file_path)
+            _record_track_started_debounced(track.file_path)
         else:
             engine.stop()
         _notify_track_changed()
@@ -2288,6 +2320,7 @@ def create_app(
         track = queue.prev()
         if track:
             engine.play(track.file_path)
+            _record_track_started_debounced(track.file_path)
         _notify_track_changed()
         _drain_unlocked(old_current, old_lookahead)
         return {"ok": True}
@@ -2313,6 +2346,7 @@ def create_app(
             engine.play(
                 track.file_path
             )  # play() resets lookahead; file-loaded re-primes it
+            _record_track_started_debounced(track.file_path)
         _notify_track_changed()
         _drain_unlocked(old_current, old_lookahead)
         return {"ok": True}
@@ -2328,6 +2362,7 @@ def create_app(
         current = queue.current()
         if was_stopped and current is not None:
             engine.play(current.file_path)
+            _record_track_started_immediate(current.file_path)
             _notify_track_changed()
         else:
             engine.preload_next(queue.peek_next())
@@ -2344,6 +2379,7 @@ def create_app(
         current = queue.current()
         if was_stopped and current is not None:
             engine.play(current.file_path)
+            _record_track_started_immediate(current.file_path)
             _notify_track_changed()
         else:
             engine.preload_next(queue.peek_next())
@@ -2374,6 +2410,7 @@ def create_app(
         current = queue.current()
         if was_stopped and current is not None:
             engine.play(current.file_path)
+            _record_track_started_immediate(current.file_path)
             _notify_track_changed()
         else:
             engine.preload_next(queue.peek_next())
@@ -2394,6 +2431,7 @@ def create_app(
         current = queue.current()
         if was_stopped and current is not None:
             engine.play(current.file_path)
+            _record_track_started_immediate(current.file_path)
             _notify_track_changed()
         else:
             engine.preload_next(queue.peek_next())

@@ -69,10 +69,11 @@ export function LastPlayedConfig(): React.JSX.Element {
 export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Element {
   const count = useStore((s) => s.lastPlayedCount)
   const days = useStore((s) => s.lastPlayedDays)
-  // Re-fetch whenever the current track changes — the server updates last_played
-  // at EOF before broadcasting track.changed, so the list is already stale by
-  // the time this selector fires.
-  const currentFilePath = useStore((s) => s.player?.current_track?.file_path ?? null)
+  // Re-fetch on track.changed events (covers both normal track transitions and
+  // the 5-second debuff timer firing after a skip). lastPlayedVersion increments
+  // on every track.changed push so this effect re-runs even when currentFilePath
+  // stays the same (e.g. debuff timer fires while the same track is playing).
+  const lastPlayedVersion = useStore((s) => s.lastPlayedVersion)
   const serverStatus = useStore((s) => s.serverStatus)
   const [albums, setAlbums] = useState<Album[]>([])
   const [loading, setLoading] = useState(true)
@@ -93,7 +94,7 @@ export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Eleme
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [count, days, currentFilePath, serverStatus])
+  }, [count, days, lastPlayedVersion, serverStatus])
 
   if (loading) {
     return (

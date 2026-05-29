@@ -650,10 +650,12 @@ def _cmd_daemon(
     def _on_track_end(had_lookahead: bool) -> None:
         finished = queue.current()
         track = queue.next()
-        # Record natural EOF so last_played sort stays accurate.
         if finished is not None:
             index.record_played(finished.file_path)
         if track:
+            # Write last_played for the incoming track before the notification
+            # chain fires so LastPlayedModule sees it on its next re-fetch.
+            index.record_track_started(track.file_path)
             if not had_lookahead:
                 # No gapless transition was queued — start the next track manually.
                 engine.play(track.file_path)

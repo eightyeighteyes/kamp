@@ -1234,17 +1234,30 @@ class LibraryIndex:
         rows = self._conn.execute("SELECT * FROM tracks").fetchall()
         return [_row_to_track(r) for r in rows]
 
-    def record_played(self, file_path: Path) -> None:
+    def record_track_started(self, file_path: Path) -> None:
         """Record the current time as last_played for the track at *file_path*.
 
-        Called when a track reaches natural end-of-file so that Last Played
-        sort order reflects actual listening history.
+        Called when a track begins playing so that Last Played sort order
+        reflects when listening last occurred rather than when it ended.
+        No-op if the path is not in the index.
         """
         import time
 
         self._conn.execute(
-            "UPDATE tracks SET last_played = ?, play_count = play_count + 1 WHERE file_path = ?",
+            "UPDATE tracks SET last_played = ? WHERE file_path = ?",
             (time.time(), str(file_path)),
+        )
+        self._conn.commit()
+
+    def record_played(self, file_path: Path) -> None:
+        """Increment play_count for the track at *file_path*.
+
+        Called when a track reaches natural end-of-file. Only play_count is
+        updated here; last_played is managed exclusively by record_track_started().
+        """
+        self._conn.execute(
+            "UPDATE tracks SET play_count = play_count + 1 WHERE file_path = ?",
+            (str(file_path),),
         )
         self._conn.commit()
 

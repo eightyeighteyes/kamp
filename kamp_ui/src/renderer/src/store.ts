@@ -55,6 +55,7 @@ type PlayerStore = {
   moduleDisplayStyles: Record<string, DisplayStyle>
   lastPlayedCount: number
   lastPlayedDays: number
+  lastPlayedVersion: number
   recentlyAddedCount: number
   recentlyAddedDays: number
   highlightEnabled: boolean
@@ -96,6 +97,7 @@ type PlayerStore = {
   setModuleDisplayStyle: (id: string, style: DisplayStyle) => void
   setLastPlayedCount: (n: number) => void
   setLastPlayedDays: (n: number) => void
+  bumpLastPlayedVersion: () => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
   setHighlightEnabled: (enabled: boolean) => void
@@ -244,6 +246,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const saved = localStorage.getItem('kamp:last-played-days')
     return saved ? parseInt(saved) : 30
   })(),
+  lastPlayedVersion: 0,
   recentlyAddedCount: (() => {
     const saved = localStorage.getItem('kamp:recently-added-count')
     return saved ? parseInt(saved) : 10
@@ -408,6 +411,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     localStorage.setItem('kamp:last-played-days', String(n))
     set({ lastPlayedDays: n })
   },
+
+  bumpLastPlayedVersion: () => set((s) => ({ lastPlayedVersion: s.lastPlayedVersion + 1 })),
 
   setRecentlyAddedCount: (n) => {
     localStorage.setItem('kamp:recently-added-count', String(n))

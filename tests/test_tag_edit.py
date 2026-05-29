@@ -183,6 +183,7 @@ class TestLibraryIndexTagEdit:
         # Set favorite via the dedicated method (upsert_track doesn't persist it).
         index.set_favorite(old_path, True)
         index.record_played(old_path)
+        index.record_track_started(old_path)
 
         new_path = tmp_path / "01 - New.mp3"
         index.move_track(old_path, new_path, "New Title", 2000.0)

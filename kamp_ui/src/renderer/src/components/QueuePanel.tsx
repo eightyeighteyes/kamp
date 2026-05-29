@@ -47,8 +47,6 @@ export function QueuePanel(): React.JSX.Element {
   // listRef is on the Next Up <ol> — used for queue-tail-drop visual
   const listRef = useRef<HTMLOListElement>(null)
   const historyListRef = useRef<HTMLOListElement>(null)
-  // hasMounted gates the history-scroll animation: instant on first render, smooth thereafter
-  const hasMounted = useRef(false)
   const [menu, setMenu] = useState<ContextMenu | null>(null)
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
   const [anchorIdx, setAnchorIdx] = useState<number | null>(null)
@@ -72,13 +70,11 @@ export function QueuePanel(): React.JSX.Element {
   const tracks = queue?.tracks ?? []
   const position = queue?.position ?? -1
 
-  // Scroll the history list to its bottom when position advances so the most
-  // recently played track is visible. Instant on first render to avoid a jump;
-  // smooth on subsequent advances so the transition reads as deliberate movement.
   useEffect(() => {
-    const behavior: ScrollBehavior = hasMounted.current ? 'smooth' : 'instant'
-    hasMounted.current = true
-    historyListRef.current?.scrollTo({ top: historyListRef.current.scrollHeight, behavior })
+    historyListRef.current?.scrollTo({
+      top: historyListRef.current.scrollHeight,
+      behavior: 'instant'
+    })
   }, [position])
 
   // When history is expanded after being collapsed, snap to the bottom instantly

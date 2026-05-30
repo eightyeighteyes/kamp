@@ -450,6 +450,12 @@ class LibraryIndex:
             return
 
         version = row["version"]
+        # In Python 3.12+, sqlite3 no longer implicitly commits an open
+        # transaction before DDL statements (ALTER TABLE, CREATE TABLE, etc.).
+        # The SELECT above opens an implicit deferred read transaction; commit
+        # it now so subsequent ALTER TABLE calls can acquire an exclusive write
+        # lock without hitting "database is locked".
+        self._conn.commit()
         if version < 2:
             # v1 → v2: FTS table added; backfill from existing tracks.
             self._rebuild_fts()

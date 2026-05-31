@@ -130,12 +130,13 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
   const setWatchFolderPath = useStore((s) => s.setWatchFolderPath)
   const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
   const loadConfig = useStore((s) => s.loadConfig)
+  const setConfigValue = useStore((s) => s.setConfigValue)
 
   const [step, setStep] = useState<OnboardingStep>('welcome')
   const [vinylPhase, setVinylPhase] = useState<VinylPhase>('rising')
   const [cardError, setCardError] = useState<string | null>(null)
   const [bandcampBusy, setBandcampBusy] = useState(false)
-  const [bandcampDownloadAll, setBandcampDownloadAll] = useState(false)
+  const [collectionMode, setCollectionMode] = useState<'stream' | 'download'>('stream')
   const [lastfmUsername, setLastfmUsername] = useState('')
   const [lastfmPassword, setLastfmPassword] = useState('')
   const [lastfmBusy, setLastfmBusy] = useState(false)
@@ -290,11 +291,12 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
     setBandcampBusy(true)
     setCardError(null)
     try {
+      await setConfigValue('bandcamp.collection_mode', collectionMode)
       const result = await window.api.bandcamp.beginLogin()
       if (result.ok) {
         await loadConfig()
-        if (bandcampDownloadAll) {
-          window.api.bandcamp.triggerSyncAll().catch(console.error)
+        if (collectionMode === 'stream') {
+          window.api.bandcamp.triggerSync().catch(console.error)
         }
         changeStep('lastfm')
       } else {
@@ -367,8 +369,6 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 <p className="onboarding-card-body">
                   <strong>kamp</strong> will keep an eye on your watch folder to auto-tag and add
                   files to your library.
-                  <br />
-                  This is also where Kamp will download new files, if you sign into Bandcamp.
                 </p>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
               </>
@@ -376,6 +376,27 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
 
             {step === 'bandcamp' && (
               <>
+                <div className="onboarding-mode-selector">
+                  <button
+                    type="button"
+                    className={`onboarding-mode-btn${collectionMode === 'stream' ? ' onboarding-mode-btn--active' : ''}`}
+                    onClick={() => setCollectionMode('stream')}
+                  >
+                    Stream
+                  </button>
+                  <button
+                    type="button"
+                    className={`onboarding-mode-btn${collectionMode === 'download' ? ' onboarding-mode-btn--active' : ''}`}
+                    onClick={() => setCollectionMode('download')}
+                  >
+                    Download
+                  </button>
+                </div>
+                <p className="onboarding-card-body">
+                  {collectionMode === 'stream'
+                    ? 'Your Bandcamp purchases stream directly. No downloads needed. Applies to new purchases synced going forward.'
+                    : 'Purchases are downloaded to your library folder for offline playback. Applies to new purchases synced going forward. Existing downloads remain in your library.'}
+                </p>
                 <button
                   className="onboarding-primary-btn"
                   onClick={handleBandcampLogin}
@@ -383,18 +404,6 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 >
                   {bandcampBusy ? 'Logging in…' : 'Log in to Bandcamp'}
                 </button>
-                <p className="onboarding-card-body">
-                  If you have a Bandcamp account, <strong>kamp</strong> can download your purchases
-                  and put them into your library
-                </p>
-                <label className="onboarding-toggle">
-                  <input
-                    type="checkbox"
-                    checked={bandcampDownloadAll}
-                    onChange={(e) => setBandcampDownloadAll(e.target.checked)}
-                  />
-                  Download all my existing purchases
-                </label>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
                 <button className="onboarding-skip-btn" onClick={() => changeStep('lastfm')}>
                   Skip

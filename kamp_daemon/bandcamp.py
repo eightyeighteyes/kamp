@@ -738,7 +738,7 @@ def fetch_stream_url(
         )
 
     tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
-    tracks: list[dict[str, Any]] = tralbum.get("tracks") or []
+    tracks: list[dict[str, Any]] = tralbum.get("trackinfo") or []
 
     for t in tracks:
         if t.get("track_num") == track_number:
@@ -769,7 +769,13 @@ def refresh_stream_url(
     try:
         session = _make_requests_session(session_data)
         return fetch_stream_url(album_url, track_number, session)
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "refresh_stream_url: failed for track %d on %s — %s",
+            track_number,
+            album_url,
+            exc,
+        )
         return None
 
 

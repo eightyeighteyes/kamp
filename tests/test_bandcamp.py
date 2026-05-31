@@ -1737,7 +1737,7 @@ def _album_page_html(tracks: list[dict]) -> str:
     import html as html_lib
     import json
 
-    tralbum = {"tracks": tracks}
+    tralbum = {"trackinfo": tracks}
     encoded = html_lib.escape(json.dumps(tralbum))
     return f'<html><body><div data-tralbum="{encoded}"></div></body></html>'
 

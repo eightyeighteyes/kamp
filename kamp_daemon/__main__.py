@@ -627,14 +627,16 @@ def _cmd_daemon(
             )
             current = queue.current()
             if current:
-                engine.load_paused(current.file_path, saved_position)
+                # Use playback_uri (stream_url if available) so remote tracks
+                # get a CDN URL rather than the raw bandcamp: scheme URI.
+                engine.load_paused(current.playback_uri, saved_position)
     elif saved_player:
         # Fallback: no queue state — restore single track (pre-TASK-47 behaviour).
         saved_path, saved_position = saved_player
         track = index.get_track_by_path(saved_path)
         if track:
             queue.load([track], 0)
-            engine.load_paused(track.file_path, saved_position)
+            engine.load_paused(track.playback_uri, saved_position)
 
     # Now Playing (MPNowPlayingInfoCenter) is owned by the Electron
     # now-playing-helper subprocess, which also handles MPRemoteCommandCenter
@@ -866,6 +868,15 @@ def _cmd_daemon(
     _sync_trigger_ref: list[Any] = [None]
     _sync_all_trigger_ref: list[Any] = [None]
 
+    def _refresh_stream_url(album_url: str, track_num: int) -> tuple[str, float] | None:
+        """Fetch a fresh CDN URL for a remote track before mpv plays it."""
+        session_data = index.get_session("bandcamp")
+        if not session_data:
+            return None
+        from kamp_daemon.bandcamp import refresh_stream_url as _bandcamp_refresh
+
+        return _bandcamp_refresh(album_url, track_num, session_data)
+
     app = create_app(
         index=index,
         engine=engine,
@@ -886,6 +897,7 @@ def _cmd_daemon(
         on_bandcamp_sync_trigger=_on_bandcamp_sync_trigger,
         on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,
         art_cache_dir=_state_dir() / "art_cache",
+        refresh_stream_url=_refresh_stream_url,
         dev_mode=bool(os.environ.get("KAMP_DEV")),
         auth_token=_auth_token,
         mb_lookup_fn=lookup_releases_from_tracks,

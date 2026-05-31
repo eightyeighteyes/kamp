@@ -50,17 +50,28 @@ def _sync_worker(
     try:
         from kamp_core.library import LibraryIndex
 
-        from .bandcamp import sync_new_purchases
-
         index = LibraryIndex(db_path)
         try:
-            paths = sync_new_purchases(
-                bc_config=bc_config,
-                watch_dir=watch_dir,
-                index=index,
-                status_callback=lambda msg: status_q.put(msg),
-            )
-            result_q.put(("ok", paths))
+            if bc_config.collection_mode == "stream":
+                from .bandcamp import sync_collection_stream
+
+                sync_collection_stream(
+                    bc_config=bc_config,
+                    watch_dir=watch_dir,
+                    index=index,
+                    status_callback=lambda msg: status_q.put(msg),
+                )
+                result_q.put(("ok", []))
+            else:
+                from .bandcamp import sync_new_purchases
+
+                paths = sync_new_purchases(
+                    bc_config=bc_config,
+                    watch_dir=watch_dir,
+                    index=index,
+                    status_callback=lambda msg: status_q.put(msg),
+                )
+                result_q.put(("ok", paths))
         finally:
             index.close()
     except Exception as exc:  # noqa: BLE001
@@ -246,11 +257,12 @@ class Syncer:
 
         db_path = _state_dir() / "library.db"
 
-        if not skip_auto_mark:
-            # First-run detection: if bandcamp_collection has no rows, mark
-            # the entire existing collection as synced before downloading.
-            # This prevents re-downloading everything on first run when the
-            # user already has their Bandcamp purchases locally.
+        if not skip_auto_mark and bc.collection_mode != "stream":
+            # First-run detection for download mode: if bandcamp_collection has
+            # no rows, mark the entire existing collection as synced before
+            # downloading to avoid re-downloading a library the user already has.
+            # Skipped in stream mode (stream sync indexes everything as remote
+            # directly; auto-mark would incorrectly set items to mode='local').
             # Use --download-all (skip_auto_mark=True) to bypass.
             from kamp_core.library import LibraryIndex as _LI
 
@@ -328,7 +340,20 @@ class Syncer:
             self.status_callback("")
 
     def sync_all_purchases(self) -> None:
-        """Reset sync state and re-download the entire Bandcamp collection."""
+        """Re-sync or re-download the entire Bandcamp collection.
+
+        In stream mode: re-indexes all purchases as remote (no state reset needed;
+        stream sync is unconditional).  In download mode: resets sync state so the
+        next sync re-downloads everything.
+        """
+        bc = self._config.bandcamp
+        if bc and bc.collection_mode == "stream":
+            logger.info(
+                "Bandcamp re-sync (stream): re-indexing all purchases as remote."
+            )
+            self.sync_once(skip_auto_mark=True)
+            return
+
         from kamp_core.library import LibraryIndex as _LI
 
         db_path = _state_dir() / "library.db"

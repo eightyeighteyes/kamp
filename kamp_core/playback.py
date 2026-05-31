@@ -230,14 +230,15 @@ class PlaybackQueue:
         """
         return [self._tracks[i] for i in self._order], self._pos
 
-    def get_state(self) -> tuple[list[Path], list[int], int, bool, bool]:
+    def get_state(self) -> tuple[list[str], list[int], int, bool, bool]:
         """Return (original_paths, order, pos, shuffle, repeat) for persistence.
 
         *original_paths* is _tracks in load order; *order* is the index
         permutation (_order) so the shuffled sequence can be faithfully
         restored and toggling shuffle off recovers the true original order.
+        Paths are returned as strings to match load_queue_state()'s list[str].
         """
-        original_paths = [t.file_path for t in self._tracks]
+        original_paths = [str(t.file_path) for t in self._tracks]
         return original_paths, list(self._order), self._pos, self._shuffle, self._repeat
 
     @property

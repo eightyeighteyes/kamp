@@ -14,7 +14,7 @@ import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import keyring
 import keyring.errors
@@ -356,6 +356,14 @@ class AlbumInfo:
     favorite: bool = False
     # True when any track in this album is individually favorited (KAMP-294).
     has_favorite_track: bool = False
+    # 'local' when all tracks are local, the source value when all are the same
+    # remote source, or 'mixed' when both local and remote tracks are present.
+    source: str = "local"
+    # True when any track in this album has source != 'local'.
+    has_remote_tracks: bool = False
+    # True when this local album is also in bandcamp_collection with mode='local'
+    # (i.e. the user owns it on Bandcamp but has it downloaded locally).
+    in_bandcamp_collection: bool = False
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -1561,7 +1569,8 @@ class LibraryIndex:
             SELECT album_artist, album, year, track_count, has_art,
                    missing_album, file_path, art_version,
                    sort_date_added, sort_last_played, sort_play_count_avg,
-                   is_favorite, has_favorite_track
+                   is_favorite, has_favorite_track,
+                   album_source, has_remote_tracks, in_bandcamp_collection
             FROM (
                 SELECT t.album_artist, t.album, t.year, COUNT(*) AS track_count,
                        MAX(t.embedded_art) AS has_art,
@@ -1571,10 +1580,19 @@ class LibraryIndex:
                        MAX(t.file_mtime) AS art_version,
                        CAST(SUM(t.play_count) AS REAL) / COUNT(*) AS sort_play_count_avg,
                        MAX(CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END) AS is_favorite,
-                       MAX(t.favorite) AS has_favorite_track
+                       MAX(t.favorite) AS has_favorite_track,
+                       CASE WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                            ELSE MIN(t.source) END AS album_source,
+                       MAX(CASE WHEN t.source != 'local' THEN 1 ELSE 0 END) AS has_remote_tracks,
+                       MAX(CASE WHEN bc.sale_item_id IS NOT NULL THEN 1 ELSE 0 END)
+                           AS in_bandcamp_collection
                 FROM tracks t
                 LEFT JOIN album_favorites af
                     ON af.album_artist = t.album_artist AND af.album = t.album
+                LEFT JOIN bandcamp_collection bc
+                    ON bc.band_name = t.album_artist COLLATE NOCASE
+                    AND bc.item_title = t.album COLLATE NOCASE
+                    AND bc.mode = 'local'
                 WHERE t.album != ''
                 GROUP BY t.album_artist, t.album
                 UNION ALL
@@ -1586,7 +1604,10 @@ class LibraryIndex:
                        t.file_mtime AS art_version,
                        CAST(t.play_count AS REAL) AS sort_play_count_avg,
                        CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
-                       t.favorite AS has_favorite_track
+                       t.favorite AS has_favorite_track,
+                       t.source AS album_source,
+                       CASE WHEN t.source != 'local' THEN 1 ELSE 0 END AS has_remote_tracks,
+                       0 AS in_bandcamp_collection
                 FROM tracks t
                 LEFT JOIN album_favorites af
                     ON af.album_artist = t.album_artist AND af.album = t.title
@@ -1609,6 +1630,9 @@ class LibraryIndex:
                 play_count_avg=r["sort_play_count_avg"] or 0.0,
                 favorite=bool(r["is_favorite"]),
                 has_favorite_track=bool(r["has_favorite_track"]),
+                source=r["album_source"],
+                has_remote_tracks=bool(r["has_remote_tracks"]),
+                in_bandcamp_collection=bool(r["in_bandcamp_collection"]),
             )
             for r in rows
         ]
@@ -1633,19 +1657,37 @@ class LibraryIndex:
         return [_row_to_track(r) for r in rows]
 
     def indexed_paths(self) -> set[Path]:
-        """Return the set of all file paths currently in the index."""
-        rows = self._conn.execute("SELECT file_path FROM tracks").fetchall()
+        """Return the set of local file paths currently in the index.
+
+        Remote tracks (source != 'local') are excluded so the scanner never
+        tries to stat a bandcamp:// URI or treats it as a missing file.
+        """
+        rows = self._conn.execute(
+            "SELECT file_path FROM tracks WHERE source = 'local'"
+        ).fetchall()
         return {Path(r["file_path"]) for r in rows}
 
     def indexed_paths_with_mtime(self) -> dict[Path, float | None]:
-        """Return a mapping of indexed file paths to their stored file_mtime."""
-        rows = self._conn.execute("SELECT file_path, file_mtime FROM tracks").fetchall()
+        """Return a mapping of local indexed file paths to their stored file_mtime.
+
+        Remote tracks (source != 'local') are excluded for the same reason as
+        indexed_paths() — their URI is not a real filesystem path.
+        """
+        rows = self._conn.execute(
+            "SELECT file_path, file_mtime FROM tracks WHERE source = 'local'"
+        ).fetchall()
         return {Path(r["file_path"]): r["file_mtime"] for r in rows}
 
-    def get_track_by_path(self, path: Path) -> "Track | None":
-        """Return the track for *path*, or None if not indexed."""
+    def get_track_by_path(self, path: "str | Path") -> "Track | None":
+        """Return the track for *path*, or None if not indexed.
+
+        Accepts both Path objects and plain strings. Strings are used directly
+        as the lookup key to avoid Path normalization corrupting remote URIs
+        (e.g. Path("bandcamp://999/3") collapses to "bandcamp:/999/3" on POSIX).
+        """
+        key = path if isinstance(path, str) else str(path)
         row = self._conn.execute(
-            "SELECT * FROM tracks WHERE file_path = ?", (str(path),)
+            "SELECT * FROM tracks WHERE file_path = ?", (key,)
         ).fetchone()
         return _row_to_track(row) if row else None
 
@@ -1688,7 +1730,7 @@ class LibraryIndex:
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
-    def save_player_state(self, track_path: Path, position: float) -> None:
+    def save_player_state(self, track_path: "str | Path", position: float) -> None:
         """Persist the current track path and playback position."""
         self._conn.execute(
             """
@@ -1706,16 +1748,20 @@ class LibraryIndex:
         self._conn.execute("DELETE FROM player_state WHERE id = 1")
         self._conn.commit()
 
-    def load_player_state(self) -> "tuple[Path, float] | None":
-        """Return (track_path, position) from the last session, or None."""
+    def load_player_state(self) -> "tuple[str, float] | None":
+        """Return (track_path, position) from the last session, or None.
+
+        Returns the raw string stored in the DB — callers must not wrap it in
+        Path() since it may be a remote URI (bandcamp://) that Path normalizes.
+        """
         row = self._conn.execute(
             "SELECT track_path, position FROM player_state WHERE id = 1"
         ).fetchone()
-        return (Path(row["track_path"]), row["position"]) if row else None
+        return (row["track_path"], row["position"]) if row else None
 
     def save_queue_state(
         self,
-        tracks: list[Path],
+        tracks: "Sequence[Path | str]",
         order: list[int],
         pos: int,
         shuffle: bool,
@@ -1743,8 +1789,12 @@ class LibraryIndex:
 
     def load_queue_state(
         self,
-    ) -> "tuple[list[Path], list[int], int, bool, bool] | None":
-        """Return (tracks_in_original_order, order, pos, shuffle, repeat) or None."""
+    ) -> "tuple[list[str], list[int], int, bool, bool] | None":
+        """Return (tracks_in_original_order, order, pos, shuffle, repeat) or None.
+
+        Tracks are returned as raw strings (not Path objects) so remote URIs
+        (bandcamp://) are not corrupted by Path normalization.
+        """
         import json
 
         row = self._conn.execute(
@@ -1752,7 +1802,7 @@ class LibraryIndex:
         ).fetchone()
         if not row:
             return None
-        paths = [Path(p) for p in json.loads(row["tracks"])]
+        paths: list[str] = list(json.loads(row["tracks"]))
         raw_order = row["order_json"]
         order: list[int] = (
             json.loads(raw_order) if raw_order else list(range(len(paths)))

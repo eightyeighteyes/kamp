@@ -1701,20 +1701,26 @@ def create_app(
             status = 422 if "below minimum" in msg else 502
             raise HTTPException(status_code=status, detail=msg) from exc
 
+        local_tracks = [t for t in tracks if not t.is_remote]
+        if not local_tracks:
+            raise HTTPException(
+                status_code=400, detail="Cannot embed art in remote-only album"
+            )
+
         if save_format == "cover-file":
-            album_dir = tracks[0].file_path.parent
+            album_dir = local_tracks[0].file_path.parent
             try:
                 await asyncio.get_event_loop().run_in_executor(
                     None, write_cover_file, image_bytes, "image/jpeg", album_dir
                 )
                 index.mark_album_art_embedded(
-                    body.album_artist, body.album, [t.file_path for t in tracks]
+                    body.album_artist, body.album, [t.file_path for t in local_tracks]
                 )
             except Exception:
                 logger.exception("Failed to write cover file to %s", album_dir)
         else:
             successful_paths: list[Path] = []
-            for track in tracks:
+            for track in local_tracks:
                 try:
                     await asyncio.get_event_loop().run_in_executor(
                         None, _embed, track.file_path, image_bytes
@@ -1819,20 +1825,26 @@ def create_app(
             image_bytes = _compress_to_max_bytes(img, min_dim, max_b)
             cover_mime = "image/jpeg"  # _compress_to_max_bytes always outputs JPEG
 
+        local_tracks = [t for t in tracks if not t.is_remote]
+        if not local_tracks:
+            raise HTTPException(
+                status_code=400, detail="Cannot embed art in remote-only album"
+            )
+
         if save_format == "cover-file":
-            album_dir = tracks[0].file_path.parent
+            album_dir = local_tracks[0].file_path.parent
             try:
                 await asyncio.get_event_loop().run_in_executor(
                     None, write_cover_file, image_bytes, cover_mime, album_dir
                 )
                 index.mark_album_art_embedded(
-                    album_artist, album, [t.file_path for t in tracks]
+                    album_artist, album, [t.file_path for t in local_tracks]
                 )
             except Exception:
                 logger.exception("Failed to write cover file to %s", album_dir)
         else:
             successful_paths: list[Path] = []
-            for track in tracks:
+            for track in local_tracks:
                 try:
                     await asyncio.get_event_loop().run_in_executor(
                         None, _embed, track.file_path, image_bytes
@@ -1889,6 +1901,8 @@ def create_app(
 
         def _embedded_response() -> Response | None:
             for track in tracks:
+                if track.is_remote:
+                    continue  # remote tracks have no local file to extract art from
                 if track.embedded_art:
                     result = extract_art(track.file_path)
                     if result:
@@ -1901,9 +1915,10 @@ def create_app(
             return None
 
         def _cover_file_response() -> Response | None:
-            if not tracks:
+            local_tracks = [t for t in tracks if not t.is_remote]
+            if not local_tracks:
                 return None
-            result = read_cover_file(tracks[0].file_path.parent)
+            result = read_cover_file(local_tracks[0].file_path.parent)
             if result:
                 data, mime = result
                 return Response(

@@ -3625,3 +3625,125 @@ class TestResolvePlaybackRemote:
 
         c.post("/api/v1/player/next")
         mock_engine.play.assert_called_once_with("https://cdn.example.com/existing.mp3")
+
+
+# ---------------------------------------------------------------------------
+# Art endpoint guards for remote tracks
+# ---------------------------------------------------------------------------
+
+
+class TestArtEndpointRemoteGuards:
+    """Art read and write endpoints skip or reject remote-only tracks."""
+
+    def _make_remote_track(self) -> Track:
+        return Track(
+            file_path=Path("bandcamp://999/1"),
+            title="Remote Song",
+            artist="The Artist",
+            album_artist="The Artist",
+            album="The Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=True,  # True but is_remote, so extract_art must not be called
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+
+    def test_art_endpoint_skips_extract_art_for_remote_tracks(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """embedded_art=True on a remote track must not trigger extract_art."""
+        remote = self._make_remote_track()
+        mock_index.tracks_for_album.return_value = [remote]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        with patch("kamp_core.server.extract_art") as mock_extract:
+            res = c.get(
+                "/api/v1/albums/art",
+                params={"album_artist": "The Artist", "album": "The Album"},
+            )
+
+        mock_extract.assert_not_called()
+        assert res.status_code == 404  # no local art found → 404
+
+    def test_art_endpoint_cover_file_returns_404_for_remote_only_album(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """_cover_file_response skips .parent when all tracks are remote.
+
+        read_cover_file is a lazy import inside the art handler — it is never
+        reached when local_tracks is empty, so no patch is needed.
+        """
+        remote = self._make_remote_track()
+        mock_index.tracks_for_album.return_value = [remote]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            config_values={"artwork.save_format": "cover-file"},
+        )
+        c = TestClient(app)
+
+        res = c.get(
+            "/api/v1/albums/art",
+            params={"album_artist": "The Artist", "album": "The Album"},
+        )
+
+        # No local tracks → _cover_file_response returns None without touching
+        # .file_path.parent; _embedded_response also returns None (no local art).
+        assert res.status_code == 404
+
+    def test_itunes_art_apply_returns_400_for_remote_only_album(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """POST /api/v1/albums/art/apply returns 400 when all tracks are remote."""
+        remote = self._make_remote_track()
+        mock_index.tracks_for_album.return_value = [remote]
+        mock_index.albums.return_value = []
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        image_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 100  # minimal JPEG header
+
+        with patch("kamp_daemon.artwork.fetch_itunes_image", return_value=image_bytes):
+            res = c.post(
+                "/api/v1/albums/art/apply",
+                json={
+                    "album_artist": "The Artist",
+                    "album": "The Album",
+                    "artwork_url_template": "https://example.mzstatic.com/image/{size}.jpg",
+                },
+            )
+
+        assert res.status_code == 400
+        assert "remote-only" in res.json()["detail"]
+
+    def test_upload_art_returns_400_for_remote_only_album(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """POST /api/v1/albums/art/apply-local returns 400 when all tracks are remote."""
+        remote = self._make_remote_track()
+        mock_index.tracks_for_album.return_value = [remote]
+        mock_index.albums.return_value = []
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        import io
+        from PIL import Image as _Image
+
+        buf = io.BytesIO()
+        _Image.new("RGB", (600, 600)).save(buf, format="JPEG")
+        image_bytes = buf.getvalue()
+
+        res = c.post(
+            "/api/v1/albums/art/apply-local",
+            data={"album_artist": "The Artist", "album": "The Album"},
+            files={"file": ("cover.jpg", image_bytes, "image/jpeg")},
+        )
+
+        assert res.status_code == 400
+        assert "remote-only" in res.json()["detail"]

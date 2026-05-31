@@ -495,7 +495,8 @@ class TestLibraryIndex:
 
         assert result is not None
         path, position = result
-        assert path == tmp_path / "track.mp3"
+        assert isinstance(path, str)
+        assert path == str(tmp_path / "track.mp3")
         assert position == 42.5
 
     def test_load_player_state_returns_none_when_empty(self, tmp_path: Path) -> None:
@@ -523,7 +524,8 @@ class TestLibraryIndex:
 
         assert result is not None
         path, position = result
-        assert path == tmp_path / "second.mp3"
+        assert isinstance(path, str)
+        assert path == str(tmp_path / "second.mp3")
         assert position == 99.0
 
     def test_save_and_load_queue_state(self, tmp_path: Path) -> None:
@@ -537,7 +539,8 @@ class TestLibraryIndex:
 
         assert result is not None
         paths, order, pos, shuffle, repeat = result
-        assert paths == tracks
+        assert all(isinstance(p, str) for p in paths)
+        assert paths == [str(t) for t in tracks]
         assert order == [2, 0, 1]
         assert pos == 1
         assert shuffle is True
@@ -567,7 +570,7 @@ class TestLibraryIndex:
 
         assert result is not None
         paths, order, pos, shuffle, repeat = result
-        assert paths == [tmp_path / "b.mp3", tmp_path / "c.mp3"]
+        assert paths == [str(tmp_path / "b.mp3"), str(tmp_path / "c.mp3")]
         assert order == [1, 0]
         assert pos == 1
         assert shuffle is True
@@ -4399,3 +4402,317 @@ class TestRemoteTrackSchema:
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
+
+
+# ---------------------------------------------------------------------------
+# AlbumInfo remote fields — source, has_remote_tracks, in_bandcamp_collection
+# ---------------------------------------------------------------------------
+
+
+class TestAlbumInfoRemoteFields:
+    """albums() computes source, has_remote_tracks, and in_bandcamp_collection."""
+
+    def _insert_track(
+        self,
+        index: "LibraryIndex",
+        tmp_path: Path,
+        name: str,
+        album: str = "The Album",
+        album_artist: str = "The Artist",
+        source: str = "local",
+    ) -> None:
+        track = Track(
+            file_path=tmp_path / name,
+            title=name,
+            artist=album_artist,
+            album_artist=album_artist,
+            album=album,
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source=source,
+        )
+        index.upsert_many([track])
+
+    def test_all_local_album_has_local_source(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(index, tmp_path, "t1.mp3", source="local")
+        self._insert_track(index, tmp_path, "t2.mp3", source="local")
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].source == "local"
+        assert albums[0].has_remote_tracks is False
+
+    def test_all_remote_album_has_remote_source(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(index, tmp_path, "bandcamp://999/1", source="bandcamp")
+        self._insert_track(index, tmp_path, "bandcamp://999/2", source="bandcamp")
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].source == "bandcamp"
+        assert albums[0].has_remote_tracks is True
+
+    def test_mixed_album_has_mixed_source(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(index, tmp_path, "t1.mp3", source="local")
+        self._insert_track(index, tmp_path, "bandcamp://999/2", source="bandcamp")
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].source == "mixed"
+        assert albums[0].has_remote_tracks is True
+
+    def test_in_bandcamp_collection_true(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(
+            index, tmp_path, "t1.mp3", album_artist="The Artist", album="The Album"
+        )
+        index.upsert_collection_item(
+            "sale-1",
+            mode="local",
+            band_name="The Artist",
+            item_title="The Album",
+            synced_at=1000.0,
+        )
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].in_bandcamp_collection is True
+
+    def test_in_bandcamp_collection_false_when_no_bc_entry(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(index, tmp_path, "t1.mp3")
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].in_bandcamp_collection is False
+
+    def test_in_bandcamp_collection_false_when_mode_is_not_local(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(
+            index, tmp_path, "t1.mp3", album_artist="The Artist", album="The Album"
+        )
+        index.upsert_collection_item(
+            "sale-1",
+            mode="remote",
+            band_name="The Artist",
+            item_title="The Album",
+            synced_at=1000.0,
+        )
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].in_bandcamp_collection is False
+
+    def test_bc_join_does_not_affect_track_count(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(
+            index, tmp_path, "t1.mp3", album_artist="The Artist", album="The Album"
+        )
+        self._insert_track(
+            index, tmp_path, "t2.mp3", album_artist="The Artist", album="The Album"
+        )
+        index.upsert_collection_item(
+            "sale-1",
+            mode="local",
+            band_name="The Artist",
+            item_title="The Album",
+            synced_at=1000.0,
+        )
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].track_count == 2
+        assert albums[0].in_bandcamp_collection is True
+
+
+# ---------------------------------------------------------------------------
+# indexed_paths / indexed_paths_with_mtime remote exclusion
+# ---------------------------------------------------------------------------
+
+
+class TestIndexedPathsExcludesRemote:
+    def test_indexed_paths_excludes_remote_tracks(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        local = Track(
+            file_path=tmp_path / "local.mp3",
+            title="Local",
+            artist="A",
+            album_artist="A",
+            album="B",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="local",
+        )
+        remote = Track(
+            file_path=Path("bandcamp://999/1"),
+            title="Remote",
+            artist="A",
+            album_artist="A",
+            album="B",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        index.upsert_many([local, remote])
+        paths = index.indexed_paths()
+        index.close()
+
+        assert tmp_path / "local.mp3" in paths
+        assert not any("bandcamp" in str(p) for p in paths)
+
+    def test_indexed_paths_with_mtime_excludes_remote_tracks(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        local = Track(
+            file_path=tmp_path / "local.mp3",
+            title="Local",
+            artist="A",
+            album_artist="A",
+            album="B",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="local",
+        )
+        remote = Track(
+            file_path=Path("bandcamp://999/1"),
+            title="Remote",
+            artist="A",
+            album_artist="A",
+            album="B",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        index.upsert_many([local, remote])
+        mtime_map = index.indexed_paths_with_mtime()
+        index.close()
+
+        assert tmp_path / "local.mp3" in mtime_map
+        assert not any("bandcamp" in str(p) for p in mtime_map)
+
+
+# ---------------------------------------------------------------------------
+# Queue/player state — str round-trip and get_track_by_path str acceptance
+# ---------------------------------------------------------------------------
+
+
+class TestQueuePlayerStateStr:
+    def test_load_player_state_returns_str(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.save_player_state(tmp_path / "track.mp3", 10.0)
+        result = index.load_player_state()
+        index.close()
+
+        assert result is not None
+        path, _ = result
+        assert isinstance(path, str)
+
+    def test_load_player_state_preserves_remote_uri(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.save_player_state("bandcamp://999/3", 22.5)
+        result = index.load_player_state()
+        index.close()
+
+        assert result is not None
+        path, position = result
+        assert path == "bandcamp://999/3"
+        assert position == 22.5
+
+    def test_load_queue_state_returns_list_of_str(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.save_queue_state(
+            [tmp_path / "a.mp3", tmp_path / "b.mp3"],
+            order=[0, 1],
+            pos=0,
+            shuffle=False,
+            repeat=False,
+        )
+        result = index.load_queue_state()
+        index.close()
+
+        assert result is not None
+        paths, _, _, _, _ = result
+        assert all(isinstance(p, str) for p in paths)
+
+    def test_load_queue_state_preserves_remote_uri(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.save_queue_state(
+            ["bandcamp://999/1", "bandcamp://999/2"],
+            order=[0, 1],
+            pos=0,
+            shuffle=False,
+            repeat=False,
+        )
+        result = index.load_queue_state()
+        index.close()
+
+        assert result is not None
+        paths, _, _, _, _ = result
+        assert paths == ["bandcamp://999/1", "bandcamp://999/2"]
+
+    def test_get_track_by_path_accepts_str(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([_sample_track(tmp_path / "song.mp3")])
+        track = index.get_track_by_path(str(tmp_path / "song.mp3"))
+        index.close()
+
+        assert track is not None
+        assert track.title == "A Song"
+
+    def test_get_track_by_path_str_avoids_uri_normalization(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        # Insert with the canonical URI directly via SQL to bypass Path normalization.
+        canonical = "bandcamp://999/3"
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album, year, "
+            "track_number, disc_number, ext, embedded_art, mb_release_id, mb_recording_id, "
+            "source) VALUES (?, 'Remote', 'A', 'A', 'B', '2024', 1, 1, 'mp3', 0, '', '', 'bandcamp')",
+            (canonical,),
+        )
+        index._conn.commit()
+        track = index.get_track_by_path(canonical)
+        index.close()
+
+        assert track is not None
+        assert track.title == "Remote"

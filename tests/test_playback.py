@@ -378,7 +378,7 @@ class TestPlaybackQueue:
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
         paths, order, pos, shuffle, repeat = q.get_state()
-        assert paths == [t.file_path for t in tracks]
+        assert paths == [str(t.file_path) for t in tracks]
         assert order == [0, 1, 2]
         assert pos == 0
         assert shuffle is False
@@ -391,7 +391,7 @@ class TestPlaybackQueue:
         q.set_shuffle(True)
         paths, order, pos, shuffle, repeat = q.get_state()
         # paths must be in ORIGINAL load order, not shuffled
-        assert paths == [t.file_path for t in tracks]
+        assert paths == [str(t.file_path) for t in tracks]
         # order[0] must be the original index of the currently playing track (0)
         assert order[0] == 0
         assert set(order) == {0, 1, 2, 3, 4}
@@ -446,7 +446,7 @@ class TestPlaybackQueue:
         # Simulate save/restore (what happens across a quit/restart).
         paths, order, pos, shuffle, repeat = q.get_state()
         q2 = PlaybackQueue()
-        resolved = [next(t for t in tracks if t.file_path == p) for p in paths]
+        resolved = [next(t for t in tracks if str(t.file_path) == p) for p in paths]
         q2.restore(resolved, order=order, pos=pos, shuffle=shuffle, repeat=repeat)
 
         assert q2.current() == before_toggle

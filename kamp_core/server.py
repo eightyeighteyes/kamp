@@ -1925,13 +1925,14 @@ def create_app(
             # (Path() on POSIX normalises double-slash to single-slash).
             sale_item_id = fp.split("bandcamp:", 1)[1].lstrip("/").split("/")[0]
             item = index.get_collection_item(sale_item_id)
-            if not item or not item.get("tralbum_id") or not item.get("album_url"):
+            if not item or not item.get("album_url"):
                 raise HTTPException(status_code=404, detail="No art found")
-            tralbum_id: str = item["tralbum_id"]
-            # tralbum_id is stable content identity — cache indefinitely regardless
-            # of whether the client sent an art_version stamp.
+            # Use tralbum_id as the cache key when available (stable content
+            # identity); fall back to sale_item_id so multiple remote albums
+            # never share a single ".jpg" file when tralbum_id is empty.
+            cache_key: str = item.get("tralbum_id") or f"sid_{sale_item_id}"
             remote_cache_ctrl = "public, max-age=31536000, immutable"
-            cache_path = art_cache_dir / f"{tralbum_id}.jpg"
+            cache_path = art_cache_dir / f"{cache_key}.jpg"
             if cache_path.exists():
                 return Response(
                     content=cache_path.read_bytes(),

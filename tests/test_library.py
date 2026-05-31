@@ -4520,6 +4520,47 @@ class TestAlbumInfoRemoteFields:
         assert len(albums) == 1
         assert albums[0].in_bandcamp_collection is False
 
+    def test_remote_only_album_has_art_true(self, tmp_path: Path) -> None:
+        """has_art is True for albums where all tracks are remote.
+
+        The art endpoint can fetch art from Bandcamp CDN on demand for these
+        albums even though no embedded art is present locally.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(index, tmp_path, "bandcamp://999/1", source="remote")
+        self._insert_track(index, tmp_path, "bandcamp://999/2", source="remote")
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].has_art is True
+
+    def test_local_only_album_has_art_false_when_no_embedded_art(
+        self, tmp_path: Path
+    ) -> None:
+        """has_art remains False for local-only albums with no embedded art."""
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(index, tmp_path, "t1.mp3", source="local")
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].has_art is False
+
+    def test_mixed_album_has_art_based_on_local_embedded_art(
+        self, tmp_path: Path
+    ) -> None:
+        """Mixed albums use MAX(embedded_art) from local tracks, not the remote shortcut."""
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(index, tmp_path, "t1.mp3", source="local")
+        self._insert_track(index, tmp_path, "bandcamp://999/2", source="remote")
+        albums = index.albums()
+        index.close()
+
+        # local track has embedded_art=False (from _insert_track default) → has_art False
+        assert len(albums) == 1
+        assert albums[0].has_art is False
+
     def test_bc_join_does_not_affect_track_count(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         self._insert_track(

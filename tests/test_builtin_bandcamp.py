@@ -198,6 +198,25 @@ class TestKampBandcampSyncer:
         syncer = KampBandcampSyncer(_ctx())
         assert syncer.error_callback is None
 
+    def test_on_tracks_indexed_getter_delegates(self) -> None:
+        """on_tracks_indexed getter returns the inner syncer's value."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer._inner.on_tracks_indexed = cb
+        assert syncer.on_tracks_indexed is cb
+
+    def test_on_tracks_indexed_setter_delegates(self) -> None:
+        """on_tracks_indexed setter writes through to the inner syncer."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer.on_tracks_indexed = cb
+        assert syncer._inner.on_tracks_indexed is cb
+
+    def test_on_tracks_indexed_none_before_configure(self) -> None:
+        """on_tracks_indexed returns None when _inner has not been configured."""
+        syncer = KampBandcampSyncer(_ctx())
+        assert syncer.on_tracks_indexed is None
+
     def test_methods_assert_before_configure(self) -> None:
         """Calling lifecycle methods before _configure() raises AssertionError."""
         syncer = KampBandcampSyncer(_ctx())

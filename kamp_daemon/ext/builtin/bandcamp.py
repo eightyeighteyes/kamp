@@ -159,3 +159,17 @@ class KampBandcampSyncer(BaseSyncer):
             self._inner is not None
         ), "call _configure() before setting error_callback"
         self._inner.error_callback = cb
+
+    @property
+    def on_tracks_indexed(self) -> Callable[[], None] | None:
+        """Callback fired after stream sync indexes new remote tracks."""
+        if self._inner is None:
+            return None
+        return self._inner.on_tracks_indexed
+
+    @on_tracks_indexed.setter
+    def on_tracks_indexed(self, cb: Callable[[], None] | None) -> None:
+        assert (
+            self._inner is not None
+        ), "call _configure() before setting on_tracks_indexed"
+        self._inner.on_tracks_indexed = cb

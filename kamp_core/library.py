@@ -1590,7 +1590,10 @@ class LibraryIndex:
                    album_source, has_remote_tracks, in_bandcamp_collection
             FROM (
                 SELECT t.album_artist, t.album, t.year, COUNT(*) AS track_count,
-                       MAX(t.embedded_art) AS has_art,
+                       CASE
+                           WHEN COUNT(DISTINCT t.source) = 1 AND MIN(t.source) = 'remote' THEN 1
+                           ELSE MAX(t.embedded_art)
+                       END AS has_art,
                        0 AS missing_album, '' AS file_path,
                        MIN(t.date_added) AS sort_date_added,
                        MAX(t.last_played) AS sort_last_played,

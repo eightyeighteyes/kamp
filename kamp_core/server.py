@@ -1892,7 +1892,7 @@ def create_app(
         # so the response is safe to cache indefinitely.
         cache_control = "public, max-age=31536000, immutable" if v else "no-store"
 
-        def _remote_art_response(fp: str, cache_ctrl: str) -> Response:
+        def _remote_art_response(fp: str, _cache_ctrl: str) -> Response:
             if art_cache_dir is None or get_bandcamp_session is None:
                 raise HTTPException(status_code=404, detail="No art found")
             # Strip scheme; handle both 'bandcamp://...' and 'bandcamp:/...'
@@ -1902,12 +1902,15 @@ def create_app(
             if not item or not item.get("tralbum_id") or not item.get("album_url"):
                 raise HTTPException(status_code=404, detail="No art found")
             tralbum_id: str = item["tralbum_id"]
+            # tralbum_id is stable content identity — cache indefinitely regardless
+            # of whether the client sent an art_version stamp.
+            remote_cache_ctrl = "public, max-age=31536000, immutable"
             cache_path = art_cache_dir / f"{tralbum_id}.jpg"
             if cache_path.exists():
                 return Response(
                     content=cache_path.read_bytes(),
                     media_type="image/jpeg",
-                    headers={"Cache-Control": cache_ctrl},
+                    headers={"Cache-Control": remote_cache_ctrl},
                 )
             session_data = get_bandcamp_session()
             if not session_data:
@@ -1922,7 +1925,7 @@ def create_app(
             return Response(
                 content=data,
                 media_type="image/jpeg",
-                headers={"Cache-Control": cache_ctrl},
+                headers={"Cache-Control": remote_cache_ctrl},
             )
 
         # Remote albums (bandcamp: URIs) are served via the art proxy cache.

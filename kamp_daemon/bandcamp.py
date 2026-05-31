@@ -369,6 +369,50 @@ def sync_new_purchases(
     return downloaded
 
 
+def sync_collection_stream(
+    bc_config: BandcampConfig,
+    watch_dir: Path,
+    index: "LibraryIndex",
+    status_callback: Callable[[str], None] | None = None,
+) -> int:
+    """Index all Bandcamp purchases as remote rows — no ZIP download.
+
+    Re-upserts every item unconditionally so that re-sync and first-sync are
+    identical. Returns the count of items indexed.
+    """
+    session_data = _ensure_session(bc_config, index)
+    session = _make_requests_session(session_data)
+    fan_id, username = _get_fan_info(session)
+    if not username:
+        username = _username_from_logout_cookie(session_data.get("cookies", []))
+    _store_username_in_session(username, session_data, index)
+    logger.info("Fetched fan_id=%s for user %r", fan_id, username)
+
+    collection = _fetch_collection(fan_id, session, index)
+    count = 0
+    for item in collection:
+        sid = item.get("sale_item_id")
+        if sid is None:
+            continue
+        if status_callback:
+            status_callback(
+                f"{item.get('item_title', '?')} by {item.get('band_name', '?')}"
+            )
+        index.upsert_collection_item(
+            str(sid),
+            mode="remote",
+            item_type=str(item.get("sale_item_type", "p")),
+            band_name=str(item.get("band_name", "")),
+            item_title=str(item.get("item_title", "")),
+            album_url=str(item.get("item_url", "")),
+            tralbum_id=str(item.get("tralbum_id", "")),
+            synced_at=time.time(),
+        )
+        count += 1
+    logger.info("Stream sync complete: %d purchase(s) indexed as remote.", count)
+    return count
+
+
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------

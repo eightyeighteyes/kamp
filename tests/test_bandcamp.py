@@ -35,6 +35,7 @@ from kamp_daemon.bandcamp import (
     fetch_stream_url,
     mark_collection_synced,
     refresh_stream_url,
+    sync_collection_stream,
     sync_new_purchases,
 )
 from kamp_daemon.config import BandcampConfig
@@ -1989,3 +1990,72 @@ class TestRefreshStreamUrl:
             result = refresh_stream_url(self._album_url, 99, self._session_data)
 
         assert result is None
+
+
+class TestSyncCollectionStream:
+    def _run(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+    ) -> tuple[int, MagicMock]:
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+        ):
+            count = sync_collection_stream(config, watch_folder, index)
+
+        return count, index
+
+    def test_upserts_all_items_as_remote(self, tmp_path: Path) -> None:
+        items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
+        count, index = self._run(tmp_path, items)
+        assert count == 2
+        calls = index.upsert_collection_item.call_args_list
+        assert len(calls) == 2
+        assert all(c[1]["mode"] == "remote" for c in calls)
+
+    def test_returns_count(self, tmp_path: Path) -> None:
+        items = [_item(10), _item(20), _item(30)]
+        count, _ = self._run(tmp_path, items)
+        assert count == 3
+
+    def test_re_upserts_already_remote_item(self, tmp_path: Path) -> None:
+        """Idempotent: an item already mode='remote' is re-upserted without error."""
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        items = [_item(99)]
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {"99": "remote"}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+        ):
+            count = sync_collection_stream(config, watch_folder, index)
+
+        assert count == 1
+        index.upsert_collection_item.assert_called_once()
+        assert index.upsert_collection_item.call_args[1]["mode"] == "remote"
+
+    def test_no_files_downloaded(self, tmp_path: Path) -> None:
+        """Stream sync must not touch the watch folder."""
+        items = [_item(5), _item(6)]
+        self._run(tmp_path, items)
+        assert not (tmp_path / "watch").exists()

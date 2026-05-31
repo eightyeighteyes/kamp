@@ -345,3 +345,20 @@ class TestConfigSet:
         Config.write_defaults(db)
         config_set(db, "paths.watch_folder", "~/Music/staging")
         assert db.get_setting("paths.watch_folder") == "~/Music/staging"
+
+    def test_collection_mode_valid_values_accepted(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        config_set(db, "bandcamp.collection_mode", "stream")
+        assert db.get_setting("bandcamp.collection_mode") == "stream"
+        config_set(db, "bandcamp.collection_mode", "download")
+        assert db.get_setting("bandcamp.collection_mode") == "download"
+
+    def test_collection_mode_invalid_value_raises(self, db: LibraryIndex) -> None:
+        with pytest.raises(ValueError, match="Invalid value 'offline'"):
+            config_set(db, "bandcamp.collection_mode", "offline")
+
+    def test_collection_mode_default_is_download(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        config = Config.load(db)
+        assert config.bandcamp is not None
+        assert config.bandcamp.collection_mode == "download"

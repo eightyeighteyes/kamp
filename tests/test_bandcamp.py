@@ -32,9 +32,11 @@ from kamp_daemon.bandcamp import (
     _username_from_logout_cookie,
     _validate_session,
     fetch_album_art_bytes,
+    fetch_album_tracks,
     fetch_stream_url,
     mark_collection_synced,
     refresh_stream_url,
+    sync_collection_stream,
     sync_new_purchases,
 )
 from kamp_daemon.config import BandcampConfig
@@ -91,6 +93,24 @@ def _item(
         or f"https://{band.lower().replace(' ', '')}.bandcamp.com/album/{title.lower().replace(' ', '-')}",
         "tralbum_id": tralbum_id or sale_item_id * 10,
     }
+
+
+def _stream_album_page_html(
+    tracks: list[dict[str, Any]] | None = None,
+    release_date: str = "01 Jan 2020 00:00:00 GMT",
+) -> str:
+    """Build fake album page HTML with data-tralbum for fetch_album_tracks tests."""
+    import html as _html
+    import json as _json
+
+    if tracks is None:
+        tracks = [
+            {"title": f"Track {i}", "track_num": i, "artist": None, "duration": 200.0}
+            for i in range(1, 4)
+        ]
+    tralbum = {"trackinfo": tracks, "album_release_date": release_date}
+    encoded = _html.escape(_json.dumps(tralbum), quote=True)
+    return f'<html><body data-tralbum="{encoded}"></body></html>'
 
 
 def _collection_page_html(items: list[dict[str, Any]]) -> str:
@@ -1989,3 +2009,252 @@ class TestRefreshStreamUrl:
             result = refresh_stream_url(self._album_url, 99, self._session_data)
 
         assert result is None
+
+
+class TestSyncCollectionStream:
+    """Tests for sync_collection_stream — album-level collection indexing."""
+
+    def _run(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+        *,
+        already_have_tracks: bool = True,
+        fake_tracks: list[Any] | None = None,
+        existing_state: dict[str, str] | None = None,
+    ) -> tuple[tuple[int, int], MagicMock]:
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = existing_state or {}
+        # By default pretend tracks already exist so fetch_album_tracks is skipped.
+        index.has_remote_album_tracks.return_value = already_have_tracks
+
+        fake_tracks = fake_tracks or []
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=fake_tracks),
+        ):
+            result = sync_collection_stream(config, watch_folder, index)
+
+        return result, index
+
+    def test_upserts_all_items_as_remote(self, tmp_path: Path) -> None:
+        items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
+        (album_count, _track_count), index = self._run(tmp_path, items)
+        assert album_count == 2
+        calls = index.upsert_collection_item.call_args_list
+        assert len(calls) == 2
+        assert all(c[1]["mode"] == "remote" for c in calls)
+
+    def test_returns_album_count(self, tmp_path: Path) -> None:
+        items = [_item(10), _item(20), _item(30)]
+        (album_count, _), _ = self._run(tmp_path, items)
+        assert album_count == 3
+
+    def test_fetches_tracks_for_new_albums(self, tmp_path: Path) -> None:
+        """Albums not yet in tracks table trigger a fetch_album_tracks call."""
+        from kamp_core.library import Track
+        from pathlib import Path as _Path
+
+        fake_track = Track(
+            file_path=_Path("bandcamp://1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            year="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="remote",
+        )
+        items = [_item(1)]
+        (album_count, track_count), index = self._run(
+            tmp_path, items, already_have_tracks=False, fake_tracks=[fake_track]
+        )
+        assert album_count == 1
+        assert track_count == 1
+        index.upsert_many.assert_called_once()
+
+    def test_skips_track_fetch_for_existing_albums(self, tmp_path: Path) -> None:
+        """Albums already in tracks table do not trigger fetch_album_tracks."""
+        items = [_item(1), _item(2)]
+        (_counts, _), index = self._run(tmp_path, items, already_have_tracks=True)
+        index.upsert_many.assert_not_called()
+
+    def test_re_upserts_already_remote_item(self, tmp_path: Path) -> None:
+        """Idempotent: collection row is always refreshed even if tracks exist."""
+        items = [_item(99)]
+        (_counts, _), index = self._run(tmp_path, items, already_have_tracks=True)
+        index.upsert_collection_item.assert_called_once()
+        assert index.upsert_collection_item.call_args[1]["mode"] == "remote"
+
+    def test_skips_local_mode_items(self, tmp_path: Path) -> None:
+        """Items already mode='local' are not overwritten with mode='remote'."""
+        items = [
+            _item(1, "Downloaded Band", "Downloaded Album"),
+            _item(2, "New Band", "New Album"),
+        ]
+        # Item 1 was already downloaded; item 2 is new.
+        (album_count, _), index = self._run(
+            tmp_path,
+            items,
+            existing_state={"1": "local"},
+        )
+        assert album_count == 1  # only the new item counted
+        calls = index.upsert_collection_item.call_args_list
+        assert len(calls) == 1
+        assert calls[0][0][0] == "2"  # only item 2 upserted
+
+    def test_no_files_downloaded(self, tmp_path: Path) -> None:
+        """Stream sync must not touch the watch folder."""
+        items = [_item(5), _item(6)]
+        self._run(tmp_path, items)
+        assert not (tmp_path / "watch").exists()
+
+    def test_warns_and_continues_on_fetch_error(self, tmp_path: Path) -> None:
+        """A failed fetch_album_tracks is logged as a warning; other albums continue."""
+        items = [_item(1), _item(2)]
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.return_value = False
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_tracks",
+                side_effect=BandcampAPIError("rate limited"),
+            ),
+        ):
+            album_count, track_count = sync_collection_stream(
+                config, watch_folder, index
+            )
+
+        assert album_count == 2  # both albums counted in bandcamp_collection
+        assert track_count == 0  # no tracks indexed (fetch failed)
+
+
+class TestFetchAlbumTracks:
+    """Tests for fetch_album_tracks — parses data-tralbum into Track objects."""
+
+    def _make_session(self, html: str) -> MagicMock:
+        session = MagicMock()
+        resp = MagicMock()
+        resp.text = html
+        resp.raise_for_status = MagicMock()
+        session.get.return_value = resp
+        return session
+
+    def test_returns_tracks_for_each_trackinfo_entry(self) -> None:
+        tracks = [
+            {"title": "Song One", "track_num": 1, "artist": None, "duration": 200.0},
+            {"title": "Song Two", "track_num": 2, "artist": None, "duration": 180.0},
+        ]
+        html = _stream_album_page_html(tracks=tracks)
+        session = self._make_session(html)
+
+        result = fetch_album_tracks(
+            "https://band.bandcamp.com/album/x", 12345, "Band", "Album", session
+        )
+
+        assert len(result) == 2
+        assert result[0].title == "Song One"
+        assert result[0].track_number == 1
+        assert result[1].title == "Song Two"
+        assert result[1].track_number == 2
+
+    def test_source_is_remote(self) -> None:
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert all(t.source == "remote" for t in result)
+
+    def test_no_stream_url(self) -> None:
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert all(t.stream_url is None for t in result)
+
+    def test_date_added_is_set(self) -> None:
+        """date_added is set to the current time so tracks sort correctly by date added."""
+        before = time.time()
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        after = time.time()
+        assert all(t.date_added is not None for t in result)
+        assert all(before <= t.date_added <= after for t in result)  # type: ignore[operator]
+
+    def test_file_path_contains_sale_item_id_and_track_num(self) -> None:
+        tracks = [{"title": "T", "track_num": 3, "artist": None}]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 999, "B", "A", self._make_session(html)
+        )
+        assert len(result) == 1
+        assert "999" in str(result[0].file_path)
+        assert "3" in str(result[0].file_path)
+
+    def test_year_extracted_from_release_date(self) -> None:
+        html = _stream_album_page_html(release_date="15 Mar 2018 00:00:00 GMT")
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert all(t.year == "2018" for t in result)
+
+    def test_per_track_artist_used_when_present(self) -> None:
+        tracks = [{"title": "T", "track_num": 1, "artist": "Guest Artist"}]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "Band", "A", self._make_session(html)
+        )
+        assert result[0].artist == "Guest Artist"
+        assert result[0].album_artist == "Band"
+
+    def test_falls_back_to_band_name_when_no_per_track_artist(self) -> None:
+        tracks = [{"title": "T", "track_num": 1, "artist": None}]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "Band", "A", self._make_session(html)
+        )
+        assert result[0].artist == "Band"
+
+    def test_raises_on_missing_data_tralbum(self) -> None:
+        session = self._make_session("<html><body>no tralbum here</body></html>")
+        with pytest.raises(BandcampAPIError, match="no data-tralbum"):
+            fetch_album_tracks("https://x.bandcamp.com/album/y", 1, "B", "A", session)
+
+    def test_skips_tracks_without_track_num(self) -> None:
+        tracks = [
+            {"title": "Good", "track_num": 1, "artist": None},
+            {"title": "Hidden", "track_num": None, "artist": None},
+        ]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert len(result) == 1
+        assert result[0].title == "Good"

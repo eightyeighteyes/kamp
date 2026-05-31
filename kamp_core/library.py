@@ -1115,6 +1115,18 @@ class LibraryIndex:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def has_remote_album_tracks(self, sale_item_id: str) -> bool:
+        """Return True if the tracks table already has entries for this remote album.
+
+        Checks both POSIX (bandcamp:/id/) and Windows (bandcamp:\\id\\) path forms so
+        incremental stream syncs can skip album-page fetches for existing albums.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM tracks WHERE file_path LIKE ? OR file_path LIKE ? LIMIT 1",
+            (f"bandcamp:/{sale_item_id}/%", f"bandcamp:\\{sale_item_id}\\%"),
+        ).fetchone()
+        return row is not None
+
     def reset_collection_sync_state(self) -> None:
         """Set synced_at = NULL for all rows so the next sync re-downloads everything."""
         self._conn.execute("UPDATE bandcamp_collection SET synced_at = NULL")

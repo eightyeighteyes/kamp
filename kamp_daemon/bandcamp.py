@@ -41,7 +41,7 @@ import requests as _requests
 from .config import BandcampConfig, token_path
 
 if TYPE_CHECKING:
-    from kamp_core.library import LibraryIndex
+    from kamp_core.library import LibraryIndex, Track
 
 logger = logging.getLogger(__name__)
 
@@ -367,6 +367,101 @@ def sync_new_purchases(
             )
 
     return downloaded
+
+
+def sync_collection_stream(
+    bc_config: BandcampConfig,
+    watch_dir: Path,
+    index: "LibraryIndex",
+    status_callback: Callable[[str], None] | None = None,
+) -> tuple[int, int]:
+    """Index all Bandcamp purchases as remote rows — no ZIP download.
+
+    For each album, upserts a bandcamp_collection row and fetches the album
+    page to create individual track records in the tracks table.  Albums that
+    already have tracks in the DB are skipped (their collection row is still
+    refreshed) so that incremental syncs remain fast.
+
+    Returns (album_count, track_count).
+    """
+    session_data = _ensure_session(bc_config, index)
+    session = _make_requests_session(session_data)
+    fan_id, username = _get_fan_info(session)
+    if not username:
+        username = _username_from_logout_cookie(session_data.get("cookies", []))
+    _store_username_in_session(username, session_data, index)
+    logger.info("Fetched fan_id=%s for user %r", fan_id, username)
+
+    collection = _fetch_collection(fan_id, session, index)
+    # Load existing state so we never overwrite a locally-downloaded album
+    # (mode='local') with mode='remote'.  Local albums were processed by the
+    # download pipeline and already have their tracks in the tracks table.
+    existing_state = index.get_collection_state()
+    album_count = 0
+    track_count = 0
+    fetch_index = 0  # throttle counter for album-page requests
+    for item in collection:
+        sid = item.get("sale_item_id")
+        if sid is None:
+            continue
+
+        # Skip albums the user already has locally — do not demote to remote.
+        if existing_state.get(str(sid)) == "local":
+            continue
+
+        band_name = str(item.get("band_name", ""))
+        item_title = str(item.get("item_title", ""))
+        album_url = str(item.get("item_url", ""))
+
+        if status_callback:
+            status_callback(f"{item_title} by {band_name}")
+
+        index.upsert_collection_item(
+            str(sid),
+            mode="remote",
+            item_type=str(item.get("sale_item_type", "p")),
+            band_name=band_name,
+            item_title=item_title,
+            album_url=album_url,
+            tralbum_id=str(item.get("tralbum_id", "")),
+            synced_at=time.time(),
+        )
+        album_count += 1
+
+        # Fetch track metadata only for albums not yet in the tracks table.
+        # This keeps incremental syncs fast while still populating new albums.
+        if album_url and not index.has_remote_album_tracks(str(sid)):
+            if fetch_index > 0:
+                time.sleep(0.5)
+            fetch_index += 1
+            try:
+                tracks = fetch_album_tracks(
+                    album_url, int(sid), band_name, item_title, session
+                )
+                if tracks:
+                    index.upsert_many(tracks)
+                    track_count += len(tracks)
+                    logger.debug(
+                        "Indexed %d track(s) for %r by %r",
+                        len(tracks),
+                        item_title,
+                        band_name,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "fetch_album_tracks: skipping tracks for %r by %r (%s): %s",
+                    item_title,
+                    band_name,
+                    album_url,
+                    exc,
+                )
+
+    logger.info(
+        "Stream sync complete: %d album(s), %d track(s) indexed as remote.",
+        album_count,
+        track_count,
+    )
+    return album_count, track_count
 
 
 # ---------------------------------------------------------------------------
@@ -756,6 +851,66 @@ def fetch_stream_url(
         f"fetch_stream_url: track_num={track_number} not found in {album_url} "
         f"(tracks present: {[t.get('track_num') for t in tracks]})"
     )
+
+
+def fetch_album_tracks(
+    album_url: str,
+    sale_item_id: int,
+    band_name: str,
+    item_title: str,
+    session: "_AnySession",
+) -> "list[Track]":
+    """Fetch track metadata from a Bandcamp album page without downloading CDN URLs.
+
+    Returns a list of Track objects (source='remote', no stream_url) ready to
+    upsert into the tracks table.  CDN stream URLs are fetched on demand at
+    play time by _resolve_playback().
+
+    Raises BandcampAPIError if the page cannot be parsed.
+    """
+    from kamp_core.library import Track
+
+    resp = session.get(album_url, timeout=30)
+    resp.raise_for_status()
+
+    match = re.search(r'data-tralbum="([^"]+)"', resp.text)
+    if not match:
+        raise BandcampAPIError(f"fetch_album_tracks: no data-tralbum in {album_url}")
+
+    tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
+    trackinfo: list[dict[str, Any]] = tralbum.get("trackinfo") or []
+
+    # Extract year from the release date string (e.g. "01 Jan 2020 00:00:00 GMT").
+    release_date = tralbum.get("album_release_date") or ""
+    year_match = re.search(r"\b(19|20)\d{2}\b", str(release_date))
+    year_str = year_match.group(0) if year_match else ""
+
+    result: list[Track] = []
+    for t in trackinfo:
+        track_num = t.get("track_num")
+        if not track_num:
+            continue
+        # Per-track artist field is set on compilations/splits; fall back to band_name.
+        artist = t.get("artist") or band_name
+        result.append(
+            Track(
+                file_path=Path(f"bandcamp://{sale_item_id}/{track_num}"),
+                title=t.get("title") or "",
+                artist=artist,
+                album_artist=band_name,
+                album=item_title,
+                year=year_str,
+                track_number=int(track_num),
+                disc_number=1,
+                ext="mp3",
+                embedded_art=False,
+                mb_release_id="",
+                mb_recording_id="",
+                source="remote",
+                date_added=time.time(),
+            )
+        )
+    return result
 
 
 def refresh_stream_url(

@@ -278,6 +278,36 @@
   text-decoration: underline;
 }
 
+/* Stream / Download mode selector */
+.onboarding-mode-selector {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.onboarding-mode-btn {
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.onboarding-mode-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.onboarding-mode-btn--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
 /* Almost Done rotating text */
 .onboarding-almost-done-text {
   font-size: 24px;

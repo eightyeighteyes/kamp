@@ -171,13 +171,15 @@ function SelectRow({
   configKey,
   options,
   initialValue,
-  onSave
+  onSave,
+  hint
 }: {
   label: string
   configKey: string
   options: string[]
   initialValue: string
   onSave: (key: string, value: string) => Promise<void>
+  hint?: string
 }): React.JSX.Element {
   const [localValue, setLocalValue] = useState(initialValue || options[0])
   const [saved, setSaved] = useState(false)
@@ -215,6 +217,7 @@ function SelectRow({
           </option>
         ))}
       </select>
+      {hint && <p className="prefs-hint">{hint}</p>}
       {error && (
         <p className="prefs-hint" style={{ color: 'var(--error)' }}>
           {error}
@@ -664,11 +667,13 @@ function ExtensionsPanel({
 function BandcampSection({
   isConnected,
   connectedUsername,
+  collectionMode,
   onConnected,
   onDisconnected
 }: {
   isConnected: boolean
   connectedUsername: string | null
+  collectionMode: string
   onConnected: () => void
   onDisconnected: () => void
 }): React.JSX.Element {
@@ -763,7 +768,9 @@ function BandcampSection({
       {isConnected && (
         <div className="prefs-row">
           <div className="prefs-row-header">
-            <span className="prefs-label">Re-download</span>
+            <span className="prefs-label">
+              {collectionMode === 'stream' ? 'Re-sync' : 'Re-download'}
+            </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <button
@@ -771,9 +778,17 @@ function BandcampSection({
               onClick={() => void handleSyncAll()}
               disabled={syncAllBusy}
             >
-              {syncAllBusy ? 'Starting…' : 'Re-download all purchases'}
+              {syncAllBusy
+                ? 'Starting…'
+                : collectionMode === 'stream'
+                  ? 'Re-sync purchase list'
+                  : 'Re-download all purchases'}
             </button>
-            <span className="prefs-hint">Clears sync history and re-downloads everything.</span>
+            <span className="prefs-hint">
+              {collectionMode === 'stream'
+                ? 'Re-indexes your entire purchase list as remote tracks.'
+                : 'Clears sync history and re-downloads everything.'}
+            </span>
           </div>
         </div>
       )}
@@ -991,7 +1006,7 @@ export function PreferencesDialog({
   const configLoading =
     configValues === null && (activeTab === 'general' || activeTab === 'services')
 
-  const hasBandcamp = configValues !== null && configValues['bandcamp.format'] !== null
+  const hasBandcamp = configValues !== null && configValues['bandcamp.connected'] === true
 
   const str = (key: keyof NonNullable<typeof configValues>): string => {
     if (!configValues) return ''
@@ -1215,13 +1230,30 @@ export function PreferencesDialog({
                   {hasBandcamp && (
                     <div className="prefs-section">
                       <div className="prefs-section-label">Bandcamp</div>
-                      <SelectRow
-                        label="Download format"
-                        configKey="bandcamp.format"
-                        options={BANDCAMP_FORMATS}
-                        initialValue={str('bandcamp.format')}
-                        onSave={handleSave}
+                      <BandcampSection
+                        isConnected={configValues?.['bandcamp.connected'] ?? false}
+                        connectedUsername={configValues?.['bandcamp.username'] ?? null}
+                        collectionMode={str('bandcamp.collection_mode')}
+                        onConnected={() => void loadConfig()}
+                        onDisconnected={() => void loadConfig()}
                       />
+                      <SelectRow
+                        label="Collection mode"
+                        configKey="bandcamp.collection_mode"
+                        options={['stream', 'download']}
+                        initialValue={str('bandcamp.collection_mode')}
+                        onSave={handleSave}
+                        hint="Applies to new purchases synced going forward. Existing downloads remain in your library."
+                      />
+                      {str('bandcamp.collection_mode') !== 'stream' && (
+                        <SelectRow
+                          label="Download format"
+                          configKey="bandcamp.format"
+                          options={BANDCAMP_FORMATS}
+                          initialValue={str('bandcamp.format')}
+                          onSave={handleSave}
+                        />
+                      )}
                       <InputRow
                         label="Poll interval"
                         configKey="bandcamp.poll_interval_minutes"
@@ -1230,12 +1262,6 @@ export function PreferencesDialog({
                         initialValue={str('bandcamp.poll_interval_minutes')}
                         hint="0 = manual only"
                         onSave={handleSave}
-                      />
-                      <BandcampSection
-                        isConnected={configValues?.['bandcamp.connected'] ?? false}
-                        connectedUsername={configValues?.['bandcamp.username'] ?? null}
-                        onConnected={() => void loadConfig()}
-                        onDisconnected={() => void loadConfig()}
                       />
                     </div>
                   )}

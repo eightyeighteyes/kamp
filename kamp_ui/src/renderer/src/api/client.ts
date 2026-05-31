@@ -231,6 +231,7 @@ export type ConfigValues = {
   'bandcamp.username': string | null
   'bandcamp.format': string | null
   'bandcamp.poll_interval_minutes': number | null
+  'bandcamp.collection_mode': string | null
   'lastfm.username': string | null
 }
 

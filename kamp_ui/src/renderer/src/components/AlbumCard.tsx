@@ -7,6 +7,42 @@ import { FavoriteIcon, PlayIcon } from './TransportIcons'
 
 type MenuPos = { x: number; y: number }
 
+const SOURCE_ABBREV: Record<string, string> = {
+  bandcamp: 'BC',
+  qobuz: 'QO',
+  plex: 'PL',
+  jellyfin: 'JF'
+}
+
+const CloudIcon = ({ size = 10 }: { size?: number }): React.JSX.Element => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path
+      d="M12.932 4.70825C11.0205 4.70825 9.34183 5.69967 8.38009 7.19396C7.89905 7.06678 7.39433 6.99913 6.87467 6.99913C3.62978 6.99913 0.999268 9.62964 0.999268 12.8745C0.999268 16.1194 3.62978 18.7499 6.87467 18.7499H18.5233C20.9962 18.7499 23.0009 16.7453 23.0009 14.2724C23.0009 11.7995 20.9962 9.79481 18.5233 9.79481C18.4593 9.79481 18.3956 9.79616 18.3322 9.79883C18.1671 6.9597 15.8125 4.70825 12.932 4.70825Z"
+      fill="currentColor"
+    />
+  </svg>
+)
+
+const WarnIcon = ({ size = 20 }: { size?: number }): React.JSX.Element => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" fill="currentColor" />
+  </svg>
+)
+
 function rnd(min: number, max: number): number {
   return min + Math.random() * (max - min)
 }
@@ -54,6 +90,11 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const highlightStyle = useStore((s) => s.highlightStyle)
   const dismissedHighlightKeys = useStore((s) => s.dismissedHighlightKeys)
   const dismissHighlight = useStore((s) => s.dismissHighlight)
+  const configValues = useStore((s) => s.configValues)
+  const connected = configValues?.['bandcamp.connected'] ?? false
+  const isRemote = album.source !== 'local'
+  const isOffline = isRemote && !connected
+  const sourceAbbrev = SOURCE_ABBREV[album.source] ?? ''
   const [artLoaded, setArtLoaded] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
@@ -198,6 +239,8 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const cardClass = [
     'album-card',
     isActive ? 'playing' : '',
+    isRemote ? 'album-card--remote' : '',
+    isOffline ? 'album-card--offline' : '',
     isNew ? `album-card--highlight-${highlightStyle}` : '',
     isNew && isMounting ? 'is-mounting' : ''
   ]
@@ -249,6 +292,14 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
         {playing && isActive && (
           <div className="now-playing-badge">
             <PlayIcon size={10} />
+          </div>
+        )}
+        {isOffline && (
+          <div className="album-art-offline-overlay" aria-hidden="true">
+            <div className="album-art-offline-msg">
+              <WarnIcon size={20} />
+              <span>Not available</span>
+            </div>
           </div>
         )}
         {isNew && highlightStyle === 'shiny' && <span className="shiny-sweep" aria-hidden="true" />}
@@ -333,6 +384,12 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
           <span className="newmoji-badge" aria-hidden="true">
             🆕
           </span>
+        )}
+        {isRemote && (
+          <div className="album-source-badge" aria-label={`Remote source: ${album.source}`}>
+            <CloudIcon size={9} />
+            {sourceAbbrev && <span>{sourceAbbrev}</span>}
+          </div>
         )}
         {album.missing_album ? (
           <div className="album-title">

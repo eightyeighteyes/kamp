@@ -103,3 +103,73 @@
   color: var(--text-dim);
   margin-top: 1px;
 }
+
+/* Source badge (in .album-info, upper-right) -------------------------------- */
+
+.album-source-badge {
+  position: absolute;
+  right: 6px;
+  top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: #1a1a4a;
+  color: #7c86e1;
+  font-size: 8px;
+  font-weight: 500;
+  padding: 1px 4px;
+  border-radius: 3px;
+  line-height: 14px;
+  height: 14px;
+  width: 28px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+/* Reserve right-side space so title doesn't run under the badge */
+.album-card--remote .album-title {
+  padding-right: 36px;
+}
+
+/* Offline state ------------------------------------------------------------- */
+
+.album-card--offline .album-source-badge {
+  background: #2e2e2e;
+  color: #666666;
+}
+
+/* Dim title / artist / year; badge opts back out below */
+.album-card--offline .album-info {
+  opacity: 0.4;
+}
+
+.album-card--offline .album-source-badge {
+  opacity: 1;
+}
+
+.album-card--offline .album-art {
+  opacity: 0.35;
+}
+
+.album-art-offline-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.album-art-offline-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: #e05e5e;
+  opacity: 0.85;
+}
+
+.album-art-offline-msg span {
+  font-size: 10px;
+  opacity: 0.8;
+}

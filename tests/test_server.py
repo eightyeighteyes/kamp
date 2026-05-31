@@ -3552,6 +3552,52 @@ class TestResolvePlaybackRemote:
         )
         mock_engine.play.assert_called_once_with(refreshed_url)
 
+    def test_remote_track_refreshes_with_windows_corrupted_path(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Windows Path normalises bandcamp:// to bandcamp:\\ — still parsed correctly."""
+        remote = Track(
+            # Simulate what str(Path("bandcamp://999/3")) yields on Windows.
+            file_path=Path("bandcamp:\\\\999\\3"),
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            year="2024",
+            track_number=3,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            stream_url="https://cdn.example.com/old.mp3",
+            stream_url_expires_at=0.0,
+        )
+        mock_queue.next.return_value = remote
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "999",
+            "album_url": "https://artist.bandcamp.com/album/the-album",
+        }
+
+        refresh_fn = MagicMock(return_value=("https://cdn.example.com/new.mp3", 9999.0))
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            refresh_stream_url=refresh_fn,
+        )
+        c = TestClient(app)
+
+        c.post("/api/v1/player/next")
+
+        refresh_fn.assert_called_once_with(
+            "https://artist.bandcamp.com/album/the-album", 3
+        )
+        mock_index.update_stream_url.assert_called_once_with(
+            "bandcamp://999/3", "https://cdn.example.com/new.mp3", 9999.0
+        )
+
     def test_remote_track_skips_refresh_when_no_callback(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:

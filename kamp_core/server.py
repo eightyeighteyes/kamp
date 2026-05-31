@@ -663,15 +663,18 @@ def create_app(
         if needs_refresh and refresh_stream_url is not None:
             _fp = str(track.file_path)
             # Parse sale_item_id and track_number from bandcamp://sale_id/track_num.
-            # Path() normalises bandcamp:// → bandcamp:/ on POSIX (// collapse);
-            # strip either prefix and reconstruct the canonical form for DB lookups.
+            # Path() mutates the URI differently per platform:
+            #   POSIX: bandcamp:// → bandcamp:/ (double-slash collapse)
+            #   Windows: bandcamp:// → bandcamp:\\ (backslash normalisation)
+            # Split on "bandcamp:" and strip all leading slashes/backslashes to
+            # get the raw "sale_id/track_num" segment, then reconstruct canonical
+            # "bandcamp://sale_id/track_num" for DB lookups.
+            _after_scheme = _fp.split("bandcamp:", 1)
             _canonical_fp: str | None = None
             _rest: str | None = None
-            for _prefix in ("bandcamp://", "bandcamp:/"):
-                if _fp.startswith(_prefix):
-                    _rest = _fp[len(_prefix) :]
-                    _canonical_fp = "bandcamp://" + _rest
-                    break
+            if len(_after_scheme) == 2:
+                _rest = _after_scheme[1].lstrip("/\\").replace("\\", "/")
+                _canonical_fp = "bandcamp://" + _rest
             if _canonical_fp is not None and _rest is not None:
                 parts = _rest.split("/", 1)
                 if len(parts) == 2:

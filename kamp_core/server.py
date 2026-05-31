@@ -44,6 +44,76 @@ from kamp_core.library import LibraryIndex, LibraryScanner, Track, extract_art
 from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
 
 # ---------------------------------------------------------------------------
+# Playback URI resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_playback_uri(
+    track: Track,
+    index: LibraryIndex,
+    refresh_stream_url: Callable[[str, int], tuple[str, float] | None] | None,
+) -> str:
+    """Return the URL or path string to pass to mpv for *track*.
+
+    For local tracks returns str(track.file_path). For remote tracks checks
+    stream URL expiry and attempts a refresh via the refresh_stream_url
+    callback before returning track.playback_uri.
+    """
+    if not track.is_remote:
+        return track.playback_uri
+
+    import time as _t
+
+    needs_refresh = (
+        track.stream_url_expires_at is None
+        or track.stream_url_expires_at < _t.time() + 60
+    )
+    if needs_refresh and refresh_stream_url is not None:
+        _fp = str(track.file_path)
+        # Parse sale_item_id and track_number from bandcamp://sale_id/track_num.
+        # Path() mutates the URI differently per platform:
+        #   POSIX: bandcamp:// → bandcamp:/ (double-slash collapse)
+        #   Windows: bandcamp:// → bandcamp:\\ (backslash normalisation)
+        # Split on "bandcamp:" and strip all leading slashes/backslashes to
+        # get the raw "sale_id/track_num" segment, then reconstruct canonical
+        # "bandcamp://sale_id/track_num" for DB lookups.
+        _after_scheme = _fp.split("bandcamp:", 1)
+        _canonical_fp: str | None = None
+        _rest: str | None = None
+        if len(_after_scheme) == 2:
+            _rest = _after_scheme[1].lstrip("/\\").replace("\\", "/")
+            _canonical_fp = "bandcamp://" + _rest
+        if _canonical_fp is not None and _rest is not None:
+            parts = _rest.split("/", 1)
+            if len(parts) == 2:
+                sale_item_id, track_num_str = parts
+                try:
+                    track_num = int(track_num_str)
+                except ValueError:
+                    track_num = 0
+                item = index.get_collection_item(sale_item_id)
+                album_url = (item or {}).get("album_url", "")
+                if album_url:
+                    result = refresh_stream_url(album_url, track_num)
+                    if result is not None:
+                        new_url, expires_at = result
+                        index.update_stream_url(_canonical_fp, new_url, expires_at)
+                        return new_url
+                    else:
+                        logger.warning(
+                            "Stream URL refresh failed for %s — using existing URI",
+                            _canonical_fp,
+                        )
+                else:
+                    logger.warning(
+                        "No album_url for %s — cannot refresh stream URL; "
+                        "run kamp sync to populate.",
+                        _canonical_fp,
+                    )
+    return track.playback_uri
+
+
+# ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
 
@@ -652,64 +722,7 @@ def create_app(
         t.start()
 
     def _resolve_playback(track: "Track") -> str:
-        """Return the URL or path string to pass to mpv for *track*.
-
-        For local tracks returns str(track.file_path). For remote tracks checks
-        stream URL expiry and attempts a refresh via the refresh_stream_url
-        callback before returning track.playback_uri.
-        """
-        if not track.is_remote:
-            return track.playback_uri
-
-        import time as _t
-
-        needs_refresh = (
-            track.stream_url_expires_at is None
-            or track.stream_url_expires_at < _t.time() + 60
-        )
-        if needs_refresh and refresh_stream_url is not None:
-            _fp = str(track.file_path)
-            # Parse sale_item_id and track_number from bandcamp://sale_id/track_num.
-            # Path() mutates the URI differently per platform:
-            #   POSIX: bandcamp:// → bandcamp:/ (double-slash collapse)
-            #   Windows: bandcamp:// → bandcamp:\\ (backslash normalisation)
-            # Split on "bandcamp:" and strip all leading slashes/backslashes to
-            # get the raw "sale_id/track_num" segment, then reconstruct canonical
-            # "bandcamp://sale_id/track_num" for DB lookups.
-            _after_scheme = _fp.split("bandcamp:", 1)
-            _canonical_fp: str | None = None
-            _rest: str | None = None
-            if len(_after_scheme) == 2:
-                _rest = _after_scheme[1].lstrip("/\\").replace("\\", "/")
-                _canonical_fp = "bandcamp://" + _rest
-            if _canonical_fp is not None and _rest is not None:
-                parts = _rest.split("/", 1)
-                if len(parts) == 2:
-                    sale_item_id, track_num_str = parts
-                    try:
-                        track_num = int(track_num_str)
-                    except ValueError:
-                        track_num = 0
-                    item = index.get_collection_item(sale_item_id)
-                    album_url = (item or {}).get("album_url", "")
-                    if album_url:
-                        result = refresh_stream_url(album_url, track_num)
-                        if result is not None:
-                            new_url, expires_at = result
-                            index.update_stream_url(_canonical_fp, new_url, expires_at)
-                            return new_url
-                        else:
-                            logger.warning(
-                                "Stream URL refresh failed for %s — using existing URI",
-                                _canonical_fp,
-                            )
-                    else:
-                        logger.warning(
-                            "No album_url for %s — cannot refresh stream URL; "
-                            "run kamp sync to populate.",
-                            _canonical_fp,
-                        )
-        return track.playback_uri
+        return resolve_playback_uri(track, index, refresh_stream_url)
 
     # Wire play-state change callback directly — the engine fires it from its
     # background reader thread whenever mpv's pause property flips.

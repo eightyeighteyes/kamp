@@ -532,7 +532,7 @@ def _cmd_daemon(
     from kamp_core.library import LibraryIndex
     from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
     from kamp_core.scrobbler import Scrobbler, authenticate as _lastfm_authenticate
-    from kamp_core.server import create_app
+    from kamp_core.server import create_app, resolve_playback_uri
     from kamp_daemon.config import config_set as _config_set
     from kamp_daemon.tagger import lookup_releases_from_tracks
 
@@ -660,7 +660,9 @@ def _cmd_daemon(
             index.record_track_started(track.file_path)
             if not had_lookahead:
                 # No gapless transition was queued — start the next track manually.
-                engine.play(track.file_path)
+                # resolve_playback_uri refreshes expired CDN stream URLs for remote
+                # tracks so mpv receives a real HTTPS URL, not a raw bandcamp: URI.
+                engine.play(resolve_playback_uri(track, index, _refresh_stream_url))
             # If had_lookahead: mpv already transitioned gaplessly.  file-loaded
             # will fire shortly and preload_next will queue the new next track.
         else:

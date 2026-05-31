@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from kamp_core.library import AlbumInfo, Track
 from kamp_core.playback import PlaybackState
-from kamp_core.server import create_app
+from kamp_core.server import create_app, resolve_playback_uri
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -3739,6 +3739,94 @@ class TestResolvePlaybackRemote:
 
         c.post("/api/v1/player/next")
         mock_engine.play.assert_called_once_with("https://cdn.example.com/existing.mp3")
+
+
+# ---------------------------------------------------------------------------
+# resolve_playback_uri — module-level function (used by on_track_end auto-advance)
+# ---------------------------------------------------------------------------
+
+
+class TestResolvePlaybackUri:
+    """resolve_playback_uri is a module-level function so on_track_end can
+    call it without going through a REST endpoint.  The underlying resolution
+    logic is the same as _resolve_playback inside create_app — these tests
+    verify the function directly to guard the KAMP-396 regression (EOF
+    auto-advance passed a raw bandcamp: URI to mpv instead of a CDN URL)."""
+
+    def _remote_track(
+        self,
+        *,
+        stream_url: str | None = None,
+        stream_url_expires_at: float | None = None,
+    ) -> Track:
+        return Track(
+            file_path=Path("bandcamp://777/2"),
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            year="2024",
+            track_number=2,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            stream_url=stream_url,
+            stream_url_expires_at=stream_url_expires_at,
+        )
+
+    def test_local_track_returns_file_path(self) -> None:
+        index = MagicMock()
+        track = _track(1)
+        assert resolve_playback_uri(track, index, None) == str(track.file_path)
+
+    def test_remote_track_with_fresh_url_returns_stream_url(self) -> None:
+        import time
+
+        index = MagicMock()
+        track = self._remote_track(
+            stream_url="https://cdn.example.com/fresh.mp3",
+            stream_url_expires_at=time.time() + 7200,
+        )
+        assert (
+            resolve_playback_uri(track, index, None)
+            == "https://cdn.example.com/fresh.mp3"
+        )
+
+    def test_remote_track_with_expired_url_refreshes(self) -> None:
+        index = MagicMock()
+        index.get_collection_item.return_value = {
+            "album_url": "https://artist.bandcamp.com/album/x"
+        }
+        refresh_fn = MagicMock(return_value=("https://cdn.example.com/new.mp3", 9999.0))
+
+        track = self._remote_track(
+            stream_url="https://cdn.example.com/old.mp3",
+            stream_url_expires_at=0.0,
+        )
+        result = resolve_playback_uri(track, index, refresh_fn)
+
+        assert result == "https://cdn.example.com/new.mp3"
+        refresh_fn.assert_called_once_with("https://artist.bandcamp.com/album/x", 2)
+        index.update_stream_url.assert_called_once_with(
+            "bandcamp://777/2", "https://cdn.example.com/new.mp3", 9999.0
+        )
+
+    def test_remote_track_with_no_stream_url_falls_back_to_playback_uri(self) -> None:
+        """No stream_url and no refresh callback → playback_uri (raw bandcamp: URI).
+
+        This is the best we can do when no refresh is available; mpv will error
+        and the error-advance path will skip the track.  The key requirement is
+        that we do NOT pass the Path str form (e.g. bandcamp:/777/2) — we pass
+        playback_uri which returns the stream_url if set, else str(file_path).
+        """
+        index = MagicMock()
+        track = self._remote_track(stream_url=None, stream_url_expires_at=None)
+        # Without a refresh callback we fall through to playback_uri.
+        result = resolve_playback_uri(track, index, None)
+        assert result == track.playback_uri
 
 
 # ---------------------------------------------------------------------------

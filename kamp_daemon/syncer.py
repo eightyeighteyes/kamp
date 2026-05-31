@@ -167,6 +167,7 @@ class Syncer:
         self._thread: threading.Thread | None = None
         self.status_callback: Callable[[str], None] | None = None
         self.error_callback: Callable[[str, str, str], None] | None = None
+        self.on_tracks_indexed: Callable[[], None] | None = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -335,6 +336,8 @@ class Syncer:
                     album_count,
                     track_count,
                 )
+                if self.on_tracks_indexed is not None:
+                    self.on_tracks_indexed()
             else:
                 logger.info(
                     "Sync complete: %d album(s) already up to date.", album_count

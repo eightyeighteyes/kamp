@@ -777,6 +777,34 @@ class TestStreamMode:
         info_msgs = " ".join(str(c) for c in mock_log.info.call_args_list)
         assert "42" in info_msgs
 
+    def test_on_tracks_indexed_called_when_tracks_written(self, tmp_path: Path) -> None:
+        """on_tracks_indexed fires when stream sync indexes new tracks."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        fired: list[bool] = []
+        syncer.on_tracks_indexed = lambda: fired.append(True)
+        with (
+            patch("kamp_daemon.bandcamp.sync_collection_stream", return_value=(5, 42)),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+        assert fired == [True]
+
+    def test_on_tracks_indexed_not_called_when_no_new_tracks(
+        self, tmp_path: Path
+    ) -> None:
+        """on_tracks_indexed does not fire when track_count == 0."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        fired: list[bool] = []
+        syncer.on_tracks_indexed = lambda: fired.append(True)
+        with (
+            patch("kamp_daemon.bandcamp.sync_collection_stream", return_value=(636, 0)),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+        assert fired == []
+
     def test_sync_once_stream_logs_up_to_date_when_no_new_tracks(
         self, tmp_path: Path
     ) -> None:

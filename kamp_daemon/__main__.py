@@ -1084,6 +1084,7 @@ def _cmd_daemon(
     _sync_all_trigger_ref[0] = core.syncer.sync_all_purchases
 
     core.syncer.status_callback = app.state.notify_bandcamp_sync_status
+    core.syncer.on_tracks_indexed = app.state.notify_library_changed
     core.watcher.stage_callback = app.state.notify_pipeline_stage
 
     # After each album finishes processing, run a library rescan directly on a

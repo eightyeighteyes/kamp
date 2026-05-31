@@ -136,6 +136,7 @@ class TrackOut(BaseModel):
     label: str
     favorite: bool
     play_count: int
+    source: str
 
     @classmethod
     def from_track(cls, t: Track) -> "TrackOut":
@@ -157,6 +158,7 @@ class TrackOut(BaseModel):
             label=t.label,
             favorite=t.favorite,
             play_count=t.play_count,
+            source=t.source,
         )
 
 
@@ -183,6 +185,10 @@ class AlbumOut(BaseModel):
     favorite: bool = False
     # True when any track in this album is individually favorited (KAMP-294).
     has_favorite_track: bool = False
+    # 'local' | 'bandcamp' | 'mixed' — derived from constituent track sources.
+    source: str = "local"
+    # True when any track in this album has source != 'local'.
+    has_remote_tracks: bool = False
 
 
 class PlayerStateOut(BaseModel):
@@ -798,6 +804,8 @@ def create_app(
                 play_count_avg=a.play_count_avg,
                 favorite=a.favorite,
                 has_favorite_track=a.has_favorite_track,
+                source=a.source,
+                has_remote_tracks=a.has_remote_tracks,
             )
             for a in index.albums(sort=sort)
         ]
@@ -1780,6 +1788,8 @@ def create_app(
                     play_count_avg=a.play_count_avg,
                     favorite=a.favorite,
                     has_favorite_track=a.has_favorite_track,
+                    source=a.source,
+                    has_remote_tracks=a.has_remote_tracks,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -1902,6 +1912,8 @@ def create_app(
                     play_count_avg=a.play_count_avg,
                     favorite=a.favorite,
                     has_favorite_track=a.has_favorite_track,
+                    source=a.source,
+                    has_remote_tracks=a.has_remote_tracks,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -2038,6 +2050,8 @@ def create_app(
                 play_count_avg=a.play_count_avg,
                 favorite=a.favorite,
                 has_favorite_track=a.has_favorite_track,
+                source=a.source,
+                has_remote_tracks=a.has_remote_tracks,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys

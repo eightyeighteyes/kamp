@@ -24,6 +24,7 @@ export type Track = {
   label: string
   favorite: boolean
   play_count: number
+  source: string
 }
 
 export type Album = {
@@ -48,6 +49,10 @@ export type Album = {
   favorite: boolean
   // True when any track in this album is individually favorited (KAMP-294).
   has_favorite_track: boolean
+  // 'local' | 'bandcamp' | 'mixed' — derived from constituent track sources.
+  source: 'local' | 'bandcamp' | 'mixed'
+  // True when any track in this album has source !== 'local'.
+  has_remote_tracks: boolean
 }
 
 export type PlayerState = {

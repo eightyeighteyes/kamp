@@ -70,7 +70,9 @@ export function QueueContextMenu({
                 last_played_at: null,
                 play_count_avg: 0,
                 favorite: false,
-                has_favorite_track: false
+                has_favorite_track: false,
+                source: 'local',
+                has_remote_tracks: false
               }
               void setActiveView('library')
               void selectAlbum(found)

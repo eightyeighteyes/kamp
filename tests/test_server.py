@@ -3014,6 +3014,40 @@ class TestPatchAlbumMetaEndpoint:
         assert t["genre"] == "Reggae"
         assert t["label"] == "Trojan"
 
+    def test_track_out_includes_source(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = _track(1)
+        track.source = "bandcamp"
+        mock_index.tracks_for_album.return_value = [track]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).get(
+            "/api/v1/tracks",
+            params={"album_artist": track.album_artist, "album": track.album},
+        )
+        assert resp.status_code == 200
+        assert resp.json()[0]["source"] == "bandcamp"
+
+    def test_album_out_includes_source_and_has_remote_tracks(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        album = _album("Tycho", "Dive")
+        album.source = "bandcamp"
+        album.has_remote_tracks = True
+        mock_index.albums.return_value = [album]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        data = TestClient(app).get("/api/v1/albums").json()
+        assert data[0]["source"] == "bandcamp"
+        assert data[0]["has_remote_tracks"] is True
+
 
 # ---------------------------------------------------------------------------
 # iTunes art search / apply (KAMP-341)

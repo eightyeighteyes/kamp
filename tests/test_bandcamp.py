@@ -34,6 +34,7 @@ from kamp_daemon.bandcamp import (
     fetch_album_art_bytes,
     fetch_stream_url,
     mark_collection_synced,
+    refresh_stream_url,
     sync_new_purchases,
 )
 from kamp_daemon.config import BandcampConfig
@@ -1951,3 +1952,40 @@ class TestFetchAlbumArtBytes:
         mock_get.assert_called_once_with(
             "https://f4.bcbits.com/img/a777888999_16.jpg", timeout=30
         )
+
+
+# ---------------------------------------------------------------------------
+# refresh_stream_url
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshStreamUrl:
+    _album_url = "https://artist.bandcamp.com/album/my-album"
+    _session_data: dict = {"cookies": []}
+
+    def test_returns_tuple_on_success(self) -> None:
+        """Returns (url, expires_at) when fetch_stream_url succeeds."""
+        expected = ("https://cdn.bcbits.com/stream/track.mp3", 9999999.0)
+        with (
+            patch("kamp_daemon.bandcamp._make_requests_session"),
+            patch(
+                "kamp_daemon.bandcamp.fetch_stream_url", return_value=expected
+            ) as mock_fetch,
+        ):
+            result = refresh_stream_url(self._album_url, 3, self._session_data)
+
+        assert result == expected
+        mock_fetch.assert_called_once()
+
+    def test_returns_none_on_exception(self) -> None:
+        """Returns None (never raises) when fetch_stream_url raises."""
+        with (
+            patch("kamp_daemon.bandcamp._make_requests_session"),
+            patch(
+                "kamp_daemon.bandcamp.fetch_stream_url",
+                side_effect=BandcampAPIError("not found"),
+            ),
+        ):
+            result = refresh_stream_url(self._album_url, 99, self._session_data)
+
+        assert result is None

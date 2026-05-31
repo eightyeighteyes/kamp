@@ -4403,6 +4403,67 @@ class TestRemoteTrackSchema:
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
 
+    def test_migration_v21_renames_remote_source_to_bandcamp(
+        self, tmp_path: Path
+    ) -> None:
+        """A v20 DB with source='remote' tracks has them rewritten to 'bandcamp'."""
+        db_path = tmp_path / "library.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (20)")
+        conn.execute("""
+            CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                artist TEXT NOT NULL DEFAULT '',
+                album_artist TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '',
+                year TEXT NOT NULL DEFAULT '',
+                track_number INTEGER NOT NULL DEFAULT 0,
+                disc_number INTEGER NOT NULL DEFAULT 1,
+                ext TEXT NOT NULL DEFAULT '',
+                embedded_art INTEGER NOT NULL DEFAULT 0,
+                mb_release_id TEXT NOT NULL DEFAULT '',
+                mb_recording_id TEXT NOT NULL DEFAULT '',
+                date_added REAL,
+                last_played REAL,
+                favorite INTEGER NOT NULL DEFAULT 0,
+                play_count INTEGER NOT NULL DEFAULT 0,
+                file_mtime REAL,
+                genre TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'local',
+                stream_url TEXT,
+                stream_url_expires_at REAL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES (?, ?)",
+            ("bandcamp://123/1", "remote"),
+        )
+        conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES (?, ?)",
+            ("/local/track.mp3", "local"),
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        rows = index._conn.execute(
+            "SELECT file_path, source FROM tracks ORDER BY file_path"
+        ).fetchall()
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        index.close()
+
+        assert version == 21
+        sources = {r["file_path"]: r["source"] for r in rows}
+        assert sources["bandcamp://123/1"] == "bandcamp"
+        assert sources["/local/track.mp3"] == "local"
+
 
 # ---------------------------------------------------------------------------
 # AlbumInfo remote fields — source, has_remote_tracks, in_bandcamp_collection

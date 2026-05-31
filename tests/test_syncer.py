@@ -689,3 +689,17 @@ class TestLogout:
         with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
             logout()
         assert not (tmp_path / "bandcamp_state.json").exists()
+
+    def test_clears_art_cache_directory(self, tmp_path: Path) -> None:
+        """logout() removes the art_cache directory if it exists."""
+        art_cache = tmp_path / "art_cache"
+        art_cache.mkdir()
+        (art_cache / "12345.jpg").write_bytes(b"\xff\xd8\xff")
+        with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+            logout()
+        assert not art_cache.exists()
+
+    def test_noop_when_art_cache_absent(self, tmp_path: Path) -> None:
+        """logout() does not raise when art_cache does not exist."""
+        with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+            logout()  # art_cache dir is absent — must not raise

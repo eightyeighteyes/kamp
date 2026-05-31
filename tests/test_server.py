@@ -3456,9 +3456,9 @@ class TestApplyLocalAlbumArt:
 
 
 class TestValidateLibraryPathRemoteURI:
-    """_validate_library_path rejects bandcamp:// URIs."""
+    """_validate_library_path rejects bandcamp: URIs in both slash forms."""
 
-    def test_bandcamp_uri_returns_400(
+    def test_bandcamp_double_slash_uri_returns_400(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
@@ -3466,6 +3466,19 @@ class TestValidateLibraryPathRemoteURI:
         response = c.post(
             "/api/v1/player/queue/add",
             json={"file_path": "bandcamp://380008227/3"},
+        )
+        assert response.status_code == 400
+        assert "Remote tracks" in response.json()["detail"]
+
+    def test_bandcamp_single_slash_uri_returns_400(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """POSIX Path normalises bandcamp:// → bandcamp:/ — must still be rejected."""
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        response = c.post(
+            "/api/v1/player/queue/add",
+            json={"file_path": "bandcamp:/380008227/3"},
         )
         assert response.status_code == 400
         assert "Remote tracks" in response.json()["detail"]
@@ -3747,3 +3760,237 @@ class TestArtEndpointRemoteGuards:
 
         assert res.status_code == 400
         assert "remote-only" in res.json()["detail"]
+
+
+class TestArtEndpointRemoteAlbums:
+    """GET /api/v1/album-art proxies and caches art for remote (bandcamp:) albums.
+
+    Tests use the single-slash URI form ('bandcamp:/sale_id/track') because
+    that is what the UI sends: str(track.file_path) where file_path is a Path,
+    and Path('bandcamp://...') on POSIX normalises the double-slash to single.
+    """
+
+    _SALE_ID = "123456"
+    _TRALBUM_ID = "987654321"
+    # Single-slash: what the UI actually sends after Path normalisation on POSIX.
+    _FILE_PATH = f"bandcamp:/{_SALE_ID}/1"
+    _JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 20
+
+    def _collection_item(self) -> dict[str, Any]:
+        return {
+            "sale_item_id": self._SALE_ID,
+            "tralbum_id": self._TRALBUM_ID,
+            "album_url": "https://artist.bandcamp.com/album/the-album",
+            "mode": "remote",
+        }
+
+    def _make_app(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        art_cache_dir: Path | None = None,
+        session_data: dict[str, Any] | None = None,
+    ) -> TestClient:
+        session_data_val = session_data if session_data is not None else {"cookies": []}
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: session_data_val,
+            art_cache_dir=art_cache_dir,
+        )
+        return TestClient(app)
+
+    def test_cache_hit_serves_jpeg(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Cached JPEG is served directly without fetching from Bandcamp."""
+        cache_dir = tmp_path / "art_cache"
+        cache_dir.mkdir()
+        (cache_dir / f"{self._TRALBUM_ID}.jpg").write_bytes(self._JPEG)
+        mock_index.get_collection_item.return_value = self._collection_item()
+
+        c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
+        res = c.get(
+            "/api/v1/album-art",
+            params={"album_artist": "A", "album": "B", "file_path": self._FILE_PATH},
+        )
+
+        assert res.status_code == 200
+        assert res.content == self._JPEG
+        assert res.headers["content-type"] == "image/jpeg"
+
+    def test_cache_miss_fetches_and_caches(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """On cache miss, art is fetched via fetch_album_art_bytes and cached to disk."""
+        cache_dir = tmp_path / "art_cache"
+        mock_index.get_collection_item.return_value = self._collection_item()
+
+        c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
+
+        with patch(
+            (
+                "kamp_core.server.get_album_art.__wrapped__"
+                if hasattr(create_app, "__wrapped__")
+                else "kamp_daemon.bandcamp.fetch_album_art_bytes"
+            ),
+            return_value=self._JPEG,
+        ):
+            with patch(
+                "kamp_daemon.bandcamp.fetch_album_art_bytes", return_value=self._JPEG
+            ):
+                res = c.get(
+                    "/api/v1/album-art",
+                    params={
+                        "album_artist": "A",
+                        "album": "B",
+                        "file_path": self._FILE_PATH,
+                    },
+                )
+
+        assert res.status_code == 200
+        assert res.content == self._JPEG
+        cache_file = cache_dir / f"{self._TRALBUM_ID}.jpg"
+        assert cache_file.exists()
+        assert cache_file.read_bytes() == self._JPEG
+
+    def test_no_collection_item_returns_404(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """If the sale_item_id is not in bandcamp_collection, return 404."""
+        mock_index.get_collection_item.return_value = None
+        c = self._make_app(
+            mock_index, mock_engine, mock_queue, art_cache_dir=tmp_path / "art_cache"
+        )
+        res = c.get(
+            "/api/v1/album-art",
+            params={"album_artist": "A", "album": "B", "file_path": self._FILE_PATH},
+        )
+        assert res.status_code == 404
+
+    def test_no_session_returns_404(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """If get_bandcamp_session returns None, return 404."""
+        mock_index.get_collection_item.return_value = self._collection_item()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: None,
+            art_cache_dir=tmp_path / "art_cache",
+        )
+        c = TestClient(app)
+        res = c.get(
+            "/api/v1/album-art",
+            params={"album_artist": "A", "album": "B", "file_path": self._FILE_PATH},
+        )
+        assert res.status_code == 404
+
+    def test_fetch_failure_returns_404(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """If fetch_album_art_bytes returns None, return 404."""
+        mock_index.get_collection_item.return_value = self._collection_item()
+        c = self._make_app(
+            mock_index, mock_engine, mock_queue, art_cache_dir=tmp_path / "art_cache"
+        )
+        with patch("kamp_daemon.bandcamp.fetch_album_art_bytes", return_value=None):
+            res = c.get(
+                "/api/v1/album-art",
+                params={
+                    "album_artist": "A",
+                    "album": "B",
+                    "file_path": self._FILE_PATH,
+                },
+            )
+        assert res.status_code == 404
+
+    def test_no_art_cache_dir_returns_404(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """If art_cache_dir is None in make_app, remote art returns 404."""
+        mock_index.get_collection_item.return_value = self._collection_item()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: {"cookies": []},
+            art_cache_dir=None,
+        )
+        c = TestClient(app)
+        res = c.get(
+            "/api/v1/album-art",
+            params={"album_artist": "A", "album": "B", "file_path": self._FILE_PATH},
+        )
+        assert res.status_code == 404
+
+    def test_album_artist_album_path_serves_art(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Art request via album_artist+album (no file_path) works for remote albums.
+
+        The UI sends album_artist and album without file_path for normal albums
+        (file_path is only populated for missing-album tracks). The endpoint must
+        fall through to the remote-art branch after local art lookup returns nothing.
+        """
+        cache_dir = tmp_path / "art_cache"
+        cache_dir.mkdir()
+        (cache_dir / f"{self._TRALBUM_ID}.jpg").write_bytes(self._JPEG)
+
+        remote_track = Track(
+            file_path=Path(f"bandcamp://{self._SALE_ID}/1"),
+            title="Track One",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=True,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        mock_index.tracks_for_album.return_value = [remote_track]
+        mock_index.get_collection_item.return_value = self._collection_item()
+
+        c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
+        # No file_path — this is the real request the UI sends for normal albums.
+        res = c.get(
+            "/api/v1/album-art",
+            params={"album_artist": "Artist", "album": "Album"},
+        )
+
+        assert res.status_code == 200
+        assert res.content == self._JPEG

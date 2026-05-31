@@ -425,6 +425,13 @@ def logout() -> None:
             index.close()
         logger.info("Bandcamp logout: session and collection state cleared.")
 
+    import shutil
+
+    art_cache = state / "art_cache"
+    if art_cache.exists():
+        shutil.rmtree(art_cache)
+        logger.info("Bandcamp logout: art cache cleared.")
+
     # Remove legacy files left over from pre-v19 installs.
     session_file = state / "bandcamp_session.json"
     state_file = state / "bandcamp_state.json"

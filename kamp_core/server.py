@@ -431,7 +431,7 @@ def _validate_library_path(file_path: str, library_path: Path | None) -> Path:
     Remote track URIs (bandcamp://) are rejected here; remote tracks are only
     reachable through the queue/album flow, not by direct file_path reference.
     """
-    if file_path.startswith("bandcamp://"):
+    if file_path.startswith("bandcamp:"):
         raise HTTPException(
             status_code=400, detail="Remote tracks cannot be addressed by path"
         )
@@ -477,6 +477,7 @@ def create_app(
     on_bandcamp_sync_trigger: Callable[[], None] | None = None,
     on_bandcamp_sync_all_trigger: Callable[[], None] | None = None,
     refresh_stream_url: Callable[[str, int], tuple[str, float] | None] | None = None,
+    art_cache_dir: Path | None = None,
     dev_mode: bool = False,
     auth_token: str | None = None,
     mb_lookup_fn: Callable[..., Any] | None = None,
@@ -1884,6 +1885,55 @@ def create_app(
     ) -> Response:
         from kamp_daemon.artwork import read_cover_file  # noqa: PLC0415
 
+        config: dict[str, Any] = _state.get("config") or {}
+        save_format: str = config.get("artwork.save_format", "embedded")
+
+        # When a version stamp is present the URL encodes content identity,
+        # so the response is safe to cache indefinitely.
+        cache_control = "public, max-age=31536000, immutable" if v else "no-store"
+
+        def _remote_art_response(fp: str, _cache_ctrl: str) -> Response:
+            if art_cache_dir is None or get_bandcamp_session is None:
+                raise HTTPException(status_code=404, detail="No art found")
+            # Strip scheme; handle both 'bandcamp://...' and 'bandcamp:/...'
+            # (Path() on POSIX normalises double-slash to single-slash).
+            sale_item_id = fp.split("bandcamp:", 1)[1].lstrip("/").split("/")[0]
+            item = index.get_collection_item(sale_item_id)
+            if not item or not item.get("tralbum_id") or not item.get("album_url"):
+                raise HTTPException(status_code=404, detail="No art found")
+            tralbum_id: str = item["tralbum_id"]
+            # tralbum_id is stable content identity — cache indefinitely regardless
+            # of whether the client sent an art_version stamp.
+            remote_cache_ctrl = "public, max-age=31536000, immutable"
+            cache_path = art_cache_dir / f"{tralbum_id}.jpg"
+            if cache_path.exists():
+                return Response(
+                    content=cache_path.read_bytes(),
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": remote_cache_ctrl},
+                )
+            session_data = get_bandcamp_session()
+            if not session_data:
+                raise HTTPException(status_code=404, detail="No art found")
+            from kamp_daemon.bandcamp import fetch_album_art_bytes  # noqa: PLC0415
+
+            data = fetch_album_art_bytes(item["album_url"], session_data)
+            if not data:
+                raise HTTPException(status_code=404, detail="No art found")
+            art_cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(data)
+            return Response(
+                content=data,
+                media_type="image/jpeg",
+                headers={"Cache-Control": remote_cache_ctrl},
+            )
+
+        # Remote albums (bandcamp: URIs) are served via the art proxy cache.
+        # Path() on POSIX collapses bandcamp:// → bandcamp:/ so match on the
+        # scheme prefix without assuming a specific number of slashes.
+        if file_path.startswith("bandcamp:"):
+            return _remote_art_response(file_path, cache_control)
+
         # file_path overrides (album_artist, album) for missing-album tracks.
         if file_path:
             p = _validate_library_path(file_path, _state["library_path"])
@@ -1891,13 +1941,6 @@ def create_app(
             tracks = [track] if track else []
         else:
             tracks = index.tracks_for_album(album_artist, album)
-
-        config: dict[str, Any] = _state.get("config") or {}
-        save_format: str = config.get("artwork.save_format", "embedded")
-
-        # When a version stamp is present the URL encodes content identity,
-        # so the response is safe to cache indefinitely.
-        cache_control = "public, max-age=31536000, immutable" if v else "no-store"
 
         def _embedded_response() -> Response | None:
             for track in tracks:
@@ -1935,6 +1978,14 @@ def create_app(
 
         if resp is not None:
             return resp
+
+        # Local art not found — if any track is remote, try the proxy cache.
+        # album.file_path is empty for regular albums, so the bandcamp: check
+        # above never fires; use the first remote track's file_path instead.
+        remote_tracks = [t for t in tracks if t.is_remote]
+        if remote_tracks:
+            return _remote_art_response(str(remote_tracks[0].file_path), cache_control)
+
         raise HTTPException(status_code=404, detail="No art found")
 
     @app.get("/api/v1/search", response_model=SearchOut)

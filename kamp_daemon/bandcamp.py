@@ -758,6 +758,33 @@ def fetch_stream_url(
     )
 
 
+def fetch_album_art_bytes(album_url: str, session_data: dict[str, Any]) -> bytes | None:
+    """Download album art JPEG for *album_url*, authenticated via *session_data*.
+
+    Returns raw JPEG bytes, or None if art cannot be found or fetched.
+    The album page fetch is proxy-aware (Cloudflare-safe on PyInstaller/Windows).
+    The CDN image download uses a plain unauthenticated session — f4.bcbits.com
+    serves art publicly with no cookies required.
+    """
+    try:
+        session = _make_requests_session(session_data)
+        resp = session.get(album_url, timeout=30)
+        resp.raise_for_status()
+        match = re.search(r'data-tralbum="([^"]+)"', resp.text)
+        if not match:
+            return None
+        tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
+        art_id = tralbum.get("art_id")
+        if not art_id:
+            return None
+        cdn_url = f"https://f4.bcbits.com/img/a{art_id}_16.jpg"
+        cdn_resp = _requests.get(cdn_url, timeout=30)
+        cdn_resp.raise_for_status()
+        return cdn_resp.content
+    except Exception:
+        return None
+
+
 # Download
 # ---------------------------------------------------------------------------
 

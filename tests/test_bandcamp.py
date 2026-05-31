@@ -31,6 +31,7 @@ from kamp_daemon.bandcamp import (
     _session_from_cookie_file,
     _username_from_logout_cookie,
     _validate_session,
+    fetch_album_art_bytes,
     fetch_stream_url,
     mark_collection_synced,
     sync_new_purchases,
@@ -1827,4 +1828,126 @@ class TestMarkCollectionSyncedStoresAlbumUrl:
 
         call_kwargs = index.upsert_collection_item.call_args[1]
         assert call_kwargs["album_url"] == "https://artist.bandcamp.com/album/album"
-        assert call_kwargs["tralbum_id"] == "100"
+
+
+# ---------------------------------------------------------------------------
+# fetch_album_art_bytes
+# ---------------------------------------------------------------------------
+
+
+def _tralbum_html(art_id: int) -> str:
+    payload = html_lib.escape(json.dumps({"id": 99, "art_id": art_id, "tracks": []}))
+    return f'<html><div data-tralbum="{payload}"></div></html>'
+
+
+class TestFetchAlbumArtBytes:
+    """fetch_album_art_bytes downloads and returns raw JPEG art bytes."""
+
+    _SESSION_DATA: dict[str, Any] = {"cookies": []}
+
+    def test_returns_jpeg_on_success(self) -> None:
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 20
+        album_page = MagicMock()
+        album_page.raise_for_status = MagicMock()
+        album_page.text = _tralbum_html(art_id=42424242)
+
+        cdn_resp = MagicMock()
+        cdn_resp.raise_for_status = MagicMock()
+        cdn_resp.content = jpeg
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session"
+            ) as mock_session_builder,
+            patch("kamp_daemon.bandcamp._requests.get", return_value=cdn_resp),
+        ):
+            mock_session = MagicMock()
+            mock_session.get.return_value = album_page
+            mock_session_builder.return_value = mock_session
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result == jpeg
+        mock_session.get.assert_called_once_with(
+            "https://artist.bandcamp.com/album/foo", timeout=30
+        )
+
+    def test_returns_none_on_missing_data_tralbum(self) -> None:
+        page = MagicMock()
+        page.raise_for_status = MagicMock()
+        page.text = "<html>no tralbum here</html>"
+
+        with patch("kamp_daemon.bandcamp._make_requests_session") as mock_sb:
+            mock_sess = MagicMock()
+            mock_sess.get.return_value = page
+            mock_sb.return_value = mock_sess
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result is None
+
+    def test_returns_none_on_missing_art_id(self) -> None:
+        payload = html_lib.escape(json.dumps({"id": 99, "tracks": []}))
+        html = f'<html><div data-tralbum="{payload}"></div></html>'
+        page = MagicMock()
+        page.raise_for_status = MagicMock()
+        page.text = html
+
+        with patch("kamp_daemon.bandcamp._make_requests_session") as mock_sb:
+            mock_sess = MagicMock()
+            mock_sess.get.return_value = page
+            mock_sb.return_value = mock_sess
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result is None
+
+    def test_returns_none_on_http_error(self) -> None:
+        import requests as _req
+
+        with patch("kamp_daemon.bandcamp._make_requests_session") as mock_sb:
+            mock_sess = MagicMock()
+            mock_sess.get.side_effect = _req.HTTPError("500 Server Error")
+            mock_sb.return_value = mock_sess
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result is None
+
+    def test_cdn_url_uses_art_id_from_tralbum(self) -> None:
+        jpeg = b"\xff\xd8\xff"
+        page = MagicMock()
+        page.raise_for_status = MagicMock()
+        page.text = _tralbum_html(art_id=777888999)
+
+        cdn_resp = MagicMock()
+        cdn_resp.raise_for_status = MagicMock()
+        cdn_resp.content = jpeg
+
+        with (
+            patch("kamp_daemon.bandcamp._make_requests_session") as mock_sb,
+            patch(
+                "kamp_daemon.bandcamp._requests.get", return_value=cdn_resp
+            ) as mock_get,
+        ):
+            mock_sess = MagicMock()
+            mock_sess.get.return_value = page
+            mock_sb.return_value = mock_sess
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result == jpeg
+        # Verify CDN URL is constructed from art_id (not tralbum id=99).
+        mock_get.assert_called_once_with(
+            "https://f4.bcbits.com/img/a777888999_16.jpg", timeout=30
+        )

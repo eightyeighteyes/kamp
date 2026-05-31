@@ -885,6 +885,7 @@ def _cmd_daemon(
         on_bandcamp_disconnect=_on_bandcamp_disconnect,
         on_bandcamp_sync_trigger=_on_bandcamp_sync_trigger,
         on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,
+        art_cache_dir=_state_dir() / "art_cache",
         dev_mode=bool(os.environ.get("KAMP_DEV")),
         auth_token=_auth_token,
         mb_lookup_fn=lookup_releases_from_tracks,

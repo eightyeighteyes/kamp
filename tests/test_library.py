@@ -4080,6 +4080,91 @@ class TestBandcampCollection:
 
         assert row["added_at"] == 500.0
 
+    def test_upsert_updates_added_at_when_new_value_is_earlier(
+        self, tmp_path: Path
+    ) -> None:
+        """ON CONFLICT takes MIN — a smaller added_at (real purchase date) replaces a
+        larger one (wrong sync-time timestamp), so existing users are self-correcting.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("8", mode="local", added_at=1_000_000.0)
+        index.upsert_collection_item("8", mode="local", added_at=100.0)
+        row = index._conn.execute(
+            "SELECT added_at FROM bandcamp_collection WHERE sale_item_id = '8'"
+        ).fetchone()
+        index.close()
+
+        assert row["added_at"] == 100.0
+
+    def test_upsert_preserves_zero_added_at_on_conflict(self, tmp_path: Path) -> None:
+        """added_at=0 (from mark_collection_synced) must survive subsequent syncs."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("9", mode="local", added_at=0.0)
+        index.upsert_collection_item("9", mode="local", added_at=9_999_999.0)
+        row = index._conn.execute(
+            "SELECT added_at FROM bandcamp_collection WHERE sale_item_id = '9'"
+        ).fetchone()
+        index.close()
+
+        assert row["added_at"] == 0.0
+
+    def test_update_remote_track_date_added_corrects_wrong_timestamp(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _sample_track(Path("bandcamp://42/1"))
+        track.date_added = 9_999_999.0  # wrong sync-time timestamp
+        index.upsert_many([track])
+
+        index.update_remote_track_date_added("42", 100.0)
+
+        row = index._conn.execute(
+            "SELECT date_added FROM tracks WHERE file_path = 'bandcamp://42/1'"
+        ).fetchone()
+        index.close()
+
+        assert row["date_added"] == 100.0
+
+    def test_update_remote_track_date_added_does_not_overwrite_earlier_value(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _sample_track(Path("bandcamp://43/1"))
+        track.date_added = 50.0  # already correct (earlier than new value)
+        index.upsert_many([track])
+
+        index.update_remote_track_date_added("43", 999_999.0)
+
+        row = index._conn.execute(
+            "SELECT date_added FROM tracks WHERE file_path = 'bandcamp://43/1'"
+        ).fetchone()
+        index.close()
+
+        assert row["date_added"] == 50.0
+
+    def test_update_remote_track_date_added_ignores_other_items(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = _sample_track(Path("bandcamp://10/1"))
+        t1.date_added = 9_999_999.0
+        t2 = _sample_track(Path("bandcamp://99/1"))
+        t2.date_added = 9_999_999.0
+        index.upsert_many([t1, t2])
+
+        index.update_remote_track_date_added("10", 1.0)
+
+        r1 = index._conn.execute(
+            "SELECT date_added FROM tracks WHERE file_path = 'bandcamp://10/1'"
+        ).fetchone()
+        r2 = index._conn.execute(
+            "SELECT date_added FROM tracks WHERE file_path = 'bandcamp://99/1'"
+        ).fetchone()
+        index.close()
+
+        assert r1["date_added"] == 1.0
+        assert r2["date_added"] == 9_999_999.0
+
     def test_get_remote_collection_filters_by_mode(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         index.upsert_collection_item("1", mode="local")

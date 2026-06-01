@@ -1127,7 +1127,8 @@ class LibraryIndex:
                 tralbum_id = excluded.tralbum_id,
                 album_url  = excluded.album_url,
                 mode       = excluded.mode,
-                synced_at  = COALESCE(excluded.synced_at, synced_at)
+                synced_at  = COALESCE(excluded.synced_at, synced_at),
+                added_at   = MIN(added_at, COALESCE(excluded.added_at, added_at))
             """,
             (
                 sale_item_id,
@@ -1139,6 +1140,27 @@ class LibraryIndex:
                 mode,
                 synced_at,
                 added_at if added_at is not None else now,
+            ),
+        )
+        self._conn.commit()
+
+    def update_remote_track_date_added(
+        self, sale_item_id: str, date_added: float
+    ) -> None:
+        """Set date_added on remote tracks for *sale_item_id* if it is later than *date_added*.
+
+        Corrects tracks whose date_added was recorded as the sync timestamp rather than
+        the actual purchase date.  The MIN-wins rule mirrors upsert_collection_item so
+        that an earlier purchase date can never be overwritten by a later sync.
+        """
+        self._conn.execute(
+            "UPDATE tracks SET date_added = ? "
+            "WHERE (file_path LIKE ? OR file_path LIKE ?) AND date_added > ?",
+            (
+                date_added,
+                f"bandcamp://{sale_item_id}/%",
+                f"bandcamp:\\{sale_item_id}\\%",
+                date_added,
             ),
         )
         self._conn.commit()

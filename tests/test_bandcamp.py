@@ -84,6 +84,7 @@ def _item(
     title: str = "Album",
     item_url: str = "",
     tralbum_id: int = 0,
+    purchased: str = "01 Jan 2024 00:00:00 GMT",
 ) -> dict[str, Any]:
     return {
         "sale_item_type": "p",
@@ -93,6 +94,7 @@ def _item(
         "item_url": item_url
         or f"https://{band.lower().replace(' ', '')}.bandcamp.com/album/{title.lower().replace(' ', '-')}",
         "tralbum_id": tralbum_id or sale_item_id * 10,
+        "purchased": purchased,
     }
 
 
@@ -780,6 +782,65 @@ class TestSyncNewPurchases:
         )
         assert call_kwargs["tralbum_id"] == "42"
         assert call_kwargs["synced_at"] is None  # preserved via COALESCE
+
+    def test_passes_purchased_as_added_at_on_download(self, tmp_path: Path) -> None:
+        """Downloaded items get added_at set to the parsed purchase timestamp."""
+        purchased_str = "15 Mar 2025 10:00:00 GMT"
+        items = [_item(1, purchased=purchased_str)]
+        watch_folder = tmp_path / "watch"
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+
+        zip_path = watch_folder / "1.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        zip_path.write_bytes(b"PK\x03\x04")
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._download_item",
+                return_value=zip_path,
+            ),
+        ):
+            sync_new_purchases(_bc_config(tmp_path), watch_folder, index)
+
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        expected = _parse_purchased(purchased_str)
+        assert call_kwargs["added_at"] == expected
+        assert call_kwargs["added_at"] is not None
+
+    def test_passes_purchased_as_added_at_on_refresh(self, tmp_path: Path) -> None:
+        """Existing items refreshed during sync get added_at from the purchase date."""
+        purchased_str = "20 Feb 2023 12:00:00 GMT"
+        items = [_item(1, purchased=purchased_str)]
+        index = MagicMock()
+        index.get_collection_state.return_value = {"1": "local"}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+        ):
+            sync_new_purchases(_bc_config(tmp_path), tmp_path / "watch", index)
+
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        assert call_kwargs["added_at"] == _parse_purchased(purchased_str)
 
 
 # ---------------------------------------------------------------------------
@@ -1872,6 +1933,60 @@ class TestMarkCollectionSyncedStoresAlbumUrl:
 
 
 # ---------------------------------------------------------------------------
+# _parse_purchased
+# ---------------------------------------------------------------------------
+
+
+class TestParsePurchased:
+    def test_parses_gmt_string(self) -> None:
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        ts = _parse_purchased("01 Jan 2024 00:00:00 GMT")
+        assert ts is not None
+        assert abs(ts - 1704067200.0) < 2  # 2024-01-01 UTC
+
+    def test_returns_none_for_none(self) -> None:
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        assert _parse_purchased(None) is None
+
+    def test_returns_none_for_garbage(self) -> None:
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        assert _parse_purchased("not a date") is None
+
+
+# ---------------------------------------------------------------------------
+# mark_collection_synced — added_at suppression
+# ---------------------------------------------------------------------------
+
+
+class TestMarkCollectionSyncedAddedAt:
+    """mark_collection_synced must pass added_at=0 so items never appear as new arrivals."""
+
+    def test_passes_added_at_zero(self, tmp_path: Path) -> None:
+        config = _bc_config(tmp_path)
+        items = [_item(1, purchased="01 Jan 2024 00:00:00 GMT")]
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+        ):
+            mark_collection_synced(config, index)
+
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        assert call_kwargs["added_at"] == 0
+
+
+# ---------------------------------------------------------------------------
 # fetch_album_art_bytes
 # ---------------------------------------------------------------------------
 
@@ -2265,6 +2380,38 @@ class TestSyncCollectionStream:
 
         assert fired == []
 
+    def test_passes_purchased_as_added_at(self, tmp_path: Path) -> None:
+        """sync_collection_stream passes the parsed purchase date as added_at."""
+        purchased_str = "10 Jun 2023 08:00:00 GMT"
+        items = [_item(1, purchased=purchased_str)]
+        _result, index = self._run(tmp_path, items)
+
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        assert call_kwargs["added_at"] == _parse_purchased(purchased_str)
+        assert call_kwargs["added_at"] is not None
+
+    def test_calls_update_remote_track_date_added(self, tmp_path: Path) -> None:
+        """sync_collection_stream corrects existing remote tracks' date_added."""
+        purchased_str = "10 Jun 2023 08:00:00 GMT"
+        items = [_item(1, purchased=purchased_str)]
+        _result, index = self._run(tmp_path, items)
+
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        index.update_remote_track_date_added.assert_called_once_with(
+            "1", _parse_purchased(purchased_str)
+        )
+
+    def test_skips_update_when_purchased_missing(self, tmp_path: Path) -> None:
+        """Items without a purchased field don't call update_remote_track_date_added."""
+        item = _item(1)
+        item.pop("purchased")
+        _result, index = self._run(tmp_path, [item])
+
+        index.update_remote_track_date_added.assert_not_called()
+
 
 class TestStreamSyncArtPrefetch:
     """Art prefetch behaviour in sync_collection_stream."""
@@ -2394,8 +2541,8 @@ class TestFetchAlbumTracks:
         )
         assert all(t.stream_url is None for t in result)
 
-    def test_date_added_is_set(self) -> None:
-        """date_added is set to the current time so tracks sort correctly by date added."""
+    def test_date_added_defaults_to_current_time(self) -> None:
+        """Without an explicit date_added, tracks default to the current time."""
         before = time.time()
         html = _stream_album_page_html()
         result = fetch_album_tracks(
@@ -2404,6 +2551,19 @@ class TestFetchAlbumTracks:
         after = time.time()
         assert all(t.date_added is not None for t in result)
         assert all(before <= t.date_added <= after for t in result)  # type: ignore[operator]
+
+    def test_date_added_uses_provided_value(self) -> None:
+        """A caller-supplied date_added is used verbatim on every track."""
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y",
+            1,
+            "B",
+            "A",
+            self._make_session(html),
+            date_added=12345.0,
+        )
+        assert all(t.date_added == 12345.0 for t in result)
 
     def test_file_path_contains_sale_item_id_and_track_num(self) -> None:
         tracks = [{"title": "T", "track_num": 3, "artist": None}]

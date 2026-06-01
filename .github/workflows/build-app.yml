@@ -3,6 +3,10 @@ name: Build App
 on:
   workflow_dispatch:
     inputs:
+      version_tag:
+        description: 'Optional suffix appended to the version (e.g. -beta, -bandcamp-streaming). Leave blank for a normal build.'
+        type: string
+        default: ''
       debug_macos:
         description: 'SSH into macOS 14 ARM runner with built bundle (tmate)'
         type: boolean
@@ -464,6 +468,18 @@ jobs:
         run: npm ci
         working-directory: kamp_ui
 
+      - name: Patch version tag
+        if: inputs.version_tag != ''
+        run: |
+          python3 -c "
+          import json, pathlib
+          p = pathlib.Path('kamp_ui/package.json')
+          d = json.loads(p.read_text())
+          d['version'] += '${{ inputs.version_tag }}'
+          p.write_text(json.dumps(d, indent=2) + '\n')
+          "
+          echo "→ Version: $(python3 -c "import json; print(json.load(open('kamp_ui/package.json'))['version'])")"
+
       - name: Build DMG
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -686,6 +702,15 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
         working-directory: kamp_ui
+
+      - name: Patch version tag
+        if: inputs.version_tag != ''
+        shell: pwsh
+        run: |
+          $pkg = Get-Content kamp_ui\package.json | ConvertFrom-Json
+          $pkg.version += '${{ inputs.version_tag }}'
+          $pkg | ConvertTo-Json -Depth 10 | Set-Content kamp_ui\package.json
+          Write-Host "-> Version: $($pkg.version)"
 
       - name: Build NSIS installer
         # Azure Trusted Signing — AZURE_TENANT_ID/CLIENT_ID/CLIENT_SECRET are read

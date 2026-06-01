@@ -1555,6 +1555,25 @@ class TestSearchEndpoint:
         assert [a["album"] for a in data["albums"]] == ["Amnesiac", "Kid A"]
         mock_index.albums.assert_called_once_with(sort="album")
 
+    def test_remote_track_appears_in_results(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t = _track(1, album="The Moon Rang Like a Bell", artist="Hundred Waters")
+        t.source = "bandcamp"
+        t.file_path = Path("bandcamp://12345/01.mp3")
+        remote_album = _album("Hundred Waters", "The Moon Rang Like a Bell")
+        remote_album.source = "bandcamp"
+        mock_index.search.return_value = [t]
+        mock_index.albums.return_value = [remote_album]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        res = TestClient(app).get("/api/v1/search?q=hundred+waters")
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data["tracks"]) == 1
+        assert data["tracks"][0]["source"] == "bandcamp"
+        assert len(data["albums"]) == 1
+        assert data["albums"][0]["source"] == "bandcamp"
+
 
 # ---------------------------------------------------------------------------
 # UI state endpoints

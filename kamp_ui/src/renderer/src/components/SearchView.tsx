@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { artUrl } from '../api/client'
 import type { Album, Track } from '../api/client'
 import { SortControl } from './SortControl'
+import { SourceControl } from './SourceControl'
 import { FilterControl } from './FilterControl'
 import { AlbumContextMenu } from './AlbumContextMenu'
 import { TrackContextMenu } from './TrackContextMenu'
@@ -128,6 +129,9 @@ export function SearchView(): React.JSX.Element {
   const [albumMenu, setAlbumMenu] = useState<AlbumMenu | null>(null)
   const [trackMenu, setTrackMenu] = useState<TrackMenu | null>(null)
 
+  const QUALITATIVE_FILTERS = ['favorite_album', 'has_favorite_track', 'unplayed', 'top_albums']
+  const hasQualitativeFilter = QUALITATIVE_FILTERS.some((f) => libraryFilter.includes(f))
+
   const top100Keys =
     libraryFilter.includes('top_albums') && allAlbums.length > 0
       ? new Set(
@@ -139,40 +143,50 @@ export function SearchView(): React.JSX.Element {
       : null
 
   const rawAlbums = results?.albums ?? []
-  const visibleAlbums =
-    libraryFilter.length > 0
-      ? rawAlbums.filter(
-          (a) =>
-            (libraryFilter.includes('favorite_album') && a.favorite) ||
-            (libraryFilter.includes('has_favorite_track') && a.has_favorite_track) ||
-            (libraryFilter.includes('unplayed') && a.last_played_at === null) ||
-            (libraryFilter.includes('top_albums') &&
-              top100Keys!.has(`${a.album_artist}\0${a.album}`))
-        )
-      : rawAlbums
+  let visibleAlbums = rawAlbums
+  if (hasQualitativeFilter) {
+    visibleAlbums = visibleAlbums.filter(
+      (a) =>
+        (libraryFilter.includes('favorite_album') && a.favorite) ||
+        (libraryFilter.includes('has_favorite_track') && a.has_favorite_track) ||
+        (libraryFilter.includes('unplayed') && a.last_played_at === null) ||
+        (libraryFilter.includes('top_albums') && top100Keys!.has(`${a.album_artist}\0${a.album}`))
+    )
+  }
+  // Source filters are AND-type: they narrow the result set independently.
+  if (libraryFilter.includes('remote_only'))
+    visibleAlbums = visibleAlbums.filter((a) => a.source !== 'local')
+  if (libraryFilter.includes('local_only'))
+    visibleAlbums = visibleAlbums.filter((a) => a.source === 'local')
 
   const albumMap = new Map<string, Album>()
   allAlbums.forEach((a) => albumMap.set(`${a.album_artist}\0${a.album}`, a))
 
   const rawTracks = results?.tracks ?? []
-  const visibleTracks =
-    libraryFilter.length > 0
-      ? rawTracks.filter((t) => {
-          const key = `${t.album_artist}\0${t.album}`
-          const album = t.album ? albumMap.get(key) : undefined
-          return (
-            (libraryFilter.includes('favorite_album') && album?.favorite === true) ||
-            (libraryFilter.includes('has_favorite_track') && t.favorite) ||
-            (libraryFilter.includes('unplayed') && t.play_count === 0) ||
-            (libraryFilter.includes('top_albums') && album !== undefined && top100Keys!.has(key))
-          )
-        })
-      : rawTracks
+  let visibleTracks = rawTracks
+  if (hasQualitativeFilter) {
+    visibleTracks = visibleTracks.filter((t) => {
+      const key = `${t.album_artist}\0${t.album}`
+      const album = t.album ? albumMap.get(key) : undefined
+      return (
+        (libraryFilter.includes('favorite_album') && album?.favorite === true) ||
+        (libraryFilter.includes('has_favorite_track') && t.favorite) ||
+        (libraryFilter.includes('unplayed') && t.play_count === 0) ||
+        (libraryFilter.includes('top_albums') && album !== undefined && top100Keys!.has(key))
+      )
+    })
+  }
+  // Source filters are AND-type: they narrow the result set independently.
+  if (libraryFilter.includes('remote_only'))
+    visibleTracks = visibleTracks.filter((t) => t.source !== 'local')
+  if (libraryFilter.includes('local_only'))
+    visibleTracks = visibleTracks.filter((t) => t.source === 'local')
 
   return (
     <div className="search-view">
       <div className="search-view-toolbar">
         <SortControl />
+        <SourceControl />
         <FilterControl />
       </div>
       <div className="search-view-content">

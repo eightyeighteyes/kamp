@@ -251,7 +251,10 @@ export default function App(): React.JSX.Element {
             useStore.getState().markAlbumDownloading(saleItemId)
           } else {
             useStore.getState().clearAlbumDownloading(saleItemId)
-            if (state === 'done') void useStore.getState().loadLibrary()
+            if (state === 'done') {
+            void useStore.getState().loadLibrary()
+            void useStore.getState().refreshOpenAlbum()
+          }
           }
         }
       )

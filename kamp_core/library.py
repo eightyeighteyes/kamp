@@ -1127,7 +1127,8 @@ class LibraryIndex:
                 tralbum_id = excluded.tralbum_id,
                 album_url  = excluded.album_url,
                 mode       = excluded.mode,
-                synced_at  = COALESCE(excluded.synced_at, synced_at)
+                synced_at  = COALESCE(excluded.synced_at, synced_at),
+                added_at   = MIN(added_at, COALESCE(excluded.added_at, added_at))
             """,
             (
                 sale_item_id,

@@ -4080,6 +4080,34 @@ class TestBandcampCollection:
 
         assert row["added_at"] == 500.0
 
+    def test_upsert_updates_added_at_when_new_value_is_earlier(
+        self, tmp_path: Path
+    ) -> None:
+        """ON CONFLICT takes MIN — a smaller added_at (real purchase date) replaces a
+        larger one (wrong sync-time timestamp), so existing users are self-correcting.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("8", mode="local", added_at=1_000_000.0)
+        index.upsert_collection_item("8", mode="local", added_at=100.0)
+        row = index._conn.execute(
+            "SELECT added_at FROM bandcamp_collection WHERE sale_item_id = '8'"
+        ).fetchone()
+        index.close()
+
+        assert row["added_at"] == 100.0
+
+    def test_upsert_preserves_zero_added_at_on_conflict(self, tmp_path: Path) -> None:
+        """added_at=0 (from mark_collection_synced) must survive subsequent syncs."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("9", mode="local", added_at=0.0)
+        index.upsert_collection_item("9", mode="local", added_at=9_999_999.0)
+        row = index._conn.execute(
+            "SELECT added_at FROM bandcamp_collection WHERE sale_item_id = '9'"
+        ).fetchone()
+        index.close()
+
+        assert row["added_at"] == 0.0
+
     def test_get_remote_collection_filters_by_mode(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         index.upsert_collection_item("1", mode="local")

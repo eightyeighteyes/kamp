@@ -25,6 +25,7 @@ to obtain the direct download URL without any JavaScript execution.
 
 from __future__ import annotations
 
+import email.utils
 import html as html_lib
 import json
 import logging
@@ -217,6 +218,19 @@ class NeedsLoginError(Exception):
     """
 
 
+def _parse_purchased(s: str | None) -> float | None:
+    """Parse a Bandcamp 'purchased' GMT string to a Unix timestamp.
+
+    Returns None on any parse failure so callers fall back to time.time().
+    """
+    if not s:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(s).timestamp()
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
@@ -255,6 +269,7 @@ def mark_collection_synced(
             album_url=str(item.get("item_url", "")),
             tralbum_id=str(item.get("tralbum_id", "")),
             synced_at=now,
+            added_at=0,
         )
 
     logger.info(
@@ -315,6 +330,7 @@ def sync_new_purchases(
                 album_url=str(item.get("item_url", "")),
                 tralbum_id=str(item.get("tralbum_id", "")),
                 synced_at=None,  # COALESCE preserves existing synced_at
+                added_at=_parse_purchased(item.get("purchased")),
             )
 
     if not new_items:
@@ -356,6 +372,7 @@ def sync_new_purchases(
                 album_url=str(item.get("item_url", "")),
                 tralbum_id=str(item.get("tralbum_id", "")),
                 synced_at=time.time(),
+                added_at=_parse_purchased(item.get("purchased")),
             )
             logger.info("Downloaded: %s", path.name)
         except Exception as exc:
@@ -433,6 +450,7 @@ def sync_collection_stream(
             album_url=album_url,
             tralbum_id=str(item.get("tralbum_id", "")),
             synced_at=time.time(),
+            added_at=_parse_purchased(item.get("purchased")),
         )
         album_count += 1
 

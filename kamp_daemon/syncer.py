@@ -60,6 +60,7 @@ def _sync_worker(
                     watch_dir=watch_dir,
                     index=index,
                     status_callback=lambda msg: status_q.put(msg),
+                    art_cache_dir=_state_dir() / "art_cache",
                 )
                 result_q.put(("ok_stream", (album_count, track_count)))
             else:

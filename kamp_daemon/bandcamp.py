@@ -374,6 +374,7 @@ def sync_collection_stream(
     watch_dir: Path,
     index: "LibraryIndex",
     status_callback: Callable[[str], None] | None = None,
+    art_cache_dir: Path | None = None,
 ) -> tuple[int, int]:
     """Index all Bandcamp purchases as remote rows — no ZIP download.
 
@@ -381,6 +382,12 @@ def sync_collection_stream(
     page to create individual track records in the tracks table.  Albums that
     already have tracks in the DB are skipped (their collection row is still
     refreshed) so that incremental syncs remain fast.
+
+    When *art_cache_dir* is provided, album art is prefetched and written to
+    ``art_cache_dir/<cache_key>.jpg`` at sync time so the album grid never
+    makes on-demand art requests.  The cache key matches the server endpoint's
+    key (tralbum_id when available, else sid_<sale_item_id>).  Art fetch
+    failures are best-effort — a warning is logged and sync continues.
 
     Returns (album_count, track_count).
     """
@@ -455,6 +462,29 @@ def sync_collection_stream(
                     album_url,
                     exc,
                 )
+
+        # Prefetch art into the local cache so the album grid renders without
+        # on-demand Bandcamp requests.  Cache key matches the server endpoint.
+        if album_url and art_cache_dir is not None:
+            tralbum = str(item.get("tralbum_id", ""))
+            cache_key = tralbum if tralbum else f"sid_{sid}"
+            cache_path = art_cache_dir / f"{cache_key}.jpg"
+            if not cache_path.exists():
+                if fetch_index > 0:
+                    time.sleep(0.5)
+                fetch_index += 1
+                try:
+                    data = fetch_album_art_bytes(album_url, session_data)
+                    if data:
+                        art_cache_dir.mkdir(parents=True, exist_ok=True)
+                        cache_path.write_bytes(data)
+                except Exception as exc:
+                    logger.warning(
+                        "art prefetch failed for %r by %r: %s",
+                        item_title,
+                        band_name,
+                        exc,
+                    )
 
     logger.info(
         "Stream sync complete: %d album(s), %d track(s) indexed as remote.",

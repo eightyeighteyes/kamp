@@ -52,12 +52,7 @@ export function SourceControl(): React.JSX.Element {
         aria-expanded={open}
         aria-haspopup="listbox"
       >
-        Source
-        {activeKey && (
-          <span className="toolbar-dropdown-badge" aria-label="1 active">
-            · 1
-          </span>
-        )}
+        {activeKey ? `Source: ${SOURCE_OPTIONS.find((o) => o.key === activeKey)!.label}` : 'Source'}
         <span className="dropdown-chevron" aria-hidden="true">
           ▾
         </span>

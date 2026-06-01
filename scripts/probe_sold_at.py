@@ -4,6 +4,7 @@ field names present in the first item, plus the value of any date-like fields.
 Run from the repo root:
     poetry run python scripts/probe_sold_at.py
 """
+
 import json
 import time
 from pathlib import Path
@@ -23,7 +24,12 @@ def main() -> None:
         raise SystemExit("No Bandcamp session found — log in via the kamp app first.")
 
     cookies_list = session_data.get("cookies", [])
-    cookies = {c["name"]: c["value"] for c in cookies_list if "bandcamp.com" in c.get("domain", "")}
+    cookies = {
+        c["name"]: c["value"]
+        for c in cookies_list
+        if c.get("domain", "") == "bandcamp.com"
+        or c.get("domain", "").endswith(".bandcamp.com")
+    }
 
     fan_url = "https://bandcamp.com/api/fan/2/collection_summary"
     r = requests.get(fan_url, cookies=cookies, timeout=10)
@@ -50,7 +56,14 @@ def main() -> None:
     for k, v in sorted(item.items()):
         print(f"  {k!r}: {v!r}")
 
-    date_fields = {k: v for k, v in item.items() if any(w in k.lower() for w in ("date", "sold", "time", "added", "stamp", "purchased"))}
+    date_fields = {
+        k: v
+        for k, v in item.items()
+        if any(
+            w in k.lower()
+            for w in ("date", "sold", "time", "added", "stamp", "purchased")
+        )
+    }
     print(f"\nDate-like fields: {json.dumps(date_fields, indent=2)}")
 
     print(f"\nlast_token from response: {result.get('last_token', '(none)')!r}")

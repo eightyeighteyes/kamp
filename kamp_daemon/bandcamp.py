@@ -511,9 +511,11 @@ def download_single_album(
     watch_dir.mkdir(parents=True, exist_ok=True)
     dest = _download_item(item, bc_config, watch_dir, session)
 
-    # Mark this item as locally downloaded and clear the remote track rows.
+    # Mark the collection item as locally downloaded. The remote track rows
+    # (bandcamp:// file_path) are left in place — a library rescan triggered
+    # by the file watcher will add local tracks, and the albums/tracks queries
+    # deduplicate by preferring non-bandcamp:// records when both exist.
     index.set_collection_item_mode(sale_item_id, "local")
-    index.set_track_source_for_item(sale_item_id, "local")
 
     if status_callback:
         status_callback("")

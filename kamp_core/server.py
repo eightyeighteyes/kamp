@@ -2044,6 +2044,16 @@ def create_app(
         if remote_tracks:
             return _remote_art_response(str(remote_tracks[0].file_path), cache_control)
 
+        # Final fallback: if this album is (or was) in the Bandcamp collection,
+        # serve cached CDN art. Covers two cases:
+        #   1. Post-download, pre-art-embed: local tracks present but no embedded art yet.
+        #   2. Permanently: local album from Bandcamp that was never art-embedded.
+        bc_item = index.get_collection_item_by_album(album_artist, album)
+        if bc_item:
+            return _remote_art_response(
+                f"bandcamp://{bc_item['sale_item_id']}/0", cache_control
+            )
+
         raise HTTPException(status_code=404, detail="No art found")
 
     @app.get("/api/v1/search", response_model=SearchOut)
@@ -2436,9 +2446,11 @@ def create_app(
         if on_album_download_trigger is None:
             raise HTTPException(status_code=503, detail="Album download not configured")
 
-        # Optimistically update DB state so the UI reflects the intent immediately.
+        # Mark the collection item as targeted for local download so in_bandcamp_collection
+        # becomes true immediately (used by the art endpoint fallback and album display).
+        # set_track_source_for_item is NOT called here — changing source prematurely breaks
+        # the has_art=true shortcut for purely-remote albums and causes art to disappear.
         index.set_collection_item_mode(sale_item_id, "local")
-        index.set_track_source_for_item(sale_item_id, "local")
 
         _broadcast(
             {

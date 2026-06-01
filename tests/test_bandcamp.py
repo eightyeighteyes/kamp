@@ -2367,7 +2367,7 @@ class TestDownloadSingleAlbum:
             download_single_album(config, tmp_path / "watch", index, "42")
 
         index.set_collection_item_mode.assert_called_once_with("42", "local")
-        index.set_track_source_for_item.assert_called_once_with("42", "local")
+        index.set_track_source_for_item.assert_not_called()
 
     def test_raises_when_item_not_in_collection(self, tmp_path: Path) -> None:
         with pytest.raises(BandcampAPIError, match="No download link"):

@@ -2390,7 +2390,7 @@ class TestBandcampCollectionDownload:
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
         mock_index.set_collection_item_mode.assert_called_once_with("42", "local")
-        mock_index.set_track_source_for_item.assert_called_once_with("42", "local")
+        mock_index.set_track_source_for_item.assert_not_called()
         trigger_done.wait(timeout=2)
         assert trigger_calls == ["42"]
 

@@ -1205,6 +1205,23 @@ class LibraryIndex:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_collection_item_by_album(
+        self, album_artist: str, album: str
+    ) -> dict[str, Any] | None:
+        """Return the bandcamp_collection row matching (album_artist, album), or None.
+
+        Used by the art endpoint to serve cached Bandcamp CDN art for local albums
+        that were downloaded from Bandcamp but have no embedded artwork yet.
+        """
+        row = self._conn.execute(
+            """SELECT * FROM bandcamp_collection
+               WHERE band_name = ? COLLATE NOCASE
+                 AND item_title = ? COLLATE NOCASE
+               LIMIT 1""",
+            (album_artist, album),
+        ).fetchone()
+        return dict(row) if row else None
+
     def update_stream_url(
         self, file_path_uri: str, stream_url: str, expires_at: float
     ) -> None:
@@ -1650,21 +1667,88 @@ class LibraryIndex:
                    album_source, has_remote_tracks, in_bandcamp_collection,
                    sample_bc_path
             FROM (
-                SELECT t.album_artist, t.album, t.year, COUNT(*) AS track_count,
+                -- Dedup state: both real bandcamp:// rows AND local-source rows exist for
+                -- this album group. Happens after a download when the pipeline scan adds
+                -- local files before the old remote rows are removed. When in dedup state,
+                -- aggregates use only the local-source rows so track counts and has_art
+                -- reflect the real files on disk, not the stale remote placeholders.
+                SELECT t.album_artist, t.album, t.year,
+                       MAX(CASE WHEN t.source = 'local'
+                                 AND EXISTS (
+                                     SELECT 1 FROM tracks t2
+                                     WHERE t2.album_artist = t.album_artist
+                                       AND t2.album = t.album
+                                       AND t2.file_path LIKE 'bandcamp://%'
+                                 )
+                           THEN 1 ELSE 0 END) AS has_local,
                        CASE
+                           WHEN MAX(CASE WHEN t.source = 'local'
+                                         AND EXISTS (
+                                             SELECT 1 FROM tracks t2
+                                             WHERE t2.album_artist = t.album_artist
+                                               AND t2.album = t.album
+                                               AND t2.file_path LIKE 'bandcamp://%'
+                                         )
+                                    THEN 1 ELSE 0 END) = 1
+                           THEN COUNT(CASE WHEN t.source = 'local' THEN 1 END)
+                           ELSE COUNT(*)
+                       END AS track_count,
+                       CASE
+                           WHEN MAX(CASE WHEN t.source = 'local'
+                                         AND EXISTS (
+                                             SELECT 1 FROM tracks t2
+                                             WHERE t2.album_artist = t.album_artist
+                                               AND t2.album = t.album
+                                               AND t2.file_path LIKE 'bandcamp://%'
+                                         )
+                                    THEN 1 ELSE 0 END) = 1
+                           THEN MAX(CASE WHEN t.source = 'local' THEN t.embedded_art ELSE 0 END)
                            WHEN COUNT(DISTINCT t.source) = 1 AND MIN(t.source) != 'local' THEN 1
                            ELSE MAX(t.embedded_art)
                        END AS has_art,
                        0 AS missing_album, '' AS file_path,
                        MIN(t.date_added) AS sort_date_added,
                        MAX(t.last_played) AS sort_last_played,
-                       MAX(t.file_mtime) AS art_version,
+                       CASE
+                           WHEN MAX(CASE WHEN t.source = 'local'
+                                         AND EXISTS (
+                                             SELECT 1 FROM tracks t2
+                                             WHERE t2.album_artist = t.album_artist
+                                               AND t2.album = t.album
+                                               AND t2.file_path LIKE 'bandcamp://%'
+                                         )
+                                    THEN 1 ELSE 0 END) = 1
+                           THEN MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
+                           ELSE MAX(t.file_mtime)
+                       END AS art_version,
                        CAST(SUM(t.play_count) AS REAL) / COUNT(*) AS sort_play_count_avg,
                        MAX(CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END) AS is_favorite,
                        MAX(t.favorite) AS has_favorite_track,
-                       CASE WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                            ELSE MIN(t.source) END AS album_source,
-                       MAX(CASE WHEN t.source != 'local' THEN 1 ELSE 0 END) AS has_remote_tracks,
+                       CASE
+                           WHEN MAX(CASE WHEN t.source = 'local'
+                                         AND EXISTS (
+                                             SELECT 1 FROM tracks t2
+                                             WHERE t2.album_artist = t.album_artist
+                                               AND t2.album = t.album
+                                               AND t2.file_path LIKE 'bandcamp://%'
+                                         )
+                                    THEN 1 ELSE 0 END) = 1
+                           THEN 'local'
+                           WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                           ELSE MIN(t.source)
+                       END AS album_source,
+                       CASE
+                           WHEN MAX(CASE WHEN t.source = 'local'
+                                         AND EXISTS (
+                                             SELECT 1 FROM tracks t2
+                                             WHERE t2.album_artist = t.album_artist
+                                               AND t2.album = t.album
+                                               AND t2.file_path LIKE 'bandcamp://%'
+                                         )
+                                    THEN 1 ELSE 0 END) = 1
+                           THEN 0
+                           ELSE MAX(CASE WHEN t.source != 'local' THEN 1 ELSE 0 END)
+                       END AS has_remote_tracks,
                        MAX(CASE WHEN bc.sale_item_id IS NOT NULL THEN 1 ELSE 0 END)
                            AS in_bandcamp_collection,
                        MIN(CASE WHEN t.file_path LIKE 'bandcamp://%'
@@ -1679,7 +1763,9 @@ class LibraryIndex:
                 WHERE t.album != ''
                 GROUP BY t.album_artist, t.album
                 UNION ALL
-                SELECT t.album_artist, t.title AS album, t.year, 1 AS track_count,
+                SELECT t.album_artist, t.title AS album, t.year,
+                       CASE WHEN t.file_path NOT LIKE 'bandcamp://%' THEN 1 ELSE 0 END AS has_local,
+                       1 AS track_count,
                        t.embedded_art AS has_art,
                        1 AS missing_album, t.file_path,
                        t.date_added AS sort_date_added,
@@ -1735,14 +1821,28 @@ class LibraryIndex:
         return [r["album_artist"] for r in rows]
 
     def tracks_for_album(self, album_artist: str, album: str) -> list[Track]:
-        """Return tracks for a given album sorted by disc then track number."""
+        """Return tracks for a given album sorted by disc then track number.
+
+        When local (non-bandcamp://) tracks exist alongside remote bandcamp://
+        tracks for the same album, only the local tracks are returned. This
+        prevents duplicate-track display after a Bandcamp album is downloaded
+        and the local files have been scanned in alongside the old remote rows.
+        """
         rows = self._conn.execute(
             """
             SELECT * FROM tracks
             WHERE album_artist = ? AND album = ?
+              AND (
+                file_path NOT LIKE 'bandcamp://%'
+                OR NOT EXISTS (
+                    SELECT 1 FROM tracks t2
+                    WHERE t2.album_artist = ? AND t2.album = ?
+                      AND t2.file_path NOT LIKE 'bandcamp://%'
+                )
+              )
             ORDER BY disc_number, track_number
             """,
-            (album_artist, album),
+            (album_artist, album, album_artist, album),
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 

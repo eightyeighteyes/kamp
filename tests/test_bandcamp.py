@@ -2174,6 +2174,91 @@ class TestSyncCollectionStream:
         assert track_count == 0  # no tracks indexed (fetch failed)
 
 
+class TestStreamSyncArtPrefetch:
+    """Art prefetch behaviour in sync_collection_stream."""
+
+    def _run_with_art(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+        art_cache_dir: Path | None,
+        mock_art: bytes | None = b"\xff\xd8\xff" * 10,
+    ) -> MagicMock:
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.return_value = True
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[]),
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_art_bytes", return_value=mock_art
+            ) as mock_fetch_art,
+        ):
+            sync_collection_stream(
+                config, watch_folder, index, art_cache_dir=art_cache_dir
+            )
+            return mock_fetch_art
+
+    def test_art_prefetch_writes_cache(self, tmp_path: Path) -> None:
+        """When art_cache_dir is provided and no cache file exists, art is fetched and written."""
+        art_cache = tmp_path / "art_cache"
+        items = [_item(1, tralbum_id=10)]
+        mock_fetch = self._run_with_art(tmp_path, items, art_cache_dir=art_cache)
+        mock_fetch.assert_called_once()
+        assert (art_cache / "10.jpg").exists()
+
+    def test_art_prefetch_skips_cached(self, tmp_path: Path) -> None:
+        """Albums whose cache file already exists do not trigger a fetch."""
+        art_cache = tmp_path / "art_cache"
+        art_cache.mkdir()
+        (art_cache / "10.jpg").write_bytes(b"\xff\xd8\xff")
+        items = [_item(1, tralbum_id=10)]
+        mock_fetch = self._run_with_art(tmp_path, items, art_cache_dir=art_cache)
+        mock_fetch.assert_not_called()
+
+    def test_art_prefetch_tolerates_failure(self, tmp_path: Path) -> None:
+        """A None return from fetch_album_art_bytes does not raise; sync completes normally."""
+        art_cache = tmp_path / "art_cache"
+        items = [_item(1, tralbum_id=10), _item(2, tralbum_id=20)]
+        mock_fetch = self._run_with_art(
+            tmp_path, items, art_cache_dir=art_cache, mock_art=None
+        )
+        # Both albums attempted; neither succeeded; no files written; no exception.
+        assert mock_fetch.call_count == 2
+        assert not any(art_cache.glob("*.jpg")) if art_cache.exists() else True
+
+    def test_art_prefetch_skipped_without_cache_dir(self, tmp_path: Path) -> None:
+        """When art_cache_dir is None (default), fetch_album_art_bytes is never called."""
+        items = [_item(1), _item(2)]
+        mock_fetch = self._run_with_art(tmp_path, items, art_cache_dir=None)
+        mock_fetch.assert_not_called()
+
+    def test_art_cache_key_uses_sid_fallback(self, tmp_path: Path) -> None:
+        """When tralbum_id is empty the cache key falls back to sid_<sale_item_id>."""
+        art_cache = tmp_path / "art_cache"
+        # Empty tralbum_id (as stored in DB when absent) triggers the fallback.
+        item = {
+            "sale_item_type": "p",
+            "sale_item_id": 7,
+            "band_name": "Band",
+            "item_title": "Album",
+            "item_url": "https://band.bandcamp.com/album/album",
+            "tralbum_id": "",
+        }
+        self._run_with_art(tmp_path, [item], art_cache_dir=art_cache)
+        assert (art_cache / "sid_7.jpg").exists()
+
+
 class TestFetchAlbumTracks:
     """Tests for fetch_album_tracks — parses data-tralbum into Track objects."""
 

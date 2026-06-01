@@ -2353,6 +2353,7 @@ def create_app(
             if session:
                 _state["config"]["bandcamp.connected"] = True
                 _state["config"]["bandcamp.username"] = session.get("username")
+                _state["config"]["bandcamp.ever_connected"] = True
         _broadcast({"type": "bandcamp.login-complete"})
         return {"ok": True}
 

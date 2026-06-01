@@ -237,6 +237,7 @@ export type ConfigValues = {
   'library.path_template': string | null
   'bandcamp.connected': boolean | null
   'bandcamp.username': string | null
+  'bandcamp.ever_connected': boolean | null
   'bandcamp.format': string | null
   'bandcamp.poll_interval_minutes': number | null
   'bandcamp.collection_mode': string | null

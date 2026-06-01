@@ -30,7 +30,26 @@ export function BandcampButton(): React.JSX.Element | null {
     return () => document.removeEventListener('mousedown', handler)
   }, [menuOpen])
 
-  if (!configValues?.['bandcamp.connected']) return null
+  const connected = configValues?.['bandcamp.connected'] ?? false
+  const everConnected = configValues?.['bandcamp.ever_connected'] ?? false
+
+  if (!connected && !everConnected) return null
+
+  if (!connected) {
+    return (
+      <div className="bandcamp-btn-anchor">
+        <button
+          className="bandcamp-btn bandcamp-btn--disconnected"
+          onClick={() => window.api.bandcamp.beginLogin().catch(console.error)}
+          {...tooltip(TOOLTIPS.BANDCAMP_RECONNECT)}
+        >
+          <svg viewBox="0 0 24 24" width="20" height="20">
+            <path d="M0 18.75l7.437-13.5H24L16.563 18.75z" />
+          </svg>
+        </button>
+      </div>
+    )
+  }
 
   const handleClick = (): void => {
     window.api.bandcamp.triggerSync().catch(console.error)

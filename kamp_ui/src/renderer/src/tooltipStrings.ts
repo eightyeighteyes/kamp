@@ -34,6 +34,7 @@ export const TOOLTIPS = {
   // Bandcamp
   BANDCAMP_SYNC: 'Sync Bandcamp library',
   BANDCAMP_SYNCING: 'Bandcamp sync in progress…',
+  BANDCAMP_RECONNECT: 'Log in to Bandcamp',
 
   // Search
   SEARCH_CLEAR: 'Clear search',

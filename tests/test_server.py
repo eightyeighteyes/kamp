@@ -2127,7 +2127,11 @@ class TestBandcampStatus:
             index=mock_index,
             engine=mock_engine,
             queue=mock_queue,
-            config_values={"bandcamp.connected": True, "bandcamp.username": "johndoe"},
+            config_values={
+                "bandcamp.connected": True,
+                "bandcamp.username": "johndoe",
+                "bandcamp.ever_connected": True,
+            },
             on_bandcamp_disconnect=lambda: None,
         )
         c = TestClient(app)
@@ -2135,6 +2139,7 @@ class TestBandcampStatus:
         data = c.get("/api/v1/config").json()
         assert data["bandcamp.connected"] is False
         assert data["bandcamp.username"] is None
+        assert data["bandcamp.ever_connected"] is True
 
     def test_login_complete_sets_bandcamp_connected(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -2146,7 +2151,11 @@ class TestBandcampStatus:
             index=mock_index,
             engine=mock_engine,
             queue=mock_queue,
-            config_values={"bandcamp.connected": False, "bandcamp.username": None},
+            config_values={
+                "bandcamp.connected": False,
+                "bandcamp.username": None,
+                "bandcamp.ever_connected": False,
+            },
             on_bandcamp_login_complete=lambda payload: None,
             get_bandcamp_session=lambda: session,
         )
@@ -2157,6 +2166,7 @@ class TestBandcampStatus:
         )
         data = c.get("/api/v1/config").json()
         assert data["bandcamp.connected"] is True
+        assert data["bandcamp.ever_connected"] is True
 
     def test_login_complete_sets_username_when_available(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -2167,7 +2177,11 @@ class TestBandcampStatus:
             index=mock_index,
             engine=mock_engine,
             queue=mock_queue,
-            config_values={"bandcamp.connected": False, "bandcamp.username": None},
+            config_values={
+                "bandcamp.connected": False,
+                "bandcamp.username": None,
+                "bandcamp.ever_connected": False,
+            },
             on_bandcamp_login_complete=lambda payload: None,
             get_bandcamp_session=lambda: session,
         )
@@ -2179,6 +2193,7 @@ class TestBandcampStatus:
         data = c.get("/api/v1/config").json()
         assert data["bandcamp.connected"] is True
         assert data["bandcamp.username"] == "johndoe"
+        assert data["bandcamp.ever_connected"] is True
 
     def test_login_complete_accepts_full_electron_cookie_shape(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

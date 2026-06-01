@@ -228,6 +228,12 @@ html[data-platform='win32'] .view-tabs {
   animation: bandcamp-pulse 1.4s ease-in-out infinite;
 }
 
+.bandcamp-btn--disconnected svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
 .pipeline-indicator {
   display: flex;
   align-items: center;

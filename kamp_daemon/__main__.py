@@ -803,6 +803,7 @@ def _cmd_daemon(
     def _on_bandcamp_login_complete(payload: dict[str, object]) -> None:
         session_data: dict[str, Any] = dict(payload)
         index.set_session("bandcamp", session_data)
+        index.set_setting("bandcamp.ever_connected", "true")
         _logger.info("Bandcamp session saved from Electron login flow.")
         # Extract username immediately so the UI can show "Connected as {username}".
         # Primary source: the logout cookie (URL-encoded JSON, always present after
@@ -884,6 +885,7 @@ def _cmd_daemon(
     # Bandcamp username comes only from the session (set after Electron login flow).
     _bc_session = index.get_session("bandcamp")
     _bc_username: str | None = _bc_session.get("username") if _bc_session else None
+    _bc_ever_connected = index.get_setting("bandcamp.ever_connected") == "true"
     _config_values: dict[str, object] = {
         "paths.watch_folder": (
             str(config.paths.watch_folder) if config.paths.watch_folder else None
@@ -895,6 +897,7 @@ def _cmd_daemon(
         "library.path_template": config.library.path_template,
         "bandcamp.connected": _bc_session is not None,
         "bandcamp.username": _bc_username,
+        "bandcamp.ever_connected": _bc_ever_connected,
         "bandcamp.format": config.bandcamp.format if config.bandcamp else None,
         "bandcamp.poll_interval_minutes": (
             config.bandcamp.poll_interval_minutes if config.bandcamp else None

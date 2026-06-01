@@ -7,6 +7,7 @@ import { useStore } from '../store'
 import { AlbumCard } from './AlbumCard'
 import { SortControl } from './SortControl'
 import { FilterControl } from './FilterControl'
+import { SourceControl } from './SourceControl'
 
 export function AlbumGrid(): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
@@ -68,6 +69,7 @@ export function AlbumGrid(): React.JSX.Element {
     <div className="album-grid-container" ref={containerRef}>
       <div className="album-grid-toolbar">
         <SortControl />
+        <SourceControl />
         <FilterControl />
       </div>
       {visible.length === 0 ? (

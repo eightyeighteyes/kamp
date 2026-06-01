@@ -1,20 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 
-type FilterKey = 'favorite_album' | 'has_favorite_track' | 'unplayed' | 'top_albums'
+type SourceKey = 'remote_only' | 'local_only'
 
-const FILTER_OPTIONS: { key: FilterKey; label: string }[] = [
-  { key: 'favorite_album', label: 'Favorite albums' },
-  { key: 'has_favorite_track', label: 'Albums with favorited tracks' },
-  { key: 'unplayed', label: 'Unplayed' },
-  { key: 'top_albums', label: 'Top Albums' }
+const SOURCE_OPTIONS: { key: SourceKey; label: string }[] = [
+  { key: 'remote_only', label: 'Streaming' },
+  { key: 'local_only', label: 'Local only' }
 ]
 
-export function FilterControl(): React.JSX.Element {
+export function SourceControl(): React.JSX.Element {
   const libraryFilter = useStore((s) => s.libraryFilter)
   const setLibraryFilter = useStore((s) => s.setLibraryFilter)
   const [open, setOpen] = useState(false)
-  // Single ref wrapping both trigger and popover so contains() check works on option clicks.
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -33,28 +30,32 @@ export function FilterControl(): React.JSX.Element {
     }
   }, [open])
 
-  const toggle = (key: FilterKey): void => {
-    if (libraryFilter.includes(key)) {
+  const activeKey = SOURCE_OPTIONS.find(({ key }) => libraryFilter.includes(key))?.key ?? null
+
+  const toggle = (key: SourceKey): void => {
+    if (activeKey === key) {
+      // deselect
       setLibraryFilter(libraryFilter.filter((f) => f !== key))
     } else {
-      setLibraryFilter([...libraryFilter, key])
+      // select this one, removing the other if present
+      const other = SOURCE_OPTIONS.find((o) => o.key !== key)!.key
+      setLibraryFilter([...libraryFilter.filter((f) => f !== other && f !== key), key])
     }
+    setOpen(false)
   }
-
-  const hasActive = libraryFilter.length > 0
 
   return (
     <div className="filter-anchor" ref={ref}>
       <button
-        className={`toolbar-dropdown-trigger${hasActive ? ' has-active' : ''}`}
+        className={`toolbar-dropdown-trigger${activeKey ? ' has-active' : ''}`}
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
-        Filter
-        {hasActive && (
-          <span className="toolbar-dropdown-badge" aria-label={`${libraryFilter.length} active`}>
-            · {libraryFilter.length}
+        Source
+        {activeKey && (
+          <span className="toolbar-dropdown-badge" aria-label="1 active">
+            · 1
           </span>
         )}
         <span className="dropdown-chevron" aria-hidden="true">
@@ -62,25 +63,23 @@ export function FilterControl(): React.JSX.Element {
         </span>
       </button>
       {open && (
-        <div
-          className="toolbar-dropdown-popover"
-          role="listbox"
-          aria-multiselectable="true"
-          aria-label="Filter"
-        >
-          {hasActive && (
-            <>
-              <button
-                className="toolbar-dropdown-item toolbar-dropdown-clear"
-                onClick={() => setLibraryFilter([])}
-              >
-                No filter
-              </button>
-              <div className="toolbar-dropdown-divider" />
-            </>
-          )}
-          {FILTER_OPTIONS.map(({ key, label }) => {
-            const active = libraryFilter.includes(key)
+        <div className="toolbar-dropdown-popover" role="listbox" aria-label="Source">
+          <button
+            role="option"
+            aria-selected={activeKey === null}
+            className={`toolbar-dropdown-item${activeKey === null ? ' active' : ''}`}
+            onClick={() => {
+              if (activeKey) setLibraryFilter(libraryFilter.filter((f) => f !== activeKey))
+              setOpen(false)
+            }}
+          >
+            <span className="dropdown-check" aria-hidden="true">
+              {activeKey === null ? '▪' : ''}
+            </span>
+            All
+          </button>
+          {SOURCE_OPTIONS.map(({ key, label }) => {
+            const active = activeKey === key
             return (
               <button
                 key={key}

@@ -52,6 +52,34 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: filter 0.5s;
+}
+
+/* Download-in-progress state ----------------------------------------------- */
+
+@keyframes albumCardDownloadPulse {
+  0%, 100% { filter: brightness(1); }
+  50%       { filter: brightness(1.2); }
+}
+
+.album-card--downloading {
+  animation: albumCardDownloadPulse 1.8s ease-in-out infinite;
+}
+
+/* Slow drift of the art behind the blur — "motion behind frosted glass".
+   scale > 1 ensures the drifting translate never exposes edges through
+   the overflow:hidden container. */
+@keyframes artDrift {
+  0%   { transform: scale(1.12) translate(0px, 0px); }
+  25%  { transform: scale(1.14) translate(-6px, -4px); }
+  50%  { transform: scale(1.12) translate(-10px, 4px); }
+  75%  { transform: scale(1.15) translate(-4px, 8px); }
+  100% { transform: scale(1.12) translate(0px, 0px); }
+}
+
+.album-art--blurred .album-art-img {
+  filter: blur(5px);
+  animation: artDrift 10s ease-in-out infinite;
 }
 
 .now-playing-badge {

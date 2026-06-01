@@ -54,6 +54,8 @@ export type Album = {
   source: 'local' | 'bandcamp' | 'mixed'
   // True when any track in this album has source !== 'local'.
   has_remote_tracks: boolean
+  // Bandcamp sale_item_id parsed from constituent track file paths; undefined for local albums.
+  sale_item_id?: string
 }
 
 export type PlayerState = {

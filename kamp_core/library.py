@@ -367,6 +367,9 @@ class AlbumInfo:
     # True when this local album is also in bandcamp_collection with mode='local'
     # (i.e. the user owns it on Bandcamp but has it downloaded locally).
     in_bandcamp_collection: bool = False
+    # Bandcamp sale_item_id, parsed from a constituent track's file_path.
+    # Non-None only for albums where at least one track has a bandcamp:// path.
+    sale_item_id: str | None = None
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -1644,7 +1647,8 @@ class LibraryIndex:
                    missing_album, file_path, art_version,
                    sort_date_added, sort_last_played, sort_play_count_avg,
                    is_favorite, has_favorite_track,
-                   album_source, has_remote_tracks, in_bandcamp_collection
+                   album_source, has_remote_tracks, in_bandcamp_collection,
+                   sample_bc_path
             FROM (
                 SELECT t.album_artist, t.album, t.year, COUNT(*) AS track_count,
                        CASE
@@ -1662,7 +1666,9 @@ class LibraryIndex:
                             ELSE MIN(t.source) END AS album_source,
                        MAX(CASE WHEN t.source != 'local' THEN 1 ELSE 0 END) AS has_remote_tracks,
                        MAX(CASE WHEN bc.sale_item_id IS NOT NULL THEN 1 ELSE 0 END)
-                           AS in_bandcamp_collection
+                           AS in_bandcamp_collection,
+                       MIN(CASE WHEN t.file_path LIKE 'bandcamp://%'
+                           THEN t.file_path ELSE NULL END) AS sample_bc_path
                 FROM tracks t
                 LEFT JOIN album_favorites af
                     ON af.album_artist = t.album_artist AND af.album = t.album
@@ -1684,7 +1690,9 @@ class LibraryIndex:
                        t.favorite AS has_favorite_track,
                        t.source AS album_source,
                        CASE WHEN t.source != 'local' THEN 1 ELSE 0 END AS has_remote_tracks,
-                       0 AS in_bandcamp_collection
+                       0 AS in_bandcamp_collection,
+                       CASE WHEN t.file_path LIKE 'bandcamp://%'
+                           THEN t.file_path ELSE NULL END AS sample_bc_path
                 FROM tracks t
                 LEFT JOIN album_favorites af
                     ON af.album_artist = t.album_artist AND af.album = t.title
@@ -1710,6 +1718,11 @@ class LibraryIndex:
                 source=r["album_source"],
                 has_remote_tracks=bool(r["has_remote_tracks"]),
                 in_bandcamp_collection=bool(r["in_bandcamp_collection"]),
+                sale_item_id=(
+                    r["sample_bc_path"].split("bandcamp://")[1].split("/")[0]
+                    if r["sample_bc_path"]
+                    else None
+                ),
             )
             for r in rows
         ]

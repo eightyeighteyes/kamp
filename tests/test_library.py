@@ -4737,6 +4737,54 @@ class TestAlbumInfoRemoteFields:
         assert albums[0].track_count == 2
         assert albums[0].in_bandcamp_collection is True
 
+    def test_sale_item_id_populated_for_bandcamp_album(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        # Insert directly so file_path preserves the bandcamp:// scheme (Path normalizes // → /).
+        index._conn.executemany(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " track_number, disc_number, year, source)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "bandcamp://abc123/1.mp3",
+                    "T1",
+                    "A",
+                    "A",
+                    "The Album",
+                    1,
+                    1,
+                    "2024",
+                    "bandcamp",
+                ),
+                (
+                    "bandcamp://abc123/2.mp3",
+                    "T2",
+                    "A",
+                    "A",
+                    "The Album",
+                    2,
+                    1,
+                    "2024",
+                    "bandcamp",
+                ),
+            ],
+        )
+        index._conn.commit()
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].sale_item_id == "abc123"
+
+    def test_sale_item_id_none_for_local_album(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        self._insert_track(index, tmp_path, "t1.mp3", source="local")
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].sale_item_id is None
+
 
 # ---------------------------------------------------------------------------
 # indexed_paths / indexed_paths_with_mtime remote exclusion

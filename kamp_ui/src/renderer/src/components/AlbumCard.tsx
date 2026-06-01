@@ -60,9 +60,11 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const dismissedHighlightKeys = useStore((s) => s.dismissedHighlightKeys)
   const dismissHighlight = useStore((s) => s.dismissHighlight)
   const configValues = useStore((s) => s.configValues)
+  const downloadingAlbumIds = useStore((s) => s.downloadingAlbumIds)
   const connected = configValues?.['bandcamp.connected'] ?? false
   const isRemote = album.source !== 'local'
   const isOffline = isRemote && !connected
+  const isDownloading = album.sale_item_id != null && downloadingAlbumIds.has(album.sale_item_id)
   const [artLoaded, setArtLoaded] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
@@ -84,6 +86,21 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   useEffect(() => {
     if (isNew && isActive && playing) dismissHighlight(album)
   }, [isNew, isActive, playing]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // artBlurred persists through the post-download rescan window:
+  // set true when download starts, cleared only when has_art returns true.
+  // setState is inside setTimeout so it's a callback, not synchronous in the effect.
+  const [artBlurred, setArtBlurred] = useState(isDownloading)
+  useEffect(() => {
+    if (!isDownloading) return
+    const t = setTimeout(() => setArtBlurred(true), 0)
+    return () => clearTimeout(t)
+  }, [isDownloading])
+  useEffect(() => {
+    if (isDownloading || !album.has_art) return
+    const t = setTimeout(() => setArtBlurred(false), 0)
+    return () => clearTimeout(t)
+  }, [album.has_art, isDownloading])
 
   // Start mounting=true so the fast sweep fires immediately; cleared after 1.2s
   const [isMounting, setIsMounting] = useState(isNew)
@@ -209,6 +226,7 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
     isActive ? 'playing' : '',
     isRemote ? 'album-card--remote' : '',
     isOffline ? 'album-card--offline' : '',
+    isDownloading ? 'album-card--downloading' : '',
     isNew ? `album-card--highlight-${highlightStyle}` : '',
     isNew && isMounting ? 'is-mounting' : ''
   ]
@@ -247,7 +265,9 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >
-      <div className={`album-art${artLoaded ? ' has-art' : ''}`}>
+      <div
+        className={`album-art${artLoaded ? ' has-art' : ''}${artBlurred ? ' album-art--blurred' : ''}`}
+      >
         {album.has_art && (
           <img
             className="album-art-img"

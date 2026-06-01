@@ -191,6 +191,8 @@ class AlbumOut(BaseModel):
     source: str = "local"
     # True when any track in this album has source != 'local'.
     has_remote_tracks: bool = False
+    # Bandcamp sale_item_id parsed from constituent track file paths; None for local albums.
+    sale_item_id: str | None = None
 
 
 class PlayerStateOut(BaseModel):
@@ -820,6 +822,7 @@ def create_app(
                 has_favorite_track=a.has_favorite_track,
                 source=a.source,
                 has_remote_tracks=a.has_remote_tracks,
+                sale_item_id=a.sale_item_id,
             )
             for a in index.albums(sort=sort)
         ]
@@ -1804,6 +1807,7 @@ def create_app(
                     has_favorite_track=a.has_favorite_track,
                     source=a.source,
                     has_remote_tracks=a.has_remote_tracks,
+                    sale_item_id=a.sale_item_id,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -1928,6 +1932,7 @@ def create_app(
                     has_favorite_track=a.has_favorite_track,
                     source=a.source,
                     has_remote_tracks=a.has_remote_tracks,
+                    sale_item_id=a.sale_item_id,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -2066,6 +2071,7 @@ def create_app(
                 has_favorite_track=a.has_favorite_track,
                 source=a.source,
                 has_remote_tracks=a.has_remote_tracks,
+                sale_item_id=a.sale_item_id,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys

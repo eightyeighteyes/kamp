@@ -44,7 +44,9 @@ export function BandcampButton(): React.JSX.Element | null {
           onClick={() =>
             window.api.bandcamp
               .beginLogin()
-              .then(({ ok }) => { if (ok) loadConfig() })
+              .then(({ ok }) => {
+                if (ok) loadConfig()
+              })
               .catch(console.error)
           }
           {...tooltip(TOOLTIPS.BANDCAMP_RECONNECT)}

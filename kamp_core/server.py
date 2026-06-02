@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import queue as _queue
 import re
 import sys
 import threading as _threading
@@ -568,7 +569,7 @@ def create_app(
     on_bandcamp_disconnect: Callable[[], None] | None = None,
     on_bandcamp_sync_trigger: Callable[[], None] | None = None,
     on_bandcamp_sync_all_trigger: Callable[[], None] | None = None,
-    on_album_download_trigger: Callable[[str], None] | None = None,
+    dl_queue: _queue.Queue[str] | None = None,
     refresh_stream_url: Callable[[str, int], tuple[str, float] | None] | None = None,
     art_cache_dir: Path | None = None,
     dev_mode: bool = False,
@@ -2452,21 +2453,19 @@ def create_app(
 
     @app.post("/api/v1/bandcamp/collection/{sale_item_id}/download")
     def download_collection_item(sale_item_id: str) -> dict[str, Any]:
-        """Download a single Bandcamp album to the watch folder.
+        """Enqueue a Bandcamp album for serialized download.
 
-        Immediately marks the item as 'local' in bandcamp_collection and
-        updates tracks.source, broadcasts 'downloading' to WebSocket clients,
-        then runs the actual download in a background thread.  Broadcasts
-        'done' or 'error' when the download completes.
+        Adds the item to the persistent download_queue table and the in-memory
+        dl_queue so the single-consumer worker thread in __main__ processes it.
+        Broadcasts 'queued' immediately; the worker broadcasts 'downloading' when
+        it begins and 'done'/'error' on completion.
 
         Returns 404 if the item is not in the collection.
-        Returns 503 if the album download callback is not configured.
+        Returns 503 if the download queue is not configured.
         """
-        import threading
-
         if not index.get_collection_item(sale_item_id):
             raise HTTPException(status_code=404, detail="Collection item not found")
-        if on_album_download_trigger is None:
+        if dl_queue is None:
             raise HTTPException(status_code=503, detail="Album download not configured")
 
         # Mark the collection item as targeted for local download so in_bandcamp_collection
@@ -2475,23 +2474,18 @@ def create_app(
         # the has_art=true shortcut for purely-remote albums and causes art to disappear.
         index.set_collection_item_mode(sale_item_id, "local")
 
+        # Persist first so a restart can replay the queue even if the process
+        # dies before the worker picks up the in-memory item.
+        index.enqueue_download(sale_item_id)
+        dl_queue.put(sale_item_id)
+
         _broadcast(
             {
                 "type": "bandcamp.album-download",
                 "sale_item_id": sale_item_id,
-                "state": "downloading",
+                "state": "queued",
             }
         )
-
-        def _run() -> None:
-            try:
-                on_album_download_trigger(sale_item_id)
-            except Exception:
-                _notify_album_download_status(sale_item_id, "error")
-
-        threading.Thread(
-            target=_run, daemon=True, name=f"album-dl-{sale_item_id}"
-        ).start()
         return {"ok": True}
 
     # -----------------------------------------------------------------------

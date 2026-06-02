@@ -90,7 +90,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 22
+_SCHEMA_VERSION = 23
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -227,6 +227,15 @@ CREATE TABLE IF NOT EXISTS bandcamp_collection (
     mode           TEXT NOT NULL DEFAULT 'local',
     synced_at      REAL,
     added_at       REAL NOT NULL DEFAULT 0
+);
+
+-- Serialized album download queue (KAMP-408).
+-- UNIQUE on sale_item_id prevents double-enqueue; INSERT OR IGNORE is idempotent.
+-- queued_at is a Unix timestamp used for FIFO replay order on restart.
+CREATE TABLE IF NOT EXISTS download_queue (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_item_id TEXT    NOT NULL UNIQUE,
+    queued_at    REAL    NOT NULL DEFAULT (unixepoch())
 );
 """
 
@@ -799,6 +808,19 @@ class LibraryIndex:
             self._conn.execute("UPDATE schema_version SET version = 22")
             self._conn.commit()
             version = 22
+
+        if version == 22:
+            # v22 → v23: download_queue table for serialized album downloads (KAMP-408).
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS download_queue (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_item_id TEXT    NOT NULL UNIQUE,
+                    queued_at    REAL    NOT NULL DEFAULT (unixepoch())
+                )
+            """)
+            self._conn.execute("UPDATE schema_version SET version = 23")
+            self._conn.commit()
+            version = 23
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -1491,6 +1513,39 @@ class LibraryIndex:
             "SELECT id, track_id FROM deferred_ops ORDER BY id ASC"
         ).fetchall()
         return [{"op_id": r["id"], "track_id": r["track_id"]} for r in rows]
+
+    # ------------------------------------------------------------------
+    # Download queue (KAMP-408)
+    # ------------------------------------------------------------------
+
+    def enqueue_download(self, sale_item_id: str) -> None:
+        """Add *sale_item_id* to the persistent download queue.
+
+        INSERT OR IGNORE makes this idempotent — re-enqueuing an already-queued
+        item is a no-op so double-clicks don't produce duplicate work.
+        """
+        self._conn.execute(
+            "INSERT OR IGNORE INTO download_queue (sale_item_id) VALUES (?)",
+            (sale_item_id,),
+        )
+        self._conn.commit()
+
+    def dequeue_download(self, sale_item_id: str) -> None:
+        """Remove *sale_item_id* from the persistent download queue after completion."""
+        self._conn.execute(
+            "DELETE FROM download_queue WHERE sale_item_id = ?", (sale_item_id,)
+        )
+        self._conn.commit()
+
+    def pending_downloads(self) -> list[str]:
+        """Return all queued sale_item_ids in FIFO order (oldest first).
+
+        Used on daemon restart to replay any downloads that survived a shutdown.
+        """
+        rows = self._conn.execute(
+            "SELECT sale_item_id FROM download_queue ORDER BY queued_at ASC, id ASC"
+        ).fetchall()
+        return [r["sale_item_id"] for r in rows]
 
     def update_track_after_album_drain(
         self,

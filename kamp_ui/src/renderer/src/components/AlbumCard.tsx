@@ -61,10 +61,12 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const dismissHighlight = useStore((s) => s.dismissHighlight)
   const configValues = useStore((s) => s.configValues)
   const downloadingAlbumIds = useStore((s) => s.downloadingAlbumIds)
+  const queuedAlbumIds = useStore((s) => s.queuedAlbumIds)
   const connected = configValues?.['bandcamp.connected'] ?? false
   const isRemote = album.source !== 'local'
   const isOffline = isRemote && !connected
   const isDownloading = album.sale_item_id != null && downloadingAlbumIds.has(album.sale_item_id)
+  const isQueued = album.sale_item_id != null && queuedAlbumIds.has(album.sale_item_id)
   const [artLoaded, setArtLoaded] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
@@ -227,6 +229,7 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
     isRemote ? 'album-card--remote' : '',
     isOffline ? 'album-card--offline' : '',
     isDownloading ? 'album-card--downloading' : '',
+    isQueued ? 'album-card--queued' : '',
     isNew ? `album-card--highlight-${highlightStyle}` : '',
     isNew && isMounting ? 'is-mounting' : ''
   ]

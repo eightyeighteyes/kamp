@@ -79,6 +79,7 @@ type PlayerStore = {
   artistPanelSnapshot: boolean | null // saved visibility before entering Now Playing
   queue: QueueState | null
   downloadingAlbumIds: Set<string>
+  queuedAlbumIds: Set<string>
 
   // Actions
   setAudioLevel: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void
@@ -101,6 +102,8 @@ type PlayerStore = {
   bumpLastPlayedVersion: () => void
   markAlbumDownloading: (saleItemId: string) => void
   clearAlbumDownloading: (saleItemId: string) => void
+  markAlbumQueued: (saleItemId: string) => void
+  clearAlbumQueued: (saleItemId: string) => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
   setHighlightEnabled: (enabled: boolean) => void
@@ -292,6 +295,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   artistPanelSnapshot: null,
   queue: null,
   downloadingAlbumIds: new Set<string>(),
+  queuedAlbumIds: new Set<string>(),
   configValues: null,
   prefsOpen: false,
   prefsInitialTab: 'general',
@@ -424,6 +428,14 @@ export const useStore = create<PlayerStore>((set, get) => ({
       const next = new Set(s.downloadingAlbumIds)
       next.delete(saleItemId)
       return { downloadingAlbumIds: next }
+    }),
+  markAlbumQueued: (saleItemId) =>
+    set((s) => ({ queuedAlbumIds: new Set([...s.queuedAlbumIds, saleItemId]) })),
+  clearAlbumQueued: (saleItemId) =>
+    set((s) => {
+      const next = new Set(s.queuedAlbumIds)
+      next.delete(saleItemId)
+      return { queuedAlbumIds: next }
     }),
 
   setRecentlyAddedCount: (n) => {

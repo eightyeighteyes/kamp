@@ -2424,60 +2424,107 @@ class TestBandcampCollectionDownload:
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
+        import queue as _queue
+
         mock_index.get_collection_item.return_value = None
-        trigger_calls: list[str] = []
         app = create_app(
             index=mock_index,
             engine=mock_engine,
             queue=mock_queue,
-            on_album_download_trigger=lambda sid: trigger_calls.append(sid),
+            dl_queue=_queue.Queue(),
         )
         resp = TestClient(app).post("/api/v1/bandcamp/collection/99999/download")
         assert resp.status_code == 404
-        assert trigger_calls == []
 
-    def test_returns_503_when_download_trigger_not_configured(
+    def test_returns_503_when_dl_queue_not_configured(
         self,
         mock_index: MagicMock,
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
         mock_index.get_collection_item.return_value = {"sale_item_id": "42"}
+        # dl_queue defaults to None → 503
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         resp = TestClient(app).post("/api/v1/bandcamp/collection/42/download")
         assert resp.status_code == 503
 
-    def test_sets_db_state_and_fires_download_trigger(
+    def test_enqueues_item_and_broadcasts_queued(
         self,
         mock_index: MagicMock,
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
+        import queue as _queue
+
         mock_index.get_collection_item.return_value = {
             "sale_item_id": "42",
             "mode": "remote",
         }
-        trigger_done = threading.Event()
-        trigger_calls: list[str] = []
-
-        def _trigger(sid: str) -> None:
-            trigger_calls.append(sid)
-            trigger_done.set()
+        dl_q: _queue.Queue[str] = _queue.Queue()
+        ws_messages: list[dict] = []
 
         app = create_app(
             index=mock_index,
             engine=mock_engine,
             queue=mock_queue,
-            on_album_download_trigger=_trigger,
+            dl_queue=dl_q,
         )
         with TestClient(app) as c:
-            resp = c.post("/api/v1/bandcamp/collection/42/download")
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.receive_json()  # consume initial state push
+                resp = c.post("/api/v1/bandcamp/collection/42/download")
+                ws_messages.append(ws.receive_json())
+
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
+        # DB enqueue and mode update must be called
         mock_index.set_collection_item_mode.assert_called_once_with("42", "local")
         mock_index.set_track_source_for_item.assert_not_called()
-        trigger_done.wait(timeout=2)
-        assert trigger_calls == ["42"]
+        mock_index.enqueue_download.assert_called_once_with("42")
+        # Item placed on the in-memory queue
+        assert dl_q.get_nowait() == "42"
+        # WS broadcast is 'queued', not 'downloading'
+        assert ws_messages[0] == {
+            "type": "bandcamp.album-download",
+            "sale_item_id": "42",
+            "state": "queued",
+        }
+
+    def test_second_download_also_broadcasts_queued(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Both items broadcast 'queued'; the worker serializes execution."""
+        import queue as _queue
+
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "x",
+            "mode": "remote",
+        }
+        dl_q: _queue.Queue[str] = _queue.Queue()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            dl_queue=dl_q,
+        )
+        with TestClient(app) as c:
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.receive_json()  # consume initial state push
+                c.post("/api/v1/bandcamp/collection/11/download")
+                msg1 = ws.receive_json()
+                c.post("/api/v1/bandcamp/collection/22/download")
+                msg2 = ws.receive_json()
+
+        assert msg1["state"] == "queued"
+        assert msg1["sale_item_id"] == "11"
+        assert msg2["state"] == "queued"
+        assert msg2["sale_item_id"] == "22"
+        # Both items are on the queue in FIFO order
+        assert dl_q.get_nowait() == "11"
+        assert dl_q.get_nowait() == "22"
 
     def test_notify_album_download_status_exposed_on_app_state(
         self,

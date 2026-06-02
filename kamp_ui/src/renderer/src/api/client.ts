@@ -537,7 +537,7 @@ export type AudioLevelMessage = {
 export type AlbumDownloadMessage = {
   type: 'bandcamp.album-download'
   sale_item_id: string
-  state: 'downloading' | 'done' | 'error'
+  state: 'queued' | 'downloading' | 'done' | 'error'
 }
 export type ServerMessage =
   | StateMessage
@@ -565,7 +565,7 @@ export function connectStateStream(
   onDeferredOpCompleted?: (trackId: number, opId: number) => void,
   onAudioLevel?: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void,
   onTrackChanged?: () => void,
-  onAlbumDownload?: (saleItemId: string, state: 'downloading' | 'done' | 'error') => void
+  onAlbumDownload?: (saleItemId: string, state: 'queued' | 'downloading' | 'done' | 'error') => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 

@@ -526,7 +526,9 @@ def _cmd_daemon(
     port: int = 47483,
     library_path: Path | None = None,
 ) -> None:
+    import queue as _queue_mod
     import threading
+    import time as _time
     import uvicorn
 
     from kamp_core.library import LibraryIndex, Track
@@ -865,25 +867,6 @@ def _cmd_daemon(
             _logger.exception("Unhandled error during manual Bandcamp sync")
             app.state.notify_bandcamp_sync_status("")  # back to idle
 
-    def _on_album_download_trigger(sale_item_id: str) -> None:
-        from .syncer import NeedsLoginError
-
-        fn = _album_download_trigger_ref[0]
-        if fn is None:
-            return
-        try:
-            fn(sale_item_id)
-            app.state.notify_album_download_status(sale_item_id, "done")
-            app.state.notify_library_changed()
-        except NeedsLoginError:
-            _logger.warning("Album download: no valid session — login required.")
-            app.state.notify_album_download_status(sale_item_id, "error")
-        except Exception:
-            _logger.exception(
-                "Unhandled error during album download (%s)", sale_item_id
-            )
-            app.state.notify_album_download_status(sale_item_id, "error")
-
     def _on_bandcamp_sync_all_trigger() -> None:
         from .syncer import NeedsLoginError
 
@@ -938,6 +921,7 @@ def _cmd_daemon(
     _sync_trigger_ref: list[Any] = [None]
     _sync_all_trigger_ref: list[Any] = [None]
     _album_download_trigger_ref: list[Any] = [None]
+    _dl_queue: _queue_mod.Queue[str] = _queue_mod.Queue()
 
     def _refresh_stream_url(album_url: str, track_num: int) -> tuple[str, float] | None:
         """Fetch a fresh CDN URL for a remote track before mpv plays it."""
@@ -967,13 +951,74 @@ def _cmd_daemon(
         on_bandcamp_disconnect=_on_bandcamp_disconnect,
         on_bandcamp_sync_trigger=_on_bandcamp_sync_trigger,
         on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,
-        on_album_download_trigger=_on_album_download_trigger,
+        dl_queue=_dl_queue,
         art_cache_dir=_state_dir() / "art_cache",
         refresh_stream_url=_refresh_stream_url,
         dev_mode=bool(os.environ.get("KAMP_DEV")),
         auth_token=_auth_token,
         mb_lookup_fn=lookup_releases_from_tracks,
     )
+
+    # ---------------------------------------------------------------------------
+    # Single-consumer album download worker (KAMP-408)
+    # ---------------------------------------------------------------------------
+    # Serializes all album downloads one at a time (FIFO) so Bandcamp doesn't
+    # 429 us.  Retries rate-limited requests with an exponential back-off
+    # (5 s → 10 s → 20 s) before giving up.
+
+    def _download_worker() -> None:
+        from .syncer import NeedsLoginError
+
+        while True:
+            sale_item_id = _dl_queue.get()
+            app.state.notify_album_download_status(sale_item_id, "downloading")
+
+            fn = _album_download_trigger_ref[0]
+            if fn is None:
+                _logger.error(
+                    "Album download trigger not configured for %s", sale_item_id
+                )
+                app.state.notify_album_download_status(sale_item_id, "error")
+                index.dequeue_download(sale_item_id)
+                continue
+
+            delays = [5, 10, 20]
+            for delay in delays + [None]:
+                try:
+                    fn(sale_item_id)
+                    app.state.notify_album_download_status(sale_item_id, "done")
+                    app.state.notify_library_changed()
+                    break
+                except NeedsLoginError:
+                    _logger.warning(
+                        "Album download: no valid session for %s", sale_item_id
+                    )
+                    app.state.notify_album_download_status(sale_item_id, "error")
+                    break
+                except Exception as exc:
+                    if "429" in str(exc) and delay is not None:
+                        _logger.warning(
+                            "Album download rate-limited for %s; retrying in %ds",
+                            sale_item_id,
+                            delay,
+                        )
+                        _time.sleep(delay)
+                        continue
+                    _logger.exception("Album download failed for %s", sale_item_id)
+                    app.state.notify_album_download_status(sale_item_id, "error")
+                    break
+
+            index.dequeue_download(sale_item_id)
+
+    threading.Thread(
+        target=_download_worker, daemon=True, name="album-dl-worker"
+    ).start()
+
+    # Replay any downloads that survived a daemon restart.  These are put onto
+    # the in-memory queue so the worker picks them up in FIFO order.
+    for _pending_sid in index.pending_downloads():
+        _dl_queue.put(_pending_sid)
+        _logger.info("Replayed queued download: %s", _pending_sid)
 
     # Wrap the existing on_track_end callback to also push track.changed events.
     # Done here (after app creation) so app.state is guaranteed to be available.

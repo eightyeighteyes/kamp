@@ -247,9 +247,13 @@ export default function App(): React.JSX.Element {
         setAudioLevel,
         bumpLastPlayedVersion,
         (saleItemId, state) => {
-          if (state === 'downloading') {
+          if (state === 'queued') {
+            useStore.getState().markAlbumQueued(saleItemId)
+          } else if (state === 'downloading') {
+            useStore.getState().clearAlbumQueued(saleItemId)
             useStore.getState().markAlbumDownloading(saleItemId)
           } else {
+            useStore.getState().clearAlbumQueued(saleItemId)
             useStore.getState().clearAlbumDownloading(saleItemId)
             if (state === 'done') {
               void useStore.getState().loadLibrary()

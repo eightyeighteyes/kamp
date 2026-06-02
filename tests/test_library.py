@@ -129,7 +129,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 22
+        assert version == 23
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1390,7 +1390,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 22
+        assert version == 23
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1447,7 +1447,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 22
+        assert version == 23
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1834,7 +1834,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 22
+        assert version == 23
         assert row is not None
         assert row[0] == 0
 
@@ -2088,7 +2088,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 22
+        assert version == 23
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2180,7 +2180,7 @@ class TestAlbumFavorite:
         index._conn.execute("SELECT COUNT(*) FROM album_favorites").fetchone()
         index.close()
 
-        assert version == 22
+        assert version == 23
 
 
 # ---------------------------------------------------------------------------
@@ -2359,7 +2359,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 22
+        assert version == 23
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2454,7 +2454,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 22
+        assert version == 23
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2462,7 +2462,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 22
+        assert version == 23
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3339,7 +3339,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 22
+        assert version == 23
 
         index.close()
 
@@ -4022,7 +4022,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 22
+        assert version == 23
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4057,7 +4057,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 22
+        assert version == 23
         index.close()
 
 
@@ -4427,7 +4427,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 22
+        assert version == 23
 
 
 class TestRemoteTrackSchema:
@@ -4694,7 +4694,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 22
+        assert version == 23
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -4755,7 +4755,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 22
+        assert version == 23
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -5436,7 +5436,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 22
+        assert version == 23
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -5447,3 +5447,109 @@ class TestMigrationV22:
         assert (
             rows.get("/music/local.mp3") == "Local"
         ), "local track should be unchanged"
+
+
+class TestDownloadQueue:
+    """enqueue_download / dequeue_download / pending_downloads (KAMP-408)."""
+
+    def test_enqueue_adds_row(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("111")
+        assert index.pending_downloads() == ["111"]
+        index.close()
+
+    def test_pending_downloads_fifo_order(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        import time
+
+        for sid in ("aaa", "bbb", "ccc"):
+            index.enqueue_download(sid)
+            time.sleep(0.01)  # ensure distinct queued_at timestamps
+        assert index.pending_downloads() == ["aaa", "bbb", "ccc"]
+        index.close()
+
+    def test_dequeue_removes_row(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("111")
+        index.enqueue_download("222")
+        index.dequeue_download("111")
+        assert index.pending_downloads() == ["222"]
+        index.close()
+
+    def test_enqueue_is_idempotent(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("111")
+        index.enqueue_download("111")  # second call is a no-op
+        assert index.pending_downloads() == ["111"]
+        index.close()
+
+    def test_pending_empty_when_queue_clear(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.pending_downloads() == []
+        index.close()
+
+    def test_dequeue_nonexistent_is_noop(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.dequeue_download("nonexistent")  # must not raise
+        assert index.pending_downloads() == []
+        index.close()
+
+
+class TestMigrationV23:
+    """v22 → v23: download_queue table created on upgrade from v22."""
+
+    def test_migration_creates_download_queue_table(self, tmp_path: Path) -> None:
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        # Build a minimal v22 DB (download_queue table must not exist yet).
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (22)")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '', track_number INTEGER NOT NULL DEFAULT 0, disc_number INTEGER NOT NULL DEFAULT 1, ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0, mb_release_id TEXT NOT NULL DEFAULT '', mb_recording_id TEXT NOT NULL DEFAULT '', date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0, play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL, genre TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'local', stream_url TEXT, stream_url_expires_at REAL)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5(title, artist, album_artist, album)"
+        )
+        conn.execute(
+            "CREATE TABLE player_state (id INTEGER PRIMARY KEY CHECK (id=1), track_path TEXT NOT NULL, position REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE queue_state (id INTEGER PRIMARY KEY CHECK (id=1), tracks TEXT NOT NULL DEFAULT '[]', order_json TEXT NOT NULL DEFAULT '', pos INTEGER NOT NULL DEFAULT -1, shuffle INTEGER NOT NULL DEFAULT 0, repeat INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE extension_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, extension_id TEXT NOT NULL, track_mbid TEXT NOT NULL DEFAULT '', operation TEXT NOT NULL, old_value TEXT NOT NULL DEFAULT '', new_value TEXT NOT NULL DEFAULT '', timestamp REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE sessions (service TEXT NOT NULL PRIMARY KEY, session_json TEXT, updated_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE album_favorites (album_artist TEXT NOT NULL, album TEXT NOT NULL, PRIMARY KEY (album_artist, album))"
+        )
+        conn.execute(
+            "CREATE TABLE settings (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE deferred_ops (id INTEGER PRIMARY KEY AUTOINCREMENT, op_type TEXT NOT NULL, track_id INTEGER NOT NULL UNIQUE, payload_json TEXT NOT NULL, created_at REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE bandcamp_collection (sale_item_id TEXT NOT NULL PRIMARY KEY, item_type TEXT NOT NULL DEFAULT 'p', band_name TEXT NOT NULL DEFAULT '', item_title TEXT NOT NULL DEFAULT '', tralbum_id TEXT NOT NULL DEFAULT '', album_url TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'local', synced_at REAL, added_at REAL NOT NULL DEFAULT 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        tables = {
+            r[0]
+            for r in index._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        index.close()
+
+        assert version == 23
+        assert "download_queue" in tables

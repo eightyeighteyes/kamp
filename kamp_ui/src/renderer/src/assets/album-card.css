@@ -58,12 +58,23 @@
 /* Download-in-progress state ----------------------------------------------- */
 
 @keyframes albumCardDownloadPulse {
-  0%, 100% { filter: brightness(1); }
-  50%       { filter: brightness(1.2); }
+  0%, 100% { filter: blur(0px); }
+  50%       { filter: blur(1px); }
 }
 
 .album-card--downloading {
   animation: albumCardDownloadPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes albumCardQueuedPulse {
+  0%, 100% { opacity: 0.55; }
+  50%       { opacity: 0.7;  }
+}
+
+/* Queued albums dim while waiting their turn; the slow pulse is calmer than
+   the brighter downloading animation to communicate "pending, not active". */
+.album-card--queued {
+  animation: albumCardQueuedPulse 3s ease-in-out infinite;
 }
 
 /* Drift of the art behind the blur — "motion behind frosted glass".

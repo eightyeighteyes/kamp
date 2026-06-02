@@ -55,56 +55,31 @@
   transition: filter 0.5s;
 }
 
-/* Download-in-progress state ----------------------------------------------- */
-
-@keyframes albumCardDownloadPulse {
-  0%, 100% { filter: blur(0px); }
-  50%       { filter: blur(1px); }
-}
-
-.album-card--downloading {
-  animation: albumCardDownloadPulse 1.8s ease-in-out infinite;
-}
+/* Download-in-progress and queued states ------------------------------------ */
 
 @keyframes albumCardQueuedPulse {
   0%, 100% { opacity: 0.55; }
   50%       { opacity: 0.7;  }
 }
 
-/* Queued albums dim while waiting their turn; the slow pulse is calmer than
-   the brighter downloading animation to communicate "pending, not active". */
+/* Queued albums dim while waiting their turn. */
 .album-card--queued {
   animation: albumCardQueuedPulse 3s ease-in-out infinite;
 }
 
-/* Drift of the art behind the blur — "motion behind frosted glass".
-   scale > 1 ensures translate never exposes edges through overflow:hidden.
-   linear timing keeps velocity constant so there are no pauses at keyframes.
-   Ten irregular waypoints across all quadrants prevent a circular feel. */
-@keyframes artDrift {
-  0%   { transform: scale(1.13) translate(0px,   0px);  }
-  10%  { transform: scale(1.15) translate(-5px,  -8px); }
-  22%  { transform: scale(1.12) translate( 4px, -10px); }
-  35%  { transform: scale(1.16) translate(10px,  -2px); }
-  47%  { transform: scale(1.13) translate( 7px,   7px); }
-  58%  { transform: scale(1.15) translate(-1px,  10px); }
-  70%  { transform: scale(1.12) translate(-9px,   5px); }
-  80%  { transform: scale(1.16) translate(-7px,  -5px); }
-  91%  { transform: scale(1.13) translate(-2px,  -9px); }
-  100% { transform: scale(1.13) translate(0px,   0px);  }
+/* Downloading: blur on the art image pulses in and out — no card-level motion. */
+@keyframes albumArtBlurPulse {
+  0%, 100% { filter: blur(3px); }
+  50%       { filter: blur(8px); }
 }
 
 .album-art--blurred .album-art-img {
-  /* Blur applies instantly so it's in place before the drift starts. */
   filter: blur(5px);
   transition: filter 0s;
-  animation: artDrift 28s linear infinite;
 }
 
-/* Suppress the drift on cards that are already animating their own state. */
-.album-card--downloading .album-art--blurred .album-art-img,
-.album-card--queued .album-art--blurred .album-art-img {
-  animation: none;
+.album-card--downloading .album-art--blurred .album-art-img {
+  animation: albumArtBlurPulse 1.8s ease-in-out infinite;
 }
 
 .now-playing-badge {

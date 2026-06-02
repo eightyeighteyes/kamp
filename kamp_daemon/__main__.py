@@ -703,10 +703,27 @@ def _cmd_daemon(
 
     engine.on_track_end = _on_track_end
 
+    def _prefetch_remote_lookahead(nxt: Track) -> None:
+        """Resolve a CDN URL for *nxt* and wire it into mpv's slot-1 lookahead.
+
+        Runs on a daemon thread so the HTTP request (album page scrape) does not
+        block the mpv reader thread.  preload_next_url() rejects stale results
+        automatically if the queue has changed by the time the fetch completes.
+        """
+        url = resolve_playback_uri(nxt, index, _refresh_stream_url)
+        if url.startswith("https://"):
+            engine.preload_next_url(url, nxt.id)
+
     def _on_file_loaded() -> None:
         # Prime or refresh the gapless lookahead whenever a new file starts.
-        # Now Playing updates are driven by Electron WebSocket subscription.
-        engine.preload_next(queue.peek_next())
+        # For remote tracks, spawn a thread to resolve the CDN URL so the HTTP
+        # request doesn't block the mpv reader thread.
+        nxt = queue.peek_next()
+        engine.preload_next(nxt)
+        if nxt is not None and nxt.is_remote:
+            threading.Thread(
+                target=_prefetch_remote_lookahead, args=(nxt,), daemon=True
+            ).start()
 
     engine.on_file_loaded = _on_file_loaded
 

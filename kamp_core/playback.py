@@ -983,6 +983,13 @@ class MpvPlaybackEngine:
         # Path of the track pre-appended to mpv's playlist as a gapless lookahead.
         # None means mpv's playlist has only the current track (slot 0).
         self._lookahead_path: Path | None = None
+        # CDN URL for a remote-track lookahead; mutually exclusive with
+        # _lookahead_path (a track is either local or remote, never both).
+        self._lookahead_url: str | None = None
+        # Track ID of the track registered in the lookahead slot.  Set eagerly
+        # by preload_next() — before the URL is fetched — so preload_next_url()
+        # can reject stale pre-fetch results after a queue change.
+        self._lookahead_id: int | None = None
         self._start_mpv()
 
     def _start_mpv(self) -> None:  # pragma: no cover
@@ -1167,6 +1174,8 @@ class MpvPlaybackEngine:
         logger.info("engine.play: loading %s", path)
         with self._lock:
             self._lookahead_path = None
+            self._lookahead_url = None
+            self._lookahead_id = None
             self.state.position = 0.0
             self.state.duration = 0.0
             self._send_command("loadfile", str(path), "replace")
@@ -1189,6 +1198,8 @@ class MpvPlaybackEngine:
         self._pending_seek = position if position > 0 else None
         with self._lock:
             self._lookahead_path = None
+            self._lookahead_url = None
+            self._lookahead_id = None
             self.state.position = 0.0
             self.state.duration = 0.0
             self._send_command("loadfile", str(path), "replace")
@@ -1211,21 +1222,29 @@ class MpvPlaybackEngine:
         _lookahead_path mutation, and the playlist-remove/loadfile send happen
         atomically with respect to a concurrent end-file/eof handler.
         """
-        # Remote tracks: CDN URL is resolved by _resolve_playback on EOF;
+        # Remote tracks: CDN URL is resolved asynchronously by preload_next_url();
         # passing the raw bandcamp: URI to mpv would silently fail.
         path = (
             None
             if (next_track is None or next_track.is_remote)
             else next_track.file_path
         )
+        next_id = next_track.id if next_track is not None else None
         with self._lock:
-            if path == self._lookahead_path:
+            # Idempotent: no-op when the registered lookahead track hasn't changed.
+            # For remote tracks path is always None, so _lookahead_id distinguishes
+            # "same remote track" from "different remote track in the lookahead slot."
+            if path == self._lookahead_path and next_id == self._lookahead_id:
                 return
-            if self._lookahead_path is not None:
+            if self._lookahead_path is not None or self._lookahead_url is not None:
                 self._lookahead_path = (
                     None  # clear before sending remove (see docstring)
                 )
+                self._lookahead_url = None
                 self._send_command("playlist-remove", 1)
+            # Register the incoming track eagerly so preload_next_url() can reject
+            # stale pre-fetch results that arrive after a subsequent queue change.
+            self._lookahead_id = next_id
             if path is not None:
                 # Skip the append when we're within the gapless danger window.
                 # mpv would trigger an immediate EOF transition the moment the
@@ -1240,10 +1259,34 @@ class MpvPlaybackEngine:
                 self._send_command("loadfile", str(path), "append")
                 self._lookahead_path = path
 
+    def preload_next_url(self, url: str, track_id: int) -> None:
+        """Pre-load a CDN URL into mpv's slot-1 for gapless remote-track playback.
+
+        Called from a background thread once the CDN URL for the next remote
+        track has been resolved.  Discards stale results whose track_id no
+        longer matches the registered lookahead track (i.e. the queue changed
+        while the pre-fetch was in flight).
+        """
+        with self._lock:
+            if self._lookahead_id != track_id:
+                return  # queue changed while pre-fetch was in flight
+            if url == self._lookahead_url:
+                return
+            if self._lookahead_url is not None:
+                self._lookahead_url = None
+                self._send_command("playlist-remove", 1)
+            if (
+                self.state.duration > 0
+                and self.state.position > self.state.duration - _GAPLESS_GUARD_SECS
+            ):
+                return
+            self._send_command("loadfile", url, "append")
+            self._lookahead_url = url
+
     @property
     def has_lookahead(self) -> bool:
         """True when a next-track is pre-appended to mpv's playlist."""
-        return self._lookahead_path is not None
+        return self._lookahead_path is not None or self._lookahead_url is not None
 
     def pause(self) -> None:
         self._send_command("set_property", "pause", True)
@@ -1267,11 +1310,13 @@ class MpvPlaybackEngine:
             # no gapless risk — removing the lookahead there breaks gapless at
             # the track's natural EOF without any benefit (KAMP-261 / KAMP-276).
             if (
-                self._lookahead_path is not None
+                (self._lookahead_path is not None or self._lookahead_url is not None)
                 and self.state.duration > 0
                 and position > self.state.duration - _GAPLESS_GUARD_SECS
             ):
                 self._lookahead_path = None
+                self._lookahead_url = None
+                self._lookahead_id = None
                 self._send_command("playlist-remove", 1)
         self._send_command("seek", position, "absolute")
 
@@ -1397,7 +1442,10 @@ class MpvPlaybackEngine:
                 # slow callback (e.g. Last.fm scrobble) cannot block FastAPI
                 # threads on seek/pause/resume (KAMP-284).
                 with self._lock:
-                    had_lookahead = self._lookahead_path is not None
+                    had_lookahead = (
+                        self._lookahead_path is not None
+                        or self._lookahead_url is not None
+                    )
                     if had_lookahead:
                         # When a lookahead was present, mpv already transitioned
                         # gaplessly and the finished entry sits at slot 0.
@@ -1415,6 +1463,8 @@ class MpvPlaybackEngine:
                         self.state.position = 0.0
                         self.state.duration = 0.0
                     self._lookahead_path = None
+                    self._lookahead_url = None
+                    self._lookahead_id = None
                 logger.info("eof: had_lookahead=%s firing on_track_end", had_lookahead)
                 # had_lookahead tells the callback whether mpv already advanced
                 # so it can skip calling engine.play(next_path) — calling play()

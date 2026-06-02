@@ -1708,9 +1708,10 @@ class TestMpvPlaybackEngine:
         engine.preload_next(_track(2))
         send.assert_called_once_with("loadfile", str(_track(2).file_path), "append")
 
-    def test_preload_next_skips_remote_track(self) -> None:
-        """Remote next-tracks must never be preloaded — their bandcamp: URI
-        cannot be opened by mpv; CDN URL is resolved on EOF instead."""
+    def test_preload_next_skips_remote_track_ipc(self) -> None:
+        """preload_next must not send any IPC command for a remote next-track —
+        the bandcamp: URI cannot be opened by mpv.  CDN URL resolution happens
+        asynchronously via preload_next_url()."""
         engine, send = _make_engine()
         engine.preload_next(_remote_track())
         send.assert_not_called()
@@ -1823,6 +1824,171 @@ class TestMpvPlaybackEngine:
         engine.on_track_end = lambda _: observed.append(engine.has_lookahead)
         engine._handle_event({"event": "end-file", "reason": "eof"})
         assert observed == [False]
+
+    # ------------------------------------------------------------------
+    # preload_next_url / remote-track gapless lookahead
+    # ------------------------------------------------------------------
+
+    def test_preload_next_registers_lookahead_id_for_remote_track(self) -> None:
+        """preload_next with a remote next-track eagerly sets _lookahead_id so
+        preload_next_url() can validate its result, but does NOT send any IPC
+        command (URL resolution happens asynchronously)."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        send.assert_not_called()
+        assert engine._lookahead_path is None
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id == remote.id
+
+    def test_preload_next_replaces_url_lookahead_when_switching_to_local(self) -> None:
+        """Switching the lookahead from a remote track (URL-based) to a local
+        track (path-based) must evict the old URL from mpv's slot-1."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        local = _track(3)
+
+        # Wire URL-based lookahead for the remote track.
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/a.mp3", remote.id)
+        send.reset_mock()
+
+        # Queue changes: next track is now local.  Old URL must be removed.
+        engine.preload_next(local)
+        assert send.call_args_list == [
+            call("playlist-remove", 1),
+            call("loadfile", str(local.file_path), "append"),
+        ]
+        assert engine._lookahead_url is None
+        assert engine._lookahead_path == local.file_path
+
+    def test_preload_next_clears_url_lookahead_when_queue_exhausted(self) -> None:
+        """preload_next(None) must evict a URL-based lookahead when the queue
+        runs out of tracks."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/a.mp3", remote.id)
+        send.reset_mock()
+
+        engine.preload_next(None)
+        send.assert_called_once_with("playlist-remove", 1)
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id is None
+
+    def test_preload_next_url_sends_loadfile_append(self) -> None:
+        """preload_next_url must call loadfile append with the CDN URL."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        send.reset_mock()
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        send.assert_called_once_with(
+            "loadfile", "https://cdn.example.com/track.mp3", "append"
+        )
+
+    def test_preload_next_url_sets_lookahead_url(self) -> None:
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        assert engine._lookahead_url == "https://cdn.example.com/track.mp3"
+
+    def test_has_lookahead_true_after_preload_next_url(self) -> None:
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        assert engine.has_lookahead is True
+
+    def test_preload_next_url_ignored_when_track_id_mismatch(self) -> None:
+        """Stale pre-fetch results (track changed after fetch started) are silently
+        discarded based on the registered _lookahead_id."""
+        engine, send = _make_engine()
+        engine._lookahead_id = 99  # registered for track 99
+        engine.preload_next_url("https://cdn.example.com/stale.mp3", 77)  # wrong id
+        send.assert_not_called()
+        assert engine._lookahead_url is None
+
+    def test_preload_next_url_skips_append_within_guard_window(self) -> None:
+        """URL pre-fetch arriving within the gapless danger window must not be
+        appended — mpv would trigger an immediate EOF transition."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.state.duration = 180.0
+        engine.state.position = 172.0  # 8 s from end
+        send.reset_mock()
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        send.assert_not_called()
+        assert engine._lookahead_url is None
+
+    def test_preload_next_url_is_noop_for_same_url(self) -> None:
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        url = "https://cdn.example.com/track.mp3"
+        engine.preload_next_url(url, remote.id)
+        send.reset_mock()
+        engine.preload_next_url(url, remote.id)
+        send.assert_not_called()
+
+    def test_seek_into_guard_window_removes_url_lookahead(self) -> None:
+        """seek() must remove a URL-based lookahead when the target is within
+        the gapless guard window, just as it does for path-based lookaheads."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        engine.state.duration = 180.0
+        engine.state.position = 60.0
+        send.reset_mock()
+        engine.seek(172.0)  # within guard window
+        assert engine._lookahead_url is None
+        assert engine._lookahead_path is None
+        assert engine._lookahead_id is None
+        assert send.call_args_list[0] == call("playlist-remove", 1)
+
+    def test_end_file_clears_url_lookahead(self) -> None:
+        """end-file/eof must clear _lookahead_url so has_lookahead reads False."""
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id is None
+        assert engine.has_lookahead is False
+
+    def test_end_file_had_lookahead_true_for_url_lookahead(self) -> None:
+        """Gapless transition via URL-based lookahead: on_track_end receives
+        had_lookahead=True so the queue advances without an extra engine.play()."""
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        observed: list[bool] = []
+        engine.on_track_end = lambda had_lookahead: observed.append(had_lookahead)
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        assert observed == [True]
+
+    def test_play_clears_url_lookahead(self) -> None:
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        engine.play(Path("/music/01.mp3"))
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id is None
+
+    def test_load_paused_clears_url_lookahead(self) -> None:
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        engine.load_paused(Path("/music/01.mp3"))
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id is None
 
     def test_handle_event_pause_with_non_bool_data_is_ignored(self) -> None:
         engine, _ = _make_engine()

@@ -48,7 +48,13 @@ const STATIC_BORDER_FRAMES = [
   'conic-gradient(from 180deg, #444 0deg, #888 80deg, #111 160deg, #777 220deg, #333 290deg, #444 360deg)'
 ]
 
-export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
+export function AlbumCard({
+  album,
+  onAfterSelect
+}: {
+  album: Album
+  onAfterSelect?: () => void
+}): React.JSX.Element {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const setActiveView = useStore((s) => s.setActiveView)
   const activeView = useStore((s) => s.activeView)
@@ -221,6 +227,7 @@ export function AlbumCard({ album }: { album: Album }): React.JSX.Element {
   const handleSelect = (): void => {
     if (activeView !== 'library') void setActiveView('library')
     void selectAlbum(album)
+    onAfterSelect?.()
   }
 
   const cardClass = [

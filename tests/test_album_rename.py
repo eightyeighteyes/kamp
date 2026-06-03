@@ -926,3 +926,50 @@ class TestPatchAlbumTagsEndpoint:
             )
             file_tags = id3.ID3(str(new_mp3))
             assert str(file_tags["TPE1"]) == "Activity Monitor"
+
+    def test_returns_409_when_albums_table_collision(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """Renaming to a name that already exists in the albums table (e.g. a
+        streaming-only album) returns 409 even when no filesystem collision exists."""
+        from kamp_core.library import Track as _Track
+
+        pairs = _make_album(tmp_path, "Artist", "Album A", "2024", 1)
+        track_objects = [t for _, t in pairs]
+        client, db = self._client_with_album(
+            tmp_path, track_objects, _mock_engine, _mock_queue
+        )
+
+        # Seed a remote-only album with the target name directly in the albums table.
+        # Use upsert_many with a bandcamp:// track so the albums row is created.
+        db.upsert_many(
+            [
+                _Track(
+                    file_path=__import__("pathlib").Path("bandcamp://sale-x/1"),
+                    title="T",
+                    artist="Artist",
+                    album_artist="Artist",
+                    album="Album B",
+                    year="2024",
+                    track_number=1,
+                    disc_number=1,
+                    ext="",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    source="bandcamp",
+                )
+            ]
+        )
+
+        # No filesystem directory exists for "Album B" — only the albums table has it.
+        assert not (tmp_path / "Artist" / "2024 - Album B").exists()
+
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Artist", "album": "Album A"},
+            json={"album": "Album B"},
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Album name already exists in library"

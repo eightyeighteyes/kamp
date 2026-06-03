@@ -1335,6 +1335,7 @@ class LibraryIndex:
         Corrects tracks whose date_added was recorded as the sync timestamp rather than
         the actual purchase date.  The MIN-wins rule mirrors upsert_collection_item so
         that an earlier purchase date can never be overwritten by a later sync.
+        Also propagates the corrected date to the parent albums row via sale_item_id.
         """
         self._conn.execute(
             "UPDATE tracks SET date_added = ? "
@@ -1346,17 +1347,43 @@ class LibraryIndex:
                 date_added,
             ),
         )
+        # Propagate to the albums row. MIN-wins: only update when new value is earlier.
+        self._conn.execute(
+            "UPDATE albums SET date_added = ?"
+            " WHERE sale_item_id = ?"
+            " AND (date_added IS NULL OR date_added > ?)",
+            (date_added, sale_item_id, date_added),
+        )
         self._conn.commit()
 
     def set_track_source_for_item(self, sale_item_id: str, source: str) -> int:
         """Set source on every track whose file_path belongs to *sale_item_id*.
 
         Matches canonical bandcamp:// (POSIX) and Windows bandcamp:\\ path forms.
-        Returns the number of rows updated.
+        Returns the number of rows updated. Also refreshes albums.source so the
+        album entity stays consistent without waiting for the next full rescan.
         """
         cur = self._conn.execute(
             "UPDATE tracks SET source = ? WHERE file_path LIKE ? OR file_path LIKE ?",
             (source, f"bandcamp://{sale_item_id}/%", f"bandcamp:\\{sale_item_id}\\%"),
+        )
+        # Refresh albums.source via the sale_item_id FK. Remote tracks may not have
+        # album_id populated yet, so join through albums.sale_item_id instead.
+        self._conn.execute(
+            """
+            UPDATE albums SET source = (
+                SELECT CASE
+                    WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
+                         AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
+                    THEN 'local'
+                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                    ELSE MIN(t.source)
+                END
+                FROM tracks t WHERE t.album_id = albums.id
+            )
+            WHERE sale_item_id = ?
+            """,
+            (sale_item_id,),
         )
         self._conn.commit()
         return cur.rowcount
@@ -1609,6 +1636,23 @@ class LibraryIndex:
                     """,
                     album_ids,
                 )
+                # Backfill sale_item_id from bandcamp_collection for albums that were
+                # just inserted without it. This covers the streaming-sync order where
+                # upsert_collection_item fires before upsert_many, so the UPDATE inside
+                # upsert_collection_item is a no-op (no albums row yet at that point).
+                self._conn.execute(
+                    f"""
+                    UPDATE albums SET sale_item_id = (
+                        SELECT bc.sale_item_id FROM bandcamp_collection bc
+                        WHERE bc.band_name  = albums.album_artist COLLATE NOCASE
+                          AND bc.item_title = albums.album        COLLATE NOCASE
+                        LIMIT 1
+                    )
+                    WHERE id IN ({id_placeholders})
+                      AND sale_item_id IS NULL
+                    """,
+                    album_ids,
+                )
 
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()
@@ -1687,35 +1731,39 @@ class LibraryIndex:
             ).fetchone()
             album_id = r["album_id"] if r else None
 
-        for old_path, new_path in path_pairs:
-            self._conn.execute(
-                """UPDATE tracks
-                   SET file_path = ?,
-                       album = ?,
-                       album_artist = ?,
-                       artist = CASE WHEN ? IS NOT NULL AND artist = ? THEN ? ELSE artist END,
-                       file_mtime = ?
-                   WHERE file_path = ?""",
-                (
-                    str(new_path),
-                    new_album,
-                    new_album_artist,
-                    old_album_artist,
-                    old_album_artist,
-                    new_album_artist,
-                    new_mtime,
-                    str(old_path),
-                ),
-            )
-        # Update the albums row. The UNIQUE (album_artist, album) COLLATE NOCASE
-        # constraint raises IntegrityError if the new name already exists.
-        if album_id is not None:
-            self._conn.execute(
-                "UPDATE albums SET album_artist = ?, album = ? WHERE id = ?",
-                (new_album_artist, new_album, album_id),
-            )
-        self._rebuild_fts()
-        self._conn.commit()
+        try:
+            for old_path, new_path in path_pairs:
+                self._conn.execute(
+                    """UPDATE tracks
+                       SET file_path = ?,
+                           album = ?,
+                           album_artist = ?,
+                           artist = CASE WHEN ? IS NOT NULL AND artist = ? THEN ? ELSE artist END,
+                           file_mtime = ?
+                       WHERE file_path = ?""",
+                    (
+                        str(new_path),
+                        new_album,
+                        new_album_artist,
+                        old_album_artist,
+                        old_album_artist,
+                        new_album_artist,
+                        new_mtime,
+                        str(old_path),
+                    ),
+                )
+            # Update the albums row. The UNIQUE (album_artist, album) COLLATE NOCASE
+            # constraint raises IntegrityError if the new name already exists.
+            if album_id is not None:
+                self._conn.execute(
+                    "UPDATE albums SET album_artist = ?, album = ? WHERE id = ?",
+                    (new_album_artist, new_album, album_id),
+                )
+            self._rebuild_fts()
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     # ------------------------------------------------------------------
     # Deferred ops (KAMP-309)
@@ -2210,6 +2258,10 @@ class LibraryIndex:
             (album_artist, album),
         ).fetchone()
         return row["id"] if row else None
+
+    def album_name_exists(self, album_artist: str, album: str) -> bool:
+        """Return True if any albums row matches (album_artist, album) case-insensitively."""
+        return self._album_id(album_artist, album) is not None
 
     def tracks_for_album(self, album_artist: str, album: str) -> list[Track]:
         """Return tracks for a given album sorted by disc then track number.

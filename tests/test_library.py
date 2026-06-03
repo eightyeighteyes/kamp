@@ -4291,6 +4291,59 @@ class TestBandcampCollection:
         assert r1["date_added"] == 1.0
         assert r2["date_added"] == 9_999_999.0
 
+    def test_update_remote_track_date_added_propagates_to_albums(
+        self, tmp_path: Path
+    ) -> None:
+        """albums.date_added is updated alongside tracks.date_added (MIN-wins)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _sample_track(Path("bandcamp://sale-1/1"))
+        track.date_added = 9_000_000.0
+        index.upsert_many([track])
+        index.upsert_collection_item(
+            "sale-1",
+            mode="local",
+            band_name=track.album_artist,
+            item_title=track.album,
+            synced_at=1000.0,
+        )
+
+        index.update_remote_track_date_added("sale-1", 100.0)
+
+        row = index._conn.execute(
+            "SELECT date_added FROM albums WHERE sale_item_id = 'sale-1'"
+        ).fetchone()
+        index.close()
+
+        assert row is not None
+        assert row["date_added"] == pytest.approx(100.0)
+
+    def test_update_remote_track_date_added_albums_min_wins(
+        self, tmp_path: Path
+    ) -> None:
+        """albums.date_added is not overwritten when existing value is already earlier."""
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _sample_track(Path("bandcamp://sale-2/1"))
+        track.date_added = 50.0
+        index.upsert_many([track])
+        index.upsert_collection_item(
+            "sale-2",
+            mode="local",
+            band_name=track.album_artist,
+            item_title=track.album,
+            synced_at=1000.0,
+        )
+
+        index.update_remote_track_date_added("sale-2", 999_999.0)
+
+        row = index._conn.execute(
+            "SELECT date_added FROM albums WHERE sale_item_id = 'sale-2'"
+        ).fetchone()
+        index.close()
+
+        # albums.date_added was already 50.0 (from upsert_many); must not be overwritten
+        assert row is not None
+        assert row["date_added"] == pytest.approx(50.0)
+
     def test_get_remote_collection_filters_by_mode(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         index.upsert_collection_item("1", mode="local")
@@ -4304,6 +4357,31 @@ class TestBandcampCollection:
         assert len(result) == 1
         assert result[0]["sale_item_id"] == "2"
         assert result[0]["band_name"] == "Artist"
+
+    def test_upsert_many_backfills_sale_item_id_when_collection_item_upserted_first(
+        self, tmp_path: Path
+    ) -> None:
+        """upsert_collection_item before upsert_many (the streaming-sync order) still
+        links albums.sale_item_id — the backfill in upsert_many closes the gap."""
+        index = LibraryIndex(tmp_path / "library.db")
+        # Streaming sync order: collection item arrives before tracks are fetched.
+        index.upsert_collection_item(
+            "sale-stream",
+            mode="remote",
+            band_name="The Artist",
+            item_title="The Album",
+            synced_at=1000.0,
+        )
+        # At this point no albums row exists yet, so the link in upsert_collection_item
+        # was a no-op. Now upsert_many inserts the remote tracks.
+        t = _sample_track(Path("bandcamp://sale-stream/1"))
+        t.source = "bandcamp"
+        index.upsert_many([t])
+        row = index._conn.execute("SELECT sale_item_id FROM albums LIMIT 1").fetchone()
+        index.close()
+
+        assert row is not None
+        assert row["sale_item_id"] == "sale-stream"
 
     def test_reset_collection_sync_state(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -4635,6 +4713,42 @@ class TestRemoteTrackSchema:
         index.close()
 
         assert updated == 0
+
+    def test_set_track_source_for_item_propagates_to_albums(
+        self, tmp_path: Path
+    ) -> None:
+        """albums.source is refreshed after set_track_source_for_item."""
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _sample_track(Path("bandcamp://sale-3/1"))
+        track.source = "bandcamp"
+        index.upsert_many([track])
+        index.upsert_collection_item(
+            "sale-3",
+            mode="local",
+            band_name=track.album_artist,
+            item_title=track.album,
+            synced_at=1000.0,
+        )
+
+        # Initially albums.source should be 'bandcamp' (only remote tracks).
+        row_before = index._conn.execute(
+            "SELECT source FROM albums WHERE sale_item_id = 'sale-3'"
+        ).fetchone()
+        assert row_before is not None
+        assert row_before["source"] == "bandcamp"
+
+        # set_track_source_for_item is called (e.g. during sync cleanup).
+        index.set_track_source_for_item("sale-3", "local")
+
+        row_after = index._conn.execute(
+            "SELECT source FROM albums WHERE sale_item_id = 'sale-3'"
+        ).fetchone()
+        index.close()
+
+        # Remote tracks now have source='local' but file_path still starts with
+        # bandcamp://, so the dedup logic produces 'local' (local wins).
+        assert row_after is not None
+        assert row_after["source"] == "local"
 
     def test_migration_v20_adds_stream_columns(self, tmp_path: Path) -> None:
         """A v19 DB gains the three new columns on open."""

@@ -1079,6 +1079,7 @@ def create_app(
         """
         import os
         import shutil
+        import sqlite3
         import time as _t
 
         from kamp_core.library import write_album_tags_to_file
@@ -1095,6 +1096,17 @@ def create_app(
 
         if new_album == album and new_album_artist == album_artist:
             raise HTTPException(status_code=400, detail="No changes requested")
+
+        # Pre-flight: reject before any file or DB mutation if the target name
+        # already exists as a different album (e.g. a streaming-only entry).
+        # This prevents file operations from running when the DB write would
+        # fail anyway, and ensures the check fires before any transaction opens.
+        current_id = index._album_id(album_artist, album)
+        target_id = index._album_id(new_album_artist, new_album)
+        if target_id is not None and target_id != current_id:
+            raise HTTPException(
+                status_code=409, detail="Album name already exists in library"
+            )
 
         lib_path: Path | None = _state["library_path"]
         if lib_path is None:
@@ -1224,13 +1236,19 @@ def create_app(
                         )
                     )
             if db_pairs:
-                index.rename_album_tracks_bulk(
-                    db_pairs,
-                    new_album,
-                    new_album_artist,
-                    new_mtime,
-                    old_album_artist=album_artist,
-                )
+                try:
+                    index.rename_album_tracks_bulk(
+                        db_pairs,
+                        new_album,
+                        new_album_artist,
+                        new_mtime,
+                        old_album_artist=album_artist,
+                    )
+                except sqlite3.IntegrityError:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Album name already exists in library",
+                    )
 
         elif not new_album_dir.exists():
             # Happy path: target directory does not exist — atomic directory rename.
@@ -1319,13 +1337,19 @@ def create_app(
                             )
                         )
                 if db_pairs:
-                    index.rename_album_tracks_bulk(
-                        db_pairs,
-                        new_album,
-                        new_album_artist,
-                        new_mtime,
-                        old_album_artist=album_artist,
-                    )
+                    try:
+                        index.rename_album_tracks_bulk(
+                            db_pairs,
+                            new_album,
+                            new_album_artist,
+                            new_mtime,
+                            old_album_artist=album_artist,
+                        )
+                    except sqlite3.IntegrityError:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Album name already exists in library",
+                        )
             else:
                 old_artist_dir = old_album_dir.parent
                 new_artist_dir = new_album_dir.parent
@@ -1415,13 +1439,19 @@ def create_app(
                         if updated is not None:
                             moved.append(TrackOut.from_track(updated))
 
-                index.rename_album_tracks_bulk(
-                    db_pairs,
-                    new_album,
-                    new_album_artist,
-                    new_mtime,
-                    old_album_artist=album_artist,
-                )
+                try:
+                    index.rename_album_tracks_bulk(
+                        db_pairs,
+                        new_album,
+                        new_album_artist,
+                        new_mtime,
+                        old_album_artist=album_artist,
+                    )
+                except sqlite3.IntegrityError:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Album name already exists in library",
+                    )
 
                 # Album-level rename: clean up old artist dir if now empty.
                 # (Artist-level rename already removed it by renaming the dir itself.)
@@ -1521,13 +1551,19 @@ def create_app(
                         )
                     )
             if db_pairs:
-                index.rename_album_tracks_bulk(
-                    db_pairs,
-                    new_album,
-                    new_album_artist,
-                    new_mtime,
-                    old_album_artist=album_artist,
-                )
+                try:
+                    index.rename_album_tracks_bulk(
+                        db_pairs,
+                        new_album,
+                        new_album_artist,
+                        new_mtime,
+                        old_album_artist=album_artist,
+                    )
+                except sqlite3.IntegrityError:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Album name already exists in library",
+                    )
             # Remove old album dir if all files were moved out.
             _scrub_os_metadata(old_album_dir)
             try:

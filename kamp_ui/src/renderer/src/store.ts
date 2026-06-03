@@ -797,7 +797,13 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setAlbumRenameProgress: (progress) => set({ albumRenameProgress: progress }),
 
   patchAlbumTags: async (albumArtist, album, opts) => {
-    const result = await api.patchAlbumTags(albumArtist, album, opts)
+    let result: Awaited<ReturnType<typeof api.patchAlbumTags>>
+    try {
+      result = await api.patchAlbumTags(albumArtist, album, opts)
+    } catch (err) {
+      set({ albumRenameProgress: null })
+      throw err
+    }
     if ('collision' in result) return result
     if (result.failed.length > 0) {
       console.error('[kamp] album rename: tag write failed for', result.failed)

@@ -1095,7 +1095,7 @@ def fetch_album_art_bytes(album_url: str, session_data: dict[str, Any]) -> bytes
         art_id = tralbum.get("art_id")
         if not art_id:
             return None
-        cdn_url = f"https://f4.bcbits.com/img/a{art_id}_16.jpg"
+        cdn_url = f"https://f4.bcbits.com/img/a{art_id}_0.jpg"
         cdn_resp = _requests.get(cdn_url, timeout=30)
         cdn_resp.raise_for_status()
         return cdn_resp.content

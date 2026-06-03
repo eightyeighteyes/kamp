@@ -4494,3 +4494,31 @@ class TestArtEndpointRemoteAlbums:
 
         assert res.status_code == 200
         assert res.content == self._JPEG
+
+    def test_windows_backslash_path_serves_art(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Windows: Path('bandcamp://sale_id/1') normalises to bandcamp:\\sale_id\\1.
+
+        _remote_art_response must strip backslashes as well as forward slashes
+        so the sale_item_id is parsed correctly and art is served.
+        """
+        cache_dir = tmp_path / "art_cache"
+        cache_dir.mkdir()
+        (cache_dir / f"{self._TRALBUM_ID}.jpg").write_bytes(self._JPEG)
+        mock_index.get_collection_item.return_value = self._collection_item()
+
+        c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
+        # Windows-normalised path: double backslash becomes the URI separator.
+        windows_path = f"bandcamp:\\\\{self._SALE_ID}\\1"
+        res = c.get(
+            "/api/v1/album-art",
+            params={"album_artist": "A", "album": "B", "file_path": windows_path},
+        )
+
+        assert res.status_code == 200
+        assert res.content == self._JPEG

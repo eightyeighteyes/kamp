@@ -74,6 +74,7 @@ export function AlbumCard({
   const isDownloading = album.sale_item_id != null && downloadingAlbumIds.has(album.sale_item_id)
   const isQueued = album.sale_item_id != null && queuedAlbumIds.has(album.sale_item_id)
   const [artLoaded, setArtLoaded] = useState(false)
+  const [artError, setArtError] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
   const isActive = album.missing_album
@@ -278,13 +279,16 @@ export function AlbumCard({
       <div
         className={`album-art${artLoaded ? ' has-art' : ''}${artBlurred ? ' album-art--blurred' : ''}`}
       >
-        {album.has_art && (
+        {album.has_art && !artError && (
           <img
             className="album-art-img"
             src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)}
             alt=""
             onLoad={() => setArtLoaded(true)}
-            onError={() => setArtLoaded(false)}
+            onError={() => {
+              setArtLoaded(false)
+              setArtError(true)
+            }}
           />
         )}
         {playing && isActive && (

@@ -2013,7 +2013,12 @@ def create_app(
                 raise HTTPException(status_code=404, detail="No art found")
             # Strip scheme; handle both 'bandcamp://...' and 'bandcamp:/...'
             # (Path() on POSIX normalises double-slash to single-slash).
-            sale_item_id = fp.split("bandcamp:", 1)[1].lstrip("/").split("/")[0]
+            sale_item_id = (
+                fp.split("bandcamp:", 1)[1]
+                .lstrip("/\\")
+                .replace("\\", "/")
+                .split("/")[0]
+            )
             item = index.get_collection_item(sale_item_id)
             if not item or not item.get("album_url"):
                 raise HTTPException(status_code=404, detail="No art found")

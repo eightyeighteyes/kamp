@@ -456,7 +456,9 @@ export function TrackList(): React.JSX.Element | null {
               const oldAlbum = album.album
               const count = album.track_count
               try {
-                const result = await patchAlbumTags(oldArtist, oldAlbum, { album_artist: newArtist })
+                const result = await patchAlbumTags(oldArtist, oldAlbum, {
+                  album_artist: newArtist
+                })
                 if (result?.collision) {
                   setAlbumCollision({ ...result, pendingOpts: { album_artist: newArtist } })
                 } else {

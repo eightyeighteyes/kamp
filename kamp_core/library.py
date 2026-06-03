@@ -90,7 +90,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 23
+_SCHEMA_VERSION = 24
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -120,7 +120,31 @@ CREATE TABLE IF NOT EXISTS tracks (
     label                TEXT    NOT NULL DEFAULT '',
     source               TEXT    NOT NULL DEFAULT 'local',
     stream_url           TEXT,
-    stream_url_expires_at REAL
+    stream_url_expires_at REAL,
+    album_id             INTEGER REFERENCES albums(id)
+);
+
+-- First-class album entity (KAMP-418). Replaces the GROUP BY (album_artist, album)
+-- derived-aggregate pattern. COLLATE NOCASE on the UNIQUE constraint prevents
+-- case-variant duplicates (e.g. "CASTLEBEAT" vs "Castlebeat") from coexisting.
+-- favorite is stored here directly; album_favorites table is dropped in v24.
+CREATE TABLE IF NOT EXISTS albums (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    album_artist   TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
+    album          TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
+    year           TEXT    NOT NULL DEFAULT '',
+    embedded_art   INTEGER NOT NULL DEFAULT 0,
+    mb_release_id  TEXT    NOT NULL DEFAULT '',
+    genre          TEXT    NOT NULL DEFAULT '',
+    label          TEXT    NOT NULL DEFAULT '',
+    source         TEXT    NOT NULL DEFAULT 'local',
+    sale_item_id   TEXT    REFERENCES bandcamp_collection(sale_item_id),
+    favorite       INTEGER NOT NULL DEFAULT 0,
+    date_added     REAL,
+    last_played_at REAL,
+    play_count_avg REAL    NOT NULL DEFAULT 0,
+    art_version    REAL,
+    UNIQUE (album_artist, album)
 );
 
 -- FTS5 virtual table for full-text search across track metadata.
@@ -166,15 +190,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     service      TEXT NOT NULL PRIMARY KEY,
     session_json TEXT,
     updated_at   REAL NOT NULL
-);
-
--- Albums marked as favorites by the user (KAMP-293).
--- Stored independently of track-level favorites so album and track favorites
--- can be toggled without affecting each other.
-CREATE TABLE IF NOT EXISTS album_favorites (
-    album_artist TEXT NOT NULL,
-    album        TEXT NOT NULL,
-    PRIMARY KEY (album_artist, album)
 );
 
 -- Application settings (replaces config.toml; see TASK-132).
@@ -354,17 +369,16 @@ class AlbumInfo:
     # as a display name, and file_path uniquely identifies this virtual album.
     missing_album: bool = False
     file_path: str = ""
-    # MAX(file_mtime) across the album's tracks — used as a cache-busting key
-    # in image URLs so the browser only re-fetches art when files change.
+    # MAX(file_mtime) across the album's local tracks — cache-busting key for image URLs.
     art_version: float | None = None
-    # MIN(date_added) across the album's tracks — exposed so callers can filter
-    # by recency without a separate query.
+    # MIN(date_added) across the album's tracks — for recency filtering.
     added_at: float | None = None
-    # MAX(last_played) across the album's tracks — exposed for the Last Played module.
+    # MAX(last_played) across the album's tracks — for the Last Played module.
     last_played_at: float | None = None
-    # SUM(play_count) / COUNT(*) across tracks — exposed for the Top Albums module.
+    # SUM(play_count) / COUNT(*) across tracks — for the Top Albums module.
     play_count_avg: float = 0.0
-    # True when the user has favorited this album (KAMP-293).
+    # True when the user has favorited this album (KAMP-293/KAMP-418).
+    # Stored directly on the albums row since KAMP-418; previously in album_favorites.
     favorite: bool = False
     # True when any track in this album is individually favorited (KAMP-294).
     has_favorite_track: bool = False
@@ -373,12 +387,12 @@ class AlbumInfo:
     source: str = "local"
     # True when any track in this album has source != 'local'.
     has_remote_tracks: bool = False
-    # True when this local album is also in bandcamp_collection with mode='local'
-    # (i.e. the user owns it on Bandcamp but has it downloaded locally).
+    # True when this album has a sale_item_id link to bandcamp_collection.
     in_bandcamp_collection: bool = False
-    # Bandcamp sale_item_id, parsed from a constituent track's file_path.
-    # Non-None only for albums where at least one track has a bandcamp:// path.
+    # Bandcamp sale_item_id — stored on the albums row since KAMP-418.
     sale_item_id: str | None = None
+    # Stable integer PK of the albums row; 0 for missing-album virtual entries.
+    album_id: int = field(default=0, compare=False)
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -442,6 +456,9 @@ class LibraryIndex:
         # WAL allows concurrent reads from other thread-connections while a
         # write (e.g. library scan) is in progress.
         conn.execute("PRAGMA journal_mode=WAL")
+        # Enforce referential integrity so orphaned album_id / sale_item_id
+        # FKs are caught at write time rather than silently ignored.
+        conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     @property
@@ -822,6 +839,139 @@ class LibraryIndex:
             self._conn.commit()
             version = 23
 
+        if version == 23:
+            # v23 → v24: promote albums to a first-class entity (KAMP-418).
+            #
+            # Step 1: create the albums table (idempotent — _DDL may have already
+            # created it on a fresh database, IF NOT EXISTS handles that).
+            self._conn.executescript("""
+                CREATE TABLE IF NOT EXISTS albums (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    album_artist   TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
+                    album          TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
+                    year           TEXT    NOT NULL DEFAULT '',
+                    embedded_art   INTEGER NOT NULL DEFAULT 0,
+                    mb_release_id  TEXT    NOT NULL DEFAULT '',
+                    genre          TEXT    NOT NULL DEFAULT '',
+                    label          TEXT    NOT NULL DEFAULT '',
+                    source         TEXT    NOT NULL DEFAULT 'local',
+                    sale_item_id   TEXT    REFERENCES bandcamp_collection(sale_item_id),
+                    favorite       INTEGER NOT NULL DEFAULT 0,
+                    date_added     REAL,
+                    last_played_at REAL,
+                    play_count_avg REAL    NOT NULL DEFAULT 0,
+                    art_version    REAL,
+                    UNIQUE (album_artist, album)
+                )
+            """)
+            # Step 2: populate albums from tracks with case-insensitive deduplication.
+            # For each LOWER(album_artist)/LOWER(album) group, pick the most-common-case
+            # variant as canonical (sub-select ordered by count DESC, then alphabetically
+            # for determinism). Exclude tracks with no album tag — they remain virtual.
+            # Build the SELECT dynamically: some old test DBs (and real DBs that started
+            # on an early version) may be missing columns that later migrations added.
+            # Rather than fail on a missing column, fall back to a literal default.
+            _tc = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+
+            def _col(name: str, expr: str, default: str = "''") -> str:
+                return expr if name in _tc else default
+
+            self._conn.execute(f"""
+                INSERT OR IGNORE INTO albums
+                    (album_artist, album, year, embedded_art, mb_release_id,
+                     genre, label, source, date_added, last_played_at,
+                     play_count_avg, art_version)
+                SELECT
+                    (SELECT t2.album_artist FROM tracks t2
+                     WHERE LOWER(t2.album_artist) = LOWER(t.album_artist)
+                       AND LOWER(t2.album) = LOWER(t.album)
+                     GROUP BY t2.album_artist
+                     ORDER BY COUNT(*) DESC, t2.album_artist ASC
+                     LIMIT 1),
+                    (SELECT t2.album FROM tracks t2
+                     WHERE LOWER(t2.album_artist) = LOWER(t.album_artist)
+                       AND LOWER(t2.album) = LOWER(t.album)
+                     GROUP BY t2.album
+                     ORDER BY COUNT(*) DESC, t2.album ASC
+                     LIMIT 1),
+                    MAX(t.year),
+                    MAX(t.embedded_art),
+                    {_col('mb_release_id', "MAX(t.mb_release_id)")},
+                    {_col('genre', "MAX(t.genre)")},
+                    {_col('label', "MAX(t.label)")},
+                    {_col('source',
+                          "CASE WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0"
+                          "          AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0"
+                          "     THEN 'local'"
+                          "     WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'"
+                          "     ELSE MIN(t.source) END",
+                          "'local'")},
+                    {_col('date_added', "MIN(t.date_added)", "NULL")},
+                    {_col('last_played', "MAX(t.last_played)", "NULL")},
+                    {_col('play_count', "CAST(SUM(t.play_count) AS REAL) / COUNT(*)", "0")},
+                    MAX(t.file_mtime)
+                FROM tracks t
+                WHERE t.album != ''
+                GROUP BY LOWER(t.album_artist), LOWER(t.album)
+            """)
+            # Step 3: link sale_item_id on album rows via the bandcamp_collection ledger.
+            # Guard: old bandcamp_collection schemas (before v19 settled on band_name/item_title)
+            # may use different column names — skip if the expected columns are absent.
+            _bcc = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(bandcamp_collection)"
+                ).fetchall()
+            }
+            if "band_name" in _bcc and "item_title" in _bcc:
+                self._conn.execute("""
+                    UPDATE albums SET sale_item_id = (
+                        SELECT bc.sale_item_id
+                        FROM bandcamp_collection bc
+                        WHERE LOWER(bc.band_name)  = LOWER(albums.album_artist)
+                          AND LOWER(bc.item_title) = LOWER(albums.album)
+                        LIMIT 1
+                    )
+                    WHERE sale_item_id IS NULL
+                """)
+            # Step 4: add album_id FK column to tracks (guard: new DBs already have it).
+            existing_cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if "album_id" not in existing_cols:
+                self._conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN album_id INTEGER REFERENCES albums(id)"
+                )
+            self._conn.execute("""
+                UPDATE tracks SET album_id = (
+                    SELECT a.id FROM albums a
+                    WHERE LOWER(a.album_artist) = LOWER(tracks.album_artist)
+                      AND LOWER(a.album) = LOWER(tracks.album)
+                )
+                WHERE album != '' AND album_id IS NULL
+            """)
+            # Step 5: absorb album_favorites into albums.favorite, then drop the table.
+            af_exists = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='album_favorites'"
+            ).fetchone()
+            if af_exists:
+                self._conn.execute("""
+                    UPDATE albums SET favorite = 1
+                    WHERE EXISTS (
+                        SELECT 1 FROM album_favorites af
+                        WHERE LOWER(af.album_artist) = LOWER(albums.album_artist)
+                          AND LOWER(af.album)        = LOWER(albums.album)
+                    )
+                """)
+                self._conn.execute("DROP TABLE album_favorites")
+            self._conn.execute("UPDATE schema_version SET version = 24")
+            self._conn.commit()
+            version = 24  # noqa: F841
+
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
         self._conn.execute("DELETE FROM tracks_fts")
@@ -1164,6 +1314,17 @@ class LibraryIndex:
                 added_at if added_at is not None else now,
             ),
         )
+        # Keep the albums row's sale_item_id FK in sync when a matching album exists.
+        if band_name and item_title:
+            self._conn.execute(
+                """
+                UPDATE albums SET sale_item_id = ?
+                WHERE album_artist = ? COLLATE NOCASE
+                  AND album        = ? COLLATE NOCASE
+                  AND (sale_item_id IS NULL OR sale_item_id = ?)
+                """,
+                (sale_item_id, band_name, item_title, sale_item_id),
+            )
         self._conn.commit()
 
     def update_remote_track_date_added(
@@ -1256,14 +1417,29 @@ class LibraryIndex:
 
         Used by the art endpoint to serve cached Bandcamp CDN art for local albums
         that were downloaded from Bandcamp but have no embedded artwork yet.
+        Looks up sale_item_id from the albums row (set during v24 migration and
+        maintained by upsert_many) rather than doing a cross-table string join.
+        Falls back to the COLLATE NOCASE join for missing-album edge cases.
         """
-        row = self._conn.execute(
-            """SELECT * FROM bandcamp_collection
-               WHERE band_name = ? COLLATE NOCASE
-                 AND item_title = ? COLLATE NOCASE
-               LIMIT 1""",
+        album_row = self._conn.execute(
+            "SELECT sale_item_id FROM albums WHERE album_artist = ? COLLATE NOCASE AND album = ? COLLATE NOCASE",
             (album_artist, album),
         ).fetchone()
+        sale_item_id = album_row["sale_item_id"] if album_row else None
+        if sale_item_id:
+            row = self._conn.execute(
+                "SELECT * FROM bandcamp_collection WHERE sale_item_id = ?",
+                (sale_item_id,),
+            ).fetchone()
+        else:
+            # Fallback for missing-album tracks or albums not yet in the albums table.
+            row = self._conn.execute(
+                """SELECT * FROM bandcamp_collection
+                   WHERE band_name = ? COLLATE NOCASE
+                     AND item_title = ? COLLATE NOCASE
+                   LIMIT 1""",
+                (album_artist, album),
+            ).fetchone()
         return dict(row) if row else None
 
     def update_stream_url(
@@ -1311,6 +1487,43 @@ class LibraryIndex:
         """Insert or replace multiple tracks in a single transaction."""
         if not tracks:
             return
+
+        # Step 1: upsert parent album rows for named albums. INSERT OR IGNORE so
+        # existing album metadata (e.g. favorite flag) is never overwritten here.
+        named = [t for t in tracks if t.album]
+        seen: set[tuple[str, str]] = set()
+        album_params: list[
+            tuple[str, str, str, int, str, str, str, str, float | None]
+        ] = []
+        for t in named:
+            key = (t.album_artist.lower(), t.album.lower())
+            if key not in seen:
+                seen.add(key)
+                album_params.append(
+                    (
+                        t.album_artist,
+                        t.album,
+                        t.year,
+                        int(t.embedded_art),
+                        t.mb_release_id,
+                        t.genre,
+                        t.label,
+                        t.source,
+                        t.date_added,
+                    )
+                )
+        if album_params:
+            self._conn.executemany(
+                """
+                INSERT OR IGNORE INTO albums
+                    (album_artist, album, year, embedded_art, mb_release_id,
+                     genre, label, source, date_added)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                album_params,
+            )
+
+        # Step 2: upsert track rows.
         self._conn.executemany(
             """
             INSERT INTO tracks
@@ -1342,6 +1555,61 @@ class LibraryIndex:
             """,
             [_track_to_params(t) for t in tracks],
         )
+
+        # Step 3: assign album_id on the track rows we just inserted/updated.
+        file_paths = [_canonical_track_key(t.file_path) for t in named]
+        if file_paths:
+            placeholders = ",".join("?" * len(file_paths))
+            self._conn.execute(
+                f"""
+                UPDATE tracks SET album_id = (
+                    SELECT a.id FROM albums a
+                    WHERE a.album_artist = tracks.album_artist COLLATE NOCASE
+                      AND a.album        = tracks.album        COLLATE NOCASE
+                )
+                WHERE file_path IN ({placeholders})
+                  AND album != ''
+                """,
+                file_paths,
+            )
+
+        # Step 4: refresh denormalized aggregate columns on the touched album rows.
+        # Run once per batch (not per track) using a correlated subquery.
+        if file_paths:
+            album_ids_rows = self._conn.execute(
+                f"SELECT DISTINCT album_id FROM tracks"
+                f" WHERE file_path IN ({placeholders}) AND album_id IS NOT NULL",
+                file_paths,
+            ).fetchall()
+            album_ids = [r[0] for r in album_ids_rows]
+            if album_ids:
+                id_placeholders = ",".join("?" * len(album_ids))
+                self._conn.execute(
+                    f"""
+                    UPDATE albums SET
+                        embedded_art   = (SELECT MAX(t.embedded_art)  FROM tracks t WHERE t.album_id = albums.id),
+                        date_added     = (SELECT MIN(t.date_added)    FROM tracks t WHERE t.album_id = albums.id),
+                        last_played_at = (SELECT MAX(t.last_played)   FROM tracks t WHERE t.album_id = albums.id),
+                        art_version    = (SELECT MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
+                                          FROM tracks t WHERE t.album_id = albums.id),
+                        play_count_avg = (SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
+                                          FROM tracks t WHERE t.album_id = albums.id),
+                        source         = (SELECT
+                                              CASE WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
+                                                        AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
+                                                   THEN 'local'
+                                                   WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                                                   ELSE MIN(t.source) END
+                                          FROM tracks t WHERE t.album_id = albums.id),
+                        year           = (SELECT MAX(t.year)           FROM tracks t WHERE t.album_id = albums.id),
+                        genre          = (SELECT MAX(t.genre)          FROM tracks t WHERE t.album_id = albums.id),
+                        label          = (SELECT MAX(t.label)          FROM tracks t WHERE t.album_id = albums.id),
+                        mb_release_id  = (SELECT MAX(t.mb_release_id)  FROM tracks t WHERE t.album_id = albums.id)
+                    WHERE id IN ({id_placeholders})
+                    """,
+                    album_ids,
+                )
+
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()
         self._conn.commit()
@@ -1405,7 +1673,20 @@ class LibraryIndex:
         old_album_artist, when provided, also updates the per-track artist column
         for any row where artist = old_album_artist (i.e. single-artist albums
         where TPE1 == TPE2).
+
+        Also updates the albums row so album_artist/album stay in sync. Raises
+        sqlite3.IntegrityError if new_album_artist/new_album already exists in
+        the albums table (i.e. a rename collision — callers should catch and 409).
         """
+        # Determine the album_id from the first old path's track row.
+        old_path_str = str(path_pairs[0][0]) if path_pairs else None
+        album_id: int | None = None
+        if old_path_str:
+            r = self._conn.execute(
+                "SELECT album_id FROM tracks WHERE file_path = ?", (old_path_str,)
+            ).fetchone()
+            album_id = r["album_id"] if r else None
+
         for old_path, new_path in path_pairs:
             self._conn.execute(
                 """UPDATE tracks
@@ -1425,6 +1706,13 @@ class LibraryIndex:
                     new_mtime,
                     str(old_path),
                 ),
+            )
+        # Update the albums row. The UNIQUE (album_artist, album) COLLATE NOCASE
+        # constraint raises IntegrityError if the new name already exists.
+        if album_id is not None:
+            self._conn.execute(
+                "UPDATE albums SET album_artist = ?, album = ? WHERE id = ?",
+                (new_album_artist, new_album, album_id),
             )
         self._rebuild_fts()
         self._conn.commit()
@@ -1593,13 +1881,25 @@ class LibraryIndex:
 
         Called when a track begins playing so that Last Played sort order
         reflects when listening last occurred rather than when it ended.
-        No-op if the path is not in the index.
+        No-op if the path is not in the index. Also propagates the timestamp
+        to the parent album row's last_played_at aggregate.
         """
         import time
 
+        now = time.time()
+        key = _canonical_track_key(file_path)
         self._conn.execute(
             "UPDATE tracks SET last_played = ? WHERE file_path = ?",
-            (time.time(), _canonical_track_key(file_path)),
+            (now, key),
+        )
+        # Keep album aggregate in sync.
+        self._conn.execute(
+            """
+            UPDATE albums SET last_played_at = ?
+            WHERE id = (SELECT album_id FROM tracks WHERE file_path = ?)
+              AND (last_played_at IS NULL OR last_played_at < ?)
+            """,
+            (now, key, now),
         )
         self._conn.commit()
 
@@ -1608,10 +1908,22 @@ class LibraryIndex:
 
         Called when a track reaches natural end-of-file. Only play_count is
         updated here; last_played is managed exclusively by record_track_started().
+        Also refreshes the parent album's play_count_avg.
         """
+        key = _canonical_track_key(file_path)
         self._conn.execute(
             "UPDATE tracks SET play_count = play_count + 1 WHERE file_path = ?",
-            (_canonical_track_key(file_path),),
+            (key,),
+        )
+        self._conn.execute(
+            """
+            UPDATE albums SET play_count_avg = (
+                SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
+                FROM tracks t WHERE t.album_id = albums.id
+            )
+            WHERE id = (SELECT album_id FROM tracks WHERE file_path = ?)
+            """,
+            (key,),
         )
         self._conn.commit()
 
@@ -1634,7 +1946,9 @@ class LibraryIndex:
 
         Called by LibraryScanner after upserting newly-scanned local files so
         that favorites set on streaming tracks are not lost when an album is
-        downloaded.  Matches by (album_artist, album, track_number, disc_number).
+        downloaded.  Matches by (album_id, track_number, disc_number) — the
+        album_id FK eliminates the binary-collation string matching that caused
+        silent data loss when MusicBrainz normalised album_artist capitalisation.
         Only updates rows where the local track has favorite=0 to avoid clearing
         a flag the user explicitly set on the local file.
         """
@@ -1646,8 +1960,10 @@ class LibraryIndex:
                   AND favorite = 0
                   AND EXISTS (
                       SELECT 1 FROM tracks r
-                      WHERE r.album_artist = ?
-                        AND r.album = ?
+                      WHERE r.album_id = (
+                                SELECT album_id FROM tracks
+                                WHERE file_path = ?
+                            )
                         AND r.track_number = ?
                         AND r.disc_number = ?
                         AND r.file_path LIKE 'bandcamp://%'
@@ -1656,8 +1972,7 @@ class LibraryIndex:
                 """,
                 (
                     str(t.file_path),
-                    t.album_artist,
-                    t.album,
+                    str(t.file_path),
                     t.track_number,
                     t.disc_number,
                 ),
@@ -1696,12 +2011,32 @@ class LibraryIndex:
             params.append(mb_release_id)
         if not sets:
             return self.tracks_for_album(album_artist, album)
-        params.extend([album_artist, album])
+        album_id = self._album_id(album_artist, album)
+        if album_id is None:
+            return []
+        params.append(album_id)
         self._conn.execute(
-            f"UPDATE tracks SET {', '.join(sets)}"
-            " WHERE album_artist = ? AND album = ?",
+            f"UPDATE tracks SET {', '.join(sets)} WHERE album_id = ?",
             params,
         )
+        # Keep the albums row in sync with track-level metadata fields.
+        album_sets: list[str] = []
+        album_meta: list[object] = []
+        for col, val in [
+            ("genre", genre),
+            ("label", label),
+            ("year", year),
+            ("mb_release_id", mb_release_id),
+        ]:
+            if val is not None:
+                album_sets.append(f"{col} = ?")
+                album_meta.append(val)
+        if album_sets:
+            album_meta.append(album_id)
+            self._conn.execute(
+                f"UPDATE albums SET {', '.join(album_sets)} WHERE id = ?",
+                album_meta,
+            )
         self._conn.commit()
         return self.tracks_for_album(album_artist, album)
 
@@ -1718,13 +2053,21 @@ class LibraryIndex:
         import time
 
         now = time.time()
+        album_id = self._album_id(album_artist, album)
+        if album_id is None:
+            return
         str_paths = [str(p) for p in file_paths]
         placeholders = ",".join("?" * len(str_paths))
         self._conn.execute(
             f"UPDATE tracks SET embedded_art = 1, file_mtime = ?"
-            f" WHERE album_artist = ? AND album = ?"
+            f" WHERE album_id = ?"
             f" AND file_path IN ({placeholders})",
-            [now, album_artist, album, *str_paths],
+            [now, album_id, *str_paths],
+        )
+        # Update the album row's aggregate art fields.
+        self._conn.execute(
+            "UPDATE albums SET embedded_art = 1, art_version = ? WHERE id = ?",
+            (now, album_id),
         )
         self._conn.commit()
 
@@ -1748,25 +2091,21 @@ class LibraryIndex:
     def toggle_album_favorite(
         self, album_artist: str, album: str, favorite: bool
     ) -> None:
-        """Insert or delete the album from album_favorites."""
-        if favorite:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO album_favorites (album_artist, album) VALUES (?, ?)",
-                (album_artist, album),
-            )
-        else:
-            self._conn.execute(
-                "DELETE FROM album_favorites WHERE album_artist = ? AND album = ?",
-                (album_artist, album),
-            )
+        """Set or clear the favorite flag on the album row."""
+        self._conn.execute(
+            "UPDATE albums SET favorite = ? WHERE album_artist = ? COLLATE NOCASE AND album = ? COLLATE NOCASE",
+            (int(favorite), album_artist, album),
+        )
         self._conn.commit()
 
     def albums(self, sort: str = "album_artist") -> list[AlbumInfo]:
-        """Return one AlbumInfo per (album_artist, album) pair.
+        """Return one AlbumInfo per album (named albums from the albums table,
+        plus one virtual entry per track that has no album tag).
 
-        Tracks that have no album tag are each returned as their own entry
-        with ``missing_album=True``; the ``album`` field is set to the track
-        title (for display) and ``file_path`` uniquely identifies the entry.
+        Named albums are read directly from the ``albums`` table with a minimal
+        LEFT JOIN to ``tracks`` for per-track aggregates (track_count,
+        has_favorite_track). Missing-album tracks each appear as their own entry
+        via a UNION ALL branch, unchanged from the pre-KAMP-418 behaviour.
 
         *sort* must be one of: ``album_artist`` (default), ``album``,
         ``date_added``, ``last_played``.  Unknown values fall back to
@@ -1774,134 +2113,64 @@ class LibraryIndex:
         """
         order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
         rows = self._conn.execute(f"""
-            SELECT album_artist, album, year, track_count, has_art,
-                   missing_album, file_path, art_version,
-                   sort_date_added, sort_last_played, sort_play_count_avg,
-                   is_favorite, has_favorite_track,
-                   album_source, has_remote_tracks, in_bandcamp_collection,
-                   sample_bc_path
-            FROM (
-                -- Dedup state: both real bandcamp:// rows AND local-source rows exist for
-                -- this album group. Happens after a download when the pipeline scan adds
-                -- local files before the old remote rows are removed. When in dedup state,
-                -- aggregates use only the local-source rows so track counts and has_art
-                -- reflect the real files on disk, not the stale remote placeholders.
-                SELECT t.album_artist, t.album, t.year,
-                       MAX(CASE WHEN t.source = 'local'
-                                 AND EXISTS (
-                                     SELECT 1 FROM tracks t2
-                                     WHERE t2.album_artist = t.album_artist
-                                       AND t2.album = t.album
-                                       AND t2.file_path LIKE 'bandcamp://%'
-                                 )
-                           THEN 1 ELSE 0 END) AS has_local,
-                       CASE
-                           WHEN MAX(CASE WHEN t.source = 'local'
-                                         AND EXISTS (
-                                             SELECT 1 FROM tracks t2
-                                             WHERE t2.album_artist = t.album_artist
-                                               AND t2.album = t.album
-                                               AND t2.file_path LIKE 'bandcamp://%'
-                                         )
-                                    THEN 1 ELSE 0 END) = 1
-                           THEN COUNT(CASE WHEN t.source = 'local' THEN 1 END)
-                           ELSE COUNT(*)
-                       END AS track_count,
-                       CASE
-                           WHEN MAX(CASE WHEN t.source = 'local'
-                                         AND EXISTS (
-                                             SELECT 1 FROM tracks t2
-                                             WHERE t2.album_artist = t.album_artist
-                                               AND t2.album = t.album
-                                               AND t2.file_path LIKE 'bandcamp://%'
-                                         )
-                                    THEN 1 ELSE 0 END) = 1
-                           THEN MAX(CASE WHEN t.source = 'local' THEN t.embedded_art ELSE 0 END)
-                           WHEN COUNT(DISTINCT t.source) = 1 AND MIN(t.source) != 'local' THEN 1
-                           ELSE MAX(t.embedded_art)
-                       END AS has_art,
-                       0 AS missing_album, '' AS file_path,
-                       MIN(t.date_added) AS sort_date_added,
-                       MAX(t.last_played) AS sort_last_played,
-                       CASE
-                           WHEN MAX(CASE WHEN t.source = 'local'
-                                         AND EXISTS (
-                                             SELECT 1 FROM tracks t2
-                                             WHERE t2.album_artist = t.album_artist
-                                               AND t2.album = t.album
-                                               AND t2.file_path LIKE 'bandcamp://%'
-                                         )
-                                    THEN 1 ELSE 0 END) = 1
-                           THEN MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
-                           ELSE MAX(t.file_mtime)
-                       END AS art_version,
-                       CAST(SUM(t.play_count) AS REAL) / COUNT(*) AS sort_play_count_avg,
-                       MAX(CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END) AS is_favorite,
-                       MAX(t.favorite) AS has_favorite_track,
-                       CASE
-                           WHEN MAX(CASE WHEN t.source = 'local'
-                                         AND EXISTS (
-                                             SELECT 1 FROM tracks t2
-                                             WHERE t2.album_artist = t.album_artist
-                                               AND t2.album = t.album
-                                               AND t2.file_path LIKE 'bandcamp://%'
-                                         )
-                                    THEN 1 ELSE 0 END) = 1
-                           THEN 'local'
-                           WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                           ELSE MIN(t.source)
-                       END AS album_source,
-                       CASE
-                           WHEN MAX(CASE WHEN t.source = 'local'
-                                         AND EXISTS (
-                                             SELECT 1 FROM tracks t2
-                                             WHERE t2.album_artist = t.album_artist
-                                               AND t2.album = t.album
-                                               AND t2.file_path LIKE 'bandcamp://%'
-                                         )
-                                    THEN 1 ELSE 0 END) = 1
-                           THEN 0
-                           ELSE MAX(CASE WHEN t.source != 'local' THEN 1 ELSE 0 END)
-                       END AS has_remote_tracks,
-                       MAX(CASE WHEN bc.sale_item_id IS NOT NULL THEN 1 ELSE 0 END)
-                           AS in_bandcamp_collection,
-                       MIN(CASE WHEN t.file_path LIKE 'bandcamp://%'
-                           THEN t.file_path ELSE NULL END) AS sample_bc_path
-                FROM tracks t
-                LEFT JOIN album_favorites af
-                    ON af.album_artist = t.album_artist AND af.album = t.album
-                LEFT JOIN bandcamp_collection bc
-                    ON bc.band_name = t.album_artist COLLATE NOCASE
-                    AND bc.item_title = t.album COLLATE NOCASE
-                    AND bc.mode = 'local'
-                WHERE t.album != ''
-                GROUP BY t.album_artist, t.album
-                UNION ALL
-                SELECT t.album_artist, t.title AS album, t.year,
-                       CASE WHEN t.file_path NOT LIKE 'bandcamp://%' THEN 1 ELSE 0 END AS has_local,
-                       1 AS track_count,
-                       t.embedded_art AS has_art,
-                       1 AS missing_album, t.file_path,
-                       t.date_added AS sort_date_added,
-                       t.last_played AS sort_last_played,
-                       t.file_mtime AS art_version,
-                       CAST(t.play_count AS REAL) AS sort_play_count_avg,
-                       CASE WHEN af.album_artist IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
-                       t.favorite AS has_favorite_track,
-                       t.source AS album_source,
-                       CASE WHEN t.source != 'local' THEN 1 ELSE 0 END AS has_remote_tracks,
-                       0 AS in_bandcamp_collection,
-                       CASE WHEN t.file_path LIKE 'bandcamp://%'
-                           THEN t.file_path ELSE NULL END AS sample_bc_path
-                FROM tracks t
-                LEFT JOIN album_favorites af
-                    ON af.album_artist = t.album_artist AND af.album = t.title
-                WHERE t.album = ''
-            )
+            SELECT
+                a.id                AS album_id,
+                a.album_artist,
+                a.album,
+                a.year,
+                a.source            AS album_source,
+                a.sale_item_id,
+                a.favorite          AS is_favorite,
+                a.date_added        AS sort_date_added,
+                a.last_played_at    AS sort_last_played,
+                a.play_count_avg    AS sort_play_count_avg,
+                a.art_version,
+                -- has_art: remote-only albums always have CDN art; others use embedded_art.
+                CASE WHEN a.source = 'bandcamp' THEN 1 ELSE a.embedded_art END AS has_art,
+                0                   AS missing_album,
+                ''                  AS file_path,
+                -- track_count: for mixed or local albums count only local tracks
+                -- so the dedup state (local+remote rows coexisting) shows real files.
+                CASE WHEN a.source IN ('mixed', 'local')
+                     THEN COUNT(CASE WHEN t.source = 'local' THEN 1 END)
+                     ELSE COUNT(t.id)
+                END                 AS track_count,
+                MAX(t.favorite)     AS has_favorite_track,
+                -- in_bandcamp_collection: True only when mode='local' (user downloaded it).
+                CASE WHEN bc.sale_item_id IS NOT NULL THEN 1 ELSE 0 END AS in_bc
+            FROM albums a
+            LEFT JOIN tracks t ON t.album_id = a.id
+            LEFT JOIN bandcamp_collection bc
+                ON bc.sale_item_id = a.sale_item_id AND bc.mode = 'local'
+            GROUP BY a.id
+            UNION ALL
+            -- Missing-album tracks: each track with album='' appears as its own
+            -- virtual entry; file_path is the unique identifier for these entries.
+            SELECT
+                0                   AS album_id,
+                t.album_artist,
+                t.title             AS album,
+                t.year,
+                t.source            AS album_source,
+                NULL                AS sale_item_id,
+                0                   AS is_favorite,
+                t.date_added        AS sort_date_added,
+                t.last_played       AS sort_last_played,
+                CAST(t.play_count AS REAL) AS sort_play_count_avg,
+                t.file_mtime        AS art_version,
+                t.embedded_art      AS has_art,
+                1                   AS missing_album,
+                t.file_path,
+                1                   AS track_count,
+                t.favorite          AS has_favorite_track,
+                0                   AS in_bc
+            FROM tracks t
+            WHERE t.album = ''
             ORDER BY {order_by}
             """).fetchall()  # noqa: S608 — order_by is from a whitelist, not user input
         return [
             AlbumInfo(
+                album_id=r["album_id"],
                 album_artist=r["album_artist"],
                 album=r["album"],
                 year=r["year"],
@@ -1916,23 +2185,31 @@ class LibraryIndex:
                 favorite=bool(r["is_favorite"]),
                 has_favorite_track=bool(r["has_favorite_track"]),
                 source=r["album_source"],
-                has_remote_tracks=bool(r["has_remote_tracks"]),
-                in_bandcamp_collection=bool(r["in_bandcamp_collection"]),
-                sale_item_id=(
-                    r["sample_bc_path"].split("bandcamp://")[1].split("/")[0]
-                    if r["sample_bc_path"]
-                    else None
-                ),
+                has_remote_tracks=r["album_source"] != "local",
+                in_bandcamp_collection=bool(r["in_bc"]),
+                sale_item_id=r["sale_item_id"],
             )
             for r in rows
         ]
 
     def artists(self) -> list[str]:
-        """Return a sorted, deduplicated list of album_artist values."""
+        """Return a sorted, deduplicated list of album_artist values.
+
+        Queries the albums table (~1k rows) rather than tracks (~10k rows).
+        COLLATE NOCASE on the albums.UNIQUE constraint means no case duplicates exist.
+        """
         rows = self._conn.execute(
-            "SELECT DISTINCT album_artist FROM tracks ORDER BY album_artist COLLATE NOCASE"
+            "SELECT DISTINCT album_artist FROM albums ORDER BY album_artist COLLATE NOCASE"
         ).fetchall()
         return [r["album_artist"] for r in rows]
+
+    def _album_id(self, album_artist: str, album: str) -> int | None:
+        """Return the albums.id for the given (album_artist, album) pair, or None."""
+        row = self._conn.execute(
+            "SELECT id FROM albums WHERE album_artist = ? COLLATE NOCASE AND album = ? COLLATE NOCASE",
+            (album_artist, album),
+        ).fetchone()
+        return row["id"] if row else None
 
     def tracks_for_album(self, album_artist: str, album: str) -> list[Track]:
         """Return tracks for a given album sorted by disc then track number.
@@ -1942,21 +2219,24 @@ class LibraryIndex:
         prevents duplicate-track display after a Bandcamp album is downloaded
         and the local files have been scanned in alongside the old remote rows.
         """
+        album_id = self._album_id(album_artist, album)
+        if album_id is None:
+            return []
         rows = self._conn.execute(
             """
             SELECT * FROM tracks
-            WHERE album_artist = ? AND album = ?
+            WHERE album_id = ?
               AND (
                 file_path NOT LIKE 'bandcamp://%'
                 OR NOT EXISTS (
                     SELECT 1 FROM tracks t2
-                    WHERE t2.album_artist = ? AND t2.album = ?
+                    WHERE t2.album_id = ?
                       AND t2.file_path NOT LIKE 'bandcamp://%'
                 )
               )
             ORDER BY disc_number, track_number
             """,
-            (album_artist, album, album_artist, album),
+            (album_id, album_id),
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
@@ -2025,10 +2305,9 @@ class LibraryIndex:
             SELECT t.*
             FROM tracks_fts f
             JOIN tracks t ON f.rowid = t.id
-            LEFT JOIN album_favorites af
-                ON t.album_artist = af.album_artist AND t.album = af.album
+            LEFT JOIN albums al ON al.id = t.album_id
             WHERE tracks_fts MATCH ?
-            ORDER BY (t.favorite OR af.album_artist IS NOT NULL) DESC, f.rank
+            ORDER BY (t.favorite OR COALESCE(al.favorite, 0)) DESC, f.rank
             """,
             (fts_expr,),
         ).fetchall()

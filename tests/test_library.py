@@ -129,7 +129,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 23
+        assert version == 24
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1390,7 +1390,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 23
+        assert version == 24
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1447,7 +1447,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 23
+        assert version == 24
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1834,7 +1834,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 23
+        assert version == 24
         assert row is not None
         assert row[0] == 0
 
@@ -2088,7 +2088,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 23
+        assert version == 24
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2158,10 +2158,10 @@ class TestAlbumFavorite:
         index2.close()
         assert albums[0].favorite is True
 
-    def test_migration_v13_to_v14_creates_album_favorites_table(
+    def test_migration_v13_to_current_absorbs_album_favorites(
         self, tmp_path: Path
     ) -> None:
-        """Existing v13 databases gain the album_favorites table on open."""
+        """v13 databases migrate to v24: albums table exists, album_favorites is dropped."""
         import sqlite3 as _sqlite3
 
         db_path = tmp_path / "library.db"
@@ -2176,11 +2176,17 @@ class TestAlbumFavorite:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        # album_favorites table must now exist
-        index._conn.execute("SELECT COUNT(*) FROM album_favorites").fetchone()
+        tables = {
+            r[0]
+            for r in index._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
         index.close()
 
-        assert version == 23
+        assert version == 24
+        assert "albums" in tables
+        assert "album_favorites" not in tables
 
 
 # ---------------------------------------------------------------------------
@@ -2359,7 +2365,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 23
+        assert version == 24
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2454,7 +2460,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 23
+        assert version == 24
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2462,7 +2468,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 23
+        assert version == 24
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3339,7 +3345,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 23
+        assert version == 24
 
         index.close()
 
@@ -3941,7 +3947,9 @@ class TestMigrationV16ToV17:
                 mb_recording_id   TEXT    NOT NULL DEFAULT '',
                 file_mtime        REAL,
                 date_added        REAL,
-                favorite          INTEGER NOT NULL DEFAULT 0
+                last_played       REAL,
+                favorite          INTEGER NOT NULL DEFAULT 0,
+                play_count        INTEGER NOT NULL DEFAULT 0
             )
         """)
         conn.execute("""
@@ -4022,7 +4030,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 23
+        assert version == 24
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4057,7 +4065,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 23
+        assert version == 24
         index.close()
 
 
@@ -4427,7 +4435,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 23
+        assert version == 24
 
 
 class TestRemoteTrackSchema:
@@ -4694,7 +4702,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 23
+        assert version == 24
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -4755,7 +4763,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 23
+        assert version == 24
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -4942,37 +4950,16 @@ class TestAlbumInfoRemoteFields:
 
     def test_sale_item_id_populated_for_bandcamp_album(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        # Insert directly so file_path preserves the bandcamp:// scheme (Path normalizes // → /).
-        index._conn.executemany(
-            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
-            " track_number, disc_number, year, source)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
-            [
-                (
-                    "bandcamp://abc123/1.mp3",
-                    "T1",
-                    "A",
-                    "A",
-                    "The Album",
-                    1,
-                    1,
-                    "2024",
-                    "bandcamp",
-                ),
-                (
-                    "bandcamp://abc123/2.mp3",
-                    "T2",
-                    "A",
-                    "A",
-                    "The Album",
-                    2,
-                    1,
-                    "2024",
-                    "bandcamp",
-                ),
-            ],
+        # Use upsert_many via the helper so the albums row (and its sale_item_id FK)
+        # is created. upsert_many's _canonical_track_key preserves bandcamp:// paths.
+        self._insert_bc_tracks(index, "abc123")
+        index.upsert_collection_item(
+            "abc123",
+            mode="local",
+            band_name="The Artist",
+            item_title="The Album",
+            synced_at=1000.0,
         )
-        index._conn.commit()
         albums = index.albums()
         index.close()
 
@@ -4989,41 +4976,48 @@ class TestAlbumInfoRemoteFields:
         assert albums[0].sale_item_id is None
 
     def _insert_bc_tracks(self, index: "LibraryIndex", sale_id: str) -> None:
-        """Insert two real bandcamp:// tracks directly, bypassing Path normalization.
+        """Insert two bandcamp:// tracks via upsert_many so the albums row is created.
 
         Uses the same album_artist / album defaults as _insert_track so tests can
-        mix the two helpers in the same album group.
+        mix the two helpers in the same album group.  _canonical_track_key inside
+        upsert_many preserves the bandcamp:// double-slash form even though Path()
+        collapses it to a single slash on POSIX.
         """
-        index._conn.executemany(
-            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
-            " track_number, disc_number, year, source)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
-            [
-                (
-                    f"bandcamp://{sale_id}/1",
-                    "T1",
-                    "The Artist",
-                    "The Artist",
-                    "The Album",
-                    1,
-                    1,
-                    "2024",
-                    "bandcamp",
-                ),
-                (
-                    f"bandcamp://{sale_id}/2",
-                    "T2",
-                    "The Artist",
-                    "The Artist",
-                    "The Album",
-                    2,
-                    1,
-                    "2024",
-                    "bandcamp",
-                ),
-            ],
-        )
-        index._conn.commit()
+        from pathlib import Path as _Path
+
+        tracks = [
+            Track(
+                file_path=_Path(f"bandcamp://{sale_id}/1"),
+                title="T1",
+                artist="The Artist",
+                album_artist="The Artist",
+                album="The Album",
+                year="2024",
+                track_number=1,
+                disc_number=1,
+                ext="",
+                embedded_art=False,
+                mb_release_id="",
+                mb_recording_id="",
+                source="bandcamp",
+            ),
+            Track(
+                file_path=_Path(f"bandcamp://{sale_id}/2"),
+                title="T2",
+                artist="The Artist",
+                album_artist="The Artist",
+                album="The Album",
+                year="2024",
+                track_number=2,
+                disc_number=1,
+                ext="",
+                embedded_art=False,
+                mb_release_id="",
+                mb_recording_id="",
+                source="bandcamp",
+            ),
+        ]
+        index.upsert_many(tracks)
 
     def test_albums_deduplicates_when_local_and_bc_tracks_coexist(
         self, tmp_path: Path
@@ -5436,7 +5430,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 23
+        assert version == 24
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -5551,5 +5545,204 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 23
+        assert version == 24
         assert "download_queue" in tables
+        assert "albums" in tables
+        assert "album_favorites" not in tables
+
+
+class TestMigrationV24:
+    """v23 → v24: first-class albums entity (KAMP-418)."""
+
+    def _build_v23_db(self, db_path: Path) -> None:
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (23)")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0, disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL,"
+            " genre TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',"
+            " source TEXT NOT NULL DEFAULT 'local', stream_url TEXT,"
+            " stream_url_expires_at REAL)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5(title, artist, album_artist, album)"
+        )
+        conn.execute(
+            "CREATE TABLE album_favorites (album_artist TEXT NOT NULL, album TEXT NOT NULL,"
+            " PRIMARY KEY (album_artist, album))"
+        )
+        conn.execute(
+            "CREATE TABLE bandcamp_collection (sale_item_id TEXT NOT NULL PRIMARY KEY,"
+            " item_type TEXT NOT NULL DEFAULT 'p', band_name TEXT NOT NULL DEFAULT '',"
+            " item_title TEXT NOT NULL DEFAULT '', tralbum_id TEXT NOT NULL DEFAULT '',"
+            " album_url TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'local',"
+            " synced_at REAL, added_at REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE settings (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE sessions (service TEXT NOT NULL PRIMARY KEY,"
+            " session_json TEXT, updated_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE deferred_ops (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " op_type TEXT NOT NULL, track_id INTEGER NOT NULL UNIQUE,"
+            " payload_json TEXT NOT NULL, created_at REAL NOT NULL,"
+            " attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE download_queue (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " sale_item_id TEXT NOT NULL UNIQUE, queued_at REAL NOT NULL DEFAULT 0)"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_migration_creates_albums_table(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v23_db(db_path)
+        index = LibraryIndex(db_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        tables = {
+            r[0]
+            for r in index._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        index.close()
+
+        assert version == 24
+        assert "albums" in tables
+        assert "album_favorites" not in tables
+
+    def test_migration_collapses_case_variant_duplicates(self, tmp_path: Path) -> None:
+        """Mixed-case tracks (CASTLEBEAT vs Castlebeat) become a single albums row."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        self._build_v23_db(db_path)
+        conn = _sqlite3.connect(str(db_path))
+        conn.executemany(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " track_number, year, source) VALUES (?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "bandcamp://s1/1",
+                    "T1",
+                    "A",
+                    "CASTLEBEAT",
+                    "Album X",
+                    1,
+                    "2023",
+                    "bandcamp",
+                ),
+                (
+                    "bandcamp://s1/2",
+                    "T2",
+                    "A",
+                    "Castlebeat",
+                    "Album X",
+                    2,
+                    "2023",
+                    "bandcamp",
+                ),
+                (
+                    "/local/track.mp3",
+                    "T3",
+                    "A",
+                    "Castlebeat",
+                    "Album X",
+                    3,
+                    "2023",
+                    "local",
+                ),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        album_count = index._conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
+        albums = index.albums()
+        index.close()
+
+        assert album_count == 1, f"expected 1 album row, got {album_count}"
+        assert len(albums) == 1
+        # Canonical artist should be one of the two variants (most-common wins).
+        assert albums[0].album_artist.lower() == "castlebeat"
+
+    def test_migration_links_sale_item_id(self, tmp_path: Path) -> None:
+        """sale_item_id is linked from bandcamp_collection to the albums row."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        self._build_v23_db(db_path)
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " track_number, year, source) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "bandcamp://sale-99/1",
+                "T1",
+                "A",
+                "The Artist",
+                "The Album",
+                1,
+                "2024",
+                "bandcamp",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO bandcamp_collection (sale_item_id, band_name, item_title, mode)"
+            " VALUES (?,?,?,?)",
+            ("sale-99", "The Artist", "The Album", "local"),
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        row = index._conn.execute("SELECT sale_item_id FROM albums LIMIT 1").fetchone()
+        index.close()
+
+        assert row is not None
+        assert row[0] == "sale-99"
+
+    def test_migration_absorbs_album_favorites(self, tmp_path: Path) -> None:
+        """Existing album_favorites rows become albums.favorite = 1."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        self._build_v23_db(db_path)
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " track_number, year, source) VALUES (?,?,?,?,?,?,?,?)",
+            ("/lib/t1.mp3", "T1", "A", "The Artist", "The Album", 1, "2024", "local"),
+        )
+        conn.execute(
+            "INSERT INTO album_favorites (album_artist, album) VALUES (?,?)",
+            ("The Artist", "The Album"),
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        row = index._conn.execute("SELECT favorite FROM albums LIMIT 1").fetchone()
+        albums = index.albums()
+        index.close()
+
+        assert row is not None
+        assert row[0] == 1
+        assert albums[0].favorite is True

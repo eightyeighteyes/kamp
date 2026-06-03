@@ -1209,7 +1209,13 @@ class MpvPlaybackEngine:
             self.state.position = 0.0
             self.state.duration = 0.0
             self.state.position_updated_at = time.time()
-            self._send_command("loadfile", str(path), "replace", "pause=yes")
+            # Pre-set pause so mpv inherits the paused state on loadfile.
+            # pause=yes in the loadfile options arg defers the network connection
+            # for remote URLs, preventing demux and leaving duration=0. Sending
+            # set_property pause True first is processed before loadfile, so mpv
+            # starts buffering normally but won't advance the playback clock.
+            self._send_command("set_property", "pause", True)
+            self._send_command("loadfile", str(path), "replace")
         self._send_command("set_property", "pause", True)
 
     def preload_next(self, next_track: "Track | None") -> None:

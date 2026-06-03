@@ -1254,6 +1254,20 @@ class TestMpvPlaybackEngine:
         send.assert_any_call("loadfile", str(Path("/music/track.mp3")), "replace")
         send.assert_any_call("set_property", "pause", True)
 
+    def test_load_paused_pause_set_before_loadfile(self) -> None:
+        # pause is sent before loadfile so mpv inherits the paused state on load.
+        # pause=yes in the loadfile options arg defers network connections for remote
+        # URLs (leaving duration=0 and the play button dead); pre-setting the property
+        # allows mpv to buffer normally while still starting paused.
+        engine, send = _make_engine()
+        engine.load_paused("https://cdn.bandcamp.com/stream/track.mp3")
+        calls = [c[0] for c in send.call_args_list]
+        pause_indices = [
+            i for i, c in enumerate(calls) if c == ("set_property", "pause", True)
+        ]
+        loadfile_idx = next(i for i, c in enumerate(calls) if c[0] == "loadfile")
+        assert pause_indices[0] < loadfile_idx
+
     def test_load_paused_sets_pending_seek_when_position_nonzero(self) -> None:
         engine, _ = _make_engine()
         engine.load_paused(Path("/music/track.mp3"), 42.5)

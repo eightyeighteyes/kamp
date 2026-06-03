@@ -4,7 +4,7 @@ import { getTracksForAlbum, downloadAlbum } from '../api/client'
 import type { Album } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
-import { FavoriteIcon, PlayNextIcon, QueueAddIcon } from './TransportIcons'
+import { DownloadArrowIcon, FavoriteIcon, PlayNextIcon, QueueAddIcon } from './TransportIcons'
 
 interface Props {
   x: number
@@ -93,7 +93,17 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
             onClose()
           }}
         >
-          ⬇ Download this album
+          <span
+            style={{
+              marginRight: 6,
+              verticalAlign: 'middle',
+              flexShrink: 0,
+              display: 'inline-flex'
+            }}
+          >
+            <DownloadArrowIcon size={12} />
+          </span>
+          Download this album
         </button>
       )}
     </ContextMenu>

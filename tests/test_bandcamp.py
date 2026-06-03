@@ -1250,8 +1250,8 @@ class TestPaginate:
 class TestFetchCollection:
     def test_deduplicates_items_across_collection_and_hidden(self) -> None:
         """Items appearing in both collection and hidden endpoints are returned once."""
-        shared = _item(99)
-        unique_hidden = _item(100)
+        shared = _item(99, title="Album A")
+        unique_hidden = _item(100, title="Album B")
 
         session = MagicMock()
 
@@ -1274,6 +1274,25 @@ class TestFetchCollection:
         ids = [r["sale_item_id"] for r in result]
         assert ids.count(99) == 1
         assert 100 in ids
+
+    def test_deduplicates_p_and_c_same_title(self) -> None:
+        """When two items share (band_name, item_title), the p-typed entry wins."""
+        p_item = _item(293211292, band="Derya Yıldırım", title="Dost 1 & 2")
+        c_item = {
+            **_item(626315711, band="Derya Yıldırım", title="Dost 1 & 2"),
+            "sale_item_type": "c",
+        }
+
+        session = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {"items": [p_item, c_item], "last_token": ""}
+        session.post.return_value = resp
+
+        result = _fetch_collection(12345, session, MagicMock())
+        ids = [r["sale_item_id"] for r in result]
+        assert ids == [293211292]
 
 
 # ---------------------------------------------------------------------------

@@ -1335,6 +1335,7 @@ class LibraryIndex:
         Corrects tracks whose date_added was recorded as the sync timestamp rather than
         the actual purchase date.  The MIN-wins rule mirrors upsert_collection_item so
         that an earlier purchase date can never be overwritten by a later sync.
+        Also propagates the corrected date to the parent albums row via sale_item_id.
         """
         self._conn.execute(
             "UPDATE tracks SET date_added = ? "
@@ -1346,17 +1347,43 @@ class LibraryIndex:
                 date_added,
             ),
         )
+        # Propagate to the albums row. MIN-wins: only update when new value is earlier.
+        self._conn.execute(
+            "UPDATE albums SET date_added = ?"
+            " WHERE sale_item_id = ?"
+            " AND (date_added IS NULL OR date_added > ?)",
+            (date_added, sale_item_id, date_added),
+        )
         self._conn.commit()
 
     def set_track_source_for_item(self, sale_item_id: str, source: str) -> int:
         """Set source on every track whose file_path belongs to *sale_item_id*.
 
         Matches canonical bandcamp:// (POSIX) and Windows bandcamp:\\ path forms.
-        Returns the number of rows updated.
+        Returns the number of rows updated. Also refreshes albums.source so the
+        album entity stays consistent without waiting for the next full rescan.
         """
         cur = self._conn.execute(
             "UPDATE tracks SET source = ? WHERE file_path LIKE ? OR file_path LIKE ?",
             (source, f"bandcamp://{sale_item_id}/%", f"bandcamp:\\{sale_item_id}\\%"),
+        )
+        # Refresh albums.source via the sale_item_id FK. Remote tracks may not have
+        # album_id populated yet, so join through albums.sale_item_id instead.
+        self._conn.execute(
+            """
+            UPDATE albums SET source = (
+                SELECT CASE
+                    WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
+                         AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
+                    THEN 'local'
+                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                    ELSE MIN(t.source)
+                END
+                FROM tracks t WHERE t.album_id = albums.id
+            )
+            WHERE sale_item_id = ?
+            """,
+            (sale_item_id,),
         )
         self._conn.commit()
         return cur.rowcount

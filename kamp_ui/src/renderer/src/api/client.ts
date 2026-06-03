@@ -414,10 +414,15 @@ export async function patchAlbumTags(
     body: JSON.stringify(opts)
   })
   if (res.status === 409) {
-    const detail = (await res.json()) as {
-      detail: { collision_count: number; first_path: string }
+    const body = (await res.json()) as {
+      detail: { collision_count: number; first_path: string } | string
     }
-    return { collision: true, ...detail.detail }
+    // Filesystem collision (overwritable) — detail is an object with collision_count.
+    if (typeof body.detail === 'object' && body.detail !== null) {
+      return { collision: true, ...body.detail }
+    }
+    // Non-overridable conflict (e.g. album name already exists in streaming library).
+    throw new Error(typeof body.detail === 'string' ? body.detail : '409 Conflict')
   }
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`

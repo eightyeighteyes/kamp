@@ -45,7 +45,7 @@ function sourceIcon(source: string, size: number): React.JSX.Element {
 type ContextMenu = { x: number; y: number; track: Track }
 type AlbumRenameToast = {
   message: string
-  undo: () => Promise<AlbumTagsCollision | null>
+  undo?: () => Promise<AlbumTagsCollision | null>
 }
 
 type MBFetchState =
@@ -426,14 +426,18 @@ export function TrackList(): React.JSX.Element | null {
               const oldAlbum = album.album
               const oldArtist = album.album_artist
               const count = album.track_count
-              const result = await patchAlbumTags(oldArtist, oldAlbum, { album: newAlbum })
-              if (result?.collision) {
-                setAlbumCollision({ ...result, pendingOpts: { album: newAlbum } })
-              } else {
-                showRenameToast({
-                  message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
-                  undo: () => patchAlbumTags(oldArtist, newAlbum, { album: oldAlbum })
-                })
+              try {
+                const result = await patchAlbumTags(oldArtist, oldAlbum, { album: newAlbum })
+                if (result?.collision) {
+                  setAlbumCollision({ ...result, pendingOpts: { album: newAlbum } })
+                } else {
+                  showRenameToast({
+                    message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
+                    undo: () => patchAlbumTags(oldArtist, newAlbum, { album: oldAlbum })
+                  })
+                }
+              } catch (err) {
+                showRenameToast({ message: err instanceof Error ? err.message : 'Rename failed' })
               }
             }}
             renderStatic={(val) => (
@@ -451,14 +455,18 @@ export function TrackList(): React.JSX.Element | null {
               const oldArtist = album.album_artist
               const oldAlbum = album.album
               const count = album.track_count
-              const result = await patchAlbumTags(oldArtist, oldAlbum, { album_artist: newArtist })
-              if (result?.collision) {
-                setAlbumCollision({ ...result, pendingOpts: { album_artist: newArtist } })
-              } else {
-                showRenameToast({
-                  message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
-                  undo: () => patchAlbumTags(newArtist, oldAlbum, { album_artist: oldArtist })
-                })
+              try {
+                const result = await patchAlbumTags(oldArtist, oldAlbum, { album_artist: newArtist })
+                if (result?.collision) {
+                  setAlbumCollision({ ...result, pendingOpts: { album_artist: newArtist } })
+                } else {
+                  showRenameToast({
+                    message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
+                    undo: () => patchAlbumTags(newArtist, oldAlbum, { album_artist: oldArtist })
+                  })
+                }
+              } catch (err) {
+                showRenameToast({ message: err instanceof Error ? err.message : 'Rename failed' })
               }
             }}
             renderStatic={(val) => (
@@ -693,16 +701,18 @@ export function TrackList(): React.JSX.Element | null {
       {albumRenameToast && (
         <div className="album-rename-toast" role="status">
           <span className="album-rename-toast-text">{albumRenameToast.message}</span>
-          <button
-            className="album-rename-toast-undo"
-            onClick={() => {
-              setAlbumRenameToast(null)
-              if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
-              void albumRenameToast.undo()
-            }}
-          >
-            Undo
-          </button>
+          {albumRenameToast.undo && (
+            <button
+              className="album-rename-toast-undo"
+              onClick={() => {
+                setAlbumRenameToast(null)
+                if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+                void albumRenameToast.undo!()
+              }}
+            >
+              Undo
+            </button>
+          )}
           <div className="album-rename-toast-bar" style={{ animationDuration: `${TOAST_TTL}ms` }} />
         </div>
       )}

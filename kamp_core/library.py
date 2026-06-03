@@ -1731,35 +1731,39 @@ class LibraryIndex:
             ).fetchone()
             album_id = r["album_id"] if r else None
 
-        for old_path, new_path in path_pairs:
-            self._conn.execute(
-                """UPDATE tracks
-                   SET file_path = ?,
-                       album = ?,
-                       album_artist = ?,
-                       artist = CASE WHEN ? IS NOT NULL AND artist = ? THEN ? ELSE artist END,
-                       file_mtime = ?
-                   WHERE file_path = ?""",
-                (
-                    str(new_path),
-                    new_album,
-                    new_album_artist,
-                    old_album_artist,
-                    old_album_artist,
-                    new_album_artist,
-                    new_mtime,
-                    str(old_path),
-                ),
-            )
-        # Update the albums row. The UNIQUE (album_artist, album) COLLATE NOCASE
-        # constraint raises IntegrityError if the new name already exists.
-        if album_id is not None:
-            self._conn.execute(
-                "UPDATE albums SET album_artist = ?, album = ? WHERE id = ?",
-                (new_album_artist, new_album, album_id),
-            )
-        self._rebuild_fts()
-        self._conn.commit()
+        try:
+            for old_path, new_path in path_pairs:
+                self._conn.execute(
+                    """UPDATE tracks
+                       SET file_path = ?,
+                           album = ?,
+                           album_artist = ?,
+                           artist = CASE WHEN ? IS NOT NULL AND artist = ? THEN ? ELSE artist END,
+                           file_mtime = ?
+                       WHERE file_path = ?""",
+                    (
+                        str(new_path),
+                        new_album,
+                        new_album_artist,
+                        old_album_artist,
+                        old_album_artist,
+                        new_album_artist,
+                        new_mtime,
+                        str(old_path),
+                    ),
+                )
+            # Update the albums row. The UNIQUE (album_artist, album) COLLATE NOCASE
+            # constraint raises IntegrityError if the new name already exists.
+            if album_id is not None:
+                self._conn.execute(
+                    "UPDATE albums SET album_artist = ?, album = ? WHERE id = ?",
+                    (new_album_artist, new_album, album_id),
+                )
+            self._rebuild_fts()
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     # ------------------------------------------------------------------
     # Deferred ops (KAMP-309)
@@ -2254,6 +2258,10 @@ class LibraryIndex:
             (album_artist, album),
         ).fetchone()
         return row["id"] if row else None
+
+    def album_name_exists(self, album_artist: str, album: str) -> bool:
+        """Return True if any albums row matches (album_artist, album) case-insensitively."""
+        return self._album_id(album_artist, album) is not None
 
     def tracks_for_album(self, album_artist: str, album: str) -> list[Track]:
         """Return tracks for a given album sorted by disc then track number.

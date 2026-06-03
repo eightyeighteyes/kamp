@@ -1097,6 +1097,17 @@ def create_app(
         if new_album == album and new_album_artist == album_artist:
             raise HTTPException(status_code=400, detail="No changes requested")
 
+        # Pre-flight: reject before any file or DB mutation if the target name
+        # already exists as a different album (e.g. a streaming-only entry).
+        # This prevents file operations from running when the DB write would
+        # fail anyway, and ensures the check fires before any transaction opens.
+        current_id = index._album_id(album_artist, album)
+        target_id = index._album_id(new_album_artist, new_album)
+        if target_id is not None and target_id != current_id:
+            raise HTTPException(
+                status_code=409, detail="Album name already exists in library"
+            )
+
         lib_path: Path | None = _state["library_path"]
         if lib_path is None:
             raise HTTPException(status_code=503, detail="Library path not configured")

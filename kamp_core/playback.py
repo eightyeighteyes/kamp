@@ -1209,7 +1209,7 @@ class MpvPlaybackEngine:
             self.state.position = 0.0
             self.state.duration = 0.0
             self.state.position_updated_at = time.time()
-            self._send_command("loadfile", str(path), "replace")
+            self._send_command("loadfile", str(path), "replace", "pause=yes")
         self._send_command("set_property", "pause", True)
 
     def preload_next(self, next_track: "Track | None") -> None:

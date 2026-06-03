@@ -1251,8 +1251,22 @@ class TestMpvPlaybackEngine:
     def test_load_paused_loads_and_pauses(self) -> None:
         engine, send = _make_engine()
         engine.load_paused(Path("/music/track.mp3"))
-        send.assert_any_call("loadfile", str(Path("/music/track.mp3")), "replace")
+        send.assert_any_call(
+            "loadfile", str(Path("/music/track.mp3")), "replace", "pause=yes"
+        )
         send.assert_any_call("set_property", "pause", True)
+
+    def test_load_paused_remote_url_includes_pause_option(self) -> None:
+        # pause=yes in the loadfile options arg is atomic — prevents the race where
+        # mpv starts streaming a remote URL before the follow-up set_property lands.
+        engine, send = _make_engine()
+        engine.load_paused("https://cdn.bandcamp.com/stream/track.mp3")
+        send.assert_any_call(
+            "loadfile",
+            "https://cdn.bandcamp.com/stream/track.mp3",
+            "replace",
+            "pause=yes",
+        )
 
     def test_load_paused_sets_pending_seek_when_position_nonzero(self) -> None:
         engine, _ = _make_engine()

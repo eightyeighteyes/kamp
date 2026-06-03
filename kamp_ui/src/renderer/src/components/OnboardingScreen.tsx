@@ -309,6 +309,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
       if (result.ok) {
         await loadConfig()
         if (collectionMode === 'stream') {
+          await setConfigValue('bandcamp.poll_interval_minutes', '15')
           window.api.bandcamp.triggerSync().catch(console.error)
         }
         changeStep('lastfm')

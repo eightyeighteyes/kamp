@@ -4358,6 +4358,31 @@ class TestBandcampCollection:
         assert result[0]["sale_item_id"] == "2"
         assert result[0]["band_name"] == "Artist"
 
+    def test_upsert_many_backfills_sale_item_id_when_collection_item_upserted_first(
+        self, tmp_path: Path
+    ) -> None:
+        """upsert_collection_item before upsert_many (the streaming-sync order) still
+        links albums.sale_item_id — the backfill in upsert_many closes the gap."""
+        index = LibraryIndex(tmp_path / "library.db")
+        # Streaming sync order: collection item arrives before tracks are fetched.
+        index.upsert_collection_item(
+            "sale-stream",
+            mode="remote",
+            band_name="The Artist",
+            item_title="The Album",
+            synced_at=1000.0,
+        )
+        # At this point no albums row exists yet, so the link in upsert_collection_item
+        # was a no-op. Now upsert_many inserts the remote tracks.
+        t = _sample_track(Path("bandcamp://sale-stream/1"))
+        t.source = "bandcamp"
+        index.upsert_many([t])
+        row = index._conn.execute("SELECT sale_item_id FROM albums LIMIT 1").fetchone()
+        index.close()
+
+        assert row is not None
+        assert row["sale_item_id"] == "sale-stream"
+
     def test_reset_collection_sync_state(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         index.upsert_collection_item("1", mode="local", synced_at=999.0)

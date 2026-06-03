@@ -1636,6 +1636,23 @@ class LibraryIndex:
                     """,
                     album_ids,
                 )
+                # Backfill sale_item_id from bandcamp_collection for albums that were
+                # just inserted without it. This covers the streaming-sync order where
+                # upsert_collection_item fires before upsert_many, so the UPDATE inside
+                # upsert_collection_item is a no-op (no albums row yet at that point).
+                self._conn.execute(
+                    f"""
+                    UPDATE albums SET sale_item_id = (
+                        SELECT bc.sale_item_id FROM bandcamp_collection bc
+                        WHERE bc.band_name  = albums.album_artist COLLATE NOCASE
+                          AND bc.item_title = albums.album        COLLATE NOCASE
+                        LIMIT 1
+                    )
+                    WHERE id IN ({id_placeholders})
+                      AND sale_item_id IS NULL
+                    """,
+                    album_ids,
+                )
 
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()

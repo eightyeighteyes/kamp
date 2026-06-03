@@ -817,7 +817,13 @@ def _extract_pagedata(html: str, url: str) -> dict[str, Any]:
 def _fetch_collection(
     fan_id: int, session: _AnySession, index: "LibraryIndex"
 ) -> list[dict[str, Any]]:
-    """Fetch all collection items (visible + hidden), deduplicated by sale_item_id."""
+    """Fetch all collection items (visible + hidden), deduplicated by sale_item_id.
+
+    A second pass deduplicates by (band_name, item_title): when the same album
+    appears under two sale_item_ids (e.g. item_type=p for the purchase and
+    item_type=c for a pre-order/compilation entry), the p-typed entry is kept
+    and the c-typed entry is dropped to prevent duplicate tracks in the DB.
+    """
     seen: set[int] = set()
     items: list[dict[str, Any]] = []
     for endpoint in (_COLLECTION_URL, _HIDDEN_URL):
@@ -826,7 +832,22 @@ def _fetch_collection(
             if item_id not in seen:
                 seen.add(item_id)
                 items.append(item)
-    return items
+
+    # Drop c-typed items that have a p-typed counterpart with the same (band, title).
+    # This prevents duplicate tracks when Bandcamp returns the same album under two
+    # sale_item_ids (one per item_type).  Two p-typed items with the same title are
+    # kept as-is (they may be distinct editions or repurchases).
+    p_titles: set[tuple[str, str]] = {
+        (str(i.get("band_name", "")), str(i.get("item_title", "")))
+        for i in items
+        if i.get("sale_item_type") == "p"
+    }
+    return [
+        i
+        for i in items
+        if i.get("sale_item_type") != "c"
+        or (str(i.get("band_name", "")), str(i.get("item_title", ""))) not in p_titles
+    ]
 
 
 def _paginate(

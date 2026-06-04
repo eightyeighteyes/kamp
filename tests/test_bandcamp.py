@@ -2124,7 +2124,7 @@ class TestFetchAlbumArtBytes:
         assert result == jpeg
         # Verify CDN URL is constructed from art_id (not tralbum id=99).
         mock_get.assert_called_once_with(
-            "https://f4.bcbits.com/img/a777888999_16.jpg", timeout=30
+            "https://f4.bcbits.com/img/a777888999_0.jpg", timeout=30
         )
 
 

@@ -2744,8 +2744,10 @@ class TestFetchAlbumTracks:
         assert len(result) == 2
         assert result[0].title == "Song One"
         assert result[0].track_number == 1
+        assert result[0].duration == 200.0
         assert result[1].title == "Song Two"
         assert result[1].track_number == 2
+        assert result[1].duration == 180.0
 
     def test_source_is_bandcamp(self) -> None:
         html = _stream_album_page_html()

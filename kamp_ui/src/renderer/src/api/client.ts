@@ -27,6 +27,7 @@ export type Track = {
   source: string
   reachable: boolean
   is_available: boolean
+  duration: number
 }
 
 export type Album = {

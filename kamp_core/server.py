@@ -146,6 +146,7 @@ class TrackOut(BaseModel):
     source: str
     reachable: bool = True
     is_available: bool = True
+    duration: float = 0.0
 
     @classmethod
     def from_track(cls, t: Track) -> "TrackOut":
@@ -170,6 +171,7 @@ class TrackOut(BaseModel):
             source=t.source,
             reachable=t.reachable,
             is_available=t.is_available,
+            duration=t.duration,
         )
 
 

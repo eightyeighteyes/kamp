@@ -368,8 +368,8 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
               choose library folder
             </button>
             <p className="onboarding-card-body">
-              <strong>kamp</strong> will scan any files in this folder and add them to its 
-              library. if you use kamp to download music, it will end up here.
+              <strong>kamp</strong> will scan any files in this folder and add them to its library.
+              if you use kamp to download music, it will end up here.
             </p>
             {cardError && <div className="onboarding-error">{cardError}</div>}
           </div>
@@ -412,8 +412,8 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 </div>
                 <p className="onboarding-card-body">
                   {collectionMode === 'stream'
-                    ? "you are a busy music fan with a solid network connection. stream your bandcamp purchases, no downloads needed. albums can be downloaded individually for offline listening."
-                    : "you are a connoisseur and curator with a big hard drive. purchases are downloaded to your library folder for offline playback."}
+                    ? 'you are a busy music fan with a solid network connection. stream your bandcamp purchases, no downloads needed. albums can be downloaded individually for offline listening.'
+                    : 'you are a connoisseur and curator with a big hard drive. purchases are downloaded to your library folder for offline playback.'}
                 </p>
                 <button
                   className="onboarding-primary-btn"
@@ -457,7 +457,8 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                   {lastfmBusy ? 'connecting…' : 'Connect Last.fm'}
                 </button>
                 <p className="onboarding-card-body">
-                  connect your <strong>last.fm</strong> account to save and share your listening history.
+                  connect your <strong>last.fm</strong> account to save and share your listening
+                  history.
                 </p>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
                 <button className="onboarding-skip-btn" onClick={advancePastCards}>

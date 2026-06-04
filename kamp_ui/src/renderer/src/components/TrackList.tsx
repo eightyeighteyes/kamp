@@ -337,7 +337,14 @@ export function TrackList(): React.JSX.Element | null {
               setHeroMenu(null)
             }}
           >
-            <span style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}>
+            <span
+              style={{
+                marginRight: 6,
+                verticalAlign: 'middle',
+                flexShrink: 0,
+                display: 'inline-flex'
+              }}
+            >
               <ShareIcon size={12} />
             </span>
             Copy Bandcamp link
@@ -371,7 +378,9 @@ export function TrackList(): React.JSX.Element | null {
         </span>
         <span>{album.album}</span>
         {album.is_preorder && (
-          <span className="album-preorder-badge" aria-label="Pre-Order">Pre-Order</span>
+          <span className="album-preorder-badge" aria-label="Pre-Order">
+            Pre-Order
+          </span>
         )}
       </nav>
 

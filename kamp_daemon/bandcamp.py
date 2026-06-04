@@ -303,6 +303,9 @@ def sync_new_purchases(
     logger.info("Fetched fan_id=%s for user %r", fan_id, username)
 
     state = index.get_collection_state()
+    # Stored num_streamable_tracks for albums currently in preorder state, used to
+    # detect when new tracks have been released without re-downloading unnecessarily.
+    streamable_counts = index.get_collection_streamable_counts()
     collection = _fetch_collection(fan_id, session, index)
 
     new_items = [
@@ -342,25 +345,39 @@ def sync_new_purchases(
     watch_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded: list[Path] = []
-    preorder_fetch_index = 0  # throttle counter for pre-order album-page requests
     download_index = 0  # throttle counter for download-page requests
     for item in new_items:
         sid = str(item.get("sale_item_id", ""))
         band_name = str(item.get("band_name", ""))
         item_title = str(item.get("item_title", ""))
         album_url = str(item.get("item_url", ""))
+        is_preorder = bool(item.get("is_preorder"))
+        api_streamable = int(item.get("num_streamable_tracks") or 0)
+        stored_streamable = streamable_counts.get(sid, 0)
 
         if not item.get("redownload_url"):
-            # Pre-order: not yet available for download. Index as streaming tracks
-            # so the album appears in the library immediately (KAMP-424).
-            logger.info(
-                "Pre-order detected for %r by %r (sale_item_id=%s) — indexing as streaming.",
+            # No download URL at all — genuine edge case (not a normal pre-order).
+            # Log a warning; nothing to download or index.
+            logger.warning(
+                "No redownload_url for %r by %r (sale_item_id=%s) — skipping.",
                 item_title,
                 band_name,
                 sid,
             )
-            if status_callback:
-                status_callback(f"{item_title} by {band_name}")
+            continue
+
+        if (
+            is_preorder
+            and state.get(sid) == "preorder"
+            and api_streamable <= stored_streamable
+        ):
+            # Pre-order re-sync with no new tracks — skip download, just refresh metadata.
+            logger.debug(
+                "Pre-order %r by %r unchanged (num_streamable_tracks=%d) — skipping re-download.",
+                item_title,
+                band_name,
+                api_streamable,
+            )
             index.upsert_collection_item(
                 sid,
                 mode="preorder",
@@ -369,42 +386,13 @@ def sync_new_purchases(
                 item_title=item_title,
                 album_url=album_url,
                 tralbum_id=str(item.get("tralbum_id", "")),
-                synced_at=time.time(),
+                synced_at=None,
                 added_at=_parse_purchased(item.get("purchased")),
+                num_streamable_tracks=api_streamable,
             )
-            if album_url:
-                if preorder_fetch_index > 0:
-                    time.sleep(0.5)
-                preorder_fetch_index += 1
-                try:
-                    tracks = fetch_album_tracks(
-                        album_url,
-                        int(sid),
-                        band_name,
-                        item_title,
-                        session,
-                        date_added=_parse_purchased(item.get("purchased")),
-                    )
-                    if tracks:
-                        index.upsert_many(tracks)
-                        logger.debug(
-                            "Indexed %d pre-order track(s) for %r by %r",
-                            len(tracks),
-                            item_title,
-                            band_name,
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "fetch_album_tracks: skipping pre-order tracks for %r by %r: %s",
-                        item_title,
-                        band_name,
-                        exc,
-                    )
             continue
 
         # Throttle download-page requests to avoid Bandcamp 429 rate limiting.
-        # Each iteration GETs a signed download page before hitting the CDN;
-        # back-to-back requests across a large collection trigger the rate limit.
         if download_index > 0:
             time.sleep(1)
         download_index += 1
@@ -413,9 +401,11 @@ def sync_new_purchases(
                 status_callback(f"{item_title} by {band_name}")
             path = _download_item(item, bc_config, watch_dir, session)
             downloaded.append(path)
+            # Pre-orders stay as 'preorder' until is_preorder flips to False.
+            mode = "preorder" if is_preorder else "local"
             index.upsert_collection_item(
                 sid,
-                mode="local",
+                mode=mode,
                 item_type=str(item.get("sale_item_type", "p")),
                 band_name=band_name,
                 item_title=item_title,
@@ -423,8 +413,14 @@ def sync_new_purchases(
                 tralbum_id=str(item.get("tralbum_id", "")),
                 synced_at=time.time(),
                 added_at=_parse_purchased(item.get("purchased")),
+                num_streamable_tracks=api_streamable,
             )
-            logger.info("Downloaded: %s", path.name)
+            logger.info(
+                "Downloaded: %s (mode=%s, streamable_tracks=%d)",
+                path.name,
+                mode,
+                api_streamable,
+            )
         except Exception as exc:
             logger.error(
                 "Failed to download %r by %r: %s",
@@ -489,12 +485,16 @@ def sync_collection_stream(
         album_url = str(item.get("item_url", ""))
         current_mode = existing_state.get(str(sid))
         is_preorder_already = current_mode == "preorder"
+        # Use is_preorder from the API as the authoritative signal when available.
+        api_says_preorder = bool(item.get("is_preorder"))
 
         if status_callback:
             status_callback(f"{item_title} by {band_name}")
 
-        # Preserve 'preorder' mode through the upsert; corrected after track re-inspection.
-        upsert_mode = "preorder" if is_preorder_already else "remote"
+        # Preserve 'preorder' mode; also respect API's is_preorder on first sync.
+        upsert_mode = (
+            "preorder" if (is_preorder_already or api_says_preorder) else "remote"
+        )
         index.upsert_collection_item(
             str(sid),
             mode=upsert_mode,
@@ -517,7 +517,9 @@ def sync_collection_stream(
         # Fetch track metadata for new albums or pre-order albums (always re-inspect
         # pre-orders so newly released tracks and full-release transitions are caught).
         if album_url and (
-            is_preorder_already or not index.has_remote_album_tracks(str(sid))
+            is_preorder_already
+            or api_says_preorder
+            or not index.has_remote_album_tracks(str(sid))
         ):
             if fetch_index > 0:
                 time.sleep(0.5)

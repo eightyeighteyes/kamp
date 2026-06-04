@@ -916,6 +916,70 @@ class TestLibraryScanner:
         assert tracks[0].artist == "OGG Artist"
         assert tracks[0].ext == "ogg"
 
+    def test_read_mp3_duration(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        _make_mp3(lib / "01.mp3", title="Song")
+
+        mock_mp3 = MagicMock()
+        mock_mp3.info.length = 180.0
+
+        with patch("kamp_core.library.mutagen.mp3.MP3", return_value=mock_mp3):
+            index = LibraryIndex(tmp_path / "library.db")
+            LibraryScanner(index).scan(lib)
+            tracks = index.all_tracks()
+            index.close()
+
+        assert tracks[0].duration == 180.0
+
+    def test_read_mp3_duration_graceful_on_error(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        _make_mp3(lib / "01.mp3", title="Song")
+
+        with patch("kamp_core.library.mutagen.mp3.MP3", side_effect=Exception("bad")):
+            index = LibraryIndex(tmp_path / "library.db")
+            LibraryScanner(index).scan(lib)
+            tracks = index.all_tracks()
+            index.close()
+
+        assert tracks[0].duration == 0.0
+
+    def test_read_m4a_duration(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        (lib / "01.m4a").write_bytes(b"\x00" * 32)
+
+        mock_audio = MagicMock()
+        mock_audio.tags = {"\xa9nam": ["Track"]}
+        mock_audio.info.length = 240.0
+
+        with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
+            index = LibraryIndex(tmp_path / "library.db")
+            LibraryScanner(index).scan(lib)
+            tracks = index.all_tracks()
+            index.close()
+
+        assert tracks[0].duration == 240.0
+
+    def test_read_flac_duration(self, tmp_path: Path) -> None:
+        lib = tmp_path / "music"
+        lib.mkdir()
+        (lib / "01.flac").write_bytes(b"fLaC")
+
+        mock_audio = MagicMock()
+        mock_audio.tags = {"TITLE": ["Track"]}
+        mock_audio.pictures = []
+        mock_audio.info.length = 300.0
+
+        with patch("kamp_core.library.mutagen.flac.FLAC", return_value=mock_audio):
+            index = LibraryIndex(tmp_path / "library.db")
+            LibraryScanner(index).scan(lib)
+            tracks = index.all_tracks()
+            index.close()
+
+        assert tracks[0].duration == 300.0
+
     def test_scan_nonexistent_directory(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         result = LibraryScanner(index).scan(tmp_path / "does_not_exist")
@@ -6301,6 +6365,103 @@ class TestMigrationV26:
         index = LibraryIndex(db_path)
         row = index._conn.execute(
             "SELECT num_streamable_tracks FROM bandcamp_collection WHERE sale_item_id = '1'"
+        ).fetchone()
+        index.close()
+
+        assert row is not None
+        assert row[0] == 0
+
+
+class TestMigrationV27:
+    """v26 → v27: duration column on tracks (KAMP-399)."""
+
+    def _build_v26_db(self, db_path: Path) -> None:
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (26)")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0, disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL,"
+            " genre TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',"
+            " source TEXT NOT NULL DEFAULT 'local', stream_url TEXT,"
+            " stream_url_expires_at REAL, album_id INTEGER,"
+            " is_available INTEGER NOT NULL DEFAULT 1)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5(title, artist, album_artist, album)"
+        )
+        conn.execute(
+            "CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " album_artist TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " album TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " year TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',"
+            " label TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'local',"
+            " sale_item_id TEXT, favorite INTEGER NOT NULL DEFAULT 0,"
+            " date_added REAL, last_played_at REAL, play_count_avg REAL NOT NULL DEFAULT 0,"
+            " art_version REAL, UNIQUE (album_artist, album))"
+        )
+        conn.execute(
+            "CREATE TABLE bandcamp_collection (sale_item_id TEXT NOT NULL PRIMARY KEY,"
+            " item_type TEXT NOT NULL DEFAULT 'p', band_name TEXT NOT NULL DEFAULT '',"
+            " item_title TEXT NOT NULL DEFAULT '', tralbum_id TEXT NOT NULL DEFAULT '',"
+            " album_url TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'local',"
+            " synced_at REAL, added_at REAL NOT NULL DEFAULT 0,"
+            " num_streamable_tracks INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE settings (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE sessions (service TEXT NOT NULL PRIMARY KEY,"
+            " session_json TEXT, updated_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE deferred_ops (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " op_type TEXT NOT NULL, track_id INTEGER NOT NULL UNIQUE,"
+            " payload_json TEXT NOT NULL, created_at REAL NOT NULL,"
+            " attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE download_queue (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " sale_item_id TEXT NOT NULL UNIQUE, queued_at REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO tracks (file_path, title) VALUES ('local/song.mp3', 'Old Song')"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_migration_adds_duration_column(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v26_db(db_path)
+        index = LibraryIndex(db_path)
+        cols = {
+            r[1] for r in index._conn.execute("PRAGMA table_info(tracks)").fetchall()
+        }
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        index.close()
+
+        assert version == 27
+        assert "duration" in cols
+
+    def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v26_db(db_path)
+        index = LibraryIndex(db_path)
+        row = index._conn.execute(
+            "SELECT duration FROM tracks WHERE file_path = 'local/song.mp3'"
         ).fetchone()
         index.close()
 

@@ -420,11 +420,11 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                   onClick={handleBandcampLogin}
                   disabled={bandcampBusy}
                 >
-                  {bandcampBusy ? 'Logging in…' : 'Log in to Bandcamp'}
+                  {bandcampBusy ? 'logging in…' : 'log in to bandcamp'}
                 </button>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
                 <button className="onboarding-skip-btn" onClick={() => changeStep('lastfm')}>
-                  Skip
+                  skip
                 </button>
               </>
             )}

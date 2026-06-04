@@ -18,6 +18,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
   const setAlbumFavorite = useStore((s) => s.setAlbumFavorite)
   const markAlbumDownloading = useStore((s) => s.markAlbumDownloading)
+  const showFlashToast = useStore((s) => s.showFlashToast)
 
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
@@ -84,6 +85,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           className="track-context-menu-item"
           onClick={() => {
             void navigator.clipboard.writeText(album.album_url!)
+            showFlashToast(`Copied link to ${album.album}`)
             onClose()
           }}
         >

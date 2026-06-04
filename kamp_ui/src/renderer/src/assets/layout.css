@@ -543,3 +543,20 @@ html[data-platform='win32'] .view-tabs {
 .artist-list li:active {
   opacity: 0.7;
 }
+
+/* Flash toast — fixed bottom-right, used for transient copy confirmations (KAMP-367) */
+.flash-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 1000;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+  animation: toast-in 0.18s ease-out;
+  pointer-events: none;
+}

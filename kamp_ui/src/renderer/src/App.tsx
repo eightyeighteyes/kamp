@@ -94,6 +94,7 @@ export default function App(): React.JSX.Element {
   const setAudioLevel = useStore((s) => s.setAudioLevel)
   const bumpLastPlayedVersion = useStore((s) => s.bumpLastPlayedVersion)
   const serverStatus = useStore((s) => s.serverStatus)
+  const flashToast = useStore((s) => s.flashToast)
   const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
   const activeView = useStore((s) => s.activeView)
   const setActiveView = useStore((s) => s.setActiveView)
@@ -629,6 +630,11 @@ export default function App(): React.JSX.Element {
       )}
       {/* Phase 2 iframes live here in a hidden holding area until their panel tab is activated */}
       <SandboxedExtensionLoader extensions={phase2Extensions} />
+      {flashToast && (
+        <div className="flash-toast" role="status">
+          {flashToast}
+        </div>
+      )}
     </div>
   )
 }

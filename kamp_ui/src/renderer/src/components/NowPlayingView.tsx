@@ -16,6 +16,7 @@ export function NowPlayingView(): React.JSX.Element {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const selectArtist = useStore((s) => s.selectArtist)
   const setActiveView = useStore((s) => s.setActiveView)
+  const showFlashToast = useStore((s) => s.showFlashToast)
   const tooltip = useTooltip()
 
   if (!current_track) {
@@ -71,6 +72,7 @@ export function NowPlayingView(): React.JSX.Element {
               className="track-context-menu-item"
               onClick={() => {
                 void navigator.clipboard.writeText(currentAlbum.album_url!)
+                showFlashToast(`Copied link to ${currentAlbum.album}`)
                 setMenu(null)
               }}
             >

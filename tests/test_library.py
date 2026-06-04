@@ -129,7 +129,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 25
+        assert version == 26
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1390,7 +1390,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1447,7 +1447,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1834,7 +1834,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert row is not None
         assert row[0] == 0
 
@@ -2088,7 +2088,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2184,7 +2184,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -2365,7 +2365,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2460,7 +2460,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 25
+        assert version == 26
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2468,7 +2468,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 25
+        assert version == 26
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3345,7 +3345,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 25
+        assert version == 26
 
         index.close()
 
@@ -4030,7 +4030,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 25
+        assert version == 26
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4065,7 +4065,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 25
+        assert version == 26
         index.close()
 
 
@@ -4513,7 +4513,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 25
+        assert version == 26
 
 
 class TestRemoteTrackSchema:
@@ -4816,7 +4816,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -4877,7 +4877,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 25
+        assert version == 26
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -5544,7 +5544,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -5659,7 +5659,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -5737,7 +5737,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -5943,7 +5943,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 25
+        assert version == 26
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -6096,3 +6096,279 @@ class TestIsPreorder:
 
         assert albums[0].in_bandcamp_collection is True
         assert albums[0].is_preorder is False
+
+
+class TestInheritRemotePlayCounts:
+    """inherit_remote_play_counts copies play_count from bandcamp:// rows to matched local tracks."""
+
+    def _setup(self, tmp_path: Path) -> "LibraryIndex":
+        return LibraryIndex(tmp_path / "library.db")
+
+    def _remote_track(
+        self, sale_item_id: str, track_num: int, play_count: int = 0
+    ) -> Track:
+        t = Track(
+            file_path=Path(f"bandcamp://{sale_item_id}/{track_num}"),
+            title=f"Track {track_num}",
+            artist="The Artist",
+            album_artist="The Artist",
+            album="The Album",
+            year="2024",
+            track_number=track_num,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        t.play_count = play_count
+        return t
+
+    def _local_track(
+        self, tmp_path: Path, track_num: int, play_count: int = 0
+    ) -> Track:
+        t = _sample_track(tmp_path / f"{track_num:02d}.mp3")
+        t.track_number = track_num
+        t.play_count = play_count
+        return t
+
+    def test_copies_play_count_from_remote_to_local(self, tmp_path: Path) -> None:
+        index = self._setup(tmp_path)
+        remote = self._remote_track("42", 1)
+        index.upsert_many([remote])
+        # play_count is managed by record_played, not upsert_many — set directly
+        index._conn.execute(
+            "UPDATE tracks SET play_count = 7 WHERE file_path LIKE 'bandcamp://%'"
+        )
+        index._conn.commit()
+
+        local = self._local_track(tmp_path, 1)
+        index.upsert_many([local])
+        index.inherit_remote_play_counts([local])
+
+        result = index.tracks_for_album("The Artist", "The Album")
+        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        index.close()
+
+        assert len(local_result) == 1
+        assert local_result[0].play_count == 7
+
+    def test_keeps_higher_local_play_count(self, tmp_path: Path) -> None:
+        """If local play_count > remote, keep the local value."""
+        index = self._setup(tmp_path)
+        remote = self._remote_track("42", 1)
+        index.upsert_many([remote])
+        index._conn.execute(
+            "UPDATE tracks SET play_count = 3 WHERE file_path LIKE 'bandcamp://%'"
+        )
+        index._conn.commit()
+
+        local = self._local_track(tmp_path, 1)
+        index.upsert_many([local])
+        index._conn.execute("UPDATE tracks SET play_count = 10 WHERE source = 'local'")
+        index._conn.commit()
+        index.inherit_remote_play_counts([local])
+
+        result = index.tracks_for_album("The Artist", "The Album")
+        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        index.close()
+
+        assert local_result[0].play_count == 10
+
+    def test_no_change_when_remote_play_count_is_zero(self, tmp_path: Path) -> None:
+        index = self._setup(tmp_path)
+        remote = self._remote_track("42", 1, play_count=0)
+        index.upsert_many([remote])
+
+        local = self._local_track(tmp_path, 1, play_count=0)
+        index.upsert_many([local])
+        index.inherit_remote_play_counts([local])
+
+        result = index.tracks_for_album("The Artist", "The Album")
+        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        index.close()
+
+        assert local_result[0].play_count == 0
+
+    def test_no_change_when_no_matching_remote_track(self, tmp_path: Path) -> None:
+        index = self._setup(tmp_path)
+        local = self._local_track(tmp_path, 1, play_count=0)
+        index.upsert_many([local])
+        index.inherit_remote_play_counts([local])
+
+        result = index.tracks_for_album("The Artist", "The Album")
+        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        index.close()
+
+        assert local_result[0].play_count == 0
+
+    def test_empty_list_is_noop(self, tmp_path: Path) -> None:
+        index = self._setup(tmp_path)
+        index.inherit_remote_play_counts([])  # must not raise
+        index.close()
+
+
+class TestMigrationV26:
+    """v25 → v26: num_streamable_tracks column on bandcamp_collection (KAMP-424)."""
+
+    def _build_v25_db(self, db_path: Path) -> None:
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (25)")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0, disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL,"
+            " genre TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',"
+            " source TEXT NOT NULL DEFAULT 'local', stream_url TEXT,"
+            " stream_url_expires_at REAL, album_id INTEGER,"
+            " is_available INTEGER NOT NULL DEFAULT 1)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5(title, artist, album_artist, album)"
+        )
+        conn.execute(
+            "CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " album_artist TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " album TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " year TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',"
+            " label TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'local',"
+            " sale_item_id TEXT, favorite INTEGER NOT NULL DEFAULT 0,"
+            " date_added REAL, last_played_at REAL, play_count_avg REAL NOT NULL DEFAULT 0,"
+            " art_version REAL, UNIQUE (album_artist, album))"
+        )
+        conn.execute(
+            "CREATE TABLE bandcamp_collection (sale_item_id TEXT NOT NULL PRIMARY KEY,"
+            " item_type TEXT NOT NULL DEFAULT 'p', band_name TEXT NOT NULL DEFAULT '',"
+            " item_title TEXT NOT NULL DEFAULT '', tralbum_id TEXT NOT NULL DEFAULT '',"
+            " album_url TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'local',"
+            " synced_at REAL, added_at REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE settings (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE sessions (service TEXT NOT NULL PRIMARY KEY,"
+            " session_json TEXT, updated_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE deferred_ops (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " op_type TEXT NOT NULL, track_id INTEGER NOT NULL UNIQUE,"
+            " payload_json TEXT NOT NULL, created_at REAL NOT NULL,"
+            " attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE download_queue (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " sale_item_id TEXT NOT NULL UNIQUE, queued_at REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO bandcamp_collection (sale_item_id, mode) VALUES ('1', 'preorder')"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_migration_adds_num_streamable_tracks_column(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v25_db(db_path)
+        index = LibraryIndex(db_path)
+        cols = {
+            r[1]
+            for r in index._conn.execute(
+                "PRAGMA table_info(bandcamp_collection)"
+            ).fetchall()
+        }
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        index.close()
+
+        assert version == 26
+        assert "num_streamable_tracks" in cols
+
+    def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v25_db(db_path)
+        index = LibraryIndex(db_path)
+        row = index._conn.execute(
+            "SELECT num_streamable_tracks FROM bandcamp_collection WHERE sale_item_id = '1'"
+        ).fetchone()
+        index.close()
+
+        assert row is not None
+        assert row[0] == 0
+
+
+class TestNumStreamableTracks:
+    """upsert_collection_item persists num_streamable_tracks (KAMP-424)."""
+
+    def test_num_streamable_tracks_persisted(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("1", mode="preorder", num_streamable_tracks=3)
+        row = index._conn.execute(
+            "SELECT num_streamable_tracks FROM bandcamp_collection WHERE sale_item_id = '1'"
+        ).fetchone()
+        index.close()
+
+        assert row is not None
+        assert row[0] == 3
+
+    def test_num_streamable_tracks_defaults_to_zero(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("1", mode="remote")
+        row = index._conn.execute(
+            "SELECT num_streamable_tracks FROM bandcamp_collection WHERE sale_item_id = '1'"
+        ).fetchone()
+        index.close()
+
+        assert row is not None
+        assert row[0] == 0
+
+    def test_num_streamable_tracks_updated_on_upsert(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("1", mode="preorder", num_streamable_tracks=2)
+        index.upsert_collection_item("1", mode="preorder", num_streamable_tracks=5)
+        row = index._conn.execute(
+            "SELECT num_streamable_tracks FROM bandcamp_collection WHERE sale_item_id = '1'"
+        ).fetchone()
+        index.close()
+
+        assert row[0] == 5
+
+
+class TestGetCollectionStreamableCounts:
+    """get_collection_streamable_counts returns {sale_item_id: count} for preorders."""
+
+    def test_returns_preorder_counts(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("1", mode="preorder", num_streamable_tracks=3)
+        index.upsert_collection_item("2", mode="preorder", num_streamable_tracks=7)
+        result = index.get_collection_streamable_counts()
+        index.close()
+
+        assert result == {"1": 3, "2": 7}
+
+    def test_excludes_non_preorder_rows(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("1", mode="local", num_streamable_tracks=5)
+        index.upsert_collection_item("2", mode="remote", num_streamable_tracks=2)
+        result = index.get_collection_streamable_counts()
+        index.close()
+
+        assert result == {}
+
+    def test_empty_when_no_preorders(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = index.get_collection_streamable_counts()
+        index.close()
+
+        assert result == {}

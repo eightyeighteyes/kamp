@@ -90,7 +90,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 25
+_SCHEMA_VERSION = 26
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -234,15 +234,16 @@ END;
 -- tralbum_id and album_url are populated by the streaming URL resolver (KAMP-382);
 -- migration rows start with '' and are backfilled on next sync.
 CREATE TABLE IF NOT EXISTS bandcamp_collection (
-    sale_item_id   TEXT NOT NULL PRIMARY KEY,
-    item_type      TEXT NOT NULL DEFAULT 'p',
-    band_name      TEXT NOT NULL DEFAULT '',
-    item_title     TEXT NOT NULL DEFAULT '',
-    tralbum_id     TEXT NOT NULL DEFAULT '',
-    album_url      TEXT NOT NULL DEFAULT '',
-    mode           TEXT NOT NULL DEFAULT 'local',
-    synced_at      REAL,
-    added_at       REAL NOT NULL DEFAULT 0
+    sale_item_id          TEXT NOT NULL PRIMARY KEY,
+    item_type             TEXT NOT NULL DEFAULT 'p',
+    band_name             TEXT NOT NULL DEFAULT '',
+    item_title            TEXT NOT NULL DEFAULT '',
+    tralbum_id            TEXT NOT NULL DEFAULT '',
+    album_url             TEXT NOT NULL DEFAULT '',
+    mode                  TEXT NOT NULL DEFAULT 'local',
+    synced_at             REAL,
+    added_at              REAL NOT NULL DEFAULT 0,
+    num_streamable_tracks INTEGER NOT NULL DEFAULT 0
 );
 
 -- Serialized album download queue (KAMP-408).
@@ -988,7 +989,24 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 25")
             self._conn.commit()
-            version = 25  # noqa: F841
+            version = 25
+
+        if version == 25:
+            # v25 → v26: add num_streamable_tracks to bandcamp_collection (KAMP-424).
+            existing = {
+                r[1]
+                for r in self._conn.execute(
+                    "PRAGMA table_info(bandcamp_collection)"
+                ).fetchall()
+            }
+            if "num_streamable_tracks" not in existing:
+                self._conn.execute(
+                    "ALTER TABLE bandcamp_collection"
+                    " ADD COLUMN num_streamable_tracks INTEGER NOT NULL DEFAULT 0"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 26")
+            self._conn.commit()
+            version = 26  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -1289,6 +1307,14 @@ class LibraryIndex:
         ).fetchall()
         return {r["sale_item_id"]: r["mode"] for r in rows}
 
+    def get_collection_streamable_counts(self) -> dict[str, int]:
+        """Return {sale_item_id: num_streamable_tracks} for all pre-order rows."""
+        rows = self._conn.execute(
+            "SELECT sale_item_id, num_streamable_tracks FROM bandcamp_collection"
+            " WHERE mode = 'preorder'"
+        ).fetchall()
+        return {r["sale_item_id"]: r["num_streamable_tracks"] for r in rows}
+
     def upsert_collection_item(
         self,
         sale_item_id: str,
@@ -1301,6 +1327,7 @@ class LibraryIndex:
         album_url: str = "",
         synced_at: float | None = None,
         added_at: float | None = None,
+        num_streamable_tracks: int = 0,
     ) -> None:
         """Insert or update a single entry in bandcamp_collection."""
         now = _time.time()
@@ -1308,17 +1335,19 @@ class LibraryIndex:
             """
             INSERT INTO bandcamp_collection
                 (sale_item_id, item_type, band_name, item_title,
-                 tralbum_id, album_url, mode, synced_at, added_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 tralbum_id, album_url, mode, synced_at, added_at,
+                 num_streamable_tracks)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sale_item_id) DO UPDATE SET
-                item_type  = excluded.item_type,
-                band_name  = excluded.band_name,
-                item_title = excluded.item_title,
-                tralbum_id = excluded.tralbum_id,
-                album_url  = excluded.album_url,
-                mode       = excluded.mode,
-                synced_at  = COALESCE(excluded.synced_at, synced_at),
-                added_at   = MIN(added_at, COALESCE(excluded.added_at, added_at))
+                item_type             = excluded.item_type,
+                band_name             = excluded.band_name,
+                item_title            = excluded.item_title,
+                tralbum_id            = excluded.tralbum_id,
+                album_url             = excluded.album_url,
+                mode                  = excluded.mode,
+                synced_at             = COALESCE(excluded.synced_at, synced_at),
+                added_at              = MIN(added_at, COALESCE(excluded.added_at, added_at)),
+                num_streamable_tracks = excluded.num_streamable_tracks
             """,
             (
                 sale_item_id,
@@ -1330,6 +1359,7 @@ class LibraryIndex:
                 mode,
                 synced_at,
                 added_at if added_at is not None else now,
+                num_streamable_tracks,
             ),
         )
         # Keep the albums row's sale_item_id FK in sync when a matching album exists.
@@ -2039,6 +2069,57 @@ class LibraryIndex:
                   )
                 """,
                 (
+                    str(t.file_path),
+                    str(t.file_path),
+                    t.track_number,
+                    t.disc_number,
+                ),
+            )
+        if new_tracks:
+            self._conn.commit()
+
+    def inherit_remote_play_counts(self, new_tracks: "list[Track]") -> None:
+        """Copy play_count from a matching remote bandcamp:// row to each newly-added
+        local track, taking the higher of the two values.
+
+        Called by LibraryScanner after a pre-order album is downloaded so play
+        counts accumulated during the streaming period are not lost.  Uses the
+        same (album_id, track_number, disc_number) match as inherit_remote_favorites.
+        Only updates when the remote play_count > the local play_count.
+        """
+        for t in new_tracks:
+            self._conn.execute(
+                """
+                UPDATE tracks SET play_count = (
+                    SELECT MAX(r.play_count, tracks.play_count)
+                    FROM tracks r
+                    WHERE r.album_id = (
+                              SELECT album_id FROM tracks
+                              WHERE file_path = ?
+                          )
+                      AND r.track_number = ?
+                      AND r.disc_number = ?
+                      AND r.file_path LIKE 'bandcamp://%'
+                      AND r.play_count > 0
+                    LIMIT 1
+                )
+                WHERE file_path = ?
+                  AND EXISTS (
+                      SELECT 1 FROM tracks r
+                      WHERE r.album_id = (
+                                SELECT album_id FROM tracks
+                                WHERE file_path = ?
+                            )
+                        AND r.track_number = ?
+                        AND r.disc_number = ?
+                        AND r.file_path LIKE 'bandcamp://%'
+                        AND r.play_count > tracks.play_count
+                  )
+                """,
+                (
+                    str(t.file_path),
+                    t.track_number,
+                    t.disc_number,
                     str(t.file_path),
                     str(t.file_path),
                     t.track_number,
@@ -3325,6 +3406,7 @@ class LibraryScanner:
         newly_added = [t for t in upsert_subset if t.file_path in to_add]
         if newly_added:
             self._index.inherit_remote_favorites(newly_added)
+            self._index.inherit_remote_play_counts(newly_added)
         added = len(newly_added) + len(reconciled_new_paths)
         updated = len([t for t in upsert_subset if t.file_path in to_update])
 

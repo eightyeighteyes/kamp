@@ -843,6 +843,207 @@ class TestSyncNewPurchases:
         assert call_kwargs["added_at"] == _parse_purchased(purchased_str)
 
 
+def _preorder_item(
+    sale_item_id: int,
+    band: str = "Band",
+    title: str = "Album",
+    num_streamable_tracks: int = 2,
+    with_redownload_url: bool = True,
+) -> dict[str, Any]:
+    """Build a collection item with is_preorder=True."""
+    item = _item(sale_item_id, band, title)
+    item["is_preorder"] = True
+    item["num_streamable_tracks"] = num_streamable_tracks
+    if with_redownload_url:
+        item["redownload_url"] = (
+            f"https://bandcamp.com/download?sitem_id={sale_item_id}&sig=fake"
+        )
+    return item
+
+
+class TestSyncNewPurchasesPreorder:
+    """Pre-order handling in sync_new_purchases (KAMP-424).
+
+    Bandcamp returns is_preorder=True on collection items whose release
+    is not yet complete. The downloaded ZIP contains only the currently
+    available tracks. kamp stores these as mode='preorder' and re-downloads
+    when num_streamable_tracks increases or is_preorder flips to False.
+    """
+
+    def _run(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+        existing_state: dict[str, str] | None = None,
+        existing_streamable_counts: dict[str, int] | None = None,
+        fake_download: Any = None,
+    ) -> "MagicMock":
+        watch_folder = tmp_path / "watch"
+
+        def _default_download(
+            item: Any, bc_config: Any, watch_dir: Any, session: Any
+        ) -> Any:
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            p = watch_dir / f"{item['sale_item_id']}.zip"
+            p.write_bytes(b"zip")
+            return p
+
+        index = MagicMock()
+        index.get_collection_state.return_value = existing_state or {}
+        index.get_collection_streamable_counts.return_value = (
+            existing_streamable_counts or {}
+        )
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._download_item",
+                side_effect=fake_download or _default_download,
+            ),
+        ):
+            sync_new_purchases(_bc_config(tmp_path), watch_folder, index)
+
+        return index
+
+    def test_preorder_is_downloaded_and_set_to_preorder_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """is_preorder=True items are downloaded and stored as mode='preorder'."""
+        items = [_preorder_item(1, num_streamable_tracks=2)]
+        index = self._run(tmp_path, items)
+
+        assert (tmp_path / "watch" / "1.zip").exists()
+        calls = index.upsert_collection_item.call_args_list
+        preorder_calls = [c for c in calls if c[1].get("mode") == "preorder"]
+        assert len(preorder_calls) == 1
+        assert preorder_calls[0][0][0] == "1"
+
+    def test_preorder_stores_num_streamable_tracks(self, tmp_path: Path) -> None:
+        """num_streamable_tracks from the API is persisted after download."""
+        items = [_preorder_item(1, num_streamable_tracks=3)]
+        index = self._run(tmp_path, items)
+
+        calls = index.upsert_collection_item.call_args_list
+        preorder_call = next(c for c in calls if c[1].get("mode") == "preorder")
+        assert preorder_call[1].get("num_streamable_tracks") == 3
+
+    def test_preorder_skips_redownload_when_count_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        """No re-download when is_preorder=True and num_streamable_tracks unchanged."""
+        items = [_preorder_item(1, num_streamable_tracks=2)]
+        mock_dl = MagicMock(return_value=tmp_path / "1.zip")
+        self._run(
+            tmp_path,
+            items,
+            existing_state={"1": "preorder"},
+            existing_streamable_counts={"1": 2},  # same as API
+            fake_download=mock_dl,
+        )
+
+        mock_dl.assert_not_called()
+
+    def test_preorder_redownloads_when_count_increases(self, tmp_path: Path) -> None:
+        """Re-downloads when num_streamable_tracks in API > stored value."""
+
+        def fake_dl(item: Any, bc_config: Any, watch_dir: Any, session: Any) -> Any:
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            p = watch_dir / f"{item['sale_item_id']}.zip"
+            p.write_bytes(b"zip")
+            return p
+
+        items = [_preorder_item(1, num_streamable_tracks=4)]
+        self._run(
+            tmp_path,
+            items,
+            existing_state={"1": "preorder"},
+            existing_streamable_counts={"1": 2},  # API says 4, stored was 2
+            fake_download=fake_dl,
+        )
+
+        assert (tmp_path / "watch" / "1.zip").exists()
+
+    def test_released_preorder_is_downloaded_as_local(self, tmp_path: Path) -> None:
+        """When is_preorder flips to False the ZIP is downloaded and mode='local'."""
+        item = _item(1, "Band", "Released Album")
+        item["is_preorder"] = False
+        item["num_streamable_tracks"] = 10
+        item["redownload_url"] = "https://bandcamp.com/download?sitem_id=1&sig=fake"
+
+        def fake_dl(i: Any, bc_config: Any, watch_dir: Any, session: Any) -> Any:
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            p = watch_dir / f"{i['sale_item_id']}.zip"
+            p.write_bytes(b"zip")
+            return p
+
+        index = self._run(
+            tmp_path,
+            [item],
+            existing_state={"1": "preorder"},
+            existing_streamable_counts={"1": 5},
+            fake_download=fake_dl,
+        )
+
+        assert (tmp_path / "watch" / "1.zip").exists()
+        calls = index.upsert_collection_item.call_args_list
+        local_calls = [c for c in calls if c[1].get("mode") == "local"]
+        assert len(local_calls) == 1
+
+    def test_no_redownload_url_falls_back_to_warning(self, tmp_path: Path) -> None:
+        """Items with no redownload_url at all get a warning (genuine edge case)."""
+        item = _item(1)
+        item["is_preorder"] = True
+        item["num_streamable_tracks"] = 0
+        # Remove any redownload_url that _make_requests_mock injected
+        item.pop("redownload_url", None)
+
+        mock_dl = MagicMock()
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.get_collection_streamable_counts.return_value = {}
+
+        session = MagicMock()
+        collection_resp = MagicMock()
+        collection_resp.json.return_value = _collection_response(
+            [item], redownload_urls={}
+        )
+        collection_resp.raise_for_status = MagicMock()
+        hidden_resp = MagicMock()
+        hidden_resp.json.return_value = _collection_response([])
+        hidden_resp.raise_for_status = MagicMock()
+        fan_page = MagicMock()
+        fan_page.text = _collection_page_html([item])
+
+        def _side(url: str, **_kw: Any) -> MagicMock:
+            if "collection_items" in url:
+                return collection_resp
+            if "hidden_items" in url:
+                return hidden_resp
+            return fan_page
+
+        session.get.side_effect = _side
+        session.post.side_effect = _side
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch("kamp_daemon.bandcamp._make_requests_session", return_value=session),
+            patch("kamp_daemon.bandcamp._download_item", mock_dl),
+        ):
+            sync_new_purchases(_bc_config(tmp_path), tmp_path / "watch", index)
+
+        mock_dl.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # mark_collection_synced
 # ---------------------------------------------------------------------------

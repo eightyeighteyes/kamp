@@ -215,9 +215,14 @@ function findKampInvocation(): KampInvocation | null {
   // file instead.
   const venvRoot = resolve(app.getAppPath(), '../.venv')
   if (isWindows) {
+    // pythonw.exe is the no-console variant shipped with every CPython install
+    // on Windows. Prefer it over python.exe so the daemon never allocates a
+    // console window in dev mode (windowsHide:true is belt-and-suspenders).
+    const pyw = join(venvRoot, 'Scripts', 'pythonw.exe')
     const py = join(venvRoot, 'Scripts', 'python.exe')
     const script = join(venvRoot, 'Scripts', 'kamp')
-    if (existsSync(py) && existsSync(script)) return { command: py, args: [script] }
+    const pythonExe = existsSync(pyw) ? pyw : py
+    if (existsSync(pythonExe) && existsSync(script)) return { command: pythonExe, args: [script] }
   } else {
     const bin = join(venvRoot, 'bin', 'kamp')
     if (existsSync(bin)) return { command: bin, args: [] }

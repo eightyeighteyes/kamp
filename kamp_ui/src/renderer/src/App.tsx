@@ -632,7 +632,8 @@ export default function App(): React.JSX.Element {
       <SandboxedExtensionLoader extensions={phase2Extensions} />
       {flashToast && (
         <div className="flash-toast" role="status">
-          {flashToast}
+          <span className="album-rename-toast-text">{flashToast}</span>
+          <div className="album-rename-toast-bar" style={{ animationDuration: '2000ms' }} />
         </div>
       )}
     </div>

@@ -1118,6 +1118,7 @@ def fetch_album_tracks(
                 source="bandcamp",
                 date_added=date_added if date_added is not None else time.time(),
                 is_available=is_available,
+                duration=float(t.get("duration") or 0.0),
             )
         )
     return result

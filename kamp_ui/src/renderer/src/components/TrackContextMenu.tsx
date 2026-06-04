@@ -61,15 +61,17 @@ export function TrackContextMenu({ x, y, track, onClose }: Props): React.JSX.Ele
         </span>
         {track.favorite ? 'Remove from Favorites' : 'Add to Favorites'}
       </button>
-      <button
-        className="track-context-menu-item"
-        onClick={() => {
-          window.api.showItemInFolder(track.file_path)
-          onClose()
-        }}
-      >
-        {revealInFinderLabel()}
-      </button>
+      {track.source === 'local' && (
+        <button
+          className="track-context-menu-item"
+          onClick={() => {
+            window.api.showItemInFolder(track.file_path)
+            onClose()
+          }}
+        >
+          {revealInFinderLabel()}
+        </button>
+      )}
     </ContextMenu>
   )
 }

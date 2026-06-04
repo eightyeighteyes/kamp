@@ -64,22 +64,6 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
         </span>
         {album.favorite ? 'Remove from Favorites' : 'Add to Favorites'}
       </button>
-      {album.source === 'local' && (
-        <button
-          className="track-context-menu-item"
-          onClick={async () => {
-            let filePath = album.file_path
-            if (!filePath) {
-              const tracks = await getTracksForAlbum(album.album_artist, album.album)
-              filePath = tracks[0]?.file_path ?? ''
-            }
-            if (filePath) window.api.showItemInFolder(filePath)
-            onClose()
-          }}
-        >
-          {revealInFinderLabel()}
-        </button>
-      )}
       {album.album_url && (
         <button
           className="track-context-menu-item"
@@ -122,6 +106,22 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
             <DownloadArrowIcon size={12} />
           </span>
           Download this album
+        </button>
+      )}
+      {album.source === 'local' && (
+        <button
+          className="track-context-menu-item"
+          onClick={async () => {
+            let filePath = album.file_path
+            if (!filePath) {
+              const tracks = await getTracksForAlbum(album.album_artist, album.album)
+              filePath = tracks[0]?.file_path ?? ''
+            }
+            if (filePath) window.api.showItemInFolder(filePath)
+            onClose()
+          }}
+        >
+          {revealInFinderLabel()}
         </button>
       )}
     </ContextMenu>

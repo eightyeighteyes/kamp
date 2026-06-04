@@ -90,7 +90,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 24
+_SCHEMA_VERSION = 25
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -121,7 +121,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     source               TEXT    NOT NULL DEFAULT 'local',
     stream_url           TEXT,
     stream_url_expires_at REAL,
-    album_id             INTEGER REFERENCES albums(id)
+    album_id             INTEGER REFERENCES albums(id),
+    is_available         INTEGER NOT NULL DEFAULT 1
 );
 
 -- First-class album entity (KAMP-418). Replaces the GROUP BY (album_artist, album)
@@ -344,6 +345,8 @@ class Track:
     source: str = field(default="local", compare=False)
     stream_url: str | None = field(default=None, compare=False)
     stream_url_expires_at: float | None = field(default=None, compare=False)
+    # False for pre-order tracks whose CDN file has not yet been released.
+    is_available: bool = field(default=True, compare=False)
     # Runtime flag; not persisted to DB. False for stub tracks created during
     # queue restore when the DB row is missing (e.g. after a DB wipe).
     reachable: bool = field(default=True, compare=False)
@@ -391,6 +394,8 @@ class AlbumInfo:
     in_bandcamp_collection: bool = False
     # Bandcamp sale_item_id — stored on the albums row since KAMP-418.
     sale_item_id: str | None = None
+    # True when the album is a Bandcamp pre-order (some tracks not yet released).
+    is_preorder: bool = False
     # Stable integer PK of the albums row; 0 for missing-album virtual entries.
     album_id: int = field(default=0, compare=False)
 
@@ -970,7 +975,20 @@ class LibraryIndex:
                 self._conn.execute("DROP TABLE album_favorites")
             self._conn.execute("UPDATE schema_version SET version = 24")
             self._conn.commit()
-            version = 24  # noqa: F841
+            version = 24
+
+        if version == 24:
+            # v24 → v25: add is_available to tracks for pre-order support (KAMP-423).
+            existing = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if "is_available" not in existing:
+                self._conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN is_available INTEGER NOT NULL DEFAULT 1"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 25")
+            self._conn.commit()
+            version = 25  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -1557,8 +1575,9 @@ class LibraryIndex:
                 (file_path, title, artist, album_artist, album, year,
                  track_number, disc_number, ext, embedded_art,
                  mb_release_id, mb_recording_id, date_added, file_mtime,
-                 genre, label, source, stream_url, stream_url_expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 genre, label, source, stream_url, stream_url_expires_at,
+                 is_available)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path) DO UPDATE SET
                 title                 = excluded.title,
                 artist                = excluded.artist,
@@ -1576,7 +1595,8 @@ class LibraryIndex:
                 label                 = excluded.label,
                 source                = excluded.source,
                 stream_url            = excluded.stream_url,
-                stream_url_expires_at = excluded.stream_url_expires_at
+                stream_url_expires_at = excluded.stream_url_expires_at,
+                is_available          = excluded.is_available
                 -- date_added intentionally omitted: preserve original scan date on re-scan
                 -- last_played intentionally omitted: managed exclusively by record_played()
             """,
@@ -2185,11 +2205,12 @@ class LibraryIndex:
                 END                 AS track_count,
                 MAX(t.favorite)     AS has_favorite_track,
                 -- in_bandcamp_collection: True only when mode='local' (user downloaded it).
-                CASE WHEN bc.sale_item_id IS NOT NULL THEN 1 ELSE 0 END AS in_bc
+                CASE WHEN bc.mode = 'local' THEN 1 ELSE 0 END AS in_bc,
+                -- is_preorder: True when the album is a Bandcamp pre-order (KAMP-423).
+                CASE WHEN bc.mode = 'preorder' THEN 1 ELSE 0 END AS is_preorder
             FROM albums a
             LEFT JOIN tracks t ON t.album_id = a.id
-            LEFT JOIN bandcamp_collection bc
-                ON bc.sale_item_id = a.sale_item_id AND bc.mode = 'local'
+            LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id
             GROUP BY a.id
             UNION ALL
             -- Missing-album tracks: each track with album='' appears as its own
@@ -2211,7 +2232,8 @@ class LibraryIndex:
                 t.file_path,
                 1                   AS track_count,
                 t.favorite          AS has_favorite_track,
-                0                   AS in_bc
+                0                   AS in_bc,
+                0                   AS is_preorder
             FROM tracks t
             WHERE t.album = ''
             ORDER BY {order_by}
@@ -2235,6 +2257,7 @@ class LibraryIndex:
                 source=r["album_source"],
                 has_remote_tracks=r["album_source"] != "local",
                 in_bandcamp_collection=bool(r["in_bc"]),
+                is_preorder=bool(r["is_preorder"]),
                 sale_item_id=r["sale_item_id"],
             )
             for r in rows
@@ -2723,6 +2746,7 @@ def _track_to_params(
     str,
     str | None,
     float | None,
+    int,
 ]:
     return (
         _canonical_track_key(t.file_path),
@@ -2744,6 +2768,7 @@ def _track_to_params(
         t.source,
         t.stream_url,
         t.stream_url_expires_at,
+        int(t.is_available),
     )
 
 
@@ -2788,6 +2813,7 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         source=row["source"],
         stream_url=row["stream_url"],
         stream_url_expires_at=row["stream_url_expires_at"],
+        is_available=bool(row["is_available"]),
     )
 
 

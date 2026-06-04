@@ -304,6 +304,11 @@ export function AlbumCard({
             </div>
           </div>
         )}
+        {album.is_preorder && (
+          <div className="album-preorder-banner" aria-label="Pre-Order">
+            pre-order
+          </div>
+        )}
         {isNew && highlightStyle === 'shiny' && <span className="shiny-sweep" aria-hidden="true" />}
         {isNew && highlightStyle === 'boring' && (
           <span className="boring-hover" aria-hidden="true">

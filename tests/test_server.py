@@ -4522,3 +4522,158 @@ class TestArtEndpointRemoteAlbums:
 
         assert res.status_code == 200
         assert res.content == self._JPEG
+
+
+class TestIsAvailableField:
+    """TrackOut exposes is_available from Track (KAMP-423)."""
+
+    def test_is_available_true_by_default(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t = _track(1)
+        mock_index.tracks_for_album.return_value = [t]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        data = c.get("/api/v1/tracks?album_artist=Artist&album=Album").json()
+        assert data[0]["is_available"] is True
+
+    def test_is_available_false_for_unreleased_preorder_track(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t = _track(1)
+        t.is_available = False
+        mock_index.tracks_for_album.return_value = [t]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        data = c.get("/api/v1/tracks?album_artist=Artist&album=Album").json()
+        assert data[0]["is_available"] is False
+
+
+class TestIsPreorderField:
+    """AlbumOut exposes is_preorder from AlbumInfo (KAMP-423)."""
+
+    def test_is_preorder_false_by_default(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.albums.return_value = [_album("Artist", "Record")]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        data = c.get("/api/v1/albums").json()
+        assert data[0]["is_preorder"] is False
+
+    def test_is_preorder_true_when_album_info_flagged(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        info = _album("Artist", "Record")
+        info.is_preorder = True
+        mock_index.albums.return_value = [info]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        data = c.get("/api/v1/albums").json()
+        assert data[0]["is_preorder"] is True
+
+
+class TestPreorderUnavailableTracksExcludedFromQueue:
+    """Unavailable pre-order tracks must not enter the queue (KAMP-423)."""
+
+    def _unavailable_track(self, n: int) -> "Track":
+        t = _track(n)
+        t.is_available = False
+        return t
+
+    def test_play_album_excludes_unavailable_tracks(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        available = _track(1)
+        unavailable = self._unavailable_track(2)
+        mock_index.tracks_for_album.return_value = [available, unavailable]
+        mock_queue.current.return_value = available
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        c.post(
+            "/api/v1/player/play",
+            json={"album_artist": "A", "album": "B", "track_index": 0},
+        )
+        mock_queue.load.assert_called_once_with([available], start_index=0)
+
+    def test_play_album_404_when_all_tracks_unavailable(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = [self._unavailable_track(1)]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/player/play",
+            json={"album_artist": "A", "album": "B", "track_index": 0},
+        )
+        assert resp.status_code == 404
+
+    def test_play_album_adjusts_start_index_for_filtered_tracks(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """When track_index points past a filtered-out track, start_index shifts down."""
+        t1 = self._unavailable_track(1)
+        t2 = _track(2)  # available, originally at index 1
+        mock_index.tracks_for_album.return_value = [t1, t2]
+        mock_queue.current.return_value = t2
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        # User requests track at index 1 (t2) in the unfiltered list
+        c.post(
+            "/api/v1/player/play",
+            json={"album_artist": "A", "album": "B", "track_index": 1},
+        )
+        # After filtering t1 out, t2 is at index 0 in the available list
+        mock_queue.load.assert_called_once_with([t2], start_index=0)
+
+    def test_add_album_to_queue_excludes_unavailable_tracks(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        available = _track(1)
+        unavailable = self._unavailable_track(2)
+        mock_index.tracks_for_album.return_value = [available, unavailable]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        c.post(
+            "/api/v1/player/queue/add-album", json={"album_artist": "A", "album": "B"}
+        )
+        mock_queue.add_album_to_queue.assert_called_once_with([available])
+
+    def test_play_album_next_excludes_unavailable_tracks(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        available = _track(1)
+        unavailable = self._unavailable_track(2)
+        mock_index.tracks_for_album.return_value = [available, unavailable]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        c.post(
+            "/api/v1/player/queue/play-album-next",
+            json={"album_artist": "A", "album": "B"},
+        )
+        mock_queue.play_album_next.assert_called_once_with([available])
+
+    def test_insert_album_excludes_unavailable_tracks(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        available = _track(1)
+        unavailable = self._unavailable_track(2)
+        mock_index.tracks_for_album.return_value = [available, unavailable]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        c.post(
+            "/api/v1/player/queue/insert-album",
+            json={"album_artist": "A", "album": "B", "index": 0},
+        )
+        mock_queue.insert_album_at.assert_called_once_with([available], 0)
+
+    def test_add_album_to_queue_404_when_all_tracks_unavailable(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = [self._unavailable_track(1)]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        resp = c.post(
+            "/api/v1/player/queue/add-album", json={"album_artist": "A", "album": "B"}
+        )
+        assert resp.status_code == 404

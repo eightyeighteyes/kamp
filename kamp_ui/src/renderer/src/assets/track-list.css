@@ -125,6 +125,24 @@
   color: #ffffff;
 }
 
+/* Pre-order badge inline with album title (KAMP-423) */
+.album-preorder-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(124, 134, 225, 0.25);
+  color: #7c86e1;
+  vertical-align: middle;
+  pointer-events: none;
+  border: 1px solid rgba(124, 134, 225, 0.4);
+}
+
 /* Edit / Done toggle — separate pill, absolutely positioned at the right of
    the hero row. Ghost in resting state; filled accent chip when active. */
 .breadcrumb-edit-btn {
@@ -769,6 +787,22 @@
 .track-row--offline .track-row-title {
   font-style: italic;
   opacity: 0.42;
+}
+
+/* Pre-order unavailable tracks (KAMP-423) ---------------------------------- */
+
+.track-row--preorder-unavailable {
+  cursor: not-allowed;
+}
+
+.track-row--preorder-unavailable .track-row-num,
+.track-row--preorder-unavailable .track-row-artist {
+  opacity: 0.35;
+}
+
+.track-row--preorder-unavailable .track-row-title {
+  font-style: italic;
+  opacity: 0.35;
 }
 
 /* Now Playing view --------------------------------------------------------- */

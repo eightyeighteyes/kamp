@@ -145,6 +145,7 @@ class TrackOut(BaseModel):
     play_count: int
     source: str
     reachable: bool = True
+    is_available: bool = True
 
     @classmethod
     def from_track(cls, t: Track) -> "TrackOut":
@@ -168,6 +169,7 @@ class TrackOut(BaseModel):
             play_count=t.play_count,
             source=t.source,
             reachable=t.reachable,
+            is_available=t.is_available,
         )
 
 
@@ -200,6 +202,8 @@ class AlbumOut(BaseModel):
     has_remote_tracks: bool = False
     # Bandcamp sale_item_id parsed from constituent track file paths; None for local albums.
     sale_item_id: str | None = None
+    # True when the album is a Bandcamp pre-order (some tracks not yet released).
+    is_preorder: bool = False
 
 
 class PlayerStateOut(BaseModel):
@@ -846,6 +850,7 @@ def create_app(
                 source=a.source,
                 has_remote_tracks=a.has_remote_tracks,
                 sale_item_id=a.sale_item_id,
+                is_preorder=a.is_preorder,
             )
             for a in index.albums(sort=sort)
         ]
@@ -1867,6 +1872,7 @@ def create_app(
                     source=a.source,
                     has_remote_tracks=a.has_remote_tracks,
                     sale_item_id=a.sale_item_id,
+                    is_preorder=a.is_preorder,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -1992,6 +1998,7 @@ def create_app(
                     source=a.source,
                     has_remote_tracks=a.has_remote_tracks,
                     sale_item_id=a.sale_item_id,
+                    is_preorder=a.is_preorder,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -2146,6 +2153,7 @@ def create_app(
                 source=a.source,
                 has_remote_tracks=a.has_remote_tracks,
                 sale_item_id=a.sale_item_id,
+                is_preorder=a.is_preorder,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys
@@ -2571,7 +2579,35 @@ def create_app(
             track = index.get_track_by_path(p)
             tracks = [track] if track else []
         else:
-            tracks = index.tracks_for_album(req.album_artist, req.album)
+            all_tracks = index.tracks_for_album(req.album_artist, req.album)
+            # Map start_index from the full list to the available subset before filtering.
+            requested = (
+                all_tracks[req.track_index]
+                if req.track_index < len(all_tracks)
+                else None
+            )
+            tracks = [t for t in all_tracks if t.is_available]
+            if requested and requested.is_available:
+                req = PlayRequest(
+                    album_artist=req.album_artist,
+                    album=req.album,
+                    track_index=next(
+                        (
+                            i
+                            for i, t in enumerate(tracks)
+                            if t.file_path == requested.file_path
+                        ),
+                        0,
+                    ),
+                    file_path=req.file_path,
+                )
+            else:
+                req = PlayRequest(
+                    album_artist=req.album_artist,
+                    album=req.album,
+                    track_index=0,
+                    file_path=req.file_path,
+                )
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.load(tracks, start_index=req.track_index)
@@ -2721,7 +2757,11 @@ def create_app(
             track = index.get_track_by_path(p)
             tracks = [track] if track else []
         else:
-            tracks = index.tracks_for_album(req.album_artist, req.album)
+            tracks = [
+                t
+                for t in index.tracks_for_album(req.album_artist, req.album)
+                if t.is_available
+            ]
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         was_stopped = queue.current() is None
@@ -2742,7 +2782,11 @@ def create_app(
             track = index.get_track_by_path(p)
             tracks = [track] if track else []
         else:
-            tracks = index.tracks_for_album(req.album_artist, req.album)
+            tracks = [
+                t
+                for t in index.tracks_for_album(req.album_artist, req.album)
+                if t.is_available
+            ]
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         was_stopped = queue.current() is None
@@ -2762,7 +2806,11 @@ def create_app(
             track = index.get_track_by_path(Path(req.file_path))
             tracks = [track] if track else []
         else:
-            tracks = index.tracks_for_album(req.album_artist, req.album)
+            tracks = [
+                t
+                for t in index.tracks_for_album(req.album_artist, req.album)
+                if t.is_available
+            ]
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.insert_album_at(tracks, req.index)

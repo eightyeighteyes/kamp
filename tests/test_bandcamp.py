@@ -2635,6 +2635,210 @@ class TestFetchAlbumTracks:
         assert len(result) == 1
         assert result[0].title == "Good"
 
+    def test_is_available_true_when_file_present(self) -> None:
+        """Tracks with a file entry are marked available (KAMP-423)."""
+        tracks = [
+            {
+                "title": "Released",
+                "track_num": 1,
+                "artist": None,
+                "file": {"mp3-128": "https://cdn.example.com/track1.mp3"},
+            }
+        ]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert len(result) == 1
+        assert result[0].is_available is True
+
+    def test_is_available_false_when_file_is_null(self) -> None:
+        """Tracks with file=null (unreleased pre-order tracks) are unavailable (KAMP-423)."""
+        tracks = [
+            {
+                "title": "Released",
+                "track_num": 1,
+                "artist": None,
+                "file": {"mp3-128": "https://cdn.example.com/t1.mp3"},
+            },
+            {"title": "Unreleased", "track_num": 2, "artist": None, "file": None},
+        ]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert len(result) == 2
+        assert result[0].is_available is True
+        assert result[1].is_available is False
+
+    def test_is_available_false_when_file_absent(self) -> None:
+        """Tracks with no file key at all are also unavailable (KAMP-423)."""
+        tracks = [{"title": "Unreleased", "track_num": 1, "artist": None}]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert result[0].is_available is False
+
+    def test_all_available_when_no_file_key_by_default(self) -> None:
+        """The default _stream_album_page_html fixture omits 'file'; confirm False."""
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        # Default fixture tracks have no 'file' key → all unavailable
+        assert all(t.is_available is False for t in result)
+
+
+class TestSyncCollectionStreamPreorder:
+    """Pre-order-aware sync behaviour in sync_collection_stream (KAMP-423)."""
+
+    def _make_track(
+        self, sale_item_id: str, track_num: int, available: bool = True
+    ) -> "Track":
+        from kamp_core.library import Track
+        from pathlib import Path as _Path
+
+        t = Track(
+            file_path=_Path(f"bandcamp://{sale_item_id}/{track_num}"),
+            title=f"Track {track_num}",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            year="2020",
+            track_number=track_num,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        t.is_available = available
+        return t
+
+    def _run(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+        fake_tracks: list[Any],
+        existing_state: dict[str, str] | None = None,
+        has_remote_tracks: bool = False,
+    ) -> "MagicMock":
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = existing_state or {}
+        index.has_remote_album_tracks.return_value = has_remote_tracks
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=fake_tracks),
+        ):
+            sync_collection_stream(config, watch_folder, index)
+
+        return index
+
+    def test_sets_preorder_mode_when_unavailable_tracks_present(
+        self, tmp_path: Path
+    ) -> None:
+        """When fetched tracks include unavailable ones, mode is set to 'preorder'."""
+        items = [_item(1)]
+        tracks = [
+            self._make_track("1", 1, available=True),
+            self._make_track("1", 2, available=False),
+        ]
+        index = self._run(tmp_path, items, tracks, has_remote_tracks=False)
+
+        index.set_collection_item_mode.assert_called_once_with("1", "preorder")
+
+    def test_does_not_call_set_mode_when_all_tracks_available_and_not_preorder(
+        self, tmp_path: Path
+    ) -> None:
+        """Fully available albums (not previously preorder) leave mode unchanged."""
+        items = [_item(1)]
+        tracks = [self._make_track("1", 1, available=True)]
+        index = self._run(tmp_path, items, tracks, has_remote_tracks=False)
+
+        index.set_collection_item_mode.assert_not_called()
+
+    def test_reverts_to_remote_when_all_tracks_become_available(
+        self, tmp_path: Path
+    ) -> None:
+        """A previously-preorder album whose tracks are all now available reverts to 'remote'."""
+        items = [_item(1)]
+        tracks = [
+            self._make_track("1", 1, available=True),
+            self._make_track("1", 2, available=True),
+        ]
+        index = self._run(
+            tmp_path,
+            items,
+            tracks,
+            existing_state={"1": "preorder"},
+            has_remote_tracks=True,
+        )
+
+        index.set_collection_item_mode.assert_called_once_with("1", "remote")
+
+    def test_preorder_album_bypasses_has_remote_tracks_short_circuit(
+        self, tmp_path: Path
+    ) -> None:
+        """Pre-order albums are always re-fetched even if tracks already exist in DB."""
+        items = [_item(1)]
+        tracks = [self._make_track("1", 1, available=False)]
+        index = self._run(
+            tmp_path,
+            items,
+            tracks,
+            existing_state={"1": "preorder"},
+            has_remote_tracks=True,  # would normally skip fetch
+        )
+
+        index.upsert_many.assert_called_once()
+
+    def test_non_preorder_album_still_skips_when_tracks_exist(
+        self, tmp_path: Path
+    ) -> None:
+        """Regular remote albums with existing tracks are still short-circuited."""
+        items = [_item(1)]
+        index = self._run(
+            tmp_path,
+            items,
+            fake_tracks=[],
+            existing_state={"1": "remote"},
+            has_remote_tracks=True,
+        )
+
+        index.upsert_many.assert_not_called()
+
+    def test_upsert_collection_item_preserves_preorder_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """When existing mode is 'preorder', upsert_collection_item is called with mode='preorder'
+        (not 'remote') so the mode survives the initial upsert before track re-inspection.
+        """
+        items = [_item(1)]
+        tracks = [self._make_track("1", 1, available=False)]
+        index = self._run(
+            tmp_path,
+            items,
+            tracks,
+            existing_state={"1": "preorder"},
+            has_remote_tracks=True,
+        )
+
+        upsert_calls = index.upsert_collection_item.call_args_list
+        assert len(upsert_calls) == 1
+        assert upsert_calls[0][1]["mode"] == "preorder"
+
 
 class TestDownloadSingleAlbum:
     """Tests for download_single_album()."""

@@ -339,6 +339,9 @@ export function TrackList(): React.JSX.Element | null {
           ›
         </span>
         <span>{album.album}</span>
+        {album.is_preorder && (
+          <span className="album-preorder-badge" aria-label="Pre-Order">Pre-Order</span>
+        )}
       </nav>
 
       {/* Edit toggle — suppressed for bandcamp-only albums (no local files to edit) */}
@@ -564,13 +567,14 @@ export function TrackList(): React.JSX.Element | null {
             const isCurrent = currentTrack?.id === track.id
             const isRemoteTrack = track.source !== 'local'
             const isTrackOffline = isRemoteTrack && !connected
+            const isPreorderUnavailable = track.is_available === false
             return (
               <li
                 key={track.id}
-                className={`track-row${isCurrent ? ' current' : ''}${isTrackOffline ? ' track-row--offline' : ''}`}
+                className={`track-row${isCurrent ? ' current' : ''}${isTrackOffline ? ' track-row--offline' : ''}${isPreorderUnavailable ? ' track-row--preorder-unavailable' : ''}`}
                 tabIndex={0}
                 onDoubleClick={() => {
-                  if (isTrackOffline) return
+                  if (isTrackOffline || isPreorderUnavailable) return
                   if (isCurrent) {
                     togglePlayPause()
                   } else {
@@ -579,7 +583,7 @@ export function TrackList(): React.JSX.Element | null {
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter') return
-                  if (isTrackOffline) return
+                  if (isTrackOffline || isPreorderUnavailable) return
                   if (isCurrent) togglePlayPause()
                   else playTrack(album.album_artist, album.album, i, album.file_path)
                 }}

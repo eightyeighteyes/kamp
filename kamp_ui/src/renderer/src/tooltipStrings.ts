@@ -20,8 +20,8 @@ export const TOOLTIPS = {
   // Queue panel
   QUEUE_CLOSE: 'Close queue',
 
-  // Panel management
-  PANEL_PICKER_MANAGE: 'Manage panels',
+  // Panel management / preferences
+  PREFERENCES: 'Preferences',
   PANEL_MODULE_DRAG: 'Drag to reorder, right-click for options',
   PANEL_MODULE_REMOVE: 'Remove module',
   PANEL_VIEW_CUSTOMIZE: 'Customize',

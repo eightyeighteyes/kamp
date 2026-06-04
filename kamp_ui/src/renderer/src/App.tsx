@@ -6,7 +6,6 @@ import { BaseKampView } from './components/BaseKampView'
 import { ExtensionPanel } from './components/ExtensionPanel'
 import { LibraryView } from './components/LibraryView'
 import { NowPlayingView } from './components/NowPlayingView'
-import { PanelPicker } from './components/PanelPicker'
 import { PreferencesDialog } from './components/PreferencesDialog'
 import { QueuePanel } from './components/QueuePanel'
 import { BandcampButton } from './components/BandcampButton'
@@ -601,7 +600,14 @@ export default function App(): React.JSX.Element {
           <PipelineIndicator />
           <BandcampButton />
         </div>
-        <PanelPicker layout={layout} />
+        <button
+          className="prefs-btn"
+          onClick={() => openPrefs()}
+          title="Preferences"
+          aria-label="Preferences"
+        >
+          ⚙
+        </button>
       </nav>
       <div className="app-body">
         {!showSetup && isPanelVisible(leftPanel) && <SlotPanel panel={leftPanel!} />}

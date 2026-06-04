@@ -125,7 +125,7 @@ function startNowPlayingHelper(): void {
     console.warn('[kamp] now-playing-helper binary not found — media keys disabled')
     return
   }
-  _helper = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] })
+  _helper = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   // Tee the helper's stderr to a per-launch log file so packaged installs
   // (no visible stderr) remain debuggable. Truncate on every spawn.
   try {
@@ -271,6 +271,7 @@ async function startServer(): Promise<void> {
   serverProcess = spawn(invocation.command, [...invocation.args, 'daemon'], {
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
     env: spawnEnv
   })
 
@@ -293,7 +294,8 @@ function stopServer(): void {
         // equivalent). Synchronous because process.on('exit') is one of the
         // call sites and won't run async work.
         execFileSync('taskkill', ['/PID', String(serverProcess.pid), '/T', '/F'], {
-          stdio: 'ignore'
+          stdio: 'ignore',
+          windowsHide: true
         })
       } else {
         // Negative PID kills the entire process group (daemon + children).

@@ -6096,3 +6096,114 @@ class TestIsPreorder:
 
         assert albums[0].in_bandcamp_collection is True
         assert albums[0].is_preorder is False
+
+
+class TestInheritRemotePlayCounts:
+    """inherit_remote_play_counts copies play_count from bandcamp:// rows to matched local tracks."""
+
+    def _setup(self, tmp_path: Path) -> "LibraryIndex":
+        return LibraryIndex(tmp_path / "library.db")
+
+    def _remote_track(
+        self, sale_item_id: str, track_num: int, play_count: int = 0
+    ) -> Track:
+        t = Track(
+            file_path=Path(f"bandcamp://{sale_item_id}/{track_num}"),
+            title=f"Track {track_num}",
+            artist="The Artist",
+            album_artist="The Artist",
+            album="The Album",
+            year="2024",
+            track_number=track_num,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        t.play_count = play_count
+        return t
+
+    def _local_track(
+        self, tmp_path: Path, track_num: int, play_count: int = 0
+    ) -> Track:
+        t = _sample_track(tmp_path / f"{track_num:02d}.mp3")
+        t.track_number = track_num
+        t.play_count = play_count
+        return t
+
+    def test_copies_play_count_from_remote_to_local(self, tmp_path: Path) -> None:
+        index = self._setup(tmp_path)
+        remote = self._remote_track("42", 1)
+        index.upsert_many([remote])
+        # play_count is managed by record_played, not upsert_many — set directly
+        index._conn.execute(
+            "UPDATE tracks SET play_count = 7 WHERE file_path LIKE 'bandcamp://%'"
+        )
+        index._conn.commit()
+
+        local = self._local_track(tmp_path, 1)
+        index.upsert_many([local])
+        index.inherit_remote_play_counts([local])
+
+        result = index.tracks_for_album("The Artist", "The Album")
+        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        index.close()
+
+        assert len(local_result) == 1
+        assert local_result[0].play_count == 7
+
+    def test_keeps_higher_local_play_count(self, tmp_path: Path) -> None:
+        """If local play_count > remote, keep the local value."""
+        index = self._setup(tmp_path)
+        remote = self._remote_track("42", 1)
+        index.upsert_many([remote])
+        index._conn.execute(
+            "UPDATE tracks SET play_count = 3 WHERE file_path LIKE 'bandcamp://%'"
+        )
+        index._conn.commit()
+
+        local = self._local_track(tmp_path, 1)
+        index.upsert_many([local])
+        index._conn.execute("UPDATE tracks SET play_count = 10 WHERE source = 'local'")
+        index._conn.commit()
+        index.inherit_remote_play_counts([local])
+
+        result = index.tracks_for_album("The Artist", "The Album")
+        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        index.close()
+
+        assert local_result[0].play_count == 10
+
+    def test_no_change_when_remote_play_count_is_zero(self, tmp_path: Path) -> None:
+        index = self._setup(tmp_path)
+        remote = self._remote_track("42", 1, play_count=0)
+        index.upsert_many([remote])
+
+        local = self._local_track(tmp_path, 1, play_count=0)
+        index.upsert_many([local])
+        index.inherit_remote_play_counts([local])
+
+        result = index.tracks_for_album("The Artist", "The Album")
+        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        index.close()
+
+        assert local_result[0].play_count == 0
+
+    def test_no_change_when_no_matching_remote_track(self, tmp_path: Path) -> None:
+        index = self._setup(tmp_path)
+        local = self._local_track(tmp_path, 1, play_count=0)
+        index.upsert_many([local])
+        index.inherit_remote_play_counts([local])
+
+        result = index.tracks_for_album("The Artist", "The Album")
+        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        index.close()
+
+        assert local_result[0].play_count == 0
+
+    def test_empty_list_is_noop(self, tmp_path: Path) -> None:
+        index = self._setup(tmp_path)
+        index.inherit_remote_play_counts([])  # must not raise
+        index.close()

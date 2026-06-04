@@ -2048,6 +2048,57 @@ class LibraryIndex:
         if new_tracks:
             self._conn.commit()
 
+    def inherit_remote_play_counts(self, new_tracks: "list[Track]") -> None:
+        """Copy play_count from a matching remote bandcamp:// row to each newly-added
+        local track, taking the higher of the two values.
+
+        Called by LibraryScanner after a pre-order album is downloaded so play
+        counts accumulated during the streaming period are not lost.  Uses the
+        same (album_id, track_number, disc_number) match as inherit_remote_favorites.
+        Only updates when the remote play_count > the local play_count.
+        """
+        for t in new_tracks:
+            self._conn.execute(
+                """
+                UPDATE tracks SET play_count = (
+                    SELECT MAX(r.play_count, tracks.play_count)
+                    FROM tracks r
+                    WHERE r.album_id = (
+                              SELECT album_id FROM tracks
+                              WHERE file_path = ?
+                          )
+                      AND r.track_number = ?
+                      AND r.disc_number = ?
+                      AND r.file_path LIKE 'bandcamp://%'
+                      AND r.play_count > 0
+                    LIMIT 1
+                )
+                WHERE file_path = ?
+                  AND EXISTS (
+                      SELECT 1 FROM tracks r
+                      WHERE r.album_id = (
+                                SELECT album_id FROM tracks
+                                WHERE file_path = ?
+                            )
+                        AND r.track_number = ?
+                        AND r.disc_number = ?
+                        AND r.file_path LIKE 'bandcamp://%'
+                        AND r.play_count > tracks.play_count
+                  )
+                """,
+                (
+                    str(t.file_path),
+                    t.track_number,
+                    t.disc_number,
+                    str(t.file_path),
+                    str(t.file_path),
+                    t.track_number,
+                    t.disc_number,
+                ),
+            )
+        if new_tracks:
+            self._conn.commit()
+
     def update_album_meta(
         self,
         album_artist: str,
@@ -3325,6 +3376,7 @@ class LibraryScanner:
         newly_added = [t for t in upsert_subset if t.file_path in to_add]
         if newly_added:
             self._index.inherit_remote_favorites(newly_added)
+            self._index.inherit_remote_play_counts(newly_added)
         added = len(newly_added) + len(reconciled_new_paths)
         updated = len([t for t in upsert_subset if t.file_path in to_update])
 

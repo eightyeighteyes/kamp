@@ -843,6 +843,155 @@ class TestSyncNewPurchases:
         assert call_kwargs["added_at"] == _parse_purchased(purchased_str)
 
 
+class TestSyncNewPurchasesPreorder:
+    """Pre-order streaming fallback in sync_new_purchases (KAMP-424)."""
+
+    def _run_no_redownload(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+        existing_state: dict[str, str] | None = None,
+        fake_tracks: list[Any] | None = None,
+    ) -> "MagicMock":
+        """Run sync_new_purchases with no redownload_urls in the API response."""
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+
+        session = MagicMock()
+        collection_resp = MagicMock()
+        # No redownload_urls → pre-order items have no redownload_url
+        collection_resp.json.return_value = _collection_response(
+            items, redownload_urls={}
+        )
+        collection_resp.raise_for_status = MagicMock()
+        hidden_resp = MagicMock()
+        hidden_resp.json.return_value = _collection_response([])
+        hidden_resp.raise_for_status = MagicMock()
+        fan_page = MagicMock()
+        fan_page.text = _collection_page_html(items)
+
+        def _side_effect(url: str, **_kw: Any) -> MagicMock:
+            if "collection_items" in url or "hidden_items" in url:
+                return collection_resp if "collection_items" in url else hidden_resp
+            if "bandcamp.com/" in url and "api" not in url:
+                return fan_page
+            return MagicMock(status_code=200, raise_for_status=MagicMock())
+
+        session.get.side_effect = _side_effect
+        session.post.side_effect = _side_effect
+
+        index = MagicMock()
+        index.get_collection_state.return_value = existing_state or {}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch("kamp_daemon.bandcamp._make_requests_session", return_value=session),
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_tracks",
+                return_value=fake_tracks or [],
+            ),
+        ):
+            sync_new_purchases(config, watch_folder, index)
+
+        return index
+
+    def test_preorder_item_is_upserted_as_preorder_mode(self, tmp_path: Path) -> None:
+        """An item with no redownload_url is indexed as mode='preorder'."""
+        items = [_item(1, "Band", "Pre-Order Album")]
+        index = self._run_no_redownload(tmp_path, items)
+
+        calls = index.upsert_collection_item.call_args_list
+        preorder_calls = [c for c in calls if c[1].get("mode") == "preorder"]
+        assert len(preorder_calls) == 1
+        assert preorder_calls[0][0][0] == "1"
+
+    def test_preorder_item_tracks_are_indexed(self, tmp_path: Path) -> None:
+        """fetch_album_tracks is called and tracks are upserted for a pre-order."""
+        from kamp_core.library import Track
+
+        fake_track = Track(
+            file_path=__import__("pathlib").Path("bandcamp://1/1"),
+            title="Unreleased",
+            artist="Band",
+            album_artist="Band",
+            album="Pre-Order Album",
+            year="2025",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        items = [_item(1, "Band", "Pre-Order Album")]
+        index = self._run_no_redownload(tmp_path, items, fake_tracks=[fake_track])
+
+        index.upsert_many.assert_called_once()
+        upserted = index.upsert_many.call_args[0][0]
+        assert len(upserted) == 1
+        assert upserted[0].title == "Unreleased"
+
+    def test_preorder_item_is_not_downloaded(self, tmp_path: Path) -> None:
+        """No ZIP download is attempted for a pre-order item."""
+        items = [_item(1)]
+        with patch("kamp_daemon.bandcamp._download_item") as mock_dl:
+            self._run_no_redownload(tmp_path, items)
+
+        mock_dl.assert_not_called()
+
+    def test_existing_preorder_is_reinspected_each_sync(self, tmp_path: Path) -> None:
+        """A pre-order item already in the DB (mode='preorder') is re-fetched on sync."""
+        items = [_item(1)]
+        # Item 1 is already mode='preorder' in the DB
+        index = self._run_no_redownload(
+            tmp_path, items, existing_state={"1": "preorder"}
+        )
+
+        # Should have called fetch_album_tracks (via the mock) to re-inspect
+        calls = index.upsert_collection_item.call_args_list
+        preorder_calls = [c for c in calls if c[1].get("mode") == "preorder"]
+        assert len(preorder_calls) == 1
+
+    def test_released_preorder_is_downloaded(self, tmp_path: Path) -> None:
+        """When redownload_url appears for a mode='preorder' item, it is downloaded."""
+        items = [_item(1, "Band", "Released Album")]
+        watch_folder = tmp_path / "watch"
+
+        def fake_download(
+            item: Any, bc_config: Any, watch_dir: Any, session: Any
+        ) -> Any:
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            p = watch_dir / f"{item['sale_item_id']}.zip"
+            p.write_bytes(b"zip")
+            return p
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),  # injects redownload_url
+            ),
+            patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
+        ):
+            index = MagicMock()
+            # Previous state was preorder
+            index.get_collection_state.return_value = {"1": "preorder"}
+            sync_new_purchases(_bc_config(tmp_path), watch_folder, index)
+
+        # Should download and set mode='local'
+        assert (watch_folder / "1.zip").exists()
+        calls = index.upsert_collection_item.call_args_list
+        local_calls = [c for c in calls if c[1].get("mode") == "local"]
+        assert len(local_calls) == 1
+
+
 # ---------------------------------------------------------------------------
 # mark_collection_synced
 # ---------------------------------------------------------------------------

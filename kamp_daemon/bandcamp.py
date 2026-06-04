@@ -342,34 +342,84 @@ def sync_new_purchases(
     watch_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded: list[Path] = []
-    for i, item in enumerate(new_items):
+    preorder_fetch_index = 0  # throttle counter for pre-order album-page requests
+    download_index = 0  # throttle counter for download-page requests
+    for item in new_items:
+        sid = str(item.get("sale_item_id", ""))
+        band_name = str(item.get("band_name", ""))
+        item_title = str(item.get("item_title", ""))
+        album_url = str(item.get("item_url", ""))
+
         if not item.get("redownload_url"):
-            logger.warning(
-                "No redownload_url for %r by %r (sale_item_id=%s) — skipping.",
-                item.get("item_title"),
-                item.get("band_name"),
-                item.get("sale_item_id"),
+            # Pre-order: not yet available for download. Index as streaming tracks
+            # so the album appears in the library immediately (KAMP-424).
+            logger.info(
+                "Pre-order detected for %r by %r (sale_item_id=%s) — indexing as streaming.",
+                item_title,
+                band_name,
+                sid,
             )
+            if status_callback:
+                status_callback(f"{item_title} by {band_name}")
+            index.upsert_collection_item(
+                sid,
+                mode="preorder",
+                item_type=str(item.get("sale_item_type", "p")),
+                band_name=band_name,
+                item_title=item_title,
+                album_url=album_url,
+                tralbum_id=str(item.get("tralbum_id", "")),
+                synced_at=time.time(),
+                added_at=_parse_purchased(item.get("purchased")),
+            )
+            if album_url:
+                if preorder_fetch_index > 0:
+                    time.sleep(0.5)
+                preorder_fetch_index += 1
+                try:
+                    tracks = fetch_album_tracks(
+                        album_url,
+                        int(sid),
+                        band_name,
+                        item_title,
+                        session,
+                        date_added=_parse_purchased(item.get("purchased")),
+                    )
+                    if tracks:
+                        index.upsert_many(tracks)
+                        logger.debug(
+                            "Indexed %d pre-order track(s) for %r by %r",
+                            len(tracks),
+                            item_title,
+                            band_name,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "fetch_album_tracks: skipping pre-order tracks for %r by %r: %s",
+                        item_title,
+                        band_name,
+                        exc,
+                    )
             continue
+
         # Throttle download-page requests to avoid Bandcamp 429 rate limiting.
         # Each iteration GETs a signed download page before hitting the CDN;
         # back-to-back requests across a large collection trigger the rate limit.
-        if i > 0:
+        if download_index > 0:
             time.sleep(1)
+        download_index += 1
         try:
             if status_callback:
-                status_callback(
-                    f"{item.get('item_title', '?')} by {item.get('band_name', '?')}"
-                )
+                status_callback(f"{item_title} by {band_name}")
             path = _download_item(item, bc_config, watch_dir, session)
             downloaded.append(path)
             index.upsert_collection_item(
-                str(item["sale_item_id"]),
+                sid,
                 mode="local",
                 item_type=str(item.get("sale_item_type", "p")),
-                band_name=str(item.get("band_name", "")),
-                item_title=str(item.get("item_title", "")),
-                album_url=str(item.get("item_url", "")),
+                band_name=band_name,
+                item_title=item_title,
+                album_url=album_url,
                 tralbum_id=str(item.get("tralbum_id", "")),
                 synced_at=time.time(),
                 added_at=_parse_purchased(item.get("purchased")),
@@ -378,8 +428,8 @@ def sync_new_purchases(
         except Exception as exc:
             logger.error(
                 "Failed to download %r by %r: %s",
-                item.get("item_title"),
-                item.get("band_name"),
+                item_title,
+                band_name,
                 exc,
             )
 

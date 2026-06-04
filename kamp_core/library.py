@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 27
+_SCHEMA_VERSION = 28
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1024,7 +1024,18 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 27")
             self._conn.commit()
-            version = 27  # noqa: F841
+            version = 27
+
+        if version == 27:
+            # v27 → v28: null file_mtime for local tracks so the next scan
+            # re-reads them and populates the duration column added in v27 (KAMP-399).
+            self._conn.execute(
+                "UPDATE tracks SET file_mtime = NULL"
+                " WHERE source = 'local' AND duration = 0"
+            )
+            self._conn.execute("UPDATE schema_version SET version = 28")
+            self._conn.commit()
+            version = 28  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""

@@ -37,6 +37,7 @@ else:
 
 import mutagen.flac
 import mutagen.id3 as id3
+import mutagen.mp3
 import mutagen.mp4
 import mutagen.oggvorbis
 
@@ -90,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 26
+_SCHEMA_VERSION = 27
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -122,7 +123,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     stream_url           TEXT,
     stream_url_expires_at REAL,
     album_id             INTEGER REFERENCES albums(id),
-    is_available         INTEGER NOT NULL DEFAULT 1
+    is_available         INTEGER NOT NULL DEFAULT 1,
+    duration             REAL    NOT NULL DEFAULT 0
 );
 
 -- First-class album entity (KAMP-418). Replaces the GROUP BY (album_artist, album)
@@ -348,6 +350,7 @@ class Track:
     stream_url_expires_at: float | None = field(default=None, compare=False)
     # False for pre-order tracks whose CDN file has not yet been released.
     is_available: bool = field(default=True, compare=False)
+    duration: float = field(default=0.0, compare=False)
     # Runtime flag; not persisted to DB. False for stub tracks created during
     # queue restore when the DB row is missing (e.g. after a DB wipe).
     reachable: bool = field(default=True, compare=False)
@@ -1008,7 +1011,20 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 26")
             self._conn.commit()
-            version = 26  # noqa: F841
+            version = 26
+
+        if version == 26:
+            # v26 → v27: add duration to tracks for per-track and album total display (KAMP-399).
+            existing = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if "duration" not in existing:
+                self._conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN duration REAL NOT NULL DEFAULT 0"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 27")
+            self._conn.commit()
+            version = 27  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -1608,8 +1624,8 @@ class LibraryIndex:
                  track_number, disc_number, ext, embedded_art,
                  mb_release_id, mb_recording_id, date_added, file_mtime,
                  genre, label, source, stream_url, stream_url_expires_at,
-                 is_available)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_available, duration)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path) DO UPDATE SET
                 title                 = excluded.title,
                 artist                = excluded.artist,
@@ -1628,7 +1644,8 @@ class LibraryIndex:
                 source                = excluded.source,
                 stream_url            = excluded.stream_url,
                 stream_url_expires_at = excluded.stream_url_expires_at,
-                is_available          = excluded.is_available
+                is_available          = excluded.is_available,
+                duration              = excluded.duration
                 -- date_added intentionally omitted: preserve original scan date on re-scan
                 -- last_played intentionally omitted: managed exclusively by record_played()
             """,
@@ -2834,6 +2851,7 @@ def _track_to_params(
     str | None,
     float | None,
     int,
+    float,
 ]:
     return (
         _canonical_track_key(t.file_path),
@@ -2856,6 +2874,7 @@ def _track_to_params(
         t.stream_url,
         t.stream_url_expires_at,
         int(t.is_available),
+        t.duration,
     )
 
 
@@ -2901,6 +2920,7 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         stream_url=row["stream_url"],
         stream_url_expires_at=row["stream_url_expires_at"],
         is_available=bool(row["is_available"]),
+        duration=row["duration"],
     )
 
 
@@ -2973,6 +2993,13 @@ def _read_mp3_tags(path: Path) -> Track:
     except Exception:
         tags = id3.ID3()
 
+    # mutagen.mp3.MP3 parses the MPEG stream (required for duration); kept
+    # separate from the ID3 read above to avoid raising on fake test files.
+    try:
+        duration = mutagen.mp3.MP3(str(path)).info.length
+    except Exception:
+        duration = 0.0
+
     def _str(frame_key: str) -> str:
         frame = tags.get(frame_key)
         if not frame:
@@ -2998,15 +3025,22 @@ def _read_mp3_tags(path: Path) -> Track:
         mb_recording_id=_str("TXXX:MusicBrainz Track Id"),
         genre=_str("TCON"),
         label=_str("TPUB"),
+        duration=duration,
     )
 
 
 def _read_m4a_tags(path: Path) -> Track:
+    audio = None
     try:
         audio = mutagen.mp4.MP4(str(path))
         tags = audio.tags or {}
     except Exception:
         tags = {}
+
+    try:
+        duration = float(audio.info.length) if audio is not None else 0.0
+    except Exception:
+        duration = 0.0
 
     def _s(key: str) -> str:
         vals = tags.get(key)
@@ -3038,11 +3072,13 @@ def _read_m4a_tags(path: Path) -> Track:
         mb_recording_id=_s("----:com.apple.iTunes:MusicBrainz Track Id"),
         genre=_s("\xa9gen"),
         label=_s("----:com.apple.iTunes:LABEL"),
+        duration=duration,
     )
 
 
 def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
     """Read tags from a FLAC or OGG Vorbis file."""
+    audio = None
     try:
         if is_flac:
             audio = mutagen.flac.FLAC(str(path))
@@ -3059,6 +3095,11 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
     except Exception:
         tags = {}
         pictures = []
+
+    try:
+        duration = float(audio.info.length) if audio is not None else 0.0
+    except Exception:
+        duration = 0.0
 
     def _s(key: str) -> str:
         vals = tags.get(key)
@@ -3081,6 +3122,7 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
         mb_recording_id=_s("MUSICBRAINZ_TRACKID"),
         genre=_s("GENRE"),
         label=_s("LABEL") or _s("ORGANIZATION"),
+        duration=duration,
     )
 
 

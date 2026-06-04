@@ -437,13 +437,17 @@ def sync_collection_stream(
         band_name = str(item.get("band_name", ""))
         item_title = str(item.get("item_title", ""))
         album_url = str(item.get("item_url", ""))
+        current_mode = existing_state.get(str(sid))
+        is_preorder_already = current_mode == "preorder"
 
         if status_callback:
             status_callback(f"{item_title} by {band_name}")
 
+        # Preserve 'preorder' mode through the upsert; corrected after track re-inspection.
+        upsert_mode = "preorder" if is_preorder_already else "remote"
         index.upsert_collection_item(
             str(sid),
-            mode="remote",
+            mode=upsert_mode,
             item_type=str(item.get("sale_item_type", "p")),
             band_name=band_name,
             item_title=item_title,
@@ -460,9 +464,11 @@ def sync_collection_stream(
         if purchased_ts is not None:
             index.update_remote_track_date_added(str(sid), purchased_ts)
 
-        # Fetch track metadata only for albums not yet in the tracks table.
-        # This keeps incremental syncs fast while still populating new albums.
-        if album_url and not index.has_remote_album_tracks(str(sid)):
+        # Fetch track metadata for new albums or pre-order albums (always re-inspect
+        # pre-orders so newly released tracks and full-release transitions are caught).
+        if album_url and (
+            is_preorder_already or not index.has_remote_album_tracks(str(sid))
+        ):
             if fetch_index > 0:
                 time.sleep(0.5)
             fetch_index += 1
@@ -486,6 +492,13 @@ def sync_collection_stream(
                     )
                     if batch_indexed_callback:
                         batch_indexed_callback()
+                    # Update pre-order mode based on current track availability.
+                    has_unavailable = any(not t.is_available for t in tracks)
+                    if has_unavailable:
+                        index.set_collection_item_mode(str(sid), "preorder")
+                    elif is_preorder_already:
+                        # All tracks are now released — graduate to normal remote.
+                        index.set_collection_item_mode(str(sid), "remote")
             except Exception as exc:
                 logger.warning(
                     "fetch_album_tracks: skipping tracks for %r by %r (%s): %s",
@@ -1034,6 +1047,8 @@ def fetch_album_tracks(
             continue
         # Per-track artist field is set on compilations/splits; fall back to band_name.
         artist = t.get("artist") or band_name
+        # file=null (or absent) means the track hasn't been released yet (pre-order).
+        is_available = bool(t.get("file"))
         result.append(
             Track(
                 file_path=Path(f"bandcamp://{sale_item_id}/{track_num}"),
@@ -1050,6 +1065,7 @@ def fetch_album_tracks(
                 mb_recording_id="",
                 source="bandcamp",
                 date_added=date_added if date_added is not None else time.time(),
+                is_available=is_available,
             )
         )
     return result

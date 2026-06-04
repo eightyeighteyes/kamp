@@ -26,6 +26,7 @@ export type Track = {
   play_count: number
   source: string
   reachable: boolean
+  is_available: boolean
 }
 
 export type Album = {
@@ -56,6 +57,8 @@ export type Album = {
   has_remote_tracks: boolean
   // Bandcamp sale_item_id parsed from constituent track file paths; undefined for local albums.
   sale_item_id?: string
+  // True when this album is a Bandcamp pre-order (some tracks not yet released).
+  is_preorder?: boolean
 }
 
 export type PlayerState = {

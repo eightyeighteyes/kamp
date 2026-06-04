@@ -413,7 +413,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 <p className="onboarding-card-body">
                   {collectionMode === 'stream'
                     ? "you are a busy music fan with a solid network connection. stream your bandcamp purchases, no downloads needed. albums can be downloaded individually for offline listening."
-                    : "you are a connoisseur and curator with a big hard drive. purchases are downloaded to your library folder for offline playback. pre-orders stream until they are released."}
+                    : "you are a connoisseur and curator with a big hard drive. purchases are downloaded to your library folder for offline playback."}
                 </p>
                 <button
                   className="onboarding-primary-btn"

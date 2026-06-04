@@ -363,22 +363,26 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
 
         {step === 'library' && (
           <div className="onboarding-library">
-            <div className="onboarding-heading">Let&apos;s set up your library</div>
+            <div className="onboarding-heading">let&apos;s set up your library</div>
             <button className="onboarding-primary-btn" onClick={handleChooseLibrary}>
-              Choose Library Folder
+              choose library folder
             </button>
+            <p className="onboarding-card-body">
+              <strong>kamp</strong> will scan any files in this folder and add them to its 
+              library. if you use kamp to download music, it will end up here.
+            </p>
             {cardError && <div className="onboarding-error">{cardError}</div>}
           </div>
         )}
 
         {(step === 'watch-folder' || step === 'bandcamp' || step === 'lastfm') && (
           <div className="onboarding-card">
-            <div className="onboarding-card-heading">While we&apos;re waiting&hellip;</div>
+            <div className="onboarding-card-heading">while we&apos;re waiting&hellip;</div>
 
             {step === 'watch-folder' && (
               <>
                 <button className="onboarding-primary-btn" onClick={handleChooseWatchFolder}>
-                  Choose Watch Folder
+                  choose watch folder
                 </button>
                 <p className="onboarding-card-body">
                   <strong>kamp</strong> will keep an eye on your watch folder to auto-tag and add
@@ -396,20 +400,20 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                     className={`onboarding-mode-btn${collectionMode === 'stream' ? ' onboarding-mode-btn--active' : ''}`}
                     onClick={() => setCollectionMode('stream')}
                   >
-                    Stream
+                    stream
                   </button>
                   <button
                     type="button"
                     className={`onboarding-mode-btn${collectionMode === 'download' ? ' onboarding-mode-btn--active' : ''}`}
                     onClick={() => setCollectionMode('download')}
                   >
-                    Download
+                    download
                   </button>
                 </div>
                 <p className="onboarding-card-body">
                   {collectionMode === 'stream'
-                    ? 'Your Bandcamp purchases stream directly. No downloads needed. Applies to new purchases synced going forward.'
-                    : 'Purchases are downloaded to your library folder for offline playback. Applies to new purchases synced going forward. Existing downloads remain in your library.'}
+                    ? "you are a busy music fan with a solid network connection. stream your bandcamp purchases, no downloads needed. albums can be downloaded individually for offline listening."
+                    : "you are a connoisseur and curator with a big hard drive. purchases are downloaded to your library folder for offline playback. pre-orders stream until they are released."}
                 </p>
                 <button
                   className="onboarding-primary-btn"
@@ -430,7 +434,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 <input
                   className="prefs-input"
                   type="text"
-                  placeholder="Last.fm username"
+                  placeholder="last.fm username"
                   value={lastfmUsername}
                   autoComplete="username"
                   onChange={(e) => setLastfmUsername(e.target.value)}
@@ -439,7 +443,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 <input
                   className="prefs-input"
                   type="password"
-                  placeholder="Password"
+                  placeholder="password"
                   value={lastfmPassword}
                   autoComplete="current-password"
                   onChange={(e) => setLastfmPassword(e.target.value)}
@@ -450,14 +454,14 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                   onClick={handleLastfmLogin}
                   disabled={lastfmBusy}
                 >
-                  {lastfmBusy ? 'Connecting…' : 'Connect Last.fm'}
+                  {lastfmBusy ? 'connecting…' : 'Connect Last.fm'}
                 </button>
                 <p className="onboarding-card-body">
-                  Connect your <strong>Last.fm</strong> account to save your listening history.
+                  connect your <strong>last.fm</strong> account to save and share your listening history.
                 </p>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
                 <button className="onboarding-skip-btn" onClick={advancePastCards}>
-                  Skip
+                  skip
                 </button>
               </>
             )}

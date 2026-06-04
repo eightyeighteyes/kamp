@@ -32,8 +32,34 @@ export function TransportBar(): React.JSX.Element {
   const setRepeat = useStore((s) => s.setRepeat)
   const shuffle = queue?.shuffle ?? false
   const repeat = queue?.repeat ?? false
+  const albums = useStore((s) => s.library.albums)
+  const selectAlbum = useStore((s) => s.selectAlbum)
+  const selectArtist = useStore((s) => s.selectArtist)
+  const setActiveView = useStore((s) => s.setActiveView)
 
   const { playing, position, duration, volume, current_track } = player
+
+  const currentAlbum = current_track
+    ? albums.find(
+        (a) => a.album === current_track.album && a.album_artist === current_track.album_artist
+      )
+    : undefined
+
+  function goToNowPlaying(): void {
+    void setActiveView('now-playing')
+  }
+
+  function goToArtist(): void {
+    if (!current_track) return
+    void setActiveView('library')
+    selectArtist(current_track.album_artist)
+  }
+
+  function goToAlbum(): void {
+    if (!currentAlbum) return
+    void setActiveView('library')
+    void selectAlbum(currentAlbum)
+  }
   // Local scrub position: holds the seek-bar value while the pointer is down so
   // that React's controlled-input re-render (which would reset value to the
   // server position) can't fire a spurious second onChange and double-seek.
@@ -71,13 +97,19 @@ export function TransportBar(): React.JSX.Element {
         {current_track ? (
           <>
             <div className="track-field">
-              <span className="track-title">{current_track.title}</span>
+              <button className="track-title" onClick={goToNowPlaying}>
+                {current_track.title}
+              </button>
             </div>
             <div className="track-field">
-              <span className="track-artist">{current_track.artist}</span>
+              <button className="track-artist" onClick={goToArtist}>
+                {current_track.artist}
+              </button>
             </div>
             <div className="track-field">
-              <span className="track-album">{current_track.album}</span>
+              <button className="track-album" onClick={goToAlbum}>
+                {current_track.album}
+              </button>
             </div>
           </>
         ) : (

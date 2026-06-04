@@ -643,7 +643,7 @@
 
 .track-row {
   display: grid;
-  grid-template-columns: 12px 32px 1fr auto;
+  grid-template-columns: 12px 32px 1fr auto auto;
   align-items: center;
   gap: 12px;
   padding: 8px 6px;
@@ -754,6 +754,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 160px;
+}
+
+.track-row-duration {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 36px;
+  text-align: right;
 }
 
 .track-row-cloud {

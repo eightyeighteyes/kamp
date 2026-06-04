@@ -30,6 +30,7 @@ import {
   WarnIcon
 } from './TransportIcons'
 import { downloadAlbum } from '../api/client'
+import { formatTime } from '../utils/formatTime'
 
 const TOAST_TTL = 10_000 // ms
 
@@ -298,6 +299,8 @@ export function TrackList(): React.JSX.Element | null {
   const isCurrentAlbum =
     currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
+  const totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0)
+
   return (
     <div
       className={`track-list-view${albumEditMode ? ' track-list-view--edit' : ''}${isResizing ? ' track-list-view--resizing' : ''}`}
@@ -488,7 +491,13 @@ export function TrackList(): React.JSX.Element | null {
               </h2>
             )}
           />
-          {album.year && <div className="track-list-album-year">{album.year}</div>}
+          {(album.year || totalDuration > 0) && (
+            <div className="track-list-album-year">
+              {[album.year, totalDuration > 0 ? formatTime(totalDuration) : '']
+                .filter(Boolean)
+                .join(' · ')}
+            </div>
+          )}
           {albumRenameProgress && (
             <div className="album-rename-progress" aria-live="polite">
               Renaming {albumRenameProgress.done} of {albumRenameProgress.total}…
@@ -644,6 +653,9 @@ export function TrackList(): React.JSX.Element | null {
                   />
                 </span>
                 <span className="track-row-artist">{track.artist}</span>
+                <span className="track-row-duration">
+                  {track.duration > 0 ? formatTime(track.duration) : '—'}
+                </span>
               </li>
             )
           })}

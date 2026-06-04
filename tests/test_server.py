@@ -4677,3 +4677,27 @@ class TestPreorderUnavailableTracksExcludedFromQueue:
             "/api/v1/player/queue/add-album", json={"album_artist": "A", "album": "B"}
         )
         assert resp.status_code == 404
+
+
+class TestAlbumUrlField:
+    """AlbumOut exposes album_url from AlbumInfo (KAMP-367)."""
+
+    def test_album_url_in_response(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        info = _album("Artist", "Record")
+        info.album_url = "https://artist.bandcamp.com/album/record"
+        mock_index.albums.return_value = [info]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        data = c.get("/api/v1/albums").json()
+        assert data[0]["album_url"] == "https://artist.bandcamp.com/album/record"
+
+    def test_album_url_empty_string_by_default(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.albums.return_value = [_album("Artist", "Record")]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        data = c.get("/api/v1/albums").json()
+        assert data[0]["album_url"] == ""

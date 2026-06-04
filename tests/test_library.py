@@ -6372,3 +6372,58 @@ class TestGetCollectionStreamableCounts:
         index.close()
 
         assert result == {}
+
+
+class TestAlbumUrlInAlbumInfo:
+    """album_url from bandcamp_collection is surfaced through AlbumInfo (KAMP-367)."""
+
+    def _remote_track(self, sale_item_id: str) -> Track:
+        return Track(
+            file_path=Path(f"bandcamp://{sale_item_id}/1"),
+            title="Track 1",
+            artist="The Artist",
+            album_artist="The Artist",
+            album="The Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+
+    def test_album_url_present_when_collection_row_has_it(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item(
+            "42",
+            mode="remote",
+            band_name="The Artist",
+            item_title="The Album",
+            album_url="https://theartist.bandcamp.com/album/the-album",
+            synced_at=1000.0,
+        )
+        index.upsert_many([self._remote_track("42")])
+        albums = index.albums()
+        index.close()
+
+        assert len(albums) == 1
+        assert albums[0].album_url == "https://theartist.bandcamp.com/album/the-album"
+
+    def test_album_url_empty_for_local_album(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "01.mp3")
+        index.upsert_many([t])
+        albums = index.albums()
+        index.close()
+
+        assert albums[0].album_url == ""
+
+    def test_album_url_empty_when_no_collection_row(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._remote_track("99")])
+        albums = index.albums()
+        index.close()
+
+        assert albums[0].album_url == ""

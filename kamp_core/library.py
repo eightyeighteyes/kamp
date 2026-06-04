@@ -397,6 +397,8 @@ class AlbumInfo:
     sale_item_id: str | None = None
     # True when the album is a Bandcamp pre-order (some tracks not yet released).
     is_preorder: bool = False
+    # Bandcamp album page URL — non-empty for streaming/downloaded Bandcamp albums.
+    album_url: str = ""
     # Stable integer PK of the albums row; 0 for missing-album virtual entries.
     album_id: int = field(default=0, compare=False)
 
@@ -2288,7 +2290,9 @@ class LibraryIndex:
                 -- in_bandcamp_collection: True only when mode='local' (user downloaded it).
                 CASE WHEN bc.mode = 'local' THEN 1 ELSE 0 END AS in_bc,
                 -- is_preorder: True when the album is a Bandcamp pre-order (KAMP-423).
-                CASE WHEN bc.mode = 'preorder' THEN 1 ELSE 0 END AS is_preorder
+                CASE WHEN bc.mode = 'preorder' THEN 1 ELSE 0 END AS is_preorder,
+                -- album_url: Bandcamp page URL for sharing (KAMP-367).
+                COALESCE(bc.album_url, '') AS album_url
             FROM albums a
             LEFT JOIN tracks t ON t.album_id = a.id
             LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id
@@ -2314,7 +2318,8 @@ class LibraryIndex:
                 1                   AS track_count,
                 t.favorite          AS has_favorite_track,
                 0                   AS in_bc,
-                0                   AS is_preorder
+                0                   AS is_preorder,
+                ''                  AS album_url
             FROM tracks t
             WHERE t.album = ''
             ORDER BY {order_by}
@@ -2339,6 +2344,7 @@ class LibraryIndex:
                 has_remote_tracks=r["album_source"] != "local",
                 in_bandcamp_collection=bool(r["in_bc"]),
                 is_preorder=bool(r["is_preorder"]),
+                album_url=r["album_url"] or "",
                 sale_item_id=r["sale_item_id"],
             )
             for r in rows

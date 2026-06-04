@@ -3,11 +3,14 @@ import { useStore } from '../store'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
 import { artUrl } from '../api/client'
+import { ContextMenu } from './ContextMenu'
+import { ShareIcon } from './TransportIcons'
 
 export function NowPlayingView(): React.JSX.Element {
   const player = useStore((s) => s.player)
   const { current_track } = player
   const [artLoaded, setArtLoaded] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const deferredOps = useStore((s) => s.deferredOps)
   const albums = useStore((s) => s.library.albums)
   const selectAlbum = useStore((s) => s.selectAlbum)
@@ -24,14 +27,16 @@ export function NowPlayingView(): React.JSX.Element {
     )
   }
 
+  const currentAlbum = current_track
+    ? albums.find(
+        (a) => a.album === current_track.album && a.album_artist === current_track.album_artist
+      )
+    : undefined
+
   function goToAlbum(): void {
-    if (!current_track) return
-    const album = albums.find(
-      (a) => a.album === current_track.album && a.album_artist === current_track.album_artist
-    )
-    if (!album) return
+    if (!currentAlbum) return
     void setActiveView('library')
-    void selectAlbum(album)
+    void selectAlbum(currentAlbum)
   }
 
   function goToArtist(): void {
@@ -42,7 +47,14 @@ export function NowPlayingView(): React.JSX.Element {
 
   return (
     <div className="now-playing">
-      <div className={`now-playing-art${artLoaded ? ' has-art' : ''}`}>
+      <div
+        className={`now-playing-art${artLoaded ? ' has-art' : ''}`}
+        onContextMenu={(e) => {
+          if (!currentAlbum?.album_url) return
+          e.preventDefault()
+          setMenu({ x: e.clientX, y: e.clientY })
+        }}
+      >
         <span className="now-playing-art-placeholder">♪</span>
         <img
           src={artUrl(
@@ -53,6 +65,29 @@ export function NowPlayingView(): React.JSX.Element {
           onLoad={() => setArtLoaded(true)}
           onError={() => setArtLoaded(false)}
         />
+        {menu && currentAlbum?.album_url && (
+          <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+            <button
+              className="track-context-menu-item"
+              onClick={() => {
+                void navigator.clipboard.writeText(currentAlbum.album_url!)
+                setMenu(null)
+              }}
+            >
+              <span
+                style={{
+                  marginRight: 6,
+                  verticalAlign: 'middle',
+                  flexShrink: 0,
+                  display: 'inline-flex'
+                }}
+              >
+                <ShareIcon size={12} />
+              </span>
+              Copy Bandcamp link
+            </button>
+          </ContextMenu>
+        )}
       </div>
       <div className="now-playing-meta">
         <div className="now-playing-title">

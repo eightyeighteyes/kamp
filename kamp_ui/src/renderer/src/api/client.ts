@@ -59,6 +59,8 @@ export type Album = {
   sale_item_id?: string
   // True when this album is a Bandcamp pre-order (some tracks not yet released).
   is_preorder?: boolean
+  // Bandcamp album page URL — non-empty for Bandcamp albums; used for sharing.
+  album_url?: string
 }
 
 export type PlayerState = {

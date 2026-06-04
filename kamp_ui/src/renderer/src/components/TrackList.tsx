@@ -9,6 +9,7 @@ import type {
   Track,
   TrackTagsCollision
 } from '../api/client'
+import { ContextMenu } from './ContextMenu'
 import { TrackContextMenu } from './TrackContextMenu'
 import { EditableTrackTitle } from './EditableTrackTitle'
 import { EditableAlbumField } from './EditableAlbumField'
@@ -27,6 +28,7 @@ import {
   PauseIcon,
   QueueAddIcon,
   PlayNextIcon,
+  ShareIcon,
   WarnIcon
 } from './TransportIcons'
 import { downloadAlbum } from '../api/client'
@@ -98,6 +100,7 @@ export function TrackList(): React.JSX.Element | null {
   const patchOpenAlbum = useStore((s) => s.patchOpenAlbum)
   const albumRenameProgress = useStore((s) => s.albumRenameProgress)
   const deferredOps = useStore((s) => s.deferredOps)
+  const showFlashToast = useStore((s) => s.showFlashToast)
 
   const albumTitleRef = useRef<HTMLHeadingElement>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -286,6 +289,7 @@ export function TrackList(): React.JSX.Element | null {
   }
 
   const [menu, setMenu] = useState<ContextMenu | null>(null)
+  const [heroMenu, setHeroMenu] = useState<{ x: number; y: number } | null>(null)
 
   if (!album) return null
 
@@ -307,7 +311,14 @@ export function TrackList(): React.JSX.Element | null {
       style={{ '--hero-height-pct': heroHeightPct } as React.CSSProperties}
     >
       {/* Hero: full-width art — image intentionally taller than hero to bleed into track list */}
-      <div className={`track-list-hero${album.has_art ? ' has-art' : ''}`}>
+      <div
+        className={`track-list-hero${album.has_art ? ' has-art' : ''}`}
+        onContextMenu={(e) => {
+          if (!album.album_url) return
+          e.preventDefault()
+          setHeroMenu({ x: e.clientX, y: e.clientY })
+        }}
+      >
         {album.has_art && (
           <HeroImage
             src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)}
@@ -316,6 +327,23 @@ export function TrackList(): React.JSX.Element | null {
       </div>
       {/* Overlay spans the full view so the gradient covers both hero and the top of the track list */}
       <div className="track-list-hero-overlay" />
+      {heroMenu && album.album_url && (
+        <ContextMenu x={heroMenu.x} y={heroMenu.y} onClose={() => setHeroMenu(null)}>
+          <button
+            className="track-context-menu-item"
+            onClick={() => {
+              void navigator.clipboard.writeText(album.album_url!)
+              showFlashToast(`Copied link to ${album.album}`)
+              setHeroMenu(null)
+            }}
+          >
+            <span style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}>
+              <ShareIcon size={12} />
+            </span>
+            Copy Bandcamp link
+          </button>
+        </ContextMenu>
+      )}
 
       {/* Breadcrumb floats over the hero */}
       <nav className="breadcrumb" aria-label="Navigation">
@@ -520,6 +548,19 @@ export function TrackList(): React.JSX.Element | null {
                   }}
                 >
                   <DownloadArrowIcon size={16} />
+                </button>
+              )}
+              {album.album_url && (
+                <button
+                  className="album-secondary-btn"
+                  {...tooltip('Copy Bandcamp link')}
+                  aria-label="Copy Bandcamp link"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(album.album_url!)
+                    showFlashToast(`Copied link to ${album.album}`)
+                  }}
+                >
+                  <ShareIcon size={16} />
                 </button>
               )}
             </div>

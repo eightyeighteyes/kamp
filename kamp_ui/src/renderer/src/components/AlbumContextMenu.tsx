@@ -4,7 +4,13 @@ import { getTracksForAlbum, downloadAlbum } from '../api/client'
 import type { Album } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
-import { DownloadArrowIcon, FavoriteIcon, PlayNextIcon, QueueAddIcon, ShareIcon } from './TransportIcons'
+import {
+  DownloadArrowIcon,
+  FavoriteIcon,
+  PlayNextIcon,
+  QueueAddIcon,
+  ShareIcon
+} from './TransportIcons'
 
 interface Props {
   x: number
@@ -74,7 +80,12 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           }}
         >
           <span
-            style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}
+            style={{
+              marginRight: 6,
+              verticalAlign: 'middle',
+              flexShrink: 0,
+              display: 'inline-flex'
+            }}
           >
             <ShareIcon size={12} />
           </span>

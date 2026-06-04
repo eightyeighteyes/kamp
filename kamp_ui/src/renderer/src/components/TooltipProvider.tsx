@@ -53,8 +53,9 @@ export function TooltipProvider({ children }: { children: React.ReactNode }): Re
   const arm = useCallback(
     (text: string, target: HTMLElement) => {
       clearTimeout(showTimerRef.current)
-      clearTimeout(hideTimerRef.current)
       clearTimeout(fadeTimerRef.current)
+      // hideTimerRef is cleared inside show() so an aborted arm leaves the
+      // visible tooltip's decay timer intact (fix for KAMP-391 phantom tooltip).
 
       const rect = target.getBoundingClientRect()
       const above = rect.top > TOP_THRESHOLD
@@ -62,6 +63,7 @@ export function TooltipProvider({ children }: { children: React.ReactNode }): Re
       const y = above ? rect.top : rect.bottom
 
       const show = (): void => {
+        clearTimeout(hideTimerRef.current)
         if (targetRef.current) targetRef.current.removeAttribute('aria-describedby')
         targetRef.current = target
         target.setAttribute('aria-describedby', 'kamp-tooltip')

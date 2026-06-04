@@ -14,12 +14,7 @@ import {
   StopIcon,
   VolumeIcon
 } from './TransportIcons'
-
-function formatTime(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
-}
+import { formatTime } from '../utils/formatTime'
 
 export function TransportBar(): React.JSX.Element {
   const player = useStore((s) => s.player)

@@ -13,9 +13,6 @@ export function NowPlayingView(): React.JSX.Element {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const deferredOps = useStore((s) => s.deferredOps)
   const albums = useStore((s) => s.library.albums)
-  const selectAlbum = useStore((s) => s.selectAlbum)
-  const selectArtist = useStore((s) => s.selectArtist)
-  const setActiveView = useStore((s) => s.setActiveView)
   const showFlashToast = useStore((s) => s.showFlashToast)
   const tooltip = useTooltip()
 
@@ -33,18 +30,6 @@ export function NowPlayingView(): React.JSX.Element {
         (a) => a.album === current_track.album && a.album_artist === current_track.album_artist
       )
     : undefined
-
-  function goToAlbum(): void {
-    if (!currentAlbum) return
-    void setActiveView('library')
-    void selectAlbum(currentAlbum)
-  }
-
-  function goToArtist(): void {
-    if (!current_track) return
-    void setActiveView('library')
-    selectArtist(current_track.album_artist)
-  }
 
   return (
     <div className="now-playing">
@@ -102,13 +87,6 @@ export function NowPlayingView(): React.JSX.Element {
             />
           )}
         </div>
-        <button className="now-playing-artist now-playing-link" onClick={goToArtist}>
-          {current_track.artist}
-        </button>
-        <button className="now-playing-album now-playing-link" onClick={goToAlbum}>
-          {current_track.album}
-          {current_track.year ? ` · ${current_track.year}` : ''}
-        </button>
       </div>
     </div>
   )

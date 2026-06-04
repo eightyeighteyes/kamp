@@ -204,6 +204,8 @@ class AlbumOut(BaseModel):
     sale_item_id: str | None = None
     # True when the album is a Bandcamp pre-order (some tracks not yet released).
     is_preorder: bool = False
+    # Bandcamp album page URL — non-empty for Bandcamp albums (KAMP-367).
+    album_url: str = ""
 
 
 class PlayerStateOut(BaseModel):
@@ -851,6 +853,7 @@ def create_app(
                 has_remote_tracks=a.has_remote_tracks,
                 sale_item_id=a.sale_item_id,
                 is_preorder=a.is_preorder,
+                album_url=a.album_url,
             )
             for a in index.albums(sort=sort)
         ]
@@ -1873,6 +1876,7 @@ def create_app(
                     has_remote_tracks=a.has_remote_tracks,
                     sale_item_id=a.sale_item_id,
                     is_preorder=a.is_preorder,
+                    album_url=a.album_url,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -1999,6 +2003,7 @@ def create_app(
                     has_remote_tracks=a.has_remote_tracks,
                     sale_item_id=a.sale_item_id,
                     is_preorder=a.is_preorder,
+                    album_url=a.album_url,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -2154,6 +2159,7 @@ def create_app(
                 has_remote_tracks=a.has_remote_tracks,
                 sale_item_id=a.sale_item_id,
                 is_preorder=a.is_preorder,
+                album_url=a.album_url,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys

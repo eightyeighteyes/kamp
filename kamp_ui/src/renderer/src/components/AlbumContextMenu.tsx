@@ -4,7 +4,7 @@ import { getTracksForAlbum, downloadAlbum } from '../api/client'
 import type { Album } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
-import { DownloadArrowIcon, FavoriteIcon, PlayNextIcon, QueueAddIcon } from './TransportIcons'
+import { DownloadArrowIcon, FavoriteIcon, PlayNextIcon, QueueAddIcon, ShareIcon } from './TransportIcons'
 
 interface Props {
   x: number
@@ -18,6 +18,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
   const setAlbumFavorite = useStore((s) => s.setAlbumFavorite)
   const markAlbumDownloading = useStore((s) => s.markAlbumDownloading)
+  const showFlashToast = useStore((s) => s.showFlashToast)
 
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
@@ -77,6 +78,23 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           }}
         >
           {revealInFinderLabel()}
+        </button>
+      )}
+      {album.album_url && (
+        <button
+          className="track-context-menu-item"
+          onClick={() => {
+            void navigator.clipboard.writeText(album.album_url!)
+            showFlashToast(`Copied link to ${album.album}`)
+            onClose()
+          }}
+        >
+          <span
+            style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}
+          >
+            <ShareIcon size={12} />
+          </span>
+          Copy Bandcamp link
         </button>
       )}
       {album.source !== 'local' && (

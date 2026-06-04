@@ -80,6 +80,7 @@ type PlayerStore = {
   queue: QueueState | null
   downloadingAlbumIds: Set<string>
   queuedAlbumIds: Set<string>
+  flashToast: string | null
 
   // Actions
   setAudioLevel: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void
@@ -104,6 +105,7 @@ type PlayerStore = {
   clearAlbumDownloading: (saleItemId: string) => void
   markAlbumQueued: (saleItemId: string) => void
   clearAlbumQueued: (saleItemId: string) => void
+  showFlashToast: (msg: string) => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
   setHighlightEnabled: (enabled: boolean) => void
@@ -296,6 +298,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   queue: null,
   downloadingAlbumIds: new Set<string>(),
   queuedAlbumIds: new Set<string>(),
+  flashToast: null,
   configValues: null,
   prefsOpen: false,
   prefsInitialTab: 'general',
@@ -437,6 +440,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
       next.delete(saleItemId)
       return { queuedAlbumIds: next }
     }),
+  showFlashToast: (msg) => {
+    set({ flashToast: msg })
+    setTimeout(() => set({ flashToast: null }), 2000)
+  },
 
   setRecentlyAddedCount: (n) => {
     localStorage.setItem('kamp:recently-added-count', String(n))

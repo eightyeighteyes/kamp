@@ -44,7 +44,7 @@
   transition: transform 0.3s ease;
 }
 
-.track-title {
+.track-title .track-field {
   font-size: 15px;
   font-weight: 500;
 }

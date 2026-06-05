@@ -125,7 +125,7 @@ function startNowPlayingHelper(): void {
     console.warn('[kamp] now-playing-helper binary not found — media keys disabled')
     return
   }
-  _helper = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] })
+  _helper = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   // Tee the helper's stderr to a per-launch log file so packaged installs
   // (no visible stderr) remain debuggable. Truncate on every spawn.
   try {
@@ -215,9 +215,14 @@ function findKampInvocation(): KampInvocation | null {
   // file instead.
   const venvRoot = resolve(app.getAppPath(), '../.venv')
   if (isWindows) {
+    // pythonw.exe is the no-console variant shipped with every CPython install
+    // on Windows. Prefer it over python.exe so the daemon never allocates a
+    // console window in dev mode (windowsHide:true is belt-and-suspenders).
+    const pyw = join(venvRoot, 'Scripts', 'pythonw.exe')
     const py = join(venvRoot, 'Scripts', 'python.exe')
     const script = join(venvRoot, 'Scripts', 'kamp')
-    if (existsSync(py) && existsSync(script)) return { command: py, args: [script] }
+    const pythonExe = existsSync(pyw) ? pyw : py
+    if (existsSync(pythonExe) && existsSync(script)) return { command: pythonExe, args: [script] }
   } else {
     const bin = join(venvRoot, 'bin', 'kamp')
     if (existsSync(bin)) return { command: bin, args: [] }
@@ -262,15 +267,20 @@ async function startServer(): Promise<void> {
     : undefined
 
   // detached: true puts the daemon in its own process group so that
-  // stopServer() can kill the group (daemon + mpv) all at once.
+  // stopServer() can kill the group (daemon + mpv) all at once on POSIX.
+  // Windows uses taskkill /T for tree kill and does not need detached; in
+  // fact CreateProcess silently ignores CREATE_NO_WINDOW (windowsHide) when
+  // combined with DETACHED_PROCESS, which would let kamp.exe's console
+  // window flash on launch (KAMP-430).
   const spawnEnv: NodeJS.ProcessEnv = { ...process.env }
   if (mpvBin) spawnEnv['KAMP_MPV_BIN'] = mpvBin
   // Tell the daemon it's running in dev mode so it allows the Vite dev server
   // origin (http://localhost:5173) in CORS — the renderer loads from there.
   if (is.dev) spawnEnv['KAMP_DEV'] = '1'
   serverProcess = spawn(invocation.command, [...invocation.args, 'daemon'], {
-    detached: true,
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
     env: spawnEnv
   })
 
@@ -293,7 +303,8 @@ function stopServer(): void {
         // equivalent). Synchronous because process.on('exit') is one of the
         // call sites and won't run async work.
         execFileSync('taskkill', ['/PID', String(serverProcess.pid), '/T', '/F'], {
-          stdio: 'ignore'
+          stdio: 'ignore',
+          windowsHide: true
         })
       } else {
         // Negative PID kills the entire process group (daemon + children).

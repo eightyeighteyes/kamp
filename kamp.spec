@@ -116,7 +116,15 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,  # server process — no GUI window
+    # console=False builds kamp.exe as a Windows GUI-subsystem binary so no
+    # console window is allocated when Electron spawns it, and — critically —
+    # so the multiprocessing.spawn workers used during sync (which re-launch
+    # this same binary, see kamp_daemon/syncer.py and pipeline.py) do not
+    # flash a console per worker. CPython's popen_spawn_win32 does not pass
+    # CREATE_NO_WINDOW; the only reliable suppression is at the PE subsystem
+    # level (KAMP-430). On macOS/Linux this flag has no effect.
+    # stdio still works via inherited pipe handles set by the parent.
+    console=False,
 )
 
 coll = COLLECT(

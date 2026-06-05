@@ -267,14 +267,18 @@ async function startServer(): Promise<void> {
     : undefined
 
   // detached: true puts the daemon in its own process group so that
-  // stopServer() can kill the group (daemon + mpv) all at once.
+  // stopServer() can kill the group (daemon + mpv) all at once on POSIX.
+  // Windows uses taskkill /T for tree kill and does not need detached; in
+  // fact CreateProcess silently ignores CREATE_NO_WINDOW (windowsHide) when
+  // combined with DETACHED_PROCESS, which would let kamp.exe's console
+  // window flash on launch (KAMP-430).
   const spawnEnv: NodeJS.ProcessEnv = { ...process.env }
   if (mpvBin) spawnEnv['KAMP_MPV_BIN'] = mpvBin
   // Tell the daemon it's running in dev mode so it allows the Vite dev server
   // origin (http://localhost:5173) in CORS — the renderer loads from there.
   if (is.dev) spawnEnv['KAMP_DEV'] = '1'
   serverProcess = spawn(invocation.command, [...invocation.args, 'daemon'], {
-    detached: true,
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
     env: spawnEnv

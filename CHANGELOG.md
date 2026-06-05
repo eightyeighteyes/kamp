@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.22.0](https://github.com/eightyeighteyes/kamp/compare/v1.21.0...v1.22.0) (2026-06-05)
+
+
+### Features
+
+* **KAMP-367:** copy Bandcamp link from Now Playing and album grid ([#507](https://github.com/eightyeighteyes/kamp/issues/507)) ([e77e3cf](https://github.com/eightyeighteyes/kamp/commit/e77e3cf808748029cbc45dfc9412ffd67bf27138))
+* **KAMP-381:** migrate bandcamp_state.json to bandcamp_collection DB table ([#463](https://github.com/eightyeighteyes/kamp/issues/463)) ([62cd945](https://github.com/eightyeighteyes/kamp/commit/62cd945e5dc73d2ef1957d94e96c43cfae0b24a1))
+* **KAMP-382:** remote track schema — source, stream_url, playback_uri ([#465](https://github.com/eightyeighteyes/kamp/issues/465)) ([127812b](https://github.com/eightyeighteyes/kamp/commit/127812bbdcf4d2d305e5d6bbed2794c2f4b0a637))
+* **KAMP-383:** integrate remote tracks into AlbumInfo, scanner guard, and queue state ([#466](https://github.com/eightyeighteyes/kamp/issues/466)) ([b810cb7](https://github.com/eightyeighteyes/kamp/commit/b810cb777b0e16ed70db42bf2a0823b4a818408e))
+* **KAMP-384:** expose source and has_remote_tracks on Album and Track API responses ([#480](https://github.com/eightyeighteyes/kamp/issues/480)) ([6477a72](https://github.com/eightyeighteyes/kamp/commit/6477a72a19becb3f91c6c8f18142034042d48426))
+* **KAMP-385:** AlbumCard source badge and offline dimming for remote albums ([#481](https://github.com/eightyeighteyes/kamp/issues/481)) ([00dcddb](https://github.com/eightyeighteyes/kamp/commit/00dcddb02776765f99238390e9a82b32b6b22dba))
+* **KAMP-386:** TrackList remote album mode ([#482](https://github.com/eightyeighteyes/kamp/issues/482)) ([a1e0164](https://github.com/eightyeighteyes/kamp/commit/a1e0164bcccbe6de56ad61ddcd416fe905432b03))
+* **KAMP-387:** remote/local filter chips and remote-aware context menus ([#483](https://github.com/eightyeighteyes/kamp/issues/483)) ([aef9009](https://github.com/eightyeighteyes/kamp/commit/aef90096e3510852b38ddf470baafb07df31943f))
+* **KAMP-388:** proxy and cache Bandcamp CDN art for remote albums ([#467](https://github.com/eightyeighteyes/kamp/issues/467)) ([18d9fd3](https://github.com/eightyeighteyes/kamp/commit/18d9fd3ccfacec7fecc8131fbb7720218964f01c))
+* **KAMP-389:** make queue and playback engine compatible with remote tracks ([#468](https://github.com/eightyeighteyes/kamp/issues/468)) ([a2df3d1](https://github.com/eightyeighteyes/kamp/commit/a2df3d1224c8f7ed063be4b69966753d7e7c408c))
+* **KAMP-390:** Bandcamp collection mode — stream vs. download ([#469](https://github.com/eightyeighteyes/kamp/issues/469)) ([1187863](https://github.com/eightyeighteyes/kamp/commit/11878632ddae6c4908afbcdabe1186b76f0bdb3c))
+* **KAMP-393:** custom version tag for tester builds + version in preferences ([#485](https://github.com/eightyeighteyes/kamp/issues/485)) ([5f16eb3](https://github.com/eightyeighteyes/kamp/commit/5f16eb35aaabbef33df5d263a175be6f4d9ff6f4))
+* **KAMP-394:** suppress new-arrival glow on initial Bandcamp sync ([#491](https://github.com/eightyeighteyes/kamp/issues/491)) ([b3e4015](https://github.com/eightyeighteyes/kamp/commit/b3e4015ed4bd3a44bf95ab41458d7581d3485670))
+* **KAMP-397:** prefer mp3-v0 over mp3-128 when streaming ([#484](https://github.com/eightyeighteyes/kamp/issues/484)) ([a4b2261](https://github.com/eightyeighteyes/kamp/commit/a4b2261eeba80bbb1b300a27bddd377938c213ec))
+* **KAMP-398:** keep Bandcamp icon in status rail after logout ([#493](https://github.com/eightyeighteyes/kamp/issues/493)) ([5cabce0](https://github.com/eightyeighteyes/kamp/commit/5cabce027956d9a88a4b103be05c3b3eb2e00516))
+* **KAMP-399:** track and album duration display ([#508](https://github.com/eightyeighteyes/kamp/issues/508)) ([48ded17](https://github.com/eightyeighteyes/kamp/commit/48ded1706c9cfe9ea765c6d12e817117a7c70184))
+* **KAMP-400:** download indicator on Album Card — brightness pulse + frosted glass art blur ([#488](https://github.com/eightyeighteyes/kamp/issues/488)) ([95e0b8e](https://github.com/eightyeighteyes/kamp/commit/95e0b8eaff8c20e3ad009127c70a97de5a6a7572))
+* **KAMP-402:** prefetch album art during stream sync ([#489](https://github.com/eightyeighteyes/kamp/issues/489)) ([c8d6a73](https://github.com/eightyeighteyes/kamp/commit/c8d6a73852b3041c041ba8b0c2f0b1180e3cf065))
+* **KAMP-403:** remote search — source filter in SearchView + SourceControl in toolbar ([#487](https://github.com/eightyeighteyes/kamp/issues/487)) ([9d36f83](https://github.com/eightyeighteyes/kamp/commit/9d36f8378cd5172ab3b81cf6fe83de185d834014))
+* **KAMP-404:** stream albums into library incrementally during first sync ([#490](https://github.com/eightyeighteyes/kamp/issues/490)) ([3d6db40](https://github.com/eightyeighteyes/kamp/commit/3d6db40c1b074bf8eb8e713beccae19ce94e6ec7))
+* **KAMP-406:** gapless playback for remote (Bandcamp streaming) tracks ([#494](https://github.com/eightyeighteyes/kamp/issues/494)) ([4aeab43](https://github.com/eightyeighteyes/kamp/commit/4aeab433be9c75af7c3712e9fb5e249853af1b96))
+* **KAMP-408:** serialize Bandcamp album downloads to prevent rate limiting ([#496](https://github.com/eightyeighteyes/kamp/issues/496)) ([440db5f](https://github.com/eightyeighteyes/kamp/commit/440db5f05e8fa6e8ab88107a8ce4b68123708faa))
+* **KAMP-413:** replace download icon with new design; use it in context menu ([#502](https://github.com/eightyeighteyes/kamp/issues/502)) ([f246b6e](https://github.com/eightyeighteyes/kamp/commit/f246b6eb6b8c6ed7a472f97780d872ef0ca5b7c9))
+* **KAMP-418:** promote albums to first-class entity — schema v24 ([#497](https://github.com/eightyeighteyes/kamp/issues/497)) ([50b2a67](https://github.com/eightyeighteyes/kamp/commit/50b2a67c9f43f04a2cf3fe4b5863dae6f66c57ea))
+* **KAMP-421:** set poll_interval_minutes to 15 when onboarding in stream mode ([#503](https://github.com/eightyeighteyes/kamp/issues/503)) ([2f68271](https://github.com/eightyeighteyes/kamp/commit/2f68271ba9863100afe055b21aa2bca7d64151fe))
+* **KAMP-423:** show pre-order status on streaming albums ([#505](https://github.com/eightyeighteyes/kamp/issues/505)) ([359e0f9](https://github.com/eightyeighteyes/kamp/commit/359e0f9356c8a5e5250aea6fdfa610d15c67fe66))
+* **KAMP-424:** stream pre-orders for download-mode users; inherit play counts on release ([#506](https://github.com/eightyeighteyes/kamp/issues/506)) ([a1b58a9](https://github.com/eightyeighteyes/kamp/commit/a1b58a908d145acc54a25fa031a7a0f1b04e9761))
+* **KAMP-427:** transport title/artist/album as nav links ([#509](https://github.com/eightyeighteyes/kamp/issues/509)) ([cf0d992](https://github.com/eightyeighteyes/kamp/commit/cf0d99285366eb719c23ad6cdd36cfac9948f0b2))
+* **KAMP-428:** gear icon opens Preferences; delete PanelPicker ([#510](https://github.com/eightyeighteyes/kamp/issues/510)) ([c33e37f](https://github.com/eightyeighteyes/kamp/commit/c33e37f33d053f193dbf150b5f1c2bee655e813c))
+* **KAMP-429:** add share button and hero context menu to album page ([#513](https://github.com/eightyeighteyes/kamp/issues/513)) ([d82cfa6](https://github.com/eightyeighteyes/kamp/commit/d82cfa63d596c637b12a60c03b0180853d33e5b9))
+
+
+### Bug Fixes
+
+* **KAMP-391:** move hideTimerRef cancel into show() to fix phantom tooltip ([#512](https://github.com/eightyeighteyes/kamp/issues/512)) ([3ff0537](https://github.com/eightyeighteyes/kamp/commit/3ff0537fce77c366d1af81a3c5c415d5effccbc5))
+* **KAMP-392:** extrapolate progress bar position when mpv time-pos events stall ([#495](https://github.com/eightyeighteyes/kamp/issues/495)) ([1f063d9](https://github.com/eightyeighteyes/kamp/commit/1f063d9f4646eec55c55f98505749c95edb56c5e))
+* **KAMP-396:** resolve stream URL on EOF auto-advance for remote tracks ([#478](https://github.com/eightyeighteyes/kamp/issues/478)) ([e841a4c](https://github.com/eightyeighteyes/kamp/commit/e841a4cdcfcf7e552920aa440a82201e8a73db8c))
+* **KAMP-401:** preserve remote tracks in queue across restarts ([#486](https://github.com/eightyeighteyes/kamp/issues/486)) ([92200e7](https://github.com/eightyeighteyes/kamp/commit/92200e7ea3f13f8646d4d4031797299bed46cdb7))
+* **KAMP-411:** strip backslashes in remote art lookup; hide img on load error ([#504](https://github.com/eightyeighteyes/kamp/issues/504)) ([5d0738e](https://github.com/eightyeighteyes/kamp/commit/5d0738e808227ce17a8bd9891d821cad4a410dd9))
+* **KAMP-412:** dedup c-typed collection items shadowed by a p-typed entry ([#500](https://github.com/eightyeighteyes/kamp/issues/500)) ([5d28fa6](https://github.com/eightyeighteyes/kamp/commit/5d28fa67cbad9d0ef17109da85cc0ad8eb02f387))
+* **KAMP-415:** replace SearchAlbumCard with canonical AlbumCard in search results ([#499](https://github.com/eightyeighteyes/kamp/issues/499)) ([d0e0f77](https://github.com/eightyeighteyes/kamp/commit/d0e0f77063f282d7c4ac7d6ca5701ac78128848c))
+* **KAMP-419:** propagate track mutations to albums entity; catch rename collision ([#498](https://github.com/eightyeighteyes/kamp/issues/498)) ([1734157](https://github.com/eightyeighteyes/kamp/commit/1734157cd338776bd90395a26023d74f4d191e33))
+* **KAMP-422:** pass pause=yes in loadfile options to prevent streaming autoplay on startup ([#501](https://github.com/eightyeighteyes/kamp/issues/501)) ([5141186](https://github.com/eightyeighteyes/kamp/commit/51411868a61f96ebd2a58b6e27fd2ff286f38e5d))
+* **KAMP-425:** hide 'Reveal in Finder' for streaming-only tracks ([#515](https://github.com/eightyeighteyes/kamp/issues/515)) ([0f6e2be](https://github.com/eightyeighteyes/kamp/commit/0f6e2beb4159acb1ba2a627602768dd805db37a9))
+* **KAMP-430:** add windowsHide:true to all subprocess spawns ([#517](https://github.com/eightyeighteyes/kamp/issues/517)) ([acdbdd4](https://github.com/eightyeighteyes/kamp/commit/acdbdd4e1e4974da4203904312e0096a8c7c8b81))
+
 ## [1.21.0](https://github.com/eightyeighteyes/kamp/compare/v1.20.0...v1.21.0) (2026-05-29)
 
 

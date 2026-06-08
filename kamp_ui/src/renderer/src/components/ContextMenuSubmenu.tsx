@@ -24,14 +24,16 @@ export function ContextMenuSubmenu({ label, children }: Props): React.JSX.Elemen
     }
   }
 
-  const handleMouseEnter = (): void => {
+  const handleMouseEnter = (childCount: number): void => {
     cancelClose()
     if (triggerRef.current) {
       const rect = triggerRef.current.getBoundingClientRect()
       const submenuWidth = 180
       const rightEdge = rect.right + submenuWidth
       const left = rightEdge <= window.innerWidth ? rect.right : rect.left - submenuWidth
-      const top = Math.min(rect.top, window.innerHeight - 300)
+      // Each menu item is ~37px; 8px top+bottom padding on the container.
+      const estimatedHeight = childCount * 37 + 8
+      const top = Math.min(rect.top, Math.max(0, window.innerHeight - estimatedHeight))
       setPos({ top, left })
     }
   }
@@ -39,7 +41,7 @@ export function ContextMenuSubmenu({ label, children }: Props): React.JSX.Elemen
   return (
     <div
       style={{ position: 'relative' }}
-      onMouseEnter={handleMouseEnter}
+      onMouseEnter={() => handleMouseEnter(React.Children.count(children))}
       onMouseLeave={scheduleClose}
     >
       <button

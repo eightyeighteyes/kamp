@@ -715,8 +715,7 @@ export async function applyAlbumArtLocal(
 
 export const getPlaylists = (): Promise<Playlist[]> => get('/api/v1/playlists')
 
-export const getPlaylist = (id: number): Promise<Playlist> =>
-  get(`/api/v1/playlists/${id}`)
+export const getPlaylist = (id: number): Promise<Playlist> => get(`/api/v1/playlists/${id}`)
 
 export const createPlaylist = (title: string): Promise<Playlist> =>
   post('/api/v1/playlists', { title })
@@ -726,8 +725,7 @@ export const patchPlaylist = (
   updates: { title?: string; favorite?: boolean }
 ): Promise<Playlist> => patch(`/api/v1/playlists/${id}`, updates)
 
-export const deletePlaylist = (id: number): Promise<void> =>
-  del(`/api/v1/playlists/${id}`)
+export const deletePlaylist = (id: number): Promise<void> => del(`/api/v1/playlists/${id}`)
 
 export const getPlaylistTracks = (id: number): Promise<PlaylistTrack[]> =>
   get(`/api/v1/playlists/${id}/tracks`)
@@ -735,16 +733,11 @@ export const getPlaylistTracks = (id: number): Promise<PlaylistTrack[]> =>
 export const addTrackToPlaylist = (id: number, filePath: string): Promise<void> =>
   post(`/api/v1/playlists/${id}/tracks`, { file_path: filePath })
 
-export const addAlbumToPlaylist = (
-  id: number,
-  albumArtist: string,
-  album: string
-): Promise<void> => post(`/api/v1/playlists/${id}/tracks`, { album_artist: albumArtist, album })
+export const addAlbumToPlaylist = (id: number, albumArtist: string, album: string): Promise<void> =>
+  post(`/api/v1/playlists/${id}/tracks`, { album_artist: albumArtist, album })
 
-export const removeTrackFromPlaylist = (
-  id: number,
-  playlistTrackId: number
-): Promise<void> => del(`/api/v1/playlists/${id}/tracks/${playlistTrackId}`)
+export const removeTrackFromPlaylist = (id: number, playlistTrackId: number): Promise<void> =>
+  del(`/api/v1/playlists/${id}/tracks/${playlistTrackId}`)
 
 export const reorderPlaylistTracks = (id: number, trackIds: number[]): Promise<void> =>
   put(`/api/v1/playlists/${id}/order`, { track_ids: trackIds })

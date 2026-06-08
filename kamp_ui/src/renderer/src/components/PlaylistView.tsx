@@ -45,6 +45,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const currentTrack = useStore((s) => s.player.current_track)
   const playing = useStore((s) => s.player.playing)
   const playPlaylist = useStore((s) => s.playPlaylist)
+  const togglePlayPause = useStore((s) => s.togglePlayPause)
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
   const configValues = useStore((s) => s.configValues)
@@ -131,11 +132,19 @@ export function PlaylistView(): React.JSX.Element | null {
     })()
   }
 
-  // Replace the queue with the playlist tracks and start playing, matching
-  // album-view behaviour (uses the dedicated play-playlist server endpoint).
+  const isCurrentPlaylist =
+    currentTrack !== null &&
+    playlistTracks.some((t) => t.file_path === currentTrack.file_path)
+
+  // If a playlist track is already in the queue: couple to transport (pause/resume).
+  // Otherwise: replace the queue with this playlist's tracks and start playing.
   const handlePlay = (): void => {
     if (playlistTracks.length === 0) return
-    void playPlaylist(playlist.id)
+    if (isCurrentPlaylist) {
+      void togglePlayPause()
+    } else {
+      void playPlaylist(playlist.id)
+    }
   }
 
   const handleAddToQueue = (): void => {
@@ -258,14 +267,12 @@ export function PlaylistView(): React.JSX.Element | null {
             >
               <PlayNextIcon size={16} />
             </button>
-            <button className="play-all-btn" aria-label="Play" onClick={handlePlay}>
-              {playing &&
-              currentTrack &&
-              playlistTracks.some((t) => t.file_path === currentTrack.file_path) ? (
-                <PauseIcon size={18} />
-              ) : (
-                <PlayIcon size={18} />
-              )}
+            <button
+              className="play-all-btn"
+              aria-label={isCurrentPlaylist && playing ? 'Pause' : 'Play'}
+              onClick={handlePlay}
+            >
+              {isCurrentPlaylist && playing ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
             </button>
           </div>
         </div>

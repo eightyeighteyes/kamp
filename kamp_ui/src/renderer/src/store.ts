@@ -635,7 +635,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   createPlaylist: async (title) => {
     const playlist = await api.createPlaylist(title)
-    await get().loadPlaylists().catch(() => undefined)
+    await get()
+      .loadPlaylists()
+      .catch(() => undefined)
     return playlist
   },
 
@@ -654,7 +656,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
     if (get().library.selectedPlaylist?.id === playlistId) {
       await get().loadPlaylistTracks(playlistId)
     }
-    await get().loadPlaylists().catch(() => undefined)
+    await get()
+      .loadPlaylists()
+      .catch(() => undefined)
   },
 
   addAlbumToPlaylist: async (playlistId, albumArtist, album) => {
@@ -662,7 +666,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
     if (get().library.selectedPlaylist?.id === playlistId) {
       await get().loadPlaylistTracks(playlistId)
     }
-    await get().loadPlaylists().catch(() => undefined)
+    await get()
+      .loadPlaylists()
+      .catch(() => undefined)
   },
 
   removeTrackFromPlaylist: async (playlistId, playlistTrackId) => {
@@ -670,7 +676,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
     if (get().library.selectedPlaylist?.id === playlistId) {
       await get().loadPlaylistTracks(playlistId)
     }
-    await get().loadPlaylists().catch(() => undefined)
+    await get()
+      .loadPlaylists()
+      .catch(() => undefined)
   },
 
   reorderPlaylistTracks: async (playlistId, trackIds) => {

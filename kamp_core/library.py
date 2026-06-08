@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 28
+_SCHEMA_VERSION = 29
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -255,6 +255,25 @@ CREATE TABLE IF NOT EXISTS download_queue (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     sale_item_id TEXT    NOT NULL UNIQUE,
     queued_at    REAL    NOT NULL DEFAULT (unixepoch())
+);
+
+-- User-defined playlists (KAMP-441). Local-only; Bandcamp playlist sync is future work.
+CREATE TABLE IF NOT EXISTS playlists (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT    NOT NULL,
+    favorite   INTEGER NOT NULL DEFAULT 0,
+    created_at REAL    NOT NULL,
+    updated_at REAL    NOT NULL
+);
+
+-- Ordered track membership in a playlist (KAMP-441).
+-- position is a dense integer rank (0-based); reorder rewrites all affected rows.
+-- ON DELETE CASCADE means deleting a playlist removes all its track rows atomically.
+CREATE TABLE IF NOT EXISTS playlist_tracks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    file_path   TEXT    NOT NULL,
+    position    INTEGER NOT NULL
 );
 """
 
@@ -1035,7 +1054,28 @@ class LibraryIndex:
             )
             self._conn.execute("UPDATE schema_version SET version = 28")
             self._conn.commit()
-            version = 28  # noqa: F841
+            version = 28
+
+        if version == 28:
+            # v28 → v29: add playlists and playlist_tracks tables (KAMP-441).
+            self._conn.executescript("""
+                CREATE TABLE IF NOT EXISTS playlists (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title      TEXT    NOT NULL,
+                    favorite   INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL    NOT NULL,
+                    updated_at REAL    NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS playlist_tracks (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+                    file_path   TEXT    NOT NULL,
+                    position    INTEGER NOT NULL
+                );
+                """)
+            self._conn.execute("UPDATE schema_version SET version = 29")
+            self._conn.commit()
+            version = 29  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -2797,6 +2837,231 @@ class LibraryIndex:
             (extension_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Playlists (KAMP-441)
+    # ------------------------------------------------------------------
+
+    def create_playlist(self, title: str) -> dict[str, Any]:
+        """Create a new empty playlist and return its row as a dict."""
+        import time as _time
+
+        now = _time.time()
+        cur = self._conn.execute(
+            "INSERT INTO playlists (title, favorite, created_at, updated_at) VALUES (?, 0, ?, ?)",
+            (title, now, now),
+        )
+        self._conn.commit()
+        return {
+            "id": cur.lastrowid,
+            "title": title,
+            "favorite": False,
+            "track_count": 0,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def get_playlists(self) -> list[dict[str, Any]]:
+        """Return all playlists with their track counts, ordered by title."""
+        rows = self._conn.execute("""
+            SELECT p.id, p.title, p.favorite, p.created_at, p.updated_at,
+                   COUNT(pt.id) AS track_count
+            FROM playlists p
+            LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+            GROUP BY p.id
+            ORDER BY p.title COLLATE NOCASE
+            """).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "favorite": bool(r["favorite"]),
+                "track_count": r["track_count"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+
+    def get_playlist(self, playlist_id: int) -> dict[str, Any] | None:
+        """Return a single playlist row plus track_count, or None if absent."""
+        row = self._conn.execute(
+            """
+            SELECT p.id, p.title, p.favorite, p.created_at, p.updated_at,
+                   COUNT(pt.id) AS track_count
+            FROM playlists p
+            LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+            WHERE p.id = ?
+            GROUP BY p.id
+            """,
+            (playlist_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "favorite": bool(row["favorite"]),
+            "track_count": row["track_count"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def get_playlist_tracks(self, playlist_id: int) -> list[dict[str, Any]]:
+        """Return tracks in a playlist ordered by position.
+
+        Each dict contains all Track fields plus the playlist-specific
+        ``playlist_track_id`` (playlist_tracks.id) and ``position``.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT pt.id AS playlist_track_id, pt.position,
+                   t.id, t.file_path, t.title, t.artist, t.album_artist, t.album,
+                   t.year, t.track_number, t.disc_number, t.ext, t.embedded_art,
+                   t.mb_release_id, t.mb_recording_id, t.genre, t.label,
+                   t.favorite, t.play_count, t.source, t.is_available, t.duration
+            FROM playlist_tracks pt
+            JOIN tracks t ON t.file_path = pt.file_path
+            WHERE pt.playlist_id = ?
+            ORDER BY pt.position ASC
+            """,
+            (playlist_id,),
+        ).fetchall()
+        return [
+            {
+                "playlist_track_id": r["playlist_track_id"],
+                "position": r["position"],
+                "id": r["id"],
+                "file_path": r["file_path"],
+                "title": r["title"],
+                "artist": r["artist"],
+                "album_artist": r["album_artist"],
+                "album": r["album"],
+                "year": r["year"],
+                "track_number": r["track_number"],
+                "disc_number": r["disc_number"],
+                "ext": r["ext"],
+                "embedded_art": bool(r["embedded_art"]),
+                "mb_release_id": r["mb_release_id"],
+                "mb_recording_id": r["mb_recording_id"],
+                "genre": r["genre"],
+                "label": r["label"],
+                "favorite": bool(r["favorite"]),
+                "play_count": r["play_count"],
+                "source": r["source"],
+                "is_available": bool(r["is_available"]),
+                "duration": r["duration"],
+            }
+            for r in rows
+        ]
+
+    def add_track_to_playlist(self, playlist_id: int, file_path: str) -> None:
+        """Append a track to the end of a playlist.
+
+        No-op if the track's file_path does not exist in the tracks table.
+        """
+        import time as _time
+
+        exists = self._conn.execute(
+            "SELECT 1 FROM tracks WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        if not exists:
+            return
+        next_pos = self._conn.execute(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_tracks WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()[0]
+        self._conn.execute(
+            "INSERT INTO playlist_tracks (playlist_id, file_path, position) VALUES (?, ?, ?)",
+            (playlist_id, file_path, next_pos),
+        )
+        self._conn.execute(
+            "UPDATE playlists SET updated_at = ? WHERE id = ?",
+            (_time.time(), playlist_id),
+        )
+        self._conn.commit()
+
+    def remove_track_from_playlist(
+        self, playlist_id: int, playlist_track_id: int
+    ) -> None:
+        """Remove a single playlist_tracks row and compact positions."""
+        import time as _time
+
+        pos_row = self._conn.execute(
+            "SELECT position FROM playlist_tracks WHERE id = ? AND playlist_id = ?",
+            (playlist_track_id, playlist_id),
+        ).fetchone()
+        if not pos_row:
+            return
+        removed_pos = pos_row["position"]
+        self._conn.execute(
+            "DELETE FROM playlist_tracks WHERE id = ? AND playlist_id = ?",
+            (playlist_track_id, playlist_id),
+        )
+        # Compact: shift every row after the removed position down by 1
+        self._conn.execute(
+            "UPDATE playlist_tracks SET position = position - 1"
+            " WHERE playlist_id = ? AND position > ?",
+            (playlist_id, removed_pos),
+        )
+        self._conn.execute(
+            "UPDATE playlists SET updated_at = ? WHERE id = ?",
+            (_time.time(), playlist_id),
+        )
+        self._conn.commit()
+
+    def reorder_playlist_tracks(self, playlist_id: int, track_ids: list[int]) -> None:
+        """Rewrite positions so playlist_tracks.id rows appear in *track_ids* order.
+
+        *track_ids* must contain every playlist_tracks.id that belongs to
+        *playlist_id*.  Raises ValueError if the set does not match.
+        """
+        import time as _time
+
+        existing = {
+            r["id"]
+            for r in self._conn.execute(
+                "SELECT id FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,)
+            ).fetchall()
+        }
+        if set(track_ids) != existing:
+            raise ValueError(
+                f"track_ids {set(track_ids)} does not match playlist {playlist_id} rows {existing}"
+            )
+        for new_pos, pt_id in enumerate(track_ids):
+            self._conn.execute(
+                "UPDATE playlist_tracks SET position = ? WHERE id = ?", (new_pos, pt_id)
+            )
+        self._conn.execute(
+            "UPDATE playlists SET updated_at = ? WHERE id = ?",
+            (_time.time(), playlist_id),
+        )
+        self._conn.commit()
+
+    def set_playlist_favorite(self, playlist_id: int, favorite: bool) -> None:
+        """Set or clear the favorite flag for *playlist_id*."""
+        import time as _time
+
+        self._conn.execute(
+            "UPDATE playlists SET favorite = ?, updated_at = ? WHERE id = ?",
+            (int(favorite), _time.time(), playlist_id),
+        )
+        self._conn.commit()
+
+    def rename_playlist(self, playlist_id: int, title: str) -> None:
+        """Rename *playlist_id*."""
+        import time as _time
+
+        self._conn.execute(
+            "UPDATE playlists SET title = ?, updated_at = ? WHERE id = ?",
+            (title, _time.time(), playlist_id),
+        )
+        self._conn.commit()
+
+    def delete_playlist(self, playlist_id: int) -> None:
+        """Delete *playlist_id* and all its playlist_tracks rows (via CASCADE)."""
+        self._conn.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+        self._conn.commit()
 
 
 # Track fields that extensions are permitted to write via apply_metadata_update.

@@ -6693,3 +6693,312 @@ class TestAlbumUrlInAlbumInfo:
         index.close()
 
         assert albums[0].album_url == ""
+
+
+# ---------------------------------------------------------------------------
+# Playlists (KAMP-441)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaylists:
+    def _index(self, tmp_path: Path) -> LibraryIndex:
+        index = LibraryIndex(tmp_path / "library.db")
+        # seed two tracks so add_track_to_playlist has real rows to reference
+        index.upsert_many(
+            [
+                _sample_track(tmp_path / "a.mp3"),
+                _sample_track(tmp_path / "b.mp3"),
+            ]
+        )
+        return index
+
+    # ------------------------------------------------------------------
+    # create / list / get
+    # ------------------------------------------------------------------
+
+    def test_create_returns_playlist_dict(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Road Trip")
+        index.close()
+
+        assert pl["id"] == 1
+        assert pl["title"] == "Road Trip"
+        assert pl["favorite"] is False
+        assert pl["track_count"] == 0
+
+    def test_get_playlists_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.get_playlists() == []
+        index.close()
+
+    def test_get_playlists_ordered_by_title(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.create_playlist("Zebra")
+        index.create_playlist("Alpha")
+        titles = [p["title"] for p in index.get_playlists()]
+        index.close()
+
+        assert titles == ["Alpha", "Zebra"]
+
+    def test_get_playlist_returns_none_for_missing_id(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.get_playlist(999) is None
+        index.close()
+
+    def test_get_playlist_returns_row(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        created = index.create_playlist("My Mix")
+        fetched = index.get_playlist(created["id"])
+        index.close()
+
+        assert fetched is not None
+        assert fetched["title"] == "My Mix"
+
+    # ------------------------------------------------------------------
+    # add track
+    # ------------------------------------------------------------------
+
+    def test_add_track_to_playlist(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        tracks = index.get_playlist_tracks(pl["id"])
+        index.close()
+
+        assert len(tracks) == 1
+        assert tracks[0]["position"] == 0
+
+    def test_add_two_tracks_sequential_positions(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "b.mp3"))
+        tracks = index.get_playlist_tracks(pl["id"])
+        index.close()
+
+        assert [t["position"] for t in tracks] == [0, 1]
+
+    def test_add_nonexistent_track_is_noop(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], "/does/not/exist.mp3")
+        assert index.get_playlist_tracks(pl["id"]) == []
+        index.close()
+
+    def test_track_count_reflects_additions(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        pl2 = index.get_playlist(pl["id"])
+        index.close()
+
+        assert pl2 is not None
+        assert pl2["track_count"] == 1
+
+    # ------------------------------------------------------------------
+    # remove track
+    # ------------------------------------------------------------------
+
+    def test_remove_track_from_playlist(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        pt_id = index.get_playlist_tracks(pl["id"])[0]["playlist_track_id"]
+        index.remove_track_from_playlist(pl["id"], pt_id)
+        assert index.get_playlist_tracks(pl["id"]) == []
+        index.close()
+
+    def test_remove_compacts_positions(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "b.mp3"))
+        tracks = index.get_playlist_tracks(pl["id"])
+        # remove the first track; second track should shift to position 0
+        index.remove_track_from_playlist(pl["id"], tracks[0]["playlist_track_id"])
+        remaining = index.get_playlist_tracks(pl["id"])
+        index.close()
+
+        assert len(remaining) == 1
+        assert remaining[0]["position"] == 0
+
+    def test_remove_nonexistent_row_is_noop(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        # should not raise
+        index.remove_track_from_playlist(pl["id"], 9999)
+        index.close()
+
+    def test_removing_track_from_library_not_playlist(self, tmp_path: Path) -> None:
+        """Removing a track from the library does not implicitly remove playlist rows."""
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        # tracks table row still exists; we're just checking independence
+        assert index.get_playlist_tracks(pl["id"]) != []
+        index.close()
+
+    # ------------------------------------------------------------------
+    # reorder
+    # ------------------------------------------------------------------
+
+    def test_reorder_playlist_tracks(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "b.mp3"))
+        tracks = index.get_playlist_tracks(pl["id"])
+        id_a = tracks[0]["playlist_track_id"]
+        id_b = tracks[1]["playlist_track_id"]
+        # reverse the order
+        index.reorder_playlist_tracks(pl["id"], [id_b, id_a])
+        reordered = index.get_playlist_tracks(pl["id"])
+        index.close()
+
+        assert reordered[0]["playlist_track_id"] == id_b
+        assert reordered[1]["playlist_track_id"] == id_a
+
+    def test_reorder_raises_on_wrong_ids(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        tracks = index.get_playlist_tracks(pl["id"])
+        pt_id = tracks[0]["playlist_track_id"]
+
+        with pytest.raises(ValueError):
+            index.reorder_playlist_tracks(pl["id"], [pt_id, 9999])
+        index.close()
+
+    # ------------------------------------------------------------------
+    # favorite / rename / delete
+    # ------------------------------------------------------------------
+
+    def test_set_playlist_favorite(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.set_playlist_favorite(pl["id"], True)
+        pl2 = index.get_playlist(pl["id"])
+        index.close()
+
+        assert pl2 is not None
+        assert pl2["favorite"] is True
+
+    def test_rename_playlist(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Old Name")
+        index.rename_playlist(pl["id"], "New Name")
+        pl2 = index.get_playlist(pl["id"])
+        index.close()
+
+        assert pl2 is not None
+        assert pl2["title"] == "New Name"
+
+    def test_delete_playlist(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Temp")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        index.delete_playlist(pl["id"])
+        assert index.get_playlist(pl["id"]) is None
+        assert index.get_playlists() == []
+        index.close()
+
+    def test_delete_playlist_cascades_tracks(self, tmp_path: Path) -> None:
+        """Deleting a playlist must remove all playlist_tracks rows."""
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Gone")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        pl_id = pl["id"]
+        index.delete_playlist(pl_id)
+        # check directly in the DB that no orphan rows remain
+        count = index._conn.execute(
+            "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?", (pl_id,)
+        ).fetchone()[0]
+        index.close()
+
+        assert count == 0
+
+    # ------------------------------------------------------------------
+    # migration v28 → v29
+    # ------------------------------------------------------------------
+
+    def test_migration_v28_creates_playlist_tables(self, tmp_path: Path) -> None:
+        """Opening a v28 DB triggers the v29 migration and creates both tables."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (28)")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0, disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL,"
+            " genre TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',"
+            " source TEXT NOT NULL DEFAULT 'local', stream_url TEXT,"
+            " stream_url_expires_at REAL, album_id INTEGER,"
+            " is_available INTEGER NOT NULL DEFAULT 1,"
+            " duration REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5(title, artist, album_artist, album)"
+        )
+        conn.execute(
+            "CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " album_artist TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " album TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " year TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',"
+            " label TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'local',"
+            " sale_item_id TEXT, favorite INTEGER NOT NULL DEFAULT 0,"
+            " date_added REAL, last_played_at REAL, play_count_avg REAL NOT NULL DEFAULT 0,"
+            " art_version REAL, UNIQUE (album_artist, album))"
+        )
+        conn.execute(
+            "CREATE TABLE bandcamp_collection (sale_item_id TEXT NOT NULL PRIMARY KEY,"
+            " item_type TEXT NOT NULL DEFAULT 'p', band_name TEXT NOT NULL DEFAULT '',"
+            " item_title TEXT NOT NULL DEFAULT '', tralbum_id TEXT NOT NULL DEFAULT '',"
+            " album_url TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'local',"
+            " synced_at REAL, added_at REAL NOT NULL DEFAULT 0,"
+            " num_streamable_tracks INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE settings (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE sessions (service TEXT NOT NULL PRIMARY KEY,"
+            " session_json TEXT, updated_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE deferred_ops (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " op_type TEXT NOT NULL, track_id INTEGER NOT NULL UNIQUE,"
+            " payload_json TEXT NOT NULL, created_at REAL NOT NULL,"
+            " attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE download_queue (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " sale_item_id TEXT NOT NULL UNIQUE, queued_at REAL NOT NULL DEFAULT 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        tables = {
+            r[0]
+            for r in index._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        index.close()
+
+        assert version == 29
+        assert "playlists" in tables
+        assert "playlist_tracks" in tables

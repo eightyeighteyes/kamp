@@ -5,6 +5,7 @@ import { TOOLTIPS } from '../tooltipStrings'
 import { QueueContextMenu } from './QueueContextMenu'
 import { FavoriteIcon, WarnIcon } from './TransportIcons'
 import type { Track } from '../api/client'
+import { computeNewOrder } from '../utils/computeNewOrder'
 
 const QUEUE_WIDTH_KEY = 'kamp:queue-width'
 const QUEUE_WIDTH_DEFAULT = 280
@@ -14,16 +15,6 @@ function isQueueDrop(types: DOMStringList | readonly string[]): boolean {
   return Array.from(types).some((t) => QUEUE_DROP_TYPES.has(t))
 }
 
-// dropIdx is the display index of the <li> the user dropped onto (same semantics
-// as moveQueueTrack's to_index — matches the existing pop-then-insert behaviour).
-// For tail-drop (empty space below rows) call with dropIdx = trackCount.
-function computeNewOrder(trackCount: number, selectedIdxs: number[], dropIdx: number): number[] {
-  const selected = new Set(selectedIdxs)
-  const unselected = Array.from({ length: trackCount }, (_, i) => i).filter((i) => !selected.has(i))
-  // Math.min handles tail-drop (dropIdx === trackCount) without an off-by-one
-  const insertPos = Math.min(dropIdx, unselected.length)
-  return [...unselected.slice(0, insertPos), ...selectedIdxs, ...unselected.slice(insertPos)]
-}
 
 type ContextMenu = {
   x: number

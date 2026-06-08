@@ -4,6 +4,9 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* Height of the sticky selector rail — used to offset the album-grid-toolbar
+     so it sticks immediately below the selector instead of under it. */
+  --selector-h: 29px;
 }
 
 /* Collection-type selector (Albums | Playlists) ---------------------------- */
@@ -15,6 +18,9 @@
   background: var(--bg);
   padding: 0 16px;
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 11;
 }
 
 .library-collection-tab {
@@ -25,6 +31,7 @@
   cursor: pointer;
   font-size: 12px;
   letter-spacing: 0.5px;
+  line-height: 1;
   padding: 8px 12px 6px;
   text-transform: uppercase;
   transition: color 0.15s, border-color 0.15s;
@@ -49,7 +56,7 @@
 
 .album-grid-toolbar {
   position: sticky;
-  top: 0;
+  top: var(--selector-h, 0px);
   z-index: 10;
   background: var(--bg);
   border-bottom: 1px solid var(--border);

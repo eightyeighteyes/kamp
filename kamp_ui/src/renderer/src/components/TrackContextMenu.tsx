@@ -11,9 +11,10 @@ interface Props {
   y: number
   track: Track
   onClose: () => void
+  onRemoveFromPlaylist?: () => void
 }
 
-export function TrackContextMenu({ x, y, track, onClose }: Props): React.JSX.Element {
+export function TrackContextMenu({ x, y, track, onClose, onRemoveFromPlaylist }: Props): React.JSX.Element {
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
   const setFavorite = useStore((s) => s.setFavorite)
@@ -99,6 +100,20 @@ export function TrackContextMenu({ x, y, track, onClose }: Props): React.JSX.Ele
           New Playlist
         </button>
       </ContextMenuSubmenu>
+      {onRemoveFromPlaylist && (
+        <>
+          <div className="track-context-menu-divider" />
+          <button
+            className="track-context-menu-item"
+            onClick={() => {
+              onRemoveFromPlaylist()
+              onClose()
+            }}
+          >
+            Remove from Playlist
+          </button>
+        </>
+      )}
       {track.source === 'local' && (
         <button
           className="track-context-menu-item"

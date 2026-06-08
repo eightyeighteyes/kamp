@@ -246,22 +246,6 @@ export function PlaylistView(): React.JSX.Element | null {
                 <span className="track-row-duration">
                   {track.duration > 0 ? formatTime(track.duration) : '—'}
                 </span>
-                <button
-                  className="track-row-remove-btn"
-                  aria-label="Remove from playlist"
-                  title="Remove from playlist"
-                  onClick={() => void removeTrackFromPlaylist(playlist.id, track.playlist_track_id)}
-                  style={{
-                    marginLeft: 'auto',
-                    background: 'none',
-                    border: 'none',
-                    cursor: 'pointer',
-                    color: 'var(--text-dim)',
-                    padding: '0 4px'
-                  }}
-                >
-                  ×
-                </button>
               </li>
             )
           })}
@@ -274,7 +258,15 @@ export function PlaylistView(): React.JSX.Element | null {
       </div>
 
       {menu && (
-        <TrackContextMenu x={menu.x} y={menu.y} track={menu.track} onClose={() => setMenu(null)} />
+        <TrackContextMenu
+          x={menu.x}
+          y={menu.y}
+          track={menu.track}
+          onClose={() => setMenu(null)}
+          onRemoveFromPlaylist={() =>
+            void removeTrackFromPlaylist(playlist.id, menu.track.playlist_track_id)
+          }
+        />
       )}
     </div>
   )

@@ -439,13 +439,17 @@ export function PlaylistView(): React.JSX.Element | null {
           x={menu.x}
           y={menu.y}
           track={menu.track}
+          selectedTracks={
+            selectedIndices.size > 1
+              ? [...selectedIndices].sort((a, b) => a - b).map((i) => playlistTracks[i])
+              : undefined
+          }
           onClose={() => setMenu(null)}
           onRemoveFromPlaylist={() => {
-            // Remove all selected tracks; fall back to just the right-clicked track.
             const targets =
               selectedIndices.size > 0
                 ? [...selectedIndices]
-                    .sort((a, b) => b - a) // descending so indices stay valid
+                    .sort((a, b) => b - a)
                     .map((i) => playlistTracks[i].playlist_track_id)
                 : [menu.track.playlist_track_id]
             targets.forEach((ptId) => void removeTrackFromPlaylist(playlist.id, ptId))

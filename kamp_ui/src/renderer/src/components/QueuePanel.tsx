@@ -10,7 +10,12 @@ import { computeNewOrder } from '../utils/computeNewOrder'
 const QUEUE_WIDTH_KEY = 'kamp:queue-width'
 const QUEUE_WIDTH_DEFAULT = 280
 
-const QUEUE_DROP_TYPES = new Set(['text/kamp-track-path', 'text/kamp-album', 'text/kamp-queue-idx'])
+const QUEUE_DROP_TYPES = new Set([
+  'text/kamp-track-path',
+  'text/kamp-album',
+  'text/kamp-queue-idx',
+  'text/kamp-playlist'
+])
 function isQueueDrop(types: DOMStringList | readonly string[]): boolean {
   return Array.from(types).some((t) => QUEUE_DROP_TYPES.has(t))
 }
@@ -34,6 +39,7 @@ export function QueuePanel(): React.JSX.Element {
   const insertIntoQueue = useStore((s) => s.insertIntoQueue)
   const insertAlbumAt = useStore((s) => s.insertAlbumAt)
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
+  const loadPlaylistTracks = useStore((s) => s.loadPlaylistTracks)
   const configValues = useStore((s) => s.configValues)
   const bandcampConnected = configValues?.['bandcamp.connected'] ?? false
   // listRef is on the Next Up <ol> — used for queue-tail-drop visual
@@ -213,6 +219,15 @@ export function QueuePanel(): React.JSX.Element {
       } catch {
         // malformed drag data — ignore
       }
+    } else {
+      const playlistIdStr = e.dataTransfer.getData('text/kamp-playlist')
+      if (playlistIdStr) {
+        void (async () => {
+          await loadPlaylistTracks(Number(playlistIdStr))
+          const paths = useStore.getState().library.playlistTracks.map((t) => t.file_path)
+          for (let i = 0; i < paths.length; i++) await insertIntoQueue(paths[i], dropIdx + i)
+        })()
+      }
     }
   }
 
@@ -248,6 +263,15 @@ export function QueuePanel(): React.JSX.Element {
         void addAlbumToQueue(album_artist, album, file_path)
       } catch {
         // malformed drag data — ignore
+      }
+    } else {
+      const playlistIdStr = e.dataTransfer.getData('text/kamp-playlist')
+      if (playlistIdStr) {
+        void (async () => {
+          await loadPlaylistTracks(Number(playlistIdStr))
+          const paths = useStore.getState().library.playlistTracks.map((t) => t.file_path)
+          for (const p of paths) await addToQueue(p)
+        })()
       }
     }
   }

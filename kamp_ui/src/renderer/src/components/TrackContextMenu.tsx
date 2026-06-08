@@ -13,6 +13,9 @@ interface Props {
   track: Track
   onClose: () => void
   onRemoveFromPlaylist?: () => void
+  // When provided (e.g. from PlaylistView multi-select), bulk actions use this
+  // list instead of the single right-clicked track.
+  selectedTracks?: Track[]
 }
 
 export function TrackContextMenu({
@@ -20,19 +23,25 @@ export function TrackContextMenu({
   y,
   track,
   onClose,
-  onRemoveFromPlaylist
+  onRemoveFromPlaylist,
+  selectedTracks
 }: Props): React.JSX.Element {
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
   const setFavorite = useStore((s) => s.setFavorite)
+  const setFavorites = useStore((s) => s.setFavorites)
   const playlists = useStore((s) => s.library.playlists)
   const addTrackToPlaylist = useStore((s) => s.addTrackToPlaylist)
   const createPlaylist = useStore((s) => s.createPlaylist)
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
 
+  // Bulk targets: the full selection when available, otherwise just this track.
+  const targets = selectedTracks && selectedTracks.length > 0 ? selectedTracks : [track]
+  const allFavorited = targets.every((t) => t.favorite)
+
   const handleAddToPlaylist = (playlistId: number): void => {
-    void addTrackToPlaylist(playlistId, track.file_path)
+    targets.forEach((t) => void addTrackToPlaylist(playlistId, t.file_path))
     onClose()
   }
 
@@ -40,11 +49,11 @@ export function TrackContextMenu({
     onClose()
     void (async () => {
       const pl = await createPlaylist('New Playlist')
-      // Navigate first so the user sees the playlist immediately;
-      // then add the track in the background.
       setCollectionType('playlists')
       await selectPlaylist(pl)
-      await addTrackToPlaylist(pl.id, track.file_path)
+      for (const t of targets) {
+        await addTrackToPlaylist(pl.id, t.file_path)
+      }
     })()
   }
 
@@ -53,8 +62,10 @@ export function TrackContextMenu({
       <button
         className="track-context-menu-item"
         onClick={() => {
-          void playNext(track.file_path)
           onClose()
+          void (async () => {
+            for (let i = targets.length - 1; i >= 0; i--) await playNext(targets[i].file_path)
+          })()
         }}
       >
         <span
@@ -67,8 +78,10 @@ export function TrackContextMenu({
       <button
         className="track-context-menu-item"
         onClick={() => {
-          void addToQueue(track.file_path)
           onClose()
+          void (async () => {
+            for (const t of targets) await addToQueue(t.file_path)
+          })()
         }}
       >
         <span
@@ -81,16 +94,20 @@ export function TrackContextMenu({
       <button
         className="track-context-menu-item"
         onClick={() => {
-          void setFavorite(track, !track.favorite)
+          if (targets.length > 1) {
+            void setFavorites(targets, !allFavorited)
+          } else {
+            void setFavorite(track, !track.favorite)
+          }
           onClose()
         }}
       >
         <span
           style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}
         >
-          <FavoriteIcon active={!track.favorite} size={12} />
+          <FavoriteIcon active={!allFavorited} size={12} />
         </span>
-        {track.favorite ? 'Remove from Favorites' : 'Add to Favorites'}
+        {allFavorited ? 'Remove from Favorites' : 'Add to Favorites'}
       </button>
       <ContextMenuSubmenu label="Add to Playlist">
         {playlists.map((pl) => (

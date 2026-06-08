@@ -23,11 +23,16 @@ export function PlaylistCard({ playlist }: { playlist: Playlist }): React.JSX.El
     <div
       className="album-card"
       tabIndex={0}
+      draggable
       onClick={handleSelect}
       onKeyDown={(e) => e.key === 'Enter' && handleSelect()}
       onContextMenu={(e) => {
         e.preventDefault()
         setMenu({ x: e.clientX, y: e.clientY })
+      }}
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/kamp-playlist', String(playlist.id))
+        e.dataTransfer.effectAllowed = 'copy'
       }}
     >
       <div className={`album-art${artLoaded ? ' has-art' : ''}`}>

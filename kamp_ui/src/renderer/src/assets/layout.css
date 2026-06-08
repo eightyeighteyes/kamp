@@ -344,6 +344,20 @@ html[data-platform='win32'] .view-tabs {
   padding-top: 0;
 }
 
+/* When the track-list is active, track-list.css zeroes out .main-content's
+   padding entirely.  The .library-view wrapper (added for the collection
+   selector) is also inside .main-content, so it loses the 16px left/right
+   inset and the selector tabs jump 16px left relative to the grid views.
+   Restore the inset on .library-view itself, then pull .track-list-view back
+   out with a matching negative margin so the hero still bleeds edge-to-edge. */
+.main-content:has(.view-pane--active .track-list-view) .library-view {
+  padding: 0 16px;
+}
+
+.main-content:has(.view-pane--active .track-list-view) .library-view .track-list-view {
+  margin: 0 -16px;
+}
+
 /* Artist panel ------------------------------------------------------------- */
 
 .artist-panel {

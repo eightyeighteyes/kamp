@@ -479,6 +479,59 @@ class BandcampProxyFetchResult(BaseModel):
     url: str | None = None
 
 
+class PlaylistOut(BaseModel):
+    id: int
+    title: str
+    favorite: bool
+    track_count: int
+    created_at: float
+    updated_at: float
+
+
+class PlaylistTrackOut(BaseModel):
+    playlist_track_id: int
+    position: int
+    id: int
+    file_path: str
+    title: str
+    artist: str
+    album_artist: str
+    album: str
+    year: str
+    track_number: int
+    disc_number: int
+    ext: str
+    embedded_art: bool
+    mb_release_id: str
+    mb_recording_id: str
+    genre: str
+    label: str
+    favorite: bool
+    play_count: int
+    source: str
+    is_available: bool
+    duration: float
+
+
+class CreatePlaylistRequest(BaseModel):
+    title: str
+
+
+class PatchPlaylistRequest(BaseModel):
+    title: str | None = None
+    favorite: bool | None = None
+
+
+class AddTrackToPlaylistRequest(BaseModel):
+    file_path: str | None = None
+    album_artist: str | None = None
+    album: str | None = None
+
+
+class ReorderPlaylistRequest(BaseModel):
+    track_ids: list[int]
+
+
 # ---------------------------------------------------------------------------
 # Bandcamp proxy URL allowlist
 # ---------------------------------------------------------------------------
@@ -490,6 +543,28 @@ class BandcampProxyFetchResult(BaseModel):
 _ALLOWED_PROXY_HOSTS: frozenset[str] = frozenset(
     {"bandcamp.com", "f4.bcbits.com", "t4.bcbits.com"}
 )
+
+# SVG template for playlist placeholder art (KAMP-441).
+# __TITLE__ is substituted with the (possibly-truncated) playlist title at request time.
+_PLAYLIST_ART_TEMPLATE = """\
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <rect width="200" height="200" fill="#141414"/>
+  <circle cx="100" cy="100" r="86" fill="#1c1a16" stroke="#c4aa78" stroke-width="1.5"/>
+  <circle cx="100" cy="100" r="78" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="70" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="62" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="54" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="46" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="38" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="32" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="26" fill="#bf7a20"/>
+  <circle cx="100" cy="100" r="26" fill="none" stroke="#8a5515" stroke-width="1"/>
+  <circle cx="100" cy="100" r="22.5" fill="none" stroke="#8a5515" stroke-width="0.6" stroke-dasharray="2.5 2"/>
+  <text x="100" y="104" text-anchor="middle" fill="#1c1a16"
+        font-size="5.5" font-weight="700" letter-spacing="0.5"
+        font-family="sans-serif">__TITLE__</text>
+  <circle cx="100" cy="100" r="3.5" fill="#141414"/>
+</svg>"""
 
 
 # OS metadata filenames that macOS (and Windows) drop into every directory.
@@ -2958,6 +3033,104 @@ def create_app(
         _pending_proxy_fetches.pop(req.id, None)
         entry["event"].set()
         return {"ok": True}
+
+    # -----------------------------------------------------------------------
+    # Playlists (KAMP-441)
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/v1/playlists", response_model=PlaylistOut, status_code=201)
+    def create_playlist(req: CreatePlaylistRequest) -> dict[str, Any]:
+        return index.create_playlist(req.title)
+
+    @app.get("/api/v1/playlists", response_model=list[PlaylistOut])
+    def list_playlists() -> list[dict[str, Any]]:
+        return index.get_playlists()
+
+    @app.get("/api/v1/playlists/{playlist_id}", response_model=PlaylistOut)
+    def get_playlist(playlist_id: int) -> dict[str, Any]:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        return pl
+
+    @app.patch("/api/v1/playlists/{playlist_id}", response_model=PlaylistOut)
+    def patch_playlist(playlist_id: int, req: PatchPlaylistRequest) -> dict[str, Any]:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        if req.title is not None:
+            index.rename_playlist(playlist_id, req.title)
+        if req.favorite is not None:
+            index.set_playlist_favorite(playlist_id, req.favorite)
+        updated = index.get_playlist(playlist_id)
+        assert updated is not None
+        return updated
+
+    @app.delete("/api/v1/playlists/{playlist_id}", status_code=204)
+    def delete_playlist(playlist_id: int) -> Response:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        index.delete_playlist(playlist_id)
+        return Response(status_code=204)
+
+    @app.get(
+        "/api/v1/playlists/{playlist_id}/tracks", response_model=list[PlaylistTrackOut]
+    )
+    def get_playlist_tracks(playlist_id: int) -> list[dict[str, Any]]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        return index.get_playlist_tracks(playlist_id)
+
+    @app.post("/api/v1/playlists/{playlist_id}/tracks")
+    def add_to_playlist(
+        playlist_id: int, req: AddTrackToPlaylistRequest
+    ) -> dict[str, Any]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        if req.file_path:
+            index.add_track_to_playlist(playlist_id, req.file_path)
+        elif req.album_artist is not None and req.album is not None:
+            tracks = index.tracks_for_album(req.album_artist, req.album)
+            for t in tracks:
+                index.add_track_to_playlist(playlist_id, str(t.file_path))
+        else:
+            raise HTTPException(
+                status_code=400, detail="Provide file_path or album_artist+album"
+            )
+        return {"ok": True}
+
+    @app.delete(
+        "/api/v1/playlists/{playlist_id}/tracks/{playlist_track_id}", status_code=204
+    )
+    def remove_from_playlist(playlist_id: int, playlist_track_id: int) -> Response:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        index.remove_track_from_playlist(playlist_id, playlist_track_id)
+        return Response(status_code=204)
+
+    @app.put("/api/v1/playlists/{playlist_id}/order")
+    def reorder_playlist(
+        playlist_id: int, req: ReorderPlaylistRequest
+    ) -> dict[str, Any]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        try:
+            index.reorder_playlist_tracks(playlist_id, req.track_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True}
+
+    @app.get("/api/v1/playlists/{playlist_id}/art")
+    def playlist_art(playlist_id: int) -> Response:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        title = pl["title"]
+        # Truncate to 12 chars so it fits within the 44px-diameter record label.
+        display = title if len(title) <= 12 else title[:11] + "…"
+        svg = _PLAYLIST_ART_TEMPLATE.replace("__TITLE__", display)
+        return Response(content=svg, media_type="image/svg+xml")
 
     # -----------------------------------------------------------------------
     # WebSocket: player state stream

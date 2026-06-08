@@ -4701,3 +4701,248 @@ class TestAlbumUrlField:
         c = TestClient(app)
         data = c.get("/api/v1/albums").json()
         assert data[0]["album_url"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Playlist endpoints (KAMP-441)
+# ---------------------------------------------------------------------------
+
+
+def _playlist(
+    id: int = 1,
+    title: str = "Test Mix",
+    favorite: bool = False,
+    track_count: int = 0,
+) -> dict:
+    import time
+
+    now = time.time()
+    return {
+        "id": id,
+        "title": title,
+        "favorite": favorite,
+        "track_count": track_count,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _playlist_track(
+    playlist_track_id: int = 1,
+    position: int = 0,
+    file_path: str = "/lib/a.mp3",
+    title: str = "A Track",
+) -> dict:
+    return {
+        "playlist_track_id": playlist_track_id,
+        "position": position,
+        "id": 10,
+        "file_path": file_path,
+        "title": title,
+        "artist": "Artist",
+        "album_artist": "Artist",
+        "album": "Album",
+        "year": "2024",
+        "track_number": 1,
+        "disc_number": 1,
+        "ext": "mp3",
+        "embedded_art": False,
+        "mb_release_id": "",
+        "mb_recording_id": "",
+        "genre": "",
+        "label": "",
+        "favorite": False,
+        "play_count": 0,
+        "source": "local",
+        "is_available": True,
+        "duration": 180.0,
+    }
+
+
+class TestPlaylistEndpoints:
+    def test_create_playlist(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.create_playlist.return_value = _playlist(title="My Mix")
+        resp = client.post("/api/v1/playlists", json={"title": "My Mix"})
+        assert resp.status_code == 201
+        assert resp.json()["title"] == "My Mix"
+        mock_index.create_playlist.assert_called_once_with("My Mix")
+
+    def test_list_playlists(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.get_playlists.return_value = [_playlist(id=1), _playlist(id=2)]
+        resp = client.get("/api/v1/playlists")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
+
+    def test_get_playlist(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=7, title="Road Trip")
+        resp = client.get("/api/v1/playlists/7")
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "Road Trip"
+
+    def test_get_playlist_404(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.get_playlist.return_value = None
+        assert client.get("/api/v1/playlists/999").status_code == 404
+
+    def test_patch_playlist_title(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        pl = _playlist(id=1, title="New Name")
+        mock_index.get_playlist.return_value = pl
+        resp = client.patch("/api/v1/playlists/1", json={"title": "New Name"})
+        assert resp.status_code == 200
+        mock_index.rename_playlist.assert_called_once_with(1, "New Name")
+
+    def test_patch_playlist_favorite(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        pl = _playlist(id=1, favorite=True)
+        mock_index.get_playlist.return_value = pl
+        resp = client.patch("/api/v1/playlists/1", json={"favorite": True})
+        assert resp.status_code == 200
+        mock_index.set_playlist_favorite.assert_called_once_with(1, True)
+
+    def test_patch_playlist_404(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        assert (
+            client.patch("/api/v1/playlists/999", json={"title": "x"}).status_code
+            == 404
+        )
+
+    def test_delete_playlist(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        resp = client.delete("/api/v1/playlists/1")
+        assert resp.status_code == 204
+        mock_index.delete_playlist.assert_called_once_with(1)
+
+    def test_delete_playlist_404(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        assert client.delete("/api/v1/playlists/999").status_code == 404
+
+    def test_get_playlist_tracks(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.get_playlist_tracks.return_value = [_playlist_track()]
+        resp = client.get("/api/v1/playlists/1/tracks")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+    def test_get_playlist_tracks_404(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        assert client.get("/api/v1/playlists/999/tracks").status_code == 404
+
+    def test_add_track_by_file_path(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        resp = client.post(
+            "/api/v1/playlists/1/tracks", json={"file_path": "/lib/a.mp3"}
+        )
+        assert resp.status_code == 200
+        mock_index.add_track_to_playlist.assert_called_once_with(1, "/lib/a.mp3")
+
+    def test_add_album_tracks(self, client: TestClient, mock_index: MagicMock) -> None:
+        from kamp_core.library import Track
+
+        t = Track(
+            file_path="/lib/a.mp3",
+            title="A",
+            artist="Ar",
+            album_artist="Ar",
+            album="Al",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+        )
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.tracks_for_album.return_value = [t]
+        resp = client.post(
+            "/api/v1/playlists/1/tracks",
+            json={"album_artist": "Ar", "album": "Al"},
+        )
+        assert resp.status_code == 200
+        mock_index.add_track_to_playlist.assert_called_once_with(1, "/lib/a.mp3")
+
+    def test_add_track_missing_body_fields(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        resp = client.post("/api/v1/playlists/1/tracks", json={})
+        assert resp.status_code == 400
+
+    def test_add_track_playlist_404(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        resp = client.post("/api/v1/playlists/999/tracks", json={"file_path": "/x.mp3"})
+        assert resp.status_code == 404
+
+    def test_remove_track(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        resp = client.delete("/api/v1/playlists/1/tracks/5")
+        assert resp.status_code == 204
+        mock_index.remove_track_from_playlist.assert_called_once_with(1, 5)
+
+    def test_remove_track_playlist_404(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        assert client.delete("/api/v1/playlists/999/tracks/1").status_code == 404
+
+    def test_reorder_playlist(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        resp = client.put("/api/v1/playlists/1/order", json={"track_ids": [3, 1, 2]})
+        assert resp.status_code == 200
+        mock_index.reorder_playlist_tracks.assert_called_once_with(1, [3, 1, 2])
+
+    def test_reorder_playlist_invalid_ids(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.reorder_playlist_tracks.side_effect = ValueError("bad ids")
+        resp = client.put("/api/v1/playlists/1/order", json={"track_ids": [99]})
+        assert resp.status_code == 400
+
+    def test_reorder_playlist_404(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        assert (
+            client.put(
+                "/api/v1/playlists/999/order", json={"track_ids": [1]}
+            ).status_code
+            == 404
+        )
+
+    def test_playlist_art_returns_svg(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1, title="My Mix")
+        resp = client.get("/api/v1/playlists/1/art")
+        assert resp.status_code == 200
+        assert "image/svg+xml" in resp.headers["content-type"]
+        assert "My Mix" in resp.text
+
+    def test_playlist_art_truncates_long_title(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(
+            id=1, title="A Very Long Playlist Title That Should Be Truncated"
+        )
+        resp = client.get("/api/v1/playlists/1/art")
+        assert resp.status_code == 200
+        assert "A Very Long…" in resp.text
+
+    def test_playlist_art_404(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.get_playlist.return_value = None
+        assert client.get("/api/v1/playlists/999/art").status_code == 404

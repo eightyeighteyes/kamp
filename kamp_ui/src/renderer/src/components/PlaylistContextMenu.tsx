@@ -18,7 +18,12 @@ export function PlaylistContextMenu({ x, y, playlist, onClose }: Props): React.J
   const addToQueue = useStore((s) => s.addToQueue)
   const loadPlaylistTracks = useStore((s) => s.loadPlaylistTracks)
 
-  const iconStyle = { marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }
+  const iconStyle = {
+    marginRight: 6,
+    verticalAlign: 'middle',
+    flexShrink: 0,
+    display: 'inline-flex'
+  }
 
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>

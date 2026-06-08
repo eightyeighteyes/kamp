@@ -133,8 +133,7 @@ export function PlaylistView(): React.JSX.Element | null {
   }
 
   const isCurrentPlaylist =
-    currentTrack !== null &&
-    playlistTracks.some((t) => t.file_path === currentTrack.file_path)
+    currentTrack !== null && playlistTracks.some((t) => t.file_path === currentTrack.file_path)
 
   // If a playlist track is already in the queue: couple to transport (pause/resume).
   // Otherwise: replace the queue with this playlist's tracks and start playing.

@@ -151,7 +151,12 @@ export function PlaylistView(): React.JSX.Element | null {
                 if (e.key === 'Enter') commitTitle()
                 if (e.key === 'Escape') setEditingTitle(false)
               }}
-              style={{ background: 'transparent', border: 'none', outline: '1px solid var(--accent)', width: '100%' }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                outline: '1px solid var(--accent)',
+                width: '100%'
+              }}
             />
           ) : (
             <h1 className="track-list-album-title" onDoubleClick={handleTitleDoubleClick}>
@@ -176,18 +181,10 @@ export function PlaylistView(): React.JSX.Element | null {
             >
               <QueueAddIcon size={16} />
             </button>
-            <button
-              className="album-secondary-btn"
-              aria-label="Play all next"
-              onClick={handlePlay}
-            >
+            <button className="album-secondary-btn" aria-label="Play all next" onClick={handlePlay}>
               <PlayNextIcon size={16} />
             </button>
-            <button
-              className="play-all-btn"
-              aria-label="Play"
-              onClick={handlePlay}
-            >
+            <button className="play-all-btn" aria-label="Play" onClick={handlePlay}>
               {playing &&
               currentTrack &&
               playlistTracks.some((t) => t.file_path === currentTrack.file_path) ? (
@@ -229,11 +226,19 @@ export function PlaylistView(): React.JSX.Element | null {
                 <span className="track-row-num">{i + 1}</span>
                 <span className="track-row-title-cell">
                   {isOffline && (
-                    <span className="track-row-offline-icon" title="Track unavailable offline" aria-hidden="true">
+                    <span
+                      className="track-row-offline-icon"
+                      title="Track unavailable offline"
+                      aria-hidden="true"
+                    >
                       <WarnIcon size={11} />
                     </span>
                   )}
-                  <span className={isOffline ? 'track-row-title track-row-title--offline' : 'track-row-title'}>
+                  <span
+                    className={
+                      isOffline ? 'track-row-title track-row-title--offline' : 'track-row-title'
+                    }
+                  >
                     {track.title}
                   </span>
                 </span>
@@ -246,7 +251,14 @@ export function PlaylistView(): React.JSX.Element | null {
                   aria-label="Remove from playlist"
                   title="Remove from playlist"
                   onClick={() => void removeTrackFromPlaylist(playlist.id, track.playlist_track_id)}
-                  style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', padding: '0 4px' }}
+                  style={{
+                    marginLeft: 'auto',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'var(--text-dim)',
+                    padding: '0 4px'
+                  }}
                 >
                   ×
                 </button>
@@ -262,12 +274,7 @@ export function PlaylistView(): React.JSX.Element | null {
       </div>
 
       {menu && (
-        <TrackContextMenu
-          x={menu.x}
-          y={menu.y}
-          track={menu.track}
-          onClose={() => setMenu(null)}
-        />
+        <TrackContextMenu x={menu.x} y={menu.y} track={menu.track} onClose={() => setMenu(null)} />
       )}
     </div>
   )

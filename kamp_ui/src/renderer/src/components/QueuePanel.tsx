@@ -15,7 +15,6 @@ function isQueueDrop(types: DOMStringList | readonly string[]): boolean {
   return Array.from(types).some((t) => QUEUE_DROP_TYPES.has(t))
 }
 
-
 type ContextMenu = {
   x: number
   y: number

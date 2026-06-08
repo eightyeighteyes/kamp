@@ -30,6 +30,7 @@ export function TrackContextMenu({
   const addToQueue = useStore((s) => s.addToQueue)
   const setFavorite = useStore((s) => s.setFavorite)
   const setFavorites = useStore((s) => s.setFavorites)
+  const showFlashToast = useStore((s) => s.showFlashToast)
   const playlists = useStore((s) => s.library.playlists)
   const addTrackToPlaylist = useStore((s) => s.addTrackToPlaylist)
   const createPlaylist = useStore((s) => s.createPlaylist)
@@ -42,6 +43,8 @@ export function TrackContextMenu({
 
   const handleAddToPlaylist = (playlistId: number): void => {
     targets.forEach((t) => void addTrackToPlaylist(playlistId, t.file_path))
+    const pl = playlists.find((p) => p.id === playlistId)
+    if (pl) showFlashToast(`Added to ${truncateTitle(pl.title, 35)}`)
     onClose()
   }
 

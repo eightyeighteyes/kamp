@@ -51,6 +51,7 @@ export function QueueContextMenu({
   const createPlaylist = useStore((s) => s.createPlaylist)
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
+  const showFlashToast = useStore((s) => s.showFlashToast)
 
   // Targets for playlist operations: all selected tracks, or the right-clicked
   // track alone when there is no selection (consistent with favorites/remove).
@@ -58,6 +59,8 @@ export function QueueContextMenu({
 
   const handleAddToPlaylist = (playlistId: number): void => {
     playlistTargets.forEach((t) => void addTrackToPlaylist(playlistId, t.file_path))
+    const pl = playlists.find((p) => p.id === playlistId)
+    if (pl) showFlashToast(`Added to ${truncateTitle(pl.title, 35)}`)
     onClose()
   }
 

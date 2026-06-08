@@ -46,6 +46,8 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
 
   const handleAddToPlaylist = (playlistId: number): void => {
     void addAlbumTracksToPlaylist(playlistId)
+    const pl = playlists.find((p) => p.id === playlistId)
+    if (pl) showFlashToast(`Added to ${truncateTitle(pl.title, 35)}`)
     onClose()
   }
 

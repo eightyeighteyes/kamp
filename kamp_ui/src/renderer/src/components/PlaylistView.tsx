@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { playlistArtUrl } from '../api/client'
 import type { PlaylistTrack } from '../api/client'
@@ -59,12 +59,22 @@ export function PlaylistView(): React.JSX.Element | null {
     return isNaN(saved) ? HERO_DEFAULT : Math.min(HERO_DEFAULT, Math.max(HERO_MIN, saved))
   })
   const [isResizing, setIsResizing] = useState(false)
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
+  const [anchorIdx, setAnchorIdx] = useState<number | null>(null)
 
   const titleInputRef = useRef<HTMLInputElement>(null)
   const dragFromIdx = useRef<number | null>(null)
   const didDragRef = useRef(false)
   const dragStartYRef = useRef(0)
   const heroAtDragStartRef = useRef(HERO_DEFAULT)
+  const pendingSingleSelect = useRef<number | null>(null)
+
+  // Clear selection when tracks are added or removed so indices don't go stale.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedIndices(new Set())
+    setAnchorIdx(null)
+  }, [playlistTracks.length])
 
   if (!playlist) return null
 
@@ -154,24 +164,78 @@ export function PlaylistView(): React.JSX.Element | null {
     })()
   }
 
-  // Drag-to-reorder handlers
-  const handleDragStart = (e: React.DragEvent, idx: number): void => {
-    dragFromIdx.current = idx
-    e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
-    e.dataTransfer.effectAllowed = 'move'
-  }
-
-  const handleDragOver = (e: React.DragEvent): void => {
-    if (e.dataTransfer.types.includes('text/kamp-playlist-track-idx')) {
-      e.preventDefault()
-      e.dataTransfer.dropEffect = 'move'
-      e.currentTarget.classList.add('drag-over')
+  const handleRowMouseDown = (e: React.MouseEvent, idx: number): void => {
+    if (e.button !== 0) return
+    if (e.shiftKey && anchorIdx !== null) {
+      const lo = Math.min(anchorIdx, idx)
+      const hi = Math.max(anchorIdx, idx)
+      setSelectedIndices(new Set(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i)))
+    } else if (e.metaKey || e.ctrlKey) {
+      setSelectedIndices((prev) => {
+        const next = new Set(prev)
+        next.has(idx) ? next.delete(idx) : next.add(idx)
+        return next
+      })
+      setAnchorIdx(idx)
+    } else if (selectedIndices.has(idx) && selectedIndices.size > 1) {
+      // Defer collapse to mouseup so a drag can start with the full selection.
+      pendingSingleSelect.current = idx
+    } else {
+      setSelectedIndices(new Set([idx]))
+      setAnchorIdx(idx)
     }
   }
 
+  const handleRowMouseUp = (idx: number): void => {
+    if (pendingSingleSelect.current === idx) {
+      pendingSingleSelect.current = null
+      setSelectedIndices(new Set([idx]))
+      setAnchorIdx(idx)
+    }
+  }
+
+  // Drag-to-reorder handlers
+  const handleDragStart = (e: React.DragEvent, idx: number): void => {
+    pendingSingleSelect.current = null
+    dragFromIdx.current = idx
+    const isMulti = selectedIndices.has(idx) && selectedIndices.size > 1
+    if (isMulti) {
+      const sorted = [...selectedIndices].sort((a, b) => a - b)
+      e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
+      e.dataTransfer.setData('text/kamp-playlist-multi', JSON.stringify(sorted))
+      const ghost = document.createElement('div')
+      ghost.textContent = `${sorted.length} tracks`
+      ghost.style.cssText =
+        'position:fixed;top:-100px;background:var(--accent);color:#fff;padding:4px 10px;border-radius:3px;font-size:12px;font-weight:600'
+      document.body.appendChild(ghost)
+      e.dataTransfer.setDragImage(ghost, 0, 0)
+      requestAnimationFrame(() => document.body.removeChild(ghost))
+    } else {
+      setSelectedIndices(new Set())
+      setAnchorIdx(null)
+      e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
+    }
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const handleDragEnd = (): void => {
+    setSelectedIndices(new Set())
+    setAnchorIdx(null)
+  }
+
+  const isPlaylistDrop = (types: DOMStringList | readonly string[]): boolean =>
+    Array.from(types).some(
+      (t) => t === 'text/kamp-playlist-track-idx' || t === 'text/kamp-playlist-multi'
+    )
+
+  const handleDragOver = (e: React.DragEvent): void => {
+    if (!isPlaylistDrop(e.dataTransfer.types)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    e.currentTarget.classList.add('drag-over')
+  }
+
   const handleDragLeave = (e: React.DragEvent): void => {
-    // Only remove the indicator when the cursor leaves the row entirely,
-    // not when it moves between child elements (spans, etc.).
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
       e.currentTarget.classList.remove('drag-over')
     }
@@ -180,13 +244,24 @@ export function PlaylistView(): React.JSX.Element | null {
   const handleDrop = (e: React.DragEvent, dropIdx: number): void => {
     e.preventDefault()
     e.currentTarget.classList.remove('drag-over')
+    const multiJson = e.dataTransfer.getData('text/kamp-playlist-multi')
     const fromStr = e.dataTransfer.getData('text/kamp-playlist-track-idx')
-    if (!fromStr) return
-    const from = Number(fromStr)
-    if (from === dropIdx) return
-    const newOrder = computeNewOrder(playlistTracks.length, [from], dropIdx)
-    const newTrackIds = newOrder.map((i) => playlistTracks[i].playlist_track_id)
-    void reorderPlaylistTracks(playlist.id, newTrackIds)
+    if (multiJson) {
+      const sorted: number[] = JSON.parse(multiJson)
+      const newOrder = computeNewOrder(playlistTracks.length, sorted, dropIdx)
+      void reorderPlaylistTracks(
+        playlist.id,
+        newOrder.map((i) => playlistTracks[i].playlist_track_id)
+      )
+    } else if (fromStr) {
+      const from = Number(fromStr)
+      if (from === dropIdx) return
+      const newOrder = computeNewOrder(playlistTracks.length, [from], dropIdx)
+      void reorderPlaylistTracks(
+        playlist.id,
+        newOrder.map((i) => playlistTracks[i].playlist_track_id)
+      )
+    }
   }
 
   return (
@@ -290,18 +365,35 @@ export function PlaylistView(): React.JSX.Element | null {
             const isCurrent = currentTrack?.file_path === track.file_path
             const isRemote = track.source !== 'local'
             const isOffline = isRemote && !connected
+            const isSelected = selectedIndices.has(i)
             return (
               <li
                 key={track.playlist_track_id}
-                className={`track-row${isCurrent ? ' current' : ''}${isOffline ? ' track-row--offline' : ''}`}
+                className={[
+                  'track-row',
+                  isCurrent ? 'current' : '',
+                  isOffline ? 'track-row--offline' : '',
+                  isSelected ? 'selected' : ''
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
                 tabIndex={0}
                 draggable
+                onMouseDown={(e) => handleRowMouseDown(e, i)}
+                onMouseUp={() => handleRowMouseUp(i)}
                 onDragStart={(e) => handleDragStart(e, i)}
+                onDragEnd={handleDragEnd}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, i)}
                 onContextMenu={(e) => {
                   e.preventDefault()
+                  // Right-click on an unselected row: select only that row.
+                  const nextIndices = isSelected ? selectedIndices : new Set([i])
+                  if (!isSelected) {
+                    setSelectedIndices(nextIndices)
+                    setAnchorIdx(i)
+                  }
                   setMenu({ x: e.clientX, y: e.clientY, track })
                 }}
               >
@@ -348,9 +440,16 @@ export function PlaylistView(): React.JSX.Element | null {
           y={menu.y}
           track={menu.track}
           onClose={() => setMenu(null)}
-          onRemoveFromPlaylist={() =>
-            void removeTrackFromPlaylist(playlist.id, menu.track.playlist_track_id)
-          }
+          onRemoveFromPlaylist={() => {
+            // Remove all selected tracks; fall back to just the right-clicked track.
+            const targets =
+              selectedIndices.size > 0
+                ? [...selectedIndices]
+                    .sort((a, b) => b - a) // descending so indices stay valid
+                    .map((i) => playlistTracks[i].playlist_track_id)
+                : [menu.track.playlist_track_id]
+            targets.forEach((ptId) => void removeTrackFromPlaylist(playlist.id, ptId))
+          }}
         />
       )}
     </div>

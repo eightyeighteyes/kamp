@@ -566,8 +566,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
   loadLibrary: async () => {
     try {
       const sort = get().sortOrder
-      const [albums, artists] = await Promise.all([api.getAlbums(sort), api.getArtists()])
-      set((s) => ({ library: { ...s.library, albums, artists }, serverStatus: 'connected' }))
+      const [albums, artists, playlists] = await Promise.all([
+        api.getAlbums(sort),
+        api.getArtists(),
+        api.getPlaylists()
+      ])
+      set((s) => ({ library: { ...s.library, albums, artists, playlists }, serverStatus: 'connected' }))
     } catch {
       // During initial startup or mid-session reconnect the server may not be
       // ready yet — the WebSocket retry loop owns recovery. Only signal

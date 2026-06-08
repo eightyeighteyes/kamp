@@ -31,6 +31,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
   const createPlaylist = useStore((s) => s.createPlaylist)
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
+  const setActiveView = useStore((s) => s.setActiveView)
 
   // Fetch tracks client-side so the full file_path list is available.
   // This handles missing-album tracks (keyed by file_path, not album_artist+album)
@@ -51,6 +52,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
     onClose()
     void (async () => {
       const pl = await createPlaylist('New Playlist')
+      void setActiveView('library')
       setCollectionType('playlists')
       await selectPlaylist(pl)
       await addAlbumTracksToPlaylist(pl.id)

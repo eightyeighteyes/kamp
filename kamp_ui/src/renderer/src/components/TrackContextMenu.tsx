@@ -1,6 +1,7 @@
 import React from 'react'
 import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
+import { ContextMenuSubmenu } from './ContextMenuSubmenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
 import { FavoriteIcon, PlayNextIcon, QueueAddIcon } from './TransportIcons'
 import type { Track } from '../api/client'
@@ -16,6 +17,26 @@ export function TrackContextMenu({ x, y, track, onClose }: Props): React.JSX.Ele
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
   const setFavorite = useStore((s) => s.setFavorite)
+  const playlists = useStore((s) => s.library.playlists)
+  const addTrackToPlaylist = useStore((s) => s.addTrackToPlaylist)
+  const createPlaylist = useStore((s) => s.createPlaylist)
+  const selectPlaylist = useStore((s) => s.selectPlaylist)
+  const setCollectionType = useStore((s) => s.setCollectionType)
+
+  const handleAddToPlaylist = (playlistId: number): void => {
+    void addTrackToPlaylist(playlistId, track.file_path)
+    onClose()
+  }
+
+  const handleNewPlaylist = (): void => {
+    void (async () => {
+      const pl = await createPlaylist('New Playlist')
+      await addTrackToPlaylist(pl.id, track.file_path)
+      setCollectionType('playlists')
+      await selectPlaylist(pl)
+    })()
+    onClose()
+  }
 
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
@@ -61,6 +82,21 @@ export function TrackContextMenu({ x, y, track, onClose }: Props): React.JSX.Ele
         </span>
         {track.favorite ? 'Remove from Favorites' : 'Add to Favorites'}
       </button>
+      <ContextMenuSubmenu label="Add to Playlist">
+        {playlists.map((pl) => (
+          <button
+            key={pl.id}
+            className="track-context-menu-item"
+            onClick={() => handleAddToPlaylist(pl.id)}
+          >
+            {pl.title}
+          </button>
+        ))}
+        {playlists.length > 0 && <div className="track-context-menu-divider" />}
+        <button className="track-context-menu-item" onClick={handleNewPlaylist}>
+          New Playlist
+        </button>
+      </ContextMenuSubmenu>
       {track.source === 'local' && (
         <button
           className="track-context-menu-item"

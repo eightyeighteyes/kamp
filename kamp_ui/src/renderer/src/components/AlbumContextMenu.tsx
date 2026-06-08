@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { getTracksForAlbum, downloadAlbum } from '../api/client'
 import type { Album } from '../api/client'
 import { ContextMenu } from './ContextMenu'
+import { ContextMenuSubmenu } from './ContextMenuSubmenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
 import {
   DownloadArrowIcon,
@@ -25,6 +26,26 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
   const setAlbumFavorite = useStore((s) => s.setAlbumFavorite)
   const markAlbumDownloading = useStore((s) => s.markAlbumDownloading)
   const showFlashToast = useStore((s) => s.showFlashToast)
+  const playlists = useStore((s) => s.library.playlists)
+  const addAlbumToPlaylist = useStore((s) => s.addAlbumToPlaylist)
+  const createPlaylist = useStore((s) => s.createPlaylist)
+  const selectPlaylist = useStore((s) => s.selectPlaylist)
+  const setCollectionType = useStore((s) => s.setCollectionType)
+
+  const handleAddToPlaylist = (playlistId: number): void => {
+    void addAlbumToPlaylist(playlistId, album.album_artist, album.album)
+    onClose()
+  }
+
+  const handleNewPlaylist = (): void => {
+    void (async () => {
+      const pl = await createPlaylist('New Playlist')
+      await addAlbumToPlaylist(pl.id, album.album_artist, album.album)
+      setCollectionType('playlists')
+      await selectPlaylist(pl)
+    })()
+    onClose()
+  }
 
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
@@ -119,6 +140,21 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           Download this album
         </button>
       )}
+      <ContextMenuSubmenu label="Add to Playlist">
+        {playlists.map((pl) => (
+          <button
+            key={pl.id}
+            className="track-context-menu-item"
+            onClick={() => handleAddToPlaylist(pl.id)}
+          >
+            {pl.title}
+          </button>
+        ))}
+        {playlists.length > 0 && <div className="track-context-menu-divider" />}
+        <button className="track-context-menu-item" onClick={handleNewPlaylist}>
+          New Playlist
+        </button>
+      </ContextMenuSubmenu>
       {album.source === 'local' && (
         <button
           className="track-context-menu-item"

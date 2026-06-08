@@ -29,13 +29,15 @@ export function TrackContextMenu({ x, y, track, onClose }: Props): React.JSX.Ele
   }
 
   const handleNewPlaylist = (): void => {
+    onClose()
     void (async () => {
       const pl = await createPlaylist('New Playlist')
-      await addTrackToPlaylist(pl.id, track.file_path)
+      // Navigate first so the user sees the playlist immediately;
+      // then add the track in the background.
       setCollectionType('playlists')
       await selectPlaylist(pl)
+      await addTrackToPlaylist(pl.id, track.file_path)
     })()
-    onClose()
   }
 
   return (

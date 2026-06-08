@@ -38,13 +38,15 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
   }
 
   const handleNewPlaylist = (): void => {
+    onClose()
     void (async () => {
       const pl = await createPlaylist('New Playlist')
-      await addAlbumToPlaylist(pl.id, album.album_artist, album.album)
+      // Navigate first so the user sees the playlist immediately;
+      // then add the tracks in the background.
       setCollectionType('playlists')
       await selectPlaylist(pl)
+      await addAlbumToPlaylist(pl.id, album.album_artist, album.album)
     })()
-    onClose()
   }
 
   return (

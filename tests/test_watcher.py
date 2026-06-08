@@ -1205,16 +1205,23 @@ class TestLibraryHandler:
 
     def test_debounces_rapid_events(self, tmp_path: Path) -> None:
         """Multiple rapid events collapse into a single scan call."""
-        on_scan = MagicMock()
+        import threading
+        import time
+
+        fired = threading.Event()
+        on_scan = MagicMock(side_effect=lambda: fired.set())
         handler = _make_library_handler(tmp_path, on_scan)
         lib = tmp_path / "library"
 
-        with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.05):
+        # _SETTLE_SECONDS = 0.1 gives a 10x margin over the worst-case
+        # threading.Timer.start() overhead (~10 ms) so no intermediate
+        # timer can fire before the next event cancels it.
+        with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.1):
             for i in range(5):
                 handler.on_created(FileCreatedEvent(str(lib / f"track{i}.mp3")))
-            import time
-
-            time.sleep(0.2)
+            assert fired.wait(timeout=5.0), "debounce never fired"
+            # Wait 3× the settle window to surface any spurious second call.
+            time.sleep(0.3)
 
         on_scan.assert_called_once()
 

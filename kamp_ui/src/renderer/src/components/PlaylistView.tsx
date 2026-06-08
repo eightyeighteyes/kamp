@@ -165,7 +165,7 @@ export function PlaylistView(): React.JSX.Element | null {
           )}
           <div className="track-list-album-year">
             {[
-              playlist.track_count === 1 ? '1 track' : `${playlist.track_count} tracks`,
+              playlistTracks.length === 1 ? '1 track' : `${playlistTracks.length} tracks`,
               totalDuration > 0 ? formatTime(totalDuration) : ''
             ]
               .filter(Boolean)

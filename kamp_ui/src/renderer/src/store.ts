@@ -628,9 +628,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   setCollectionType: (type) =>
-    set((s) => ({
-      library: { ...s.library, collectionType: type, selectedPlaylist: null, playlistTracks: [] }
-    })),
+    set((s) => ({ library: { ...s.library, collectionType: type } })),
 
   playPlaylist: async (playlistId) => {
     await api.playPlaylist(playlistId)

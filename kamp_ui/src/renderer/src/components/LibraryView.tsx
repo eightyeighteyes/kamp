@@ -18,15 +18,29 @@ export function LibraryView(): React.JSX.Element {
   const collectionType = useStore((s) => s.library.collectionType)
   const selectedPlaylist = useStore((s) => s.library.selectedPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
+  const selectAlbum = useStore((s) => s.selectAlbum)
+  const selectArtist = useStore((s) => s.selectArtist)
+  const selectPlaylist = useStore((s) => s.selectPlaylist)
   const loadPlaylists = useStore((s) => s.loadPlaylists)
 
   const handleSelectAlbums = (): void => {
-    setCollectionType('albums')
+    if (collectionType === 'albums' && selectedAlbum) {
+      // Re-clicking the active Albums tab while inside an album → back to grid.
+      void selectAlbum(null)
+      selectArtist(null)
+    } else {
+      setCollectionType('albums')
+    }
   }
 
   const handleSelectPlaylists = (): void => {
-    setCollectionType('playlists')
-    void loadPlaylists()
+    if (collectionType === 'playlists' && selectedPlaylist) {
+      // Re-clicking the active Playlists tab while inside a playlist → back to grid.
+      void selectPlaylist(null)
+    } else {
+      setCollectionType('playlists')
+      void loadPlaylists()
+    }
   }
 
   const renderContent = (): React.JSX.Element => {

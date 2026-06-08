@@ -57,7 +57,15 @@ export function ContextMenuSubmenu({ label, children }: Props): React.JSX.Elemen
         createPortal(
           <div
             className="track-context-menu"
-            style={{ position: 'fixed', zIndex: 1001, minWidth: 180, top: pos.top, left: pos.left }}
+            style={{
+              position: 'fixed',
+              zIndex: 1001,
+              minWidth: 180,
+              top: pos.top,
+              left: pos.left,
+              maxHeight: 'calc(100vh - 16px)',
+              overflowY: 'auto'
+            }}
             onMouseEnter={cancelClose}
             onMouseLeave={scheduleClose}
           >

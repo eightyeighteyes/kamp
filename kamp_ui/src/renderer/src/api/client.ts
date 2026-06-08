@@ -80,6 +80,20 @@ export type ScanResult = {
   updated: number
 }
 
+export type Playlist = {
+  id: number
+  title: string
+  favorite: boolean
+  track_count: number
+  created_at: number
+  updated_at: number
+}
+
+export type PlaylistTrack = Track & {
+  playlist_track_id: number
+  position: number
+}
+
 // Configurable base URL: defaults to localhost but can be overridden via
 // environment variable for remote / mobile use cases.
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:47483'
@@ -147,6 +161,16 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'PUT',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body)
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`)
+  return res.json() as Promise<T>
+}
+
 // ---------------------------------------------------------------------------
 // Library
 // ---------------------------------------------------------------------------
@@ -169,6 +193,9 @@ export const artUrl = (
   const withPath = filePath ? `${base}&file_path=${encodeURIComponent(filePath)}` : base
   return artVersion != null ? `${withPath}&v=${artVersion}` : withPath
 }
+
+export const playlistArtUrl = (playlistId: number): string =>
+  `${BASE_URL}/api/v1/playlists/${playlistId}/art`
 
 export const getArtists = (): Promise<string[]> => get('/api/v1/artists')
 
@@ -681,3 +708,43 @@ export async function applyAlbumArtLocal(
   }
   return res.json() as Promise<Album>
 }
+
+// ---------------------------------------------------------------------------
+// Playlists (KAMP-441)
+// ---------------------------------------------------------------------------
+
+export const getPlaylists = (): Promise<Playlist[]> => get('/api/v1/playlists')
+
+export const getPlaylist = (id: number): Promise<Playlist> =>
+  get(`/api/v1/playlists/${id}`)
+
+export const createPlaylist = (title: string): Promise<Playlist> =>
+  post('/api/v1/playlists', { title })
+
+export const patchPlaylist = (
+  id: number,
+  updates: { title?: string; favorite?: boolean }
+): Promise<Playlist> => patch(`/api/v1/playlists/${id}`, updates)
+
+export const deletePlaylist = (id: number): Promise<void> =>
+  del(`/api/v1/playlists/${id}`)
+
+export const getPlaylistTracks = (id: number): Promise<PlaylistTrack[]> =>
+  get(`/api/v1/playlists/${id}/tracks`)
+
+export const addTrackToPlaylist = (id: number, filePath: string): Promise<void> =>
+  post(`/api/v1/playlists/${id}/tracks`, { file_path: filePath })
+
+export const addAlbumToPlaylist = (
+  id: number,
+  albumArtist: string,
+  album: string
+): Promise<void> => post(`/api/v1/playlists/${id}/tracks`, { album_artist: albumArtist, album })
+
+export const removeTrackFromPlaylist = (
+  id: number,
+  playlistTrackId: number
+): Promise<void> => del(`/api/v1/playlists/${id}/tracks/${playlistTrackId}`)
+
+export const reorderPlaylistTracks = (id: number, trackIds: number[]): Promise<void> =>
+  put(`/api/v1/playlists/${id}/order`, { track_ids: trackIds })

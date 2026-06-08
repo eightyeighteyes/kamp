@@ -13,6 +13,8 @@ import type {
   AlbumTagsCollision,
   ConfigValues,
   PlayerState,
+  Playlist,
+  PlaylistTrack,
   QueueState,
   ScanProgress,
   ScanResult,
@@ -32,6 +34,10 @@ type LibraryState = {
   selectedAlbum: Album | null
   tracks: Track[]
   tracksAlbumKey: string | null // "artist\0album" key for the loaded track list
+  collectionType: 'albums' | 'playlists'
+  playlists: Playlist[]
+  selectedPlaylist: Playlist | null
+  playlistTracks: PlaylistTrack[]
 }
 
 type PlayerStore = {
@@ -128,6 +134,18 @@ type PlayerStore = {
   selectArtist: (artist: string | null) => void
   selectAlbum: (album: Album | null) => Promise<void>
   loadTracks: (albumArtist: string, album: string, filePath?: string) => Promise<void>
+  setCollectionType: (type: 'albums' | 'playlists') => void
+  loadPlaylists: () => Promise<void>
+  createPlaylist: (title: string) => Promise<Playlist>
+  selectPlaylist: (playlist: Playlist | null) => Promise<void>
+  loadPlaylistTracks: (playlistId: number) => Promise<void>
+  addTrackToPlaylist: (playlistId: number, filePath: string) => Promise<void>
+  addAlbumToPlaylist: (playlistId: number, albumArtist: string, album: string) => Promise<void>
+  removeTrackFromPlaylist: (playlistId: number, playlistTrackId: number) => Promise<void>
+  reorderPlaylistTracks: (playlistId: number, trackIds: number[]) => Promise<void>
+  setPlaylistFavorite: (playlistId: number, favorite: boolean) => Promise<void>
+  renamePlaylist: (playlistId: number, title: string) => Promise<void>
+  deletePlaylist: (playlistId: number) => Promise<void>
   playAlbum: (
     albumArtist: string,
     album: string,
@@ -219,7 +237,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
     selectedArtist: null,
     selectedAlbum: null,
     tracks: [],
-    tracksAlbumKey: null
+    tracksAlbumKey: null,
+    collectionType: 'albums',
+    playlists: [],
+    selectedPlaylist: null,
+    playlistTracks: []
   },
   serverStatus: 'reconnecting',
   scanStatus: 'idle',
@@ -592,6 +614,112 @@ export const useStore = create<PlayerStore>((set, get) => ({
     if (get().library.tracksAlbumKey === key) return
     const tracks = await api.getTracksForAlbum(albumArtist, album, filePath)
     set((s) => ({ library: { ...s.library, tracks, tracksAlbumKey: key } }))
+  },
+
+  setCollectionType: (type) =>
+    set((s) => ({
+      library: { ...s.library, collectionType: type, selectedPlaylist: null, playlistTracks: [] }
+    })),
+
+  loadPlaylists: async () => {
+    const playlists = await api.getPlaylists()
+    set((s) => ({ library: { ...s.library, playlists } }))
+  },
+
+  createPlaylist: async (title) => {
+    const playlist = await api.createPlaylist(title)
+    await get().loadPlaylists()
+    return playlist
+  },
+
+  selectPlaylist: async (playlist) => {
+    set((s) => ({ library: { ...s.library, selectedPlaylist: playlist, playlistTracks: [] } }))
+    if (playlist) await get().loadPlaylistTracks(playlist.id)
+  },
+
+  loadPlaylistTracks: async (playlistId) => {
+    const playlistTracks = await api.getPlaylistTracks(playlistId)
+    set((s) => ({ library: { ...s.library, playlistTracks } }))
+  },
+
+  addTrackToPlaylist: async (playlistId, filePath) => {
+    await api.addTrackToPlaylist(playlistId, filePath)
+    if (get().library.selectedPlaylist?.id === playlistId) {
+      await get().loadPlaylistTracks(playlistId)
+    }
+    await get().loadPlaylists()
+  },
+
+  addAlbumToPlaylist: async (playlistId, albumArtist, album) => {
+    await api.addAlbumToPlaylist(playlistId, albumArtist, album)
+    if (get().library.selectedPlaylist?.id === playlistId) {
+      await get().loadPlaylistTracks(playlistId)
+    }
+    await get().loadPlaylists()
+  },
+
+  removeTrackFromPlaylist: async (playlistId, playlistTrackId) => {
+    await api.removeTrackFromPlaylist(playlistId, playlistTrackId)
+    if (get().library.selectedPlaylist?.id === playlistId) {
+      await get().loadPlaylistTracks(playlistId)
+    }
+    await get().loadPlaylists()
+  },
+
+  reorderPlaylistTracks: async (playlistId, trackIds) => {
+    // Optimistic update: reorder in-place before awaiting the API call.
+    set((s) => {
+      const { playlistTracks } = s.library
+      const byId = new Map(playlistTracks.map((t) => [t.playlist_track_id, t]))
+      const reordered = trackIds
+        .map((id, pos) => {
+          const t = byId.get(id)
+          return t ? { ...t, position: pos } : null
+        })
+        .filter((t): t is PlaylistTrack => t !== null)
+      return { library: { ...s.library, playlistTracks: reordered } }
+    })
+    await api.reorderPlaylistTracks(playlistId, trackIds)
+  },
+
+  setPlaylistFavorite: async (playlistId, favorite) => {
+    await api.patchPlaylist(playlistId, { favorite })
+    await get().loadPlaylists()
+    if (get().library.selectedPlaylist?.id === playlistId) {
+      set((s) => ({
+        library: {
+          ...s.library,
+          selectedPlaylist: s.library.selectedPlaylist
+            ? { ...s.library.selectedPlaylist, favorite }
+            : null
+        }
+      }))
+    }
+  },
+
+  renamePlaylist: async (playlistId, title) => {
+    await api.patchPlaylist(playlistId, { title })
+    await get().loadPlaylists()
+    if (get().library.selectedPlaylist?.id === playlistId) {
+      set((s) => ({
+        library: {
+          ...s.library,
+          selectedPlaylist: s.library.selectedPlaylist
+            ? { ...s.library.selectedPlaylist, title }
+            : null
+        }
+      }))
+    }
+  },
+
+  deletePlaylist: async (playlistId) => {
+    await api.deletePlaylist(playlistId)
+    if (get().library.selectedPlaylist?.id === playlistId) {
+      set((s) => ({
+        library: { ...s.library, selectedPlaylist: null, playlistTracks: [] }
+      }))
+    }
+    await get().loadPlaylists()
   },
 
   playAlbum: async (albumArtist, album, trackIndex = 0, filePath = '') => {

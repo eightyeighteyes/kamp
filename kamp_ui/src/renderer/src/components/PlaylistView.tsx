@@ -81,7 +81,9 @@ export function PlaylistView(): React.JSX.Element | null {
       const deltaVh = ((ev.clientY - dragStartYRef.current) / window.innerHeight) * 100
       if (Math.abs(ev.clientY - dragStartYRef.current) > 4) didDragRef.current = true
       if (!didDragRef.current) return
-      setHeroHeightPct(Math.min(HERO_DEFAULT, Math.max(HERO_MIN, heroAtDragStartRef.current + deltaVh)))
+      setHeroHeightPct(
+        Math.min(HERO_DEFAULT, Math.max(HERO_MIN, heroAtDragStartRef.current + deltaVh))
+      )
     }
 
     const onUp = (): void => {

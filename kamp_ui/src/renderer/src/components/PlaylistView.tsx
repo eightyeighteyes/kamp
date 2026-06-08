@@ -99,7 +99,11 @@ export function PlaylistView(): React.JSX.Element | null {
   }
 
   const handleDragLeave = (e: React.DragEvent): void => {
-    e.currentTarget.classList.remove('drag-over')
+    // Only remove the indicator when the cursor leaves the row entirely,
+    // not when it moves between child elements (spans, etc.).
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      e.currentTarget.classList.remove('drag-over')
+    }
   }
 
   const handleDrop = (e: React.DragEvent, dropIdx: number): void => {

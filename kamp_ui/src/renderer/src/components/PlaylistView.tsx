@@ -117,7 +117,7 @@ export function PlaylistView(): React.JSX.Element | null {
   return (
     <div className="track-list-view">
       <div className="track-list-hero has-art">
-        <HeroImage src={playlistArtUrl(playlist.id)} />
+        <HeroImage src={playlistArtUrl(playlist.id, playlist.updated_at)} />
       </div>
       <div className="track-list-hero-overlay" />
 

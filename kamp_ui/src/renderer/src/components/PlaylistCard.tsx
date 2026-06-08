@@ -33,7 +33,7 @@ export function PlaylistCard({ playlist }: { playlist: Playlist }): React.JSX.El
       <div className={`album-art${artLoaded ? ' has-art' : ''}`}>
         <img
           className="album-art-img"
-          src={playlistArtUrl(playlist.id)}
+          src={playlistArtUrl(playlist.id, playlist.updated_at)}
           alt=""
           onLoad={() => setArtLoaded(true)}
           onError={() => setArtLoaded(false)}

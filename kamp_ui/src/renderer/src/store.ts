@@ -610,7 +610,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set((s) => ({ library: { ...s.library, selectedArtist: artist, selectedAlbum: null } })),
 
   selectAlbum: async (album) => {
-    set((s) => ({ library: { ...s.library, selectedAlbum: album }, albumEditMode: false }))
+    set((s) => ({
+      library: { ...s.library, selectedAlbum: album, collectionType: 'albums' },
+      albumEditMode: false
+    }))
     if (album) await get().loadTracks(album.album_artist, album.album, album.file_path)
   },
 

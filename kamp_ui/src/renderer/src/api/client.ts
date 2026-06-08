@@ -194,8 +194,10 @@ export const artUrl = (
   return artVersion != null ? `${withPath}&v=${artVersion}` : withPath
 }
 
-export const playlistArtUrl = (playlistId: number): string =>
-  `${BASE_URL}/api/v1/playlists/${playlistId}/art`
+export const playlistArtUrl = (playlistId: number, version?: number): string => {
+  const base = `${BASE_URL}/api/v1/playlists/${playlistId}/art`
+  return version != null ? `${base}?v=${version}` : base
+}
 
 export const getArtists = (): Promise<string[]> => get('/api/v1/artists')
 

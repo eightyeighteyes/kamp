@@ -44,10 +44,9 @@ export function PlaylistView(): React.JSX.Element | null {
   const renamePlaylist = useStore((s) => s.renamePlaylist)
   const currentTrack = useStore((s) => s.player.current_track)
   const playing = useStore((s) => s.player.playing)
-  const queuePosition = useStore((s) => s.queue?.position ?? -1)
+  const playPlaylist = useStore((s) => s.playPlaylist)
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
-  const skipToQueueTrack = useStore((s) => s.skipToQueueTrack)
   const configValues = useStore((s) => s.configValues)
   const connected = configValues?.['bandcamp.connected'] ?? false
 
@@ -132,16 +131,11 @@ export function PlaylistView(): React.JSX.Element | null {
     })()
   }
 
-  // Insert all tracks next and immediately start playing the first one.
+  // Replace the queue with the playlist tracks and start playing, matching
+  // album-view behaviour (uses the dedicated play-playlist server endpoint).
   const handlePlay = (): void => {
     if (playlistTracks.length === 0) return
-    const insertAfter = queuePosition
-    void (async () => {
-      for (let i = playlistTracks.length - 1; i >= 0; i--) {
-        await playNext(playlistTracks[i].file_path)
-      }
-      await skipToQueueTrack(insertAfter + 1)
-    })()
+    void playPlaylist(playlist.id)
   }
 
   const handleAddToQueue = (): void => {

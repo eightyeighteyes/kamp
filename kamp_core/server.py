@@ -226,6 +226,10 @@ class PlayRequest(BaseModel):
     file_path: str = ""  # non-empty for missing-album tracks
 
 
+class PlayPlaylistRequest(BaseModel):
+    playlist_id: int
+
+
 class SeekRequest(BaseModel):
     position: float
 
@@ -2695,6 +2699,24 @@ def create_app(
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.load(tracks, start_index=req.track_index)
+        current = queue.current()
+        if current:
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
+        _notify_track_changed()
+        _drain_unlocked(old_current, old_lookahead)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/play-playlist")
+    def play_playlist(req: PlayPlaylistRequest) -> dict[str, Any]:
+        if index.get_playlist(req.playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        tracks = index.tracks_for_playlist(req.playlist_id)
+        if not tracks:
+            return {"ok": True}
+        old_current = queue.current()
+        old_lookahead = queue.peek_next()
+        queue.load(tracks, start_index=0)
         current = queue.current()
         if current:
             engine.play(_resolve_playback(current))

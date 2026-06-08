@@ -2470,6 +2470,20 @@ class LibraryIndex:
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
+    def tracks_for_playlist(self, playlist_id: int) -> list[Track]:
+        """Return Track objects for a playlist in playlist order."""
+        rows = self._conn.execute(
+            """
+            SELECT t.*
+            FROM playlist_tracks pt
+            JOIN tracks t ON t.file_path = pt.file_path
+            WHERE pt.playlist_id = ?
+            ORDER BY pt.position ASC
+            """,
+            (playlist_id,),
+        ).fetchall()
+        return [_row_to_track(r) for r in rows]
+
     def indexed_paths(self) -> set[Path]:
         """Return the set of local file paths currently in the index.
 

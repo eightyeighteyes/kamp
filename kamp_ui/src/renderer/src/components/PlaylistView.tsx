@@ -39,8 +39,10 @@ export function PlaylistView(): React.JSX.Element | null {
   const renamePlaylist = useStore((s) => s.renamePlaylist)
   const currentTrack = useStore((s) => s.player.current_track)
   const playing = useStore((s) => s.player.playing)
-  const playAlbumNext = useStore((s) => s.playAlbumNext)
-  const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
+  const queuePosition = useStore((s) => s.queue?.position ?? -1)
+  const playNext = useStore((s) => s.playNext)
+  const addToQueue = useStore((s) => s.addToQueue)
+  const skipToQueueTrack = useStore((s) => s.skipToQueueTrack)
   const configValues = useStore((s) => s.configValues)
   const connected = configValues?.['bandcamp.connected'] ?? false
 
@@ -69,18 +71,35 @@ export function PlaylistView(): React.JSX.Element | null {
     setEditingTitle(false)
   }
 
-  // Playlist playback: use the first track's album/artist as a proxy,
-  // or — for multi-source playlists — queue all file_paths sequentially.
-  // For now, route through addAlbumToQueue using the playlist's file paths
-  // by playing each track as individual path adds. A simpler UX: play first track.
-  const handlePlay = (): void => {
+  // Insert all playlist tracks at "play next" position. playNext always inserts at
+  // currentPosition+1, so iterating in reverse lands them in the correct order.
+  const handlePlayNext = (): void => {
     if (playlistTracks.length === 0) return
-    const first = playlistTracks[0]
-    void playAlbumNext(first.album_artist, first.album, first.file_path)
+    void (async () => {
+      for (let i = playlistTracks.length - 1; i >= 0; i--) {
+        await playNext(playlistTracks[i].file_path)
+      }
+    })()
   }
 
-  const handleAddNext = (): void => {
-    playlistTracks.forEach((t) => void addAlbumToQueue(t.album_artist, t.album, t.file_path))
+  // Insert all tracks next and immediately start playing the first one.
+  const handlePlay = (): void => {
+    if (playlistTracks.length === 0) return
+    const insertAfter = queuePosition
+    void (async () => {
+      for (let i = playlistTracks.length - 1; i >= 0; i--) {
+        await playNext(playlistTracks[i].file_path)
+      }
+      await skipToQueueTrack(insertAfter + 1)
+    })()
+  }
+
+  const handleAddToQueue = (): void => {
+    void (async () => {
+      for (const t of playlistTracks) {
+        await addToQueue(t.file_path)
+      }
+    })()
   }
 
   // Drag-to-reorder handlers
@@ -181,11 +200,15 @@ export function PlaylistView(): React.JSX.Element | null {
             <button
               className="album-secondary-btn"
               aria-label="Add all to queue"
-              onClick={handleAddNext}
+              onClick={handleAddToQueue}
             >
               <QueueAddIcon size={16} />
             </button>
-            <button className="album-secondary-btn" aria-label="Play all next" onClick={handlePlay}>
+            <button
+              className="album-secondary-btn"
+              aria-label="Play all next"
+              onClick={handlePlayNext}
+            >
               <PlayNextIcon size={16} />
             </button>
             <button className="play-all-btn" aria-label="Play" onClick={handlePlay}>

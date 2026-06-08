@@ -14,7 +14,13 @@ interface Props {
   onRemoveFromPlaylist?: () => void
 }
 
-export function TrackContextMenu({ x, y, track, onClose, onRemoveFromPlaylist }: Props): React.JSX.Element {
+export function TrackContextMenu({
+  x,
+  y,
+  track,
+  onClose,
+  onRemoveFromPlaylist
+}: Props): React.JSX.Element {
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
   const setFavorite = useStore((s) => s.setFavorite)

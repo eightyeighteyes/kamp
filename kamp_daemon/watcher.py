@@ -447,21 +447,12 @@ class _LibraryHandler(FileSystemEventHandler):
     def _fire(self) -> None:
         with self._lock:
             self._pending = None
-            # Leave _batch_start set until after _on_scan() returns so that
-            # any _schedule() calls arriving in the window between releasing
-            # this lock and calling _on_scan() extend the existing batch
-            # (elapsed += current time) rather than starting a fresh one
-            # with elapsed = 0. Without this guard, a concurrent event could
-            # reset _batch_start to None, create a second timer, and produce
-            # a spurious double-scan call.
+            self._batch_start = None
         logger.info("Library change detected — triggering re-scan")
         try:
             self._on_scan()
         except Exception:
             logger.exception("Unhandled error in library re-scan")
-        finally:
-            with self._lock:
-                self._batch_start = None
 
     def cancel_pending(self) -> None:
         """Cancel any pending debounce timer without firing the scan."""

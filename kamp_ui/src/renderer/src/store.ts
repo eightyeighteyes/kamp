@@ -885,6 +885,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
           }
         : s.searchResults
     }))
+    // Patch playlist track list so the heart updates without a reload.
+    set((s) => ({
+      library: {
+        ...s.library,
+        playlistTracks: s.library.playlistTracks.map((t) =>
+          t.id === track.id ? { ...t, favorite } : t
+        )
+      }
+    }))
     // Reload the open album track list so the heart in track rows updates.
     await get().refreshOpenAlbum()
   },
@@ -920,6 +929,14 @@ export const useStore = create<PlayerStore>((set, get) => ({
             tracks: s.searchResults.tracks.map((t) => (ids.has(t.id) ? { ...t, favorite } : t))
           }
         : s.searchResults
+    }))
+    set((s) => ({
+      library: {
+        ...s.library,
+        playlistTracks: s.library.playlistTracks.map((t) =>
+          ids.has(t.id) ? { ...t, favorite } : t
+        )
+      }
     }))
     await get().refreshOpenAlbum()
   },

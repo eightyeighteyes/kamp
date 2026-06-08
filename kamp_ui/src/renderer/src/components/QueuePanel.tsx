@@ -12,6 +12,7 @@ const QUEUE_WIDTH_DEFAULT = 280
 
 const QUEUE_DROP_TYPES = new Set([
   'text/kamp-track-path',
+  'text/kamp-file-paths',
   'text/kamp-album',
   'text/kamp-queue-idx',
   'text/kamp-playlist'
@@ -204,6 +205,15 @@ export function QueuePanel(): React.JSX.Element {
       if (from !== dropIdx) void moveQueueTrack(from, dropIdx)
     } else if (trackPath) {
       void insertIntoQueue(trackPath, dropIdx)
+    } else if (e.dataTransfer.getData('text/kamp-file-paths')) {
+      try {
+        const paths: string[] = JSON.parse(e.dataTransfer.getData('text/kamp-file-paths'))
+        void (async () => {
+          for (let i = 0; i < paths.length; i++) await insertIntoQueue(paths[i], dropIdx + i)
+        })()
+      } catch {
+        // malformed — ignore
+      }
     } else if (albumJson) {
       try {
         const {
@@ -249,6 +259,15 @@ export function QueuePanel(): React.JSX.Element {
       if (from !== last) void moveQueueTrack(from, last)
     } else if (trackPath) {
       void addToQueue(trackPath)
+    } else if (e.dataTransfer.getData('text/kamp-file-paths')) {
+      try {
+        const paths: string[] = JSON.parse(e.dataTransfer.getData('text/kamp-file-paths'))
+        void (async () => {
+          for (const p of paths) await addToQueue(p)
+        })()
+      } catch {
+        // malformed — ignore
+      }
     } else if (albumJson) {
       try {
         const {

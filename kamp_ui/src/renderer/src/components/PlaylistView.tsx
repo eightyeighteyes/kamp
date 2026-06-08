@@ -201,8 +201,11 @@ export function PlaylistView(): React.JSX.Element | null {
     const isMulti = selectedIndices.has(idx) && selectedIndices.size > 1
     if (isMulti) {
       const sorted = [...selectedIndices].sort((a, b) => a - b)
+      const paths = sorted.map((i) => playlistTracks[i].file_path)
       e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
       e.dataTransfer.setData('text/kamp-playlist-multi', JSON.stringify(sorted))
+      // Also set queue-compatible types so drops onto the queue panel work.
+      e.dataTransfer.setData('text/kamp-file-paths', JSON.stringify(paths))
       const ghost = document.createElement('div')
       ghost.textContent = `${sorted.length} tracks`
       ghost.style.cssText =
@@ -214,6 +217,8 @@ export function PlaylistView(): React.JSX.Element | null {
       setSelectedIndices(new Set())
       setAnchorIdx(null)
       e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
+      // Also set the queue-compatible single-path type.
+      e.dataTransfer.setData('text/kamp-track-path', playlistTracks[idx].file_path)
     }
     e.dataTransfer.effectAllowed = 'move'
   }

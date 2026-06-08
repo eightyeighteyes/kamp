@@ -27,13 +27,23 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
   const markAlbumDownloading = useStore((s) => s.markAlbumDownloading)
   const showFlashToast = useStore((s) => s.showFlashToast)
   const playlists = useStore((s) => s.library.playlists)
-  const addAlbumToPlaylist = useStore((s) => s.addAlbumToPlaylist)
+  const addTrackToPlaylist = useStore((s) => s.addTrackToPlaylist)
   const createPlaylist = useStore((s) => s.createPlaylist)
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
 
+  // Fetch tracks client-side so the full file_path list is available.
+  // This handles missing-album tracks (keyed by file_path, not album_artist+album)
+  // and avoids the server-side tracks_for_album path which has no file_path fallback.
+  const addAlbumTracksToPlaylist = async (playlistId: number): Promise<void> => {
+    const tracks = await getTracksForAlbum(album.album_artist, album.album, album.file_path)
+    for (const t of tracks) {
+      await addTrackToPlaylist(playlistId, t.file_path)
+    }
+  }
+
   const handleAddToPlaylist = (playlistId: number): void => {
-    void addAlbumToPlaylist(playlistId, album.album_artist, album.album)
+    void addAlbumTracksToPlaylist(playlistId)
     onClose()
   }
 
@@ -41,11 +51,9 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
     onClose()
     void (async () => {
       const pl = await createPlaylist('New Playlist')
-      // Navigate first so the user sees the playlist immediately;
-      // then add the tracks in the background.
       setCollectionType('playlists')
       await selectPlaylist(pl)
-      await addAlbumToPlaylist(pl.id, album.album_artist, album.album)
+      await addAlbumTracksToPlaylist(pl.id)
     })()
   }
 

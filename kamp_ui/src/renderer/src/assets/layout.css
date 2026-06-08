@@ -351,6 +351,7 @@ html[data-platform='win32'] .view-tabs {
    Restore the inset on .library-view itself, then pull .track-list-view back
    out with a matching negative margin so the hero still bleeds edge-to-edge. */
 .main-content:has(.view-pane--active .track-list-view) .library-view {
+  height: 100%;
   padding: 0 16px;
 }
 

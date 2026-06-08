@@ -3,9 +3,10 @@
 .library-view {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  /* Height of the sticky selector rail — used to offset the album-grid-toolbar
-     so it sticks immediately below the selector instead of under it. */
+  /* No fixed height — lets .library-view grow with its content so that
+     position:sticky on .library-collection-selector works for the full
+     scroll extent. The track-list context restores height:100% via
+     layout.css so the hero fills the viewport there. */
   --selector-h: 29px;
 }
 

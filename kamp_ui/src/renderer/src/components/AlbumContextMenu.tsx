@@ -3,7 +3,9 @@ import { useStore } from '../store'
 import { getTracksForAlbum, downloadAlbum } from '../api/client'
 import type { Album } from '../api/client'
 import { ContextMenu } from './ContextMenu'
+import { ContextMenuSubmenu } from './ContextMenuSubmenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
+import { truncateTitle } from '../utils/truncateTitle'
 import {
   DownloadArrowIcon,
   FavoriteIcon,
@@ -25,6 +27,40 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
   const setAlbumFavorite = useStore((s) => s.setAlbumFavorite)
   const markAlbumDownloading = useStore((s) => s.markAlbumDownloading)
   const showFlashToast = useStore((s) => s.showFlashToast)
+  const playlists = useStore((s) => s.library.playlists)
+  const addTrackToPlaylist = useStore((s) => s.addTrackToPlaylist)
+  const createPlaylist = useStore((s) => s.createPlaylist)
+  const selectPlaylist = useStore((s) => s.selectPlaylist)
+  const setCollectionType = useStore((s) => s.setCollectionType)
+  const setActiveView = useStore((s) => s.setActiveView)
+
+  // Fetch tracks client-side so the full file_path list is available.
+  // This handles missing-album tracks (keyed by file_path, not album_artist+album)
+  // and avoids the server-side tracks_for_album path which has no file_path fallback.
+  const addAlbumTracksToPlaylist = async (playlistId: number): Promise<void> => {
+    const tracks = await getTracksForAlbum(album.album_artist, album.album, album.file_path)
+    for (const t of tracks) {
+      await addTrackToPlaylist(playlistId, t.file_path)
+    }
+  }
+
+  const handleAddToPlaylist = (playlistId: number): void => {
+    void addAlbumTracksToPlaylist(playlistId)
+    const pl = playlists.find((p) => p.id === playlistId)
+    if (pl) showFlashToast(`Added to ${truncateTitle(pl.title, 35)}`)
+    onClose()
+  }
+
+  const handleNewPlaylist = (): void => {
+    onClose()
+    void (async () => {
+      const pl = await createPlaylist('New Playlist')
+      void setActiveView('library')
+      setCollectionType('playlists')
+      await selectPlaylist(pl)
+      await addAlbumTracksToPlaylist(pl.id)
+    })()
+  }
 
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
@@ -119,6 +155,21 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           Download this album
         </button>
       )}
+      <ContextMenuSubmenu label="Add to Playlist">
+        {playlists.map((pl) => (
+          <button
+            key={pl.id}
+            className="track-context-menu-item"
+            onClick={() => handleAddToPlaylist(pl.id)}
+          >
+            {truncateTitle(pl.title)}
+          </button>
+        ))}
+        {playlists.length > 0 && <div className="track-context-menu-divider" />}
+        <button className="track-context-menu-item" onClick={handleNewPlaylist}>
+          New Playlist
+        </button>
+      </ContextMenuSubmenu>
       {album.source === 'local' && (
         <button
           className="track-context-menu-item"

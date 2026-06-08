@@ -659,6 +659,14 @@
   color: var(--accent);
 }
 
+.track-row.drag-over {
+  border-top: 2px solid var(--accent);
+}
+
+.track-row.selected {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .track-row-fav {
   display: flex;
   align-items: center;

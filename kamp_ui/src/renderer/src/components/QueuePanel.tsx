@@ -5,24 +5,20 @@ import { TOOLTIPS } from '../tooltipStrings'
 import { QueueContextMenu } from './QueueContextMenu'
 import { FavoriteIcon, WarnIcon } from './TransportIcons'
 import type { Track } from '../api/client'
+import { computeNewOrder } from '../utils/computeNewOrder'
 
 const QUEUE_WIDTH_KEY = 'kamp:queue-width'
 const QUEUE_WIDTH_DEFAULT = 280
 
-const QUEUE_DROP_TYPES = new Set(['text/kamp-track-path', 'text/kamp-album', 'text/kamp-queue-idx'])
+const QUEUE_DROP_TYPES = new Set([
+  'text/kamp-track-path',
+  'text/kamp-file-paths',
+  'text/kamp-album',
+  'text/kamp-queue-idx',
+  'text/kamp-playlist'
+])
 function isQueueDrop(types: DOMStringList | readonly string[]): boolean {
   return Array.from(types).some((t) => QUEUE_DROP_TYPES.has(t))
-}
-
-// dropIdx is the display index of the <li> the user dropped onto (same semantics
-// as moveQueueTrack's to_index — matches the existing pop-then-insert behaviour).
-// For tail-drop (empty space below rows) call with dropIdx = trackCount.
-function computeNewOrder(trackCount: number, selectedIdxs: number[], dropIdx: number): number[] {
-  const selected = new Set(selectedIdxs)
-  const unselected = Array.from({ length: trackCount }, (_, i) => i).filter((i) => !selected.has(i))
-  // Math.min handles tail-drop (dropIdx === trackCount) without an off-by-one
-  const insertPos = Math.min(dropIdx, unselected.length)
-  return [...unselected.slice(0, insertPos), ...selectedIdxs, ...unselected.slice(insertPos)]
 }
 
 type ContextMenu = {
@@ -44,6 +40,7 @@ export function QueuePanel(): React.JSX.Element {
   const insertIntoQueue = useStore((s) => s.insertIntoQueue)
   const insertAlbumAt = useStore((s) => s.insertAlbumAt)
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
+  const loadPlaylistTracks = useStore((s) => s.loadPlaylistTracks)
   const configValues = useStore((s) => s.configValues)
   const bandcampConnected = configValues?.['bandcamp.connected'] ?? false
   // listRef is on the Next Up <ol> — used for queue-tail-drop visual
@@ -208,6 +205,15 @@ export function QueuePanel(): React.JSX.Element {
       if (from !== dropIdx) void moveQueueTrack(from, dropIdx)
     } else if (trackPath) {
       void insertIntoQueue(trackPath, dropIdx)
+    } else if (e.dataTransfer.getData('text/kamp-file-paths')) {
+      try {
+        const paths: string[] = JSON.parse(e.dataTransfer.getData('text/kamp-file-paths'))
+        void (async () => {
+          for (let i = 0; i < paths.length; i++) await insertIntoQueue(paths[i], dropIdx + i)
+        })()
+      } catch {
+        // malformed — ignore
+      }
     } else if (albumJson) {
       try {
         const {
@@ -222,6 +228,15 @@ export function QueuePanel(): React.JSX.Element {
         void insertAlbumAt(album_artist, album, dropIdx, file_path)
       } catch {
         // malformed drag data — ignore
+      }
+    } else {
+      const playlistIdStr = e.dataTransfer.getData('text/kamp-playlist')
+      if (playlistIdStr) {
+        void (async () => {
+          await loadPlaylistTracks(Number(playlistIdStr))
+          const paths = useStore.getState().library.playlistTracks.map((t) => t.file_path)
+          for (let i = 0; i < paths.length; i++) await insertIntoQueue(paths[i], dropIdx + i)
+        })()
       }
     }
   }
@@ -244,6 +259,15 @@ export function QueuePanel(): React.JSX.Element {
       if (from !== last) void moveQueueTrack(from, last)
     } else if (trackPath) {
       void addToQueue(trackPath)
+    } else if (e.dataTransfer.getData('text/kamp-file-paths')) {
+      try {
+        const paths: string[] = JSON.parse(e.dataTransfer.getData('text/kamp-file-paths'))
+        void (async () => {
+          for (const p of paths) await addToQueue(p)
+        })()
+      } catch {
+        // malformed — ignore
+      }
     } else if (albumJson) {
       try {
         const {
@@ -258,6 +282,15 @@ export function QueuePanel(): React.JSX.Element {
         void addAlbumToQueue(album_artist, album, file_path)
       } catch {
         // malformed drag data — ignore
+      }
+    } else {
+      const playlistIdStr = e.dataTransfer.getData('text/kamp-playlist')
+      if (playlistIdStr) {
+        void (async () => {
+          await loadPlaylistTracks(Number(playlistIdStr))
+          const paths = useStore.getState().library.playlistTracks.map((t) => t.file_path)
+          for (const p of paths) await addToQueue(p)
+        })()
       }
     }
   }
@@ -328,7 +361,9 @@ export function QueuePanel(): React.JSX.Element {
         }}
         onDragLeave={(e) => {
           e.stopPropagation()
-          e.currentTarget.classList.remove('drag-over')
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            e.currentTarget.classList.remove('drag-over')
+          }
         }}
         onDrop={(e) => handleDrop(e, idx)}
         onDoubleClick={() => void skipToQueueTrack(idx)}

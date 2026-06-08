@@ -1,6 +1,8 @@
 import React from 'react'
 import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
+import { ContextMenuSubmenu } from './ContextMenuSubmenu'
+import { truncateTitle } from '../utils/truncateTitle'
 import {
   FavoriteIcon,
   GoToAlbumIcon,
@@ -44,6 +46,36 @@ export function QueueContextMenu({
   const reorderQueue = useStore((s) => s.reorderQueue)
   const queueLength = useStore((s) => s.queue?.tracks.length ?? 0)
   const setFavorites = useStore((s) => s.setFavorites)
+  const playlists = useStore((s) => s.library.playlists)
+  const addTrackToPlaylist = useStore((s) => s.addTrackToPlaylist)
+  const createPlaylist = useStore((s) => s.createPlaylist)
+  const selectPlaylist = useStore((s) => s.selectPlaylist)
+  const setCollectionType = useStore((s) => s.setCollectionType)
+  const showFlashToast = useStore((s) => s.showFlashToast)
+
+  // Targets for playlist operations: all selected tracks, or the right-clicked
+  // track alone when there is no selection (consistent with favorites/remove).
+  const playlistTargets = selectedTracks.length > 0 ? selectedTracks : track ? [track] : []
+
+  const handleAddToPlaylist = (playlistId: number): void => {
+    playlistTargets.forEach((t) => void addTrackToPlaylist(playlistId, t.file_path))
+    const pl = playlists.find((p) => p.id === playlistId)
+    if (pl) showFlashToast(`Added to ${truncateTitle(pl.title, 35)}`)
+    onClose()
+  }
+
+  const handleNewPlaylist = (): void => {
+    if (playlistTargets.length === 0) return
+    onClose()
+    void (async () => {
+      const pl = await createPlaylist('New Playlist')
+      setCollectionType('playlists')
+      await selectPlaylist(pl)
+      for (const t of playlistTargets) {
+        await addTrackToPlaylist(pl.id, t.file_path)
+      }
+    })()
+  }
 
   // For the favorites label: apply to all selected; label reflects majority state.
   const allFavorited = selectedTracks.length > 0 && selectedTracks.every((t) => t.favorite)
@@ -132,6 +164,21 @@ export function QueueContextMenu({
               {allFavorited ? 'Remove from Favorites' : 'Add to Favorites'}
             </button>
           )}
+          <ContextMenuSubmenu label="Add to Playlist">
+            {playlists.map((pl) => (
+              <button
+                key={pl.id}
+                className="track-context-menu-item"
+                onClick={() => handleAddToPlaylist(pl.id)}
+              >
+                {truncateTitle(pl.title)}
+              </button>
+            ))}
+            {playlists.length > 0 && <div className="track-context-menu-divider" />}
+            <button className="track-context-menu-item" onClick={handleNewPlaylist}>
+              New Playlist
+            </button>
+          </ContextMenuSubmenu>
           {unplayedSelectedIndices.length > 0 && position >= 0 && (
             <button
               className="track-context-menu-item"

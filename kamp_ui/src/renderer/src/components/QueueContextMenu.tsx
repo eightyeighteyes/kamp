@@ -2,6 +2,7 @@ import React from 'react'
 import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
 import { ContextMenuSubmenu } from './ContextMenuSubmenu'
+import { truncateTitle } from '../utils/truncateTitle'
 import {
   FavoriteIcon,
   GoToAlbumIcon,
@@ -161,7 +162,7 @@ export function QueueContextMenu({
                 className="track-context-menu-item"
                 onClick={() => handleAddToPlaylist(pl.id)}
               >
-                {pl.title}
+                {truncateTitle(pl.title)}
               </button>
             ))}
             {playlists.length > 0 && <div className="track-context-menu-divider" />}

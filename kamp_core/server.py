@@ -562,10 +562,43 @@ _PLAYLIST_ART_TEMPLATE = """\
   <circle cx="100" cy="100" r="22.5" fill="none" stroke="#8a5515" stroke-width="0.6" stroke-dasharray="2.5 2"/>
   <!-- Title sits above the spindle hole (hole top y≈96.5); baseline at y=95 clears the hole -->
   <text x="100" y="95" text-anchor="middle" fill="#1c1a16"
-        font-size="5.5" font-weight="700" letter-spacing="0.5"
+        font-size="__FONT_SIZE__" font-weight="700" letter-spacing="0.5"
         font-family="sans-serif">__TITLE__</text>
   <circle cx="100" cy="100" r="3.5" fill="#141414"/>
 </svg>"""
+
+
+def _fit_playlist_label(title: str) -> tuple[str, str]:
+    """Return (display_text, font_size_str) to fit *title* in the vinyl label.
+
+    Available width above the spindle hole is ~44 SVG units (inner dashed ring
+    chord at y=95).  Per-char advance ≈ font_size * 0.6 + letter_spacing (0.5).
+    Font is capped at [3.5, 5.5]; titles that would require a smaller font are
+    truncated with a single ellipsis character.
+    """
+    MAX_FONT = 5.5
+    MIN_FONT = 3.5
+    LABEL_WIDTH = 44.0
+    LETTER_SPACING = 0.5
+    CHAR_FACTOR = 0.6  # average char width as a fraction of font-size
+
+    n = len(title)
+    if n == 0:
+        return title, f"{MAX_FONT:.1f}"
+
+    # Font size that makes n chars exactly fill the label width.
+    ideal = (LABEL_WIDTH / n - LETTER_SPACING) / CHAR_FACTOR
+
+    if ideal >= MAX_FONT:
+        return title, f"{MAX_FONT:.1f}"
+
+    if ideal >= MIN_FONT:
+        # Round to one decimal so the SVG attribute doesn't change on every minor length change.
+        return title, f"{round(ideal * 10) / 10:.1f}"
+
+    # Title is too long even at the minimum legible font — truncate.
+    max_chars = int(LABEL_WIDTH / (MIN_FONT * CHAR_FACTOR + LETTER_SPACING))  # ≈ 16
+    return title[: max_chars - 1] + "…", f"{MIN_FONT:.1f}"
 
 
 # OS metadata filenames that macOS (and Windows) drop into every directory.
@@ -3127,10 +3160,10 @@ def create_app(
         pl = index.get_playlist(playlist_id)
         if pl is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
-        title = pl["title"]
-        # Truncate to 12 chars so it fits within the 44px-diameter record label.
-        display = title if len(title) <= 12 else title[:11] + "…"
-        svg = _PLAYLIST_ART_TEMPLATE.replace("__TITLE__", display)
+        display, font_size = _fit_playlist_label(pl["title"])
+        svg = _PLAYLIST_ART_TEMPLATE.replace("__TITLE__", display).replace(
+            "__FONT_SIZE__", font_size
+        )
         return Response(content=svg, media_type="image/svg+xml")
 
     # -----------------------------------------------------------------------

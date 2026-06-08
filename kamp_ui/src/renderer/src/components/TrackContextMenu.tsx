@@ -5,6 +5,7 @@ import { ContextMenuSubmenu } from './ContextMenuSubmenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
 import { FavoriteIcon, PlayNextIcon, QueueAddIcon } from './TransportIcons'
 import type { Track } from '../api/client'
+import { truncateTitle } from '../utils/truncateTitle'
 
 interface Props {
   x: number
@@ -98,7 +99,7 @@ export function TrackContextMenu({
             className="track-context-menu-item"
             onClick={() => handleAddToPlaylist(pl.id)}
           >
-            {pl.title}
+            {truncateTitle(pl.title)}
           </button>
         ))}
         {playlists.length > 0 && <div className="track-context-menu-divider" />}

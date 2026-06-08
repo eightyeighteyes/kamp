@@ -4,6 +4,7 @@ import { playlistArtUrl } from '../api/client'
 import type { PlaylistTrack } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
 import { computeNewOrder } from '../utils/computeNewOrder'
+import { truncateTitle } from '../utils/truncateTitle'
 import {
   FavoriteIcon,
   PauseIcon,
@@ -149,7 +150,7 @@ export function PlaylistView(): React.JSX.Element | null {
         <span className="breadcrumb-sep" aria-hidden="true">
           ›
         </span>
-        <span>{playlist.title}</span>
+        <span title={playlist.title}>{truncateTitle(playlist.title)}</span>
       </nav>
 
       <div className="track-list-identity">

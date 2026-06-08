@@ -5,6 +5,7 @@ import type { Album } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { ContextMenuSubmenu } from './ContextMenuSubmenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
+import { truncateTitle } from '../utils/truncateTitle'
 import {
   DownloadArrowIcon,
   FavoriteIcon,
@@ -159,7 +160,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
             className="track-context-menu-item"
             onClick={() => handleAddToPlaylist(pl.id)}
           >
-            {pl.title}
+            {truncateTitle(pl.title)}
           </button>
         ))}
         {playlists.length > 0 && <div className="track-context-menu-divider" />}

@@ -15,6 +15,10 @@ import {
 } from './TransportIcons'
 import { formatTime } from '../utils/formatTime'
 
+const HERO_DEFAULT = 45
+const HERO_MIN = 15
+const HERO_KEY = 'kamp:playlist-hero-height-pct'
+
 type TrackMenu = { x: number; y: number; track: PlaylistTrack }
 
 function HeroImage({ src }: { src: string }): React.JSX.Element {
@@ -50,13 +54,56 @@ export function PlaylistView(): React.JSX.Element | null {
   const [menu, setMenu] = useState<TrackMenu | null>(null)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
-  const titleInputRef = useRef<HTMLInputElement>(null)
+  const [heroHeightPct, setHeroHeightPct] = useState<number>(() => {
+    const saved = parseFloat(localStorage.getItem(HERO_KEY) ?? '')
+    return isNaN(saved) ? HERO_DEFAULT : Math.min(HERO_DEFAULT, Math.max(HERO_MIN, saved))
+  })
+  const [isResizing, setIsResizing] = useState(false)
 
+  const titleInputRef = useRef<HTMLInputElement>(null)
   const dragFromIdx = useRef<number | null>(null)
+  const didDragRef = useRef(false)
+  const dragStartYRef = useRef(0)
+  const heroAtDragStartRef = useRef(HERO_DEFAULT)
 
   if (!playlist) return null
 
   const totalDuration = playlistTracks.reduce((sum, t) => sum + (t.duration || 0), 0)
+
+  const handleResizeMouseDown = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    didDragRef.current = false
+    dragStartYRef.current = e.clientY
+    heroAtDragStartRef.current = heroHeightPct
+    setIsResizing(true)
+
+    const onMove = (ev: MouseEvent): void => {
+      const deltaVh = ((ev.clientY - dragStartYRef.current) / window.innerHeight) * 100
+      if (Math.abs(ev.clientY - dragStartYRef.current) > 4) didDragRef.current = true
+      if (!didDragRef.current) return
+      setHeroHeightPct(Math.min(HERO_DEFAULT, Math.max(HERO_MIN, heroAtDragStartRef.current + deltaVh)))
+    }
+
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setIsResizing(false)
+      if (didDragRef.current) {
+        setHeroHeightPct((h) => {
+          localStorage.setItem(HERO_KEY, String(Math.round(h)))
+          return h
+        })
+      }
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const handleResizeReset = (): void => {
+    setHeroHeightPct(HERO_DEFAULT)
+    localStorage.setItem(HERO_KEY, String(HERO_DEFAULT))
+  }
 
   const handleTitleDoubleClick = (): void => {
     setTitleDraft(playlist.title)
@@ -139,7 +186,10 @@ export function PlaylistView(): React.JSX.Element | null {
   }
 
   return (
-    <div className="track-list-view">
+    <div
+      className={`track-list-view${isResizing ? ' track-list-view--resizing' : ''}`}
+      style={{ '--hero-height-pct': heroHeightPct } as React.CSSProperties}
+    >
       <div className="track-list-hero has-art">
         <HeroImage src={playlistArtUrl(playlist.id, playlist.updated_at)} />
       </div>
@@ -225,7 +275,12 @@ export function PlaylistView(): React.JSX.Element | null {
         </div>
       </div>
 
-      <div className="track-list-divider" />
+      <button
+        className="album-meta-toggle"
+        aria-label="Resize hero"
+        onMouseDown={handleResizeMouseDown}
+        onDoubleClick={handleResizeReset}
+      />
 
       <div className="track-list-body">
         <ol className="track-rows">

@@ -52,19 +52,25 @@ export function QueueContextMenu({
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
 
+  // Targets for playlist operations: all selected tracks, or the right-clicked
+  // track alone when there is no selection (consistent with favorites/remove).
+  const playlistTargets = selectedTracks.length > 0 ? selectedTracks : track ? [track] : []
+
   const handleAddToPlaylist = (playlistId: number): void => {
-    if (track) void addTrackToPlaylist(playlistId, track.file_path)
+    playlistTargets.forEach((t) => void addTrackToPlaylist(playlistId, t.file_path))
     onClose()
   }
 
   const handleNewPlaylist = (): void => {
-    if (!track) return
+    if (playlistTargets.length === 0) return
     onClose()
     void (async () => {
       const pl = await createPlaylist('New Playlist')
       setCollectionType('playlists')
       await selectPlaylist(pl)
-      await addTrackToPlaylist(pl.id, track.file_path)
+      for (const t of playlistTargets) {
+        await addTrackToPlaylist(pl.id, t.file_path)
+      }
     })()
   }
 

@@ -704,14 +704,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     await api.patchPlaylist(playlistId, { favorite })
     await get().loadPlaylists()
     if (get().library.selectedPlaylist?.id === playlistId) {
-      set((s) => ({
-        library: {
-          ...s.library,
-          selectedPlaylist: s.library.selectedPlaylist
-            ? { ...s.library.selectedPlaylist, favorite }
-            : null
-        }
-      }))
+      const fresh = get().library.playlists.find((p) => p.id === playlistId) ?? null
+      set((s) => ({ library: { ...s.library, selectedPlaylist: fresh } }))
     }
   },
 
@@ -719,14 +713,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
     await api.patchPlaylist(playlistId, { title })
     await get().loadPlaylists()
     if (get().library.selectedPlaylist?.id === playlistId) {
-      set((s) => ({
-        library: {
-          ...s.library,
-          selectedPlaylist: s.library.selectedPlaylist
-            ? { ...s.library.selectedPlaylist, title }
-            : null
-        }
-      }))
+      // Replace selectedPlaylist from the freshly loaded list so updated_at
+      // is current — the art URL includes updated_at for cache-busting.
+      const fresh = get().library.playlists.find((p) => p.id === playlistId) ?? null
+      set((s) => ({ library: { ...s.library, selectedPlaylist: fresh } }))
     }
   },
 

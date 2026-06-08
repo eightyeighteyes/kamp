@@ -318,7 +318,9 @@ export function QueuePanel(): React.JSX.Element {
         }}
         onDragLeave={(e) => {
           e.stopPropagation()
-          e.currentTarget.classList.remove('drag-over')
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            e.currentTarget.classList.remove('drag-over')
+          }
         }}
         onDrop={(e) => handleDrop(e, idx)}
         onDoubleClick={() => void skipToQueueTrack(idx)}

@@ -560,8 +560,8 @@ _PLAYLIST_ART_TEMPLATE = """\
   <circle cx="100" cy="100" r="26" fill="#bf7a20"/>
   <circle cx="100" cy="100" r="26" fill="none" stroke="#8a5515" stroke-width="1"/>
   <circle cx="100" cy="100" r="22.5" fill="none" stroke="#8a5515" stroke-width="0.6" stroke-dasharray="2.5 2"/>
-  <!-- Title sits below the spindle hole (hole edge y≈103.5); y=112 clears it by ~8px at this font size -->
-  <text x="100" y="112" text-anchor="middle" fill="#1c1a16"
+  <!-- Title sits above the spindle hole (hole top y≈96.5); baseline at y=95 clears the hole -->
+  <text x="100" y="95" text-anchor="middle" fill="#1c1a16"
         font-size="5.5" font-weight="700" letter-spacing="0.5"
         font-family="sans-serif">__TITLE__</text>
   <circle cx="100" cy="100" r="3.5" fill="#141414"/>

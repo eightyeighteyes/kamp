@@ -7,7 +7,7 @@ import type { Playlist } from '../api/client'
 const PLAYLIST_SORT_OPTIONS = [
   { key: 'title', label: 'Name' },
   { key: 'track_count', label: 'Track Count' },
-  { key: 'updated_at', label: 'Last Updated' },
+  { key: 'updated_at', label: 'Last Updated' }
 ]
 
 type PlaylistSortOrder = 'title' | 'track_count' | 'updated_at'

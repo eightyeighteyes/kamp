@@ -1,29 +1,30 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { useStore } from '../store'
+import { SortAscIcon, SortDescIcon } from './TransportIcons'
 
-type SortOrder = 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
+export type SortOption = { key: string; label: string }
 
-const SORT_OPTIONS: SortOrder[] = [
-  'album_artist',
-  'album',
-  'date_added',
-  'last_played',
-  'most_played'
-]
-
-const SORT_LABELS: Record<SortOrder, string> = {
-  album_artist: 'Artist',
-  album: 'Album',
-  date_added: 'Date Added',
-  last_played: 'Last Played',
-  most_played: 'Most Played'
+interface Props {
+  value: string
+  options: SortOption[]
+  dir: 'asc' | 'desc'
+  onChange: (key: string) => void
+  onDirChange: (dir: 'asc' | 'desc') => void
+  /** Hide the asc/desc toggle (e.g. when the current sort has no meaningful direction). */
+  showDir?: boolean
 }
 
-export function SortControl(): React.JSX.Element {
-  const sortOrder = useStore((s) => s.sortOrder)
-  const setSortOrder = useStore((s) => s.setSortOrder)
+export function SortControl({
+  value,
+  options,
+  dir,
+  onChange,
+  onDirChange,
+  showDir = true
+}: Props): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+
+  const currentLabel = options.find((o) => o.key === value)?.label ?? options[0]?.label ?? 'Sort'
 
   useEffect(() => {
     if (!open) return
@@ -35,38 +36,50 @@ export function SortControl(): React.JSX.Element {
   }, [open])
 
   return (
-    <div className="sort-anchor" ref={ref}>
-      <button
-        className="toolbar-dropdown-trigger"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-      >
-        {`Sort: ${SORT_LABELS[sortOrder as SortOrder] ?? SORT_LABELS.album_artist}`}
-        <span className="dropdown-chevron" aria-hidden="true">
-          ▾
-        </span>
-      </button>
-      {open && (
-        <div className="toolbar-dropdown-popover" role="listbox" aria-label="Sort by">
-          {SORT_OPTIONS.map((key) => (
-            <button
-              key={key}
-              role="option"
-              aria-selected={sortOrder === key}
-              className={`toolbar-dropdown-item${sortOrder === key ? ' active' : ''}`}
-              onClick={() => {
-                setSortOrder(key)
-                setOpen(false)
-              }}
-            >
-              <span className="dropdown-check" aria-hidden="true">
-                {sortOrder === key ? '✓' : ''}
-              </span>
-              {SORT_LABELS[key]}
-            </button>
-          ))}
-        </div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      <div className="sort-anchor" ref={ref}>
+        <button
+          className="toolbar-dropdown-trigger"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+        >
+          {`Sort: ${currentLabel}`}
+          <span className="dropdown-chevron" aria-hidden="true">
+            ▾
+          </span>
+        </button>
+        {open && (
+          <div className="toolbar-dropdown-popover" role="listbox" aria-label="Sort by">
+            {options.map((opt) => (
+              <button
+                key={opt.key}
+                role="option"
+                aria-selected={value === opt.key}
+                className={`toolbar-dropdown-item${value === opt.key ? ' active' : ''}`}
+                onClick={() => {
+                  onChange(opt.key)
+                  setOpen(false)
+                }}
+              >
+                <span className="dropdown-check" aria-hidden="true">
+                  {value === opt.key ? '✓' : ''}
+                </span>
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {showDir && (
+        <button
+          className="toolbar-dropdown-trigger sort-dir-btn"
+          title={dir === 'asc' ? 'Ascending — click to reverse' : 'Descending — click to reverse'}
+          aria-label={dir === 'asc' ? 'Sort ascending' : 'Sort descending'}
+          onClick={() => onDirChange(dir === 'asc' ? 'desc' : 'asc')}
+        >
+          {dir === 'asc' ? <SortAscIcon size={10} /> : <SortDescIcon size={10} />}
+        </button>
       )}
     </div>
   )

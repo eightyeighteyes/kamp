@@ -92,6 +92,7 @@ export type Playlist = {
 export type PlaylistTrack = Track & {
   playlist_track_id: number
   position: number
+  last_played: number | null
 }
 
 // Configurable base URL: defaults to localhost but can be overridden via
@@ -176,8 +177,10 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 // Library
 // ---------------------------------------------------------------------------
 
-export const getAlbums = (sort = 'album_artist'): Promise<Album[]> =>
-  get(`/api/v1/albums?sort=${encodeURIComponent(sort)}`)
+export const getAlbums = (sort = 'album_artist', dir = ''): Promise<Album[]> =>
+  get(
+    `/api/v1/albums?sort=${encodeURIComponent(sort)}${dir ? `&direction=${encodeURIComponent(dir)}` : ''}`
+  )
 
 // Returns the URL for an album's cover art; load it in an <img> src.
 // The server returns 404 when no art is embedded — handle with onError.
@@ -236,6 +239,7 @@ export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
 export type UiState = {
   active_view: 'library' | 'now-playing' | 'home'
   sort_order: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
+  sort_dir: 'asc' | 'desc'
   queue_panel_open: boolean
 }
 
@@ -244,8 +248,10 @@ export const setActiveViewApi = (
   view: 'library' | 'now-playing' | 'home'
 ): Promise<{ ok: boolean }> => post('/api/v1/ui/active-view', { view })
 export const setSortOrderApi = (
-  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
-): Promise<{ ok: boolean }> => post('/api/v1/ui/sort-order', { sort_order: sortOrder })
+  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played',
+  sortDir: 'asc' | 'desc'
+): Promise<{ ok: boolean }> =>
+  post('/api/v1/ui/sort-order', { sort_order: sortOrder, sort_dir: sortDir })
 export const setQueuePanelApi = (open: boolean): Promise<{ ok: boolean }> =>
   post('/api/v1/ui/queue-panel', { open })
 
@@ -718,6 +724,9 @@ export async function applyAlbumArtLocal(
 
 export const playPlaylist = (playlistId: number, startIndex = 0): Promise<void> =>
   post('/api/v1/player/play-playlist', { playlist_id: playlistId, start_index: startIndex })
+
+export const playFiles = (filePaths: string[], startIndex = 0): Promise<void> =>
+  post('/api/v1/player/play-files', { file_paths: filePaths, start_index: startIndex })
 
 export const getPlaylists = (): Promise<Playlist[]> => get('/api/v1/playlists')
 

@@ -261,6 +261,33 @@ class TestAlbumsEndpoint:
         album = c.get("/api/v1/albums").json()[0]
         assert album["art_version"] == pytest.approx(1234567.0)
 
+    def test_direction_param_forwarded_to_index(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.albums.return_value = []
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        c.get("/api/v1/albums?sort=date_added&direction=asc")
+        mock_index.albums.assert_called_with(sort="date_added", sort_dir="asc")
+
+    def test_empty_direction_passes_none_to_index(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.albums.return_value = []
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        c.get("/api/v1/albums?sort=album_artist")
+        mock_index.albums.assert_called_with(sort="album_artist", sort_dir=None)
+
+    def test_invalid_direction_ignored(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.albums.return_value = []
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        c.get("/api/v1/albums?direction=sideways")
+        mock_index.albums.assert_called_with(sort="album_artist", sort_dir=None)
+
 
 class TestAlbumArtEndpoint:
     def test_returns_art_bytes_when_embedded(
@@ -1688,7 +1715,36 @@ class TestUiStateEndpoints:
             on_ui_state_set=callback,
         )
         TestClient(app).post("/api/v1/ui/sort-order", json={"sort_order": "date_added"})
-        callback.assert_called_once_with("ui.sort_order", "date_added")
+        callback.assert_called_with("ui.sort_order", "date_added")
+
+    def test_get_ui_state_includes_sort_dir(self, client: TestClient) -> None:
+        data = client.get("/api/v1/ui").json()
+        assert "sort_dir" in data
+        assert data["sort_dir"] == "asc"
+
+    def test_set_sort_order_persists_sort_dir(self, client: TestClient) -> None:
+        client.post(
+            "/api/v1/ui/sort-order",
+            json={"sort_order": "date_added", "sort_dir": "asc"},
+        )
+        assert client.get("/api/v1/ui").json()["sort_dir"] == "asc"
+
+    def test_set_sort_order_without_sort_dir_leaves_dir_unchanged(
+        self, client: TestClient
+    ) -> None:
+        client.post(
+            "/api/v1/ui/sort-order",
+            json={"sort_order": "date_added", "sort_dir": "desc"},
+        )
+        client.post("/api/v1/ui/sort-order", json={"sort_order": "album_artist"})
+        assert client.get("/api/v1/ui").json()["sort_dir"] == "desc"
+
+    def test_set_sort_order_invalid_sort_dir_ignored(self, client: TestClient) -> None:
+        client.post(
+            "/api/v1/ui/sort-order",
+            json={"sort_order": "album_artist", "sort_dir": "sideways"},
+        )
+        assert client.get("/api/v1/ui").json()["sort_dir"] == "asc"
 
 
 # ---------------------------------------------------------------------------

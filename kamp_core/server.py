@@ -231,6 +231,11 @@ class PlayPlaylistRequest(BaseModel):
     start_index: int = 0
 
 
+class PlayFilesRequest(BaseModel):
+    file_paths: list[str]
+    start_index: int = 0
+
+
 class SeekRequest(BaseModel):
     position: float
 
@@ -513,6 +518,7 @@ class PlaylistTrackOut(BaseModel):
     label: str
     favorite: bool
     play_count: int
+    last_played: float | None = None
     source: str
     is_available: bool
     duration: float
@@ -691,6 +697,7 @@ def create_app(
         },
         "ui_active_view": ui_active_view,
         "ui_sort_order": ui_sort_order,
+        "ui_sort_dir": "asc",
         "ui_queue_panel_open": ui_queue_panel_open,
         "library_version": 0,
         "config": dict(config_values) if config_values is not None else {},
@@ -916,7 +923,9 @@ def create_app(
     # -----------------------------------------------------------------------
 
     @app.get("/api/v1/albums", response_model=list[AlbumOut])
-    def get_albums(sort: str = "album_artist") -> list[AlbumOut]:
+    def get_albums(sort: str = "album_artist", direction: str = "") -> list[AlbumOut]:
+        # direction="" means use the natural per-key default (historical behaviour).
+        sort_dir = direction if direction in ("asc", "desc") else None
         return [
             AlbumOut(
                 album_artist=a.album_artist,
@@ -938,7 +947,7 @@ def create_app(
                 is_preorder=a.is_preorder,
                 album_url=a.album_url,
             )
-            for a in index.albums(sort=sort)
+            for a in index.albums(sort=sort, sort_dir=sort_dir)
         ]
 
     @app.get("/api/v1/artists", response_model=list[str])
@@ -2368,6 +2377,7 @@ def create_app(
         return {
             "active_view": _state["ui_active_view"],
             "sort_order": _state["ui_sort_order"],
+            "sort_dir": _state["ui_sort_dir"],
             "queue_panel_open": bool(_state["ui_queue_panel_open"]),
         }
 
@@ -2393,6 +2403,11 @@ def create_app(
         _state["ui_sort_order"] = sort
         if on_ui_state_set is not None:
             on_ui_state_set("ui.sort_order", sort)
+        sort_dir = req.get("sort_dir", "")
+        if sort_dir in ("asc", "desc"):
+            _state["ui_sort_dir"] = sort_dir
+            if on_ui_state_set is not None:
+                on_ui_state_set("ui.sort_dir", sort_dir)
         return {"ok": True}
 
     @app.post("/api/v1/ui/queue-panel")
@@ -2713,6 +2728,30 @@ def create_app(
         if index.get_playlist(req.playlist_id) is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
         tracks = index.tracks_for_playlist(req.playlist_id)
+        if not tracks:
+            return {"ok": True}
+        old_current = queue.current()
+        old_lookahead = queue.peek_next()
+        start = max(0, min(req.start_index, len(tracks) - 1))
+        queue.load(tracks, start_index=start)
+        current = queue.current()
+        if current:
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
+        _notify_track_changed()
+        _drain_unlocked(old_current, old_lookahead)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/play-files")
+    def play_files(req: PlayFilesRequest) -> dict[str, Any]:
+        """Replace the queue with an explicit ordered list of file paths.
+
+        Used when the client holds an ordered list (e.g. a sorted playlist
+        view) that differs from the stored playlist order.
+        """
+        tracks = [
+            t for p in req.file_paths if (t := index.get_track_by_path(p)) is not None
+        ]
         if not tracks:
             return {"ok": True}
         old_current = queue.current()

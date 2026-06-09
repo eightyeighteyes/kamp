@@ -107,6 +107,14 @@
   border-color: var(--accent-dim);
 }
 
+/* Direction toggle sits immediately after the sort dropdown. */
+.sort-dir-btn {
+  padding: 3px 6px;
+  font-size: 13px;
+  min-width: 26px;
+  justify-content: center;
+}
+
 .toolbar-dropdown-badge {
   color: var(--accent);
   font-variant-numeric: tabular-nums;

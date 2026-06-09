@@ -314,17 +314,28 @@ def _get_date_added(path: Path) -> float | None:
 
 # Mapping from public sort key → SQL ORDER BY clause used in albums().
 # Keys are validated against this dict so no user input reaches the query.
+# {dir} is replaced with ASC or DESC at query time via albums(sort_dir=...).
+# Only the primary sort field carries the direction; the album_artist tiebreaker
+# is always ASC so results are deterministic regardless of chosen direction.
 _SORT_CLAUSES: dict[str, str] = {
-    "album_artist": "album_artist COLLATE NOCASE, album COLLATE NOCASE",
-    "album": "album COLLATE NOCASE, album_artist COLLATE NOCASE",
-    # Newest first (largest timestamp); NULLs sort last in DESC.
-    # These reference the sort_date_added / sort_last_played columns produced
-    # by the UNION ALL query in albums() (aliases for MIN/MAX in the grouped
-    # part and the raw value in the single-track missing-album part).
-    "date_added": "sort_date_added DESC, album_artist COLLATE NOCASE",
-    "last_played": "sort_last_played DESC, album_artist COLLATE NOCASE",
-    # Highest average plays per track first; NULLs (unplayed) sort last via COALESCE.
-    "most_played": "sort_play_count_avg DESC, album_artist COLLATE NOCASE",
+    "album_artist": "album_artist COLLATE NOCASE {dir}, album COLLATE NOCASE",
+    "album": "album COLLATE NOCASE {dir}, album_artist COLLATE NOCASE",
+    # These reference the sort_date_added / sort_last_played / sort_play_count_avg
+    # columns produced by the UNION ALL query in albums().
+    "date_added": "sort_date_added {dir}, album_artist COLLATE NOCASE",
+    "last_played": "sort_last_played {dir}, album_artist COLLATE NOCASE",
+    "most_played": "sort_play_count_avg {dir}, album_artist COLLATE NOCASE",
+}
+
+# Natural default direction per sort key — used when sort_dir is not provided.
+# Text sorts default to ascending (A→Z); date/play sorts to descending
+# (newest/most first), preserving the historical behaviour.
+_DEFAULT_SORT_DIR: dict[str, str] = {
+    "album_artist": "ASC",
+    "album": "ASC",
+    "date_added": "DESC",
+    "last_played": "DESC",
+    "most_played": "DESC",
 }
 
 
@@ -2317,7 +2328,9 @@ class LibraryIndex:
         )
         self._conn.commit()
 
-    def albums(self, sort: str = "album_artist") -> list[AlbumInfo]:
+    def albums(
+        self, sort: str = "album_artist", sort_dir: str | None = None
+    ) -> list[AlbumInfo]:
         """Return one AlbumInfo per album (named albums from the albums table,
         plus one virtual entry per track that has no album tag).
 
@@ -2327,10 +2340,19 @@ class LibraryIndex:
         via a UNION ALL branch, unchanged from the pre-KAMP-418 behaviour.
 
         *sort* must be one of: ``album_artist`` (default), ``album``,
-        ``date_added``, ``last_played``.  Unknown values fall back to
-        ``album_artist`` so callers never have to guard against bad input.
+        ``date_added``, ``last_played``, ``most_played``.  Unknown values fall
+        back to ``album_artist``.
+
+        *sort_dir* must be ``"asc"`` or ``"desc"``; ``None`` (default) uses the
+        natural direction for the chosen sort key (ASC for text fields, DESC for
+        date/play fields) so the historical ordering is preserved.
         """
-        order_by = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
+        clause = _SORT_CLAUSES.get(sort, _SORT_CLAUSES["album_artist"])
+        if sort_dir in ("asc", "desc"):
+            dir_sql = sort_dir.upper()
+        else:
+            dir_sql = _DEFAULT_SORT_DIR.get(sort, "ASC")
+        order_by = clause.format(dir=dir_sql)
         rows = self._conn.execute(f"""
             SELECT
                 a.id                AS album_id,
@@ -2933,7 +2955,7 @@ class LibraryIndex:
                    t.id, t.file_path, t.title, t.artist, t.album_artist, t.album,
                    t.year, t.track_number, t.disc_number, t.ext, t.embedded_art,
                    t.mb_release_id, t.mb_recording_id, t.genre, t.label,
-                   t.favorite, t.play_count, t.source, t.is_available, t.duration
+                   t.favorite, t.play_count, t.last_played, t.source, t.is_available, t.duration
             FROM playlist_tracks pt
             JOIN tracks t ON t.file_path = pt.file_path
             WHERE pt.playlist_id = ?
@@ -2962,6 +2984,7 @@ class LibraryIndex:
                 "label": r["label"],
                 "favorite": bool(r["favorite"]),
                 "play_count": r["play_count"],
+                "last_played": r["last_played"],
                 "source": r["source"],
                 "is_available": bool(r["is_available"]),
                 "duration": r["duration"],

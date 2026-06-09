@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { playlistArtUrl } from '../api/client'
 import type { PlaylistTrack } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
+import { SortControl } from './SortControl'
 import { computeNewOrder } from '../utils/computeNewOrder'
 import { truncateTitle } from '../utils/truncateTitle'
 import {
@@ -18,6 +19,83 @@ import { formatTime } from '../utils/formatTime'
 const HERO_DEFAULT = 45
 const HERO_MIN = 15
 const HERO_KEY = 'kamp:playlist-hero-height-pct'
+
+const TRACK_SORT_OPTIONS = [
+  { key: 'position', label: 'Playlist Order' },
+  { key: 'title', label: 'Title' },
+  { key: 'artist', label: 'Artist' },
+  { key: 'album', label: 'Album' },
+  { key: 'duration', label: 'Duration' },
+  { key: 'last_played', label: 'Last Played' },
+  { key: 'most_played', label: 'Most Played' }
+]
+
+type TrackSortOrder =
+  | 'position'
+  | 'title'
+  | 'artist'
+  | 'album'
+  | 'duration'
+  | 'last_played'
+  | 'most_played'
+
+function sortKey(playlistId: number): string {
+  return `kamp:playlist:${playlistId}:sort`
+}
+
+function loadTrackSort(playlistId: number): { order: TrackSortOrder; dir: 'asc' | 'desc' } {
+  try {
+    const raw = localStorage.getItem(sortKey(playlistId))
+    if (raw) {
+      const parsed = JSON.parse(raw) as { order: TrackSortOrder; dir: 'asc' | 'desc' }
+      if (parsed.order && parsed.dir) return parsed
+    }
+  } catch {
+    // ignore malformed storage
+  }
+  return { order: 'position', dir: 'asc' }
+}
+
+function applySortToTracks(
+  tracks: PlaylistTrack[],
+  order: TrackSortOrder,
+  dir: 'asc' | 'desc'
+): PlaylistTrack[] {
+  if (order === 'position') return tracks
+  const sorted = [...tracks].sort((a, b) => {
+    let cmp = 0
+    switch (order) {
+      case 'title':
+        cmp = a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
+        break
+      case 'artist':
+        cmp = a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+        break
+      case 'album':
+        cmp = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+        break
+      case 'duration':
+        cmp = a.duration - b.duration
+        break
+      case 'last_played': {
+        // Unplayed tracks always sort last regardless of direction, so return
+        // early to bypass the dir === 'desc' ? -cmp : cmp sign-flip at the end.
+        const aT = a.last_played
+        const bT = b.last_played
+        if (aT === null && bT === null) return 0
+        if (aT === null) return 1 // a always last
+        if (bT === null) return -1 // b always last
+        cmp = aT - bT
+        break
+      }
+      case 'most_played':
+        cmp = a.play_count - b.play_count
+        break
+    }
+    return dir === 'desc' ? -cmp : cmp
+  })
+  return sorted
+}
 
 type TrackMenu = { x: number; y: number; track: PlaylistTrack }
 
@@ -45,6 +123,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const currentTrack = useStore((s) => s.player.current_track)
   const playing = useStore((s) => s.player.playing)
   const playPlaylist = useStore((s) => s.playPlaylist)
+  const playFiles = useStore((s) => s.playFiles)
   const togglePlayPause = useStore((s) => s.togglePlayPause)
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
@@ -69,14 +148,53 @@ export function PlaylistView(): React.JSX.Element | null {
   const heroAtDragStartRef = useRef(HERO_DEFAULT)
   const pendingSingleSelect = useRef<number | null>(null)
 
-  // Clear selection when tracks are added or removed so indices don't go stale.
+  // Per-playlist sort state — loaded from localStorage when playlist changes.
+  const playlistId = playlist?.id ?? 0
+  const storedSort = loadTrackSort(playlistId)
+  const [trackSortOrder, setTrackSortOrder] = useState<TrackSortOrder>(storedSort.order)
+  const [trackSortDir, setTrackSortDir] = useState<'asc' | 'desc'>(storedSort.dir)
+
+  // Reload sort state when navigating to a different playlist.
+  useEffect(() => {
+    if (!playlist) return
+    const s = loadTrackSort(playlist.id)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTrackSortOrder(s.order)
+    setTrackSortDir(s.dir)
+  }, [playlist])
+
+  // Clear selection when tracks change or sort changes (display indices shift).
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedIndices(new Set())
     setAnchorIdx(null)
-  }, [playlistTracks.length])
+  }, [playlistTracks.length, trackSortOrder])
 
   if (!playlist) return null
+
+  const persistTrackSort = (order: TrackSortOrder, dir: 'asc' | 'desc'): void => {
+    try {
+      localStorage.setItem(sortKey(playlist.id), JSON.stringify({ order, dir }))
+    } catch {
+      // ignore
+    }
+  }
+
+  const handleTrackSortChange = (key: string): void => {
+    const order = key as TrackSortOrder
+    setTrackSortOrder(order)
+    persistTrackSort(order, trackSortDir)
+  }
+
+  const handleTrackDirChange = (dir: 'asc' | 'desc'): void => {
+    setTrackSortDir(dir)
+    persistTrackSort(trackSortOrder, dir)
+  }
+
+  // Apply sort for display only. When not in playlist-order mode,
+  // drag-to-reorder is disabled (it's nonsensical on a sorted view).
+  const displayTracks = applySortToTracks(playlistTracks, trackSortOrder, trackSortDir)
+  const isDragEnabled = trackSortOrder === 'position'
 
   const totalDuration = playlistTracks.reduce((sum, t) => sum + (t.duration || 0), 0)
 
@@ -194,18 +312,21 @@ export function PlaylistView(): React.JSX.Element | null {
     }
   }
 
-  // Drag-to-reorder handlers
+  // Drag handlers — always fire so queue drops work even when sorted.
+  // Playlist-internal reorder data (kamp-playlist-*) is only set when
+  // isDragEnabled; the queue-compatible types are always set.
   const handleDragStart = (e: React.DragEvent, idx: number): void => {
     pendingSingleSelect.current = null
     dragFromIdx.current = idx
     const isMulti = selectedIndices.has(idx) && selectedIndices.size > 1
     if (isMulti) {
       const sorted = [...selectedIndices].sort((a, b) => a - b)
-      const paths = sorted.map((i) => playlistTracks[i].file_path)
-      e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
-      e.dataTransfer.setData('text/kamp-playlist-multi', JSON.stringify(sorted))
-      // Also set queue-compatible types so drops onto the queue panel work.
+      const paths = sorted.map((i) => displayTracks[i].file_path)
       e.dataTransfer.setData('text/kamp-file-paths', JSON.stringify(paths))
+      if (isDragEnabled) {
+        e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
+        e.dataTransfer.setData('text/kamp-playlist-multi', JSON.stringify(sorted))
+      }
       const ghost = document.createElement('div')
       ghost.textContent = `${sorted.length} tracks`
       ghost.style.cssText =
@@ -216,9 +337,10 @@ export function PlaylistView(): React.JSX.Element | null {
     } else {
       setSelectedIndices(new Set())
       setAnchorIdx(null)
-      e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
-      // Also set the queue-compatible single-path type.
-      e.dataTransfer.setData('text/kamp-track-path', playlistTracks[idx].file_path)
+      e.dataTransfer.setData('text/kamp-track-path', displayTracks[idx].file_path)
+      if (isDragEnabled) {
+        e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
+      }
     }
     e.dataTransfer.effectAllowed = 'move'
   }
@@ -364,9 +486,20 @@ export function PlaylistView(): React.JSX.Element | null {
         onDoubleClick={handleResizeReset}
       />
 
+      <div className="album-grid-toolbar" style={{ margin: '0 -16px', padding: '0 16px' }}>
+        <SortControl
+          value={trackSortOrder}
+          options={TRACK_SORT_OPTIONS}
+          dir={trackSortDir}
+          onChange={handleTrackSortChange}
+          onDirChange={handleTrackDirChange}
+          showDir={trackSortOrder !== 'position'}
+        />
+      </div>
+
       <div className="track-list-body">
         <ol className="track-rows">
-          {playlistTracks.map((track, i) => {
+          {displayTracks.map((track, i) => {
             const isCurrent = currentTrack?.file_path === track.file_path
             const isRemote = track.source !== 'local'
             const isOffline = isRemote && !connected
@@ -388,22 +521,37 @@ export function PlaylistView(): React.JSX.Element | null {
                 onMouseUp={() => handleRowMouseUp(i)}
                 onDragStart={(e) => handleDragStart(e, i)}
                 onDragEnd={handleDragEnd}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(e, i)}
+                onDragOver={isDragEnabled ? handleDragOver : undefined}
+                onDragLeave={isDragEnabled ? handleDragLeave : undefined}
+                onDrop={isDragEnabled ? (e) => handleDrop(e, i) : undefined}
                 onDoubleClick={() => {
                   if (isOffline) return
                   if (isCurrent) {
                     void togglePlayPause()
-                  } else {
+                  } else if (isDragEnabled) {
+                    // Playlist order — i maps directly to stored position
                     void playPlaylist(playlist.id, i)
+                  } else {
+                    // Sorted view — queue in display order so the right track plays
+                    void playFiles(
+                      displayTracks.map((t) => t.file_path),
+                      i
+                    )
                   }
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter') return
                   if (isOffline) return
-                  if (isCurrent) void togglePlayPause()
-                  else void playPlaylist(playlist.id, i)
+                  if (isCurrent) {
+                    void togglePlayPause()
+                  } else if (isDragEnabled) {
+                    void playPlaylist(playlist.id, i)
+                  } else {
+                    void playFiles(
+                      displayTracks.map((t) => t.file_path),
+                      i
+                    )
+                  }
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault()
@@ -460,7 +608,7 @@ export function PlaylistView(): React.JSX.Element | null {
           track={menu.track}
           selectedTracks={
             selectedIndices.size > 1
-              ? [...selectedIndices].sort((a, b) => a - b).map((i) => playlistTracks[i])
+              ? [...selectedIndices].sort((a, b) => a - b).map((i) => displayTracks[i])
               : undefined
           }
           onClose={() => setMenu(null)}
@@ -469,7 +617,7 @@ export function PlaylistView(): React.JSX.Element | null {
               selectedIndices.size > 0
                 ? [...selectedIndices]
                     .sort((a, b) => b - a)
-                    .map((i) => playlistTracks[i].playlist_track_id)
+                    .map((i) => displayTracks[i].playlist_track_id)
                 : [menu.track.playlist_track_id]
             targets.forEach((ptId) => void removeTrackFromPlaylist(playlist.id, ptId))
           }}

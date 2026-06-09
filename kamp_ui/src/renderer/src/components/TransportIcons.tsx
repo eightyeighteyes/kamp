@@ -303,3 +303,19 @@ export function ShareIcon({ size = 24 }: IconProps): React.JSX.Element {
     </svg>
   )
 }
+
+export function SortAscIcon({ size = 12 }: IconProps): React.JSX.Element {
+  return (
+    <svg width={size} height={size} {...FILL_PROPS}>
+      <path d="M12 5 L20 19 L4 19 Z" />
+    </svg>
+  )
+}
+
+export function SortDescIcon({ size = 12 }: IconProps): React.JSX.Element {
+  return (
+    <svg width={size} height={size} {...FILL_PROPS}>
+      <path d="M12 19 L4 5 L20 5 Z" />
+    </svg>
+  )
+}

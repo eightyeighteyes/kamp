@@ -25,7 +25,7 @@ const TRACK_SORT_OPTIONS = [
   { key: 'title', label: 'Title' },
   { key: 'artist', label: 'Artist' },
   { key: 'album', label: 'Album' },
-  { key: 'duration', label: 'Duration' },
+  { key: 'duration', label: 'Duration' }
 ]
 
 type TrackSortOrder = 'position' | 'title' | 'artist' | 'album' | 'duration'
@@ -131,6 +131,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const [trackSortDir, setTrackSortDir] = useState<'asc' | 'desc'>(storedSort.dir)
 
   // Reload sort state when navigating to a different playlist.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!playlist) return
     const s = loadTrackSort(playlist.id)

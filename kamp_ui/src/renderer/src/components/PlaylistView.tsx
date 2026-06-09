@@ -288,18 +288,21 @@ export function PlaylistView(): React.JSX.Element | null {
     }
   }
 
-  // Drag-to-reorder handlers
+  // Drag handlers — always fire so queue drops work even when sorted.
+  // Playlist-internal reorder data (kamp-playlist-*) is only set when
+  // isDragEnabled; the queue-compatible types are always set.
   const handleDragStart = (e: React.DragEvent, idx: number): void => {
     pendingSingleSelect.current = null
     dragFromIdx.current = idx
     const isMulti = selectedIndices.has(idx) && selectedIndices.size > 1
     if (isMulti) {
       const sorted = [...selectedIndices].sort((a, b) => a - b)
-      const paths = sorted.map((i) => playlistTracks[i].file_path)
-      e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
-      e.dataTransfer.setData('text/kamp-playlist-multi', JSON.stringify(sorted))
-      // Also set queue-compatible types so drops onto the queue panel work.
+      const paths = sorted.map((i) => displayTracks[i].file_path)
       e.dataTransfer.setData('text/kamp-file-paths', JSON.stringify(paths))
+      if (isDragEnabled) {
+        e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
+        e.dataTransfer.setData('text/kamp-playlist-multi', JSON.stringify(sorted))
+      }
       const ghost = document.createElement('div')
       ghost.textContent = `${sorted.length} tracks`
       ghost.style.cssText =
@@ -310,9 +313,10 @@ export function PlaylistView(): React.JSX.Element | null {
     } else {
       setSelectedIndices(new Set())
       setAnchorIdx(null)
-      e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
-      // Also set the queue-compatible single-path type.
-      e.dataTransfer.setData('text/kamp-track-path', playlistTracks[idx].file_path)
+      e.dataTransfer.setData('text/kamp-track-path', displayTracks[idx].file_path)
+      if (isDragEnabled) {
+        e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
+      }
     }
     e.dataTransfer.effectAllowed = 'move'
   }
@@ -487,11 +491,11 @@ export function PlaylistView(): React.JSX.Element | null {
                   .filter(Boolean)
                   .join(' ')}
                 tabIndex={0}
-                draggable={isDragEnabled}
+                draggable
                 onMouseDown={(e) => handleRowMouseDown(e, i)}
                 onMouseUp={() => handleRowMouseUp(i)}
-                onDragStart={isDragEnabled ? (e) => handleDragStart(e, i) : undefined}
-                onDragEnd={isDragEnabled ? handleDragEnd : undefined}
+                onDragStart={(e) => handleDragStart(e, i)}
+                onDragEnd={handleDragEnd}
                 onDragOver={isDragEnabled ? handleDragOver : undefined}
                 onDragLeave={isDragEnabled ? handleDragLeave : undefined}
                 onDrop={isDragEnabled ? (e) => handleDrop(e, i) : undefined}

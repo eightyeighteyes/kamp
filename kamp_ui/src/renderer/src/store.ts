@@ -77,6 +77,7 @@ type PlayerStore = {
   albumMetaExpanded: boolean
   albumRenameProgress: { done: number; total: number } | null
   sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
+  sortDir: 'asc' | 'desc'
   libraryFilter: string[]
   searchQuery: string
   searchResults: SearchResult | null
@@ -98,6 +99,7 @@ type PlayerStore = {
   setSortOrder: (
     sort: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
   ) => Promise<void>
+  setSortDir: (dir: 'asc' | 'desc') => Promise<void>
   setLibraryFilter: (filters: string[]) => void
   setActiveView: (view: 'library' | 'now-playing' | 'home') => Promise<void>
   setModuleOrder: (ids: string[]) => void
@@ -311,6 +313,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   albumMetaExpanded: localStorage.getItem('kamp:meta-expanded') === 'true',
   albumRenameProgress: null,
   sortOrder: 'album_artist',
+  sortDir: 'asc',
   libraryFilter: [],
   searchQuery: '',
   searchResults: null,
@@ -354,14 +357,29 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   setSortOrder: async (sort) => {
-    set({ sortOrder: sort })
+    // Reset direction to the natural default for the new sort key so the
+    // results make intuitive sense (e.g. "Date Added" → newest first).
+    const naturalDir: 'asc' | 'desc' = ['date_added', 'last_played', 'most_played'].includes(sort)
+      ? 'desc'
+      : 'asc'
+    set({ sortOrder: sort, sortDir: naturalDir })
     await get().loadLibrary()
     const q = get().searchQuery
     if (q.trim()) await get().setSearchQuery(q)
     try {
-      await api.setSortOrderApi(sort)
+      await api.setSortOrderApi(sort, naturalDir)
     } catch {
       // Best-effort — preference is already applied locally.
+    }
+  },
+
+  setSortDir: async (dir) => {
+    set({ sortDir: dir })
+    await get().loadLibrary()
+    try {
+      await api.setSortOrderApi(get().sortOrder, dir)
+    } catch {
+      // Best-effort.
     }
   },
 
@@ -547,6 +565,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
       set({
         activeView: ui.active_view,
         sortOrder: ui.sort_order,
+        sortDir: ui.sort_dir ?? 'asc',
         queueVisible: ui.queue_panel_open
       })
     } catch {
@@ -567,8 +586,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
   loadLibrary: async () => {
     try {
       const sort = get().sortOrder
+      const dir = get().sortDir
       const [albums, artists, playlists] = await Promise.all([
-        api.getAlbums(sort),
+        api.getAlbums(sort, dir),
         api.getArtists(),
         api.getPlaylists()
       ])

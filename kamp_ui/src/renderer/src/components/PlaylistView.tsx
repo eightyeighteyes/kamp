@@ -131,14 +131,13 @@ export function PlaylistView(): React.JSX.Element | null {
   const [trackSortDir, setTrackSortDir] = useState<'asc' | 'desc'>(storedSort.dir)
 
   // Reload sort state when navigating to a different playlist.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!playlist) return
     const s = loadTrackSort(playlist.id)
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setTrackSortOrder(s.order)
     setTrackSortDir(s.dir)
-  }, [playlist?.id])
+  }, [playlist])
 
   // Clear selection when tracks change or sort changes (display indices shift).
   useEffect(() => {

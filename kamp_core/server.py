@@ -231,6 +231,11 @@ class PlayPlaylistRequest(BaseModel):
     start_index: int = 0
 
 
+class PlayFilesRequest(BaseModel):
+    file_paths: list[str]
+    start_index: int = 0
+
+
 class SeekRequest(BaseModel):
     position: float
 
@@ -2723,6 +2728,30 @@ def create_app(
         if index.get_playlist(req.playlist_id) is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
         tracks = index.tracks_for_playlist(req.playlist_id)
+        if not tracks:
+            return {"ok": True}
+        old_current = queue.current()
+        old_lookahead = queue.peek_next()
+        start = max(0, min(req.start_index, len(tracks) - 1))
+        queue.load(tracks, start_index=start)
+        current = queue.current()
+        if current:
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
+        _notify_track_changed()
+        _drain_unlocked(old_current, old_lookahead)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/play-files")
+    def play_files(req: PlayFilesRequest) -> dict[str, Any]:
+        """Replace the queue with an explicit ordered list of file paths.
+
+        Used when the client holds an ordered list (e.g. a sorted playlist
+        view) that differs from the stored playlist order.
+        """
+        tracks = [
+            t for p in req.file_paths if (t := index.get_track_by_path(p)) is not None
+        ]
         if not tracks:
             return {"ok": True}
         old_current = queue.current()

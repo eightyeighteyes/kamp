@@ -123,6 +123,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const currentTrack = useStore((s) => s.player.current_track)
   const playing = useStore((s) => s.player.playing)
   const playPlaylist = useStore((s) => s.playPlaylist)
+  const playFiles = useStore((s) => s.playFiles)
   const togglePlayPause = useStore((s) => s.togglePlayPause)
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
@@ -527,15 +528,30 @@ export function PlaylistView(): React.JSX.Element | null {
                   if (isOffline) return
                   if (isCurrent) {
                     void togglePlayPause()
-                  } else {
+                  } else if (isDragEnabled) {
+                    // Playlist order — i maps directly to stored position
                     void playPlaylist(playlist.id, i)
+                  } else {
+                    // Sorted view — queue in display order so the right track plays
+                    void playFiles(
+                      displayTracks.map((t) => t.file_path),
+                      i
+                    )
                   }
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter') return
                   if (isOffline) return
-                  if (isCurrent) void togglePlayPause()
-                  else void playPlaylist(playlist.id, i)
+                  if (isCurrent) {
+                    void togglePlayPause()
+                  } else if (isDragEnabled) {
+                    void playPlaylist(playlist.id, i)
+                  } else {
+                    void playFiles(
+                      displayTracks.map((t) => t.file_path),
+                      i
+                    )
+                  }
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault()

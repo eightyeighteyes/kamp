@@ -725,6 +725,9 @@ export async function applyAlbumArtLocal(
 export const playPlaylist = (playlistId: number, startIndex = 0): Promise<void> =>
   post('/api/v1/player/play-playlist', { playlist_id: playlistId, start_index: startIndex })
 
+export const playFiles = (filePaths: string[], startIndex = 0): Promise<void> =>
+  post('/api/v1/player/play-files', { file_paths: filePaths, start_index: startIndex })
+
 export const getPlaylists = (): Promise<Playlist[]> => get('/api/v1/playlists')
 
 export const getPlaylist = (id: number): Promise<Playlist> => get(`/api/v1/playlists/${id}`)

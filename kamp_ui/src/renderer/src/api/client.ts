@@ -716,8 +716,8 @@ export async function applyAlbumArtLocal(
 // Playlists (KAMP-441)
 // ---------------------------------------------------------------------------
 
-export const playPlaylist = (playlistId: number): Promise<void> =>
-  post('/api/v1/player/play-playlist', { playlist_id: playlistId })
+export const playPlaylist = (playlistId: number, startIndex = 0): Promise<void> =>
+  post('/api/v1/player/play-playlist', { playlist_id: playlistId, start_index: startIndex })
 
 export const getPlaylists = (): Promise<Playlist[]> => get('/api/v1/playlists')
 

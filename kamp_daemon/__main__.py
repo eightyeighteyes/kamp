@@ -690,7 +690,11 @@ def _cmd_daemon(
                 # No gapless transition was queued — start the next track manually.
                 # resolve_playback_uri refreshes expired CDN stream URLs for remote
                 # tracks so mpv receives a real HTTPS URL, not a raw bandcamp: URI.
-                engine.play(resolve_playback_uri(track, index, _refresh_stream_url))
+                engine.play(
+                    resolve_playback_uri(
+                        track, index, _refresh_stream_url, _check_stream_url
+                    )
+                )
             # If had_lookahead: mpv already transitioned gaplessly.  file-loaded
             # will fire shortly and preload_next will queue the new next track.
         else:
@@ -712,7 +716,7 @@ def _cmd_daemon(
         block the mpv reader thread.  preload_next_url() rejects stale results
         automatically if the queue has changed by the time the fetch completes.
         """
-        url = resolve_playback_uri(nxt, index, _refresh_stream_url)
+        url = resolve_playback_uri(nxt, index, _refresh_stream_url, _check_stream_url)
         if url.startswith("https://"):
             engine.preload_next_url(url, nxt.id)
 
@@ -932,6 +936,8 @@ def _cmd_daemon(
 
         return _bandcamp_refresh(album_url, track_num, session_data)
 
+    from kamp_daemon.bandcamp import check_stream_url as _check_stream_url
+
     app = create_app(
         index=index,
         engine=engine,
@@ -954,6 +960,7 @@ def _cmd_daemon(
         dl_queue=_dl_queue,
         art_cache_dir=_state_dir() / "art_cache",
         refresh_stream_url=_refresh_stream_url,
+        check_stream_url=_check_stream_url,
         dev_mode=bool(os.environ.get("KAMP_DEV")),
         auth_token=_auth_token,
         mb_lookup_fn=lookup_releases_from_tracks,

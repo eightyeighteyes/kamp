@@ -59,65 +59,113 @@ def resolve_playback_uri(
     track: Track,
     index: LibraryIndex,
     refresh_stream_url: Callable[[str, int], tuple[str, float] | None] | None,
+    check_stream_url: Callable[[str], int] | None = None,
 ) -> str:
     """Return the URL or path string to pass to mpv for *track*.
 
-    For local tracks returns str(track.file_path). For remote tracks checks
-    stream URL expiry and attempts a refresh via the refresh_stream_url
-    callback before returning track.playback_uri.
+    For local tracks returns str(track.file_path).  For remote tracks:
+    1. Proactively refreshes the cached CDN URL if it is near/past expiry.
+    2. Makes a HEAD request to validate the URL before handing it to mpv.
+       If the CDN returns a 4xx (e.g. 410 Gone for an invalidated session
+       token), forces a fresh refresh so mpv always receives a live URL.
+
+    A brief validation delay is far better than silently skipping a track.
     """
     if not track.is_remote:
         return track.playback_uri
 
     import time as _t
 
+    _now = _t.time()
+
+    # Parse bandcamp://sale_id/track_num upfront — needed by both the
+    # proactive-expiry path and the HEAD-triggered forced-refresh path.
+    # Path() mutates the URI differently per platform (POSIX collapses //,
+    # Windows converts to \\), so split on the scheme literal instead.
+    _fp = str(track.file_path)
+    _after_scheme = _fp.split("bandcamp:", 1)
+    _canonical_fp: str | None = None
+    _album_url: str = ""
+    _track_num: int = 0
+    if len(_after_scheme) == 2:
+        _rest = _after_scheme[1].lstrip("/\\").replace("\\", "/")
+        _canonical_fp = "bandcamp://" + _rest
+        _parts = _rest.split("/", 1)
+        if len(_parts) == 2:
+            _sale_item_id, _track_num_str = _parts
+            try:
+                _track_num = int(_track_num_str)
+            except ValueError:
+                pass
+            _item = index.get_collection_item(_sale_item_id)
+            _album_url = (_item or {}).get("album_url", "")
+
+    def _do_refresh(reason: str) -> str | None:
+        """Fetch a fresh CDN URL and persist it; return the URL or None."""
+        if not _album_url or refresh_stream_url is None or _canonical_fp is None:
+            if not _album_url and _canonical_fp:
+                logger.warning(
+                    "resolve_playback_uri: no album_url for %s — cannot "
+                    "refresh stream URL; run kamp sync to populate.",
+                    _canonical_fp,
+                )
+            return None
+        logger.info(
+            "resolve_playback_uri: refreshing stream URL for %s (%s)",
+            _canonical_fp,
+            reason,
+        )
+        result = refresh_stream_url(_album_url, _track_num)
+        if result is not None:
+            new_url, expires_at = result
+            index.update_stream_url(_canonical_fp, new_url, expires_at)
+            logger.info(
+                "resolve_playback_uri: stream URL refreshed for %s "
+                "(new expires_at=%.0f)",
+                _canonical_fp,
+                expires_at,
+            )
+            return new_url
+        logger.warning(
+            "resolve_playback_uri: refresh failed for %s",
+            _canonical_fp,
+        )
+        return None
+
+    # Step 1 — proactive refresh when the cached URL is near or past expiry.
+    url = track.playback_uri
     needs_refresh = (
-        track.stream_url_expires_at is None
-        or track.stream_url_expires_at < _t.time() + 60
+        track.stream_url_expires_at is None or track.stream_url_expires_at < _now + 60
     )
-    if needs_refresh and refresh_stream_url is not None:
-        _fp = str(track.file_path)
-        # Parse sale_item_id and track_number from bandcamp://sale_id/track_num.
-        # Path() mutates the URI differently per platform:
-        #   POSIX: bandcamp:// → bandcamp:/ (double-slash collapse)
-        #   Windows: bandcamp:// → bandcamp:\\ (backslash normalisation)
-        # Split on "bandcamp:" and strip all leading slashes/backslashes to
-        # get the raw "sale_id/track_num" segment, then reconstruct canonical
-        # "bandcamp://sale_id/track_num" for DB lookups.
-        _after_scheme = _fp.split("bandcamp:", 1)
-        _canonical_fp: str | None = None
-        _rest: str | None = None
-        if len(_after_scheme) == 2:
-            _rest = _after_scheme[1].lstrip("/\\").replace("\\", "/")
-            _canonical_fp = "bandcamp://" + _rest
-        if _canonical_fp is not None and _rest is not None:
-            parts = _rest.split("/", 1)
-            if len(parts) == 2:
-                sale_item_id, track_num_str = parts
-                try:
-                    track_num = int(track_num_str)
-                except ValueError:
-                    track_num = 0
-                item = index.get_collection_item(sale_item_id)
-                album_url = (item or {}).get("album_url", "")
-                if album_url:
-                    result = refresh_stream_url(album_url, track_num)
-                    if result is not None:
-                        new_url, expires_at = result
-                        index.update_stream_url(_canonical_fp, new_url, expires_at)
-                        return new_url
-                    else:
-                        logger.warning(
-                            "Stream URL refresh failed for %s — using existing URI",
-                            _canonical_fp,
-                        )
-                else:
-                    logger.warning(
-                        "No album_url for %s — cannot refresh stream URL; "
-                        "run kamp sync to populate.",
-                        _canonical_fp,
-                    )
-    return track.playback_uri
+    if needs_refresh:
+        refreshed = _do_refresh(f"expires_at={track.stream_url_expires_at}")
+        if refreshed is not None:
+            url = refreshed
+    else:
+        logger.debug(
+            "resolve_playback_uri: cached stream URL for %s (expires in %.0fs)",
+            track.file_path,
+            (track.stream_url_expires_at or 0) - _now,
+        )
+
+    # Step 2 — HEAD request to verify the URL is live before handing to mpv.
+    # A 4xx from the CDN means the signed token was invalidated (e.g. 410 Gone
+    # when Bandcamp's session key rotates); force a fresh refresh in that case.
+    # This adds a round-trip but prevents silent track-skipping on stale tokens.
+    if url.startswith("https://") and check_stream_url is not None:
+        status = check_stream_url(url)
+        if 400 <= status < 500:
+            logger.warning(
+                "resolve_playback_uri: HEAD returned %d for %s — "
+                "forcing refresh before playback",
+                status,
+                _canonical_fp,
+            )
+            refreshed = _do_refresh(f"HEAD {status}")
+            if refreshed is not None:
+                url = refreshed
+
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -666,6 +714,7 @@ def create_app(
     on_bandcamp_sync_all_trigger: Callable[[], None] | None = None,
     dl_queue: _queue.Queue[str] | None = None,
     refresh_stream_url: Callable[[str, int], tuple[str, float] | None] | None = None,
+    check_stream_url: Callable[[str], int] | None = None,
     art_cache_dir: Path | None = None,
     dev_mode: bool = False,
     auth_token: str | None = None,
@@ -847,7 +896,7 @@ def create_app(
         t.start()
 
     def _resolve_playback(track: "Track") -> str:
-        return resolve_playback_uri(track, index, refresh_stream_url)
+        return resolve_playback_uri(track, index, refresh_stream_url, check_stream_url)
 
     # Wire play-state change callback directly — the engine fires it from its
     # background reader thread whenever mpv's pause property flips.

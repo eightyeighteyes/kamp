@@ -995,6 +995,9 @@ class MpvPlaybackEngine:
         # by preload_next() — before the URL is fetched — so preload_next_url()
         # can reject stale pre-fetch results after a queue change.
         self._lookahead_id: int | None = None
+        # URI most recently passed to play() or load_paused(); used to include
+        # the failing URL in end-file error log messages.
+        self._current_uri: str | None = None
         self._start_mpv()
 
     def _start_mpv(self) -> None:  # pragma: no cover
@@ -1181,6 +1184,7 @@ class MpvPlaybackEngine:
             self._lookahead_path = None
             self._lookahead_url = None
             self._lookahead_id = None
+            self._current_uri = str(path)
             self.state.position = 0.0
             self.state.duration = 0.0
             self.state.position_updated_at = time.time()
@@ -1214,6 +1218,7 @@ class MpvPlaybackEngine:
             # for remote URLs, preventing demux and leaving duration=0. Sending
             # set_property pause True first is processed before loadfile, so mpv
             # starts buffering normally but won't advance the playback clock.
+            self._current_uri = str(path)
             self._send_command("set_property", "pause", True)
             self._send_command("loadfile", str(path), "replace")
         self._send_command("set_property", "pause", True)
@@ -1498,7 +1503,10 @@ class MpvPlaybackEngine:
                 # stalling silently. "stop" is intentional (loadfile replace or
                 # stop command) and must NOT advance the queue.
                 logger.warning(
-                    "end-file: reason=%s — advancing queue", event.get("reason")
+                    "end-file: reason=%s file_error=%r uri=%s — advancing queue",
+                    event.get("reason"),
+                    event.get("file_error"),
+                    self._current_uri,
                 )
                 if self.on_track_end is not None:
                     self.on_track_end(False)

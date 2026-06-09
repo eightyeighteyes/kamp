@@ -4687,6 +4687,37 @@ class TestRemoteTrackSchema:
         assert row["stream_url"] == "https://new-cdn.example.com/track.mp3"
         assert row["stream_url_expires_at"] == 12345.0
 
+    def test_upsert_many_preserves_stream_url_when_incoming_is_null(
+        self, tmp_path: Path
+    ) -> None:
+        """Re-indexing a remote track must not wipe a cached stream URL.
+
+        fetch_album_tracks returns tracks with stream_url=None; without
+        COALESCE the upsert would NULL out stream_url on every sync run.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _sample_track(tmp_path / "bandcamp://777/1")
+        track.source = "bandcamp"
+        track.stream_url = "https://cdn.example.com/cached.mp3"
+        track.stream_url_expires_at = 9999.0
+        index.upsert_track(track)
+
+        # Simulate a sync: same track, but stream_url fields are None.
+        re_indexed = _sample_track(tmp_path / "bandcamp://777/1")
+        re_indexed.source = "bandcamp"
+        re_indexed.stream_url = None
+        re_indexed.stream_url_expires_at = None
+        index.upsert_many([re_indexed])
+
+        row = index._conn.execute(
+            "SELECT stream_url, stream_url_expires_at FROM tracks WHERE file_path = ?",
+            (str(track.file_path),),
+        ).fetchone()
+        index.close()
+
+        assert row["stream_url"] == "https://cdn.example.com/cached.mp3"
+        assert row["stream_url_expires_at"] == 9999.0
+
     def test_get_collection_item_found(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         index.upsert_collection_item(

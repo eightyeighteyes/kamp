@@ -4181,6 +4181,81 @@ class TestResolvePlaybackUri:
             "bandcamp://777/2", "https://cdn.example.com/new.mp3", 9999.0
         )
 
+    def test_head_check_passes_returns_cached_url(self) -> None:
+        """If HEAD returns 2xx, no refresh is triggered and the cached URL is used."""
+        import time
+
+        index = MagicMock()
+        check_fn = MagicMock(return_value=200)
+        track = self._remote_track(
+            stream_url="https://cdn.example.com/valid.mp3",
+            stream_url_expires_at=time.time() + 7200,
+        )
+        result = resolve_playback_uri(track, index, None, check_fn)
+
+        assert result == "https://cdn.example.com/valid.mp3"
+        check_fn.assert_called_once_with("https://cdn.example.com/valid.mp3")
+        index.update_stream_url.assert_not_called()
+
+    def test_head_check_410_forces_refresh(self) -> None:
+        """If HEAD returns 410 Gone, a forced refresh is attempted even if expires_at is future."""
+        import time
+
+        index = MagicMock()
+        index.get_collection_item.return_value = {
+            "album_url": "https://artist.bandcamp.com/album/x"
+        }
+        check_fn = MagicMock(return_value=410)
+        refresh_fn = MagicMock(
+            return_value=("https://cdn.example.com/fresh.mp3", 9999.0)
+        )
+        track = self._remote_track(
+            stream_url="https://cdn.example.com/stale.mp3",
+            stream_url_expires_at=time.time() + 7200,  # not expired per our estimate
+        )
+        result = resolve_playback_uri(track, index, refresh_fn, check_fn)
+
+        assert result == "https://cdn.example.com/fresh.mp3"
+        refresh_fn.assert_called_once_with("https://artist.bandcamp.com/album/x", 2)
+        index.update_stream_url.assert_called_once_with(
+            "bandcamp://777/2", "https://cdn.example.com/fresh.mp3", 9999.0
+        )
+
+    def test_head_check_403_forces_refresh(self) -> None:
+        """HEAD 403 (forbidden) also triggers a forced refresh."""
+        import time
+
+        index = MagicMock()
+        index.get_collection_item.return_value = {
+            "album_url": "https://artist.bandcamp.com/album/x"
+        }
+        check_fn = MagicMock(return_value=403)
+        refresh_fn = MagicMock(
+            return_value=("https://cdn.example.com/fresh.mp3", 9999.0)
+        )
+        track = self._remote_track(
+            stream_url="https://cdn.example.com/stale.mp3",
+            stream_url_expires_at=time.time() + 7200,
+        )
+        result = resolve_playback_uri(track, index, refresh_fn, check_fn)
+
+        assert result == "https://cdn.example.com/fresh.mp3"
+
+    def test_head_check_network_error_falls_through(self) -> None:
+        """HEAD returning 0 (network error) does not trigger refresh — let mpv try."""
+        import time
+
+        index = MagicMock()
+        check_fn = MagicMock(return_value=0)
+        track = self._remote_track(
+            stream_url="https://cdn.example.com/maybe.mp3",
+            stream_url_expires_at=time.time() + 7200,
+        )
+        result = resolve_playback_uri(track, index, None, check_fn)
+
+        assert result == "https://cdn.example.com/maybe.mp3"
+        index.update_stream_url.assert_not_called()
+
     def test_remote_track_with_no_stream_url_falls_back_to_playback_uri(self) -> None:
         """No stream_url and no refresh callback → playback_uri (raw bandcamp: URI).
 

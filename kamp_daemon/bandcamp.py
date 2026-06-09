@@ -1050,7 +1050,18 @@ def fetch_stream_url(
                     f"fetch_stream_url: no mp3 stream URL for track {track_number} "
                     f"in {album_url}"
                 )
-            expires_at = time.time() + 86400
+            # ts= in the signed CDN URL is the creation timestamp; the token
+            # is hmac(ts + path + secret) so ts cannot be changed independently.
+            # Bandcamp rejects the URL once ts is older than ~24 hours, so the
+            # true expiry is ts + 86400.  Using the URL-embedded ts is more
+            # accurate than time.time() because it reflects when Bandcamp
+            # actually signed the URL, not when we fetched the page.
+            try:
+                _qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                _ts = _qs.get("ts")
+                expires_at = float(_ts[0]) + 86400 if _ts else time.time() + 86400
+            except Exception:
+                expires_at = time.time() + 86400
             return url, expires_at
 
     raise BandcampAPIError(
@@ -1143,6 +1154,21 @@ def refresh_stream_url(
             exc,
         )
         return None
+
+
+def check_stream_url(url: str) -> int:
+    """HEAD request to verify a Bandcamp CDN stream URL is still live.
+
+    Returns the HTTP status code (200, 403, 410, …) or 0 on network/DNS
+    failure.  CDN stream URLs carry all authentication in the signed query
+    parameters, so no session cookies are required here.  Returns quickly
+    (5 s timeout) so it can be called on the playback code path.
+    """
+    try:
+        resp = _requests.head(url, timeout=5, allow_redirects=False)
+        return resp.status_code
+    except _requests.RequestException:
+        return 0
 
 
 def fetch_album_art_bytes(album_url: str, session_data: dict[str, Any]) -> bytes | None:

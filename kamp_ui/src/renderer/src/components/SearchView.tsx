@@ -56,12 +56,24 @@ function SearchTrackRow({
   )
 }
 
+const SEARCH_SORT_OPTIONS = [
+  { key: 'album_artist', label: 'Artist' },
+  { key: 'album', label: 'Album' },
+  { key: 'date_added', label: 'Date Added' },
+  { key: 'last_played', label: 'Last Played' },
+  { key: 'most_played', label: 'Most Played' },
+]
+
 export function SearchView(): React.JSX.Element {
   const results = useStore((s) => s.searchResults)
   const query = useStore((s) => s.searchQuery)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
   const libraryFilter = useStore((s) => s.libraryFilter)
   const allAlbums = useStore((s) => s.library.albums)
+  const sortOrder = useStore((s) => s.sortOrder)
+  const sortDir = useStore((s) => s.sortDir)
+  const setSortOrder = useStore((s) => s.setSortOrder)
+  const setSortDir = useStore((s) => s.setSortDir)
 
   const [trackMenu, setTrackMenu] = useState<TrackMenu | null>(null)
 
@@ -121,7 +133,13 @@ export function SearchView(): React.JSX.Element {
   return (
     <div className="search-view">
       <div className="search-view-toolbar">
-        <SortControl />
+        <SortControl
+          value={sortOrder}
+          options={SEARCH_SORT_OPTIONS}
+          dir={sortDir}
+          onChange={(key) => void setSortOrder(key as typeof sortOrder)}
+          onDirChange={(d) => void setSortDir(d)}
+        />
         <SourceControl />
         <FilterControl />
       </div>

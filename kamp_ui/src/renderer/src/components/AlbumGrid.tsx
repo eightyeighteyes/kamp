@@ -9,10 +9,22 @@ import { SortControl } from './SortControl'
 import { FilterControl } from './FilterControl'
 import { SourceControl } from './SourceControl'
 
+const ALBUM_SORT_OPTIONS = [
+  { key: 'album_artist', label: 'Artist' },
+  { key: 'album', label: 'Album' },
+  { key: 'date_added', label: 'Date Added' },
+  { key: 'last_played', label: 'Last Played' },
+  { key: 'most_played', label: 'Most Played' },
+]
+
 export function AlbumGrid(): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
   const selectedArtist = useStore((s) => s.library.selectedArtist)
   const libraryFilter = useStore((s) => s.libraryFilter)
+  const sortOrder = useStore((s) => s.sortOrder)
+  const sortDir = useStore((s) => s.sortDir)
+  const setSortOrder = useStore((s) => s.setSortOrder)
+  const setSortDir = useStore((s) => s.setSortDir)
 
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -68,7 +80,13 @@ export function AlbumGrid(): React.JSX.Element {
   return (
     <div className="album-grid-container" ref={containerRef}>
       <div className="album-grid-toolbar">
-        <SortControl />
+        <SortControl
+          value={sortOrder}
+          options={ALBUM_SORT_OPTIONS}
+          dir={sortDir}
+          onChange={(key) => void setSortOrder(key as typeof sortOrder)}
+          onDirChange={(d) => void setSortDir(d)}
+        />
         <SourceControl />
         <FilterControl />
       </div>

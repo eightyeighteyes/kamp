@@ -61,7 +61,7 @@ const SEARCH_SORT_OPTIONS = [
   { key: 'album', label: 'Album' },
   { key: 'date_added', label: 'Date Added' },
   { key: 'last_played', label: 'Last Played' },
-  { key: 'most_played', label: 'Most Played' },
+  { key: 'most_played', label: 'Most Played' }
 ]
 
 export function SearchView(): React.JSX.Element {

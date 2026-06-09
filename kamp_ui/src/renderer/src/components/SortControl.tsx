@@ -10,7 +10,13 @@ interface Props {
   onDirChange: (dir: 'asc' | 'desc') => void
 }
 
-export function SortControl({ value, options, dir, onChange, onDirChange }: Props): React.JSX.Element {
+export function SortControl({
+  value,
+  options,
+  dir,
+  onChange,
+  onDirChange
+}: Props): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 

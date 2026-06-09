@@ -27,10 +27,17 @@ const TRACK_SORT_OPTIONS = [
   { key: 'album', label: 'Album' },
   { key: 'duration', label: 'Duration' },
   { key: 'last_played', label: 'Last Played' },
-  { key: 'most_played', label: 'Most Played' },
+  { key: 'most_played', label: 'Most Played' }
 ]
 
-type TrackSortOrder = 'position' | 'title' | 'artist' | 'album' | 'duration' | 'last_played' | 'most_played'
+type TrackSortOrder =
+  | 'position'
+  | 'title'
+  | 'artist'
+  | 'album'
+  | 'duration'
+  | 'last_played'
+  | 'most_played'
 
 function sortKey(playlistId: number): string {
   return `kamp:playlist:${playlistId}:sort`

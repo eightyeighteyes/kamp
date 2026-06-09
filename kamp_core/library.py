@@ -2955,7 +2955,7 @@ class LibraryIndex:
                    t.id, t.file_path, t.title, t.artist, t.album_artist, t.album,
                    t.year, t.track_number, t.disc_number, t.ext, t.embedded_art,
                    t.mb_release_id, t.mb_recording_id, t.genre, t.label,
-                   t.favorite, t.play_count, t.source, t.is_available, t.duration
+                   t.favorite, t.play_count, t.last_played, t.source, t.is_available, t.duration
             FROM playlist_tracks pt
             JOIN tracks t ON t.file_path = pt.file_path
             WHERE pt.playlist_id = ?
@@ -2984,6 +2984,7 @@ class LibraryIndex:
                 "label": r["label"],
                 "favorite": bool(r["favorite"]),
                 "play_count": r["play_count"],
+                "last_played": r["last_played"],
                 "source": r["source"],
                 "is_available": bool(r["is_available"]),
                 "duration": r["duration"],

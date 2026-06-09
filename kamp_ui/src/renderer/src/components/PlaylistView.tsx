@@ -25,10 +25,12 @@ const TRACK_SORT_OPTIONS = [
   { key: 'title', label: 'Title' },
   { key: 'artist', label: 'Artist' },
   { key: 'album', label: 'Album' },
-  { key: 'duration', label: 'Duration' }
+  { key: 'duration', label: 'Duration' },
+  { key: 'last_played', label: 'Last Played' },
+  { key: 'most_played', label: 'Most Played' },
 ]
 
-type TrackSortOrder = 'position' | 'title' | 'artist' | 'album' | 'duration'
+type TrackSortOrder = 'position' | 'title' | 'artist' | 'album' | 'duration' | 'last_played' | 'most_played'
 
 function sortKey(playlistId: number): string {
   return `kamp:playlist:${playlistId}:sort`
@@ -67,6 +69,16 @@ function applySortToTracks(
         break
       case 'duration':
         cmp = a.duration - b.duration
+        break
+      case 'last_played':
+        // nulls (never played) sort last regardless of direction
+        if (a.last_played === null && b.last_played === null) cmp = 0
+        else if (a.last_played === null) cmp = 1
+        else if (b.last_played === null) cmp = -1
+        else cmp = a.last_played - b.last_played
+        break
+      case 'most_played':
+        cmp = a.play_count - b.play_count
         break
     }
     return dir === 'desc' ? -cmp : cmp

@@ -513,6 +513,7 @@ class PlaylistTrackOut(BaseModel):
     label: str
     favorite: bool
     play_count: int
+    last_played: float | None = None
     source: str
     is_available: bool
     duration: float

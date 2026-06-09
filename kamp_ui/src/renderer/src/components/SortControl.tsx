@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { SortAscIcon, SortDescIcon } from './TransportIcons'
 
 export type SortOption = { key: string; label: string }
 
@@ -73,7 +74,7 @@ export function SortControl({
         aria-label={dir === 'asc' ? 'Sort ascending' : 'Sort descending'}
         onClick={() => onDirChange(dir === 'asc' ? 'desc' : 'asc')}
       >
-        {dir === 'asc' ? '↑' : '↓'}
+        {dir === 'asc' ? <SortAscIcon size={10} /> : <SortDescIcon size={10} />}
       </button>
     </div>
   )

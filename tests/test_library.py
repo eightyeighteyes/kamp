@@ -1714,6 +1714,32 @@ class TestAlbumsSort:
         assert albums[0].album == "Multi"
         assert albums[0].play_count_avg == pytest.approx(2.6)
 
+    def test_sort_dir_asc_reverses_date_sort(self, tmp_path: Path) -> None:
+        """sort_dir='asc' on date_added yields oldest-first (inverse of default)."""
+        index = self._make_index(tmp_path)
+        albums = index.albums(sort="date_added", sort_dir="asc")
+        index.close()
+        # date_added values: Hot Rats=1000, Apostrophe=2000, Foley Room=3000
+        assert albums[0].album == "Hot Rats"
+        assert albums[1].album == "Apostrophe"
+        assert albums[2].album == "Foley Room"
+
+    def test_sort_dir_desc_reverses_text_sort(self, tmp_path: Path) -> None:
+        """sort_dir='desc' on album_artist yields Z→A."""
+        index = self._make_index(tmp_path)
+        albums = index.albums(sort="album_artist", sort_dir="desc")
+        index.close()
+        assert albums[0].album_artist == "Zappa"
+        assert albums[-1].album_artist == "Amon Tobin"
+
+    def test_sort_dir_none_preserves_natural_defaults(self, tmp_path: Path) -> None:
+        """sort_dir=None uses the per-key natural direction (historical behaviour)."""
+        index = self._make_index(tmp_path)
+        albums_default = index.albums(sort="date_added")
+        albums_none = index.albums(sort="date_added", sort_dir=None)
+        index.close()
+        assert [a.album for a in albums_default] == [a.album for a in albums_none]
+
 
 class TestRecordPlayed:
     """Tests for LibraryIndex.record_played()."""

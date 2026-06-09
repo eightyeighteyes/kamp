@@ -691,6 +691,7 @@ def create_app(
         },
         "ui_active_view": ui_active_view,
         "ui_sort_order": ui_sort_order,
+        "ui_sort_dir": "asc",
         "ui_queue_panel_open": ui_queue_panel_open,
         "library_version": 0,
         "config": dict(config_values) if config_values is not None else {},
@@ -916,7 +917,9 @@ def create_app(
     # -----------------------------------------------------------------------
 
     @app.get("/api/v1/albums", response_model=list[AlbumOut])
-    def get_albums(sort: str = "album_artist") -> list[AlbumOut]:
+    def get_albums(sort: str = "album_artist", direction: str = "") -> list[AlbumOut]:
+        # direction="" means use the natural per-key default (historical behaviour).
+        sort_dir = direction if direction in ("asc", "desc") else None
         return [
             AlbumOut(
                 album_artist=a.album_artist,
@@ -938,7 +941,7 @@ def create_app(
                 is_preorder=a.is_preorder,
                 album_url=a.album_url,
             )
-            for a in index.albums(sort=sort)
+            for a in index.albums(sort=sort, sort_dir=sort_dir)
         ]
 
     @app.get("/api/v1/artists", response_model=list[str])
@@ -2368,6 +2371,7 @@ def create_app(
         return {
             "active_view": _state["ui_active_view"],
             "sort_order": _state["ui_sort_order"],
+            "sort_dir": _state["ui_sort_dir"],
             "queue_panel_open": bool(_state["ui_queue_panel_open"]),
         }
 
@@ -2393,6 +2397,11 @@ def create_app(
         _state["ui_sort_order"] = sort
         if on_ui_state_set is not None:
             on_ui_state_set("ui.sort_order", sort)
+        sort_dir = req.get("sort_dir", "")
+        if sort_dir in ("asc", "desc"):
+            _state["ui_sort_dir"] = sort_dir
+            if on_ui_state_set is not None:
+                on_ui_state_set("ui.sort_dir", sort_dir)
         return {"ok": True}
 
     @app.post("/api/v1/ui/queue-panel")

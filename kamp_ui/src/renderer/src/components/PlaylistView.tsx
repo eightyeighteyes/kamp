@@ -523,6 +523,20 @@ export function PlaylistView(): React.JSX.Element | null {
                 onDragOver={isDragEnabled ? handleDragOver : undefined}
                 onDragLeave={isDragEnabled ? handleDragLeave : undefined}
                 onDrop={isDragEnabled ? (e) => handleDrop(e, i) : undefined}
+                onDoubleClick={() => {
+                  if (isOffline) return
+                  if (isCurrent) {
+                    void togglePlayPause()
+                  } else {
+                    void playPlaylist(playlist.id, i)
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return
+                  if (isOffline) return
+                  if (isCurrent) void togglePlayPause()
+                  else void playPlaylist(playlist.id, i)
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault()
                   // Right-click on an unselected row: select only that row.

@@ -2118,6 +2118,36 @@ class TestFetchStreamUrl:
         with pytest.raises(BandcampAPIError, match="track_num=99 not found"):
             fetch_stream_url(self._album_url, 99, sess)
 
+    def test_uses_ts_plus_24h_as_expires_at(self) -> None:
+        """ts= is the URL creation time; expiry is ts + 86400 (Bandcamp's ~24h window)."""
+        creation_ts = int(time.time())
+        stream_url = f"https://t4.bcbits.com/stream/abc/mp3-v0/123?p=1&ts={creation_ts}&token={creation_ts}_abc"
+        track_data = [
+            {"track_num": 1, "file": {"mp3-v0": stream_url}},
+        ]
+        html = _album_page_html(track_data)
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        _, expires_at = fetch_stream_url(self._album_url, 1, sess)
+
+        assert expires_at == creation_ts + 86400
+
+    def test_falls_back_to_24h_when_ts_param_absent(self) -> None:
+        """URLs without a ts= param default to +24h expiry."""
+        track_data = [
+            {"track_num": 1, "file": {"mp3-v0": "https://cdn.example.com/1.mp3"}},
+        ]
+        html = _album_page_html(track_data)
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        _, expires_at = fetch_stream_url(self._album_url, 1, sess)
+
+        assert expires_at > time.time() + 86000
+
 
 class TestMarkCollectionSyncedStoresAlbumUrl:
     """mark_collection_synced now passes album_url and tralbum_id from the API response."""

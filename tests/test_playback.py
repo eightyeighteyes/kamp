@@ -1344,6 +1344,27 @@ class TestMpvPlaybackEngine:
 
         callback.assert_called_once_with(False)
 
+    def test_end_file_error_logs_file_error_and_uri(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """file_error and current URI are included in the warning log."""
+        engine, _ = _make_engine()
+        engine._current_uri = "https://t4.bcbits.com/stream/abc.mp3?ts=9999"
+        engine.on_track_end = MagicMock()
+
+        with caplog.at_level(logging.WARNING, logger="kamp_core.playback"):
+            engine._handle_event(
+                {
+                    "event": "end-file",
+                    "reason": "error",
+                    "file_error": "Failed to open stream",
+                }
+            )
+
+        combined = " ".join(r.getMessage() for r in caplog.records)
+        assert "Failed to open stream" in combined
+        assert "https://t4.bcbits.com/stream/abc.mp3" in combined
+
     def test_end_file_network_advances_queue(self) -> None:
         """reason=network (dropped connection) must advance the queue."""
         engine, _ = _make_engine()

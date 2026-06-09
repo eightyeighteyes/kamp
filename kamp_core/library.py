@@ -1704,8 +1704,11 @@ class LibraryIndex:
                 genre                 = excluded.genre,
                 label                 = excluded.label,
                 source                = excluded.source,
-                stream_url            = excluded.stream_url,
-                stream_url_expires_at = excluded.stream_url_expires_at,
+                -- Preserve the cached CDN URL if the incoming row has none.
+                -- fetch_album_tracks never populates stream_url; without this
+                -- COALESCE a sync run would wipe every cached stream URL.
+                stream_url            = COALESCE(excluded.stream_url, stream_url),
+                stream_url_expires_at = COALESCE(excluded.stream_url_expires_at, stream_url_expires_at),
                 is_available          = excluded.is_available,
                 duration              = excluded.duration
                 -- date_added intentionally omitted: preserve original scan date on re-scan

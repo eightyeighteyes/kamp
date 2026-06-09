@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 29
+_SCHEMA_VERSION = 30
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -272,7 +272,7 @@ CREATE TABLE IF NOT EXISTS playlists (
 CREATE TABLE IF NOT EXISTS playlist_tracks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
-    file_path   TEXT    NOT NULL,
+    track_id    INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
     position    INTEGER NOT NULL
 );
 """
@@ -1086,7 +1086,40 @@ class LibraryIndex:
                 """)
             self._conn.execute("UPDATE schema_version SET version = 29")
             self._conn.commit()
-            version = 29  # noqa: F841
+            version = 29
+
+        if version == 29:
+            # v29 → v30: replace file_path with track_id FK in playlist_tracks (KAMP-448).
+            # SQLite doesn't support DROP COLUMN on older engines, so use rename/recreate.
+            # Rows whose file_path no longer maps to a track are dropped — they were
+            # already orphaned.
+            # Guard: _DDL may have already created playlist_tracks with track_id on
+            # fresh installs that upgrade through v28→v29 in the same session, in which
+            # case the rename/recreate is not needed.
+            existing_cols = {
+                r[1]
+                for r in self._conn.execute(
+                    "PRAGMA table_info(playlist_tracks)"
+                ).fetchall()
+            }
+            if "file_path" in existing_cols:
+                self._conn.executescript("""
+                    ALTER TABLE playlist_tracks RENAME TO playlist_tracks_old;
+                    CREATE TABLE playlist_tracks (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+                        track_id    INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+                        position    INTEGER NOT NULL
+                    );
+                    INSERT INTO playlist_tracks (id, playlist_id, track_id, position)
+                        SELECT pt.id, pt.playlist_id, t.id, pt.position
+                        FROM playlist_tracks_old pt
+                        JOIN tracks t ON t.file_path = pt.file_path;
+                    DROP TABLE playlist_tracks_old;
+                """)
+            self._conn.execute("UPDATE schema_version SET version = 30")
+            self._conn.commit()
+            version = 30  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -2501,7 +2534,7 @@ class LibraryIndex:
             """
             SELECT t.*
             FROM playlist_tracks pt
-            JOIN tracks t ON t.file_path = pt.file_path
+            JOIN tracks t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?
             ORDER BY pt.position ASC
             """,
@@ -2960,7 +2993,7 @@ class LibraryIndex:
                    t.mb_release_id, t.mb_recording_id, t.genre, t.label,
                    t.favorite, t.play_count, t.last_played, t.source, t.is_available, t.duration
             FROM playlist_tracks pt
-            JOIN tracks t ON t.file_path = pt.file_path
+            JOIN tracks t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?
             ORDER BY pt.position ASC
             """,
@@ -3002,18 +3035,19 @@ class LibraryIndex:
         """
         import time as _time
 
-        exists = self._conn.execute(
-            "SELECT 1 FROM tracks WHERE file_path = ?", (file_path,)
+        row = self._conn.execute(
+            "SELECT id FROM tracks WHERE file_path = ?", (file_path,)
         ).fetchone()
-        if not exists:
+        if not row:
             return
+        track_id = row["id"]
         next_pos = self._conn.execute(
             "SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_tracks WHERE playlist_id = ?",
             (playlist_id,),
         ).fetchone()[0]
         self._conn.execute(
-            "INSERT INTO playlist_tracks (playlist_id, file_path, position) VALUES (?, ?, ?)",
-            (playlist_id, file_path, next_pos),
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+            (playlist_id, track_id, next_pos),
         )
         self._conn.execute(
             "UPDATE playlists SET updated_at = ? WHERE id = ?",

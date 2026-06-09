@@ -9,6 +9,8 @@ interface Props {
   dir: 'asc' | 'desc'
   onChange: (key: string) => void
   onDirChange: (dir: 'asc' | 'desc') => void
+  /** Hide the asc/desc toggle (e.g. when the current sort has no meaningful direction). */
+  showDir?: boolean
 }
 
 export function SortControl({
@@ -16,7 +18,8 @@ export function SortControl({
   options,
   dir,
   onChange,
-  onDirChange
+  onDirChange,
+  showDir = true
 }: Props): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -68,14 +71,16 @@ export function SortControl({
           </div>
         )}
       </div>
-      <button
-        className="toolbar-dropdown-trigger sort-dir-btn"
-        title={dir === 'asc' ? 'Ascending — click to reverse' : 'Descending — click to reverse'}
-        aria-label={dir === 'asc' ? 'Sort ascending' : 'Sort descending'}
-        onClick={() => onDirChange(dir === 'asc' ? 'desc' : 'asc')}
-      >
-        {dir === 'asc' ? <SortAscIcon size={10} /> : <SortDescIcon size={10} />}
-      </button>
+      {showDir && (
+        <button
+          className="toolbar-dropdown-trigger sort-dir-btn"
+          title={dir === 'asc' ? 'Ascending — click to reverse' : 'Descending — click to reverse'}
+          aria-label={dir === 'asc' ? 'Sort ascending' : 'Sort descending'}
+          onClick={() => onDirChange(dir === 'asc' ? 'desc' : 'asc')}
+        >
+          {dir === 'asc' ? <SortAscIcon size={10} /> : <SortDescIcon size={10} />}
+        </button>
+      )}
     </div>
   )
 }

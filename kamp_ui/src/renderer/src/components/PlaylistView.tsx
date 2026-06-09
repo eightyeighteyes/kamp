@@ -488,6 +488,7 @@ export function PlaylistView(): React.JSX.Element | null {
           dir={trackSortDir}
           onChange={handleTrackSortChange}
           onDirChange={handleTrackDirChange}
+          showDir={trackSortOrder !== 'position'}
         />
       </div>
 

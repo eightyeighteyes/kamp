@@ -228,6 +228,7 @@ class PlayRequest(BaseModel):
 
 class PlayPlaylistRequest(BaseModel):
     playlist_id: int
+    start_index: int = 0
 
 
 class SeekRequest(BaseModel):
@@ -2716,7 +2717,8 @@ def create_app(
             return {"ok": True}
         old_current = queue.current()
         old_lookahead = queue.peek_next()
-        queue.load(tracks, start_index=0)
+        start = max(0, min(req.start_index, len(tracks) - 1))
+        queue.load(tracks, start_index=start)
         current = queue.current()
         if current:
             engine.play(_resolve_playback(current))

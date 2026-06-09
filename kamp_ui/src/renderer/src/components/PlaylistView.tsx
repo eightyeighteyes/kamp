@@ -77,13 +77,17 @@ function applySortToTracks(
       case 'duration':
         cmp = a.duration - b.duration
         break
-      case 'last_played':
-        // nulls (never played) sort last regardless of direction
-        if (a.last_played === null && b.last_played === null) cmp = 0
-        else if (a.last_played === null) cmp = 1
-        else if (b.last_played === null) cmp = -1
-        else cmp = a.last_played - b.last_played
+      case 'last_played': {
+        // Unplayed tracks always sort last regardless of direction, so return
+        // early to bypass the dir === 'desc' ? -cmp : cmp sign-flip at the end.
+        const aT = a.last_played
+        const bT = b.last_played
+        if (aT === null && bT === null) return 0
+        if (aT === null) return 1 // a always last
+        if (bT === null) return -1 // b always last
+        cmp = aT - bT
         break
+      }
       case 'most_played':
         cmp = a.play_count - b.play_count
         break

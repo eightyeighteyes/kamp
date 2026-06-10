@@ -7623,7 +7623,35 @@ class TestPlaylists:
         result = index.get_playlist_cover(pl["id"])
         index.close()
 
-        assert result == fake_jpeg
+        assert result == (fake_jpeg, "image/jpeg")
+
+    def test_set_and_get_playlist_cover_svg(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        pl = index.create_playlist("SVG Art Test")
+        svg_data = b"<svg xmlns='http://www.w3.org/2000/svg'><rect width='10' height='10'/></svg>"
+
+        index.set_playlist_cover(pl["id"], svg_data, "image/svg+xml")
+        result = index.get_playlist_cover(pl["id"])
+        index.close()
+
+        assert result == (svg_data, "image/svg+xml")
+
+    def test_set_playlist_cover_replaces_previous_format(self, tmp_path: Path) -> None:
+        """Switching from JPEG to SVG removes the old .jpg file."""
+        index = LibraryIndex(tmp_path / "library.db")
+        pl = index.create_playlist("Format Switch")
+        index.set_playlist_cover(pl["id"], b"\xff\xd8\xff" + b"\x00" * 30)
+        index.set_playlist_cover(
+            pl["id"],
+            b"<svg/>",
+            "image/svg+xml",
+        )
+        result = index.get_playlist_cover(pl["id"])
+        art_dir = (tmp_path / "library.db").parent / "playlist_art"
+        index.close()
+
+        assert result is not None and result[1] == "image/svg+xml"
+        assert not (art_dir / f"{pl['id']}.jpg").exists()
 
     def test_set_playlist_cover_bumps_updated_at(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")

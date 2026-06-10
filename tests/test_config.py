@@ -286,6 +286,12 @@ class TestConfigSet:
         config = Config.load(db)
         assert config.ui.sort_order == "last_played"
 
+    def test_ui_sort_dir_valid(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        config_set(db, "ui.sort_dir", "desc")
+        config = Config.load(db)
+        assert config.ui.sort_dir == "desc"
+
     def test_deprecated_username_raises(self, db: LibraryIndex) -> None:
         with pytest.raises(KeyError, match="deprecated"):
             config_set(db, "bandcamp.username", "foo")

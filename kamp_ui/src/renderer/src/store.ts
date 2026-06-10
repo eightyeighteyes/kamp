@@ -151,6 +151,7 @@ type PlayerStore = {
   setPlaylistFavorite: (playlistId: number, favorite: boolean) => Promise<void>
   renamePlaylist: (playlistId: number, title: string) => Promise<void>
   deletePlaylist: (playlistId: number) => Promise<void>
+  patchOpenPlaylist: (playlist: Playlist) => void
   playAlbum: (
     albumArtist: string,
     album: string,
@@ -765,6 +766,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
     }
     await get().loadPlaylists()
   },
+
+  patchOpenPlaylist: (playlist) =>
+    set((s) => ({ library: { ...s.library, selectedPlaylist: playlist } })),
 
   playAlbum: async (albumArtist, album, trackIndex = 0, filePath = '') => {
     await api.playAlbum(albumArtist, album, trackIndex, filePath)

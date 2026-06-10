@@ -3267,10 +3267,48 @@ def create_app(
         pl = index.get_playlist(playlist_id)
         if pl is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
+        cover = index.get_playlist_cover(playlist_id)
+        if cover is not None:
+            return Response(content=cover, media_type="image/jpeg")
         title = pl["title"]
         display = title if len(title) <= 12 else title[:11] + "…"
         svg = _PLAYLIST_ART_TEMPLATE.replace("__TITLE__", display)
         return Response(content=svg, media_type="image/svg+xml")
+
+    @app.post("/api/v1/playlists/{playlist_id}/art", response_model=PlaylistOut)
+    async def set_playlist_art(
+        playlist_id: int,
+        file: UploadFile = File(...),
+    ) -> PlaylistOut:
+        """Upload a local image file and store it as cover art for the playlist.
+
+        Returns 404 if the playlist does not exist.
+        Returns 422 if the uploaded file is not a valid image.
+        Returns the updated PlaylistOut on success.
+        """
+        from kamp_daemon.artwork import (
+            ArtworkError,
+            validate_image_bytes,
+        )  # noqa: PLC0415
+
+        content_type = file.content_type or ""
+        if not content_type.startswith("image/"):
+            raise HTTPException(
+                status_code=422, detail="Uploaded file must be an image"
+            )
+
+        image_data = await file.read()
+
+        try:
+            validate_image_bytes(image_data)
+        except ArtworkError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+
+        updated = index.set_playlist_cover(playlist_id, image_data)
+        return PlaylistOut(**updated)  # type: ignore[arg-type]
 
     # -----------------------------------------------------------------------
     # WebSocket: player state stream

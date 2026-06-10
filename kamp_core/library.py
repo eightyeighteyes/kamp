@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 31
+_SCHEMA_VERSION = 32
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -265,6 +265,12 @@ CREATE TABLE IF NOT EXISTS playlists (
     created_at     REAL    NOT NULL,
     updated_at     REAL    NOT NULL,
     last_played_at REAL
+);
+
+-- FTS5 index for playlist name search (KAMP-442). Non-content table; manually synced.
+CREATE VIRTUAL TABLE IF NOT EXISTS playlists_fts USING fts5(
+    title,
+    tokenize = 'unicode61'
 );
 
 -- Ordered track membership in a playlist (KAMP-441).
@@ -1137,7 +1143,21 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 31")
             self._conn.commit()
-            version = 31  # noqa: F841
+            version = 31
+
+        if version == 31:
+            # v31 → v32: add playlists_fts FTS5 table for playlist name search (KAMP-442).
+            self._conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS playlists_fts USING fts5(
+                    title, tokenize = 'unicode61'
+                )
+            """)
+            self._conn.execute(
+                "INSERT INTO playlists_fts(rowid, title) SELECT id, title FROM playlists"
+            )
+            self._conn.execute("UPDATE schema_version SET version = 32")
+            self._conn.commit()
+            version = 32  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -1145,6 +1165,10 @@ class LibraryIndex:
         self._conn.execute(
             "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album) "
             "SELECT id, title, artist, album_artist, album FROM tracks"
+        )
+        self._conn.execute("DELETE FROM playlists_fts")
+        self._conn.execute(
+            "INSERT INTO playlists_fts(rowid, title) SELECT id, title FROM playlists"
         )
 
     # ------------------------------------------------------------------
@@ -2633,6 +2657,77 @@ class LibraryIndex:
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
+    # Source expression reused by both playlist search methods.  Matches the
+    # album source computation: 'mixed' when both local and non-local tracks are
+    # present; otherwise the sole source value, defaulting to 'local' if empty.
+    _PLAYLIST_SOURCE_EXPR = """
+        CASE
+            WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
+             AND COUNT(CASE WHEN t.source != 'local' THEN 1 END) > 0
+            THEN 'mixed'
+            WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
+            THEN 'local'
+            WHEN COUNT(t.id) = 0 THEN 'local'
+            ELSE MIN(t.source)
+        END
+    """
+
+    def search_playlists(self, query: str) -> list[dict[str, Any]]:
+        """Full-text search over playlist titles.
+
+        Returns playlists ranked by relevance, each with a computed ``source``
+        field ('local', 'bandcamp', or 'mixed'). Returns an empty list when
+        *query* is blank.
+        """
+        fts_expr = _make_fts_query(query)
+        if not fts_expr:
+            return []
+        rows = self._conn.execute(
+            f"""
+            SELECT p.id, p.title, p.favorite, p.created_at, p.updated_at,
+                   p.last_played_at,
+                   COUNT(pt.id) AS track_count,
+                   {self._PLAYLIST_SOURCE_EXPR} AS source
+            FROM playlists_fts f
+            JOIN playlists p ON f.rowid = p.id
+            LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+            LEFT JOIN tracks t ON t.id = pt.track_id
+            WHERE playlists_fts MATCH ?
+            GROUP BY p.id
+            ORDER BY p.favorite DESC, f.rank
+            """,
+            (fts_expr,),
+        ).fetchall()
+        return [_playlist_row_to_dict(r) for r in rows]
+
+    def playlists_for_tracks(self, track_ids: list[int]) -> list[dict[str, Any]]:
+        """Return deduplicated playlists that contain any of the given track IDs.
+
+        Each result includes a computed ``source`` field. Returns an empty list
+        when *track_ids* is empty.
+        """
+        if not track_ids:
+            return []
+        placeholders = ",".join("?" * len(track_ids))
+        rows = self._conn.execute(
+            f"""
+            SELECT p.id, p.title, p.favorite, p.created_at, p.updated_at,
+                   p.last_played_at,
+                   COUNT(DISTINCT pt_all.id) AS track_count,
+                   {self._PLAYLIST_SOURCE_EXPR} AS source
+            FROM playlist_tracks pt_match
+            JOIN playlists p ON p.id = pt_match.playlist_id
+            -- Count all tracks in the playlist (not just the matched ones).
+            LEFT JOIN playlist_tracks pt_all ON pt_all.playlist_id = p.id
+            LEFT JOIN tracks t ON t.id = pt_all.track_id
+            WHERE pt_match.track_id IN ({placeholders})
+            GROUP BY p.id
+            ORDER BY p.favorite DESC, p.title COLLATE NOCASE
+            """,
+            track_ids,
+        ).fetchall()
+        return [_playlist_row_to_dict(r) for r in rows]
+
     def save_player_state(self, track_path: "str | Path", position: float) -> None:
         """Persist the current track path and playback position."""
         self._conn.execute(
@@ -2941,9 +3036,13 @@ class LibraryIndex:
             "INSERT INTO playlists (title, favorite, created_at, updated_at) VALUES (?, 0, ?, ?)",
             (title, now, now),
         )
+        new_id = cur.lastrowid
+        self._conn.execute(
+            "INSERT INTO playlists_fts(rowid, title) VALUES (?, ?)", (new_id, title)
+        )
         self._conn.commit()
         return {
-            "id": cur.lastrowid,
+            "id": new_id,
             "title": title,
             "favorite": False,
             "track_count": 0,
@@ -3159,10 +3258,16 @@ class LibraryIndex:
             "UPDATE playlists SET title = ?, updated_at = ? WHERE id = ?",
             (title, _time.time(), playlist_id),
         )
+        self._conn.execute("DELETE FROM playlists_fts WHERE rowid = ?", (playlist_id,))
+        self._conn.execute(
+            "INSERT INTO playlists_fts(rowid, title) VALUES (?, ?)",
+            (playlist_id, title),
+        )
         self._conn.commit()
 
     def delete_playlist(self, playlist_id: int) -> None:
         """Delete *playlist_id* and all its playlist_tracks rows (via CASCADE)."""
+        self._conn.execute("DELETE FROM playlists_fts WHERE rowid = ?", (playlist_id,))
         self._conn.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
         self._conn.commit()
 
@@ -3301,6 +3406,19 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         is_available=bool(row["is_available"]),
         duration=row["duration"],
     )
+
+
+def _playlist_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "favorite": bool(row["favorite"]),
+        "track_count": row["track_count"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "last_played_at": row["last_played_at"],
+        "source": row["source"],
+    }
 
 
 # ---------------------------------------------------------------------------

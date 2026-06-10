@@ -52,6 +52,8 @@ def mock_index() -> MagicMock:
     index.albums.return_value = []
     index.artists.return_value = []
     index.tracks_for_album.return_value = []
+    index.search_playlists.return_value = []
+    index.playlists_for_tracks.return_value = []
     return index
 
 
@@ -1561,7 +1563,7 @@ class TestSearchEndpoint:
         res = TestClient(app).get("/api/v1/search?q=")
         assert res.status_code == 200
         data = res.json()
-        assert data == {"albums": [], "tracks": []}
+        assert data == {"albums": [], "tracks": [], "playlists": []}
 
     def test_returns_matching_tracks_and_albums(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -1635,6 +1637,90 @@ class TestSearchEndpoint:
         assert data["tracks"][0]["source"] == "bandcamp"
         assert len(data["albums"]) == 1
         assert data["albums"][0]["source"] == "bandcamp"
+
+    def test_search_response_includes_playlists_key(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.search.return_value = []
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        res = TestClient(app).get("/api/v1/search?q=anything")
+        assert "playlists" in res.json()
+
+    def test_search_returns_playlist_name_match(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.search.return_value = []
+        mock_index.search_playlists.return_value = [
+            {
+                "id": 1,
+                "title": "Road Trip",
+                "favorite": False,
+                "track_count": 5,
+                "created_at": 1000.0,
+                "updated_at": 1001.0,
+                "last_played_at": None,
+                "source": "local",
+            }
+        ]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        res = TestClient(app).get("/api/v1/search?q=road")
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data["playlists"]) == 1
+        assert data["playlists"][0]["title"] == "Road Trip"
+        assert data["playlists"][0]["source"] == "local"
+
+    def test_search_returns_playlists_containing_matched_tracks(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t = _track(1, album="Kid A", artist="Radiohead")
+        mock_index.search.return_value = [t]
+        mock_index.albums.return_value = []
+        mock_index.playlists_for_tracks.return_value = [
+            {
+                "id": 7,
+                "title": "Chill Mix",
+                "favorite": True,
+                "track_count": 10,
+                "created_at": 2000.0,
+                "updated_at": 2001.0,
+                "last_played_at": None,
+                "source": "bandcamp",
+            }
+        ]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        res = TestClient(app).get("/api/v1/search?q=radiohead")
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data["playlists"]) == 1
+        assert data["playlists"][0]["id"] == 7
+        assert data["playlists"][0]["source"] == "bandcamp"
+        mock_index.playlists_for_tracks.assert_called_once_with([t.id])
+
+    def test_search_playlists_deduplication(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """A playlist matching both by name and by track-membership appears once."""
+        t = _track(1, album="Kid A", artist="Radiohead")
+        mock_index.search.return_value = [t]
+        mock_index.albums.return_value = []
+        shared = {
+            "id": 3,
+            "title": "Radiohead Playlist",
+            "favorite": False,
+            "track_count": 2,
+            "created_at": 3000.0,
+            "updated_at": 3001.0,
+            "last_played_at": None,
+            "source": "local",
+        }
+        mock_index.search_playlists.return_value = [shared]
+        mock_index.playlists_for_tracks.return_value = [shared]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        res = TestClient(app).get("/api/v1/search?q=radiohead")
+        data = res.json()
+        assert len(data["playlists"]) == 1
+        assert data["playlists"][0]["id"] == 3
 
 
 # ---------------------------------------------------------------------------

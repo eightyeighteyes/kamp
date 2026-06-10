@@ -1,10 +1,11 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
-import type { Album, Track } from '../api/client'
+import type { Album, PlaylistSearchResult, Track } from '../api/client'
 import { SortControl } from './SortControl'
 import { SourceControl } from './SourceControl'
 import { FilterControl } from './FilterControl'
 import { AlbumCard } from './AlbumCard'
+import { PlaylistCard } from './PlaylistCard'
 import { TrackContextMenu } from './TrackContextMenu'
 import { FavoriteIcon } from './TransportIcons'
 
@@ -130,6 +131,20 @@ export function SearchView(): React.JSX.Element {
   if (libraryFilter.includes('local_only'))
     visibleTracks = visibleTracks.filter((t) => t.source === 'local')
 
+  const rawPlaylists: PlaylistSearchResult[] = results?.playlists ?? []
+  let visiblePlaylists = rawPlaylists
+  if (hasQualitativeFilter) {
+    visiblePlaylists = visiblePlaylists.filter(
+      (pl) =>
+        (libraryFilter.includes('favorite_album') && pl.favorite) ||
+        (libraryFilter.includes('unplayed') && pl.last_played_at === null)
+    )
+  }
+  if (libraryFilter.includes('remote_only'))
+    visiblePlaylists = visiblePlaylists.filter((pl) => pl.source !== 'local')
+  if (libraryFilter.includes('local_only'))
+    visiblePlaylists = visiblePlaylists.filter((pl) => pl.source === 'local')
+
   return (
     <div className="search-view">
       <div className="search-view-toolbar">
@@ -146,7 +161,7 @@ export function SearchView(): React.JSX.Element {
       <div className="search-view-content">
         {!results ? (
           <div className="search-empty">Searching…</div>
-        ) : !visibleAlbums.length && !visibleTracks.length ? (
+        ) : !visibleAlbums.length && !visibleTracks.length && !visiblePlaylists.length ? (
           <div className="search-empty">No results for &ldquo;{query}&rdquo;</div>
         ) : (
           <>
@@ -160,6 +175,16 @@ export function SearchView(): React.JSX.Element {
                       album={album}
                       onAfterSelect={() => void setSearchQuery('')}
                     />
+                  ))}
+                </div>
+              </section>
+            )}
+            {visiblePlaylists.length > 0 && (
+              <section className="search-section">
+                <h2 className="search-section-title">Playlists</h2>
+                <div className="search-album-grid">
+                  {visiblePlaylists.map((pl) => (
+                    <PlaylistCard key={pl.id} playlist={pl} />
                   ))}
                 </div>
               </section>

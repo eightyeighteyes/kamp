@@ -653,6 +653,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   playPlaylist: async (playlistId, startIndex = 0) => {
     await api.playPlaylist(playlistId, startIndex)
     void get().loadQueue()
+    void get().loadPlaylists()
   },
 
   playFiles: async (filePaths, startIndex = 0) => {

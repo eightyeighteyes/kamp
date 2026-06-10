@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 30
+_SCHEMA_VERSION = 31
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -259,11 +259,12 @@ CREATE TABLE IF NOT EXISTS download_queue (
 
 -- User-defined playlists (KAMP-441). Local-only; Bandcamp playlist sync is future work.
 CREATE TABLE IF NOT EXISTS playlists (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT    NOT NULL,
-    favorite   INTEGER NOT NULL DEFAULT 0,
-    created_at REAL    NOT NULL,
-    updated_at REAL    NOT NULL
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    title          TEXT    NOT NULL,
+    favorite       INTEGER NOT NULL DEFAULT 0,
+    created_at     REAL    NOT NULL,
+    updated_at     REAL    NOT NULL,
+    last_played_at REAL
 );
 
 -- Ordered track membership in a playlist (KAMP-441).
@@ -1119,7 +1120,24 @@ class LibraryIndex:
                 """)
             self._conn.execute("UPDATE schema_version SET version = 30")
             self._conn.commit()
-            version = 30  # noqa: F841
+            version = 30
+
+        if version == 30:
+            # v30 → v31: add last_played_at to playlists (KAMP-450).
+            # Guard: _DDL already includes last_played_at on fresh installs that
+            # ran v28→v29 in the same session (playlists table created with the
+            # updated schema), so skip the ALTER if the column is already present.
+            pl_cols = {
+                r[1]
+                for r in self._conn.execute("PRAGMA table_info(playlists)").fetchall()
+            }
+            if "last_played_at" not in pl_cols:
+                self._conn.execute(
+                    "ALTER TABLE playlists ADD COLUMN last_played_at REAL"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 31")
+            self._conn.commit()
+            version = 31  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -2937,7 +2955,7 @@ class LibraryIndex:
         """Return all playlists with their track counts, ordered by title."""
         rows = self._conn.execute("""
             SELECT p.id, p.title, p.favorite, p.created_at, p.updated_at,
-                   COUNT(pt.id) AS track_count
+                   p.last_played_at, COUNT(pt.id) AS track_count
             FROM playlists p
             LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
             GROUP BY p.id
@@ -2951,6 +2969,7 @@ class LibraryIndex:
                 "track_count": r["track_count"],
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
+                "last_played_at": r["last_played_at"],
             }
             for r in rows
         ]
@@ -2960,7 +2979,7 @@ class LibraryIndex:
         row = self._conn.execute(
             """
             SELECT p.id, p.title, p.favorite, p.created_at, p.updated_at,
-                   COUNT(pt.id) AS track_count
+                   p.last_played_at, COUNT(pt.id) AS track_count
             FROM playlists p
             LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
             WHERE p.id = ?
@@ -2977,7 +2996,17 @@ class LibraryIndex:
             "track_count": row["track_count"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "last_played_at": row["last_played_at"],
         }
+
+    def record_playlist_played(self, playlist_id: int) -> None:
+        """Write the current time as last_played_at for the given playlist."""
+        now = _time.time()
+        self._conn.execute(
+            "UPDATE playlists SET last_played_at = ? WHERE id = ?",
+            (now, playlist_id),
+        )
+        self._conn.commit()
 
     def get_playlist_tracks(self, playlist_id: int) -> list[dict[str, Any]]:
         """Return tracks in a playlist ordered by position.

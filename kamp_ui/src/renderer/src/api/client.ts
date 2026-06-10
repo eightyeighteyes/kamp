@@ -87,6 +87,7 @@ export type Playlist = {
   track_count: number
   created_at: number
   updated_at: number
+  last_played_at: number | null
 }
 
 export type PlaylistTrack = Track & {

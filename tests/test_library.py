@@ -7613,3 +7613,42 @@ class TestPlaylists:
         index.close()
 
         assert results[0]["track_count"] == 2
+
+    def test_set_and_get_playlist_cover(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        pl = index.create_playlist("Art Test")
+        fake_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 60
+
+        index.set_playlist_cover(pl["id"], fake_jpeg)
+        result = index.get_playlist_cover(pl["id"])
+        index.close()
+
+        assert result == fake_jpeg
+
+    def test_set_playlist_cover_bumps_updated_at(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        pl = index.create_playlist("Timestamp Test")
+        original_updated_at = pl["updated_at"]
+
+        updated = index.set_playlist_cover(pl["id"], b"\xff\xd8\xff" + b"\x00" * 30)
+        index.close()
+
+        assert updated is not None
+        assert updated["updated_at"] > original_updated_at
+
+    def test_get_playlist_cover_returns_none_when_absent(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        pl = index.create_playlist("No Art")
+        result = index.get_playlist_cover(pl["id"])
+        index.close()
+
+        assert result is None
+
+    def test_set_playlist_cover_returns_none_for_unknown_id(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = index.set_playlist_cover(9999, b"\xff\xd8\xff" + b"\x00" * 30)
+        index.close()
+
+        assert result is None

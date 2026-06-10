@@ -72,6 +72,37 @@
   );
 }
 
+/* Hidden native file input for playlist art upload */
+.art-upload-input {
+  display: none;
+}
+
+/* "Change art" button sits at the bottom-right of the hero */
+.hero-art-btn {
+  position: absolute;
+  bottom: 8px;
+  right: 10px;
+  z-index: 2;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: rgba(20, 20, 20, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.track-list-hero:hover .hero-art-btn {
+  opacity: 1;
+}
+
+.hero-art-btn:hover {
+  color: var(--text);
+  background: rgba(20, 20, 20, 0.85);
+}
+
 /* Breadcrumb floats over the hero */
 .breadcrumb {
   position: absolute;

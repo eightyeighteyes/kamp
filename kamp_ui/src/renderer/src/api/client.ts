@@ -726,6 +726,24 @@ export async function applyAlbumArtLocal(
 // Playlists (KAMP-441)
 // ---------------------------------------------------------------------------
 
+export async function applyPlaylistArtLocal(
+  playlistId: number,
+  file: File
+): Promise<Playlist> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${BASE_URL}/api/v1/playlists/${playlistId}/art`, {
+    method: 'POST',
+    headers: _authHeaders(),
+    body: form
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(detail?.detail ?? res.statusText)
+  }
+  return res.json() as Promise<Playlist>
+}
+
 export const playPlaylist = (playlistId: number, startIndex = 0): Promise<void> =>
   post('/api/v1/player/play-playlist', { playlist_id: playlistId, start_index: startIndex })
 

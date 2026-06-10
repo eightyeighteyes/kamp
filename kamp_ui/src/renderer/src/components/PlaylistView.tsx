@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { playlistArtUrl } from '../api/client'
+import { applyPlaylistArtLocal, playlistArtUrl } from '../api/client'
 import type { PlaylistTrack } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
 import { SortControl } from './SortControl'
@@ -128,6 +128,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const togglePlayPause = useStore((s) => s.togglePlayPause)
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
+  const patchOpenPlaylist = useStore((s) => s.patchOpenPlaylist)
   const configValues = useStore((s) => s.configValues)
   const connected = configValues?.['bandcamp.connected'] ?? false
 
@@ -143,6 +144,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const [anchorIdx, setAnchorIdx] = useState<number | null>(null)
 
   const titleInputRef = useRef<HTMLInputElement>(null)
+  const artInputRef = useRef<HTMLInputElement>(null)
   const dragFromIdx = useRef<number | null>(null)
   const didDragRef = useRef(false)
   const dragStartYRef = useRef(0)
@@ -179,6 +181,15 @@ export function PlaylistView(): React.JSX.Element | null {
     } catch {
       // ignore
     }
+  }
+
+  const handleArtFileChosen = (e: React.ChangeEvent<HTMLInputElement>): void => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    applyPlaylistArtLocal(playlist.id, file)
+      .then((updated) => patchOpenPlaylist(updated))
+      .catch((err: unknown) => console.error('Failed to set playlist art:', err))
   }
 
   const handleTrackSortChange = (key: string): void => {
@@ -399,6 +410,20 @@ export function PlaylistView(): React.JSX.Element | null {
     >
       <div className="track-list-hero has-art">
         <HeroImage src={playlistArtUrl(playlist.id, playlist.updated_at)} />
+        <input
+          type="file"
+          accept="image/*"
+          ref={artInputRef}
+          className="art-upload-input"
+          onChange={handleArtFileChosen}
+        />
+        <button
+          className="hero-art-btn"
+          title="Change art"
+          onClick={() => artInputRef.current?.click()}
+        >
+          Change art
+        </button>
       </div>
       <div className="track-list-hero-overlay" />
 

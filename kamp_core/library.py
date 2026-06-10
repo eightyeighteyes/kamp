@@ -3271,6 +3271,34 @@ class LibraryIndex:
         self._conn.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
         self._conn.commit()
 
+    def set_playlist_cover(
+        self, playlist_id: int, data: bytes
+    ) -> dict[str, Any] | None:
+        """Write *data* as the cover image for *playlist_id* and bump updated_at.
+
+        Stores the file at <db_dir>/playlist_art/<playlist_id>.jpg.
+        Returns the updated playlist row dict, or None if the playlist does not exist.
+        """
+        pl = self.get_playlist(playlist_id)
+        if pl is None:
+            return None
+        art_dir = self._db_path.parent / "playlist_art"
+        art_dir.mkdir(exist_ok=True)
+        (art_dir / f"{playlist_id}.jpg").write_bytes(data)
+        now = _time.time()
+        self._conn.execute(
+            "UPDATE playlists SET updated_at = ? WHERE id = ?", (now, playlist_id)
+        )
+        self._conn.commit()
+        return self.get_playlist(playlist_id)
+
+    def get_playlist_cover(self, playlist_id: int) -> bytes | None:
+        """Return the raw bytes of the stored cover art, or None if not set."""
+        path = self._db_path.parent / "playlist_art" / f"{playlist_id}.jpg"
+        if path.exists():
+            return path.read_bytes()
+        return None
+
 
 # Track fields that extensions are permitted to write via apply_metadata_update.
 # Excludes internal columns (embedded_art, play_count, last_played, etc.) so

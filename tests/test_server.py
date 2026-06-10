@@ -54,6 +54,7 @@ def mock_index() -> MagicMock:
     index.tracks_for_album.return_value = []
     index.search_playlists.return_value = []
     index.playlists_for_tracks.return_value = []
+    index.get_playlist_cover.return_value = None
     return index
 
 
@@ -5222,3 +5223,98 @@ class TestPlaylistEndpoints:
     ) -> None:
         mock_index.get_playlist.return_value = None
         assert client.post("/api/v1/playlists/999/played").status_code == 404
+
+
+class TestPlaylistArt:
+    def _make_jpeg_bytes(self) -> bytes:
+        import io
+
+        from PIL import Image
+
+        img = Image.new("RGB", (100, 100), color=(128, 64, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        return buf.getvalue()
+
+    def test_get_art_returns_jpeg_when_cover_present(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.get_playlist_cover.return_value = b"\xff\xd8\xff\xe0" + b"\x00" * 60
+
+        resp = client.get("/api/v1/playlists/1/art")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+
+    def test_get_art_falls_back_to_svg_when_no_cover(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1, title="My Mix")
+        mock_index.get_playlist_cover.return_value = None
+
+        resp = client.get("/api/v1/playlists/1/art")
+
+        assert resp.status_code == 200
+        assert "image/svg+xml" in resp.headers["content-type"]
+        assert "My Mix" in resp.text
+
+    def test_post_art_happy_path_returns_playlist_out(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        updated = _playlist(id=1, title="Art Test")
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.set_playlist_cover.return_value = updated
+        image_bytes = self._make_jpeg_bytes()
+
+        with patch("kamp_daemon.artwork.validate_image_bytes"):
+            resp = client.post(
+                "/api/v1/playlists/1/art",
+                files={"file": ("cover.jpg", image_bytes, "image/jpeg")},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["title"] == "Art Test"
+        mock_index.set_playlist_cover.assert_called_once_with(1, image_bytes)
+
+    def test_post_art_404_when_playlist_not_found(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        image_bytes = self._make_jpeg_bytes()
+
+        with patch("kamp_daemon.artwork.validate_image_bytes"):
+            resp = client.post(
+                "/api/v1/playlists/999/art",
+                files={"file": ("cover.jpg", image_bytes, "image/jpeg")},
+            )
+
+        assert resp.status_code == 404
+
+    def test_post_art_422_for_non_image_content_type(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        resp = client.post(
+            "/api/v1/playlists/1/art",
+            files={"file": ("notes.txt", b"hello world", "text/plain")},
+        )
+        assert resp.status_code == 422
+
+    def test_post_art_422_for_corrupt_image(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        from kamp_daemon.artwork import ArtworkError
+
+        mock_index.get_playlist.return_value = _playlist(id=1)
+
+        with patch(
+            "kamp_daemon.artwork.validate_image_bytes",
+            side_effect=ArtworkError("not a valid image"),
+        ):
+            resp = client.post(
+                "/api/v1/playlists/1/art",
+                files={"file": ("cover.jpg", b"\xff\xd8\xff not real", "image/jpeg")},
+            )
+
+        assert resp.status_code == 422

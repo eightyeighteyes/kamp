@@ -178,6 +178,7 @@ export function QueueContextMenu({
                 className="track-context-menu-item"
                 onClick={() => {
                   void setActiveView('library')
+                  setCollectionType('albums')
                   selectArtist(track.album_artist)
                   onClose()
                 }}

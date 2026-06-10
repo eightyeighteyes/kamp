@@ -3,7 +3,13 @@ import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
 import { ContextMenuSubmenu } from './ContextMenuSubmenu'
 import { revealInFinderLabel } from '../hooks/platformLabel'
-import { FavoriteIcon, PlayNextIcon, QueueAddIcon } from './TransportIcons'
+import {
+  FavoriteIcon,
+  GoToAlbumIcon,
+  GoToArtistIcon,
+  PlayNextIcon,
+  QueueAddIcon
+} from './TransportIcons'
 import type { Track } from '../api/client'
 import { getPlaylistTracks } from '../api/client'
 import { truncateTitle } from '../utils/truncateTitle'
@@ -45,6 +51,10 @@ export function TrackContextMenu({
   const createPlaylist = useStore((s) => s.createPlaylist)
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
+  const albums = useStore((s) => s.library.albums)
+  const selectAlbum = useStore((s) => s.selectAlbum)
+  const selectArtist = useStore((s) => s.selectArtist)
+  const setActiveView = useStore((s) => s.setActiveView)
 
   const [duplicateModal, setDuplicateModal] = useState<DuplicateModalState | null>(null)
 
@@ -178,6 +188,81 @@ export function TrackContextMenu({
             </span>
             {allFavorited ? 'Remove from Favorites' : 'Add to Favorites'}
           </button>
+          {targets.length === 1 && (
+            <>
+              <button
+                className="track-context-menu-item"
+                onClick={() => {
+                  const found = albums.find(
+                    (a) => a.album_artist === track.album_artist && a.album === track.album
+                  ) ?? {
+                    album_artist: track.album_artist,
+                    album: track.album,
+                    year: '',
+                    track_count: 0,
+                    has_art: false,
+                    missing_album: false,
+                    file_path: '',
+                    art_version: null,
+                    added_at: null,
+                    last_played_at: null,
+                    play_count_avg: 0,
+                    favorite: false,
+                    has_favorite_track: false,
+                    source: 'local',
+                    has_remote_tracks: false
+                  }
+                  void setActiveView('library')
+                  void selectAlbum(found)
+                  onClose()
+                }}
+              >
+                <span
+                  style={{
+                    marginRight: 6,
+                    verticalAlign: 'middle',
+                    flexShrink: 0,
+                    display: 'inline-flex'
+                  }}
+                >
+                  <GoToAlbumIcon size={12} />
+                </span>
+                Go to Album
+              </button>
+              <button
+                className="track-context-menu-item"
+                onClick={() => {
+                  void setActiveView('library')
+                  setCollectionType('albums')
+                  selectArtist(track.album_artist)
+                  onClose()
+                }}
+              >
+                <span
+                  style={{
+                    marginRight: 6,
+                    verticalAlign: 'middle',
+                    flexShrink: 0,
+                    display: 'inline-flex'
+                  }}
+                >
+                  <GoToArtistIcon size={12} />
+                </span>
+                Go to Artist
+              </button>
+            </>
+          )}
+          {track.source === 'local' && (
+            <button
+              className="track-context-menu-item"
+              onClick={() => {
+                window.api.showItemInFolder(track.file_path)
+                onClose()
+              }}
+            >
+              {revealInFinderLabel()}
+            </button>
+          )}
           <ContextMenuSubmenu label="Add to Playlist">
             {playlists.map((pl) => (
               <button
@@ -206,17 +291,6 @@ export function TrackContextMenu({
                 Remove from Playlist
               </button>
             </>
-          )}
-          {track.source === 'local' && (
-            <button
-              className="track-context-menu-item"
-              onClick={() => {
-                window.api.showItemInFolder(track.file_path)
-                onClose()
-              }}
-            >
-              {revealInFinderLabel()}
-            </button>
           )}
         </ContextMenu>
       )}

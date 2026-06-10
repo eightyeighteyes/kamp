@@ -5122,3 +5122,17 @@ class TestPlaylistEndpoints:
 
         assert resp.status_code == 200
         mock_index.record_playlist_played.assert_not_called()
+
+    def test_record_playlist_played_endpoint(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=7)
+        resp = client.post("/api/v1/playlists/7/played")
+        assert resp.status_code == 204
+        mock_index.record_playlist_played.assert_called_once_with(7)
+
+    def test_record_playlist_played_endpoint_404(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        assert client.post("/api/v1/playlists/999/played").status_code == 404

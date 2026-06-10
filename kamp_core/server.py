@@ -3189,6 +3189,13 @@ def create_app(
         index.delete_playlist(playlist_id)
         return Response(status_code=204)
 
+    @app.post("/api/v1/playlists/{playlist_id}/played", status_code=204)
+    def record_playlist_played(playlist_id: int) -> Response:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        index.record_playlist_played(playlist_id)
+        return Response(status_code=204)
+
     @app.get(
         "/api/v1/playlists/{playlist_id}/tracks", response_model=list[PlaylistTrackOut]
     )

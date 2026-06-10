@@ -139,6 +139,7 @@ type PlayerStore = {
   setCollectionType: (type: 'albums' | 'playlists') => void
   playPlaylist: (playlistId: number, startIndex?: number) => Promise<void>
   playFiles: (filePaths: string[], startIndex?: number) => Promise<void>
+  recordPlaylistPlayed: (playlistId: number) => Promise<void>
   loadPlaylists: () => Promise<void>
   createPlaylist: (title: string) => Promise<Playlist>
   selectPlaylist: (playlist: Playlist | null) => Promise<void>
@@ -659,6 +660,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
   playFiles: async (filePaths, startIndex = 0) => {
     await api.playFiles(filePaths, startIndex)
     void get().loadQueue()
+  },
+
+  recordPlaylistPlayed: async (playlistId) => {
+    await api.recordPlaylistPlayed(playlistId)
+    void get().loadPlaylists()
   },
 
   loadPlaylists: async () => {

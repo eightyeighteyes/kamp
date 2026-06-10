@@ -726,10 +726,7 @@ export async function applyAlbumArtLocal(
 // Playlists (KAMP-441)
 // ---------------------------------------------------------------------------
 
-export async function applyPlaylistArtLocal(
-  playlistId: number,
-  file: File
-): Promise<Playlist> {
+export async function applyPlaylistArtLocal(playlistId: number, file: File): Promise<Playlist> {
   const form = new FormData()
   form.append('file', file)
   const res = await fetch(`${BASE_URL}/api/v1/playlists/${playlistId}/art`, {

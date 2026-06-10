@@ -4844,6 +4844,7 @@ def _playlist(
     title: str = "Test Mix",
     favorite: bool = False,
     track_count: int = 0,
+    last_played_at: float | None = None,
 ) -> dict:
     import time
 
@@ -4855,6 +4856,7 @@ def _playlist(
         "track_count": track_count,
         "created_at": now,
         "updated_at": now,
+        "last_played_at": last_played_at,
     }
 
 
@@ -5077,3 +5079,60 @@ class TestPlaylistEndpoints:
     def test_playlist_art_404(self, client: TestClient, mock_index: MagicMock) -> None:
         mock_index.get_playlist.return_value = None
         assert client.get("/api/v1/playlists/999/art").status_code == 404
+
+    def test_play_playlist_records_last_played(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        from kamp_core.library import Track
+
+        t = Track(
+            file_path="/lib/a.mp3",
+            title="A",
+            artist="Ar",
+            album_artist="Ar",
+            album="Al",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+        )
+        mock_index.get_playlist.return_value = _playlist(id=3)
+        mock_index.tracks_for_playlist.return_value = [t]
+        mock_queue.current.return_value = None
+
+        resp = client.post(
+            "/api/v1/player/play-playlist", json={"playlist_id": 3, "start_index": 0}
+        )
+
+        assert resp.status_code == 200
+        mock_index.record_playlist_played.assert_called_once_with(3)
+
+    def test_play_playlist_empty_does_not_record_last_played(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=5)
+        mock_index.tracks_for_playlist.return_value = []
+
+        resp = client.post(
+            "/api/v1/player/play-playlist", json={"playlist_id": 5, "start_index": 0}
+        )
+
+        assert resp.status_code == 200
+        mock_index.record_playlist_played.assert_not_called()
+
+    def test_record_playlist_played_endpoint(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=7)
+        resp = client.post("/api/v1/playlists/7/played")
+        assert resp.status_code == 204
+        mock_index.record_playlist_played.assert_called_once_with(7)
+
+    def test_record_playlist_played_endpoint_404(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        assert client.post("/api/v1/playlists/999/played").status_code == 404

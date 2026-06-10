@@ -87,6 +87,7 @@ export type Playlist = {
   track_count: number
   created_at: number
   updated_at: number
+  last_played_at: number | null
 }
 
 export type PlaylistTrack = Track & {
@@ -756,3 +757,6 @@ export const removeTrackFromPlaylist = (id: number, playlistTrackId: number): Pr
 
 export const reorderPlaylistTracks = (id: number, trackIds: number[]): Promise<void> =>
   put(`/api/v1/playlists/${id}/order`, { track_ids: trackIds })
+
+export const recordPlaylistPlayed = (id: number): Promise<void> =>
+  post(`/api/v1/playlists/${id}/played`, {})

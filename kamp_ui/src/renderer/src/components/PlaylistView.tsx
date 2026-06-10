@@ -124,6 +124,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const playing = useStore((s) => s.player.playing)
   const playPlaylist = useStore((s) => s.playPlaylist)
   const playFiles = useStore((s) => s.playFiles)
+  const recordPlaylistPlayed = useStore((s) => s.recordPlaylistPlayed)
   const togglePlayPause = useStore((s) => s.togglePlayPause)
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
@@ -537,6 +538,7 @@ export function PlaylistView(): React.JSX.Element | null {
                       displayTracks.map((t) => t.file_path),
                       i
                     )
+                    void recordPlaylistPlayed(playlist.id)
                   }
                 }}
                 onKeyDown={(e) => {
@@ -551,6 +553,7 @@ export function PlaylistView(): React.JSX.Element | null {
                       displayTracks.map((t) => t.file_path),
                       i
                     )
+                    void recordPlaylistPlayed(playlist.id)
                   }
                 }}
                 onContextMenu={(e) => {

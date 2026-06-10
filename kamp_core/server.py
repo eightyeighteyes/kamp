@@ -544,6 +544,7 @@ class PlaylistOut(BaseModel):
     track_count: int
     created_at: float
     updated_at: float
+    last_played_at: float | None = None
 
 
 class PlaylistTrackOut(BaseModel):
@@ -2783,6 +2784,7 @@ def create_app(
         old_lookahead = queue.peek_next()
         start = max(0, min(req.start_index, len(tracks) - 1))
         queue.load(tracks, start_index=start)
+        index.record_playlist_played(req.playlist_id)
         current = queue.current()
         if current:
             engine.play(_resolve_playback(current))
@@ -3185,6 +3187,13 @@ def create_app(
         if pl is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
         index.delete_playlist(playlist_id)
+        return Response(status_code=204)
+
+    @app.post("/api/v1/playlists/{playlist_id}/played", status_code=204)
+    def record_playlist_played(playlist_id: int) -> Response:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        index.record_playlist_played(playlist_id)
         return Response(status_code=204)
 
     @app.get(

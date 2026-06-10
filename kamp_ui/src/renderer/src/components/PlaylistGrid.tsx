@@ -7,10 +7,11 @@ import type { Playlist } from '../api/client'
 const PLAYLIST_SORT_OPTIONS = [
   { key: 'title', label: 'Name' },
   { key: 'track_count', label: 'Track Count' },
-  { key: 'updated_at', label: 'Last Updated' }
+  { key: 'updated_at', label: 'Last Updated' },
+  { key: 'last_played_at', label: 'Last Played' }
 ]
 
-type PlaylistSortOrder = 'title' | 'track_count' | 'updated_at'
+type PlaylistSortOrder = 'title' | 'track_count' | 'updated_at' | 'last_played_at'
 
 const STORAGE_KEY = 'kamp:playlists-sort'
 
@@ -32,6 +33,14 @@ function sortPlaylists(
   order: PlaylistSortOrder,
   dir: 'asc' | 'desc'
 ): Playlist[] {
+  // last_played_at: nulls always last regardless of direction
+  if (order === 'last_played_at') {
+    const withVal = playlists.filter((p) => p.last_played_at !== null)
+    const nulls = playlists.filter((p) => p.last_played_at === null)
+    withVal.sort((a, b) => a.last_played_at! - b.last_played_at!)
+    if (dir === 'desc') withVal.reverse()
+    return [...withVal, ...nulls]
+  }
   const sorted = [...playlists].sort((a, b) => {
     switch (order) {
       case 'track_count':

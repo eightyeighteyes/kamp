@@ -3269,8 +3269,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Playlist not found")
         cover = index.get_playlist_cover(playlist_id)
         if cover is not None:
-            data, mime = cover
-            return Response(content=data, media_type=mime)
+            return Response(content=cover, media_type="image/jpeg")
         title = pl["title"]
         display = title if len(title) <= 12 else title[:11] + "…"
         svg = _PLAYLIST_ART_TEMPLATE.replace("__TITLE__", display)
@@ -3300,16 +3299,15 @@ def create_app(
 
         image_data = await file.read()
 
-        if content_type != "image/svg+xml":
-            try:
-                validate_image_bytes(image_data)
-            except ArtworkError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            validate_image_bytes(image_data)
+        except ArtworkError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         if index.get_playlist(playlist_id) is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
 
-        updated = index.set_playlist_cover(playlist_id, image_data, content_type)
+        updated = index.set_playlist_cover(playlist_id, image_data)
         return PlaylistOut(**updated)  # type: ignore[arg-type]
 
     # -----------------------------------------------------------------------

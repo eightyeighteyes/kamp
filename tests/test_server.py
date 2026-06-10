@@ -5240,10 +5240,7 @@ class TestPlaylistArt:
         self, client: TestClient, mock_index: MagicMock
     ) -> None:
         mock_index.get_playlist.return_value = _playlist(id=1)
-        mock_index.get_playlist_cover.return_value = (
-            b"\xff\xd8\xff\xe0" + b"\x00" * 60,
-            "image/jpeg",
-        )
+        mock_index.get_playlist_cover.return_value = b"\xff\xd8\xff\xe0" + b"\x00" * 60
 
         resp = client.get("/api/v1/playlists/1/art")
 
@@ -5262,35 +5259,6 @@ class TestPlaylistArt:
         assert "image/svg+xml" in resp.headers["content-type"]
         assert "My Mix" in resp.text
 
-    def test_get_art_returns_svg_content_type_when_cover_is_svg(
-        self, client: TestClient, mock_index: MagicMock
-    ) -> None:
-        svg_bytes = b"<svg xmlns='http://www.w3.org/2000/svg'/>"
-        mock_index.get_playlist.return_value = _playlist(id=1)
-        mock_index.get_playlist_cover.return_value = (svg_bytes, "image/svg+xml")
-
-        resp = client.get("/api/v1/playlists/1/art")
-
-        assert resp.status_code == 200
-        assert "image/svg+xml" in resp.headers["content-type"]
-
-    def test_post_art_svg_skips_pil_validation(
-        self, client: TestClient, mock_index: MagicMock
-    ) -> None:
-        svg_bytes = b"<svg xmlns='http://www.w3.org/2000/svg'/>"
-        mock_index.get_playlist.return_value = _playlist(id=1)
-        mock_index.set_playlist_cover.return_value = _playlist(id=1)
-
-        resp = client.post(
-            "/api/v1/playlists/1/art",
-            files={"file": ("icon.svg", svg_bytes, "image/svg+xml")},
-        )
-
-        assert resp.status_code == 200
-        mock_index.set_playlist_cover.assert_called_once_with(
-            1, svg_bytes, "image/svg+xml"
-        )
-
     def test_post_art_happy_path_returns_playlist_out(
         self, client: TestClient, mock_index: MagicMock
     ) -> None:
@@ -5308,9 +5276,7 @@ class TestPlaylistArt:
         assert resp.status_code == 200
         body = resp.json()
         assert body["title"] == "Art Test"
-        mock_index.set_playlist_cover.assert_called_once_with(
-            1, image_bytes, "image/jpeg"
-        )
+        mock_index.set_playlist_cover.assert_called_once_with(1, image_bytes)
 
     def test_post_art_404_when_playlist_not_found(
         self, client: TestClient, mock_index: MagicMock

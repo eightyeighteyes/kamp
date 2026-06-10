@@ -184,7 +184,11 @@ export function SearchView(): React.JSX.Element {
                 <h2 className="search-section-title">Playlists</h2>
                 <div className="search-album-grid">
                   {visiblePlaylists.map((pl) => (
-                    <PlaylistCard key={pl.id} playlist={pl} />
+                    <PlaylistCard
+                      key={pl.id}
+                      playlist={pl}
+                      onAfterSelect={() => void setSearchQuery('')}
+                    />
                   ))}
                 </div>
               </section>

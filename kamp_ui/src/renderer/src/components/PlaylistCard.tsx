@@ -7,7 +7,13 @@ import { FavoriteIcon } from './TransportIcons'
 
 type MenuPos = { x: number; y: number }
 
-export function PlaylistCard({ playlist }: { playlist: Playlist }): React.JSX.Element {
+export function PlaylistCard({
+  playlist,
+  onAfterSelect
+}: {
+  playlist: Playlist
+  onAfterSelect?: () => void
+}): React.JSX.Element {
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
   const [menu, setMenu] = useState<MenuPos | null>(null)
@@ -17,6 +23,7 @@ export function PlaylistCard({ playlist }: { playlist: Playlist }): React.JSX.El
     if (menu) return
     setCollectionType('playlists')
     void selectPlaylist(playlist)
+    onAfterSelect?.()
   }
 
   return (

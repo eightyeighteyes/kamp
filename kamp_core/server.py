@@ -363,6 +363,7 @@ class AlbumFavoriteRequest(BaseModel):
 class SearchOut(BaseModel):
     albums: list[AlbumOut]
     tracks: list[TrackOut]
+    playlists: list[PlaylistSearchOut] = []
 
 
 class QueueOut(BaseModel):
@@ -545,6 +546,10 @@ class PlaylistOut(BaseModel):
     created_at: float
     updated_at: float
     last_played_at: float | None = None
+
+
+class PlaylistSearchOut(PlaylistOut):
+    source: str = "local"
 
 
 class PlaylistTrackOut(BaseModel):
@@ -2308,8 +2313,22 @@ def create_app(
             or (a.missing_album and a.file_path in fts_paths)
         ]
         albums.sort(key=lambda a: not a.favorite)
+
+        # Merge playlist-name matches with playlists containing matched tracks,
+        # deduplicating by id so a playlist that matches both facets appears once.
+        name_playlists = index.search_playlists(q)
+        track_playlists = index.playlists_for_tracks([t.id for t in fts_tracks])
+        seen_ids: set[int] = set()
+        playlists: list[PlaylistSearchOut] = []
+        for raw in name_playlists + track_playlists:
+            if raw["id"] not in seen_ids:
+                seen_ids.add(raw["id"])
+                playlists.append(PlaylistSearchOut(**raw))
+
         return SearchOut(
-            albums=albums, tracks=[TrackOut.from_track(t) for t in fts_tracks]
+            albums=albums,
+            tracks=[TrackOut.from_track(t) for t in fts_tracks],
+            playlists=playlists,
         )
 
     @app.post("/api/v1/library/scan", response_model=ScanResult)

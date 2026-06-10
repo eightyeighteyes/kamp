@@ -215,9 +215,12 @@ export const getTracksForAlbum = (
   return get(filePath ? `${base}&file_path=${encodeURIComponent(filePath)}` : base)
 }
 
+export type PlaylistSearchResult = Playlist & { source: string }
+
 export type SearchResult = {
   albums: Album[]
   tracks: Track[]
+  playlists: PlaylistSearchResult[]
 }
 
 export const search = (q: string, sort = 'album_artist'): Promise<SearchResult> =>

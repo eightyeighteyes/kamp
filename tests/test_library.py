@@ -129,7 +129,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 31
+        assert version == 32
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1454,7 +1454,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1511,7 +1511,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1924,7 +1924,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert row is not None
         assert row[0] == 0
 
@@ -2178,7 +2178,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2274,7 +2274,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -2455,7 +2455,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2550,7 +2550,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 31
+        assert version == 32
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2558,7 +2558,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 31
+        assert version == 32
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3435,7 +3435,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 31
+        assert version == 32
 
         index.close()
 
@@ -4120,7 +4120,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 31
+        assert version == 32
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4155,7 +4155,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 31
+        assert version == 32
         index.close()
 
 
@@ -4603,7 +4603,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 31
+        assert version == 32
 
 
 class TestRemoteTrackSchema:
@@ -4937,7 +4937,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -4998,7 +4998,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 31
+        assert version == 32
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -5665,7 +5665,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -5780,7 +5780,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -5858,7 +5858,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -6064,7 +6064,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -6413,7 +6413,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -6510,7 +6510,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -6625,7 +6625,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -7114,7 +7114,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -7229,7 +7229,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -7327,5 +7327,289 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 31
+        assert version == 32
         assert "last_played_at" in columns
+
+    # ------------------------------------------------------------------
+    # migration v31 → v32
+    # ------------------------------------------------------------------
+
+    def test_migration_v31_creates_playlists_fts(self, tmp_path: Path) -> None:
+        """Opening a v31 DB triggers the v32 migration: playlists_fts created."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (31)")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0, disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL,"
+            " genre TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',"
+            " source TEXT NOT NULL DEFAULT 'local', stream_url TEXT,"
+            " stream_url_expires_at REAL, album_id INTEGER,"
+            " is_available INTEGER NOT NULL DEFAULT 1,"
+            " duration REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5(title, artist, album_artist, album)"
+        )
+        conn.execute(
+            "CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " album_artist TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " album TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " year TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',"
+            " label TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'local',"
+            " sale_item_id TEXT, favorite INTEGER NOT NULL DEFAULT 0,"
+            " date_added REAL, last_played_at REAL, play_count_avg REAL NOT NULL DEFAULT 0,"
+            " art_version REAL, UNIQUE (album_artist, album))"
+        )
+        conn.execute(
+            "CREATE TABLE bandcamp_collection (sale_item_id TEXT NOT NULL PRIMARY KEY,"
+            " item_type TEXT NOT NULL DEFAULT 'p', band_name TEXT NOT NULL DEFAULT '',"
+            " item_title TEXT NOT NULL DEFAULT '', tralbum_id TEXT NOT NULL DEFAULT '',"
+            " album_url TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'local',"
+            " synced_at REAL, added_at REAL NOT NULL DEFAULT 0,"
+            " num_streamable_tracks INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE settings (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE sessions (service TEXT NOT NULL PRIMARY KEY,"
+            " session_json TEXT, updated_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE deferred_ops (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " op_type TEXT NOT NULL, track_id INTEGER NOT NULL UNIQUE,"
+            " payload_json TEXT NOT NULL, created_at REAL NOT NULL,"
+            " attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE download_queue (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " sale_item_id TEXT NOT NULL UNIQUE, queued_at REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE playlists (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " title TEXT NOT NULL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " created_at REAL NOT NULL, updated_at REAL NOT NULL,"
+            " last_played_at REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE playlist_tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,"
+            " track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,"
+            " position INTEGER NOT NULL)"
+        )
+        import time as _time
+
+        conn.execute(
+            "INSERT INTO playlists (title, favorite, created_at, updated_at)"
+            " VALUES ('Existing Playlist', 0, ?, ?)",
+            (_time.time(), _time.time()),
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        # The migrated FTS table should contain the pre-existing playlist.
+        results = index.search_playlists("Existing Playlist")
+        index.close()
+
+        assert version == 32
+        assert len(results) == 1
+        assert results[0]["title"] == "Existing Playlist"
+
+    # ------------------------------------------------------------------
+    # search_playlists
+    # ------------------------------------------------------------------
+
+    def test_search_playlists_empty_query_returns_empty(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.create_playlist("Chill Mix")
+        assert index.search_playlists("") == []
+        assert index.search_playlists("   ") == []
+        index.close()
+
+    def test_search_playlists_by_exact_name(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.create_playlist("Road Trip")
+        index.create_playlist("Late Night")
+        results = index.search_playlists("Road Trip")
+        index.close()
+
+        assert len(results) == 1
+        assert results[0]["title"] == "Road Trip"
+
+    def test_search_playlists_partial_match(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.create_playlist("Morning Coffee")
+        index.create_playlist("Evening Wind-Down")
+        results = index.search_playlists("morning")
+        index.close()
+
+        assert len(results) == 1
+        assert results[0]["title"] == "Morning Coffee"
+
+    def test_search_playlists_result_has_source_local_for_empty_playlist(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._index(tmp_path)
+        index.create_playlist("Empty Playlist")
+        results = index.search_playlists("Empty")
+        index.close()
+
+        assert results[0]["source"] == "local"
+
+    def test_search_playlists_source_computed_from_tracks(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        local_track = _sample_track(tmp_path / "local.mp3")
+        remote_track = Track(
+            file_path=tmp_path / "remote.mp3",
+            title="Remote Song",
+            artist="Remote Artist",
+            album_artist="Remote Artist",
+            album="Remote Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        index.upsert_many([local_track, remote_track])
+
+        pl_local = index.create_playlist("Local Only")
+        index.add_track_to_playlist(pl_local["id"], str(local_track.file_path))
+        results_local = index.search_playlists("Local Only")
+
+        pl_remote = index.create_playlist("Remote Only")
+        index.add_track_to_playlist(pl_remote["id"], str(remote_track.file_path))
+        results_remote = index.search_playlists("Remote Only")
+
+        pl_mixed = index.create_playlist("Mixed")
+        index.add_track_to_playlist(pl_mixed["id"], str(local_track.file_path))
+        index.add_track_to_playlist(pl_mixed["id"], str(remote_track.file_path))
+        results_mixed = index.search_playlists("Mixed")
+        index.close()
+
+        assert results_local[0]["source"] == "local"
+        assert results_remote[0]["source"] == "bandcamp"
+        assert results_mixed[0]["source"] == "mixed"
+
+    def test_search_playlists_fts_updated_on_rename(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Old Name")
+        index.rename_playlist(pl["id"], "New Name")
+
+        assert index.search_playlists("Old Name") == []
+        results = index.search_playlists("New Name")
+        index.close()
+
+        assert len(results) == 1
+        assert results[0]["title"] == "New Name"
+
+    def test_search_playlists_fts_cleared_on_delete(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Gone")
+        index.delete_playlist(pl["id"])
+        results = index.search_playlists("Gone")
+        index.close()
+
+        assert results == []
+
+    # ------------------------------------------------------------------
+    # playlists_for_tracks
+    # ------------------------------------------------------------------
+
+    def test_playlists_for_tracks_empty_list_returns_empty(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._index(tmp_path)
+        index.create_playlist("Mix")
+        assert index.playlists_for_tracks([]) == []
+        index.close()
+
+    def test_playlists_for_tracks_basic(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("My Faves")
+        track = index.get_track_by_path(str(tmp_path / "a.mp3"))
+        assert track is not None
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+
+        results = index.playlists_for_tracks([track.id])
+        index.close()
+
+        assert len(results) == 1
+        assert results[0]["id"] == pl["id"]
+        assert results[0]["title"] == "My Faves"
+
+    def test_playlists_for_tracks_deduplicated(self, tmp_path: Path) -> None:
+        """Multiple tracks from the same playlist must produce one result row."""
+        index = LibraryIndex(tmp_path / "library.db")
+        tracks = [_sample_track(tmp_path / f"{i}.mp3") for i in range(3)]
+        index.upsert_many(tracks)
+        pl = index.create_playlist("Triple")
+        ids = []
+        for t in tracks:
+            row = index.get_track_by_path(str(t.file_path))
+            assert row is not None
+            ids.append(row.id)
+            index.add_track_to_playlist(pl["id"], str(t.file_path))
+
+        results = index.playlists_for_tracks(ids)
+        index.close()
+
+        assert len(results) == 1
+        assert results[0]["title"] == "Triple"
+
+    def test_playlists_for_tracks_excludes_unrelated_playlists(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._index(tmp_path)
+        pl_a = index.create_playlist("Has Track")
+        index.create_playlist("Empty")
+        track = index.get_track_by_path(str(tmp_path / "a.mp3"))
+        assert track is not None
+        index.add_track_to_playlist(pl_a["id"], str(tmp_path / "a.mp3"))
+
+        results = index.playlists_for_tracks([track.id])
+        index.close()
+
+        assert len(results) == 1
+        assert results[0]["id"] == pl_a["id"]
+
+    def test_playlists_for_tracks_track_count_reflects_full_playlist(
+        self, tmp_path: Path
+    ) -> None:
+        """track_count in results must count all tracks in the playlist, not
+        just the ones in the search input."""
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = _sample_track(tmp_path / "t1.mp3")
+        t2 = _sample_track(tmp_path / "t2.mp3")
+        index.upsert_many([t1, t2])
+        pl = index.create_playlist("Two Tracks")
+        row1 = index.get_track_by_path(str(t1.file_path))
+        row2 = index.get_track_by_path(str(t2.file_path))
+        assert row1 is not None and row2 is not None
+        index.add_track_to_playlist(pl["id"], str(t1.file_path))
+        index.add_track_to_playlist(pl["id"], str(t2.file_path))
+
+        # Only pass one track id; track_count must still be 2.
+        results = index.playlists_for_tracks([row1.id])
+        index.close()
+
+        assert results[0]["track_count"] == 2

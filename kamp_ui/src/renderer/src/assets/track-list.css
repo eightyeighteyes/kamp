@@ -77,10 +77,11 @@
   display: none;
 }
 
-/* "Change art" button sits at the bottom-right of the hero */
+/* "Change art" button sits at the top-right of the hero.
+   Bottom is occupied by .track-list-identity (margin-top: -48px overlap). */
 .hero-art-btn {
   position: absolute;
-  bottom: 8px;
+  top: 10px;
   right: 10px;
   z-index: 2;
   padding: 3px 8px;

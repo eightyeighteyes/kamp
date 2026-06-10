@@ -252,6 +252,17 @@ export function TrackContextMenu({
               </button>
             </>
           )}
+          {track.source === 'local' && (
+            <button
+              className="track-context-menu-item"
+              onClick={() => {
+                window.api.showItemInFolder(track.file_path)
+                onClose()
+              }}
+            >
+              {revealInFinderLabel()}
+            </button>
+          )}
           <ContextMenuSubmenu label="Add to Playlist">
             {playlists.map((pl) => (
               <button
@@ -280,17 +291,6 @@ export function TrackContextMenu({
                 Remove from Playlist
               </button>
             </>
-          )}
-          {track.source === 'local' && (
-            <button
-              className="track-context-menu-item"
-              onClick={() => {
-                window.api.showItemInFolder(track.file_path)
-                onClose()
-              }}
-            >
-              {revealInFinderLabel()}
-            </button>
           )}
         </ContextMenu>
       )}

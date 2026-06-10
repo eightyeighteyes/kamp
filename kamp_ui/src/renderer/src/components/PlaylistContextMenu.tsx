@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
 import { FavoriteIcon, PlayNextIcon, QueueAddIcon } from './TransportIcons'
 import type { Playlist } from '../api/client'
+import { truncateTitle } from '../utils/truncateTitle'
 
 interface Props {
   x: number
@@ -13,6 +14,7 @@ interface Props {
 
 export function PlaylistContextMenu({ x, y, playlist, onClose }: Props): React.JSX.Element {
   const deletePlaylist = useStore((s) => s.deletePlaylist)
+  const renamePlaylist = useStore((s) => s.renamePlaylist)
   const setPlaylistFavorite = useStore((s) => s.setPlaylistFavorite)
   const playNext = useStore((s) => s.playNext)
   const addToQueue = useStore((s) => s.addToQueue)
@@ -74,9 +76,22 @@ export function PlaylistContextMenu({ x, y, playlist, onClose }: Props): React.J
       <div className="track-context-menu-divider" />
       <button
         className="track-context-menu-item"
+        onClick={() => {
+          const newTitle = window.prompt('Rename playlist', playlist.title)
+          const trimmed = newTitle?.trim()
+          if (trimmed && trimmed !== playlist.title) {
+            void renamePlaylist(playlist.id, trimmed)
+          }
+          onClose()
+        }}
+      >
+        Rename Playlist
+      </button>
+      <button
+        className="track-context-menu-item"
         style={{ color: 'var(--danger, #e05)' }}
         onClick={() => {
-          if (window.confirm(`Delete playlist "${playlist.title}"?`)) {
+          if (window.confirm(`Delete playlist "${truncateTitle(playlist.title, 40)}"?`)) {
             void deletePlaylist(playlist.id)
           }
           onClose()

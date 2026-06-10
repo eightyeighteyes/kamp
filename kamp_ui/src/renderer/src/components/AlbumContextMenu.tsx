@@ -222,21 +222,6 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
               Download this album
             </button>
           )}
-          <ContextMenuSubmenu label="Add to Playlist">
-            {playlists.map((pl) => (
-              <button
-                key={pl.id}
-                className="track-context-menu-item"
-                onClick={() => handleAddToPlaylist(pl.id)}
-              >
-                {truncateTitle(pl.title)}
-              </button>
-            ))}
-            {playlists.length > 0 && <div className="track-context-menu-divider" />}
-            <button className="track-context-menu-item" onClick={handleNewPlaylist}>
-              New Playlist
-            </button>
-          </ContextMenuSubmenu>
           {album.source === 'local' && (
             <button
               className="track-context-menu-item"
@@ -253,6 +238,21 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
               {revealInFinderLabel()}
             </button>
           )}
+          <ContextMenuSubmenu label="Add to Playlist">
+            {playlists.map((pl) => (
+              <button
+                key={pl.id}
+                className="track-context-menu-item"
+                onClick={() => handleAddToPlaylist(pl.id)}
+              >
+                {truncateTitle(pl.title)}
+              </button>
+            ))}
+            {playlists.length > 0 && <div className="track-context-menu-divider" />}
+            <button className="track-context-menu-item" onClick={handleNewPlaylist}>
+              New Playlist
+            </button>
+          </ContextMenuSubmenu>
         </ContextMenu>
       )}
       {duplicateModal && (

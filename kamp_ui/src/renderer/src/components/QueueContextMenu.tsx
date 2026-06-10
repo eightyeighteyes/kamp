@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useStore } from '../store'
 import { ContextMenu } from './ContextMenu'
 import { ContextMenuSubmenu } from './ContextMenuSubmenu'
@@ -11,6 +11,8 @@ import {
   RemoveFromQueueIcon
 } from './TransportIcons'
 import type { Track } from '../api/client'
+import { getPlaylistTracks } from '../api/client'
+import { DuplicatePlaylistTrackModal } from './DuplicatePlaylistTrackModal'
 
 interface Props {
   x: number
@@ -22,6 +24,13 @@ interface Props {
   position: number // currently playing track's display index
   onClearSelection: () => void
   onClose: () => void
+}
+
+type DuplicateModalState = {
+  playlistId: number
+  playlistName: string
+  allPaths: string[]
+  uniquePaths: string[]
 }
 
 export function QueueContextMenu({
@@ -53,14 +62,54 @@ export function QueueContextMenu({
   const setCollectionType = useStore((s) => s.setCollectionType)
   const showFlashToast = useStore((s) => s.showFlashToast)
 
+  const [duplicateModal, setDuplicateModal] = useState<DuplicateModalState | null>(null)
+
   // Targets for playlist operations: all selected tracks, or the right-clicked
   // track alone when there is no selection (consistent with favorites/remove).
   const playlistTargets = selectedTracks.length > 0 ? selectedTracks : track ? [track] : []
 
   const handleAddToPlaylist = (playlistId: number): void => {
-    playlistTargets.forEach((t) => void addTrackToPlaylist(playlistId, t.file_path))
     const pl = playlists.find((p) => p.id === playlistId)
-    if (pl) showFlashToast(`Added to ${truncateTitle(pl.title, 35)}`)
+    const allPaths = playlistTargets.map((t) => t.file_path)
+    void (async () => {
+      const existing = await getPlaylistTracks(playlistId)
+      const existingSet = new Set(existing.map((t) => t.file_path))
+      const uniquePaths = allPaths.filter((p) => !existingSet.has(p))
+      if (uniquePaths.length === allPaths.length) {
+        allPaths.forEach((fp) => void addTrackToPlaylist(playlistId, fp))
+        if (pl) showFlashToast(`Added to ${truncateTitle(pl.title, 35)}`)
+        onClose()
+      } else {
+        setDuplicateModal({
+          playlistId,
+          playlistName: pl?.title ?? '',
+          allPaths,
+          uniquePaths
+        })
+      }
+    })()
+  }
+
+  const handleDuplicateConfirmAll = (): void => {
+    if (!duplicateModal) return
+    const { playlistId, allPaths, playlistName } = duplicateModal
+    allPaths.forEach((fp) => void addTrackToPlaylist(playlistId, fp))
+    showFlashToast(`Added to ${truncateTitle(playlistName, 35)}`)
+    setDuplicateModal(null)
+    onClose()
+  }
+
+  const handleDuplicateConfirmUnique = (): void => {
+    if (!duplicateModal) return
+    const { playlistId, uniquePaths, playlistName } = duplicateModal
+    uniquePaths.forEach((fp) => void addTrackToPlaylist(playlistId, fp))
+    showFlashToast(`Added to ${truncateTitle(playlistName, 35)}`)
+    setDuplicateModal(null)
+    onClose()
+  }
+
+  const handleDuplicateCancel = (): void => {
+    setDuplicateModal(null)
     onClose()
   }
 
@@ -81,184 +130,197 @@ export function QueueContextMenu({
   const allFavorited = selectedTracks.length > 0 && selectedTracks.every((t) => t.favorite)
 
   return (
-    <ContextMenu x={x} y={y} onClose={onClose}>
-      {track && (
-        <>
-          <button
-            className="track-context-menu-item"
-            onClick={() => {
-              const found = albums.find(
-                (a) => a.album_artist === track.album_artist && a.album === track.album
-              ) ?? {
-                album_artist: track.album_artist,
-                album: track.album,
-                year: '',
-                track_count: 0,
-                has_art: false,
-                missing_album: false,
-                file_path: '',
-                art_version: null,
-                added_at: null,
-                last_played_at: null,
-                play_count_avg: 0,
-                favorite: false,
-                has_favorite_track: false,
-                source: 'local',
-                has_remote_tracks: false
-              }
-              void setActiveView('library')
-              void selectAlbum(found)
-              onClose()
-            }}
-          >
-            <span
-              style={{
-                marginRight: 6,
-                verticalAlign: 'middle',
-                flexShrink: 0,
-                display: 'inline-flex'
-              }}
-            >
-              <GoToAlbumIcon size={12} />
-            </span>
-            Go to Album
-          </button>
-          <button
-            className="track-context-menu-item"
-            onClick={() => {
-              void setActiveView('library')
-              selectArtist(track.album_artist)
-              onClose()
-            }}
-          >
-            <span
-              style={{
-                marginRight: 6,
-                verticalAlign: 'middle',
-                flexShrink: 0,
-                display: 'inline-flex'
-              }}
-            >
-              <GoToArtistIcon size={12} />
-            </span>
-            Go to Artist
-          </button>
-          {selectedTracks.length > 0 && (
-            <button
-              className="track-context-menu-item"
-              onClick={() => {
-                void setFavorites(selectedTracks, !allFavorited)
-                onClose()
-              }}
-            >
-              <span
-                style={{
-                  marginRight: 6,
-                  verticalAlign: 'middle',
-                  flexShrink: 0,
-                  display: 'inline-flex'
-                }}
-              >
-                <FavoriteIcon active={!allFavorited} size={12} />
-              </span>
-              {allFavorited ? 'Remove from Favorites' : 'Add to Favorites'}
-            </button>
-          )}
-          <ContextMenuSubmenu label="Add to Playlist">
-            {playlists.map((pl) => (
+    <>
+      {!duplicateModal && (
+        <ContextMenu x={x} y={y} onClose={onClose}>
+          {track && (
+            <>
               <button
-                key={pl.id}
                 className="track-context-menu-item"
-                onClick={() => handleAddToPlaylist(pl.id)}
+                onClick={() => {
+                  const found = albums.find(
+                    (a) => a.album_artist === track.album_artist && a.album === track.album
+                  ) ?? {
+                    album_artist: track.album_artist,
+                    album: track.album,
+                    year: '',
+                    track_count: 0,
+                    has_art: false,
+                    missing_album: false,
+                    file_path: '',
+                    art_version: null,
+                    added_at: null,
+                    last_played_at: null,
+                    play_count_avg: 0,
+                    favorite: false,
+                    has_favorite_track: false,
+                    source: 'local',
+                    has_remote_tracks: false
+                  }
+                  void setActiveView('library')
+                  void selectAlbum(found)
+                  onClose()
+                }}
               >
-                {truncateTitle(pl.title)}
+                <span
+                  style={{
+                    marginRight: 6,
+                    verticalAlign: 'middle',
+                    flexShrink: 0,
+                    display: 'inline-flex'
+                  }}
+                >
+                  <GoToAlbumIcon size={12} />
+                </span>
+                Go to Album
               </button>
-            ))}
-            {playlists.length > 0 && <div className="track-context-menu-divider" />}
-            <button className="track-context-menu-item" onClick={handleNewPlaylist}>
-              New Playlist
-            </button>
-          </ContextMenuSubmenu>
-          {unplayedSelectedIndices.length > 0 && position >= 0 && (
+              <button
+                className="track-context-menu-item"
+                onClick={() => {
+                  void setActiveView('library')
+                  selectArtist(track.album_artist)
+                  onClose()
+                }}
+              >
+                <span
+                  style={{
+                    marginRight: 6,
+                    verticalAlign: 'middle',
+                    flexShrink: 0,
+                    display: 'inline-flex'
+                  }}
+                >
+                  <GoToArtistIcon size={12} />
+                </span>
+                Go to Artist
+              </button>
+              {selectedTracks.length > 0 && (
+                <button
+                  className="track-context-menu-item"
+                  onClick={() => {
+                    void setFavorites(selectedTracks, !allFavorited)
+                    onClose()
+                  }}
+                >
+                  <span
+                    style={{
+                      marginRight: 6,
+                      verticalAlign: 'middle',
+                      flexShrink: 0,
+                      display: 'inline-flex'
+                    }}
+                  >
+                    <FavoriteIcon active={!allFavorited} size={12} />
+                  </span>
+                  {allFavorited ? 'Remove from Favorites' : 'Add to Favorites'}
+                </button>
+              )}
+              <ContextMenuSubmenu label="Add to Playlist">
+                {playlists.map((pl) => (
+                  <button
+                    key={pl.id}
+                    className="track-context-menu-item"
+                    onClick={() => handleAddToPlaylist(pl.id)}
+                  >
+                    {truncateTitle(pl.title)}
+                  </button>
+                ))}
+                {playlists.length > 0 && <div className="track-context-menu-divider" />}
+                <button className="track-context-menu-item" onClick={handleNewPlaylist}>
+                  New Playlist
+                </button>
+              </ContextMenuSubmenu>
+              {unplayedSelectedIndices.length > 0 && position >= 0 && (
+                <button
+                  className="track-context-menu-item"
+                  onClick={() => {
+                    if (unplayedSelectedIndices.length === 1) {
+                      void moveQueueTrack(unplayedSelectedIndices[0], position + 1)
+                    } else {
+                      const selectedSet = new Set(unplayedSelectedIndices)
+                      const nonSelected = Array.from({ length: queueLength }, (_, i) => i).filter(
+                        (i) => !selectedSet.has(i)
+                      )
+                      const insertAt = nonSelected.indexOf(position) + 1
+                      const newOrder = [
+                        ...nonSelected.slice(0, insertAt),
+                        ...unplayedSelectedIndices,
+                        ...nonSelected.slice(insertAt)
+                      ]
+                      void reorderQueue(newOrder)
+                    }
+                    onClearSelection()
+                    onClose()
+                  }}
+                >
+                  <span
+                    style={{
+                      marginRight: 6,
+                      verticalAlign: 'middle',
+                      flexShrink: 0,
+                      display: 'inline-flex'
+                    }}
+                  >
+                    <PlayNextIcon size={12} />
+                  </span>
+                  Queue Next
+                </button>
+              )}
+              {unplayedSelectedIndices.length > 0 && (
+                <button
+                  className="track-context-menu-item"
+                  onClick={() => {
+                    void removeFromQueue(unplayedSelectedIndices)
+                    onClose()
+                  }}
+                >
+                  <span
+                    style={{
+                      marginRight: 6,
+                      verticalAlign: 'middle',
+                      flexShrink: 0,
+                      display: 'inline-flex'
+                    }}
+                  >
+                    <RemoveFromQueueIcon size={12} />
+                  </span>
+                  Remove from Queue
+                </button>
+              )}
+              <div className="track-context-menu-divider" />
+            </>
+          )}
+          <button
+            className="track-context-menu-item"
+            onClick={() => {
+              void clearQueue()
+              onClose()
+            }}
+          >
+            Clear Queue
+          </button>
+          {trackIdx !== null && (
             <button
               className="track-context-menu-item"
               onClick={() => {
-                if (unplayedSelectedIndices.length === 1) {
-                  void moveQueueTrack(unplayedSelectedIndices[0], position + 1)
-                } else {
-                  const selectedSet = new Set(unplayedSelectedIndices)
-                  const nonSelected = Array.from({ length: queueLength }, (_, i) => i).filter(
-                    (i) => !selectedSet.has(i)
-                  )
-                  const insertAt = nonSelected.indexOf(position) + 1
-                  const newOrder = [
-                    ...nonSelected.slice(0, insertAt),
-                    ...unplayedSelectedIndices,
-                    ...nonSelected.slice(insertAt)
-                  ]
-                  void reorderQueue(newOrder)
-                }
-                onClearSelection()
+                void clearRemainingQueue(trackIdx)
                 onClose()
               }}
             >
-              <span
-                style={{
-                  marginRight: 6,
-                  verticalAlign: 'middle',
-                  flexShrink: 0,
-                  display: 'inline-flex'
-                }}
-              >
-                <PlayNextIcon size={12} />
-              </span>
-              Queue Next
+              Clear Remaining
             </button>
           )}
-          {unplayedSelectedIndices.length > 0 && (
-            <button
-              className="track-context-menu-item"
-              onClick={() => {
-                void removeFromQueue(unplayedSelectedIndices)
-                onClose()
-              }}
-            >
-              <span
-                style={{
-                  marginRight: 6,
-                  verticalAlign: 'middle',
-                  flexShrink: 0,
-                  display: 'inline-flex'
-                }}
-              >
-                <RemoveFromQueueIcon size={12} />
-              </span>
-              Remove from Queue
-            </button>
-          )}
-          <div className="track-context-menu-divider" />
-        </>
+        </ContextMenu>
       )}
-      <button
-        className="track-context-menu-item"
-        onClick={() => {
-          void clearQueue()
-          onClose()
-        }}
-      >
-        Clear Queue
-      </button>
-      {trackIdx !== null && (
-        <button
-          className="track-context-menu-item"
-          onClick={() => {
-            void clearRemainingQueue(trackIdx)
-            onClose()
-          }}
-        >
-          Clear Remaining
-        </button>
+      {duplicateModal && (
+        <DuplicatePlaylistTrackModal
+          playlistName={duplicateModal.playlistName}
+          hasMixed={duplicateModal.uniquePaths.length > 0}
+          onAddAll={handleDuplicateConfirmAll}
+          onAddUnique={handleDuplicateConfirmUnique}
+          onCancel={handleDuplicateCancel}
+        />
       )}
-    </ContextMenu>
+    </>
   )
 }

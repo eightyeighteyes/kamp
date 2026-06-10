@@ -1,4 +1,4 @@
-/* MusicBrainz comparison modal (KAMP-230) ---------------------------------- */
+/* Shared modal primitives -------------------------------------------------- */
 
 .modal-backdrop {
   position: fixed;
@@ -19,6 +19,71 @@
   flex-direction: column;
   overflow: hidden;
 }
+
+/* Compact confirmation modal (CollisionModal, DuplicatePlaylistTrackModal) */
+.collision-modal {
+  width: min(420px, 90vw);
+  padding: 24px;
+  gap: 16px;
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.modal-body {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.modal-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised, var(--surface));
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.modal-btn:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.modal-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.modal-btn--primary:hover {
+  filter: brightness(1.1);
+}
+
+.modal-btn--destructive {
+  background: none;
+  border-color: var(--danger, #c0392b);
+  color: var(--danger, #c0392b);
+}
+
+.modal-btn--destructive:hover {
+  background: rgba(192, 57, 43, 0.12);
+}
+
+/* MusicBrainz comparison modal (KAMP-230) ---------------------------------- */
 
 .mb-modal {
   width: min(680px, 92vw);

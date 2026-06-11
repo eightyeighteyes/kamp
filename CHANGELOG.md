@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.23.0](https://github.com/eightyeighteyes/kamp/compare/v1.22.0...v1.23.0) (2026-06-11)
+
+
+### Features
+
+* **KAMP-442:** search returns playlists by name and via track/artist results ([#530](https://github.com/eightyeighteyes/kamp/issues/530)) ([562e4c8](https://github.com/eightyeighteyes/kamp/commit/562e4c85c3b28c37b4b3280479352534f095e444))
+* **KAMP-443:** playlist cover art ([#531](https://github.com/eightyeighteyes/kamp/issues/531)) ([2370be7](https://github.com/eightyeighteyes/kamp/commit/2370be75378244b165775120d072d39f4bf3a6c4))
+* **KAMP-445:** add artist breadcrumb to album grid ([#536](https://github.com/eightyeighteyes/kamp/issues/536)) ([fafc9bc](https://github.com/eightyeighteyes/kamp/commit/fafc9bc1e5917aa2887764a0a89617bfad648ba5))
+* **KAMP-446:** drag to reposition album hero art vertically ([#537](https://github.com/eightyeighteyes/kamp/issues/537)) ([d668204](https://github.com/eightyeighteyes/kamp/commit/d668204cb29eb96865ea15353d0456294b36fd90))
+* **KAMP-450:** track when a playlist was last played ([#529](https://github.com/eightyeighteyes/kamp/issues/529)) ([06caa3d](https://github.com/eightyeighteyes/kamp/commit/06caa3d90e06d96eaec405f90f082f8da8880db6))
+* **KAMP-453:** warn before adding duplicate tracks to a playlist ([#532](https://github.com/eightyeighteyes/kamp/issues/532)) ([759a6ae](https://github.com/eightyeighteyes/kamp/commit/759a6ae4403ba0b35882b198f41c1f12c432e971))
+* **KAMP-454:** go to album / go to artist in track context menu ([#533](https://github.com/eightyeighteyes/kamp/issues/533)) ([273cfe7](https://github.com/eightyeighteyes/kamp/commit/273cfe73ebe2463b213a90f132d0becf377e8041))
+
+
+### Bug Fixes
+
+* **KAMP-437:** allow available streaming tracks to be dragged into queue ([#535](https://github.com/eightyeighteyes/kamp/issues/535)) ([1b61ec4](https://github.com/eightyeighteyes/kamp/commit/1b61ec4dfa91b037679cbb46927b0e9e66cebed4))
+* **KAMP-448:** use track_id FK in playlist_tracks instead of file_path ([#528](https://github.com/eightyeighteyes/kamp/issues/528)) ([9900f55](https://github.com/eightyeighteyes/kamp/commit/9900f550dfb71d7f4278e4db091ab3b6a3a56642))
+* **KAMP-449:** double-clicking a playlist track now starts playback from that track ([#525](https://github.com/eightyeighteyes/kamp/issues/525)) ([74cc805](https://github.com/eightyeighteyes/kamp/commit/74cc805656396df9235e231a59d8eff3938afe91))
+* **KAMP-451:** validate remote stream URLs with HEAD before playback ([#527](https://github.com/eightyeighteyes/kamp/issues/527)) ([1ea0443](https://github.com/eightyeighteyes/kamp/commit/1ea04436f9260bf57548638ef5a8469bba52cf78))
+* **KAMP-455:** persist sort direction across app restarts ([#534](https://github.com/eightyeighteyes/kamp/issues/534)) ([80943ec](https://github.com/eightyeighteyes/kamp/commit/80943ecd35b22816f2255b6b45937d04b08aa1d9))
+
 ## [1.22.0](https://github.com/eightyeighteyes/kamp/compare/v1.21.0...v1.22.0) (2026-06-05)
 
 

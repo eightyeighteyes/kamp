@@ -646,7 +646,7 @@ export function TrackList(): React.JSX.Element | null {
                   if (isCurrent) togglePlayPause()
                   else playTrack(album.album_artist, album.album, i, album.file_path)
                 }}
-                {...(!isRemoteTrack
+                {...(!isTrackOffline && !isPreorderUnavailable
                   ? {
                       draggable: true,
                       onDragStart: (e: React.DragEvent) => {

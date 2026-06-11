@@ -344,6 +344,18 @@ export function QueuePanel(): React.JSX.Element {
             e.dataTransfer.setData('text/kamp-queue-idx', String(idx))
           }
           e.dataTransfer.effectAllowed = 'move'
+          const elem = e.currentTarget as HTMLElement
+          const onEscape = (ev: KeyboardEvent): void => {
+            if (ev.key !== 'Escape') return
+            document.removeEventListener('keydown', onEscape)
+            elem.dispatchEvent(new DragEvent('dragend', { bubbles: true }))
+          }
+          document.addEventListener('keydown', onEscape)
+          document.addEventListener(
+            'dragend',
+            () => document.removeEventListener('keydown', onEscape),
+            { once: true }
+          )
         }}
         onDragEnd={() => {
           // Always clear after drag — avoids stale index mapping when loadQueue()

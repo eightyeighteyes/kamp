@@ -708,6 +708,18 @@ export function TrackList(): React.JSX.Element | null {
                       onDragStart: (e: React.DragEvent) => {
                         e.dataTransfer.setData('text/kamp-track-path', track.file_path)
                         e.dataTransfer.effectAllowed = 'copy'
+                        const elem = e.currentTarget as HTMLElement
+                        const onEscape = (ev: KeyboardEvent): void => {
+                          if (ev.key !== 'Escape') return
+                          document.removeEventListener('keydown', onEscape)
+                          elem.dispatchEvent(new DragEvent('dragend', { bubbles: true }))
+                        }
+                        document.addEventListener('keydown', onEscape)
+                        document.addEventListener(
+                          'dragend',
+                          () => document.removeEventListener('keydown', onEscape),
+                          { once: true }
+                        )
                       }
                     }
                   : {})}

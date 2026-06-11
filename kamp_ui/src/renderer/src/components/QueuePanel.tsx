@@ -65,6 +65,8 @@ export function QueuePanel(): React.JSX.Element {
   const dragStartXRef = useRef(0)
   const widthAtDragStartRef = useRef(QUEUE_WIDTH_DEFAULT)
   const didDragRef = useRef(false)
+  const isDraggingRef = useRef(false)
+  const dragElemRef = useRef<HTMLElement | null>(null)
 
   const tracks = queue?.tracks ?? []
   const position = queue?.position ?? -1
@@ -95,6 +97,25 @@ export function QueuePanel(): React.JSX.Element {
 
     setAnchorIdx(null)
   }, [tracks.length, position])
+
+  // Persistent Escape-to-cancel-drag handler. Must be registered before any drag
+  // starts — Chromium may suppress dynamically-added keydown listeners during drag.
+  useEffect(() => {
+    const onEscape = (ev: KeyboardEvent): void => {
+      if (ev.key !== 'Escape' || !isDraggingRef.current) return
+      isDraggingRef.current = false
+      const elem = dragElemRef.current
+      dragElemRef.current = null
+      if (elem) {
+        // Simulate mouse release to end the native drag (and hide the ghost)
+        document.dispatchEvent(new MouseEvent('mouseup'))
+        // Dispatch dragend on the source element to trigger React onDragEnd cleanup
+        elem.dispatchEvent(new DragEvent('dragend', { bubbles: true }))
+      }
+    }
+    document.addEventListener('keydown', onEscape)
+    return () => document.removeEventListener('keydown', onEscape)
+  }, [])
 
   // Clamp width to 33% when the window shrinks.
   useEffect(() => {
@@ -344,20 +365,12 @@ export function QueuePanel(): React.JSX.Element {
             e.dataTransfer.setData('text/kamp-queue-idx', String(idx))
           }
           e.dataTransfer.effectAllowed = 'move'
-          const elem = e.currentTarget as HTMLElement
-          const onEscape = (ev: KeyboardEvent): void => {
-            if (ev.key !== 'Escape') return
-            document.removeEventListener('keydown', onEscape)
-            elem.dispatchEvent(new DragEvent('dragend', { bubbles: true }))
-          }
-          document.addEventListener('keydown', onEscape)
-          document.addEventListener(
-            'dragend',
-            () => document.removeEventListener('keydown', onEscape),
-            { once: true }
-          )
+          isDraggingRef.current = true
+          dragElemRef.current = e.currentTarget as HTMLElement
         }}
         onDragEnd={() => {
+          isDraggingRef.current = false
+          dragElemRef.current = null
           // Always clear after drag — avoids stale index mapping when loadQueue()
           // returns the reordered array with the same length.
           setSelectedIndices(new Set())

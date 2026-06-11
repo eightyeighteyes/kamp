@@ -121,6 +121,8 @@ export function TrackList(): React.JSX.Element | null {
   const toggleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const artOffsetAtPanStartRef = useRef(ART_OFFSET_DEFAULT)
   const panStartYRef = useRef(0)
+  const isDraggingTrackRef = useRef(false)
+  const dragTrackElemRef = useRef<HTMLElement | null>(null)
   const [heroHeightPct, setHeroHeightPct] = useState<number>(() => {
     const saved = parseFloat(localStorage.getItem(HERO_KEY) ?? '')
     return isNaN(saved) ? HERO_DEFAULT : Math.min(HERO_DEFAULT, Math.max(HERO_MIN, saved))
@@ -277,6 +279,23 @@ export function TrackList(): React.JSX.Element | null {
       if (toggleTimeoutRef.current) clearTimeout(toggleTimeoutRef.current)
       setIsResizing(false)
     }
+  }, [])
+
+  // Persistent Escape-to-cancel-drag handler. Must be registered before any drag
+  // starts — Chromium may suppress dynamically-added keydown listeners during drag.
+  useEffect(() => {
+    const onEscape = (ev: KeyboardEvent): void => {
+      if (ev.key !== 'Escape' || !isDraggingTrackRef.current) return
+      isDraggingTrackRef.current = false
+      const elem = dragTrackElemRef.current
+      dragTrackElemRef.current = null
+      if (elem) {
+        document.dispatchEvent(new MouseEvent('mouseup'))
+        elem.dispatchEvent(new DragEvent('dragend', { bubbles: true }))
+      }
+    }
+    document.addEventListener('keydown', onEscape)
+    return () => document.removeEventListener('keydown', onEscape)
   }, [])
 
   const handleFetchMB = (): void => {
@@ -708,18 +727,12 @@ export function TrackList(): React.JSX.Element | null {
                       onDragStart: (e: React.DragEvent) => {
                         e.dataTransfer.setData('text/kamp-track-path', track.file_path)
                         e.dataTransfer.effectAllowed = 'copy'
-                        const elem = e.currentTarget as HTMLElement
-                        const onEscape = (ev: KeyboardEvent): void => {
-                          if (ev.key !== 'Escape') return
-                          document.removeEventListener('keydown', onEscape)
-                          elem.dispatchEvent(new DragEvent('dragend', { bubbles: true }))
-                        }
-                        document.addEventListener('keydown', onEscape)
-                        document.addEventListener(
-                          'dragend',
-                          () => document.removeEventListener('keydown', onEscape),
-                          { once: true }
-                        )
+                        isDraggingTrackRef.current = true
+                        dragTrackElemRef.current = e.currentTarget as HTMLElement
+                      },
+                      onDragEnd: () => {
+                        isDraggingTrackRef.current = false
+                        dragTrackElemRef.current = null
                       }
                     }
                   : {})}

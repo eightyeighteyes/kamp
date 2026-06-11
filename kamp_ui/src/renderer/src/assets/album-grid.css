@@ -75,7 +75,7 @@
   margin: 0 -16px 0;
 }
 
-/* Breadcrumb rendered inline in the toolbar (no hero image to overlay) */
+/* Breadcrumb sits below the toolbar rail (no hero image to overlay) */
 .album-grid-breadcrumb {
   position: static;
   background: transparent;
@@ -83,7 +83,6 @@
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   padding: 0;
-  margin-right: 4px;
 }
 
 /* Shared toolbar dropdown styles ------------------------------------------- */

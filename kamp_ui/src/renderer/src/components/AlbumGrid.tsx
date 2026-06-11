@@ -20,6 +20,7 @@ const ALBUM_SORT_OPTIONS = [
 export function AlbumGrid(): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
   const selectedArtist = useStore((s) => s.library.selectedArtist)
+  const selectArtist = useStore((s) => s.selectArtist)
   const libraryFilter = useStore((s) => s.libraryFilter)
   const sortOrder = useStore((s) => s.sortOrder)
   const sortDir = useStore((s) => s.sortDir)
@@ -90,6 +91,15 @@ export function AlbumGrid(): React.JSX.Element {
         <SourceControl />
         <FilterControl />
       </div>
+      {selectedArtist && (
+        <nav className="breadcrumb album-grid-breadcrumb" aria-label="Navigation">
+          <button onClick={() => selectArtist(null)}>Library</button>
+          <span className="breadcrumb-sep" aria-hidden="true">
+            ›
+          </span>
+          <span>{selectedArtist}</span>
+        </nav>
+      )}
       {visible.length === 0 ? (
         <div className="album-grid-empty">{emptyMessage()}</div>
       ) : (

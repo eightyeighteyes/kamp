@@ -946,6 +946,7 @@ def _cmd_daemon(
         on_library_path_set=_on_library_path_set,
         ui_active_view=config.ui.active_view,
         ui_sort_order=config.ui.sort_order,
+        ui_sort_dir=config.ui.sort_dir,
         ui_queue_panel_open=config.ui.queue_panel_open,
         on_ui_state_set=_on_ui_state_set,
         config_values=_config_values,

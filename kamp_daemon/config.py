@@ -60,6 +60,7 @@ class LibraryConfig:
 class UiConfig:
     active_view: str = "library"
     sort_order: str = "album_artist"
+    sort_dir: str = "asc"
     queue_panel_open: int = 0
 
 
@@ -98,6 +99,7 @@ _CONFIG_DEFAULTS: dict[str, str] = {
     "bandcamp.collection_mode": "download",
     "ui.active_view": "home",
     "ui.sort_order": "album_artist",
+    "ui.sort_dir": "asc",
     "ui.queue_panel_open": "0",
 }
 
@@ -116,6 +118,7 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "bandcamp.collection_mode": str,
     "ui.active_view": str,
     "ui.sort_order": str,
+    "ui.sort_dir": str,
     "ui.queue_panel_open": int,
 }
 
@@ -178,6 +181,7 @@ _CONFIG_KEY_CHOICES: dict[str, frozenset[str]] = {
     "bandcamp.collection_mode": frozenset({"stream", "download"}),
     "ui.active_view": frozenset({"library", "now-playing", "home"}),
     "ui.sort_order": frozenset({"album_artist", "album", "date_added", "last_played"}),
+    "ui.sort_dir": frozenset({"asc", "desc"}),
 }
 
 
@@ -331,6 +335,7 @@ class Config:
             ui=UiConfig(
                 active_view=_get("ui.active_view"),
                 sort_order=_get("ui.sort_order"),
+                sort_dir=_get("ui.sort_dir"),
                 queue_panel_open=_int("ui.queue_panel_open"),
             ),
         )

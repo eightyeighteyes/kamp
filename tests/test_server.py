@@ -1809,6 +1809,18 @@ class TestUiStateEndpoints:
         assert "sort_dir" in data
         assert data["sort_dir"] == "asc"
 
+    def test_ui_sort_dir_init_param_reflected_in_ui_state(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            ui_sort_dir="desc",
+        )
+        data = TestClient(app).get("/api/v1/ui").json()
+        assert data["sort_dir"] == "desc"
+
     def test_set_sort_order_persists_sort_dir(self, client: TestClient) -> None:
         client.post(
             "/api/v1/ui/sort-order",

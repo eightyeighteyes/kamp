@@ -37,7 +37,7 @@
   width: 100%;
   height: 150%;
   object-fit: cover;
-  object-position: center top;
+  object-position: center 0%;
   display: block;
   opacity: 0;
   transition: opacity 0.3s;
@@ -102,6 +102,15 @@
 .hero-art-btn:hover {
   color: var(--text);
   background: rgba(20, 20, 20, 0.85);
+}
+
+/* Art pan gesture cursors */
+.track-list-view--edit .track-list-hero.has-art {
+  cursor: grab;
+}
+
+.track-list-view--art-panning .track-list-hero {
+  cursor: grabbing;
 }
 
 /* Breadcrumb floats over the hero */

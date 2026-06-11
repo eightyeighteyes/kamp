@@ -39,6 +39,9 @@ const TOAST_TTL = 10_000 // ms
 const HERO_DEFAULT = 45
 const HERO_MIN = 15
 const HERO_KEY = 'kamp:hero-height-pct'
+const ART_OFFSET_DEFAULT = 0
+const artOffsetKey = (artist: string, album: string): string =>
+  `kamp:album-art-offset:${encodeURIComponent(artist)}:${encodeURIComponent(album)}`
 
 function sourceIcon(source: string, size: number): React.JSX.Element {
   if (source === 'bandcamp') return <BandcampIcon size={size} />
@@ -57,7 +60,13 @@ type MBFetchState =
   | { status: 'ready'; candidates: MusicBrainzRelease[] }
   | { status: 'error'; message: string }
 
-function HeroImage({ src }: { src: string }): React.JSX.Element {
+function HeroImage({
+  src,
+  objectPositionY = 0
+}: {
+  src: string
+  objectPositionY?: number
+}): React.JSX.Element {
   const [loaded, setLoaded] = useState(false)
   return (
     <img
@@ -65,6 +74,7 @@ function HeroImage({ src }: { src: string }): React.JSX.Element {
       src={src}
       alt=""
       draggable={false}
+      style={{ objectPosition: `center ${objectPositionY}%` }}
       onLoad={() => setLoaded(true)}
       onError={() => setLoaded(false)}
     />
@@ -109,11 +119,21 @@ export function TrackList(): React.JSX.Element | null {
   const dragStartYRef = useRef(0)
   const heroAtDragStartRef = useRef(HERO_DEFAULT)
   const toggleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const artOffsetAtPanStartRef = useRef(ART_OFFSET_DEFAULT)
+  const panStartYRef = useRef(0)
   const [heroHeightPct, setHeroHeightPct] = useState<number>(() => {
     const saved = parseFloat(localStorage.getItem(HERO_KEY) ?? '')
     return isNaN(saved) ? HERO_DEFAULT : Math.min(HERO_DEFAULT, Math.max(HERO_MIN, saved))
   })
+  const [artOffsetPct, setArtOffsetPct] = useState<number>(() => {
+    if (!album) return ART_OFFSET_DEFAULT
+    const saved = parseFloat(
+      localStorage.getItem(artOffsetKey(album.album_artist, album.album)) ?? ''
+    )
+    return isNaN(saved) ? ART_OFFSET_DEFAULT : Math.min(100, Math.max(0, saved))
+  })
   const [isResizing, setIsResizing] = useState(false)
+  const [isArtPanning, setIsArtPanning] = useState(false)
   const [collision, setCollision] = useState<
     (TrackTagsCollision & { pendingTrackId: number; pendingTitle: string }) | null
   >(null)
@@ -133,6 +153,40 @@ export function TrackList(): React.JSX.Element | null {
     setPrevAlbumKey(albumKey)
     setMbState({ status: 'idle' })
     setArtSearchOpen(false)
+    const savedOffset = album
+      ? parseFloat(localStorage.getItem(artOffsetKey(album.album_artist, album.album)) ?? '')
+      : NaN
+    setArtOffsetPct(
+      isNaN(savedOffset) ? ART_OFFSET_DEFAULT : Math.min(100, Math.max(0, savedOffset))
+    )
+  }
+
+  const handleArtPanMouseDown = (e: React.MouseEvent): void => {
+    if (e.button !== 0 || !album?.has_art) return
+    e.preventDefault()
+    artOffsetAtPanStartRef.current = artOffsetPct
+    panStartYRef.current = e.clientY
+    setIsArtPanning(true)
+
+    const onMove = (ev: MouseEvent): void => {
+      const delta = ev.clientY - panStartYRef.current
+      setArtOffsetPct(Math.min(100, Math.max(0, artOffsetAtPanStartRef.current - delta * 0.5)))
+    }
+
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setIsArtPanning(false)
+      if (album) {
+        setArtOffsetPct((o) => {
+          localStorage.setItem(artOffsetKey(album.album_artist, album.album), String(Math.round(o)))
+          return o
+        })
+      }
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   }
 
   const handleResizeMouseDown = (e: React.MouseEvent): void => {
@@ -307,12 +361,13 @@ export function TrackList(): React.JSX.Element | null {
 
   return (
     <div
-      className={`track-list-view${albumEditMode ? ' track-list-view--edit' : ''}${isResizing ? ' track-list-view--resizing' : ''}`}
+      className={`track-list-view${albumEditMode ? ' track-list-view--edit' : ''}${isResizing ? ' track-list-view--resizing' : ''}${isArtPanning ? ' track-list-view--art-panning' : ''}`}
       style={{ '--hero-height-pct': heroHeightPct } as React.CSSProperties}
     >
       {/* Hero: full-width art — image intentionally taller than hero to bleed into track list */}
       <div
         className={`track-list-hero${album.has_art ? ' has-art' : ''}`}
+        onMouseDown={albumEditMode && album.has_art ? handleArtPanMouseDown : undefined}
         onContextMenu={(e) => {
           if (!album.album_url) return
           e.preventDefault()
@@ -322,6 +377,7 @@ export function TrackList(): React.JSX.Element | null {
         {album.has_art && (
           <HeroImage
             src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)}
+            objectPositionY={artOffsetPct}
           />
         )}
       </div>

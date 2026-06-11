@@ -75,8 +75,9 @@
   margin: 0 -16px 0;
 }
 
-/* Breadcrumb sits below the toolbar rail (no hero image to overlay) */
-.album-grid-breadcrumb {
+/* Breadcrumb sits below the toolbar rail (no hero image to overlay).
+   Double-class selector outranks .breadcrumb { position: absolute } from track-list.css. */
+.album-grid-breadcrumb.breadcrumb {
   position: static;
   background: transparent;
   border: none;

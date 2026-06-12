@@ -3,6 +3,7 @@ name = "kamp"
 version = "1.23.0"
 description = "Automated audio library ingest from Bandcamp downloads."
 authors = []
+license = { text = "GPL-3.0-or-later" }
 packages = [{include = "kamp_daemon"}, {include = "kamp_core"}]
 # USAGE.md is read by the Homebrew formula's caveats block; completions/ is
 # installed by the Homebrew formula's zsh_completion.install call; launcher/main.c

@@ -57,6 +57,8 @@ def mock_index() -> MagicMock:
     index.get_playlist_cover.return_value = None
     # Default: no magic criteria (static playlist). Individual tests override.
     index.get_magic_playlist_criteria.return_value = None
+    # Default: no magic playlists for field_index building.
+    index.list_all_magic_criteria.return_value = []
     return index
 
 
@@ -5575,3 +5577,52 @@ class TestPlaylistArt:
             )
 
         assert resp.status_code == 422
+
+
+class TestMagicPlaylistReactivity:
+    """Tests for the field_index rebuild and on_fields_changed callback (KAMP-462)."""
+
+    def test_field_index_rebuilt_after_create_magic_playlist(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.create_magic_playlist.return_value = 5
+        mock_index.get_playlist.return_value = _playlist(id=5, title="Favs")
+        mock_index.list_all_magic_criteria.reset_mock()
+        client.post(
+            "/api/v1/playlists",
+            json={"title": "Favs", "criteria": _SAMPLE_CRITERIA},
+        )
+        mock_index.list_all_magic_criteria.assert_called()
+
+    def test_field_index_not_rebuilt_after_create_static_playlist(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.create_playlist.return_value = _playlist(title="Static")
+        mock_index.list_all_magic_criteria.reset_mock()
+        client.post("/api/v1/playlists", json={"title": "Static"})
+        mock_index.list_all_magic_criteria.assert_not_called()
+
+    def test_field_index_rebuilt_after_delete_playlist(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.list_all_magic_criteria.reset_mock()
+        client.delete("/api/v1/playlists/1")
+        mock_index.list_all_magic_criteria.assert_called()
+
+    def test_field_index_rebuilt_after_update_criteria(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.list_all_magic_criteria.reset_mock()
+        client.put("/api/v1/playlists/1/criteria", json={"criteria": _SAMPLE_CRITERIA})
+        mock_index.list_all_magic_criteria.assert_called()
+
+    def test_on_fields_changed_is_callable_and_no_crash(
+        self, client: TestClient
+    ) -> None:
+        # Verify the callback is exposed on app.state and can be called without
+        # error even with no WebSocket clients connected (_event_loop is None).
+        on_fields_changed = client.app.state.on_fields_changed
+        assert callable(on_fields_changed)
+        on_fields_changed({"track.favorite"})  # must not raise

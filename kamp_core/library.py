@@ -545,6 +545,10 @@ class LibraryIndex:
         # all down cleanly at server shutdown.
         self._all_conns: list[sqlite3.Connection] = []
         self._all_conns_lock = threading.Lock()
+        # Injected by the server to push magic_playlist.updated WebSocket events
+        # when a field referenced by magic criteria changes. Default None so
+        # library mutations work without a server context (e.g. in tests).
+        self.on_fields_changed: Callable[[set[str]], None] | None = None
         # Correct permissions on existing installs where the file was created
         # with the default umask (644).
         if db_path.exists():
@@ -1944,6 +1948,16 @@ class LibraryIndex:
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()
         self._conn.commit()
+        if self.on_fields_changed:
+            self.on_fields_changed(
+                {
+                    "track.artist",
+                    "track.album",
+                    "track.genre",
+                    "track.source",
+                    "track.year",
+                }
+            )
 
     def move_track(
         self,
@@ -2205,6 +2219,19 @@ class LibraryIndex:
         # Sync FTS — rebuilding is simpler than per-row deletes with FTS5 content tables.
         self._rebuild_fts()
         self._conn.commit()
+        if self.on_fields_changed:
+            self.on_fields_changed(
+                {
+                    "track.artist",
+                    "track.album",
+                    "track.genre",
+                    "track.source",
+                    "track.year",
+                    "track.favorite",
+                    "track.play_count",
+                    "track.last_played",
+                }
+            )
 
     def all_tracks(self) -> list[Track]:
         """Return all indexed tracks in insertion order."""
@@ -2237,6 +2264,8 @@ class LibraryIndex:
             (now, key, now),
         )
         self._conn.commit()
+        if self.on_fields_changed:
+            self.on_fields_changed({"track.last_played"})
 
     def record_played(self, file_path: Path) -> None:
         """Increment play_count for the track at *file_path*.
@@ -2261,6 +2290,8 @@ class LibraryIndex:
             (key,),
         )
         self._conn.commit()
+        if self.on_fields_changed:
+            self.on_fields_changed({"track.play_count"})
 
     def set_favorite(self, file_path: "Path | str", favorite: bool) -> None:
         """Set or clear the favorite flag for the track at *file_path*.
@@ -2274,6 +2305,8 @@ class LibraryIndex:
             (int(favorite), key),
         )
         self._conn.commit()
+        if self.on_fields_changed:
+            self.on_fields_changed({"track.favorite"})
 
     def inherit_remote_favorites(self, new_tracks: "list[Track]") -> None:
         """Copy the favorite flag from a matching remote bandcamp:// row to each
@@ -2483,6 +2516,8 @@ class LibraryIndex:
             (int(favorite), album_artist, album),
         )
         self._conn.commit()
+        if self.on_fields_changed:
+            self.on_fields_changed({"album.favorite"})
 
     def albums(
         self, sort: str = "album_artist", sort_dir: str | None = None
@@ -3527,6 +3562,19 @@ class LibraryIndex:
         sql = f"SELECT COUNT(*) FROM tracks {album_join} WHERE {where_fragment}"
         row = self._conn.execute(sql, params).fetchone()
         return int(row[0])
+
+    def list_all_magic_criteria(self) -> list[tuple[int, "MagicCriteria"]]:
+        """Return ``(playlist_id, MagicCriteria)`` pairs for every magic playlist.
+
+        Used by the server to build the field_index at startup and after CRUD.
+        """
+        rows = self._conn.execute(
+            "SELECT playlist_id, criteria_json FROM magic_playlist_criteria"
+        ).fetchall()
+        return [
+            (r["playlist_id"], MagicCriteria.from_dict(json.loads(r["criteria_json"])))
+            for r in rows
+        ]
 
 
 # Track fields that extensions are permitted to write via apply_metadata_update.

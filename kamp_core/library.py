@@ -91,7 +91,63 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 32
+_SCHEMA_VERSION = 33
+
+
+@dataclass
+class Condition:
+    """A single field-level filter in a magic playlist."""
+
+    field: str
+    op: str
+    value: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"field": self.field, "op": self.op, "value": self.value}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Condition":
+        return cls(field=d["field"], op=d["op"], value=d["value"])
+
+
+@dataclass
+class Group:
+    """A group of conditions combined with a boolean match rule."""
+
+    conditions: list[Condition]
+    match: str  # "all" | "any"
+    negate: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "conditions": [c.to_dict() for c in self.conditions],
+            "match": self.match,
+            "negate": self.negate,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Group":
+        return cls(
+            conditions=[Condition.from_dict(c) for c in d["conditions"]],
+            match=d["match"],
+            negate=d.get("negate", False),
+        )
+
+
+@dataclass
+class MagicCriteria:
+    """Top-level criteria for a magic playlist: groups combined with a boolean match rule."""
+
+    groups: list[Group]
+    match: str  # "all" | "any"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"groups": [g.to_dict() for g in self.groups], "match": self.match}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "MagicCriteria":
+        return cls(groups=[Group.from_dict(g) for g in d["groups"]], match=d["match"])
+
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -281,6 +337,15 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
     playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
     track_id    INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
     position    INTEGER NOT NULL
+);
+
+-- Magic playlist criteria (KAMP-459). A playlist is magic iff it has a row here.
+-- criteria_json stores a MagicCriteria JSON blob. evaluated_at is the epoch time of
+-- the last evaluation; NULL means the cache is stale and must be rebuilt.
+CREATE TABLE IF NOT EXISTS magic_playlist_criteria (
+    playlist_id  INTEGER PRIMARY KEY REFERENCES playlists(id) ON DELETE CASCADE,
+    criteria_json TEXT NOT NULL,
+    evaluated_at  REAL
 );
 """
 
@@ -1157,7 +1222,20 @@ class LibraryIndex:
             )
             self._conn.execute("UPDATE schema_version SET version = 32")
             self._conn.commit()
-            version = 32  # noqa: F841
+            version = 32
+
+        if version == 32:
+            # v32 → v33: add magic_playlist_criteria table (KAMP-459).
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS magic_playlist_criteria (
+                    playlist_id   INTEGER PRIMARY KEY REFERENCES playlists(id) ON DELETE CASCADE,
+                    criteria_json TEXT NOT NULL,
+                    evaluated_at  REAL
+                )
+            """)
+            self._conn.execute("UPDATE schema_version SET version = 33")
+            self._conn.commit()
+            version = 33  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -3298,6 +3376,58 @@ class LibraryIndex:
         if path.exists():
             return path.read_bytes()
         return None
+
+    # ------------------------------------------------------------------
+    # Magic playlist criteria (KAMP-459)
+    # ------------------------------------------------------------------
+
+    def create_magic_playlist(self, title: str, criteria: MagicCriteria) -> int:
+        """Create a new magic playlist and return its id.
+
+        Writes to playlists, playlists_fts, and magic_playlist_criteria
+        atomically so the playlist is always coherent on read.
+        """
+        now = _time.time()
+        cur = self._conn.execute(
+            "INSERT INTO playlists (title, favorite, created_at, updated_at) VALUES (?, 0, ?, ?)",
+            (title, now, now),
+        )
+        new_id = cur.lastrowid
+        self._conn.execute(
+            "INSERT INTO playlists_fts(rowid, title) VALUES (?, ?)", (new_id, title)
+        )
+        self._conn.execute(
+            "INSERT INTO magic_playlist_criteria (playlist_id, criteria_json) VALUES (?, ?)",
+            (new_id, json.dumps(criteria.to_dict())),
+        )
+        self._conn.commit()
+        return new_id  # type: ignore[return-value]
+
+    def get_magic_playlist_criteria(self, playlist_id: int) -> MagicCriteria | None:
+        """Return the MagicCriteria for a magic playlist, or None if it is not magic."""
+        row = self._conn.execute(
+            "SELECT criteria_json FROM magic_playlist_criteria WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return MagicCriteria.from_dict(json.loads(row["criteria_json"]))
+
+    def update_magic_playlist_criteria(
+        self, playlist_id: int, criteria: MagicCriteria
+    ) -> None:
+        """Replace the criteria for an existing magic playlist and clear evaluated_at.
+
+        Raises ValueError if playlist_id has no magic_playlist_criteria row.
+        """
+        cur = self._conn.execute(
+            "UPDATE magic_playlist_criteria"
+            " SET criteria_json = ?, evaluated_at = NULL WHERE playlist_id = ?",
+            (json.dumps(criteria.to_dict()), playlist_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"playlist {playlist_id} is not a magic playlist")
+        self._conn.commit()
 
 
 # Track fields that extensions are permitted to write via apply_metadata_update.

@@ -188,3 +188,9 @@ Workaround in `kamp_core/win_credential.py`: wrap the JSON blob with **DPAPI** (
 Two further notes for future Windows work on this code path:
 - The non-mac branches of `set_session`/`get_session`/`clear_session` in `library.py` should always have a final `except Exception` arm in addition to the typed keyring catches — the keyring exception hierarchy does not cover backend bugs.
 - Don't add `pywin32` for Credential Manager work — `keyring` 25.x's WinVault and our DPAPI wrapper both use ctypes directly, so the dependency is unnecessary.
+
+## HTML5 drag and Escape-cancel in Electron (KAMP-456)
+
+**Never attempt to cancel an HTML5 drag ghost via JavaScript.** The OS drag session (AppKit on macOS, OLE on Windows) owns the ghost. Nothing in JS can terminate it early — not synthetic `MouseEvent('mouseup')`, not synthetic `DragEvent('dragend')`, not `sendInputEvent({type:'mouseUp'})`, not `sendInputEvent({type:'keyDown', keyCode:'Escape'})`. The ~1s delay on Escape is OS drag session teardown time, not JS latency.
+
+Four approaches were tried on KAMP-456; all failed. The correct fix (KAMP-458) is replacing HTML5 drag with pointer-events drag (`onPointerDown` + `document pointermove/pointerup`) for any drag that needs Escape-cancel. Pointer-events drag has no OS modal session — the ghost is a DOM element, keyboard events fire normally, Escape cancels immediately. Keep HTML5 drag only for cross-component drops where `dataTransfer` is essential and Escape-cancel is not required.

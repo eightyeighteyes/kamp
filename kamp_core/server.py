@@ -3333,9 +3333,9 @@ def create_app(
     def preview_criteria(req: CriteriaPreviewRequest) -> dict[str, Any]:
         try:
             mc = MagicCriteria.from_dict(req.criteria)
+            return {"count": index.count_magic_criteria(mc)}
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"count": index.count_magic_criteria(mc)}
 
     @app.post("/api/v1/playlists/{playlist_id}/tracks")
     def add_to_playlist(

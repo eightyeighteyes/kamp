@@ -246,6 +246,17 @@ function hasAnyCriteria(state: ModalState): boolean {
   return state.groups.some((g) => g.conditions.length > 0)
 }
 
+function hasAllConditionsComplete(state: ModalState): boolean {
+  return state.groups.every((g) =>
+    g.conditions.every((c) => {
+      const { type } = FIELD_META[c.field]
+      if (type === 'bool' || type === 'source') return true
+      if (type === 'date') return !!c.dateMeta
+      return c.value.trim() !== ''
+    })
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components for condition value inputs
 // ---------------------------------------------------------------------------
@@ -641,9 +652,9 @@ export function MagicPlaylistModal({
     }
   }, [open])
 
-  // Debounced preview — only fires when there are actual conditions
+  // Debounced preview — only fires when all conditions are present and filled in
   useEffect(() => {
-    if (!open || !hasAnyCriteria(state)) return
+    if (!open || !hasAnyCriteria(state) || !hasAllConditionsComplete(state)) return
     const criteria = buildCriteriaDoc(state)
     const timeout = setTimeout(async () => {
       try {
@@ -755,15 +766,21 @@ export function MagicPlaylistModal({
 
         <div className="magic-playlist-footer">
           <span className="magic-preview-text">
-            {hasAnyCriteria(state)
-              ? previewText || 'Matches…'
-              : 'Every track in your library qualifies right now — add a rule to narrow it down.'}
+            {!hasAnyCriteria(state)
+              ? 'No conditions set — will match no tracks.'
+              : !hasAllConditionsComplete(state)
+                ? 'Fill in all condition values to see a preview.'
+                : previewText || 'Matches…'}
           </span>
           <div className="magic-footer-actions">
             <button className="magic-btn magic-btn--cancel" onClick={onClose}>
               Cancel
             </button>
-            <button className="magic-btn magic-btn--save" onClick={handleSave} disabled={saving}>
+            <button
+              className="magic-btn magic-btn--save"
+              onClick={handleSave}
+              disabled={saving || !hasAllConditionsComplete(state)}
+            >
               {saving ? 'Saving…' : 'Save'}
             </button>
           </div>

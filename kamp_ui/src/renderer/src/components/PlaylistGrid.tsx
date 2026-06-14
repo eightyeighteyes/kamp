@@ -70,6 +70,8 @@ function sortPlaylists(
 export function PlaylistGrid(): React.JSX.Element {
   const playlists = useStore((s) => s.library.playlists)
   const createPlaylist = useStore((s) => s.createPlaylist)
+  const selectPlaylist = useStore((s) => s.selectPlaylist)
+  const setCollectionType = useStore((s) => s.setCollectionType)
   const stored = loadStoredSort()
   const [sortOrder, setSortOrderLocal] = useState<PlaylistSortOrder>(stored.order)
   const [sortDir, setSortDirLocal] = useState<'asc' | 'desc'>(stored.dir)
@@ -103,10 +105,12 @@ export function PlaylistGrid(): React.JSX.Element {
     }
   }
 
-  const handleNewPlaylist = async (): Promise<void> => {
-    const title = window.prompt('Playlist name:')
-    if (!title?.trim()) return
-    await createPlaylist(title.trim())
+  const handleNewPlaylist = (): void => {
+    void (async () => {
+      const pl = await createPlaylist('New Playlist')
+      setCollectionType('playlists')
+      await selectPlaylist(pl)
+    })()
   }
 
   const handleNewMagicPlaylist = (): void => {
@@ -164,7 +168,7 @@ export function PlaylistGrid(): React.JSX.Element {
           onDirChange={handleDirChange}
         />
         <div className="playlist-cta-group">
-          <button className="playlist-cta-btn" onClick={() => void handleNewPlaylist()}>
+          <button className="playlist-cta-btn" onClick={handleNewPlaylist}>
             New Playlist
           </button>
           <button

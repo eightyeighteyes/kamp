@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useStore } from '../store'
 import { PlaylistCard } from './PlaylistCard'
 import { SortControl } from './SortControl'
+import { SparkleIcon } from './TransportIcons'
 import type { Playlist } from '../api/client'
 
 const PLAYLIST_SORT_OPTIONS = [
@@ -12,8 +13,10 @@ const PLAYLIST_SORT_OPTIONS = [
 ]
 
 type PlaylistSortOrder = 'title' | 'track_count' | 'updated_at' | 'last_played_at'
+type TypeFilter = 'all' | 'magic' | 'simple'
 
 const STORAGE_KEY = 'kamp:playlists-sort'
+const TYPE_FILTER_KEY = 'kamp:playlists-type-filter'
 
 function loadStoredSort(): { order: PlaylistSortOrder; dir: 'asc' | 'desc' } {
   try {
@@ -26,6 +29,16 @@ function loadStoredSort(): { order: PlaylistSortOrder; dir: 'asc' | 'desc' } {
     // ignore malformed storage
   }
   return { order: 'title', dir: 'asc' }
+}
+
+function loadStoredTypeFilter(): TypeFilter {
+  try {
+    const raw = localStorage.getItem(TYPE_FILTER_KEY)
+    if (raw === 'magic' || raw === 'simple') return raw
+  } catch {
+    // ignore malformed storage
+  }
+  return 'all'
 }
 
 function sortPlaylists(
@@ -56,9 +69,11 @@ function sortPlaylists(
 
 export function PlaylistGrid(): React.JSX.Element {
   const playlists = useStore((s) => s.library.playlists)
+  const createPlaylist = useStore((s) => s.createPlaylist)
   const stored = loadStoredSort()
   const [sortOrder, setSortOrderLocal] = useState<PlaylistSortOrder>(stored.order)
   const [sortDir, setSortDirLocal] = useState<'asc' | 'desc'>(stored.dir)
+  const [typeFilter, setTypeFilterLocal] = useState<TypeFilter>(loadStoredTypeFilter)
 
   const persist = (order: PlaylistSortOrder, dir: 'asc' | 'desc'): void => {
     try {
@@ -79,7 +94,33 @@ export function PlaylistGrid(): React.JSX.Element {
     persist(sortOrder, dir)
   }
 
-  const visible = sortPlaylists(playlists, sortOrder, sortDir)
+  const handleTypeFilter = (f: TypeFilter): void => {
+    setTypeFilterLocal(f)
+    try {
+      localStorage.setItem(TYPE_FILTER_KEY, f)
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  const handleNewPlaylist = async (): Promise<void> => {
+    const title = window.prompt('Playlist name:')
+    if (!title?.trim()) return
+    await createPlaylist(title.trim())
+  }
+
+  const handleNewMagicPlaylist = (): void => {
+    // KAMP-464 opens the criteria builder modal here
+  }
+
+  const typeFiltered =
+    typeFilter === 'magic'
+      ? playlists.filter((p) => p.criteria !== null)
+      : typeFilter === 'simple'
+        ? playlists.filter((p) => p.criteria === null)
+        : playlists
+
+  const visible = sortPlaylists(typeFiltered, sortOrder, sortDir)
 
   if (playlists.length === 0) {
     return (
@@ -95,6 +136,26 @@ export function PlaylistGrid(): React.JSX.Element {
   return (
     <div className="album-grid-container">
       <div className="album-grid-toolbar">
+        <div className="playlist-type-filter">
+          <button
+            className={`playlist-type-btn${typeFilter === 'all' ? ' active' : ''}`}
+            onClick={() => handleTypeFilter('all')}
+          >
+            All
+          </button>
+          <button
+            className={`playlist-type-btn${typeFilter === 'magic' ? ' active' : ''}`}
+            onClick={() => handleTypeFilter('magic')}
+          >
+            Magic
+          </button>
+          <button
+            className={`playlist-type-btn${typeFilter === 'simple' ? ' active' : ''}`}
+            onClick={() => handleTypeFilter('simple')}
+          >
+            Simple
+          </button>
+        </div>
         <SortControl
           value={sortOrder}
           options={PLAYLIST_SORT_OPTIONS}
@@ -102,12 +163,27 @@ export function PlaylistGrid(): React.JSX.Element {
           onChange={handleOrderChange}
           onDirChange={handleDirChange}
         />
+        <div className="playlist-cta-group">
+          <button className="playlist-cta-btn" onClick={() => void handleNewPlaylist()}>
+            New Playlist
+          </button>
+          <button className="playlist-cta-btn playlist-cta-btn--magic" onClick={handleNewMagicPlaylist}>
+            <SparkleIcon size={12} />
+            New Magic Playlist
+          </button>
+        </div>
       </div>
-      <div className="album-grid">
-        {visible.map((pl) => (
-          <PlaylistCard key={pl.id} playlist={pl} />
-        ))}
-      </div>
+      {visible.length === 0 && typeFilter === 'magic' ? (
+        <div className="album-grid-empty">
+          No magic playlists yet. Set some rules and Kamp builds the playlist for you &mdash; automatically.
+        </div>
+      ) : (
+        <div className="album-grid">
+          {visible.map((pl) => (
+            <PlaylistCard key={pl.id} playlist={pl} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

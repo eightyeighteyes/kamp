@@ -264,16 +264,18 @@ export function TrackContextMenu({
             </button>
           )}
           <ContextMenuSubmenu label="Add to Playlist">
-            {playlists.map((pl) => (
-              <button
-                key={pl.id}
-                className="track-context-menu-item"
-                onClick={() => handleAddToPlaylist(pl.id)}
-              >
-                {truncateTitle(pl.title)}
-              </button>
-            ))}
-            {playlists.length > 0 && <div className="track-context-menu-divider" />}
+            {playlists
+              .filter((pl) => !pl.criteria)
+              .map((pl) => (
+                <button
+                  key={pl.id}
+                  className="track-context-menu-item"
+                  onClick={() => handleAddToPlaylist(pl.id)}
+                >
+                  {truncateTitle(pl.title)}
+                </button>
+              ))}
+            {playlists.some((pl) => !pl.criteria) && <div className="track-context-menu-divider" />}
             <button className="track-context-menu-item" onClick={handleNewPlaylist}>
               New Playlist
             </button>

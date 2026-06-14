@@ -1,0 +1,362 @@
+/* Magic Playlist criteria builder modal (KAMP-464) */
+/* .prefs-overlay is reused from preferences.css for the backdrop */
+
+.magic-playlist-dialog {
+  width: 600px;
+  max-height: 80vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: prefs-in 150ms ease;
+}
+
+/* Header ------------------------------------------------------------------- */
+
+.magic-playlist-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 44px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.magic-playlist-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.magic-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 4px;
+  transition: color 0.1s;
+}
+
+.magic-close-btn:hover {
+  color: var(--text);
+}
+
+/* Body --------------------------------------------------------------------- */
+
+.magic-playlist-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Title row (create mode) */
+.magic-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.magic-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  width: 40px;
+}
+
+/* Top-level match sentence */
+.magic-top-match-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* Groups ------------------------------------------------------------------- */
+
+.magic-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.magic-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--surface-hover);
+}
+
+.magic-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.magic-group-label {
+  flex: 1;
+}
+
+.magic-conditions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.magic-group-separator {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  padding: 4px 0;
+  margin-bottom: 8px;
+}
+
+/* Condition row ------------------------------------------------------------ */
+
+.magic-condition {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.magic-date-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Add rule / Add group buttons */
+.magic-add-rule-btn,
+.magic-add-group-btn {
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 10px;
+  transition:
+    border-color 0.1s,
+    color 0.1s;
+  align-self: flex-start;
+}
+
+.magic-add-rule-btn:hover,
+.magic-add-group-btn:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.magic-add-group-btn {
+  align-self: flex-start;
+}
+
+/* Shared form controls ----------------------------------------------------- */
+
+.magic-select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  height: 28px;
+  padding: 0 6px;
+  outline: none;
+}
+
+.magic-select:focus {
+  border-color: var(--accent-dim);
+}
+
+.magic-select--field {
+  min-width: 140px;
+}
+
+.magic-select--wide {
+  min-width: 180px;
+  max-width: 240px;
+}
+
+.magic-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  height: 28px;
+  padding: 0 8px;
+  outline: none;
+}
+
+.magic-input:focus {
+  border-color: var(--accent-dim);
+}
+
+.magic-input--title {
+  flex: 1;
+}
+
+.magic-input--text {
+  min-width: 140px;
+  flex: 1;
+}
+
+.magic-input--number {
+  width: 64px;
+}
+
+/* Match pill --------------------------------------------------------------- */
+
+.match-pill {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  transition:
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
+}
+
+.match-pill--active,
+.match-pill:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Negate button ------------------------------------------------------------ */
+
+.magic-negate-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  transition:
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
+}
+
+.magic-negate-btn:hover,
+.magic-negate-btn--active {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Remove buttons ----------------------------------------------------------- */
+
+.magic-remove-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  flex-shrink: 0;
+  transition: color 0.1s;
+}
+
+.magic-remove-btn:hover {
+  color: var(--error);
+}
+
+.magic-remove-btn--group {
+  margin-left: auto;
+}
+
+/* Footer ------------------------------------------------------------------- */
+
+.magic-playlist-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.magic-preview-text {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.magic-footer-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.magic-btn {
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 14px;
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+
+.magic-btn--cancel {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.magic-btn--cancel:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.magic-btn--save {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--text-on-accent);
+}
+
+.magic-btn--save:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.magic-btn--save:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

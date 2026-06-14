@@ -80,7 +80,30 @@ export type ScanResult = {
   updated: number
 }
 
-export type CriteriaCondition = { field: string; op: string; value: string }
+export type CriteriaField =
+  | 'track.favorite'
+  | 'album.favorite'
+  | 'track.play_count'
+  | 'track.year'
+  | 'track.last_played'
+  | 'track.date_added'
+  | 'track.genre'
+  | 'track.artist'
+  | 'track.album'
+  | 'track.source'
+  | 'in_playlist'
+
+export type CriteriaOperator =
+  | 'is'
+  | 'is_not'
+  | 'gt'
+  | 'lt'
+  | 'gte'
+  | 'lte'
+  | 'contains'
+  | 'not_contains'
+
+export type CriteriaCondition = { field: CriteriaField; op: CriteriaOperator; value: string }
 export type CriteriaGroup = {
   match: 'all' | 'any'
   negate: boolean
@@ -787,3 +810,12 @@ export const reorderPlaylistTracks = (id: number, trackIds: number[]): Promise<v
 
 export const recordPlaylistPlayed = (id: number): Promise<void> =>
   post(`/api/v1/playlists/${id}/played`, {})
+
+export const previewCriteria = (criteria: CriteriaDoc): Promise<{ count: number }> =>
+  post('/api/v1/criteria/preview', { criteria })
+
+export const createMagicPlaylist = (title: string, criteria: CriteriaDoc): Promise<Playlist> =>
+  post('/api/v1/playlists', { title, criteria })
+
+export const updateMagicPlaylistCriteria = (id: number, criteria: CriteriaDoc): Promise<Playlist> =>
+  put(`/api/v1/playlists/${id}/criteria`, { criteria })

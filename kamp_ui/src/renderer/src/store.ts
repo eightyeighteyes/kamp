@@ -12,6 +12,7 @@ import type {
   Album,
   AlbumTagsCollision,
   ConfigValues,
+  CriteriaDoc,
   PlayerState,
   Playlist,
   PlaylistTrack,
@@ -142,6 +143,8 @@ type PlayerStore = {
   recordPlaylistPlayed: (playlistId: number) => Promise<void>
   loadPlaylists: () => Promise<void>
   createPlaylist: (title: string) => Promise<Playlist>
+  createMagicPlaylist: (title: string, criteria: CriteriaDoc) => Promise<Playlist>
+  updateMagicPlaylistCriteria: (id: number, criteria: CriteriaDoc) => Promise<Playlist>
   selectPlaylist: (playlist: Playlist | null) => Promise<void>
   loadPlaylistTracks: (playlistId: number) => Promise<void>
   addTrackToPlaylist: (playlistId: number, filePath: string) => Promise<void>
@@ -675,6 +678,22 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   createPlaylist: async (title) => {
     const playlist = await api.createPlaylist(title)
+    await get()
+      .loadPlaylists()
+      .catch(() => undefined)
+    return playlist
+  },
+
+  createMagicPlaylist: async (title, criteria) => {
+    const playlist = await api.createMagicPlaylist(title, criteria)
+    await get()
+      .loadPlaylists()
+      .catch(() => undefined)
+    return playlist
+  },
+
+  updateMagicPlaylistCriteria: async (id, criteria) => {
+    const playlist = await api.updateMagicPlaylistCriteria(id, criteria)
     await get()
       .loadPlaylists()
       .catch(() => undefined)

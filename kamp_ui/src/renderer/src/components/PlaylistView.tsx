@@ -4,6 +4,7 @@ import { applyPlaylistArtLocal, playlistArtUrl } from '../api/client'
 import type { PlaylistTrack } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
 import { SortControl } from './SortControl'
+import { MagicPlaylistModal } from './MagicPlaylistModal'
 import { computeNewOrder } from '../utils/computeNewOrder'
 import { truncateTitle } from '../utils/truncateTitle'
 import {
@@ -12,6 +13,7 @@ import {
   PlayIcon,
   PlayNextIcon,
   QueueAddIcon,
+  SparkleIcon,
   WarnIcon
 } from './TransportIcons'
 import { formatTime } from '../utils/formatTime'
@@ -115,6 +117,7 @@ function HeroImage({ src }: { src: string }): React.JSX.Element {
 export function PlaylistView(): React.JSX.Element | null {
   const playlist = useStore((s) => s.library.selectedPlaylist)
   const playlistTracks = useStore((s) => s.library.playlistTracks)
+  const playlistTracksLoading = useStore((s) => s.library.playlistTracksLoading)
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const reorderPlaylistTracks = useStore((s) => s.reorderPlaylistTracks)
   const removeTrackFromPlaylist = useStore((s) => s.removeTrackFromPlaylist)
@@ -134,6 +137,8 @@ export function PlaylistView(): React.JSX.Element | null {
 
   const [menu, setMenu] = useState<TrackMenu | null>(null)
   const [editingTitle, setEditingTitle] = useState(false)
+  const [magicModalOpen, setMagicModalOpen] = useState(false)
+  const [magicModalKey, setMagicModalKey] = useState(0)
   const [titleDraft, setTitleDraft] = useState('')
   const [heroHeightPct, setHeroHeightPct] = useState<number>(() => {
     const saved = parseFloat(localStorage.getItem(HERO_KEY) ?? '')
@@ -521,6 +526,18 @@ export function PlaylistView(): React.JSX.Element | null {
           onDirChange={handleTrackDirChange}
           showDir={trackSortOrder !== 'position'}
         />
+        {playlist.criteria !== null && (
+          <button
+            className="playlist-cta-btn playlist-cta-btn--magic"
+            onClick={() => {
+              setMagicModalKey((k) => k + 1)
+              setMagicModalOpen(true)
+            }}
+          >
+            <SparkleIcon size={12} />
+            Edit criteria
+          </button>
+        )}
       </div>
 
       <div className="track-list-body">
@@ -624,10 +641,21 @@ export function PlaylistView(): React.JSX.Element | null {
         </ol>
         {playlistTracks.length === 0 && (
           <div className="album-grid-empty">
-            No tracks yet. Right-click any track or album and choose Add to Playlist.
+            {playlistTracksLoading
+              ? 'Loading…'
+              : playlist.criteria !== null
+                ? 'No tracks match these criteria yet.'
+                : 'No tracks yet. Right-click any track or album and choose Add to Playlist.'}
           </div>
         )}
       </div>
+
+      <MagicPlaylistModal
+        key={magicModalKey}
+        open={magicModalOpen}
+        onClose={() => setMagicModalOpen(false)}
+        playlist={playlist.criteria !== null ? playlist : undefined}
+      />
 
       {menu && (
         <TrackContextMenu

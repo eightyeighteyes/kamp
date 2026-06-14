@@ -39,6 +39,7 @@ type LibraryState = {
   playlists: Playlist[]
   selectedPlaylist: Playlist | null
   playlistTracks: PlaylistTrack[]
+  playlistTracksLoading: boolean
 }
 
 type PlayerStore = {
@@ -250,7 +251,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     collectionType: 'albums',
     playlists: [],
     selectedPlaylist: null,
-    playlistTracks: []
+    playlistTracks: [],
+    playlistTracksLoading: false
   },
   serverStatus: 'reconnecting',
   scanStatus: 'idle',
@@ -701,13 +703,20 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   selectPlaylist: async (playlist) => {
-    set((s) => ({ library: { ...s.library, selectedPlaylist: playlist, playlistTracks: [] } }))
+    set((s) => ({
+      library: {
+        ...s.library,
+        selectedPlaylist: playlist,
+        playlistTracks: [],
+        playlistTracksLoading: !!playlist
+      }
+    }))
     if (playlist) await get().loadPlaylistTracks(playlist.id)
   },
 
   loadPlaylistTracks: async (playlistId) => {
     const playlistTracks = await api.getPlaylistTracks(playlistId)
-    set((s) => ({ library: { ...s.library, playlistTracks } }))
+    set((s) => ({ library: { ...s.library, playlistTracks, playlistTracksLoading: false } }))
   },
 
   addTrackToPlaylist: async (playlistId, filePath) => {

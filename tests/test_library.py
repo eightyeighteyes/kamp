@@ -8208,3 +8208,60 @@ class TestMagicPlaylists:
         result = index.evaluate_magic_playlist(pid)
         index.close()
         assert result == [id_a]
+
+    def test_get_magic_playlist_tracks_returns_full_dicts(self, tmp_path: Path) -> None:
+        index, id_a, _ = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.artist", op="is", value="Alvvays")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Smart Mix", criteria)
+        tracks = index.get_magic_playlist_tracks(pid)
+        index.close()
+
+        assert len(tracks) == 1
+        t = tracks[0]
+        assert t["id"] == id_a
+        assert t["artist"] == "Alvvays"
+        assert t["playlist_track_id"] is None
+        assert t["position"] == 0
+
+    def test_get_magic_playlist_tracks_returns_empty_for_static(
+        self, tmp_path: Path
+    ) -> None:
+        index, _, _ = self._seeded_index(tmp_path)
+        pl = index.create_playlist("Static")
+        tracks = index.get_magic_playlist_tracks(pl["id"])
+        index.close()
+        assert tracks == []
+
+    def test_count_magic_criteria_returns_match_count(self, tmp_path: Path) -> None:
+        index, _, _ = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.artist", op="is", value="Alvvays")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        count = index.count_magic_criteria(criteria)
+        index.close()
+        assert count == 1
+
+    def test_count_magic_criteria_empty_returns_all(self, tmp_path: Path) -> None:
+        index, _, _ = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(groups=[], match="all")
+        count = index.count_magic_criteria(criteria)
+        index.close()
+        assert count == 2

@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 from kamp_core.library import (
     LibraryIndex,
     LibraryScanner,
+    MagicCriteria,
     Track,
     _canonical_track_key,
     extract_art,
@@ -546,6 +547,7 @@ class PlaylistOut(BaseModel):
     created_at: float
     updated_at: float
     last_played_at: float | None = None
+    criteria: dict[str, Any] | None = None
 
 
 class PlaylistSearchOut(PlaylistOut):
@@ -553,7 +555,7 @@ class PlaylistSearchOut(PlaylistOut):
 
 
 class PlaylistTrackOut(BaseModel):
-    playlist_track_id: int
+    playlist_track_id: int | None
     position: int
     id: int
     file_path: str
@@ -580,11 +582,20 @@ class PlaylistTrackOut(BaseModel):
 
 class CreatePlaylistRequest(BaseModel):
     title: str
+    criteria: dict[str, Any] | None = None
 
 
 class PatchPlaylistRequest(BaseModel):
     title: str | None = None
     favorite: bool | None = None
+
+
+class UpdateCriteriaRequest(BaseModel):
+    criteria: dict[str, Any]
+
+
+class CriteriaPreviewRequest(BaseModel):
+    criteria: dict[str, Any]
 
 
 class AddTrackToPlaylistRequest(BaseModel):
@@ -3170,23 +3181,46 @@ def create_app(
         return {"ok": True}
 
     # -----------------------------------------------------------------------
-    # Playlists (KAMP-441)
+    # Playlists (KAMP-441, KAMP-461)
     # -----------------------------------------------------------------------
+
+    def _enrich_playlist(pl: dict[str, Any]) -> dict[str, Any]:
+        """Add 'criteria' key to a playlist dict (None for static playlists)."""
+        mc = index.get_magic_playlist_criteria(pl["id"])
+        pl["criteria"] = mc.to_dict() if mc is not None else None
+        return pl
 
     @app.post("/api/v1/playlists", response_model=PlaylistOut, status_code=201)
     def create_playlist(req: CreatePlaylistRequest) -> dict[str, Any]:
-        return index.create_playlist(req.title)
+        if req.criteria is not None:
+            try:
+                mc = MagicCriteria.from_dict(req.criteria)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            new_id = index.create_magic_playlist(req.title, mc)
+            pl = index.get_playlist(new_id)
+            assert pl is not None
+        else:
+            pl = index.create_playlist(req.title)
+        return _enrich_playlist(pl)
 
     @app.get("/api/v1/playlists", response_model=list[PlaylistOut])
-    def list_playlists() -> list[dict[str, Any]]:
-        return index.get_playlists()
+    def list_playlists(type: str | None = None) -> list[dict[str, Any]]:
+        playlists = index.get_playlists()
+        result: list[dict[str, Any]] = []
+        for pl in playlists:
+            _enrich_playlist(pl)
+            if type == "simple" and pl["criteria"] is not None:
+                continue
+            result.append(pl)
+        return result
 
     @app.get("/api/v1/playlists/{playlist_id}", response_model=PlaylistOut)
     def get_playlist(playlist_id: int) -> dict[str, Any]:
         pl = index.get_playlist(playlist_id)
         if pl is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
-        return pl
+        return _enrich_playlist(pl)
 
     @app.patch("/api/v1/playlists/{playlist_id}", response_model=PlaylistOut)
     def patch_playlist(playlist_id: int, req: PatchPlaylistRequest) -> dict[str, Any]:
@@ -3199,7 +3233,7 @@ def create_app(
             index.set_playlist_favorite(playlist_id, req.favorite)
         updated = index.get_playlist(playlist_id)
         assert updated is not None
-        return updated
+        return _enrich_playlist(updated)
 
     @app.delete("/api/v1/playlists/{playlist_id}", status_code=204)
     def delete_playlist(playlist_id: int) -> Response:
@@ -3222,7 +3256,43 @@ def create_app(
     def get_playlist_tracks(playlist_id: int) -> list[dict[str, Any]]:
         if index.get_playlist(playlist_id) is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
+        if index.get_magic_playlist_criteria(playlist_id) is not None:
+            return index.get_magic_playlist_tracks(playlist_id)
         return index.get_playlist_tracks(playlist_id)
+
+    @app.put("/api/v1/playlists/{playlist_id}/criteria", response_model=PlaylistOut)
+    def update_playlist_criteria(
+        playlist_id: int, req: UpdateCriteriaRequest
+    ) -> dict[str, Any]:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        try:
+            mc = MagicCriteria.from_dict(req.criteria)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            index.update_magic_playlist_criteria(playlist_id, mc)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        updated = index.get_playlist(playlist_id)
+        assert updated is not None
+        return _enrich_playlist(updated)
+
+    @app.get("/api/v1/playlists/{playlist_id}/criteria")
+    def get_playlist_criteria(playlist_id: int) -> dict[str, Any]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        mc = index.get_magic_playlist_criteria(playlist_id)
+        return {"criteria": mc.to_dict() if mc is not None else None}
+
+    @app.post("/api/v1/criteria/preview")
+    def preview_criteria(req: CriteriaPreviewRequest) -> dict[str, Any]:
+        try:
+            mc = MagicCriteria.from_dict(req.criteria)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"count": index.count_magic_criteria(mc)}
 
     @app.post("/api/v1/playlists/{playlist_id}/tracks")
     def add_to_playlist(

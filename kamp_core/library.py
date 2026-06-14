@@ -3453,6 +3453,81 @@ class LibraryIndex:
         rows = self._conn.execute(sql, params).fetchall()
         return [r[0] for r in rows]
 
+    def get_magic_playlist_tracks(self, playlist_id: int) -> list[dict[str, Any]]:
+        """Return full track dicts for a magic playlist, evaluated on the fly.
+
+        Returns the same shape as ``get_playlist_tracks`` but with
+        ``playlist_track_id=None`` and ``position=0`` since magic tracks are
+        not stored in ``playlist_tracks``.  Returns an empty list when the
+        playlist has no criteria row.
+        """
+        from kamp_core.criteria import build_query
+
+        criteria = self.get_magic_playlist_criteria(playlist_id)
+        if criteria is None:
+            return []
+        where_fragment, params, needs_album_join = build_query(criteria)
+        album_join = (
+            "LEFT JOIN albums ON albums.id = tracks.album_id"
+            if needs_album_join
+            else ""
+        )
+        sql = f"""
+            SELECT NULL AS playlist_track_id, 0 AS position,
+                   tracks.id, tracks.file_path, tracks.title, tracks.artist,
+                   tracks.album_artist, tracks.album, tracks.year,
+                   tracks.track_number, tracks.disc_number, tracks.ext,
+                   tracks.embedded_art, tracks.mb_release_id, tracks.mb_recording_id,
+                   tracks.genre, tracks.label, tracks.favorite, tracks.play_count,
+                   tracks.last_played, tracks.source, tracks.is_available, tracks.duration
+            FROM tracks {album_join}
+            WHERE {where_fragment}
+            ORDER BY tracks.id
+        """
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "playlist_track_id": None,
+                "position": 0,
+                "id": r["id"],
+                "file_path": r["file_path"],
+                "title": r["title"],
+                "artist": r["artist"],
+                "album_artist": r["album_artist"],
+                "album": r["album"],
+                "year": r["year"],
+                "track_number": r["track_number"],
+                "disc_number": r["disc_number"],
+                "ext": r["ext"],
+                "embedded_art": bool(r["embedded_art"]),
+                "mb_release_id": r["mb_release_id"],
+                "mb_recording_id": r["mb_recording_id"],
+                "genre": r["genre"],
+                "label": r["label"],
+                "favorite": bool(r["favorite"]),
+                "play_count": r["play_count"],
+                "last_played": r["last_played"],
+                "source": r["source"],
+                "is_available": bool(r["is_available"]),
+                "duration": r["duration"],
+            }
+            for r in rows
+        ]
+
+    def count_magic_criteria(self, criteria: "MagicCriteria") -> int:
+        """Return the number of tracks that match *criteria* without fetching them."""
+        from kamp_core.criteria import build_query
+
+        where_fragment, params, needs_album_join = build_query(criteria)
+        album_join = (
+            "LEFT JOIN albums ON albums.id = tracks.album_id"
+            if needs_album_join
+            else ""
+        )
+        sql = f"SELECT COUNT(*) FROM tracks {album_join} WHERE {where_fragment}"
+        row = self._conn.execute(sql, params).fetchone()
+        return int(row[0])
+
 
 # Track fields that extensions are permitted to write via apply_metadata_update.
 # Excludes internal columns (embedded_art, play_count, last_played, etc.) so

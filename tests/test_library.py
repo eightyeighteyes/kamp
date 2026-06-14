@@ -7939,3 +7939,272 @@ class TestMagicPlaylists:
 
         assert version == 33
         assert fetched == criteria
+
+    # ------------------------------------------------------------------
+    # evaluate_magic_playlist integration
+    # ------------------------------------------------------------------
+
+    def _seeded_index(self, tmp_path: Path) -> tuple["LibraryIndex", int, int]:
+        """Return (index, track_id_a, track_id_b) with two distinct tracks."""
+        from kamp_core.library import Track
+
+        index = LibraryIndex(tmp_path / "library.db")
+        track_a = Track(
+            file_path=tmp_path / "a.mp3",
+            title="Song A",
+            artist="Alvvays",
+            album_artist="Alvvays",
+            album="Antisocialites",
+            year="2017",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="Indie",
+            favorite=True,
+            play_count=5,
+            source="local",
+        )
+        track_b = Track(
+            file_path=tmp_path / "b.mp3",
+            title="Song B",
+            artist="Weezer",
+            album_artist="Weezer",
+            album="Blue Album",
+            year="1994",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="Rock",
+            favorite=False,
+            play_count=0,
+            source="local",
+        )
+        index.upsert_many([track_a, track_b])
+        # favorite and play_count are runtime fields not written by upsert_many;
+        # set them directly so the evaluate tests can filter on them.
+        index._conn.execute(
+            "UPDATE tracks SET favorite = 1, play_count = 5 WHERE file_path = ?",
+            (str(tmp_path / "a.mp3"),),
+        )
+        index._conn.commit()
+        row_a = index._conn.execute(
+            "SELECT id FROM tracks WHERE file_path = ?", (str(tmp_path / "a.mp3"),)
+        ).fetchone()
+        row_b = index._conn.execute(
+            "SELECT id FROM tracks WHERE file_path = ?", (str(tmp_path / "b.mp3"),)
+        ).fetchone()
+        return index, row_a["id"], row_b["id"]
+
+    def test_evaluate_returns_empty_for_nonexistent_playlist(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = index.evaluate_magic_playlist(9999)
+        index.close()
+        assert result == []
+
+    def test_evaluate_returns_empty_for_static_playlist(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        pl = index.create_playlist("Static")
+        result = index.evaluate_magic_playlist(pl["id"])
+        index.close()
+        assert result == []
+
+    def test_evaluate_filters_by_artist(self, tmp_path: Path) -> None:
+        index, id_a, _ = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.artist", op="is", value="Alvvays")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Alvvays Only", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [id_a]
+
+    def test_evaluate_filters_by_favorite(self, tmp_path: Path) -> None:
+        index, id_a, _ = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.favorite", op="is", value="true")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Favorites", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [id_a]
+
+    def test_evaluate_filters_by_genre_contains(self, tmp_path: Path) -> None:
+        index, id_a, id_b = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.genre", op="contains", value="Indie")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Indie", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [id_a]
+
+    def test_evaluate_play_count_gt(self, tmp_path: Path) -> None:
+        index, id_a, _ = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.play_count", op="gt", value="2")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Played", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [id_a]
+
+    def test_evaluate_year_lt(self, tmp_path: Path) -> None:
+        index, _, id_b = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[Condition(field="track.year", op="lt", value="2000")],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Old Stuff", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [id_b]
+
+    def test_evaluate_no_results(self, tmp_path: Path) -> None:
+        index, _, _ = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.artist", op="is", value="Nobody Famous")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Empty Result", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == []
+
+    def test_evaluate_all_results_with_empty_criteria(self, tmp_path: Path) -> None:
+        index, id_a, id_b = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(groups=[], match="all")
+        pid = index.create_magic_playlist("Everything", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert sorted(result) == sorted([id_a, id_b])
+
+    def test_evaluate_match_any_combines_artists(self, tmp_path: Path) -> None:
+        index, id_a, id_b = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.artist", op="is", value="Alvvays"),
+                        Condition(field="track.artist", op="is", value="Weezer"),
+                    ],
+                    match="any",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Both Artists", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert sorted(result) == sorted([id_a, id_b])
+
+    def test_evaluate_negated_group_excludes_match(self, tmp_path: Path) -> None:
+        index, _, id_b = self._seeded_index(tmp_path)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.artist", op="is", value="Alvvays")
+                    ],
+                    match="all",
+                    negate=True,
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Not Alvvays", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [id_b]
+
+    def test_evaluate_album_favorite_uses_join(self, tmp_path: Path) -> None:
+        index, id_a, _ = self._seeded_index(tmp_path)
+        # Mark Alvvays album as favorite.
+        index.toggle_album_favorite("Alvvays", "Antisocialites", True)
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="album.favorite", op="is", value="true")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Fav Albums", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [id_a]
+
+    def test_evaluate_in_playlist(self, tmp_path: Path) -> None:
+        index, id_a, _ = self._seeded_index(tmp_path)
+        # Create a static playlist containing only track A.
+        static = index.create_playlist("Static")
+        index.add_track_to_playlist(static["id"], str(tmp_path / "a.mp3"))
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="in_playlist", op="is", value=str(static["id"]))
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("In Static", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [id_a]

@@ -80,6 +80,14 @@ export type ScanResult = {
   updated: number
 }
 
+export type CriteriaCondition = { field: string; op: string; value: string }
+export type CriteriaGroup = {
+  match: 'all' | 'any'
+  negate: boolean
+  conditions: CriteriaCondition[]
+}
+export type CriteriaDoc = { match: 'all' | 'any'; groups: CriteriaGroup[] }
+
 export type Playlist = {
   id: number
   title: string
@@ -88,6 +96,7 @@ export type Playlist = {
   created_at: number
   updated_at: number
   last_played_at: number | null
+  criteria: CriteriaDoc | null
 }
 
 export type PlaylistTrack = Track & {

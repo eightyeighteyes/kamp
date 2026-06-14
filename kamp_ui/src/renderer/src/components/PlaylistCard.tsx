@@ -3,7 +3,7 @@ import { useStore } from '../store'
 import { playlistArtUrl } from '../api/client'
 import type { Playlist } from '../api/client'
 import { PlaylistContextMenu } from './PlaylistContextMenu'
-import { FavoriteIcon } from './TransportIcons'
+import { FavoriteIcon, SparkleIcon } from './TransportIcons'
 
 type MenuPos = { x: number; y: number }
 
@@ -50,6 +50,12 @@ export function PlaylistCard({
           onLoad={() => setArtLoaded(true)}
           onError={() => setArtLoaded(false)}
         />
+        {playlist.criteria !== null && (
+          <div className="playlist-magic-badge">
+            <SparkleIcon size={10} />
+            <span>Magic</span>
+          </div>
+        )}
       </div>
       <div className="album-info">
         <div className="album-title">{playlist.title}</div>

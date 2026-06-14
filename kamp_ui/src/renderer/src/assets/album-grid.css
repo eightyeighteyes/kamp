@@ -208,3 +208,74 @@
   padding: 40px;
   text-align: center;
 }
+
+/* Playlist type filter (KAMP-463) ------------------------------------------ */
+
+.playlist-type-filter {
+  display: flex;
+  gap: 2px;
+}
+
+.playlist-type-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+  transition:
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
+}
+
+.playlist-type-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.playlist-type-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Playlist CTA buttons (KAMP-463) ------------------------------------------ */
+
+.playlist-cta-group {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.playlist-cta-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+  transition:
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
+}
+
+.playlist-cta-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.playlist-cta-btn--magic {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.playlist-cta-btn--magic:hover {
+  background: var(--accent-dim);
+}

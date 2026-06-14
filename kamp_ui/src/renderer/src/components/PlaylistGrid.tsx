@@ -167,7 +167,10 @@ export function PlaylistGrid(): React.JSX.Element {
           <button className="playlist-cta-btn" onClick={() => void handleNewPlaylist()}>
             New Playlist
           </button>
-          <button className="playlist-cta-btn playlist-cta-btn--magic" onClick={handleNewMagicPlaylist}>
+          <button
+            className="playlist-cta-btn playlist-cta-btn--magic"
+            onClick={handleNewMagicPlaylist}
+          >
             <SparkleIcon size={12} />
             New Magic Playlist
           </button>
@@ -175,7 +178,8 @@ export function PlaylistGrid(): React.JSX.Element {
       </div>
       {visible.length === 0 && typeFilter === 'magic' ? (
         <div className="album-grid-empty">
-          No magic playlists yet. Set some rules and Kamp builds the playlist for you &mdash; automatically.
+          No magic playlists yet. Set some rules and Kamp builds the playlist for you &mdash;
+          automatically.
         </div>
       ) : (
         <div className="album-grid">

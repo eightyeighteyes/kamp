@@ -8265,3 +8265,188 @@ class TestMagicPlaylists:
         count = index.count_magic_criteria(criteria)
         index.close()
         assert count == 2
+
+
+class TestMagicPlaylistReactivity:
+    """Tests for the on_fields_changed callback wired into LibraryIndex mutations."""
+
+    def _make_index_with_track(self, tmp_path: Path) -> tuple["LibraryIndex", Path]:
+        from kamp_core.library import Track
+
+        index = LibraryIndex(tmp_path / "library.db")
+        track = Track(
+            file_path=tmp_path / "a.mp3",
+            title="Song A",
+            artist="Alvvays",
+            album_artist="Alvvays",
+            album="Antisocialites",
+            year="2017",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="Indie",
+            favorite=False,
+            play_count=0,
+            source="local",
+        )
+        index.upsert_many([track])
+        return index, tmp_path / "a.mp3"
+
+    def test_on_fields_changed_none_does_not_crash(self, tmp_path: Path) -> None:
+        """All 6 mutations must work when on_fields_changed is None (default)."""
+        from kamp_core.library import Track
+
+        index, track_path = self._make_index_with_track(tmp_path)
+        assert index.on_fields_changed is None
+        index.set_favorite(track_path, True)
+        index.toggle_album_favorite("Alvvays", "Antisocialites", True)
+        index.record_played(track_path)
+        index.record_track_started(track_path)
+        second = Track(
+            file_path=tmp_path / "b.mp3",
+            title="Song B",
+            artist="Weezer",
+            album_artist="Weezer",
+            album="Blue",
+            year="1994",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="Rock",
+            favorite=False,
+            play_count=0,
+            source="local",
+        )
+        index.upsert_many([second])
+        index.remove_track(track_path)
+        index.close()
+
+    def test_set_favorite_fires_on_fields_changed(self, tmp_path: Path) -> None:
+        index, track_path = self._make_index_with_track(tmp_path)
+        cb = MagicMock()
+        index.on_fields_changed = cb
+        index.set_favorite(track_path, True)
+        index.close()
+        cb.assert_called_once_with({"track.favorite"})
+
+    def test_toggle_album_favorite_fires_on_fields_changed(
+        self, tmp_path: Path
+    ) -> None:
+        index, _ = self._make_index_with_track(tmp_path)
+        cb = MagicMock()
+        index.on_fields_changed = cb
+        index.toggle_album_favorite("Alvvays", "Antisocialites", True)
+        index.close()
+        cb.assert_called_once_with({"album.favorite"})
+
+    def test_record_played_fires_on_fields_changed(self, tmp_path: Path) -> None:
+        index, track_path = self._make_index_with_track(tmp_path)
+        cb = MagicMock()
+        index.on_fields_changed = cb
+        index.record_played(track_path)
+        index.close()
+        cb.assert_called_once_with({"track.play_count"})
+
+    def test_record_track_started_fires_on_fields_changed(self, tmp_path: Path) -> None:
+        index, track_path = self._make_index_with_track(tmp_path)
+        cb = MagicMock()
+        index.on_fields_changed = cb
+        index.record_track_started(track_path)
+        index.close()
+        cb.assert_called_once_with({"track.last_played"})
+
+    def test_upsert_many_fires_on_fields_changed(self, tmp_path: Path) -> None:
+        from kamp_core.library import Track
+
+        index = LibraryIndex(tmp_path / "library.db")
+        cb = MagicMock()
+        index.on_fields_changed = cb
+        track = Track(
+            file_path=tmp_path / "a.mp3",
+            title="Song A",
+            artist="Alvvays",
+            album_artist="Alvvays",
+            album="Antisocialites",
+            year="2017",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="Indie",
+            favorite=False,
+            play_count=0,
+            source="local",
+        )
+        index.upsert_many([track])
+        index.close()
+        cb.assert_called_once()
+        fields_arg = cb.call_args[0][0]
+        assert "track.artist" in fields_arg
+        assert "track.album" in fields_arg
+        assert "track.genre" in fields_arg
+        assert "track.source" in fields_arg
+        assert "track.year" in fields_arg
+
+    def test_remove_track_fires_on_fields_changed(self, tmp_path: Path) -> None:
+        index, track_path = self._make_index_with_track(tmp_path)
+        cb = MagicMock()
+        index.on_fields_changed = cb
+        index.remove_track(track_path)
+        index.close()
+        cb.assert_called_once()
+        fields_arg = cb.call_args[0][0]
+        assert "track.artist" in fields_arg
+        assert "track.favorite" in fields_arg
+        assert "track.play_count" in fields_arg
+        assert "track.last_played" in fields_arg
+
+    def test_list_all_magic_criteria_returns_all(self, tmp_path: Path) -> None:
+        index, _ = self._make_index_with_track(tmp_path)
+        mc1 = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.favorite", op="is", value="true")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        mc2 = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.play_count", op="gt", value="5")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        id1 = index.create_magic_playlist("Favorites", mc1)
+        id2 = index.create_magic_playlist("Most Played", mc2)
+        result = index.list_all_magic_criteria()
+        index.close()
+        assert len(result) == 2
+        ids = {pair[0] for pair in result}
+        assert ids == {id1, id2}
+        criteria_by_id = {pair[0]: pair[1] for pair in result}
+        assert criteria_by_id[id1].groups[0].conditions[0].field == "track.favorite"
+        assert criteria_by_id[id2].groups[0].conditions[0].field == "track.play_count"
+
+    def test_list_all_magic_criteria_empty_when_none(self, tmp_path: Path) -> None:
+        index, _ = self._make_index_with_track(tmp_path)
+        index.close()
+        index2 = LibraryIndex(tmp_path / "library.db")
+        result = index2.list_all_magic_criteria()
+        index2.close()
+        assert result == []

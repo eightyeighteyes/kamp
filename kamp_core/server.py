@@ -921,6 +921,46 @@ def create_app(
     engine.on_play_state_changed = _notify_play_state_changed
     engine.on_audio_level = _notify_audio_level
 
+    # Magic playlist field_index: maps field name → set of playlist IDs whose
+    # criteria reference that field.  Rebuilt at startup and after CRUD ops.
+    field_index: dict[str, set[int]] = {}
+    # Per-playlist timestamp of last broadcast (for ≤1 event/second debounce).
+    _last_magic_broadcast: dict[int, float] = {}
+
+    def _rebuild_field_index() -> None:
+        new_index: dict[str, set[int]] = {}
+        for playlist_id, mc in index.list_all_magic_criteria():
+            for group in mc.groups:
+                for cond in group.conditions:
+                    new_index.setdefault(cond.field, set()).add(playlist_id)
+        field_index.clear()
+        field_index.update(new_index)
+
+    def _on_fields_changed(fields: set[str]) -> None:
+        """Broadcast magic_playlist.updated for each playlist affected by *fields*.
+
+        Called from LibraryIndex mutation methods (which run on various threads).
+        _broadcast is thread-safe. Debounce suppresses duplicate events within 1s.
+        """
+        affected: set[int] = set()
+        for f in fields:
+            affected |= field_index.get(f, set())
+        if not affected:
+            return
+        import time as _t  # noqa: PLC0415
+
+        now = _t.time()
+        for pid in affected:
+            if now - _last_magic_broadcast.get(pid, 0.0) < 1.0:
+                continue
+            _last_magic_broadcast[pid] = now
+            _broadcast({"type": "magic_playlist.updated", "id": pid})
+
+    index.on_fields_changed = _on_fields_changed
+    _rebuild_field_index()
+    app.state.field_index = field_index
+    app.state.on_fields_changed = _on_fields_changed
+
     # Auth middleware must be defined before add_middleware(CORSMiddleware) so
     # CORS ends up as the outermost wrapper (handles OPTIONS preflight first).
     @app.middleware("http")
@@ -3200,6 +3240,7 @@ def create_app(
             new_id = index.create_magic_playlist(req.title, mc)
             pl = index.get_playlist(new_id)
             assert pl is not None
+            _rebuild_field_index()
         else:
             pl = index.create_playlist(req.title)
         return _enrich_playlist(pl)
@@ -3241,6 +3282,7 @@ def create_app(
         if pl is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
         index.delete_playlist(playlist_id)
+        _rebuild_field_index()
         return Response(status_code=204)
 
     @app.post("/api/v1/playlists/{playlist_id}/played", status_code=204)
@@ -3275,6 +3317,7 @@ def create_app(
             index.update_magic_playlist_criteria(playlist_id, mc)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _rebuild_field_index()
         updated = index.get_playlist(playlist_id)
         assert updated is not None
         return _enrich_playlist(updated)

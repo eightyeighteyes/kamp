@@ -16,8 +16,11 @@ from pytest_mock import MockerFixture
 
 from kamp_core.library import (
     AlbumInfo,
+    Condition,
+    Group,
     LibraryIndex,
     LibraryScanner,
+    MagicCriteria,
     ScanResult,
     Track,
     extract_art,
@@ -129,7 +132,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 32
+        assert version == 33
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1454,7 +1457,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1511,7 +1514,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1924,7 +1927,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert row is not None
         assert row[0] == 0
 
@@ -2178,7 +2181,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2274,7 +2277,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -2455,7 +2458,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2550,7 +2553,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 32
+        assert version == 33
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2558,7 +2561,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 32
+        assert version == 33
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3435,7 +3438,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 32
+        assert version == 33
 
         index.close()
 
@@ -4120,7 +4123,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 32
+        assert version == 33
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4155,7 +4158,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 32
+        assert version == 33
         index.close()
 
 
@@ -4603,7 +4606,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 32
+        assert version == 33
 
 
 class TestRemoteTrackSchema:
@@ -4937,7 +4940,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -4998,7 +5001,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 32
+        assert version == 33
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -5665,7 +5668,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -5780,7 +5783,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -5858,7 +5861,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -6064,7 +6067,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -6413,7 +6416,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -6510,7 +6513,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -6625,7 +6628,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -7114,7 +7117,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -7229,7 +7232,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -7327,7 +7330,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -7427,7 +7430,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 32
+        assert version == 33
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -7652,3 +7655,287 @@ class TestPlaylists:
         index.close()
 
         assert result is None
+
+
+class TestMagicPlaylists:
+    def _criteria(self) -> MagicCriteria:
+        return MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[Condition(field="artist", op="eq", value="Alvvays")],
+                    match="all",
+                    negate=False,
+                )
+            ],
+            match="all",
+        )
+
+    def _index(self, tmp_path: Path) -> LibraryIndex:
+        return LibraryIndex(tmp_path / "library.db")
+
+    # ------------------------------------------------------------------
+    # Serialization round-trips
+    # ------------------------------------------------------------------
+
+    def test_condition_round_trip(self) -> None:
+        c = Condition(field="year", op="gt", value="2010")
+        assert Condition.from_dict(c.to_dict()) == c
+
+    def test_group_round_trip(self) -> None:
+        g = Group(
+            conditions=[Condition(field="artist", op="eq", value="Weezer")],
+            match="any",
+            negate=True,
+        )
+        assert Group.from_dict(g.to_dict()) == g
+
+    def test_magic_criteria_round_trip(self) -> None:
+        mc = self._criteria()
+        assert MagicCriteria.from_dict(mc.to_dict()) == mc
+
+    def test_group_negate_defaults_to_false(self) -> None:
+        d = {"conditions": [], "match": "all"}
+        g = Group.from_dict(d)
+        assert g.negate is False
+
+    # ------------------------------------------------------------------
+    # create_magic_playlist
+    # ------------------------------------------------------------------
+
+    def test_create_magic_playlist_returns_id(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        playlist_id = index.create_magic_playlist("Smart Mix", self._criteria())
+        index.close()
+
+        assert isinstance(playlist_id, int)
+        assert playlist_id > 0
+
+    def test_create_magic_playlist_creates_both_rows(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        playlist_id = index.create_magic_playlist("Smart Mix", self._criteria())
+
+        pl = index.get_playlist(playlist_id)
+        criteria = index.get_magic_playlist_criteria(playlist_id)
+        index.close()
+
+        assert pl is not None
+        assert pl["title"] == "Smart Mix"
+        assert criteria is not None
+
+    def test_create_magic_playlist_appears_in_get_playlists(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._index(tmp_path)
+        index.create_magic_playlist("Smart Mix", self._criteria())
+        titles = [p["title"] for p in index.get_playlists()]
+        index.close()
+
+        assert "Smart Mix" in titles
+
+    # ------------------------------------------------------------------
+    # get_magic_playlist_criteria
+    # ------------------------------------------------------------------
+
+    def test_get_magic_playlist_criteria_returns_none_for_static_playlist(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Static Mix")
+        result = index.get_magic_playlist_criteria(pl["id"])
+        index.close()
+
+        assert result is None
+
+    def test_get_magic_playlist_criteria_returns_criteria(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        criteria = self._criteria()
+        playlist_id = index.create_magic_playlist("Smart Mix", criteria)
+
+        fetched = index.get_magic_playlist_criteria(playlist_id)
+        index.close()
+
+        assert fetched == criteria
+
+    def test_get_magic_playlist_criteria_returns_none_for_unknown_id(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._index(tmp_path)
+        result = index.get_magic_playlist_criteria(9999)
+        index.close()
+
+        assert result is None
+
+    # ------------------------------------------------------------------
+    # update_magic_playlist_criteria
+    # ------------------------------------------------------------------
+
+    def test_update_magic_playlist_criteria(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        playlist_id = index.create_magic_playlist("Smart Mix", self._criteria())
+
+        new_criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[Condition(field="year", op="gt", value="2000")],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        index.update_magic_playlist_criteria(playlist_id, new_criteria)
+        fetched = index.get_magic_playlist_criteria(playlist_id)
+        index.close()
+
+        assert fetched == new_criteria
+
+    def test_update_magic_playlist_criteria_clears_evaluated_at(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._index(tmp_path)
+        playlist_id = index.create_magic_playlist("Smart Mix", self._criteria())
+        # Manually set evaluated_at so we can confirm it is cleared.
+        index._conn.execute(
+            "UPDATE magic_playlist_criteria SET evaluated_at = 9999.0 WHERE playlist_id = ?",
+            (playlist_id,),
+        )
+        index._conn.commit()
+
+        index.update_magic_playlist_criteria(playlist_id, self._criteria())
+        row = index._conn.execute(
+            "SELECT evaluated_at FROM magic_playlist_criteria WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()
+        index.close()
+
+        assert row["evaluated_at"] is None
+
+    def test_update_magic_playlist_criteria_raises_for_non_magic_playlist(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._index(tmp_path)
+        pl = index.create_playlist("Static Mix")
+
+        with pytest.raises(ValueError, match="not a magic playlist"):
+            index.update_magic_playlist_criteria(pl["id"], self._criteria())
+        index.close()
+
+    # ------------------------------------------------------------------
+    # Cascade delete
+    # ------------------------------------------------------------------
+
+    def test_delete_magic_playlist_cascades_criteria(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        playlist_id = index.create_magic_playlist("Smart Mix", self._criteria())
+        index.delete_playlist(playlist_id)
+
+        result = index.get_magic_playlist_criteria(playlist_id)
+        pl = index.get_playlist(playlist_id)
+        index.close()
+
+        assert result is None
+        assert pl is None
+
+    # ------------------------------------------------------------------
+    # Schema migration v32 → v33
+    # ------------------------------------------------------------------
+
+    def test_migration_v33_creates_magic_criteria_table(self, tmp_path: Path) -> None:
+        """Opening a v32 DB triggers the v33 migration: magic_playlist_criteria created."""
+        import sqlite3 as _sqlite3
+        import time as _time
+
+        db_path = tmp_path / "library.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (32)")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0, disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL,"
+            " genre TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',"
+            " source TEXT NOT NULL DEFAULT 'local', stream_url TEXT,"
+            " stream_url_expires_at REAL, album_id INTEGER,"
+            " is_available INTEGER NOT NULL DEFAULT 1,"
+            " duration REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5(title, artist, album_artist, album)"
+        )
+        conn.execute(
+            "CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " album_artist TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " album TEXT NOT NULL DEFAULT '' COLLATE NOCASE,"
+            " year TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', genre TEXT NOT NULL DEFAULT '',"
+            " label TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'local',"
+            " sale_item_id TEXT, favorite INTEGER NOT NULL DEFAULT 0,"
+            " date_added REAL, last_played_at REAL, play_count_avg REAL NOT NULL DEFAULT 0,"
+            " art_version REAL, UNIQUE (album_artist, album))"
+        )
+        conn.execute(
+            "CREATE TABLE bandcamp_collection (sale_item_id TEXT NOT NULL PRIMARY KEY,"
+            " item_type TEXT NOT NULL DEFAULT 'p', band_name TEXT NOT NULL DEFAULT '',"
+            " item_title TEXT NOT NULL DEFAULT '', tralbum_id TEXT NOT NULL DEFAULT '',"
+            " album_url TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'local',"
+            " synced_at REAL, added_at REAL NOT NULL DEFAULT 0,"
+            " num_streamable_tracks INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE settings (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE sessions (service TEXT NOT NULL PRIMARY KEY,"
+            " session_json TEXT, updated_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE deferred_ops (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " op_type TEXT NOT NULL, track_id INTEGER NOT NULL UNIQUE,"
+            " payload_json TEXT NOT NULL, created_at REAL NOT NULL,"
+            " attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE download_queue (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " sale_item_id TEXT NOT NULL UNIQUE, queued_at REAL NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE playlists (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " title TEXT NOT NULL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " created_at REAL NOT NULL, updated_at REAL NOT NULL,"
+            " last_played_at REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE playlist_tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,"
+            " track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,"
+            " position INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE playlists_fts USING fts5(title, tokenize = 'unicode61')"
+        )
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+
+        # Verify the table exists and the methods work end-to-end.
+        criteria = MagicCriteria(
+            groups=[
+                Group(conditions=[Condition("artist", "eq", "Weezer")], match="all")
+            ],
+            match="all",
+        )
+        playlist_id = index.create_magic_playlist("Post-Migration Mix", criteria)
+        fetched = index.get_magic_playlist_criteria(playlist_id)
+        index.close()
+
+        assert version == 33
+        assert fetched == criteria

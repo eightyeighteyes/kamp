@@ -3429,6 +3429,30 @@ class LibraryIndex:
             raise ValueError(f"playlist {playlist_id} is not a magic playlist")
         self._conn.commit()
 
+    def evaluate_magic_playlist(self, playlist_id: int) -> list[int]:
+        """Return track IDs matching the magic playlist criteria.
+
+        Returns an empty list when the playlist does not exist or has no
+        criteria row.  A LEFT JOIN on albums is added only when the criteria
+        reference album-level fields so the common case avoids the extra join.
+        """
+        # Lazy import avoids a circular dependency: criteria.py imports the
+        # dataclasses (MagicCriteria etc.) defined in this module.
+        from kamp_core.criteria import build_query
+
+        criteria = self.get_magic_playlist_criteria(playlist_id)
+        if criteria is None:
+            return []
+        where_fragment, params, needs_album_join = build_query(criteria)
+        album_join = (
+            "LEFT JOIN albums ON albums.id = tracks.album_id"
+            if needs_album_join
+            else ""
+        )
+        sql = f"SELECT tracks.id FROM tracks {album_join} WHERE {where_fragment} ORDER BY tracks.id"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [r[0] for r in rows]
+
 
 # Track fields that extensions are permitted to write via apply_metadata_update.
 # Excludes internal columns (embedded_art, play_count, last_played, etc.) so

@@ -1,0 +1,310 @@
+"""Unit tests for kamp_core.criteria.build_query."""
+
+from __future__ import annotations
+
+import pytest
+
+from kamp_core.criteria import build_query
+from kamp_core.library import Condition, Group, MagicCriteria
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _criteria(*groups: Group, match: str = "all") -> MagicCriteria:
+    return MagicCriteria(groups=list(groups), match=match)
+
+
+def _group(*conditions: Condition, match: str = "all", negate: bool = False) -> Group:
+    return Group(conditions=list(conditions), match=match, negate=negate)
+
+
+def _cond(field: str, op: str, value: str) -> Condition:
+    return Condition(field=field, op=op, value=value)
+
+
+# ---------------------------------------------------------------------------
+# Empty criteria / empty group
+# ---------------------------------------------------------------------------
+
+
+def test_empty_criteria_returns_passthrough() -> None:
+    frag, params, join = build_query(MagicCriteria(groups=[], match="all"))
+    assert frag == "1"
+    assert params == []
+    assert join is False
+
+
+def test_empty_group_returns_passthrough() -> None:
+    frag, params, join = build_query(_criteria(_group()))
+    assert frag == "1"
+    assert params == []
+    assert join is False
+
+
+# ---------------------------------------------------------------------------
+# Bool coercion
+# ---------------------------------------------------------------------------
+
+
+def test_track_favorite_true() -> None:
+    frag, params, join = build_query(
+        _criteria(_group(_cond("track.favorite", "is", "true")))
+    )
+    assert "tracks.favorite" in frag
+    assert params == [1]
+    assert join is False
+
+
+def test_track_favorite_false() -> None:
+    frag, params, join = build_query(
+        _criteria(_group(_cond("track.favorite", "is", "false")))
+    )
+    assert params == [0]
+
+
+def test_album_favorite_sets_join_flag() -> None:
+    frag, params, join = build_query(
+        _criteria(_group(_cond("album.favorite", "is", "true")))
+    )
+    assert "albums.favorite" in frag
+    assert params == [1]
+    assert join is True
+
+
+# ---------------------------------------------------------------------------
+# Numeric fields
+# ---------------------------------------------------------------------------
+
+
+def test_track_play_count_gt() -> None:
+    frag, params, join = build_query(
+        _criteria(_group(_cond("track.play_count", "gt", "5")))
+    )
+    assert "tracks.play_count" in frag
+    assert "> ?" in frag
+    assert params == [5]
+
+
+def test_track_play_count_lte() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.play_count", "lte", "10")))
+    )
+    assert "<= ?" in frag
+    assert params == [10]
+
+
+def test_track_last_played_uses_coalesce() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.last_played", "gt", "1000000.0")))
+    )
+    assert "COALESCE(tracks.last_played, 0)" in frag
+    assert params == [1000000.0]
+
+
+def test_track_date_added_gte() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.date_added", "gte", "1700000000.0")))
+    )
+    assert "tracks.date_added" in frag
+    assert ">= ?" in frag
+    assert params == [1700000000.0]
+
+
+# ---------------------------------------------------------------------------
+# Year field — TEXT column with CAST for numeric ops
+# ---------------------------------------------------------------------------
+
+
+def test_track_year_gt_uses_cast() -> None:
+    frag, params, _ = build_query(_criteria(_group(_cond("track.year", "gt", "2010"))))
+    assert "CAST(tracks.year AS INTEGER)" in frag
+    assert "> ?" in frag
+    assert params == ["2010"]
+
+
+def test_track_year_lt_uses_cast() -> None:
+    frag, params, _ = build_query(_criteria(_group(_cond("track.year", "lt", "2000"))))
+    assert "CAST(tracks.year AS INTEGER)" in frag
+
+
+def test_track_year_is_does_not_cast() -> None:
+    frag, params, _ = build_query(_criteria(_group(_cond("track.year", "is", "2020"))))
+    assert "CAST" not in frag
+    assert "tracks.year" in frag
+    assert "= ?" in frag
+    assert params == ["2020"]
+
+
+# ---------------------------------------------------------------------------
+# Text fields — is / is_not / contains / not_contains
+# ---------------------------------------------------------------------------
+
+
+def test_track_artist_is() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.artist", "is", "Weezer")))
+    )
+    assert "tracks.artist" in frag
+    assert "= ?" in frag
+    assert params == ["Weezer"]
+
+
+def test_track_artist_is_not() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.artist", "is_not", "Nickelback")))
+    )
+    assert "!= ?" in frag
+    assert params == ["Nickelback"]
+
+
+def test_track_genre_contains_wraps_value() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.genre", "contains", "Rock")))
+    )
+    assert "LIKE ?" in frag
+    assert params == ["%Rock%"]
+
+
+def test_track_genre_not_contains() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.genre", "not_contains", "Pop")))
+    )
+    assert "NOT LIKE ?" in frag
+    assert params == ["%Pop%"]
+
+
+def test_track_album_contains() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.album", "contains", "Blue")))
+    )
+    assert "tracks.album" in frag
+    assert params == ["%Blue%"]
+
+
+def test_track_source_is() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.source", "is", "bandcamp")))
+    )
+    assert "tracks.source" in frag
+    assert params == ["bandcamp"]
+
+
+# ---------------------------------------------------------------------------
+# in_playlist special field
+# ---------------------------------------------------------------------------
+
+
+def test_in_playlist_is() -> None:
+    frag, params, join = build_query(_criteria(_group(_cond("in_playlist", "is", "7"))))
+    assert "EXISTS" in frag
+    assert "NOT EXISTS" not in frag
+    assert "playlist_tracks" in frag
+    assert params == [7]
+    assert join is False
+
+
+def test_in_playlist_is_not() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("in_playlist", "is_not", "3")))
+    )
+    assert "NOT EXISTS" in frag
+    assert params == [3]
+
+
+# ---------------------------------------------------------------------------
+# Group composition — AND / OR / negate
+# ---------------------------------------------------------------------------
+
+
+def test_group_match_all_uses_and() -> None:
+    g = _group(
+        _cond("track.artist", "is", "A"),
+        _cond("track.genre", "is", "B"),
+        match="all",
+    )
+    frag, _, _ = build_query(_criteria(g))
+    assert " AND " in frag
+
+
+def test_group_match_any_uses_or() -> None:
+    g = _group(
+        _cond("track.artist", "is", "A"),
+        _cond("track.genre", "is", "B"),
+        match="any",
+    )
+    frag, _, _ = build_query(_criteria(g))
+    assert " OR " in frag
+
+
+def test_group_negate_wraps_in_not() -> None:
+    g = _group(_cond("track.favorite", "is", "true"), negate=True)
+    frag, _, _ = build_query(_criteria(g))
+    assert frag.startswith("NOT (")
+
+
+# ---------------------------------------------------------------------------
+# MagicCriteria top-level composition
+# ---------------------------------------------------------------------------
+
+
+def test_criteria_match_all_joins_groups_with_and() -> None:
+    g1 = _group(_cond("track.artist", "is", "X"))
+    g2 = _group(_cond("track.genre", "is", "Y"))
+    frag, params, _ = build_query(_criteria(g1, g2, match="all"))
+    assert " AND " in frag
+    assert params == ["X", "Y"]
+
+
+def test_criteria_match_any_joins_groups_with_or() -> None:
+    g1 = _group(_cond("track.artist", "is", "X"))
+    g2 = _group(_cond("track.genre", "is", "Y"))
+    frag, params, _ = build_query(_criteria(g1, g2, match="any"))
+    assert " OR " in frag
+
+
+def test_needs_album_join_propagates_through_groups() -> None:
+    g1 = _group(_cond("track.artist", "is", "X"))
+    g2 = _group(_cond("album.favorite", "is", "true"))
+    _, _, join = build_query(_criteria(g1, g2))
+    assert join is True
+
+
+def test_needs_album_join_false_when_no_album_fields() -> None:
+    g = _group(_cond("track.artist", "is", "X"))
+    _, _, join = build_query(_criteria(g))
+    assert join is False
+
+
+# ---------------------------------------------------------------------------
+# Multi-condition params order
+# ---------------------------------------------------------------------------
+
+
+def test_params_are_ordered_correctly() -> None:
+    g = _group(
+        _cond("track.artist", "is", "Alvvays"),
+        _cond("track.year", "gt", "2010"),
+        match="all",
+    )
+    _, params, _ = build_query(_criteria(g))
+    assert params[0] == "Alvvays"
+    assert params[1] == "2010"
+
+
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_field_raises() -> None:
+    g = _group(_cond("track.nonsense", "is", "x"))
+    with pytest.raises(ValueError, match="Unknown magic playlist field"):
+        build_query(_criteria(g))
+
+
+def test_unknown_operator_raises() -> None:
+    g = _group(_cond("track.artist", "between", "A"))
+    with pytest.raises(ValueError, match="Unknown magic playlist operator"):
+        build_query(_criteria(g))

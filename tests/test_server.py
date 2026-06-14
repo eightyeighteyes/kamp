@@ -55,6 +55,8 @@ def mock_index() -> MagicMock:
     index.search_playlists.return_value = []
     index.playlists_for_tracks.return_value = []
     index.get_playlist_cover.return_value = None
+    # Default: no magic criteria (static playlist). Individual tests override.
+    index.get_magic_playlist_criteria.return_value = None
     return index
 
 
@@ -5235,6 +5237,249 @@ class TestPlaylistEndpoints:
     ) -> None:
         mock_index.get_playlist.return_value = None
         assert client.post("/api/v1/playlists/999/played").status_code == 404
+
+
+_SAMPLE_CRITERIA = {
+    "groups": [
+        {
+            "conditions": [{"field": "track.artist", "op": "is", "value": "Alvvays"}],
+            "match": "all",
+            "negate": False,
+        }
+    ],
+    "match": "all",
+}
+
+
+class TestMagicPlaylistEndpoints:
+    """Tests for magic playlist routes added in KAMP-461."""
+
+    # ------------------------------------------------------------------
+    # POST /api/v1/playlists — with criteria
+    # ------------------------------------------------------------------
+
+    def test_create_magic_playlist_calls_create_magic_playlist(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        from kamp_core.library import MagicCriteria
+
+        mock_index.create_magic_playlist.return_value = 5
+        mock_index.get_playlist.return_value = _playlist(id=5, title="Smart Mix")
+        resp = client.post(
+            "/api/v1/playlists",
+            json={"title": "Smart Mix", "criteria": _SAMPLE_CRITERIA},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["id"] == 5
+        mock_index.create_magic_playlist.assert_called_once()
+        # criteria key is present in the response (enriched from get_magic_playlist_criteria
+        # which returns None by default in the fixture → criteria=None)
+        assert "criteria" in resp.json()
+
+    def test_create_magic_playlist_invalid_criteria_returns_400(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        resp = client.post(
+            "/api/v1/playlists", json={"title": "Bad", "criteria": {"bad": "data"}}
+        )
+        assert resp.status_code == 400
+
+    def test_create_static_playlist_unaffected(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.create_playlist.return_value = _playlist(title="Static")
+        resp = client.post("/api/v1/playlists", json={"title": "Static"})
+        assert resp.status_code == 201
+        mock_index.create_playlist.assert_called_once_with("Static")
+        mock_index.create_magic_playlist.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # GET /api/v1/playlists — criteria field + ?type=simple filter
+    # ------------------------------------------------------------------
+
+    def test_list_playlists_includes_criteria_field(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlists.return_value = [_playlist(id=1)]
+        resp = client.get("/api/v1/playlists")
+        assert resp.status_code == 200
+        assert "criteria" in resp.json()[0]
+
+    def test_list_playlists_type_simple_excludes_magic(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        from kamp_core.library import Condition, Group, MagicCriteria
+
+        mock_index.get_playlists.return_value = [_playlist(id=1), _playlist(id=2)]
+        mc = MagicCriteria(
+            groups=[
+                Group(conditions=[Condition("track.artist", "is", "X")], match="all")
+            ],
+            match="all",
+        )
+        # playlist 1 is magic, playlist 2 is static
+        mock_index.get_magic_playlist_criteria.side_effect = lambda pid: (
+            mc if pid == 1 else None
+        )
+        resp = client.get("/api/v1/playlists?type=simple")
+        assert resp.status_code == 200
+        ids = [p["id"] for p in resp.json()]
+        assert 1 not in ids
+        assert 2 in ids
+
+    def test_list_playlists_no_type_includes_all(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        from kamp_core.library import Condition, Group, MagicCriteria
+
+        mock_index.get_playlists.return_value = [_playlist(id=1), _playlist(id=2)]
+        mc = MagicCriteria(
+            groups=[
+                Group(conditions=[Condition("track.artist", "is", "X")], match="all")
+            ],
+            match="all",
+        )
+        mock_index.get_magic_playlist_criteria.side_effect = lambda pid: (
+            mc if pid == 1 else None
+        )
+        resp = client.get("/api/v1/playlists")
+        ids = [p["id"] for p in resp.json()]
+        assert ids == [1, 2]
+
+    # ------------------------------------------------------------------
+    # GET /api/v1/playlists/{id}/tracks — magic branch
+    # ------------------------------------------------------------------
+
+    def test_get_magic_playlist_tracks_calls_get_magic_tracks(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        from kamp_core.library import Condition, Group, MagicCriteria
+
+        mc = MagicCriteria(
+            groups=[
+                Group(conditions=[Condition("track.artist", "is", "X")], match="all")
+            ],
+            match="all",
+        )
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.get_magic_playlist_criteria.return_value = mc
+        magic_track = dict(_playlist_track(), playlist_track_id=None, position=0)
+        mock_index.get_magic_playlist_tracks.return_value = [magic_track]
+        resp = client.get("/api/v1/playlists/1/tracks")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+        assert resp.json()[0]["playlist_track_id"] is None
+        mock_index.get_magic_playlist_tracks.assert_called_once_with(1)
+        mock_index.get_playlist_tracks.assert_not_called()
+
+    def test_get_static_playlist_tracks_unaffected(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        # get_magic_playlist_criteria returns None by default (static playlist)
+        mock_index.get_playlist_tracks.return_value = [_playlist_track()]
+        resp = client.get("/api/v1/playlists/1/tracks")
+        assert resp.status_code == 200
+        mock_index.get_playlist_tracks.assert_called_once_with(1)
+        mock_index.get_magic_playlist_tracks.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # PUT /api/v1/playlists/{id}/criteria
+    # ------------------------------------------------------------------
+
+    def test_put_criteria_updates_and_returns_playlist(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        resp = client.put(
+            "/api/v1/playlists/1/criteria", json={"criteria": _SAMPLE_CRITERIA}
+        )
+        assert resp.status_code == 200
+        mock_index.update_magic_playlist_criteria.assert_called_once()
+
+    def test_put_criteria_404(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.get_playlist.return_value = None
+        resp = client.put(
+            "/api/v1/playlists/999/criteria", json={"criteria": _SAMPLE_CRITERIA}
+        )
+        assert resp.status_code == 404
+
+    def test_put_criteria_not_magic_returns_400(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.update_magic_playlist_criteria.side_effect = ValueError(
+            "not a magic playlist"
+        )
+        resp = client.put(
+            "/api/v1/playlists/1/criteria", json={"criteria": _SAMPLE_CRITERIA}
+        )
+        assert resp.status_code == 400
+
+    def test_put_criteria_invalid_body_returns_400(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        resp = client.put(
+            "/api/v1/playlists/1/criteria", json={"criteria": {"bad": True}}
+        )
+        assert resp.status_code == 400
+
+    # ------------------------------------------------------------------
+    # GET /api/v1/playlists/{id}/criteria
+    # ------------------------------------------------------------------
+
+    def test_get_criteria_returns_dict_for_magic_playlist(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        from kamp_core.library import Condition, Group, MagicCriteria
+
+        mc = MagicCriteria(
+            groups=[
+                Group(conditions=[Condition("track.artist", "is", "X")], match="all")
+            ],
+            match="all",
+        )
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.get_magic_playlist_criteria.return_value = mc
+        resp = client.get("/api/v1/playlists/1/criteria")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "criteria" in body
+        assert body["criteria"]["match"] == "all"
+
+    def test_get_criteria_returns_null_for_static_playlist(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        resp = client.get("/api/v1/playlists/1/criteria")
+        assert resp.status_code == 200
+        assert resp.json()["criteria"] is None
+
+    def test_get_criteria_404(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.get_playlist.return_value = None
+        assert client.get("/api/v1/playlists/999/criteria").status_code == 404
+
+    # ------------------------------------------------------------------
+    # POST /api/v1/criteria/preview
+    # ------------------------------------------------------------------
+
+    def test_criteria_preview_returns_count(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.count_magic_criteria.return_value = 42
+        resp = client.post(
+            "/api/v1/criteria/preview", json={"criteria": _SAMPLE_CRITERIA}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"count": 42}
+        mock_index.count_magic_criteria.assert_called_once()
+
+    def test_criteria_preview_invalid_criteria_returns_400(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        resp = client.post("/api/v1/criteria/preview", json={"criteria": {"bad": True}})
+        assert resp.status_code == 400
 
 
 class TestPlaylistArt:

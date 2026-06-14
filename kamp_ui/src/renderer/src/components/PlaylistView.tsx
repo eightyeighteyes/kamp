@@ -549,7 +549,7 @@ export function PlaylistView(): React.JSX.Element | null {
             const isSelected = selectedIndices.has(i)
             return (
               <li
-                key={track.playlist_track_id}
+                key={track.playlist_track_id ?? track.id}
                 className={[
                   'track-row',
                   isCurrent ? 'current' : '',
@@ -668,15 +668,19 @@ export function PlaylistView(): React.JSX.Element | null {
               : undefined
           }
           onClose={() => setMenu(null)}
-          onRemoveFromPlaylist={() => {
-            const targets =
-              selectedIndices.size > 0
-                ? [...selectedIndices]
-                    .sort((a, b) => b - a)
-                    .map((i) => displayTracks[i].playlist_track_id)
-                : [menu.track.playlist_track_id]
-            targets.forEach((ptId) => void removeTrackFromPlaylist(playlist.id, ptId))
-          }}
+          onRemoveFromPlaylist={
+            playlist.criteria === null
+              ? () => {
+                  const targets =
+                    selectedIndices.size > 0
+                      ? [...selectedIndices]
+                          .sort((a, b) => b - a)
+                          .map((i) => displayTracks[i].playlist_track_id!)
+                      : [menu.track.playlist_track_id!]
+                  targets.forEach((ptId) => void removeTrackFromPlaylist(playlist.id, ptId))
+                }
+              : undefined
+          }
         />
       )}
     </div>

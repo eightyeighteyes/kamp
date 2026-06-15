@@ -62,6 +62,9 @@ export type Album = {
   is_preorder?: boolean
   // Bandcamp album page URL — non-empty for Bandcamp albums; used for sharing.
   album_url?: string
+  // User-set display overrides for streaming albums (KAMP-467). Undefined means no override.
+  display_album?: string
+  display_album_artist?: string
 }
 
 export type PlayerState = {
@@ -461,6 +464,39 @@ export async function patchTrackTags(
   }
   return res.json() as Promise<Track>
 }
+export async function patchTrackDisplay(
+  trackId: number,
+  displayTitle: string | null
+): Promise<Track> {
+  const res = await fetch(`${BASE_URL}/api/v1/tracks/${trackId}/display`, {
+    method: 'PATCH',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ display_title: displayTitle || null })
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json() as Promise<Track>
+}
+
+export async function patchAlbumDisplay(
+  albumArtist: string,
+  album: string,
+  displayAlbum: string | null,
+  displayAlbumArtist: string | null
+): Promise<Album> {
+  const res = await fetch(`${BASE_URL}/api/v1/albums/display`, {
+    method: 'PATCH',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      album_artist: albumArtist,
+      album,
+      display_album: displayAlbum || null,
+      display_album_artist: displayAlbumArtist || null
+    })
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json() as Promise<Album>
+}
+
 export const setAlbumFavorite = (
   albumArtist: string,
   album: string,

@@ -201,11 +201,18 @@ type PlayerStore = {
     title: string,
     overwrite?: boolean
   ) => Promise<api.TrackTagsCollision | null>
+  patchTrackDisplay: (trackId: number, displayTitle: string | null) => Promise<void>
   patchAlbumTags: (
     albumArtist: string,
     album: string,
     opts: { album?: string; album_artist?: string; overwrite?: boolean; skip_conflicts?: boolean }
   ) => Promise<AlbumTagsCollision | null>
+  patchAlbumDisplay: (
+    albumArtist: string,
+    album: string,
+    displayAlbum: string | null,
+    displayAlbumArtist: string | null
+  ) => Promise<void>
   deferredOps: Record<number, number> // track_id → op_id
   clearDeferredOp: (trackId: number) => void
   setAlbumRenameProgress: (progress: { done: number; total: number } | null) => void
@@ -1036,6 +1043,18 @@ export const useStore = create<PlayerStore>((set, get) => ({
     return null
   },
 
+  patchTrackDisplay: async (trackId, displayTitle) => {
+    const updated = await api.patchTrackDisplay(trackId, displayTitle)
+    // Update the track in the open track list without reloading the whole library.
+    set((s) => ({
+      library: {
+        ...s.library,
+        tracks: s.library.tracks.map((t) => (t.id === trackId ? updated : t))
+      }
+    }))
+    void get().loadQueue()
+  },
+
   clearDeferredOp: (trackId) =>
     set((s) => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -1080,6 +1099,22 @@ export const useStore = create<PlayerStore>((set, get) => ({
       await get().loadTracks(newArtist, newAlbum)
     }
     return null
+  },
+
+  patchAlbumDisplay: async (albumArtist, album, displayAlbum, displayAlbumArtist) => {
+    const updated = await api.patchAlbumDisplay(albumArtist, album, displayAlbum, displayAlbumArtist)
+    // Update the album in the library list and selectedAlbum without a full reload.
+    set((s) => {
+      const albums = s.library.albums.map((a) =>
+        a.album_artist === albumArtist && a.album === album ? { ...a, ...updated } : a
+      )
+      const selectedAlbum =
+        s.library.selectedAlbum?.album_artist === albumArtist &&
+        s.library.selectedAlbum?.album === album
+          ? { ...s.library.selectedAlbum, ...updated }
+          : s.library.selectedAlbum
+      return { library: { ...s.library, albums, selectedAlbum } }
+    })
   },
 
   patchAlbumMeta: async (albumArtist, album, opts) => {

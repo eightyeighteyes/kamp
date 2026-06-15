@@ -685,7 +685,7 @@ export function PlaylistView(): React.JSX.Element | null {
 
       {displayMode === 'albums' ? (
         <div className="track-list-body">
-          <div className="album-grid">
+          <div className="album-grid" style={{ padding: 10 }}>
             {albumGroups.map((a) => (
               <AlbumCard key={`${a.album_artist}::${a.album}`} album={a} />
             ))}

@@ -75,6 +75,19 @@
   margin: 0 -16px 0;
 }
 
+/* When embedded inside the resize handle (.album-meta-toggle), the toolbar
+   shares the same horizontal band as the drag zone. It is transparent so the
+   playlist hero gradient bleeds through, and non-sticky since it lives above
+   the scrollable track list. The drag handle's cursor and border are kept. */
+.album-grid-toolbar--embedded {
+  position: static;
+  background: transparent;
+  border-bottom: none;
+  margin: 0;
+  flex: 1;
+  cursor: default;
+}
+
 /* Breadcrumb sits below the toolbar rail (no hero image to overlay).
    Double-class selector outranks .breadcrumb { position: absolute } from track-list.css. */
 .album-grid-breadcrumb.breadcrumb {

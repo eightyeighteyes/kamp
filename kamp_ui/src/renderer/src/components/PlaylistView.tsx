@@ -630,53 +630,57 @@ export function PlaylistView(): React.JSX.Element | null {
         </div>
       </div>
 
-      <button
+      {/* Drag-to-resize handle; toolbar lives inside so they share the same
+          horizontal band. stopPropagation on the toolbar prevents mousedown
+          from bubbling up and starting a drag when the user clicks a control. */}
+      <div
         className="album-meta-toggle"
         aria-label="Resize hero"
         onMouseDown={handleResizeMouseDown}
         onDoubleClick={handleResizeReset}
-      />
-
-      <div
-        className="album-grid-toolbar"
-        style={{ margin: '0 -16px', padding: '0 16px', marginBottom: 6 }}
       >
-        <div className="view-mode-toggle">
-          <button
-            className={`view-mode-btn${displayMode === 'tracks' ? ' view-mode-btn--active' : ''}`}
-            title="Track list"
-            onClick={() => setDisplayModeAndPersist('tracks')}
-          >
-            <QueueIcon size={14} />
-          </button>
-          <button
-            className={`view-mode-btn${displayMode === 'albums' ? ' view-mode-btn--active' : ''}`}
-            title="Album grid"
-            onClick={() => setDisplayModeAndPersist('albums')}
-          >
-            <GridViewIcon size={14} />
-          </button>
+        <div
+          className="album-grid-toolbar album-grid-toolbar--embedded"
+          onMouseDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          <div className="view-mode-toggle">
+            <button
+              className={`view-mode-btn${displayMode === 'tracks' ? ' view-mode-btn--active' : ''}`}
+              title="Track list"
+              onClick={() => setDisplayModeAndPersist('tracks')}
+            >
+              <QueueIcon size={14} />
+            </button>
+            <button
+              className={`view-mode-btn${displayMode === 'albums' ? ' view-mode-btn--active' : ''}`}
+              title="Album grid"
+              onClick={() => setDisplayModeAndPersist('albums')}
+            >
+              <GridViewIcon size={14} />
+            </button>
+          </div>
+          <SortControl
+            value={trackSortOrder}
+            options={trackSortOptions}
+            dir={trackSortDir}
+            onChange={handleTrackSortChange}
+            onDirChange={handleTrackDirChange}
+            showDir={trackSortOrder !== 'position'}
+          />
+          {playlist.criteria !== null && (
+            <button
+              className="playlist-cta-btn playlist-cta-btn--magic"
+              onClick={() => {
+                setMagicModalKey((k) => k + 1)
+                setMagicModalOpen(true)
+              }}
+            >
+              <SparkleIcon size={12} />
+              Edit criteria
+            </button>
+          )}
         </div>
-        <SortControl
-          value={trackSortOrder}
-          options={trackSortOptions}
-          dir={trackSortDir}
-          onChange={handleTrackSortChange}
-          onDirChange={handleTrackDirChange}
-          showDir={trackSortOrder !== 'position'}
-        />
-        {playlist.criteria !== null && (
-          <button
-            className="playlist-cta-btn playlist-cta-btn--magic"
-            onClick={() => {
-              setMagicModalKey((k) => k + 1)
-              setMagicModalOpen(true)
-            }}
-          >
-            <SparkleIcon size={12} />
-            Edit criteria
-          </button>
-        )}
       </div>
 
       {displayMode === 'albums' ? (

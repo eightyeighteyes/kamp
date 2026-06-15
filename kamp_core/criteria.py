@@ -25,6 +25,7 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     "track.year": ("tracks.year", "year"),
     "track.genre": ("tracks.genre", "text"),
     "track.artist": ("tracks.artist", "text"),
+    "track.album_artist": ("tracks.album_artist", "text"),
     "track.album": ("tracks.album", "text"),
     "track.source": ("tracks.source", "text"),
 }

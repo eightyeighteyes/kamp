@@ -183,6 +183,14 @@ def test_track_album_contains() -> None:
     assert params == ["%Blue%"]
 
 
+def test_track_album_artist_contains() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.album_artist", "contains", "Beach")))
+    )
+    assert "tracks.album_artist" in frag
+    assert params == ["%Beach%"]
+
+
 def test_track_source_is() -> None:
     frag, params, _ = build_query(
         _criteria(_group(_cond("track.source", "is", "bandcamp")))

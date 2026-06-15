@@ -12,6 +12,7 @@ type FieldType = 'bool' | 'int' | 'date' | 'text' | 'source' | 'playlist'
 
 const FIELD_META: Record<CriteriaField, { label: string; type: FieldType }> = {
   'track.artist': { label: 'Artist', type: 'text' },
+  'track.album_artist': { label: 'Album Artist', type: 'text' },
   'track.album': { label: 'Album', type: 'text' },
   'track.genre': { label: 'Genre', type: 'text' },
   'track.year': { label: 'Year', type: 'int' },
@@ -26,6 +27,7 @@ const FIELD_META: Record<CriteriaField, { label: string; type: FieldType }> = {
 
 const FIELD_ORDER: CriteriaField[] = [
   'track.artist',
+  'track.album_artist',
   'track.album',
   'track.genre',
   'track.year',

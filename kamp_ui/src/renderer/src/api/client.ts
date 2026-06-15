@@ -89,6 +89,7 @@ export type CriteriaField =
   | 'track.date_added'
   | 'track.genre'
   | 'track.artist'
+  | 'track.album_artist'
   | 'track.album'
   | 'track.source'
   | 'in_playlist'

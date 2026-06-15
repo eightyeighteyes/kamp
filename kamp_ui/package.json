@@ -26,7 +26,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@tanstack/react-virtual": "^3.14.2",
     "react-markdown": "^10.1.0",
-    "zustand": "^5.0.12"
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

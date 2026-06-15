@@ -248,10 +248,11 @@ export function PlaylistView(): React.JSX.Element | null {
   }, [flashIds])
 
   // Synthesize Album objects from playlist tracks for the album-grid display mode.
+  // Iterates displayTracks (already sorted) so tile order matches the active sort.
   const albumGroups = useMemo<Album[]>(() => {
-    if (displayMode !== 'albums' || !isMagic) return []
+    if (displayMode !== 'albums') return []
     const seen = new Map<string, Album>()
-    for (const t of playlistTracks) {
+    for (const t of displayTracks) {
       const albumArtist = t.album_artist || t.artist
       const key = `${albumArtist}::${t.album}`
       if (!seen.has(key)) {
@@ -283,7 +284,7 @@ export function PlaylistView(): React.JSX.Element | null {
       }
     }
     return [...seen.values()]
-  }, [playlistTracks, displayMode, isMagic])
+  }, [displayTracks, displayMode])
 
   if (!playlist) return null
 
@@ -631,25 +632,26 @@ export function PlaylistView(): React.JSX.Element | null {
         onDoubleClick={handleResizeReset}
       />
 
-      <div className="album-grid-toolbar" style={{ margin: '0 -16px', padding: '0 16px' }}>
-        {isMagic && (
-          <div className="view-mode-toggle">
-            <button
-              className={`view-mode-btn${displayMode === 'tracks' ? ' view-mode-btn--active' : ''}`}
-              title="Track list"
-              onClick={() => setDisplayModeAndPersist('tracks')}
-            >
-              <QueueIcon size={14} />
-            </button>
-            <button
-              className={`view-mode-btn${displayMode === 'albums' ? ' view-mode-btn--active' : ''}`}
-              title="Album grid"
-              onClick={() => setDisplayModeAndPersist('albums')}
-            >
-              <GridViewIcon size={14} />
-            </button>
-          </div>
-        )}
+      <div
+        className="album-grid-toolbar"
+        style={{ margin: '0 -16px', padding: '0 16px', marginBottom: 6 }}
+      >
+        <div className="view-mode-toggle">
+          <button
+            className={`view-mode-btn${displayMode === 'tracks' ? ' view-mode-btn--active' : ''}`}
+            title="Track list"
+            onClick={() => setDisplayModeAndPersist('tracks')}
+          >
+            <QueueIcon size={14} />
+          </button>
+          <button
+            className={`view-mode-btn${displayMode === 'albums' ? ' view-mode-btn--active' : ''}`}
+            title="Album grid"
+            onClick={() => setDisplayModeAndPersist('albums')}
+          >
+            <GridViewIcon size={14} />
+          </button>
+        </div>
         <SortControl
           value={trackSortOrder}
           options={trackSortOptions}
@@ -672,7 +674,7 @@ export function PlaylistView(): React.JSX.Element | null {
         )}
       </div>
 
-      {displayMode === 'albums' && isMagic ? (
+      {displayMode === 'albums' ? (
         <div className="track-list-body">
           <div className="album-grid">
             {albumGroups.map((a) => (
@@ -681,7 +683,11 @@ export function PlaylistView(): React.JSX.Element | null {
           </div>
           {albumGroups.length === 0 && (
             <div className="album-grid-empty">
-              {playlistTracksLoading ? 'Loading…' : 'No tracks match these criteria yet.'}
+              {playlistTracksLoading
+                ? 'Loading…'
+                : isMagic
+                  ? 'No tracks match these criteria yet.'
+                  : 'No tracks yet. Right-click any track or album and choose Add to Playlist.'}
             </div>
           )}
         </div>

@@ -261,6 +261,12 @@ export default function App(): React.JSX.Element {
               void useStore.getState().refreshOpenAlbum()
             }
           }
+        },
+        (id) => {
+          const { selectedPlaylist } = useStore.getState().library
+          if (selectedPlaylist?.id === id) {
+            void useStore.getState().loadPlaylistTracks(id)
+          }
         }
       )
     }

@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { PlaylistCard } from './PlaylistCard'
 import { SortControl } from './SortControl'
 import { SparkleIcon } from './TransportIcons'
+import { MagicPlaylistModal } from './MagicPlaylistModal'
 import type { Playlist } from '../api/client'
 
 const PLAYLIST_SORT_OPTIONS = [
@@ -76,6 +77,8 @@ export function PlaylistGrid(): React.JSX.Element {
   const [sortOrder, setSortOrderLocal] = useState<PlaylistSortOrder>(stored.order)
   const [sortDir, setSortDirLocal] = useState<'asc' | 'desc'>(stored.dir)
   const [typeFilter, setTypeFilterLocal] = useState<TypeFilter>(loadStoredTypeFilter)
+  const [magicModalOpen, setMagicModalOpen] = useState(false)
+  const [magicModalKey, setMagicModalKey] = useState(0)
 
   const persist = (order: PlaylistSortOrder, dir: 'asc' | 'desc'): void => {
     try {
@@ -114,7 +117,8 @@ export function PlaylistGrid(): React.JSX.Element {
   }
 
   const handleNewMagicPlaylist = (): void => {
-    // KAMP-464 opens the criteria builder modal here
+    setMagicModalKey((k) => k + 1)
+    setMagicModalOpen(true)
   }
 
   const typeFiltered =
@@ -192,6 +196,11 @@ export function PlaylistGrid(): React.JSX.Element {
           ))}
         </div>
       )}
+      <MagicPlaylistModal
+        key={magicModalKey}
+        open={magicModalOpen}
+        onClose={() => setMagicModalOpen(false)}
+      />
     </div>
   )
 }

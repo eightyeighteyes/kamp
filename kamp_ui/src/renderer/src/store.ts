@@ -12,6 +12,7 @@ import type {
   Album,
   AlbumTagsCollision,
   ConfigValues,
+  CriteriaDoc,
   PlayerState,
   Playlist,
   PlaylistTrack,
@@ -38,6 +39,7 @@ type LibraryState = {
   playlists: Playlist[]
   selectedPlaylist: Playlist | null
   playlistTracks: PlaylistTrack[]
+  playlistTracksLoading: boolean
 }
 
 type PlayerStore = {
@@ -142,6 +144,8 @@ type PlayerStore = {
   recordPlaylistPlayed: (playlistId: number) => Promise<void>
   loadPlaylists: () => Promise<void>
   createPlaylist: (title: string) => Promise<Playlist>
+  createMagicPlaylist: (title: string, criteria: CriteriaDoc) => Promise<Playlist>
+  updateMagicPlaylistCriteria: (id: number, criteria: CriteriaDoc) => Promise<Playlist>
   selectPlaylist: (playlist: Playlist | null) => Promise<void>
   loadPlaylistTracks: (playlistId: number) => Promise<void>
   addTrackToPlaylist: (playlistId: number, filePath: string) => Promise<void>
@@ -247,7 +251,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     collectionType: 'albums',
     playlists: [],
     selectedPlaylist: null,
-    playlistTracks: []
+    playlistTracks: [],
+    playlistTracksLoading: false
   },
   serverStatus: 'reconnecting',
   scanStatus: 'idle',
@@ -681,14 +686,52 @@ export const useStore = create<PlayerStore>((set, get) => ({
     return playlist
   },
 
+  createMagicPlaylist: async (title, criteria) => {
+    const playlist = await api.createMagicPlaylist(title, criteria)
+    await get()
+      .loadPlaylists()
+      .catch(() => undefined)
+    return playlist
+  },
+
+  updateMagicPlaylistCriteria: async (id, criteria) => {
+    const playlist = await api.updateMagicPlaylistCriteria(id, criteria)
+    await get()
+      .loadPlaylists()
+      .catch(() => undefined)
+    if (get().library.selectedPlaylist?.id === id) {
+      void get().loadPlaylistTracks(id)
+    }
+    return playlist
+  },
+
   selectPlaylist: async (playlist) => {
-    set((s) => ({ library: { ...s.library, selectedPlaylist: playlist, playlistTracks: [] } }))
+    set((s) => ({
+      library: {
+        ...s.library,
+        selectedPlaylist: playlist,
+        playlistTracks: [],
+        playlistTracksLoading: !!playlist
+      }
+    }))
     if (playlist) await get().loadPlaylistTracks(playlist.id)
   },
 
   loadPlaylistTracks: async (playlistId) => {
     const playlistTracks = await api.getPlaylistTracks(playlistId)
-    set((s) => ({ library: { ...s.library, playlistTracks } }))
+    set((s) => ({
+      library: {
+        ...s.library,
+        playlistTracks,
+        playlistTracksLoading: false,
+        // Keep the playlist card count in sync with the just-evaluated result
+        playlists: s.library.playlists.map((p) =>
+          p.id === playlistId && p.criteria !== null
+            ? { ...p, track_count: playlistTracks.length }
+            : p
+        )
+      }
+    }))
   },
 
   addTrackToPlaylist: async (playlistId, filePath) => {
@@ -768,7 +811,13 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   patchOpenPlaylist: (playlist) =>
-    set((s) => ({ library: { ...s.library, selectedPlaylist: playlist } })),
+    set((s) => ({
+      library: {
+        ...s.library,
+        selectedPlaylist: playlist,
+        playlists: s.library.playlists.map((p) => (p.id === playlist.id ? playlist : p))
+      }
+    })),
 
   playAlbum: async (albumArtist, album, trackIndex = 0, filePath = '') => {
     await api.playAlbum(albumArtist, album, trackIndex, filePath)

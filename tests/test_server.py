@@ -5578,6 +5578,38 @@ class TestPlaylistArt:
 
         assert resp.status_code == 422
 
+    def test_post_art_preserves_criteria_for_magic_playlist(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        """Regression: POST /art used to return criteria: null for magic playlists."""
+        from kamp_core.library import Condition, Group, MagicCriteria
+
+        mc = MagicCriteria(
+            groups=[
+                Group(
+                    match="all",
+                    conditions=[
+                        Condition(field="track.favorite", op="is", value="true")
+                    ],
+                )
+            ],
+            match="all",
+        )
+        updated = _playlist(id=5, title="Faves")
+        mock_index.get_playlist.return_value = _playlist(id=5)
+        mock_index.set_playlist_cover.return_value = updated
+        mock_index.get_magic_playlist_criteria.return_value = mc
+        image_bytes = self._make_jpeg_bytes()
+
+        with patch("kamp_daemon.artwork.validate_image_bytes"):
+            resp = client.post(
+                "/api/v1/playlists/5/art",
+                files={"file": ("cover.jpg", image_bytes, "image/jpeg")},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["criteria"] is not None
+
 
 class TestMagicPlaylistReactivity:
     """Tests for the field_index rebuild and on_fields_changed callback (KAMP-462)."""

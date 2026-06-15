@@ -3333,9 +3333,9 @@ def create_app(
     def preview_criteria(req: CriteriaPreviewRequest) -> dict[str, Any]:
         try:
             mc = MagicCriteria.from_dict(req.criteria)
+            return {"count": index.count_magic_criteria(mc)}
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"count": index.count_magic_criteria(mc)}
 
     @app.post("/api/v1/playlists/{playlist_id}/tracks")
     def add_to_playlist(
@@ -3422,7 +3422,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Playlist not found")
 
         updated = index.set_playlist_cover(playlist_id, image_data)
-        return PlaylistOut(**updated)  # type: ignore[arg-type]
+        return PlaylistOut(**_enrich_playlist(updated))  # type: ignore[arg-type]
 
     # -----------------------------------------------------------------------
     # WebSocket: player state stream

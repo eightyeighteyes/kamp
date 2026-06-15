@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { useStore } from '../store'
 import { applyPlaylistArtLocal, playlistArtUrl } from '../api/client'
 import type { PlaylistTrack } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
 import { SortControl } from './SortControl'
+import { MagicPlaylistModal } from './MagicPlaylistModal'
 import { computeNewOrder } from '../utils/computeNewOrder'
 import { truncateTitle } from '../utils/truncateTitle'
 import {
@@ -12,6 +14,7 @@ import {
   PlayIcon,
   PlayNextIcon,
   QueueAddIcon,
+  SparkleIcon,
   WarnIcon
 } from './TransportIcons'
 import { formatTime } from '../utils/formatTime'
@@ -43,17 +46,20 @@ function sortKey(playlistId: number): string {
   return `kamp:playlist:${playlistId}:sort`
 }
 
-function loadTrackSort(playlistId: number): { order: TrackSortOrder; dir: 'asc' | 'desc' } {
+function loadTrackSort(
+  playlistId: number,
+  isMagic: boolean
+): { order: TrackSortOrder; dir: 'asc' | 'desc' } {
   try {
     const raw = localStorage.getItem(sortKey(playlistId))
     if (raw) {
       const parsed = JSON.parse(raw) as { order: TrackSortOrder; dir: 'asc' | 'desc' }
-      if (parsed.order && parsed.dir) return parsed
+      if (parsed.order && parsed.dir && !(isMagic && parsed.order === 'position')) return parsed
     }
   } catch {
     // ignore malformed storage
   }
-  return { order: 'position', dir: 'asc' }
+  return { order: isMagic ? 'title' : 'position', dir: 'asc' }
 }
 
 function applySortToTracks(
@@ -73,6 +79,8 @@ function applySortToTracks(
         break
       case 'album':
         cmp = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+        if (cmp === 0) cmp = a.disc_number - b.disc_number
+        if (cmp === 0) cmp = a.track_number - b.track_number
         break
       case 'duration':
         cmp = a.duration - b.duration
@@ -115,6 +123,7 @@ function HeroImage({ src }: { src: string }): React.JSX.Element {
 export function PlaylistView(): React.JSX.Element | null {
   const playlist = useStore((s) => s.library.selectedPlaylist)
   const playlistTracks = useStore((s) => s.library.playlistTracks)
+  const playlistTracksLoading = useStore((s) => s.library.playlistTracksLoading)
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const reorderPlaylistTracks = useStore((s) => s.reorderPlaylistTracks)
   const removeTrackFromPlaylist = useStore((s) => s.removeTrackFromPlaylist)
@@ -134,6 +143,8 @@ export function PlaylistView(): React.JSX.Element | null {
 
   const [menu, setMenu] = useState<TrackMenu | null>(null)
   const [editingTitle, setEditingTitle] = useState(false)
+  const [magicModalOpen, setMagicModalOpen] = useState(false)
+  const [magicModalKey, setMagicModalKey] = useState(0)
   const [titleDraft, setTitleDraft] = useState('')
   const [heroHeightPct, setHeroHeightPct] = useState<number>(() => {
     const saved = parseFloat(localStorage.getItem(HERO_KEY) ?? '')
@@ -145,33 +156,59 @@ export function PlaylistView(): React.JSX.Element | null {
 
   const titleInputRef = useRef<HTMLInputElement>(null)
   const artInputRef = useRef<HTMLInputElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const dragFromIdx = useRef<number | null>(null)
+
+  // Must be declared before the early return — hook call order must be unconditional.
+  // playlistTracks.length === displayTracks.length (sort never adds/removes items).
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: playlistTracks.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 38,
+    overscan: 8
+  })
   const didDragRef = useRef(false)
   const dragStartYRef = useRef(0)
   const heroAtDragStartRef = useRef(HERO_DEFAULT)
   const pendingSingleSelect = useRef<number | null>(null)
 
   // Per-playlist sort state — loaded from localStorage when playlist changes.
+  const isMagic = !!playlist?.criteria
   const playlistId = playlist?.id ?? 0
-  const storedSort = loadTrackSort(playlistId)
+  const storedSort = loadTrackSort(playlistId, isMagic)
   const [trackSortOrder, setTrackSortOrder] = useState<TrackSortOrder>(storedSort.order)
   const [trackSortDir, setTrackSortDir] = useState<'asc' | 'desc'>(storedSort.dir)
+
+  const trackSortOptions = isMagic
+    ? TRACK_SORT_OPTIONS.filter((o) => o.key !== 'position')
+    : TRACK_SORT_OPTIONS
 
   // Reload sort state when navigating to a different playlist.
   useEffect(() => {
     if (!playlist) return
-    const s = loadTrackSort(playlist.id)
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    const s = loadTrackSort(playlist.id, !!playlist.criteria)
     setTrackSortOrder(s.order)
     setTrackSortDir(s.dir)
   }, [playlist])
 
   // Clear selection when tracks change or sort changes (display indices shift).
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedIndices(new Set())
     setAnchorIdx(null)
   }, [playlistTracks.length, trackSortOrder])
+
+  // Memoized before the early return (hooks must be unconditional).
+  // Spreading + sorting 9000 tracks on every currentTrack/playing re-render
+  // was causing ~500 ms UI lag on large magic playlists.
+  const displayTracks = useMemo(
+    () => applySortToTracks(playlistTracks, trackSortOrder, trackSortDir),
+    [playlistTracks, trackSortOrder, trackSortDir]
+  )
+  const totalDuration = useMemo(
+    () => playlistTracks.reduce((sum, t) => sum + (t.duration || 0), 0),
+    [playlistTracks]
+  )
 
   if (!playlist) return null
 
@@ -205,10 +242,7 @@ export function PlaylistView(): React.JSX.Element | null {
 
   // Apply sort for display only. When not in playlist-order mode,
   // drag-to-reorder is disabled (it's nonsensical on a sorted view).
-  const displayTracks = applySortToTracks(playlistTracks, trackSortOrder, trackSortDir)
   const isDragEnabled = trackSortOrder === 'position'
-
-  const totalDuration = playlistTracks.reduce((sum, t) => sum + (t.duration || 0), 0)
 
   const handleResizeMouseDown = (e: React.MouseEvent): void => {
     e.preventDefault()
@@ -515,24 +549,46 @@ export function PlaylistView(): React.JSX.Element | null {
       <div className="album-grid-toolbar" style={{ margin: '0 -16px', padding: '0 16px' }}>
         <SortControl
           value={trackSortOrder}
-          options={TRACK_SORT_OPTIONS}
+          options={trackSortOptions}
           dir={trackSortDir}
           onChange={handleTrackSortChange}
           onDirChange={handleTrackDirChange}
           showDir={trackSortOrder !== 'position'}
         />
+        {playlist.criteria !== null && (
+          <button
+            className="playlist-cta-btn playlist-cta-btn--magic"
+            onClick={() => {
+              setMagicModalKey((k) => k + 1)
+              setMagicModalOpen(true)
+            }}
+          >
+            <SparkleIcon size={12} />
+            Edit criteria
+          </button>
+        )}
       </div>
 
-      <div className="track-list-body">
-        <ol className="track-rows">
-          {displayTracks.map((track, i) => {
+      <div className="track-list-body" ref={scrollRef}>
+        {/* Tall positioning context; only visible rows are in the DOM. */}
+        <ol
+          className="track-rows"
+          style={{
+            position: 'relative',
+            height: virtualizer.getTotalSize() + 80,
+            padding: 0
+          }}
+        >
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const i = virtualRow.index
+            const track = displayTracks[i]
             const isCurrent = currentTrack?.file_path === track.file_path
             const isRemote = track.source !== 'local'
             const isOffline = isRemote && !connected
             const isSelected = selectedIndices.has(i)
             return (
               <li
-                key={track.playlist_track_id}
+                key={track.playlist_track_id ?? track.id}
                 className={[
                   'track-row',
                   isCurrent ? 'current' : '',
@@ -541,6 +597,13 @@ export function PlaylistView(): React.JSX.Element | null {
                 ]
                   .filter(Boolean)
                   .join(' ')}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 20,
+                  right: 20,
+                  transform: `translateY(${virtualRow.start}px)`
+                }}
                 tabIndex={0}
                 draggable
                 onMouseDown={(e) => handleRowMouseDown(e, i)}
@@ -624,10 +687,21 @@ export function PlaylistView(): React.JSX.Element | null {
         </ol>
         {playlistTracks.length === 0 && (
           <div className="album-grid-empty">
-            No tracks yet. Right-click any track or album and choose Add to Playlist.
+            {playlistTracksLoading
+              ? 'Loading…'
+              : playlist.criteria !== null
+                ? 'No tracks match these criteria yet.'
+                : 'No tracks yet. Right-click any track or album and choose Add to Playlist.'}
           </div>
         )}
       </div>
+
+      <MagicPlaylistModal
+        key={magicModalKey}
+        open={magicModalOpen}
+        onClose={() => setMagicModalOpen(false)}
+        playlist={playlist.criteria !== null ? playlist : undefined}
+      />
 
       {menu && (
         <TrackContextMenu
@@ -640,15 +714,19 @@ export function PlaylistView(): React.JSX.Element | null {
               : undefined
           }
           onClose={() => setMenu(null)}
-          onRemoveFromPlaylist={() => {
-            const targets =
-              selectedIndices.size > 0
-                ? [...selectedIndices]
-                    .sort((a, b) => b - a)
-                    .map((i) => displayTracks[i].playlist_track_id)
-                : [menu.track.playlist_track_id]
-            targets.forEach((ptId) => void removeTrackFromPlaylist(playlist.id, ptId))
-          }}
+          onRemoveFromPlaylist={
+            playlist.criteria === null
+              ? () => {
+                  const targets =
+                    selectedIndices.size > 0
+                      ? [...selectedIndices]
+                          .sort((a, b) => b - a)
+                          .map((i) => displayTracks[i].playlist_track_id!)
+                      : [menu.track.playlist_track_id!]
+                  targets.forEach((ptId) => void removeTrackFromPlaylist(playlist.id, ptId))
+                }
+              : undefined
+          }
         />
       )}
     </div>

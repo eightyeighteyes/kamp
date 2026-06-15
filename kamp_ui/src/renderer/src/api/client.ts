@@ -80,7 +80,31 @@ export type ScanResult = {
   updated: number
 }
 
-export type CriteriaCondition = { field: string; op: string; value: string }
+export type CriteriaField =
+  | 'track.favorite'
+  | 'album.favorite'
+  | 'track.play_count'
+  | 'track.year'
+  | 'track.last_played'
+  | 'track.date_added'
+  | 'track.genre'
+  | 'track.artist'
+  | 'track.album_artist'
+  | 'track.album'
+  | 'track.source'
+  | 'in_playlist'
+
+export type CriteriaOperator =
+  | 'is'
+  | 'is_not'
+  | 'gt'
+  | 'lt'
+  | 'gte'
+  | 'lte'
+  | 'contains'
+  | 'not_contains'
+
+export type CriteriaCondition = { field: CriteriaField; op: CriteriaOperator; value: string }
 export type CriteriaGroup = {
   match: 'all' | 'any'
   negate: boolean
@@ -599,6 +623,10 @@ export type AlbumDownloadMessage = {
   sale_item_id: string
   state: 'queued' | 'downloading' | 'done' | 'error'
 }
+export type MagicPlaylistUpdatedMessage = {
+  type: 'magic_playlist.updated'
+  id: number
+}
 export type ServerMessage =
   | StateMessage
   | TrackChangedMessage
@@ -607,6 +635,7 @@ export type ServerMessage =
   | DeferredOpCompletedMessage
   | AudioLevelMessage
   | AlbumDownloadMessage
+  | MagicPlaylistUpdatedMessage
 
 export async function getDeferredOps(): Promise<{ op_id: number; track_id: number }[]> {
   const res = await fetch(`${BASE_URL}/api/v1/deferred-ops`, {
@@ -625,7 +654,11 @@ export function connectStateStream(
   onDeferredOpCompleted?: (trackId: number, opId: number) => void,
   onAudioLevel?: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void,
   onTrackChanged?: () => void,
-  onAlbumDownload?: (saleItemId: string, state: 'queued' | 'downloading' | 'done' | 'error') => void
+  onAlbumDownload?: (
+    saleItemId: string,
+    state: 'queued' | 'downloading' | 'done' | 'error'
+  ) => void,
+  onMagicPlaylistUpdated?: (id: number) => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 
@@ -644,6 +677,7 @@ export function connectStateStream(
         onAudioLevel?.(msg.left_db, msg.right_db, msg.crest_db, msg.peak_db)
       else if (msg.type === 'bandcamp.album-download')
         onAlbumDownload?.(msg.sale_item_id, msg.state)
+      else if (msg.type === 'magic_playlist.updated') onMagicPlaylistUpdated?.(msg.id)
     } catch {
       // malformed message — ignore
     }
@@ -787,3 +821,12 @@ export const reorderPlaylistTracks = (id: number, trackIds: number[]): Promise<v
 
 export const recordPlaylistPlayed = (id: number): Promise<void> =>
   post(`/api/v1/playlists/${id}/played`, {})
+
+export const previewCriteria = (criteria: CriteriaDoc): Promise<{ count: number }> =>
+  post('/api/v1/criteria/preview', { criteria })
+
+export const createMagicPlaylist = (title: string, criteria: CriteriaDoc): Promise<Playlist> =>
+  post('/api/v1/playlists', { title, criteria })
+
+export const updateMagicPlaylistCriteria = (id: number, criteria: CriteriaDoc): Promise<Playlist> =>
+  put(`/api/v1/playlists/${id}/criteria`, { criteria })

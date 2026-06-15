@@ -29,16 +29,16 @@ def _cond(field: str, op: str, value: str) -> Condition:
 # ---------------------------------------------------------------------------
 
 
-def test_empty_criteria_returns_passthrough() -> None:
+def test_empty_criteria_returns_nothing() -> None:
     frag, params, join = build_query(MagicCriteria(groups=[], match="all"))
-    assert frag == "1"
+    assert frag == "0"
     assert params == []
     assert join is False
 
 
-def test_empty_group_returns_passthrough() -> None:
+def test_empty_group_returns_nothing() -> None:
     frag, params, join = build_query(_criteria(_group()))
-    assert frag == "1"
+    assert frag == "0"
     assert params == []
     assert join is False
 
@@ -183,6 +183,14 @@ def test_track_album_contains() -> None:
     assert params == ["%Blue%"]
 
 
+def test_track_album_artist_contains() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.album_artist", "contains", "Beach")))
+    )
+    assert "tracks.album_artist" in frag
+    assert params == ["%Beach%"]
+
+
 def test_track_source_is() -> None:
     frag, params, _ = build_query(
         _criteria(_group(_cond("track.source", "is", "bandcamp")))
@@ -307,4 +315,16 @@ def test_unknown_field_raises() -> None:
 def test_unknown_operator_raises() -> None:
     g = _group(_cond("track.artist", "between", "A"))
     with pytest.raises(ValueError, match="Unknown magic playlist operator"):
+        build_query(_criteria(g))
+
+
+def test_empty_value_for_int_field_raises() -> None:
+    g = _group(_cond("track.play_count", "is", ""))
+    with pytest.raises(ValueError, match="empty value"):
+        build_query(_criteria(g))
+
+
+def test_empty_value_for_float_field_raises() -> None:
+    g = _group(_cond("track.last_played", "gt", ""))
+    with pytest.raises(ValueError, match="empty value"):
         build_query(_criteria(g))

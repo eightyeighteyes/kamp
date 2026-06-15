@@ -25,6 +25,7 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     "track.year": ("tracks.year", "year"),
     "track.genre": ("tracks.genre", "text"),
     "track.artist": ("tracks.artist", "text"),
+    "track.album_artist": ("tracks.album_artist", "text"),
     "track.album": ("tracks.album", "text"),
     "track.source": ("tracks.source", "text"),
 }
@@ -45,8 +46,12 @@ def _coerce(value: str, vtype: str) -> Any:
     if vtype == "bool":
         return 1 if value.lower() == "true" else 0
     if vtype == "int":
+        if not value.strip():
+            raise ValueError(f"empty value for int field")
         return int(value)
     if vtype == "float":
+        if not value.strip():
+            raise ValueError(f"empty value for float field")
         return float(value)
     # "text" and "year" pass through as-is; year CAST happens in SQL.
     return value
@@ -120,7 +125,7 @@ def _condition_sql(cond: "Condition") -> tuple[str, list[Any], bool]:
 def _group_sql(group: "Group") -> tuple[str, list[Any], bool]:
     """Return ``(sql_fragment, params, needs_album_join)`` for a condition group."""
     if not group.conditions:
-        return "1", [], False
+        return "0", [], False
 
     joiner = " AND " if group.match == "all" else " OR "
     parts: list[str] = []
@@ -150,10 +155,11 @@ def build_query(criteria: "MagicCriteria") -> tuple[str, list[Any], bool]:
     Returns ``(where_fragment, params, needs_album_join)``.  The caller is
     responsible for composing the full SELECT and adding a LEFT JOIN on albums
     when ``needs_album_join`` is True.  An empty criteria (no groups) returns
-    ``("1", [], False)`` so the caller always gets a valid SQL fragment.
+    ``("0", [], False)`` — matching nothing — so the caller always gets a valid
+    SQL fragment.
     """
     if not criteria.groups:
-        return "1", [], False
+        return "0", [], False
 
     joiner = " AND " if criteria.match == "all" else " OR "
     parts: list[str] = []

@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 33
+_SCHEMA_VERSION = 34
 
 
 @dataclass
@@ -342,10 +342,12 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
 -- Magic playlist criteria (KAMP-459). A playlist is magic iff it has a row here.
 -- criteria_json stores a MagicCriteria JSON blob. evaluated_at is the epoch time of
 -- the last evaluation; NULL means the cache is stale and must be rebuilt.
+-- cached_track_count stores the result count from the last evaluation (KAMP-464).
 CREATE TABLE IF NOT EXISTS magic_playlist_criteria (
-    playlist_id  INTEGER PRIMARY KEY REFERENCES playlists(id) ON DELETE CASCADE,
-    criteria_json TEXT NOT NULL,
-    evaluated_at  REAL
+    playlist_id         INTEGER PRIMARY KEY REFERENCES playlists(id) ON DELETE CASCADE,
+    criteria_json       TEXT NOT NULL,
+    evaluated_at        REAL,
+    cached_track_count  INTEGER
 );
 """
 
@@ -1239,7 +1241,25 @@ class LibraryIndex:
             """)
             self._conn.execute("UPDATE schema_version SET version = 33")
             self._conn.commit()
-            version = 33  # noqa: F841
+            version = 33
+
+        if version == 33:
+            # v33 → v34: cache evaluated track count in magic_playlist_criteria.
+            # Guard with PRAGMA in case a fresh DB already has the column via DDL.
+            cols = {
+                r[1]
+                for r in self._conn.execute(
+                    "PRAGMA table_info(magic_playlist_criteria)"
+                )
+            }
+            if "cached_track_count" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE magic_playlist_criteria"
+                    " ADD COLUMN cached_track_count INTEGER"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 34")
+            self._conn.commit()
+            version = 34  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table."""
@@ -3167,9 +3187,15 @@ class LibraryIndex:
         """Return all playlists with their track counts, ordered by title."""
         rows = self._conn.execute("""
             SELECT p.id, p.title, p.favorite, p.created_at, p.updated_at,
-                   p.last_played_at, COUNT(pt.id) AS track_count
+                   p.last_played_at,
+                   CASE
+                     WHEN mpc.playlist_id IS NOT NULL
+                       THEN COALESCE(mpc.cached_track_count, 0)
+                     ELSE COUNT(pt.id)
+                   END AS track_count
             FROM playlists p
             LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+            LEFT JOIN magic_playlist_criteria mpc ON mpc.playlist_id = p.id
             GROUP BY p.id
             ORDER BY p.title COLLATE NOCASE
             """).fetchall()
@@ -3191,9 +3217,15 @@ class LibraryIndex:
         row = self._conn.execute(
             """
             SELECT p.id, p.title, p.favorite, p.created_at, p.updated_at,
-                   p.last_played_at, COUNT(pt.id) AS track_count
+                   p.last_played_at,
+                   CASE
+                     WHEN mpc.playlist_id IS NOT NULL
+                       THEN COALESCE(mpc.cached_track_count, 0)
+                     ELSE COUNT(pt.id)
+                   END AS track_count
             FROM playlists p
             LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+            LEFT JOIN magic_playlist_criteria mpc ON mpc.playlist_id = p.id
             WHERE p.id = ?
             GROUP BY p.id
             """,
@@ -3520,6 +3552,15 @@ class LibraryIndex:
             ORDER BY tracks.id
         """
         rows = self._conn.execute(sql, params).fetchall()
+        # Cache the evaluated count so get_playlists can show it immediately.
+        import time as _t  # noqa: PLC0415
+
+        self._conn.execute(
+            "UPDATE magic_playlist_criteria"
+            " SET cached_track_count = ?, evaluated_at = ? WHERE playlist_id = ?",
+            (len(rows), _t.time(), playlist_id),
+        )
+        self._conn.commit()
         return [
             {
                 "playlist_track_id": None,

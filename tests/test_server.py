@@ -3484,6 +3484,79 @@ class TestPatchAlbumMetaEndpoint:
         assert data[0]["source"] == "bandcamp"
         assert data[0]["has_remote_tracks"] is True
 
+    def _make_remote_track(self, n: int = 1) -> Track:
+        return Track(
+            file_path=Path(f"bandcamp://123/{n}"),
+            title=f"Stream {n}",
+            artist="Artist",
+            album_artist="Artist",
+            album="Record",
+            year="",
+            track_number=n,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="",
+            label="",
+            source="bandcamp",
+        )
+
+    def test_remote_tracks_skip_file_write_but_update_db(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Bandcamp tracks must not trigger write_meta_tags_to_file."""
+        remote = self._make_remote_track()
+        updated = Track(**{**remote.__dict__, "genre": "Jazz"})
+        mock_index.tracks_for_album.return_value = [remote]
+        mock_index.update_album_meta.return_value = [updated]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        with patch("kamp_core.library.write_meta_tags_to_file") as mock_write:
+            resp = TestClient(app).patch(
+                "/api/v1/albums/meta",
+                params={"album_artist": "Artist", "album": "Record"},
+                json={"genre": "Jazz"},
+            )
+
+        assert resp.status_code == 200
+        mock_write.assert_not_called()
+        mock_index.update_album_meta.assert_called_once_with(
+            "Artist", "Record", genre="Jazz", label=None, year=None, mb_release_id=None
+        )
+
+    def test_mixed_album_writes_files_only_for_local_tracks(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Only local tracks in a mixed album receive file-tag writes."""
+        local = self._make_track(1)
+        remote = self._make_remote_track(2)
+        updated = [
+            Track(**{**local.__dict__, "genre": "Jazz"}),
+            Track(**{**remote.__dict__, "genre": "Jazz"}),
+        ]
+        mock_index.tracks_for_album.return_value = [local, remote]
+        mock_index.update_album_meta.return_value = updated
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        with patch("kamp_core.library.write_meta_tags_to_file") as mock_write:
+            resp = TestClient(app).patch(
+                "/api/v1/albums/meta",
+                params={"album_artist": "Artist", "album": "Record"},
+                json={"genre": "Jazz"},
+            )
+
+        assert resp.status_code == 200
+        assert mock_write.call_count == 1
+        assert mock_write.call_args[0][0] == local.file_path
+
 
 # ---------------------------------------------------------------------------
 # iTunes art search / apply (KAMP-341)
@@ -5658,3 +5731,131 @@ class TestMagicPlaylistReactivity:
         on_fields_changed = client.app.state.on_fields_changed
         assert callable(on_fields_changed)
         on_fields_changed({"track.favorite"})  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Display override endpoints (KAMP-467)
+# ---------------------------------------------------------------------------
+
+
+def _bandcamp_track(n: int = 1) -> Track:
+    return Track(
+        file_path=Path(f"bandcamp://42/{n}"),
+        title=f"Track {n}",
+        artist="Band",
+        album_artist="Band",
+        album="Long Name",
+        year="2020",
+        track_number=n,
+        disc_number=1,
+        ext="mp3",
+        embedded_art=False,
+        mb_release_id="",
+        mb_recording_id="",
+        source="bandcamp",
+    )
+
+
+class TestPatchTrackDisplayEndpoint:
+    """PATCH /api/v1/tracks/{track_id}/display — display-only title override."""
+
+    def test_returns_updated_track(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = _bandcamp_track()
+        track.id = 7
+        updated = Track(**{**track.__dict__, "title": "Short Name"})
+        updated.id = 7
+        mock_index.get_track_by_id.return_value = track
+        mock_index.update_track_display_title.return_value = updated
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/tracks/7/display", json={"display_title": "Short Name"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "Short Name"
+        mock_index.update_track_display_title.assert_called_once_with(7, "Short Name")
+
+    def test_returns_404_for_missing_track(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        mock_index.get_track_by_id.return_value = None
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/tracks/9999/display", json={"display_title": "X"}
+        )
+
+        assert resp.status_code == 404
+
+
+class TestPatchAlbumDisplayEndpoint:
+    """PATCH /api/v1/albums/display — display-only album title and artist override."""
+
+    def _album_info(self) -> AlbumInfo:
+        return AlbumInfo(
+            album_artist="Band",
+            album="Long Name",
+            year="2020",
+            track_count=1,
+            has_art=False,
+            source="bandcamp",
+            display_album="Short",
+            display_album_artist="B",
+        )
+
+    def test_returns_updated_album(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        mock_index.update_album_display.return_value = self._album_info()
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/albums/display",
+            json={
+                "album_artist": "Band",
+                "album": "Long Name",
+                "display_album": "Short",
+                "display_album_artist": "B",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["display_album"] == "Short"
+        assert data["display_album_artist"] == "B"
+        mock_index.update_album_display.assert_called_once_with(
+            "Band", "Long Name", "Short", "B"
+        )
+
+    def test_returns_404_for_missing_album(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        mock_index.update_album_display.return_value = None
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/albums/display",
+            json={
+                "album_artist": "Ghost",
+                "album": "Phantom",
+                "display_album": None,
+                "display_album_artist": None,
+            },
+        )
+
+        assert resp.status_code == 404

@@ -105,7 +105,9 @@ export function TrackList(): React.JSX.Element | null {
   const setAlbumMetaExpanded = useStore((s) => s.setAlbumMetaExpanded)
   const patchAlbumMeta = useStore((s) => s.patchAlbumMeta)
   const patchTrackTitle = useStore((s) => s.patchTrackTitle)
+  const patchTrackDisplay = useStore((s) => s.patchTrackDisplay)
   const patchAlbumTags = useStore((s) => s.patchAlbumTags)
+  const patchAlbumDisplay = useStore((s) => s.patchAlbumDisplay)
   const refreshOpenAlbum = useStore((s) => s.refreshOpenAlbum)
   const patchOpenAlbum = useStore((s) => s.patchOpenAlbum)
   const albumRenameProgress = useStore((s) => s.albumRenameProgress)
@@ -427,12 +429,12 @@ export function TrackList(): React.JSX.Element | null {
             selectArtist(album.album_artist)
           }}
         >
-          {album.album_artist}
+          {album.display_album_artist ?? album.album_artist}
         </button>
         <span className="breadcrumb-sep" aria-hidden="true">
           ›
         </span>
-        <span>{album.album}</span>
+        <span>{album.display_album ?? album.album}</span>
         {album.is_preorder && (
           <span className="album-preorder-badge" aria-label="Pre-Order">
             Pre-Order
@@ -440,17 +442,15 @@ export function TrackList(): React.JSX.Element | null {
         )}
       </nav>
 
-      {/* Edit toggle — suppressed for bandcamp-only albums (no local files to edit) */}
-      {album.source !== 'bandcamp' && (
-        <button
-          className={`breadcrumb-edit-btn${albumEditMode ? ' active' : ''}`}
-          aria-pressed={albumEditMode}
-          onClick={() => setAlbumEditMode(!albumEditMode)}
-        >
-          <PencilIcon size={11} />
-          {albumEditMode ? 'Done' : 'Edit tags'}
-        </button>
-      )}
+      {/* Edit toggle */}
+      <button
+        className={`breadcrumb-edit-btn${albumEditMode ? ' active' : ''}`}
+        aria-pressed={albumEditMode}
+        onClick={() => setAlbumEditMode(!albumEditMode)}
+      >
+        <PencilIcon size={11} />
+        {albumEditMode ? 'Done' : 'Edit tags'}
+      </button>
 
       {/* MusicBrainz fetch pill — only for local albums in edit mode */}
       {album.source === 'local' && albumEditMode && (
@@ -517,13 +517,22 @@ export function TrackList(): React.JSX.Element | null {
             <FavoriteIcon active={album.favorite} size={36} />
           </button>
           <EditableAlbumField
-            value={album.album}
+            value={album.display_album ?? album.album}
             editMode={albumEditMode}
             disabled={albumRenameProgress !== null}
             className="track-list-album-title"
             onSave={async (newAlbum) => {
               const oldAlbum = album.album
               const oldArtist = album.album_artist
+              if (album.source === 'bandcamp') {
+                await patchAlbumDisplay(
+                  oldArtist,
+                  oldAlbum,
+                  newAlbum,
+                  album.display_album_artist ?? null
+                )
+                return
+              }
               const count = album.track_count
               try {
                 const result = await patchAlbumTags(oldArtist, oldAlbum, { album: newAlbum })
@@ -546,13 +555,17 @@ export function TrackList(): React.JSX.Element | null {
             )}
           />
           <EditableAlbumField
-            value={album.album_artist}
+            value={album.display_album_artist ?? album.album_artist}
             editMode={albumEditMode}
             disabled={albumRenameProgress !== null}
             className="track-list-album-artist-input"
             onSave={async (newArtist) => {
               const oldArtist = album.album_artist
               const oldAlbum = album.album
+              if (album.source === 'bandcamp') {
+                await patchAlbumDisplay(oldArtist, oldAlbum, album.display_album ?? null, newArtist)
+                return
+              }
               const count = album.track_count
               try {
                 const result = await patchAlbumTags(oldArtist, oldAlbum, {
@@ -748,9 +761,13 @@ export function TrackList(): React.JSX.Element | null {
                   <EditableTrackTitle
                     trackId={track.id}
                     title={track.title}
-                    editMode={albumEditMode && !isRemoteTrack}
+                    editMode={albumEditMode}
                     deferred={track.id in deferredOps}
                     onSave={async (trackId, newTitle) => {
+                      if (isRemoteTrack) {
+                        await patchTrackDisplay(trackId, newTitle)
+                        return
+                      }
                       const result = await patchTrackTitle(trackId, newTitle)
                       if (result?.collision) {
                         setCollision({ ...result, pendingTrackId: trackId, pendingTitle: newTitle })

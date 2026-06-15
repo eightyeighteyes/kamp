@@ -114,7 +114,7 @@ export function AlbumMetaPanel({
   }, [expanded])
 
   const mbId = tracks[0]?.mb_release_id ?? ''
-  const hasContent = hasAnyMeta(tracks, year)
+  const hasContent = hasAnyMeta(tracks, commonValue(tracks, 'year'))
 
   const handleSaveGenre = (): void => {
     const current = commonValue(tracks, 'genre')
@@ -155,7 +155,7 @@ export function AlbumMetaPanel({
         aria-hidden={!expanded}
       >
         <dl className="album-meta-rows">
-          {year && (
+          {(year || editMode) && (
             <MetaField
               label="YEAR"
               value={year}

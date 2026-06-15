@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 34
+_SCHEMA_VERSION = 35
 
 
 @dataclass
@@ -180,7 +180,12 @@ CREATE TABLE IF NOT EXISTS tracks (
     stream_url_expires_at REAL,
     album_id             INTEGER REFERENCES albums(id),
     is_available         INTEGER NOT NULL DEFAULT 1,
-    duration             REAL    NOT NULL DEFAULT 0
+    duration             REAL    NOT NULL DEFAULT 0,
+    -- User-set display overrides for streaming tracks (KAMP-467).
+    -- NULL means "use the canonical value from Bandcamp".
+    display_title        TEXT,
+    display_album        TEXT,
+    display_album_artist TEXT
 );
 
 -- First-class album entity (KAMP-418). Replaces the GROUP BY (album_artist, album)
@@ -203,6 +208,10 @@ CREATE TABLE IF NOT EXISTS albums (
     last_played_at REAL,
     play_count_avg REAL    NOT NULL DEFAULT 0,
     art_version    REAL,
+    -- User-set display overrides for streaming albums (KAMP-467).
+    -- NULL means "use the canonical value from Bandcamp".
+    display_album        TEXT,
+    display_album_artist TEXT,
     UNIQUE (album_artist, album)
 );
 
@@ -393,7 +402,7 @@ def _get_date_added(path: Path) -> float | None:
 # is always ASC so results are deterministic regardless of chosen direction.
 _SORT_CLAUSES: dict[str, str] = {
     "album_artist": "album_artist COLLATE NOCASE {dir}, album COLLATE NOCASE",
-    "album": "album COLLATE NOCASE {dir}, album_artist COLLATE NOCASE",
+    "album": "sort_album COLLATE NOCASE {dir}, album_artist COLLATE NOCASE",
     # These reference the sort_date_added / sort_last_played / sort_play_count_avg
     # columns produced by the UNION ALL query in albums().
     "date_added": "sort_date_added {dir}, album_artist COLLATE NOCASE",
@@ -508,6 +517,10 @@ class AlbumInfo:
     album_url: str = ""
     # Stable integer PK of the albums row; 0 for missing-album virtual entries.
     album_id: int = field(default=0, compare=False)
+    # User-set display overrides for streaming albums (KAMP-467). None means
+    # no override; the canonical album/album_artist is the authoritative value.
+    display_album: str | None = None
+    display_album_artist: str | None = None
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -1259,15 +1272,52 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 34")
             self._conn.commit()
-            version = 34  # noqa: F841
+            version = 34
+
+        if version == 34:
+            # v34 → v35: add display override columns for streaming albums/tracks (KAMP-467).
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            for col in ("display_title", "display_album", "display_album_artist"):
+                if col not in track_cols:
+                    self._conn.execute(f"ALTER TABLE tracks ADD COLUMN {col} TEXT")
+            album_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(albums)").fetchall()
+            }
+            for col in ("display_album", "display_album_artist"):
+                if col not in album_cols:
+                    self._conn.execute(f"ALTER TABLE albums ADD COLUMN {col} TEXT")
+            self._conn.execute("UPDATE schema_version SET version = 35")
+            self._conn.commit()
+            version = 35  # noqa: F841
 
     def _rebuild_fts(self) -> None:
-        """Rebuild the FTS index from the current contents of the tracks table."""
+        """Rebuild the FTS index from the current contents of the tracks table.
+
+        Uses COALESCE with display override columns when they exist (v35+).
+        Falls back to the canonical columns during early migration runs where
+        the display columns have not yet been added.
+        """
+        cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+        }
         self._conn.execute("DELETE FROM tracks_fts")
-        self._conn.execute(
-            "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album) "
-            "SELECT id, title, artist, album_artist, album FROM tracks"
-        )
+        if "display_title" in cols:
+            self._conn.execute(
+                "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album) "
+                "SELECT id"
+                ", COALESCE(display_title, title)"
+                ", artist"
+                ", COALESCE(display_album_artist, album_artist)"
+                ", COALESCE(display_album, album)"
+                " FROM tracks"
+            )
+        else:
+            self._conn.execute(
+                "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album) "
+                "SELECT id, title, artist, album_artist, album FROM tracks"
+            )
         self._conn.execute("DELETE FROM playlists_fts")
         self._conn.execute(
             "INSERT INTO playlists_fts(rowid, title) SELECT id, title FROM playlists"
@@ -1784,6 +1834,91 @@ class LibraryIndex:
         )
         self._conn.commit()
 
+    def update_track_display_title(
+        self, track_id: int, display_title: str | None
+    ) -> "Track | None":
+        """Set (or clear) the display title override for a streaming track (KAMP-467).
+
+        Passing None or an empty string clears the override and restores the
+        Bandcamp canonical title.  Returns the updated Track, or None if the
+        track is not found.
+        """
+        value = display_title or None  # normalise empty string → NULL
+        self._conn.execute(
+            "UPDATE tracks SET display_title = ? WHERE id = ?", (value, track_id)
+        )
+        # Update FTS so the new display title is immediately searchable.
+        self._conn.execute("DELETE FROM tracks_fts WHERE rowid=?", (track_id,))
+        self._conn.execute(
+            "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album)"
+            " SELECT id"
+            ", COALESCE(display_title, title)"
+            ", artist"
+            ", COALESCE(display_album_artist, album_artist)"
+            ", COALESCE(display_album, album)"
+            " FROM tracks WHERE id=?",
+            (track_id,),
+        )
+        self._conn.commit()
+        return self.get_track_by_id(track_id)
+
+    def update_album_display(
+        self,
+        album_artist: str,
+        album: str,
+        display_album: str | None,
+        display_album_artist: str | None,
+    ) -> "AlbumInfo | None":
+        """Set (or clear) display overrides for a streaming album (KAMP-467).
+
+        Writes to the albums row and denormalizes onto all constituent tracks so
+        that _row_to_track and FTS both see effective values without needing a
+        JOIN.  Passing None or empty string for a field clears that override.
+        Returns the updated AlbumInfo, or None if the album is not found.
+        """
+        album_id = self._album_id(album_artist, album)
+        if album_id is None:
+            return None
+        d_album = display_album or None
+        d_artist = display_album_artist or None
+        self._conn.execute(
+            "UPDATE albums SET display_album = ?, display_album_artist = ? WHERE id = ?",
+            (d_album, d_artist, album_id),
+        )
+        # Denormalize onto tracks so _row_to_track needs no JOIN.
+        self._conn.execute(
+            "UPDATE tracks SET display_album = ?, display_album_artist = ? WHERE album_id = ?",
+            (d_album, d_artist, album_id),
+        )
+        # Rebuild FTS for all affected tracks.
+        track_ids = [
+            r["id"]
+            for r in self._conn.execute(
+                "SELECT id FROM tracks WHERE album_id = ?", (album_id,)
+            ).fetchall()
+        ]
+        for tid in track_ids:
+            self._conn.execute("DELETE FROM tracks_fts WHERE rowid=?", (tid,))
+            self._conn.execute(
+                "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album)"
+                " SELECT id"
+                ", COALESCE(display_title, title)"
+                ", artist"
+                ", COALESCE(display_album_artist, album_artist)"
+                ", COALESCE(display_album, album)"
+                " FROM tracks WHERE id=?",
+                (tid,),
+            )
+        self._conn.commit()
+        results = self.albums()
+        for a in results:
+            if (
+                a.album_artist.lower() == album_artist.lower()
+                and a.album.lower() == album.lower()
+            ):
+                return a
+        return None
+
     # ------------------------------------------------------------------
     # Settings (application configuration)
     # ------------------------------------------------------------------
@@ -1870,7 +2005,11 @@ class LibraryIndex:
                 artist                = excluded.artist,
                 album_artist          = excluded.album_artist,
                 album                 = excluded.album,
-                year                  = excluded.year,
+                -- For streaming tracks, preserve user-edited year/genre/label if the
+                -- incoming sync value is empty (Bandcamp never sends these fields).
+                year                  = CASE WHEN excluded.source = 'bandcamp'
+                                             THEN COALESCE(NULLIF(excluded.year,  ''), year)
+                                             ELSE excluded.year  END,
                 track_number          = excluded.track_number,
                 disc_number           = excluded.disc_number,
                 ext                   = excluded.ext,
@@ -1878,8 +2017,12 @@ class LibraryIndex:
                 mb_release_id         = excluded.mb_release_id,
                 mb_recording_id       = excluded.mb_recording_id,
                 file_mtime            = excluded.file_mtime,
-                genre                 = excluded.genre,
-                label                 = excluded.label,
+                genre                 = CASE WHEN excluded.source = 'bandcamp'
+                                             THEN COALESCE(NULLIF(excluded.genre, ''), genre)
+                                             ELSE excluded.genre END,
+                label                 = CASE WHEN excluded.source = 'bandcamp'
+                                             THEN COALESCE(NULLIF(excluded.label, ''), label)
+                                             ELSE excluded.label END,
                 source                = excluded.source,
                 -- Preserve the cached CDN URL if the incoming row has none.
                 -- fetch_album_tracks never populates stream_url; without this
@@ -2228,7 +2371,12 @@ class LibraryIndex:
         self._conn.execute("DELETE FROM tracks_fts WHERE rowid=?", (track_id,))
         self._conn.execute(
             "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album)"
-            " SELECT id, title, artist, album_artist, album FROM tracks WHERE id=?",
+            " SELECT id"
+            ", COALESCE(display_title, title)"
+            ", artist"
+            ", COALESCE(display_album_artist, album_artist)"
+            ", COALESCE(display_album, album)"
+            " FROM tracks WHERE id=?",
             (track_id,),
         )
         self._conn.commit()
@@ -2593,7 +2741,12 @@ class LibraryIndex:
                 -- is_preorder: True when the album is a Bandcamp pre-order (KAMP-423).
                 CASE WHEN bc.mode = 'preorder' THEN 1 ELSE 0 END AS is_preorder,
                 -- album_url: Bandcamp page URL for sharing (KAMP-367).
-                COALESCE(bc.album_url, '') AS album_url
+                COALESCE(bc.album_url, '') AS album_url,
+                -- display overrides for streaming albums (KAMP-467).
+                a.display_album,
+                a.display_album_artist,
+                -- effective album title used for sort-by-album ordering.
+                COALESCE(a.display_album, a.album) AS sort_album
             FROM albums a
             LEFT JOIN tracks t ON t.album_id = a.id
             LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id
@@ -2620,7 +2773,10 @@ class LibraryIndex:
                 t.favorite          AS has_favorite_track,
                 0                   AS in_bc,
                 0                   AS is_preorder,
-                ''                  AS album_url
+                ''                  AS album_url,
+                NULL                AS display_album,
+                NULL                AS display_album_artist,
+                t.title             AS sort_album
             FROM tracks t
             WHERE t.album = ''
             ORDER BY {order_by}
@@ -2647,6 +2803,8 @@ class LibraryIndex:
                 is_preorder=bool(r["is_preorder"]),
                 album_url=r["album_url"] or "",
                 sale_item_id=r["sale_item_id"],
+                display_album=r["display_album"],
+                display_album_artist=r["display_album_artist"],
             )
             for r in rows
         ]
@@ -3728,10 +3886,13 @@ def _row_to_track(row: sqlite3.Row) -> Track:
     return Track(
         id=row["id"],
         file_path=Path(row["file_path"]),
-        title=row["title"],
+        # Apply display overrides (KAMP-467): if the user has set a display value,
+        # use it in place of the Bandcamp-sourced canonical value.  The override is
+        # NULL for local tracks and for streaming tracks the user has not edited.
+        title=row["display_title"] or row["title"],
         artist=row["artist"],
-        album_artist=row["album_artist"],
-        album=row["album"],
+        album_artist=row["display_album_artist"] or row["album_artist"],
+        album=row["display_album"] or row["album"],
         year=row["year"],
         track_number=row["track_number"],
         disc_number=row["disc_number"],

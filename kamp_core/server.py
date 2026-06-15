@@ -257,6 +257,9 @@ class AlbumOut(BaseModel):
     is_preorder: bool = False
     # Bandcamp album page URL — non-empty for Bandcamp albums (KAMP-367).
     album_url: str = ""
+    # User-set display overrides for streaming albums (KAMP-467). None means no override.
+    display_album: str | None = None
+    display_album_artist: str | None = None
 
 
 class PlayerStateOut(BaseModel):
@@ -475,6 +478,21 @@ class AlbumTagsOut(BaseModel):
     # Paths of files left at their original location due to skip_conflicts.
     skipped: list[str]
     failed: list[AlbumTagsTrackResult]
+
+
+class TrackDisplayRequest(BaseModel):
+    """Display-only title override for a streaming track (KAMP-467)."""
+
+    display_title: str | None = None
+
+
+class AlbumDisplayRequest(BaseModel):
+    """Display-only overrides for a streaming album's title and artist (KAMP-467)."""
+
+    album_artist: str
+    album: str
+    display_album: str | None = None
+    display_album_artist: str | None = None
 
 
 class AlbumMetaRequest(BaseModel):
@@ -1053,6 +1071,8 @@ def create_app(
                 sale_item_id=a.sale_item_id,
                 is_preorder=a.is_preorder,
                 album_url=a.album_url,
+                display_album=a.display_album,
+                display_album_artist=a.display_album_artist,
             )
             for a in index.albums(sort=sort, sort_dir=sort_dir)
         ]
@@ -1795,6 +1815,62 @@ def create_app(
             moved=moved, deferred=deferred, skipped=skipped, failed=failed
         )
 
+    @app.patch("/api/v1/tracks/{track_id}/display", response_model=TrackOut)
+    def patch_track_display(track_id: int, req: "TrackDisplayRequest") -> TrackOut:
+        """Set (or clear) the display title for a streaming track (KAMP-467).
+
+        Writes only to the DB — no file operations are performed.
+        Passing null or empty string for display_title clears the override and
+        restores the Bandcamp canonical title.
+        Returns 404 if the track is not found.
+        """
+        track = index.get_track_by_id(track_id)
+        if track is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        updated = index.update_track_display_title(track_id, req.display_title)
+        _notify_library_changed()
+        return TrackOut.from_track(updated)  # type: ignore[arg-type]
+
+    @app.patch("/api/v1/albums/display", response_model=AlbumOut)
+    def patch_album_display(req: "AlbumDisplayRequest") -> AlbumOut:
+        """Set (or clear) display overrides for a streaming album (KAMP-467).
+
+        Writes only to the DB — no file operations are performed.
+        Passing null or empty string for a field clears that override.
+        Returns 404 if the album is not found.
+        """
+        result = index.update_album_display(
+            req.album_artist,
+            req.album,
+            req.display_album,
+            req.display_album_artist,
+        )
+        if result is None:
+            raise HTTPException(status_code=404, detail="Album not found")
+        _notify_library_changed()
+        return AlbumOut(
+            album_artist=result.album_artist,
+            album=result.album,
+            year=result.year,
+            track_count=result.track_count,
+            has_art=result.has_art,
+            missing_album=result.missing_album,
+            file_path=result.file_path,
+            art_version=result.art_version,
+            added_at=result.added_at,
+            last_played_at=result.last_played_at,
+            play_count_avg=result.play_count_avg,
+            favorite=result.favorite,
+            has_favorite_track=result.has_favorite_track,
+            source=result.source,
+            has_remote_tracks=result.has_remote_tracks,
+            sale_item_id=result.sale_item_id,
+            is_preorder=result.is_preorder,
+            album_url=result.album_url,
+            display_album=result.display_album,
+            display_album_artist=result.display_album_artist,
+        )
+
     @app.patch("/api/v1/albums/meta")
     def patch_album_meta(
         album_artist: str, album: str, req: "AlbumMetaRequest"
@@ -1819,6 +1895,8 @@ def create_app(
             raise HTTPException(status_code=400, detail="No changes requested")
 
         for track in tracks:
+            if track.is_remote:
+                continue
             try:
                 write_meta_tags_to_file(
                     track.file_path,
@@ -2076,6 +2154,8 @@ def create_app(
                     sale_item_id=a.sale_item_id,
                     is_preorder=a.is_preorder,
                     album_url=a.album_url,
+                    display_album=a.display_album,
+                    display_album_artist=a.display_album_artist,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -2203,6 +2283,8 @@ def create_app(
                     sale_item_id=a.sale_item_id,
                     is_preorder=a.is_preorder,
                     album_url=a.album_url,
+                    display_album=a.display_album,
+                    display_album_artist=a.display_album_artist,
                 )
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
@@ -2359,6 +2441,8 @@ def create_app(
                 sale_item_id=a.sale_item_id,
                 is_preorder=a.is_preorder,
                 album_url=a.album_url,
+                display_album=a.display_album,
+                display_album_artist=a.display_album_artist,
             )
             for a in index.albums(sort=sort)
             if (a.album_artist, a.album) in fts_keys

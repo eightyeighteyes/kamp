@@ -399,12 +399,12 @@ export function AlbumCard({
         )}
         {album.missing_album ? (
           <div className="album-title">
-            <em>{album.album}</em>
+            <em>{album.display_album ?? album.album}</em>
           </div>
         ) : (
-          <div className="album-title">{album.album}</div>
+          <div className="album-title">{album.display_album ?? album.album}</div>
         )}
-        <div className="album-artist">{album.album_artist}</div>
+        <div className="album-artist">{album.display_album_artist ?? album.album_artist}</div>
         <div className="album-year">{album.year}</div>
         {album.favorite && (
           <div className="album-fav-badge">

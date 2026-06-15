@@ -147,6 +147,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const patchOpenPlaylist = useStore((s) => s.patchOpenPlaylist)
   const configValues = useStore((s) => s.configValues)
   const connected = configValues?.['bandcamp.connected'] ?? false
+  const libraryAlbums = useStore((s) => s.library.albums)
 
   const [menu, setMenu] = useState<TrackMenu | null>(null)
   const [editingTitle, setEditingTitle] = useState(false)
@@ -251,6 +252,11 @@ export function PlaylistView(): React.JSX.Element | null {
   // Iterates displayTracks (already sorted) so tile order matches the active sort.
   const albumGroups = useMemo<Album[]>(() => {
     if (displayMode !== 'albums') return []
+    // Build a quick lookup for album-level favorite status from the store's album
+    // list (populated when the user has browsed the library). Falls back to false.
+    const albumFavMap = new Map<string, boolean>(
+      libraryAlbums.map((a) => [`${a.album_artist}::${a.album}`, a.favorite])
+    )
     const seen = new Map<string, Album>()
     for (const t of displayTracks) {
       const albumArtist = t.album_artist || t.artist
@@ -272,7 +278,7 @@ export function PlaylistView(): React.JSX.Element | null {
           added_at: null,
           last_played_at: null,
           play_count_avg: 0,
-          favorite: false,
+          favorite: albumFavMap.get(key) ?? false,
           has_favorite_track: t.favorite,
           source: t.source === 'bandcamp' ? 'bandcamp' : 'local',
           has_remote_tracks: t.source !== 'local'
@@ -289,7 +295,7 @@ export function PlaylistView(): React.JSX.Element | null {
       }
     }
     return [...seen.values()]
-  }, [displayTracks, displayMode])
+  }, [displayTracks, displayMode, libraryAlbums])
 
   if (!playlist) return null
 

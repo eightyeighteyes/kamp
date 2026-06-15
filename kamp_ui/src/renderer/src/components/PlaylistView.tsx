@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useStore } from '../store'
 import { applyPlaylistArtLocal, playlistArtUrl } from '../api/client'
@@ -198,6 +198,18 @@ export function PlaylistView(): React.JSX.Element | null {
     setAnchorIdx(null)
   }, [playlistTracks.length, trackSortOrder])
 
+  // Memoized before the early return (hooks must be unconditional).
+  // Spreading + sorting 9000 tracks on every currentTrack/playing re-render
+  // was causing ~500 ms UI lag on large magic playlists.
+  const displayTracks = useMemo(
+    () => applySortToTracks(playlistTracks, trackSortOrder, trackSortDir),
+    [playlistTracks, trackSortOrder, trackSortDir]
+  )
+  const totalDuration = useMemo(
+    () => playlistTracks.reduce((sum, t) => sum + (t.duration || 0), 0),
+    [playlistTracks]
+  )
+
   if (!playlist) return null
 
   const persistTrackSort = (order: TrackSortOrder, dir: 'asc' | 'desc'): void => {
@@ -230,10 +242,7 @@ export function PlaylistView(): React.JSX.Element | null {
 
   // Apply sort for display only. When not in playlist-order mode,
   // drag-to-reorder is disabled (it's nonsensical on a sorted view).
-  const displayTracks = applySortToTracks(playlistTracks, trackSortOrder, trackSortDir)
   const isDragEnabled = trackSortOrder === 'position'
-
-  const totalDuration = playlistTracks.reduce((sum, t) => sum + (t.duration || 0), 0)
 
   const handleResizeMouseDown = (e: React.MouseEvent): void => {
     e.preventDefault()

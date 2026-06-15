@@ -2005,7 +2005,11 @@ class LibraryIndex:
                 artist                = excluded.artist,
                 album_artist          = excluded.album_artist,
                 album                 = excluded.album,
-                year                  = excluded.year,
+                -- For streaming tracks, preserve user-edited year/genre/label if the
+                -- incoming sync value is empty (Bandcamp never sends these fields).
+                year                  = CASE WHEN excluded.source = 'bandcamp'
+                                             THEN COALESCE(NULLIF(excluded.year,  ''), year)
+                                             ELSE excluded.year  END,
                 track_number          = excluded.track_number,
                 disc_number           = excluded.disc_number,
                 ext                   = excluded.ext,
@@ -2013,8 +2017,12 @@ class LibraryIndex:
                 mb_release_id         = excluded.mb_release_id,
                 mb_recording_id       = excluded.mb_recording_id,
                 file_mtime            = excluded.file_mtime,
-                genre                 = excluded.genre,
-                label                 = excluded.label,
+                genre                 = CASE WHEN excluded.source = 'bandcamp'
+                                             THEN COALESCE(NULLIF(excluded.genre, ''), genre)
+                                             ELSE excluded.genre END,
+                label                 = CASE WHEN excluded.source = 'bandcamp'
+                                             THEN COALESCE(NULLIF(excluded.label, ''), label)
+                                             ELSE excluded.label END,
                 source                = excluded.source,
                 -- Preserve the cached CDN URL if the incoming row has none.
                 -- fetch_album_tracks never populates stream_url; without this

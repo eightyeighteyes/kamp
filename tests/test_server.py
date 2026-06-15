@@ -3484,6 +3484,79 @@ class TestPatchAlbumMetaEndpoint:
         assert data[0]["source"] == "bandcamp"
         assert data[0]["has_remote_tracks"] is True
 
+    def _make_remote_track(self, n: int = 1) -> Track:
+        return Track(
+            file_path=Path(f"bandcamp://123/{n}"),
+            title=f"Stream {n}",
+            artist="Artist",
+            album_artist="Artist",
+            album="Record",
+            year="",
+            track_number=n,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="",
+            label="",
+            source="bandcamp",
+        )
+
+    def test_remote_tracks_skip_file_write_but_update_db(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Bandcamp tracks must not trigger write_meta_tags_to_file."""
+        remote = self._make_remote_track()
+        updated = Track(**{**remote.__dict__, "genre": "Jazz"})
+        mock_index.tracks_for_album.return_value = [remote]
+        mock_index.update_album_meta.return_value = [updated]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        with patch("kamp_core.library.write_meta_tags_to_file") as mock_write:
+            resp = TestClient(app).patch(
+                "/api/v1/albums/meta",
+                params={"album_artist": "Artist", "album": "Record"},
+                json={"genre": "Jazz"},
+            )
+
+        assert resp.status_code == 200
+        mock_write.assert_not_called()
+        mock_index.update_album_meta.assert_called_once_with(
+            "Artist", "Record", genre="Jazz", label=None, year=None, mb_release_id=None
+        )
+
+    def test_mixed_album_writes_files_only_for_local_tracks(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Only local tracks in a mixed album receive file-tag writes."""
+        local = self._make_track(1)
+        remote = self._make_remote_track(2)
+        updated = [
+            Track(**{**local.__dict__, "genre": "Jazz"}),
+            Track(**{**remote.__dict__, "genre": "Jazz"}),
+        ]
+        mock_index.tracks_for_album.return_value = [local, remote]
+        mock_index.update_album_meta.return_value = updated
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        with patch("kamp_core.library.write_meta_tags_to_file") as mock_write:
+            resp = TestClient(app).patch(
+                "/api/v1/albums/meta",
+                params={"album_artist": "Artist", "album": "Record"},
+                json={"genre": "Jazz"},
+            )
+
+        assert resp.status_code == 200
+        assert mock_write.call_count == 1
+        assert mock_write.call_args[0][0] == local.file_path
+
 
 # ---------------------------------------------------------------------------
 # iTunes art search / apply (KAMP-341)

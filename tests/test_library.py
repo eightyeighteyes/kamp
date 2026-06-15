@@ -8477,6 +8477,26 @@ def _make_bandcamp_track(uri: str, title: str = "Track", album: str = "Album") -
     )
 
 
+def _bandcamp_track() -> Track:
+    return Track(
+        file_path=Path("bandcamp://sale123/1"),
+        title="Stream Track",
+        artist="Band",
+        album_artist="Band",
+        album="Stream Album",
+        year="",
+        track_number=1,
+        disc_number=1,
+        ext="",
+        embedded_art=False,
+        mb_release_id="",
+        mb_recording_id="",
+        genre="",
+        label="",
+        source="bandcamp",
+    )
+
+
 class TestDisplayOverrides:
     """update_track_display_title and update_album_display (KAMP-467)."""
 
@@ -8598,3 +8618,63 @@ class TestDisplayOverrides:
         index.close()
 
         assert any(t.title == "Glum" for t in results)
+
+
+class TestUpsertSyncProtection:
+    """Bandcamp syncs must not overwrite user-edited genre/label/year."""
+
+    def test_bandcamp_sync_preserves_user_genre(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _bandcamp_track()
+        index.upsert_many([track])
+        index.update_album_meta("Band", "Stream Album", genre="Jazz")
+
+        synced = Track(**{**track.__dict__, "genre": ""})
+        index.upsert_many([synced])
+
+        result = index.all_tracks()[0]
+        index.close()
+        assert result.genre == "Jazz"
+
+    def test_bandcamp_sync_preserves_user_label_and_year(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _bandcamp_track()
+        index.upsert_many([track])
+        index.update_album_meta("Band", "Stream Album", label="ECM", year="1975")
+
+        synced = Track(**{**track.__dict__, "label": "", "year": ""})
+        index.upsert_many([synced])
+
+        result = index.all_tracks()[0]
+        index.close()
+        assert result.label == "ECM"
+        assert result.year == "1975"
+
+    def test_local_track_empty_genre_always_wins(self, tmp_path: Path) -> None:
+        """Rescanning a local file with no genre tag must clear the DB genre."""
+        index = LibraryIndex(tmp_path / "library.db")
+        path = tmp_path / "01.mp3"
+        track = Track(**{**_sample_track(path).__dict__, "genre": "Rock"})
+        index.upsert_many([track])
+
+        rescanned = Track(**{**track.__dict__, "genre": ""})
+        index.upsert_many([rescanned])
+
+        result = index.all_tracks()[0]
+        index.close()
+        assert result.genre == ""
+
+    def test_bandcamp_sync_overwrites_when_incoming_is_nonempty(
+        self, tmp_path: Path
+    ) -> None:
+        """If Bandcamp ever does send a genre, it must win over the empty DB value."""
+        index = LibraryIndex(tmp_path / "library.db")
+        track = _bandcamp_track()
+        index.upsert_many([track])
+
+        synced = Track(**{**track.__dict__, "genre": "Electronic"})
+        index.upsert_many([synced])
+
+        result = index.all_tracks()[0]
+        index.close()
+        assert result.genre == "Electronic"

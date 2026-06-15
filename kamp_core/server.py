@@ -1895,6 +1895,8 @@ def create_app(
             raise HTTPException(status_code=400, detail="No changes requested")
 
         for track in tracks:
+            if track.is_remote:
+                continue
             try:
                 write_meta_tags_to_file(
                     track.file_path,

@@ -1001,7 +1001,9 @@
   cursor: ns-resize;
   color: var(--text-dim);
   position: relative;
-  z-index: 2;
+  /* Must be above .track-list-body (z-index: 2) so the embedded toolbar's
+     dropdown popover isn't clipped by the sibling that follows in the DOM. */
+  z-index: 20;
 }
 
 .track-list-view--resizing {

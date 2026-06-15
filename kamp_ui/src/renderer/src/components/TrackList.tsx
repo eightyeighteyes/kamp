@@ -525,7 +525,12 @@ export function TrackList(): React.JSX.Element | null {
               const oldAlbum = album.album
               const oldArtist = album.album_artist
               if (album.source === 'bandcamp') {
-                await patchAlbumDisplay(oldArtist, oldAlbum, newAlbum, album.display_album_artist ?? null)
+                await patchAlbumDisplay(
+                  oldArtist,
+                  oldAlbum,
+                  newAlbum,
+                  album.display_album_artist ?? null
+                )
                 return
               }
               const count = album.track_count

@@ -1102,7 +1102,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   patchAlbumDisplay: async (albumArtist, album, displayAlbum, displayAlbumArtist) => {
-    const updated = await api.patchAlbumDisplay(albumArtist, album, displayAlbum, displayAlbumArtist)
+    const updated = await api.patchAlbumDisplay(
+      albumArtist,
+      album,
+      displayAlbum,
+      displayAlbumArtist
+    )
     // Update the album in the library list and selectedAlbum without a full reload.
     set((s) => {
       const albums = s.library.albums.map((a) =>

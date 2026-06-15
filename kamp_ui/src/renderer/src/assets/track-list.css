@@ -1166,3 +1166,21 @@
     transition: none;
   }
 }
+
+@keyframes row-flash {
+  from { background: var(--accent-dim); }
+  to { background: transparent; }
+}
+
+.track-row--new-flash {
+  animation: row-flash 600ms ease-out;
+}
+
+@keyframes count-tick {
+  from { color: var(--accent); }
+  to { color: inherit; }
+}
+
+.track-count-tick {
+  animation: count-tick 300ms ease-out;
+}

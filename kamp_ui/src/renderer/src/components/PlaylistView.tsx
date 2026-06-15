@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { useStore } from '../store'
 import { applyPlaylistArtLocal, playlistArtUrl } from '../api/client'
 import type { PlaylistTrack } from '../api/client'
@@ -155,7 +156,18 @@ export function PlaylistView(): React.JSX.Element | null {
 
   const titleInputRef = useRef<HTMLInputElement>(null)
   const artInputRef = useRef<HTMLInputElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const dragFromIdx = useRef<number | null>(null)
+
+  // Must be declared before the early return — hook call order must be unconditional.
+  // playlistTracks.length === displayTracks.length (sort never adds/removes items).
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: playlistTracks.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 38,
+    overscan: 8
+  })
   const didDragRef = useRef(false)
   const dragStartYRef = useRef(0)
   const heroAtDragStartRef = useRef(HERO_DEFAULT)
@@ -176,14 +188,12 @@ export function PlaylistView(): React.JSX.Element | null {
   useEffect(() => {
     if (!playlist) return
     const s = loadTrackSort(playlist.id, !!playlist.criteria)
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTrackSortOrder(s.order)
     setTrackSortDir(s.dir)
   }, [playlist])
 
   // Clear selection when tracks change or sort changes (display indices shift).
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedIndices(new Set())
     setAnchorIdx(null)
   }, [playlistTracks.length, trackSortOrder])
@@ -550,9 +560,19 @@ export function PlaylistView(): React.JSX.Element | null {
         )}
       </div>
 
-      <div className="track-list-body">
-        <ol className="track-rows">
-          {displayTracks.map((track, i) => {
+      <div className="track-list-body" ref={scrollRef}>
+        {/* Tall positioning context; only visible rows are in the DOM. */}
+        <ol
+          className="track-rows"
+          style={{
+            position: 'relative',
+            height: virtualizer.getTotalSize() + 80,
+            padding: 0
+          }}
+        >
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const i = virtualRow.index
+            const track = displayTracks[i]
             const isCurrent = currentTrack?.file_path === track.file_path
             const isRemote = track.source !== 'local'
             const isOffline = isRemote && !connected
@@ -568,6 +588,13 @@ export function PlaylistView(): React.JSX.Element | null {
                 ]
                   .filter(Boolean)
                   .join(' ')}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 20,
+                  right: 20,
+                  transform: `translateY(${virtualRow.start}px)`
+                }}
                 tabIndex={0}
                 draggable
                 onMouseDown={(e) => handleRowMouseDown(e, i)}

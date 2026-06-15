@@ -3422,7 +3422,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Playlist not found")
 
         updated = index.set_playlist_cover(playlist_id, image_data)
-        return PlaylistOut(**updated)  # type: ignore[arg-type]
+        return PlaylistOut(**_enrich_playlist(updated))  # type: ignore[arg-type]
 
     # -----------------------------------------------------------------------
     # WebSocket: player state stream

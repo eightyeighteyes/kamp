@@ -699,6 +699,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
     await get()
       .loadPlaylists()
       .catch(() => undefined)
+    if (get().library.selectedPlaylist?.id === id) {
+      void get().loadPlaylistTracks(id)
+    }
     return playlist
   },
 
@@ -716,7 +719,19 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   loadPlaylistTracks: async (playlistId) => {
     const playlistTracks = await api.getPlaylistTracks(playlistId)
-    set((s) => ({ library: { ...s.library, playlistTracks, playlistTracksLoading: false } }))
+    set((s) => ({
+      library: {
+        ...s.library,
+        playlistTracks,
+        playlistTracksLoading: false,
+        // Keep the playlist card count in sync with the just-evaluated result
+        playlists: s.library.playlists.map((p) =>
+          p.id === playlistId && p.criteria !== null
+            ? { ...p, track_count: playlistTracks.length }
+            : p
+        )
+      }
+    }))
   },
 
   addTrackToPlaylist: async (playlistId, filePath) => {
@@ -796,7 +811,13 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   patchOpenPlaylist: (playlist) =>
-    set((s) => ({ library: { ...s.library, selectedPlaylist: playlist } })),
+    set((s) => ({
+      library: {
+        ...s.library,
+        selectedPlaylist: playlist,
+        playlists: s.library.playlists.map((p) => (p.id === playlist.id ? playlist : p))
+      }
+    })),
 
   playAlbum: async (albumArtist, album, trackIndex = 0, filePath = '') => {
     await api.playAlbum(albumArtist, album, trackIndex, filePath)

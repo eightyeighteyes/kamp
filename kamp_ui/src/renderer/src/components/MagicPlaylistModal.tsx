@@ -734,18 +734,23 @@ export function MagicPlaylistModal({
             </div>
           )}
 
-          <div className="magic-top-match-row">
-            <span>Match</span>
-            <button
-              className="match-pill match-pill--active"
-              onClick={() =>
-                dispatch({ type: 'SET_TOP_MATCH', match: state.match === 'all' ? 'any' : 'all' })
-              }
-            >
-              {state.match === 'all' ? 'All' : 'Any'}
-            </button>
-            <span>of the following groups:</span>
-          </div>
+          {state.groups.length > 1 && (
+            <div className="magic-top-match-row">
+              <span>Match</span>
+              <button
+                className="match-pill match-pill--active"
+                onClick={() =>
+                  dispatch({
+                    type: 'SET_TOP_MATCH',
+                    match: state.match === 'all' ? 'any' : 'all'
+                  })
+                }
+              >
+                {state.match === 'all' ? 'All' : 'Any'}
+              </button>
+              <span>of the following groups:</span>
+            </div>
+          )}
 
           <div className="magic-groups">
             {state.groups.map((g, i) => (

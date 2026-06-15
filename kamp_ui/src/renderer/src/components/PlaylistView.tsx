@@ -45,17 +45,20 @@ function sortKey(playlistId: number): string {
   return `kamp:playlist:${playlistId}:sort`
 }
 
-function loadTrackSort(playlistId: number): { order: TrackSortOrder; dir: 'asc' | 'desc' } {
+function loadTrackSort(
+  playlistId: number,
+  isMagic: boolean
+): { order: TrackSortOrder; dir: 'asc' | 'desc' } {
   try {
     const raw = localStorage.getItem(sortKey(playlistId))
     if (raw) {
       const parsed = JSON.parse(raw) as { order: TrackSortOrder; dir: 'asc' | 'desc' }
-      if (parsed.order && parsed.dir) return parsed
+      if (parsed.order && parsed.dir && !(isMagic && parsed.order === 'position')) return parsed
     }
   } catch {
     // ignore malformed storage
   }
-  return { order: 'position', dir: 'asc' }
+  return { order: isMagic ? 'title' : 'position', dir: 'asc' }
 }
 
 function applySortToTracks(
@@ -75,6 +78,8 @@ function applySortToTracks(
         break
       case 'album':
         cmp = a.album.localeCompare(b.album, undefined, { sensitivity: 'base' })
+        if (cmp === 0) cmp = a.disc_number - b.disc_number
+        if (cmp === 0) cmp = a.track_number - b.track_number
         break
       case 'duration':
         cmp = a.duration - b.duration
@@ -157,15 +162,20 @@ export function PlaylistView(): React.JSX.Element | null {
   const pendingSingleSelect = useRef<number | null>(null)
 
   // Per-playlist sort state — loaded from localStorage when playlist changes.
+  const isMagic = !!playlist?.criteria
   const playlistId = playlist?.id ?? 0
-  const storedSort = loadTrackSort(playlistId)
+  const storedSort = loadTrackSort(playlistId, isMagic)
   const [trackSortOrder, setTrackSortOrder] = useState<TrackSortOrder>(storedSort.order)
   const [trackSortDir, setTrackSortDir] = useState<'asc' | 'desc'>(storedSort.dir)
+
+  const trackSortOptions = isMagic
+    ? TRACK_SORT_OPTIONS.filter((o) => o.key !== 'position')
+    : TRACK_SORT_OPTIONS
 
   // Reload sort state when navigating to a different playlist.
   useEffect(() => {
     if (!playlist) return
-    const s = loadTrackSort(playlist.id)
+    const s = loadTrackSort(playlist.id, !!playlist.criteria)
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setTrackSortOrder(s.order)
     setTrackSortDir(s.dir)
@@ -520,7 +530,7 @@ export function PlaylistView(): React.JSX.Element | null {
       <div className="album-grid-toolbar" style={{ margin: '0 -16px', padding: '0 16px' }}>
         <SortControl
           value={trackSortOrder}
-          options={TRACK_SORT_OPTIONS}
+          options={trackSortOptions}
           dir={trackSortDir}
           onChange={handleTrackSortChange}
           onDirChange={handleTrackDirChange}

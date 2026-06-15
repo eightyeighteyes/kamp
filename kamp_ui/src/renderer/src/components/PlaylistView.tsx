@@ -261,9 +261,13 @@ export function PlaylistView(): React.JSX.Element | null {
           album: t.album,
           year: t.year,
           track_count: 1,
-          has_art: t.embedded_art,
+          // Non-local tracks have server-side art even without embedded art.
+          has_art: t.embedded_art || t.source !== 'local',
           missing_album: false,
-          file_path: t.file_path,
+          // file_path is the unique key only for missing_album=true albums.
+          // Passing a track's file_path here causes /api/v1/tracks to receive
+          // a bandcamp:// URI as a query param, which the server rejects (400).
+          file_path: '',
           art_version: null,
           added_at: null,
           last_played_at: null,
@@ -277,6 +281,7 @@ export function PlaylistView(): React.JSX.Element | null {
         const alb = seen.get(key)!
         alb.track_count++
         if (t.favorite) alb.has_favorite_track = true
+        if (t.embedded_art || t.source !== 'local') alb.has_art = true
         if (t.source !== 'local') {
           alb.has_remote_tracks = true
           alb.source = alb.source === 'local' ? (t.source as 'bandcamp') : 'mixed'

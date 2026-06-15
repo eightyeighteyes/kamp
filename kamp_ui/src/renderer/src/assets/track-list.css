@@ -991,11 +991,9 @@
    and ns-resize cursor signal the drag affordance. */
 .album-meta-toggle {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
+  align-items: stretch;
   width: 100%;
-  padding: 7px 20px;
+  padding: 0;
   background: none;
   border: none;
   border-top: 2px solid rgba(255, 255, 255, 0.15);
@@ -1003,7 +1001,9 @@
   cursor: ns-resize;
   color: var(--text-dim);
   position: relative;
-  z-index: 2;
+  /* Must be above .track-list-body (z-index: 2) so the embedded toolbar's
+     dropdown popover isn't clipped by the sibling that follows in the DOM. */
+  z-index: 20;
 }
 
 .track-list-view--resizing {
@@ -1165,4 +1165,22 @@
   .meta-field-input {
     transition: none;
   }
+}
+
+@keyframes row-flash {
+  from { background: var(--accent-dim); }
+  to { background: transparent; }
+}
+
+.track-row--new-flash {
+  animation: row-flash 600ms ease-out;
+}
+
+@keyframes count-tick {
+  from { color: var(--accent); }
+  to { color: inherit; }
+}
+
+.track-count-tick {
+  animation: count-tick 300ms ease-out;
 }

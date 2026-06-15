@@ -2,18 +2,21 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useStore } from '../store'
 import { applyPlaylistArtLocal, playlistArtUrl } from '../api/client'
-import type { PlaylistTrack } from '../api/client'
+import type { Album, PlaylistTrack } from '../api/client'
 import { TrackContextMenu } from './TrackContextMenu'
 import { SortControl } from './SortControl'
 import { MagicPlaylistModal } from './MagicPlaylistModal'
+import { AlbumCard } from './AlbumCard'
 import { computeNewOrder } from '../utils/computeNewOrder'
 import { truncateTitle } from '../utils/truncateTitle'
 import {
   FavoriteIcon,
+  GridViewIcon,
   PauseIcon,
   PlayIcon,
   PlayNextIcon,
   QueueAddIcon,
+  QueueIcon,
   SparkleIcon,
   WarnIcon
 } from './TransportIcons'
@@ -46,6 +49,10 @@ function sortKey(playlistId: number): string {
   return `kamp:playlist:${playlistId}:sort`
 }
 
+function displayModeKey(playlistId: number): string {
+  return `kamp:playlist:${playlistId}:display-mode`
+}
+
 function loadTrackSort(
   playlistId: number,
   isMagic: boolean
@@ -59,7 +66,7 @@ function loadTrackSort(
   } catch {
     // ignore malformed storage
   }
-  return { order: isMagic ? 'title' : 'position', dir: 'asc' }
+  return { order: isMagic ? 'artist' : 'position', dir: 'asc' }
 }
 
 function applySortToTracks(
@@ -140,6 +147,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const patchOpenPlaylist = useStore((s) => s.patchOpenPlaylist)
   const configValues = useStore((s) => s.configValues)
   const connected = configValues?.['bandcamp.connected'] ?? false
+  const libraryAlbums = useStore((s) => s.library.albums)
 
   const [menu, setMenu] = useState<TrackMenu | null>(null)
   const [editingTitle, setEditingTitle] = useState(false)
@@ -158,6 +166,12 @@ export function PlaylistView(): React.JSX.Element | null {
   const artInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const dragFromIdx = useRef<number | null>(null)
+  const prevTrackIdsRef = useRef<Set<number>>(new Set())
+  const [flashIds, setFlashIds] = useState<Set<number>>(new Set())
+  const [displayMode, setDisplayMode] = useState<'tracks' | 'albums'>(() => {
+    const stored = localStorage.getItem(displayModeKey(playlist?.id ?? 0))
+    return stored === 'albums' ? 'albums' : 'tracks'
+  })
 
   // Must be declared before the early return — hook call order must be unconditional.
   // playlistTracks.length === displayTracks.length (sort never adds/removes items).
@@ -210,11 +224,93 @@ export function PlaylistView(): React.JSX.Element | null {
     [playlistTracks]
   )
 
+  // Re-read display mode from localStorage when navigating between playlists.
+  useEffect(() => {
+    if (playlistId === 0) return
+    const stored = localStorage.getItem(displayModeKey(playlistId))
+    setDisplayMode(stored === 'albums' ? 'albums' : 'tracks')
+  }, [playlistId])
+
+  // Diff track IDs on WS refresh and flash newly-added rows (magic playlists only).
+  useEffect(() => {
+    const currentIds = new Set(playlistTracks.map((t) => t.id))
+    if (isMagic && prevTrackIdsRef.current.size > 0) {
+      const newIds = new Set([...currentIds].filter((id) => !prevTrackIdsRef.current.has(id)))
+      if (newIds.size > 0) setFlashIds(newIds)
+    }
+    prevTrackIdsRef.current = currentIds
+  }, [playlistTracks, isMagic])
+
+  // Clear flash after 700ms.
+  useEffect(() => {
+    if (flashIds.size === 0) return
+    const timer = setTimeout(() => setFlashIds(new Set()), 700)
+    return () => clearTimeout(timer)
+  }, [flashIds])
+
+  // Synthesize Album objects from playlist tracks for the album-grid display mode.
+  // Iterates displayTracks (already sorted) so tile order matches the active sort.
+  const albumGroups = useMemo<Album[]>(() => {
+    if (displayMode !== 'albums') return []
+    // Build a quick lookup for album-level favorite status from the store's album
+    // list (populated when the user has browsed the library). Falls back to false.
+    const albumFavMap = new Map<string, boolean>(
+      libraryAlbums.map((a) => [`${a.album_artist}::${a.album}`, a.favorite])
+    )
+    const seen = new Map<string, Album>()
+    for (const t of displayTracks) {
+      const albumArtist = t.album_artist || t.artist
+      const key = `${albumArtist}::${t.album}`
+      if (!seen.has(key)) {
+        seen.set(key, {
+          album_artist: albumArtist,
+          album: t.album,
+          year: t.year,
+          track_count: 1,
+          // Non-local tracks have server-side art even without embedded art.
+          has_art: t.embedded_art || t.source !== 'local',
+          missing_album: false,
+          // file_path is the unique key only for missing_album=true albums.
+          // Passing a track's file_path here causes /api/v1/tracks to receive
+          // a bandcamp:// URI as a query param, which the server rejects (400).
+          file_path: '',
+          art_version: null,
+          added_at: null,
+          last_played_at: null,
+          play_count_avg: 0,
+          favorite: albumFavMap.get(key) ?? false,
+          has_favorite_track: t.favorite,
+          source: t.source === 'bandcamp' ? 'bandcamp' : 'local',
+          has_remote_tracks: t.source !== 'local'
+        })
+      } else {
+        const alb = seen.get(key)!
+        alb.track_count++
+        if (t.favorite) alb.has_favorite_track = true
+        if (t.embedded_art || t.source !== 'local') alb.has_art = true
+        if (t.source !== 'local') {
+          alb.has_remote_tracks = true
+          alb.source = alb.source === 'local' ? (t.source as 'bandcamp') : 'mixed'
+        }
+      }
+    }
+    return [...seen.values()]
+  }, [displayTracks, displayMode, libraryAlbums])
+
   if (!playlist) return null
 
   const persistTrackSort = (order: TrackSortOrder, dir: 'asc' | 'desc'): void => {
     try {
       localStorage.setItem(sortKey(playlist.id), JSON.stringify({ order, dir }))
+    } catch {
+      // ignore
+    }
+  }
+
+  const setDisplayModeAndPersist = (mode: 'tracks' | 'albums'): void => {
+    setDisplayMode(mode)
+    try {
+      localStorage.setItem(displayModeKey(playlist.id), mode)
     } catch {
       // ignore
     }
@@ -504,12 +600,13 @@ export function PlaylistView(): React.JSX.Element | null {
             </h1>
           )}
           <div className="track-list-album-year">
-            {[
-              playlistTracks.length === 1 ? '1 track' : `${playlistTracks.length} tracks`,
-              totalDuration > 0 ? formatTime(totalDuration) : ''
-            ]
-              .filter(Boolean)
-              .join(' · ')}
+            <span
+              key={isMagic ? playlistTracks.length : 0}
+              className={isMagic ? 'track-count-tick' : undefined}
+            >
+              {playlistTracks.length === 1 ? '1 track' : `${playlistTracks.length} tracks`}
+            </span>
+            {totalDuration > 0 && ` · ${formatTime(totalDuration)}`}
           </div>
         </div>
         <div className="album-controls-group">
@@ -539,162 +636,205 @@ export function PlaylistView(): React.JSX.Element | null {
         </div>
       </div>
 
-      <button
+      {/* Drag-to-resize handle; toolbar lives inside so they share the same
+          horizontal band. stopPropagation on the toolbar prevents mousedown
+          from bubbling up and starting a drag when the user clicks a control. */}
+      <div
         className="album-meta-toggle"
         aria-label="Resize hero"
         onMouseDown={handleResizeMouseDown}
         onDoubleClick={handleResizeReset}
-      />
+      >
+        <div
+          className="album-grid-toolbar album-grid-toolbar--embedded"
+          onMouseDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          <div className="view-mode-toggle">
+            <button
+              className={`view-mode-btn${displayMode === 'tracks' ? ' view-mode-btn--active' : ''}`}
+              title="Track list"
+              onClick={() => setDisplayModeAndPersist('tracks')}
+            >
+              <QueueIcon size={14} />
+            </button>
+            <button
+              className={`view-mode-btn${displayMode === 'albums' ? ' view-mode-btn--active' : ''}`}
+              title="Album grid"
+              onClick={() => setDisplayModeAndPersist('albums')}
+            >
+              <GridViewIcon size={14} />
+            </button>
+          </div>
+          <SortControl
+            value={trackSortOrder}
+            options={trackSortOptions}
+            dir={trackSortDir}
+            onChange={handleTrackSortChange}
+            onDirChange={handleTrackDirChange}
+            showDir={trackSortOrder !== 'position'}
+          />
+          {playlist.criteria !== null && (
+            <button
+              className="playlist-cta-btn playlist-cta-btn--magic"
+              onClick={() => {
+                setMagicModalKey((k) => k + 1)
+                setMagicModalOpen(true)
+              }}
+            >
+              <SparkleIcon size={12} />
+              Edit criteria
+            </button>
+          )}
+        </div>
+      </div>
 
-      <div className="album-grid-toolbar" style={{ margin: '0 -16px', padding: '0 16px' }}>
-        <SortControl
-          value={trackSortOrder}
-          options={trackSortOptions}
-          dir={trackSortDir}
-          onChange={handleTrackSortChange}
-          onDirChange={handleTrackDirChange}
-          showDir={trackSortOrder !== 'position'}
-        />
-        {playlist.criteria !== null && (
-          <button
-            className="playlist-cta-btn playlist-cta-btn--magic"
-            onClick={() => {
-              setMagicModalKey((k) => k + 1)
-              setMagicModalOpen(true)
+      {displayMode === 'albums' ? (
+        <div className="track-list-body">
+          <div className="album-grid" style={{ padding: 10 }}>
+            {albumGroups.map((a) => (
+              <AlbumCard key={`${a.album_artist}::${a.album}`} album={a} />
+            ))}
+          </div>
+          {albumGroups.length === 0 && (
+            <div className="album-grid-empty">
+              {playlistTracksLoading
+                ? 'Loading…'
+                : isMagic
+                  ? 'No tracks match these criteria yet.'
+                  : 'No tracks yet. Right-click any track or album and choose Add to Playlist.'}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="track-list-body" ref={scrollRef}>
+          {/* Tall positioning context; only visible rows are in the DOM. */}
+          <ol
+            className="track-rows"
+            style={{
+              position: 'relative',
+              height: virtualizer.getTotalSize() + 80,
+              padding: 0
             }}
           >
-            <SparkleIcon size={12} />
-            Edit criteria
-          </button>
-        )}
-      </div>
-
-      <div className="track-list-body" ref={scrollRef}>
-        {/* Tall positioning context; only visible rows are in the DOM. */}
-        <ol
-          className="track-rows"
-          style={{
-            position: 'relative',
-            height: virtualizer.getTotalSize() + 80,
-            padding: 0
-          }}
-        >
-          {virtualizer.getVirtualItems().map((virtualRow) => {
-            const i = virtualRow.index
-            const track = displayTracks[i]
-            const isCurrent = currentTrack?.file_path === track.file_path
-            const isRemote = track.source !== 'local'
-            const isOffline = isRemote && !connected
-            const isSelected = selectedIndices.has(i)
-            return (
-              <li
-                key={track.playlist_track_id ?? track.id}
-                className={[
-                  'track-row',
-                  isCurrent ? 'current' : '',
-                  isOffline ? 'track-row--offline' : '',
-                  isSelected ? 'selected' : ''
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 20,
-                  right: 20,
-                  transform: `translateY(${virtualRow.start}px)`
-                }}
-                tabIndex={0}
-                draggable
-                onMouseDown={(e) => handleRowMouseDown(e, i)}
-                onMouseUp={() => handleRowMouseUp(i)}
-                onDragStart={(e) => handleDragStart(e, i)}
-                onDragEnd={handleDragEnd}
-                onDragOver={isDragEnabled ? handleDragOver : undefined}
-                onDragLeave={isDragEnabled ? handleDragLeave : undefined}
-                onDrop={isDragEnabled ? (e) => handleDrop(e, i) : undefined}
-                onDoubleClick={() => {
-                  if (isOffline) return
-                  if (isCurrent) {
-                    void togglePlayPause()
-                  } else if (isDragEnabled) {
-                    // Playlist order — i maps directly to stored position
-                    void playPlaylist(playlist.id, i)
-                  } else {
-                    // Sorted view — queue in display order so the right track plays
-                    void playFiles(
-                      displayTracks.map((t) => t.file_path),
-                      i
-                    )
-                    void recordPlaylistPlayed(playlist.id)
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter') return
-                  if (isOffline) return
-                  if (isCurrent) {
-                    void togglePlayPause()
-                  } else if (isDragEnabled) {
-                    void playPlaylist(playlist.id, i)
-                  } else {
-                    void playFiles(
-                      displayTracks.map((t) => t.file_path),
-                      i
-                    )
-                    void recordPlaylistPlayed(playlist.id)
-                  }
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  // Right-click on an unselected row: select only that row.
-                  const nextIndices = isSelected ? selectedIndices : new Set([i])
-                  if (!isSelected) {
-                    setSelectedIndices(nextIndices)
-                    setAnchorIdx(i)
-                  }
-                  setMenu({ x: e.clientX, y: e.clientY, track })
-                }}
-              >
-                <span className="track-row-fav">
-                  {track.favorite && <FavoriteIcon active size={10} />}
-                </span>
-                <span className="track-row-num">{i + 1}</span>
-                <span className="track-row-title-cell">
-                  {isOffline && (
-                    <span
-                      className="track-row-offline-icon"
-                      title="Track unavailable offline"
-                      aria-hidden="true"
-                    >
-                      <WarnIcon size={11} />
-                    </span>
-                  )}
-                  <span
-                    className={
-                      isOffline ? 'track-row-title track-row-title--offline' : 'track-row-title'
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const i = virtualRow.index
+              const track = displayTracks[i]
+              const isCurrent = currentTrack?.file_path === track.file_path
+              const isRemote = track.source !== 'local'
+              const isOffline = isRemote && !connected
+              const isSelected = selectedIndices.has(i)
+              return (
+                <li
+                  key={track.playlist_track_id ?? track.id}
+                  className={[
+                    'track-row',
+                    isCurrent ? 'current' : '',
+                    isOffline ? 'track-row--offline' : '',
+                    isSelected ? 'selected' : '',
+                    flashIds.has(track.id) ? 'track-row--new-flash' : ''
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 20,
+                    right: 20,
+                    transform: `translateY(${virtualRow.start}px)`
+                  }}
+                  tabIndex={0}
+                  draggable
+                  onMouseDown={(e) => handleRowMouseDown(e, i)}
+                  onMouseUp={() => handleRowMouseUp(i)}
+                  onDragStart={(e) => handleDragStart(e, i)}
+                  onDragEnd={handleDragEnd}
+                  onDragOver={isDragEnabled ? handleDragOver : undefined}
+                  onDragLeave={isDragEnabled ? handleDragLeave : undefined}
+                  onDrop={isDragEnabled ? (e) => handleDrop(e, i) : undefined}
+                  onDoubleClick={() => {
+                    if (isOffline) return
+                    if (isCurrent) {
+                      void togglePlayPause()
+                    } else if (isDragEnabled) {
+                      // Playlist order — i maps directly to stored position
+                      void playPlaylist(playlist.id, i)
+                    } else {
+                      // Sorted view — queue in display order so the right track plays
+                      void playFiles(
+                        displayTracks.map((t) => t.file_path),
+                        i
+                      )
+                      void recordPlaylistPlayed(playlist.id)
                     }
-                  >
-                    {track.title}
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return
+                    if (isOffline) return
+                    if (isCurrent) {
+                      void togglePlayPause()
+                    } else if (isDragEnabled) {
+                      void playPlaylist(playlist.id, i)
+                    } else {
+                      void playFiles(
+                        displayTracks.map((t) => t.file_path),
+                        i
+                      )
+                      void recordPlaylistPlayed(playlist.id)
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    // Right-click on an unselected row: select only that row.
+                    const nextIndices = isSelected ? selectedIndices : new Set([i])
+                    if (!isSelected) {
+                      setSelectedIndices(nextIndices)
+                      setAnchorIdx(i)
+                    }
+                    setMenu({ x: e.clientX, y: e.clientY, track })
+                  }}
+                >
+                  <span className="track-row-fav">
+                    {track.favorite && <FavoriteIcon active size={10} />}
                   </span>
-                </span>
-                <span className="track-row-artist">{track.artist}</span>
-                <span className="track-row-duration">
-                  {track.duration > 0 ? formatTime(track.duration) : '—'}
-                </span>
-              </li>
-            )
-          })}
-        </ol>
-        {playlistTracks.length === 0 && (
-          <div className="album-grid-empty">
-            {playlistTracksLoading
-              ? 'Loading…'
-              : playlist.criteria !== null
-                ? 'No tracks match these criteria yet.'
-                : 'No tracks yet. Right-click any track or album and choose Add to Playlist.'}
-          </div>
-        )}
-      </div>
+                  <span className="track-row-num">{i + 1}</span>
+                  <span className="track-row-title-cell">
+                    {isOffline && (
+                      <span
+                        className="track-row-offline-icon"
+                        title="Track unavailable offline"
+                        aria-hidden="true"
+                      >
+                        <WarnIcon size={11} />
+                      </span>
+                    )}
+                    <span
+                      className={
+                        isOffline ? 'track-row-title track-row-title--offline' : 'track-row-title'
+                      }
+                    >
+                      {track.title}
+                    </span>
+                  </span>
+                  <span className="track-row-artist">{track.artist}</span>
+                  <span className="track-row-duration">
+                    {track.duration > 0 ? formatTime(track.duration) : '—'}
+                  </span>
+                </li>
+              )
+            })}
+          </ol>
+          {playlistTracks.length === 0 && (
+            <div className="album-grid-empty">
+              {playlistTracksLoading
+                ? 'Loading…'
+                : playlist.criteria !== null
+                  ? 'No tracks match these criteria yet.'
+                  : 'No tracks yet. Right-click any track or album and choose Add to Playlist.'}
+            </div>
+          )}
+        </div>
+      )}
 
       <MagicPlaylistModal
         key={magicModalKey}

@@ -991,6 +991,9 @@
   align-items: center;
   flex: 1;
   min-width: 0;
+  /* .track-row-title sets overflow: hidden for static ellipsis clipping;
+     cancel it here so the input's margin: 0 -4px border isn't clipped. */
+  overflow: visible;
 }
 
 /* Liner Notes panel ------------------------------------------------------- */

@@ -350,6 +350,7 @@
 }
 
 .track-list-identity-text {
+  flex: 1;
   min-width: 0;
 }
 
@@ -426,7 +427,6 @@
   border-radius: 3px;
   outline: none;
   font-family: inherit;
-  font-size: inherit;
   font-weight: inherit;
   color: inherit;
   line-height: inherit;
@@ -1113,7 +1113,6 @@
   -webkit-appearance: none;
   background: transparent;
   border: none;
-  border-bottom: 1px dashed rgba(255, 255, 255, 0.25);
   border-radius: 0;
   outline: none;
   font-family: inherit;

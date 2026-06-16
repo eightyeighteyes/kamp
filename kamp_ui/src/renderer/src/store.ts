@@ -621,14 +621,21 @@ export const useStore = create<PlayerStore>((set, get) => ({
         // are visible immediately without needing to navigate away and back.
         const { selectedAlbum } = s.library
         const refreshedSelectedAlbum = selectedAlbum
-          ? (albums.find((a) =>
-              a.album_artist === selectedAlbum.album_artist &&
-              a.album === selectedAlbum.album &&
-              a.file_path === selectedAlbum.file_path
+          ? (albums.find(
+              (a) =>
+                a.album_artist === selectedAlbum.album_artist &&
+                a.album === selectedAlbum.album &&
+                a.file_path === selectedAlbum.file_path
             ) ?? selectedAlbum)
           : null
         return {
-          library: { ...s.library, albums, artists, playlists, selectedAlbum: refreshedSelectedAlbum },
+          library: {
+            ...s.library,
+            albums,
+            artists,
+            playlists,
+            selectedAlbum: refreshedSelectedAlbum
+          },
           serverStatus: 'connected'
         }
       })

@@ -5727,6 +5727,169 @@ class TestDownloadQueue:
         index.close()
 
 
+class TestRemoveDownload:
+    """Tests for local_tracks_for_sale_item_id and remove_download."""
+
+    def _setup_downloaded_album(self, tmp_path: Path) -> LibraryIndex:
+        """Create an index with a downloaded album: both local and streaming tracks present.
+
+        Streaming tracks keep play_count 2 and 5; local tracks keep 7 and 3.
+        play_count is set via raw SQL because upsert_many intentionally omits it
+        (play counts are managed exclusively by record_played() in production).
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("sid42", mode="local", synced_at=1.0)
+
+        # Streaming tracks (bandcamp://) inserted first, as they would be pre-download.
+        streaming1 = _sample_track(Path("bandcamp://sid42/1"))
+        streaming1.track_number = 1
+        streaming1.source = "bandcamp"
+        streaming2 = _sample_track(Path("bandcamp://sid42/2"))
+        streaming2.track_number = 2
+        streaming2.source = "bandcamp"
+        index.upsert_many([streaming1, streaming2])
+
+        # Link sale_item_id on the albums row and set play counts directly.
+        index._conn.execute(
+            "UPDATE albums SET sale_item_id = 'sid42', source = 'local' WHERE album = 'The Album'"
+        )
+        index._conn.execute(
+            "UPDATE tracks SET play_count = 2 WHERE file_path = 'bandcamp://sid42/1'"
+        )
+        index._conn.execute(
+            "UPDATE tracks SET play_count = 5 WHERE file_path = 'bandcamp://sid42/2'"
+        )
+        index._conn.commit()
+
+        # Local tracks — play_count set via SQL after upsert.
+        local1 = _sample_track(tmp_path / "track1.mp3")
+        local1.track_number = 1
+        local2 = _sample_track(tmp_path / "track2.mp3")
+        local2.track_number = 2
+        index.upsert_many([local1, local2])
+        index._conn.execute(
+            "UPDATE tracks SET play_count = 7 WHERE file_path = ?",
+            (str(tmp_path / "track1.mp3"),),
+        )
+        index._conn.execute(
+            "UPDATE tracks SET play_count = 3 WHERE file_path = ?",
+            (str(tmp_path / "track2.mp3"),),
+        )
+        index._conn.commit()
+
+        return index
+
+    def test_local_tracks_for_sale_item_id_returns_local_only(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._setup_downloaded_album(tmp_path)
+        tracks = index.local_tracks_for_sale_item_id("sid42")
+        index.close()
+
+        paths = [str(t.file_path) for t in tracks]
+        assert all("bandcamp" not in p for p in paths)
+        assert len(tracks) == 2
+
+    def test_local_tracks_for_sale_item_id_returns_empty_for_unknown(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.local_tracks_for_sale_item_id("no-such-id") == []
+        index.close()
+
+    def test_remove_download_returns_local_file_paths(self, tmp_path: Path) -> None:
+        index = self._setup_downloaded_album(tmp_path)
+        paths = index.remove_download("sid42")
+        index.close()
+
+        assert len(paths) == 2
+        assert all(isinstance(p, Path) for p in paths)
+        assert all("bandcamp" not in str(p) for p in paths)
+
+    def test_remove_download_deletes_local_tracks_from_db(self, tmp_path: Path) -> None:
+        index = self._setup_downloaded_album(tmp_path)
+        index.remove_download("sid42")
+
+        remaining = index._conn.execute(
+            "SELECT file_path FROM tracks WHERE file_path NOT LIKE 'bandcamp://%'"
+        ).fetchall()
+        index.close()
+
+        assert remaining == []
+
+    def test_remove_download_streaming_tracks_remain(self, tmp_path: Path) -> None:
+        index = self._setup_downloaded_album(tmp_path)
+        index.remove_download("sid42")
+
+        streaming = index._conn.execute(
+            "SELECT file_path FROM tracks WHERE file_path LIKE 'bandcamp://%'"
+        ).fetchall()
+        index.close()
+
+        assert len(streaming) == 2
+
+    def test_remove_download_sets_mode_remote(self, tmp_path: Path) -> None:
+        index = self._setup_downloaded_album(tmp_path)
+        index.remove_download("sid42")
+
+        row = index._conn.execute(
+            "SELECT mode FROM bandcamp_collection WHERE sale_item_id = 'sid42'"
+        ).fetchone()
+        index.close()
+
+        assert row["mode"] == "remote"
+
+    def test_remove_download_preserves_higher_local_play_count(
+        self, tmp_path: Path
+    ) -> None:
+        """Track 1: local play_count=7 > streaming=2; streaming should end up at 7."""
+        index = self._setup_downloaded_album(tmp_path)
+        index.remove_download("sid42")
+
+        row = index._conn.execute(
+            "SELECT play_count FROM tracks WHERE file_path = 'bandcamp://sid42/1'"
+        ).fetchone()
+        index.close()
+
+        assert row["play_count"] == 7
+
+    def test_remove_download_keeps_streaming_count_when_higher(
+        self, tmp_path: Path
+    ) -> None:
+        """Track 2: streaming play_count=5 > local=3; streaming should keep 5."""
+        index = self._setup_downloaded_album(tmp_path)
+        index.remove_download("sid42")
+
+        row = index._conn.execute(
+            "SELECT play_count FROM tracks WHERE file_path = 'bandcamp://sid42/2'"
+        ).fetchone()
+        index.close()
+
+        assert row["play_count"] == 5
+
+    def test_remove_download_updates_albums_source_to_bandcamp(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._setup_downloaded_album(tmp_path)
+        index.remove_download("sid42")
+
+        row = index._conn.execute(
+            "SELECT source FROM albums WHERE sale_item_id = 'sid42'"
+        ).fetchone()
+        index.close()
+
+        assert row["source"] == "bandcamp"
+
+    def test_remove_download_returns_empty_for_unknown_sale_item_id(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = index.remove_download("no-such-id")
+        index.close()
+
+        assert result == []
+
+
 class TestMigrationV23:
     """v22 → v23: download_queue table created on upgrade from v22."""
 

@@ -369,6 +369,7 @@ export function TrackList(): React.JSX.Element | null {
       {/* Hero: full-width art — image intentionally taller than hero to bleed into track list */}
       <div
         className={`track-list-hero${album.has_art ? ' has-art' : ''}`}
+        title={albumEditMode && album.has_art ? 'Drag to reposition art' : undefined}
         onMouseDown={albumEditMode && album.has_art ? handleArtPanMouseDown : undefined}
         onContextMenu={(e) => {
           if (!album.album_url) return

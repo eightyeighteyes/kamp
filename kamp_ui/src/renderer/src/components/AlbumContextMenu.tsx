@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
 import { getTracksForAlbum, downloadAlbum, getPlaylistTracks } from '../api/client'
+import { RemoveFromQueueIcon } from './TransportIcons'
 import type { Album } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { ContextMenuSubmenu } from './ContextMenuSubmenu'
@@ -34,6 +35,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
   const setAlbumFavorite = useStore((s) => s.setAlbumFavorite)
   const markAlbumDownloading = useStore((s) => s.markAlbumDownloading)
+  const removeDownload = useStore((s) => s.removeDownload)
   const showFlashToast = useStore((s) => s.showFlashToast)
   const playlists = useStore((s) => s.library.playlists)
   const addTrackToPlaylist = useStore((s) => s.addTrackToPlaylist)
@@ -220,6 +222,27 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
                 <DownloadArrowIcon size={12} />
               </span>
               Download this album
+            </button>
+          )}
+          {album.source === 'local' && album.sale_item_id && (
+            <button
+              className="track-context-menu-item track-context-menu-item--action"
+              onClick={() => {
+                void removeDownload(album.sale_item_id!)
+                onClose()
+              }}
+            >
+              <span
+                style={{
+                  marginRight: 6,
+                  verticalAlign: 'middle',
+                  flexShrink: 0,
+                  display: 'inline-flex'
+                }}
+              >
+                <RemoveFromQueueIcon size={12} />
+              </span>
+              Remove download
             </button>
           )}
           {album.source === 'local' && (

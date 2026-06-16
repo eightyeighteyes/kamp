@@ -156,7 +156,7 @@
   line-height: 1;
   background: #3B6FD4;
   color: #fff;
-  font-family: system-ui, sans-serif;
+  font-family: inherit;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.12em;

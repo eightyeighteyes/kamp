@@ -16,6 +16,15 @@ textarea {
   -webkit-user-select: text;
 }
 
+/* Form elements don't inherit font from the page by default (UA stylesheet).
+   Force inheritance so DM Sans applies everywhere without per-component overrides. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
 html,
 body,
 #root {

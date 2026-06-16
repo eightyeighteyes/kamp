@@ -414,7 +414,7 @@
 
 /* Base reset: strip OS chrome, inherit all typography from the surrounding
    heading/text so the input is visually indistinguishable from the label
-   except for the dashed border affordance. */
+   except hover/focus borders. */
 .editable-album-field {
   display: block;
   width: 100%;
@@ -422,8 +422,7 @@
   appearance: none;
   -webkit-appearance: none;
   background: transparent;
-  /* 1px dashed = resting affordance per design spec */
-  border: 1px dashed rgba(255, 255, 255, 0.22);
+  border: none;
   border-radius: 3px;
   outline: none;
   font-family: inherit;
@@ -743,7 +742,7 @@
   appearance: none;
   -webkit-appearance: none;
   background: transparent;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 3px;
   outline: none;
   font-family: inherit;

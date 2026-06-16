@@ -529,7 +529,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 fontSize="31"
                 fontWeight="700"
                 letterSpacing="8"
-                fontFamily="'DM Sans', sans-serif"
+                fontFamily="inherit"
               >
                 KAMP
               </text>
@@ -541,7 +541,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 fill="#1c1a16"
                 fontSize="17"
                 letterSpacing="5"
-                fontFamily="'DM Sans', sans-serif"
+                fontFamily="inherit"
               >
                 HI · FI
               </text>

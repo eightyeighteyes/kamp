@@ -102,7 +102,7 @@ export function SplashScreen({
             fontSize="9"
             fontWeight="700"
             letterSpacing="2.5"
-            fontFamily="'DM Sans', sans-serif"
+            fontFamily="inherit"
           >
             KAMP
           </text>
@@ -113,7 +113,7 @@ export function SplashScreen({
             fill="#1c1a16"
             fontSize="4.8"
             letterSpacing="1.5"
-            fontFamily="'DM Sans', sans-serif"
+            fontFamily="inherit"
           >
             HI · FI
           </text>

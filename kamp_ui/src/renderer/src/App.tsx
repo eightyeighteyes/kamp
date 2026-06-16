@@ -645,7 +645,7 @@ export default function App(): React.JSX.Element {
       {flashToast && (
         <div className="flash-toast" role="status">
           <span className="album-rename-toast-text">{flashToast}</span>
-          <div className="album-rename-toast-bar" style={{ animationDuration: '2000ms' }} />
+          <div className="album-rename-toast-bar" style={{ animationDuration: '5000ms' }} />
         </div>
       )}
     </div>

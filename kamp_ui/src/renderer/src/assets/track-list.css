@@ -443,8 +443,7 @@
 }
 
 .editable-album-field:hover {
-  border-color: rgba(255, 255, 255, 0.45);
-  border-style: solid;
+  border: 1px solid rgba(255, 255, 255, 0.45);
 }
 
 .editable-album-field:focus {
@@ -759,8 +758,12 @@
     box-shadow 150ms ease;
 }
 
+.track-row-title--input:hover {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
 .track-row-title--input:focus {
-  border-color: var(--accent);
+  border: 1px solid var(--accent);
   box-shadow: 0 0 0 2px var(--accent-dim);
   background: var(--surface-hover);
 }

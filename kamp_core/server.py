@@ -2846,6 +2846,68 @@ def create_app(
         )
         return {"ok": True}
 
+    @app.delete("/api/v1/bandcamp/collection/{sale_item_id}/download")
+    def remove_downloaded_item(sale_item_id: str) -> dict[str, Any]:
+        """Revert a downloaded Bandcamp album back to streaming state.
+
+        Deletes the local files, removes local track rows from the DB (streaming
+        rows are preserved and become the primary tracks again), and sets
+        bandcamp_collection.mode back to 'remote'.
+
+        Returns 404 if the item is not in the collection.
+        Returns 409 if a track from this album is currently playing.
+        """
+        if not index.get_collection_item(sale_item_id):
+            raise HTTPException(status_code=404, detail="Collection item not found")
+
+        local_tracks = index.local_tracks_for_sale_item_id(sale_item_id)
+
+        def _is_track_locked(tid: int) -> bool:
+            c = queue.current()
+            la = queue.peek_next()
+            return (c is not None and c.id == tid) or (la is not None and la.id == tid)
+
+        if any(_is_track_locked(t.id) for t in local_tracks):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A track in this album is currently playing. "
+                    "Stop playback before removing the download."
+                ),
+            )
+
+        file_paths = index.remove_download(sale_item_id)
+
+        for fp in file_paths:
+            try:
+                fp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        lib_path: Path | None = _state["library_path"]
+        dirs_to_try: set[Path] = set()
+        for fp in file_paths:
+            dirs_to_try.add(fp.parent)
+            if fp.parent.parent != fp.parent:
+                dirs_to_try.add(fp.parent.parent)
+        for d in sorted(dirs_to_try, key=lambda p: len(p.parts), reverse=True):
+            if lib_path is not None and d == lib_path:
+                continue
+            _scrub_os_metadata(d)
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": sale_item_id,
+                "state": "removed",
+            }
+        )
+        return {"ok": True}
+
     # -----------------------------------------------------------------------
     # Player
     # -----------------------------------------------------------------------

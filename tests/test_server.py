@@ -2695,6 +2695,136 @@ class TestBandcampCollectionDownload:
         assert callable(getattr(app.state, "notify_album_download_status", None))
 
 
+# DELETE /api/v1/bandcamp/collection/{sale_item_id}/download
+# ---------------------------------------------------------------------------
+
+
+class TestBandcampRemoveDownload:
+    """Tests for DELETE /api/v1/bandcamp/collection/{sale_item_id}/download."""
+
+    def test_returns_404_when_item_not_in_collection(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        mock_index.get_collection_item.return_value = None
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).delete("/api/v1/bandcamp/collection/99/download")
+        assert resp.status_code == 404
+
+    def test_returns_409_when_track_is_playing(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        from kamp_core.library import Track
+        from pathlib import Path as _Path
+
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "42",
+            "mode": "local",
+        }
+        playing_track = Track(
+            file_path=_Path("/music/Artist/Album/01.flac"),
+            title="Playing Track",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="flac",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+        )
+        playing_track.id = 77
+        mock_index.local_tracks_for_sale_item_id.return_value = [playing_track]
+        mock_queue.current.return_value = playing_track
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+        assert resp.status_code == 409
+
+    def test_returns_200_and_broadcasts_removed(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        from pathlib import Path as _Path
+
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "42",
+            "mode": "local",
+        }
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_index.remove_download.return_value = []
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        with TestClient(app) as c:
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.receive_json()  # consume initial state push
+                resp = c.delete("/api/v1/bandcamp/collection/42/download")
+                msg = ws.receive_json()
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert msg["type"] == "bandcamp.album-download"
+        assert msg["sale_item_id"] == "42"
+        assert msg["state"] == "removed"
+
+    def test_deletes_local_files(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        from pathlib import Path as _Path
+
+        track_file = tmp_path / "track.flac"  # type: ignore[operator]
+        track_file.write_bytes(b"dummy")
+
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "42",
+            "mode": "local",
+        }
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_index.remove_download.return_value = [track_file]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert not track_file.exists()
+
+    def test_no_error_when_file_already_missing(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        from pathlib import Path as _Path
+
+        missing_file = tmp_path / "gone.flac"  # type: ignore[operator]
+        # Do not create the file — simulates already-deleted scenario.
+
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "42",
+            "mode": "local",
+        }
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_index.remove_download.return_value = [missing_file]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert resp.status_code == 200
+
+
 # Bandcamp session-cookies endpoint
 # ---------------------------------------------------------------------------
 

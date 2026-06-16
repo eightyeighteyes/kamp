@@ -256,7 +256,7 @@ export default function App(): React.JSX.Element {
           } else {
             useStore.getState().clearAlbumQueued(saleItemId)
             useStore.getState().clearAlbumDownloading(saleItemId)
-            if (state === 'done') {
+            if (state === 'done' || state === 'removed') {
               void useStore.getState().loadLibrary()
               void useStore.getState().refreshOpenAlbum()
             }

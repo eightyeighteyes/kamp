@@ -115,6 +115,7 @@ type PlayerStore = {
   clearAlbumDownloading: (saleItemId: string) => void
   markAlbumQueued: (saleItemId: string) => void
   clearAlbumQueued: (saleItemId: string) => void
+  removeDownload: (saleItemId: string) => Promise<void>
   showFlashToast: (msg: string) => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
@@ -496,6 +497,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
       next.delete(saleItemId)
       return { queuedAlbumIds: next }
     }),
+  removeDownload: async (saleItemId) => {
+    await api.removeDownload(saleItemId)
+  },
   showFlashToast: (msg) => {
     set({ flashToast: msg })
     setTimeout(() => set({ flashToast: null }), 2000)

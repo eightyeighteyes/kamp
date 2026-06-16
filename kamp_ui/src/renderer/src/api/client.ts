@@ -347,6 +347,9 @@ export const disconnectBandcamp = (): Promise<{ ok: boolean }> => del('/api/v1/b
 export const downloadAlbum = (saleItemId: string): Promise<{ ok: boolean }> =>
   post(`/api/v1/bandcamp/collection/${encodeURIComponent(saleItemId)}/download`)
 
+export const removeDownload = (saleItemId: string): Promise<{ ok: boolean }> =>
+  del(`/api/v1/bandcamp/collection/${encodeURIComponent(saleItemId)}/download`)
+
 // ---------------------------------------------------------------------------
 // Player
 // ---------------------------------------------------------------------------
@@ -657,7 +660,7 @@ export type AudioLevelMessage = {
 export type AlbumDownloadMessage = {
   type: 'bandcamp.album-download'
   sale_item_id: string
-  state: 'queued' | 'downloading' | 'done' | 'error'
+  state: 'queued' | 'downloading' | 'done' | 'error' | 'removed'
 }
 export type MagicPlaylistUpdatedMessage = {
   type: 'magic_playlist.updated'
@@ -692,7 +695,7 @@ export function connectStateStream(
   onTrackChanged?: () => void,
   onAlbumDownload?: (
     saleItemId: string,
-    state: 'queued' | 'downloading' | 'done' | 'error'
+    state: 'queued' | 'downloading' | 'done' | 'error' | 'removed'
   ) => void,
   onMagicPlaylistUpdated?: (id: number) => void
 ): () => void {

@@ -832,6 +832,12 @@
   overflow: hidden;
 }
 
+/* Allow the input's border to extend past the cell edge in edit mode.
+   Text clipping in static mode is handled by .track-row-title itself. */
+.track-list-view--edit .track-row-title-cell {
+  overflow: visible;
+}
+
 .track-row-offline-icon {
   display: inline-flex;
   align-items: center;

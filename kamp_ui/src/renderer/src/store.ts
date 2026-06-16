@@ -507,7 +507,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
   showFlashToast: (msg) => {
     set({ flashToast: msg })
-    setTimeout(() => set({ flashToast: null }), 2000)
+    setTimeout(() => set({ flashToast: null }), 5000)
   },
 
   setRecentlyAddedCount: (n) => {

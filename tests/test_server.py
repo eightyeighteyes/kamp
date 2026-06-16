@@ -2713,7 +2713,7 @@ class TestBandcampRemoveDownload:
         resp = TestClient(app).delete("/api/v1/bandcamp/collection/99/download")
         assert resp.status_code == 404
 
-    def test_returns_409_when_track_is_playing(
+    def test_returns_409_when_track_is_actively_playing(
         self,
         mock_index: MagicMock,
         mock_engine: MagicMock,
@@ -2743,10 +2743,73 @@ class TestBandcampRemoveDownload:
         playing_track.id = 77
         mock_index.local_tracks_for_sale_item_id.return_value = [playing_track]
         mock_queue.current.return_value = playing_track
+        mock_engine.state.playing = True
 
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
         assert resp.status_code == 409
+
+    def test_swaps_queue_to_streaming_when_stopped(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """When the local track is queued but transport is stopped, swap the
+        queue entry to the streaming equivalent and proceed without a 409."""
+        from kamp_core.library import Track
+        from pathlib import Path as _Path
+
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "42",
+            "mode": "local",
+        }
+        local_track = Track(
+            file_path=_Path("/music/Artist/Album/01.flac"),
+            title="Track",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="flac",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+        )
+        local_track.id = 77
+        local_track.album_id = 5
+
+        streaming_track = Track(
+            file_path=_Path("bandcamp://42/1"),
+            title="Track",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+        )
+        streaming_track.id = 78
+
+        mock_index.local_tracks_for_sale_item_id.return_value = [local_track]
+        mock_index.streaming_track_for_local_id.return_value = streaming_track
+        mock_index.remove_download.return_value = []
+        mock_queue.current.return_value = local_track
+        mock_queue.peek_next.return_value = None
+        mock_engine.state.playing = False
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert resp.status_code == 200
+        mock_queue.update_track_by_id.assert_called_once_with(77, streaming_track)
+        mock_engine.unload.assert_called_once()
 
     def test_returns_200_and_broadcasts_removed(
         self,

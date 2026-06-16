@@ -1793,6 +1793,27 @@ class LibraryIndex:
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
+    def streaming_track_for_local_id(self, local_track_id: int) -> "Track | None":
+        """Return the streaming (bandcamp://) equivalent of a local track.
+
+        Joins on (album_id, track_number, disc_number) to find the bandcamp://
+        row that corresponds to the given local track ID.  Used to swap a queue
+        entry to its streaming counterpart before deleting the local file.
+        """
+        row = self._conn.execute(
+            """
+            SELECT s.* FROM tracks s
+            JOIN tracks l ON l.album_id = s.album_id
+                          AND l.track_number = s.track_number
+                          AND l.disc_number = s.disc_number
+            WHERE l.id = ?
+              AND (s.file_path LIKE 'bandcamp://%' OR s.file_path LIKE 'bandcamp:\\%')
+            LIMIT 1
+            """,
+            (local_track_id,),
+        ).fetchone()
+        return _row_to_track(row) if row is not None else None
+
     def remove_download(self, sale_item_id: str) -> "list[Path]":
         """Revert a downloaded collection item back to streaming state.
 

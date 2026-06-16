@@ -1345,6 +1345,21 @@ class MpvPlaybackEngine:
         self._send_command("set_property", "pause", True)
         self._send_command("seek", 0, "absolute")
 
+    def unload(self) -> None:
+        # Fully unload the current file from mpv using mpv's "stop" command.
+        # Used before deleting a file that is loaded but not actively playing;
+        # "stop" reason in the end-file event does NOT trigger queue advancement.
+        with self._lock:
+            self._lookahead_path = None
+            self._lookahead_url = None
+            self._lookahead_id = None
+            self._current_uri = None
+            self.state.playing = False
+            self.state.position = 0.0
+            self.state.duration = 0.0
+            self.state.position_updated_at = time.time()
+            self._send_command("stop")
+
     @property
     def volume(self) -> int:
         return self.state.volume

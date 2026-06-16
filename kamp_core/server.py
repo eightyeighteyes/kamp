@@ -2867,14 +2867,23 @@ def create_app(
             la = queue.peek_next()
             return (c is not None and c.id == tid) or (la is not None and la.id == tid)
 
-        if any(_is_track_locked(t.id) for t in local_tracks):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "A track in this album is currently playing. "
-                    "Stop playback before removing the download."
-                ),
-            )
+        locked = [t for t in local_tracks if _is_track_locked(t.id)]
+        if locked:
+            if engine.state.playing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "A track in this album is currently playing. "
+                        "Stop playback before removing the download."
+                    ),
+                )
+            # Stopped/paused: swap queue entries to streaming equivalents and
+            # unload the file so it can be deleted without a held file handle.
+            for local_track in locked:
+                streaming = index.streaming_track_for_local_id(local_track.id)
+                if streaming is not None:
+                    queue.update_track_by_id(local_track.id, streaming)
+            engine.unload()
 
         file_paths = index.remove_download(sale_item_id)
 

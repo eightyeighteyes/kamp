@@ -498,7 +498,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
       return { queuedAlbumIds: next }
     }),
   removeDownload: async (saleItemId) => {
-    await api.removeDownload(saleItemId)
+    try {
+      await api.removeDownload(saleItemId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not remove download'
+      get().showFlashToast(msg)
+    }
   },
   showFlashToast: (msg) => {
     set({ flashToast: msg })
@@ -611,10 +616,22 @@ export const useStore = create<PlayerStore>((set, get) => ({
         api.getArtists(),
         api.getPlaylists()
       ])
-      set((s) => ({
-        library: { ...s.library, albums, artists, playlists },
-        serverStatus: 'connected'
-      }))
+      set((s) => {
+        // Refresh selectedAlbum so metadata changes (source, sale_item_id, etc.)
+        // are visible immediately without needing to navigate away and back.
+        const { selectedAlbum } = s.library
+        const refreshedSelectedAlbum = selectedAlbum
+          ? (albums.find((a) =>
+              a.album_artist === selectedAlbum.album_artist &&
+              a.album === selectedAlbum.album &&
+              a.file_path === selectedAlbum.file_path
+            ) ?? selectedAlbum)
+          : null
+        return {
+          library: { ...s.library, albums, artists, playlists, selectedAlbum: refreshedSelectedAlbum },
+          serverStatus: 'connected'
+        }
+      })
     } catch {
       // During initial startup or mid-session reconnect the server may not be
       // ready yet — the WebSocket retry loop owns recovery. Only signal

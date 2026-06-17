@@ -111,7 +111,6 @@ function ArtistListRow({ artist }: { artist: Artist }): React.JSX.Element {
       </div>
       <div className="module-list-info">
         <div className="module-list-title">{artist.name}</div>
-        <div className="module-list-artist">{formatPlayTime(artist.play_time)}</div>
       </div>
       <span className="track-card-play-count">{formatPlayTime(artist.play_time)}</span>
       {menu && (

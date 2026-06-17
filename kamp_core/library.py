@@ -2171,9 +2171,18 @@ class LibraryIndex:
         if album_params:
             # Ensure each album_artist has an artists row before inserting albums.
             artist_names = list({p[0] for p in album_params if p[0]})
+            # Also ensure track-level artists from Various Artists albums have rows.
+            va_track_artists = list(
+                {
+                    t.artist
+                    for t in named
+                    if t.album_artist == "Various Artists" and t.artist
+                }
+            )
+            all_artist_names = list(set(artist_names + va_track_artists))
             self._conn.executemany(
                 "INSERT OR IGNORE INTO artists (name) VALUES (?)",
-                [(n,) for n in artist_names],
+                [(n,) for n in all_artist_names],
             )
             self._conn.executemany(
                 """
@@ -2676,16 +2685,28 @@ class LibraryIndex:
 
         Called periodically by the daemon's state-saver on track switch and on shutdown.
         Orthogonal to record_played: that updates tracks.play_count; this updates artists.play_time.
+        For Various Artists albums, credits the track-level artist instead of the album artist.
         """
         key = _canonical_track_key(file_path)
+        row = self._conn.execute(
+            "SELECT artist, album_artist FROM tracks WHERE file_path = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return
+        artist_name = (
+            row["artist"]
+            if row["album_artist"] == "Various Artists"
+            else row["album_artist"]
+        )
+        if not artist_name:
+            return
+        # Ensure the artist row exists (needed for track-level artists from VA albums).
         self._conn.execute(
-            """
-            UPDATE artists SET play_time = play_time + ?
-            WHERE name = (
-                SELECT album_artist FROM tracks WHERE file_path = ?
-            )
-            """,
-            (elapsed_seconds, key),
+            "INSERT OR IGNORE INTO artists (name) VALUES (?)", (artist_name,)
+        )
+        self._conn.execute(
+            "UPDATE artists SET play_time = play_time + ? WHERE name = ?",
+            (elapsed_seconds, artist_name),
         )
         self._conn.commit()
 

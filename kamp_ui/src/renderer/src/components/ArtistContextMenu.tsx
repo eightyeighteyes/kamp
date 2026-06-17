@@ -2,7 +2,7 @@ import React from 'react'
 import { useStore } from '../store'
 import type { Artist } from '../api/client'
 import { ContextMenu } from './ContextMenu'
-import { PlayNextIcon, QueueAddIcon } from './TransportIcons'
+import { PlayIcon, PlayNextIcon, QueueAddIcon } from './TransportIcons'
 
 interface Props {
   x: number
@@ -65,23 +65,28 @@ export function ArtistContextMenu({ x, y, artist, onClose }: Props): React.JSX.E
   return (
     <ContextMenu x={x} y={y} onClose={onClose}>
       <button className="track-context-menu-item" onClick={handlePlayNow}>
-        Play artist now
+        <span
+          style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}
+        >
+          <PlayIcon size={12} />
+        </span>
+        Play Artist Now
       </button>
       <button className="track-context-menu-item" onClick={handlePlayNext}>
         <span
           style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}
         >
-          <PlayNextIcon size={14} />
+          <PlayNextIcon size={12} />
         </span>
-        Play artist next
+        Play Artist Next
       </button>
       <button className="track-context-menu-item" onClick={handleAddToQueue}>
         <span
           style={{ marginRight: 6, verticalAlign: 'middle', flexShrink: 0, display: 'inline-flex' }}
         >
-          <QueueAddIcon size={14} />
+          <QueueAddIcon size={12} />
         </span>
-        Add artist to queue
+        Add Artist to Queue
       </button>
     </ContextMenu>
   )

@@ -1401,10 +1401,10 @@ class TestPlayerWebSocket:
             msg = ws.receive_json()
         assert msg["type"] == "track.changed"
 
-    def test_buffering_backstop_cleared_by_ping_when_position_advances(
+    def test_buffering_cleared_by_on_file_loaded(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
-        """WS ping clears buffering when position > 0 (playing→playing backstop)."""
+        """on_file_loaded clears buffering when mpv opens the new file."""
         import time
 
         remote = Track(
@@ -1426,7 +1426,6 @@ class TestPlayerWebSocket:
         )
         mock_queue.next.return_value = remote
         mock_index.get_collection_item.return_value = None
-        mock_engine.state = PlaybackState(playing=True, position=0.0)
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
 
@@ -1434,15 +1433,10 @@ class TestPlayerWebSocket:
         c.post("/api/v1/player/next")
         assert c.get("/api/v1/player/state").json()["buffering"] is True
 
-        # Simulate mpv advancing position (audio started).
-        mock_engine.state = PlaybackState(playing=True, position=2.5)
-        with c.websocket_connect("/api/v1/ws") as ws:
-            ws.receive_json()  # initial snapshot (may still show buffering)
-            ws.send_text("ping")
-            msg = ws.receive_json()
+        # Simulate mpv firing file-loaded (new file opened and decoding begun).
+        mock_engine.on_file_loaded()
 
-        # Ping backstop must clear buffering once position > 0.
-        assert msg["buffering"] is False
+        assert c.get("/api/v1/player/state").json()["buffering"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -976,6 +976,19 @@ def create_app(
     engine.on_play_state_changed = _notify_play_state_changed
     engine.on_audio_level = _notify_audio_level
 
+    # Outermost on_file_loaded wrapper: clear buffering the moment mpv opens
+    # the new file. Wraps the __main__.py chain (gapless preload + scrobble)
+    # which is already assigned before create_app is called.
+    _outer_on_file_loaded = engine.on_file_loaded
+
+    def _on_file_loaded_clear_buffering() -> None:
+        _state["buffering"] = False
+        _broadcast({"type": "player.state", **_state_snapshot().model_dump()})
+        if _outer_on_file_loaded is not None:
+            _outer_on_file_loaded()
+
+    engine.on_file_loaded = _on_file_loaded_clear_buffering
+
     # Magic playlist field_index: maps field name → set of playlist IDs whose
     # criteria reference that field.  Rebuilt at startup and after CRUD ops.
     field_index: dict[str, set[int]] = {}
@@ -3694,11 +3707,6 @@ def create_app(
                     if _recv_exc is not None:
                         raise _recv_exc
                     # Each "ping" from the client triggers a fresh snapshot.
-                    # Backstop: if mpv started playing without a pause-property
-                    # change (playing→playing transition), clear the buffering
-                    # flag once position advances so the indicator doesn't linger.
-                    if _state["buffering"] and engine.state.position > 0:
-                        _state["buffering"] = False
                     await ws.send_json(
                         {"type": "player.state", **_state_snapshot().model_dump()}
                     )

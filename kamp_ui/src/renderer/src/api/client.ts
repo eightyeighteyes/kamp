@@ -74,7 +74,7 @@ export type PlayerState = {
   volume: number
   current_track: Track | null
   next_track: Track | null
-  buffering?: boolean
+  buffering: boolean
 }
 
 export type ScanResult = {

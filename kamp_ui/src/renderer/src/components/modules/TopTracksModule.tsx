@@ -75,7 +75,7 @@ function TrackCard({ track }: { track: Track }): React.JSX.Element {
       <div className="track-card-info">
         <div className="track-card-title">{track.title}</div>
         <div className="track-card-artist">{track.artist}</div>
-        <div className="track-card-play-count">{track.play_count}×</div>
+        <div className="track-card-play-count">{track.play_count} plays</div>
       </div>
       {menu && (
         <TrackContextMenu x={menu.x} y={menu.y} track={menu.track} onClose={() => setMenu(null)} />
@@ -126,7 +126,7 @@ function TrackListRow({ track }: { track: Track }): React.JSX.Element {
         <div className="module-list-title">{track.title}</div>
         <div className="module-list-artist">{track.artist}</div>
       </div>
-      <span className="track-card-play-count">{track.play_count}×</span>
+      <span className="track-card-play-count">{track.play_count} plays</span>
       {menu && (
         <TrackContextMenu x={menu.x} y={menu.y} track={menu.track} onClose={() => setMenu(null)} />
       )}

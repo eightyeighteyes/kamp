@@ -116,6 +116,8 @@ export function TrackList(): React.JSX.Element | null {
   const deferredOps = useStore((s) => s.deferredOps)
   const showFlashToast = useStore((s) => s.showFlashToast)
 
+  const flashTrackId = useStore((s) => s.flashTrackId)
+
   const albumTitleRef = useRef<HTMLHeadingElement>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mbAbortRef = useRef<AbortController | null>(null)
@@ -714,7 +716,7 @@ export function TrackList(): React.JSX.Element | null {
             return (
               <li
                 key={track.id}
-                className={`track-row${isCurrent ? ' current' : ''}${isTrackOffline ? ' track-row--offline' : ''}${isPreorderUnavailable ? ' track-row--preorder-unavailable' : ''}`}
+                className={`track-row${isCurrent ? ' current' : ''}${isTrackOffline ? ' track-row--offline' : ''}${isPreorderUnavailable ? ' track-row--preorder-unavailable' : ''}${flashTrackId === track.id ? ' track-row--new-flash' : ''}`}
                 tabIndex={0}
                 onDoubleClick={() => {
                   if (isTrackOffline || isPreorderUnavailable) return

@@ -243,6 +243,9 @@ export const playlistArtUrl = (playlistId: number, version?: number): string => 
 
 export const getArtists = (): Promise<string[]> => get('/api/v1/artists')
 
+export const getTopTracks = (limit: number): Promise<Track[]> =>
+  get(`/api/v1/tracks/top?limit=${limit}`)
+
 export const getTracksForAlbum = (
   albumArtist: string,
   album: string,

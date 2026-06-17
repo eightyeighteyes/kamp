@@ -2545,6 +2545,14 @@ class LibraryIndex:
         rows = self._conn.execute("SELECT * FROM tracks").fetchall()
         return [_row_to_track(r) for r in rows]
 
+    def top_tracks(self, limit: int) -> list[Track]:
+        """Return the top *limit* tracks by play_count descending, excluding unplayed."""
+        rows = self._conn.execute(
+            "SELECT * FROM tracks WHERE play_count > 0 ORDER BY play_count DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [_row_to_track(r) for r in rows]
+
     def record_track_started(self, file_path: Path) -> None:
         """Record the current time as last_played for the track at *file_path*.
 

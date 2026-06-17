@@ -71,6 +71,8 @@ type PlayerStore = {
   highlightStyle: string
   dismissedHighlightKeys: Set<string>
   topAlbumsCount: number
+  topTracksCount: number
+  flashTrackId: number | null
   baseKampEditMode: boolean
   stereoRackTrackSize: TrackDisplaySize
   stereoRackPlasmaMode: PlasmaMode
@@ -123,6 +125,8 @@ type PlayerStore = {
   setHighlightStyle: (style: string) => void
   dismissHighlight: (album: Album) => void
   setTopAlbumsCount: (n: number) => void
+  setTopTracksCount: (n: number) => void
+  setFlashTrackId: (id: number) => void
   toggleBaseKampEditMode: () => void
   setStereoRackTrackSize: (v: TrackDisplaySize) => void
   setStereoRackPlasmaMode: (v: PlasmaMode) => void
@@ -320,6 +324,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const saved = localStorage.getItem('kamp:top-albums-count')
     return saved ? parseInt(saved) : 10
   })(),
+  topTracksCount: (() => {
+    const saved = localStorage.getItem('kamp:top-tracks-count')
+    return saved ? parseInt(saved) : 10
+  })(),
+  flashTrackId: null,
   baseKampEditMode: localStorage.getItem('kamp:base-kamp-edit-mode') === 'true',
   stereoRackTrackSize:
     (localStorage.getItem('stereo-rack:track-size') as TrackDisplaySize) ?? 'teeny',
@@ -545,6 +554,16 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setTopAlbumsCount: (n) => {
     localStorage.setItem('kamp:top-albums-count', String(n))
     set({ topAlbumsCount: n })
+  },
+
+  setTopTracksCount: (n) => {
+    localStorage.setItem('kamp:top-tracks-count', String(n))
+    set({ topTracksCount: n })
+  },
+
+  setFlashTrackId: (id) => {
+    set({ flashTrackId: id })
+    setTimeout(() => set({ flashTrackId: null }), 700)
   },
 
   toggleBaseKampEditMode: () => {

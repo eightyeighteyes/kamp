@@ -1874,6 +1874,94 @@ class TestRecordPlayed:
         assert track is not None
         assert track.play_count == 1
 
+    def test_top_tracks_returns_played_in_desc_order(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for name, plays in [("a.mp3", 3), ("b.mp3", 1), ("c.mp3", 5)]:
+            p = tmp_path / name
+            _make_mp3(p, artist="A", album_artist="A", album="X", title=name)
+            index.upsert_many(
+                [
+                    Track(
+                        file_path=p,
+                        title=name,
+                        artist="A",
+                        album_artist="A",
+                        album="X",
+                        year="",
+                        track_number=1,
+                        disc_number=1,
+                        ext="mp3",
+                        embedded_art=False,
+                        mb_release_id="",
+                        mb_recording_id="",
+                    )
+                ]
+            )
+            for _ in range(plays):
+                index.record_played(p)
+        result = index.top_tracks(10)
+        index.close()
+        assert [t.play_count for t in result] == [5, 3, 1]
+
+    def test_top_tracks_respects_limit(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for i in range(5):
+            p = tmp_path / f"{i}.mp3"
+            _make_mp3(p, artist="A", album_artist="A", album="X", title=str(i))
+            index.upsert_many(
+                [
+                    Track(
+                        file_path=p,
+                        title=str(i),
+                        artist="A",
+                        album_artist="A",
+                        album="X",
+                        year="",
+                        track_number=i + 1,
+                        disc_number=1,
+                        ext="mp3",
+                        embedded_art=False,
+                        mb_release_id="",
+                        mb_recording_id="",
+                    )
+                ]
+            )
+            for _ in range(i + 1):
+                index.record_played(p)
+        result = index.top_tracks(3)
+        index.close()
+        assert len(result) == 3
+
+    def test_top_tracks_excludes_unplayed(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        played = tmp_path / "played.mp3"
+        unplayed = tmp_path / "unplayed.mp3"
+        for p in [played, unplayed]:
+            _make_mp3(p, artist="A", album_artist="A", album="X", title=p.stem)
+            index.upsert_many(
+                [
+                    Track(
+                        file_path=p,
+                        title=p.stem,
+                        artist="A",
+                        album_artist="A",
+                        album="X",
+                        year="",
+                        track_number=1,
+                        disc_number=1,
+                        ext="mp3",
+                        embedded_art=False,
+                        mb_release_id="",
+                        mb_recording_id="",
+                    )
+                ]
+            )
+        index.record_played(played)
+        result = index.top_tracks(10)
+        index.close()
+        assert len(result) == 1
+        assert result[0].file_path == played
+
     def test_migration_v4_to_v5_adds_play_count_column(self, tmp_path: Path) -> None:
         """Existing v4 databases gain the play_count column on open."""
         import sqlite3 as _sqlite3

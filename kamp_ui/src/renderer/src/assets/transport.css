@@ -120,6 +120,13 @@
   gap: 8px;
 }
 
+.seek-bar-wrapper {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
 .seek-bar {
   flex: 1;
   cursor: pointer;
@@ -233,46 +240,44 @@
 
 /* Buffering indicator -------------------------------------------------------- */
 
-/* Pulsing opacity on the element (not the pseudo-element track) because
-   background-position animation on ::webkit-slider-runnable-track is a layout
-   paint operation that Chromium cannot GPU-composite — it silently drops the
-   animation while still applying the static gradient. Opacity is compositable
-   and always animates correctly. */
-@keyframes buffering-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-/* Disable interaction and animate the seek bar element itself. */
+/* Disable interaction; the seek-bar-wrapper::after overlay replaces the
+   visual while buffering, so hide the input itself. */
 .is-buffering .seek-bar {
   cursor: default;
   pointer-events: none;
-  animation: buffering-pulse 1.2s ease-in-out infinite;
-}
-
-/* Hide the thumb — no draggable handle while buffering. */
-.is-buffering .seek-bar::-webkit-slider-thumb {
   opacity: 0;
-  pointer-events: none;
 }
 
-/* Static accent-colour track during buffering. With --range-progress: 100%
-   (set when no duration is known yet), the full track shows as accent. */
-.is-buffering .seek-bar::-webkit-slider-runnable-track {
-  background: linear-gradient(
+/* Shimmer overlay: a 4px stripe, vertically centred, that scans left→right.
+   Lives on ::after of .seek-bar-wrapper (a real div) so Chromium can paint
+   and animate it — background-position on ::webkit-slider-runnable-track is
+   a replaced-element pseudo-element that Chromium silently refuses to animate. */
+@keyframes shimmer-scan {
+  from {
+    background-position: 0% center;
+  }
+  to {
+    background-position: 100% center;
+  }
+}
+
+.is-buffering .seek-bar-wrapper::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  top: 50%;
+  margin-top: -2px;
+  border-radius: 2px;
+  pointer-events: none;
+  background-color: var(--border);
+  background-image: linear-gradient(
     90deg,
-    #3a3a3a 0%,
-    var(--accent) 45%,
-    #3a3a3a 55%,
-    #3a3a3a 100%
+    transparent 30%,
+    var(--accent) 50%,
+    transparent 70%
   );
   background-size: 300% 100%;
-  /* 50% centers the accent stripe (at 45–55% of the 300%-wide gradient)
-     over the middle of the track element. */
-  background-position: 50% center;
+  animation: shimmer-scan 1.5s ease-in-out infinite;
 }

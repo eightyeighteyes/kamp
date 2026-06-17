@@ -168,6 +168,13 @@
   margin-top: 2px;
 }
 
+.module-list-play-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+  padding-left: 8px;
+}
+
 .module-empty {
   padding: 48px 16px;
   text-align: center;

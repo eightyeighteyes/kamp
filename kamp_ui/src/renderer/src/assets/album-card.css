@@ -136,6 +136,12 @@
   margin-top: 1px;
 }
 
+.album-play-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 1px;
+}
+
 /* Source badge (in .album-info, upper-right) -------------------------------- */
 
 .album-source-badge {

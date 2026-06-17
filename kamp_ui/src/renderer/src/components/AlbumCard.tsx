@@ -50,10 +50,12 @@ const STATIC_BORDER_FRAMES = [
 
 export function AlbumCard({
   album,
-  onAfterSelect
+  onAfterSelect,
+  showPlayCount = false
 }: {
   album: Album
   onAfterSelect?: () => void
+  showPlayCount?: boolean
 }): React.JSX.Element {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const setActiveView = useStore((s) => s.setActiveView)
@@ -406,6 +408,9 @@ export function AlbumCard({
         )}
         <div className="album-artist">{album.display_album_artist ?? album.album_artist}</div>
         <div className="album-year">{album.year}</div>
+        {showPlayCount && album.play_count_avg > 0 && (
+          <div className="album-play-count">avg {album.play_count_avg.toFixed(1)}</div>
+        )}
         {album.favorite && (
           <div className="album-fav-badge">
             <FavoriteIcon active size={14} />

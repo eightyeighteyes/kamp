@@ -83,6 +83,10 @@ export function TopAlbumsModule({ displayStyle }: ModuleProps): React.JSX.Elemen
     return <div className="module-empty">No albums played yet.</div>
   }
 
-  if (displayStyle === 'list') return <ListView albums={albums} />
-  return displayStyle === 'grid' ? <GridView albums={albums} /> : <ShelfView albums={albums} />
+  if (displayStyle === 'list') return <ListView albums={albums} showPlayCount />
+  return displayStyle === 'grid' ? (
+    <GridView albums={albums} showPlayCount />
+  ) : (
+    <ShelfView albums={albums} showPlayCount />
+  )
 }

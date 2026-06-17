@@ -14,6 +14,7 @@ const QUEUE_DROP_TYPES = new Set([
   'text/kamp-track-path',
   'text/kamp-file-paths',
   'text/kamp-album',
+  'text/kamp-artist',
   'text/kamp-queue-idx',
   'text/kamp-playlist'
 ])

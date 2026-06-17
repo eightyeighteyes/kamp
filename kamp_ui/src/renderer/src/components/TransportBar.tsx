@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
@@ -67,6 +67,16 @@ export function TransportBar(): React.JSX.Element {
   const pointerDown = useRef(false)
   const tooltip = useTooltip()
   const displayPosition = scrubPos !== null ? scrubPos : position
+
+  // Debounce the buffering indicator: only show it if buffering persists for
+  // >250ms. This prevents a 1-2 frame shimmer flash when the cached URL
+  // resolves immediately (CSS animation-delay doesn't suppress a class that
+  // is added then removed within the delay window — only React state can).
+  const [isBuffering, setIsBuffering] = useState(false)
+  useEffect(() => {
+    const timerId = setTimeout(() => setIsBuffering(!!buffering), buffering ? 250 : 0)
+    return () => clearTimeout(timerId)
+  }, [buffering])
 
   // Force-clear scrub state when the track changes. Without this, a pointerup
   // event that didn't reach the slider (release outside its bounds, OS-level
@@ -166,8 +176,8 @@ export function TransportBar(): React.JSX.Element {
         </button>
       </div>
 
-      <div className={`transport-progress${buffering ? ' is-buffering' : ''}`}>
-        <span className="time">{buffering ? '…' : formatTime(displayPosition)}</span>
+      <div className={`transport-progress${isBuffering ? ' is-buffering' : ''}`}>
+        <span className="time">{isBuffering ? '…' : formatTime(displayPosition)}</span>
         <input
           type="range"
           className="seek-bar"
@@ -175,6 +185,7 @@ export function TransportBar(): React.JSX.Element {
           max={duration || 1}
           step={0.5}
           value={displayPosition}
+          disabled={isBuffering}
           onPointerDown={(e) => {
             pointerDown.current = true
             setScrubPos(position)
@@ -208,11 +219,12 @@ export function TransportBar(): React.JSX.Element {
           }}
           style={
             {
-              '--range-progress': `${(displayPosition / (duration || 1)) * 100}%`
+              '--range-progress':
+                isBuffering && !duration ? '100%' : `${(displayPosition / (duration || 1)) * 100}%`
             } as React.CSSProperties
           }
         />
-        <span className="time">{formatTime(duration)}</span>
+        <span className="time">{isBuffering && !duration ? '' : formatTime(duration)}</span>
       </div>
 
       <div className="transport-mode-btns">

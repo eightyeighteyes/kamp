@@ -238,19 +238,45 @@
   100% { background-position: -200% center; }
 }
 
+/* Disable interaction on the seek bar while buffering. */
+.is-buffering .seek-bar {
+  cursor: default;
+  pointer-events: none;
+}
+
+/* Hide the thumb so there's no draggable handle sitting at position 0. */
+.is-buffering .seek-bar::-webkit-slider-thumb {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .is-buffering .seek-bar::-webkit-slider-runnable-track {
+  /* Use #3a3a3a (lighter than --border #2e2e2e) so the sweep is visible
+     even when --range-progress is 0% (no track duration yet). */
   background: linear-gradient(
     90deg,
-    var(--border) 0%,
+    #3a3a3a 0%,
     var(--accent) 45%,
-    var(--border) 55%,
-    var(--border) 100%
+    #3a3a3a 55%,
+    #3a3a3a 100%
   );
   background-size: 300% 100%;
   animation: buffering-shimmer 1.4s infinite linear;
 }
 
+.is-buffering .seek-bar::-moz-range-thumb {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .is-buffering .seek-bar::-moz-range-track {
-  background: var(--border);
+  background: linear-gradient(
+    90deg,
+    #3a3a3a 0%,
+    var(--accent) 45%,
+    #3a3a3a 55%,
+    #3a3a3a 100%
+  );
+  background-size: 300% 100%;
   animation: buffering-shimmer 1.4s infinite linear;
 }

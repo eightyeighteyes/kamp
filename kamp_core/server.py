@@ -2893,21 +2893,27 @@ def create_app(
             return (c is not None and c.id == tid) or (la is not None and la.id == tid)
 
         locked = [t for t in local_tracks if _is_track_locked(t.id)]
+        if locked and engine.state.playing:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A track in this album is currently playing. "
+                    "Stop playback before removing the download."
+                ),
+            )
+
+        # Swap every local track in the queue to its streaming equivalent so
+        # that on restart the queue can be fully restored from the DB.  Without
+        # this, only the swapped current/next entries survive; all other queue
+        # positions point at local paths that no longer exist after deletion.
+        for local_track in local_tracks:
+            streaming = index.streaming_track_for_local_id(local_track.id)
+            if streaming is not None:
+                queue.update_track_by_id(local_track.id, streaming)
+
         if locked:
-            if engine.state.playing:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "A track in this album is currently playing. "
-                        "Stop playback before removing the download."
-                    ),
-                )
-            # Stopped/paused: swap queue entries to streaming equivalents and
-            # unload the file so it can be deleted without a held file handle.
-            for local_track in locked:
-                streaming = index.streaming_track_for_local_id(local_track.id)
-                if streaming is not None:
-                    queue.update_track_by_id(local_track.id, streaming)
+            # Current track's file is loaded in mpv — unload it so the handle
+            # is released before we delete the file from disk.
             engine.unload()
 
         file_paths = index.remove_download(sale_item_id)

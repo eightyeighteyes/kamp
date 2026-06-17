@@ -668,6 +668,10 @@ _OS_METADATA_NAMES: frozenset[str] = frozenset(
     {".DS_Store", "Thumbs.db", "desktop.ini", ".Spotlight-V100", ".Trashes"}
 )
 
+_COVER_ART_EXTENSIONS: frozenset[str] = frozenset(
+    {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
+)
+
 
 def _scrub_os_metadata(directory: Path) -> None:
     """Remove known OS-generated metadata files from *directory*.
@@ -678,6 +682,27 @@ def _scrub_os_metadata(directory: Path) -> None:
     try:
         for entry in directory.iterdir():
             if entry.name in _OS_METADATA_NAMES:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _scrub_cover_art(directory: Path) -> None:
+    """Remove image files and macOS resource forks from *directory*.
+
+    Called before rmdir() on an album directory being vacated by
+    remove_download, so cover.jpg and similar bundled artwork files don't
+    prevent cleanup.  Only touches the top level — does not recurse.
+    """
+    try:
+        for entry in directory.iterdir():
+            if entry.is_file() and (
+                entry.suffix.lower() in _COVER_ART_EXTENSIONS
+                or entry.name.startswith("._")
+            ):
                 try:
                     entry.unlink()
                 except OSError:
@@ -2894,12 +2919,24 @@ def create_app(
                 pass
 
         lib_path: Path | None = _state["library_path"]
-        dirs_to_try: set[Path] = set()
-        for fp in file_paths:
-            dirs_to_try.add(fp.parent)
-            if fp.parent.parent != fp.parent:
-                dirs_to_try.add(fp.parent.parent)
-        for d in sorted(dirs_to_try, key=lambda p: len(p.parts), reverse=True):
+        # Album-level dirs (directly contained the track files): scrub OS
+        # metadata and cover-art images before attempting rmdir.
+        album_dirs: set[Path] = {fp.parent for fp in file_paths}
+        for d in album_dirs:
+            if lib_path is not None and d == lib_path:
+                continue
+            _scrub_os_metadata(d)
+            _scrub_cover_art(d)
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        # Parent (artist-level) dirs: only scrub OS metadata — cover art
+        # doesn't live here, and rmdir fails safely if other albums remain.
+        parent_dirs: set[Path] = {
+            fp.parent.parent for fp in file_paths if fp.parent.parent != fp.parent
+        }
+        for d in parent_dirs:
             if lib_path is not None and d == lib_path:
                 continue
             _scrub_os_metadata(d)

@@ -2887,6 +2887,65 @@ class TestBandcampRemoveDownload:
 
         assert resp.status_code == 200
 
+    def test_removes_cover_art_before_rmdir(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Cover art left in the album dir after track deletion is cleaned up."""
+        album_dir = tmp_path / "Artist" / "Album"  # type: ignore[operator]
+        album_dir.mkdir(parents=True)
+        track_file = album_dir / "01.flac"
+        cover_file = album_dir / "cover.jpg"
+        track_file.write_bytes(b"audio")
+        cover_file.write_bytes(b"img")
+
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "42",
+            "mode": "local",
+        }
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_index.remove_download.return_value = [track_file]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert not cover_file.exists()
+        assert not album_dir.exists()
+
+    def test_preserves_artist_dir_when_other_album_remains(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        tmp_path: pytest.TempPathFactory,
+    ) -> None:
+        """Artist dir is kept when another album's folder still lives in it."""
+        artist_dir = tmp_path / "Artist"  # type: ignore[operator]
+        album_dir = artist_dir / "Album A"
+        other_album_dir = artist_dir / "Album B"
+        album_dir.mkdir(parents=True)
+        other_album_dir.mkdir(parents=True)
+        (other_album_dir / "01.flac").write_bytes(b"audio")
+
+        track_file = album_dir / "01.flac"
+        track_file.write_bytes(b"audio")
+
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "42",
+            "mode": "local",
+        }
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_index.remove_download.return_value = [track_file]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert not album_dir.exists()
+        assert artist_dir.exists()  # kept — other album still present
+
 
 # Bandcamp session-cookies endpoint
 # ---------------------------------------------------------------------------

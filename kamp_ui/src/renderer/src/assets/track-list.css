@@ -1179,12 +1179,13 @@
 }
 
 @keyframes row-flash {
-  from { background: var(--accent-dim); }
-  to { background: transparent; }
+  0%   { background: var(--accent-dim); }
+  25%  { background: var(--accent-dim); }
+  100% { background: transparent; }
 }
 
 .track-row--new-flash {
-  animation: row-flash 600ms ease-out;
+  animation: row-flash 2s ease-out;
 }
 
 @keyframes count-tick {

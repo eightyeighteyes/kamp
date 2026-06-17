@@ -175,6 +175,89 @@
   padding-left: 8px;
 }
 
+/* Track card (Top Tracks module shelf and grid views) */
+.track-card {
+  position: relative;
+  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+  transition:
+    background 0.1s,
+    box-shadow 0.1s;
+}
+
+.track-card:hover {
+  background: var(--surface-hover);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.track-card.playing {
+  outline: 3px solid rgba(124, 134, 225, 0.55);
+  outline-offset: 0;
+}
+
+.track-card-art {
+  width: 100%;
+  aspect-ratio: 1;
+  background: var(--border);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  color: var(--text-dim);
+}
+
+.track-card-art:not(.has-art)::before {
+  content: '♪';
+}
+
+.track-card-art-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.track-card-info {
+  padding: 8px;
+}
+
+.track-card-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.track-card-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.track-card-play-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 1px;
+  flex: 0 0 auto;
+}
+
+.module-shelf .track-card {
+  flex: 0 0 180px;
+  scroll-snap-align: start;
+}
+
+.module-shelf .track-card:first-child {
+  margin-left: 5px;
+}
+
 .module-empty {
   padding: 48px 16px;
   text-align: center;

@@ -1138,6 +1138,10 @@ def create_app(
     def get_artists() -> list[str]:
         return index.artists()
 
+    @app.get("/api/v1/tracks/top", response_model=list[TrackOut])
+    def get_top_tracks(limit: int = 10) -> list[TrackOut]:
+        return [TrackOut.from_track(t) for t in index.top_tracks(limit)]
+
     @app.get("/api/v1/tracks", response_model=list[TrackOut])
     def get_tracks(
         album_artist: str, album: str, file_path: str = ""

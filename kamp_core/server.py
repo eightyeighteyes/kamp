@@ -849,7 +849,13 @@ def create_app(
 
     def _notify_play_state_changed() -> None:
         """Broadcast a play_state.changed push event to all connected WebSocket clients."""
-        _state["buffering"] = False
+        # Only clear buffering when mpv reports it is actively playing. During a
+        # playing→playing track switch, mpv briefly sets pause=True as the old
+        # file ends; clearing on that transition would kill the indicator before
+        # the new file loads. Clearing on playing=True is redundant (file-loaded
+        # already cleared it) but harmless.
+        if engine.state.playing:
+            _state["buffering"] = False
         _broadcast({"type": "play_state.changed", **_state_snapshot().model_dump()})
 
     def _notify_album_download_status(sale_item_id: str, state: str) -> None:

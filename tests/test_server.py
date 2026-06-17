@@ -4699,8 +4699,10 @@ class TestResolvePlaybackRemote:
     def test_buffering_true_after_remote_play_cleared_by_play_state_change(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
-        """Buffering flag is set while resolving a remote URL and cleared when
-        on_play_state_changed fires (simulating mpv reporting playback started)."""
+        """Buffering is cleared by on_play_state_changed only when playing=True.
+        A pause transition (playing=False) must NOT clear it — mpv briefly sets
+        pause=True during a playing→playing file switch and we must not lose the
+        indicator before the new file has actually loaded."""
         import time
 
         remote = Track(
@@ -4727,13 +4729,18 @@ class TestResolvePlaybackRemote:
 
         c.post("/api/v1/player/next")
 
-        # After the endpoint returns the URL is resolved but buffering stays True
-        # until mpv confirms playback via on_play_state_changed.
+        # Buffering stays True after the endpoint returns — mpv hasn't started yet.
         assert c.get("/api/v1/player/state").json()["buffering"] is True
 
-        # Simulate mpv firing the play-state callback (pause → False).
+        # Simulate mpv's internal pause=True transition (old file ending during
+        # a playing→playing switch) — must NOT clear the indicator.
+        mock_engine.state.playing = False
         app.state.notify_play_state_changed()
+        assert c.get("/api/v1/player/state").json()["buffering"] is True
 
+        # Simulate mpv reporting playing=True (new file is playing).
+        mock_engine.state.playing = True
+        app.state.notify_play_state_changed()
         assert c.get("/api/v1/player/state").json()["buffering"] is False
 
 

@@ -233,26 +233,37 @@
 
 /* Buffering indicator -------------------------------------------------------- */
 
-@keyframes buffering-shimmer {
-  0%   { background-position: 200% center; }
-  100% { background-position: -200% center; }
+/* Pulsing opacity on the element (not the pseudo-element track) because
+   background-position animation on ::webkit-slider-runnable-track is a layout
+   paint operation that Chromium cannot GPU-composite — it silently drops the
+   animation while still applying the static gradient. Opacity is compositable
+   and always animates correctly. */
+@keyframes buffering-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
-/* Disable interaction on the seek bar while buffering. */
+/* Disable interaction and animate the seek bar element itself. */
 .is-buffering .seek-bar {
   cursor: default;
   pointer-events: none;
+  animation: buffering-pulse 1.2s ease-in-out infinite;
 }
 
-/* Hide the thumb so there's no draggable handle sitting at position 0. */
+/* Hide the thumb — no draggable handle while buffering. */
 .is-buffering .seek-bar::-webkit-slider-thumb {
   opacity: 0;
   pointer-events: none;
 }
 
+/* Static accent-colour track during buffering. With --range-progress: 100%
+   (set when no duration is known yet), the full track shows as accent. */
 .is-buffering .seek-bar::-webkit-slider-runnable-track {
-  /* Use #3a3a3a (lighter than --border #2e2e2e) so the sweep is visible
-     even when --range-progress is 0% (no track duration yet). */
   background: linear-gradient(
     90deg,
     #3a3a3a 0%,
@@ -261,22 +272,7 @@
     #3a3a3a 100%
   );
   background-size: 300% 100%;
-  animation: buffering-shimmer 1.4s infinite linear;
-}
-
-.is-buffering .seek-bar::-moz-range-thumb {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.is-buffering .seek-bar::-moz-range-track {
-  background: linear-gradient(
-    90deg,
-    #3a3a3a 0%,
-    var(--accent) 45%,
-    #3a3a3a 55%,
-    #3a3a3a 100%
-  );
-  background-size: 300% 100%;
-  animation: buffering-shimmer 1.4s infinite linear;
+  /* 50% centers the accent stripe (at 45–55% of the 300%-wide gradient)
+     over the middle of the track element. */
+  background-position: 50% center;
 }

@@ -185,7 +185,6 @@ export function TransportBar(): React.JSX.Element {
           max={duration || 1}
           step={0.5}
           value={displayPosition}
-          disabled={isBuffering}
           onPointerDown={(e) => {
             pointerDown.current = true
             setScrubPos(position)

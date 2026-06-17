@@ -28,6 +28,7 @@ import {
   PauseIcon,
   QueueAddIcon,
   PlayNextIcon,
+  RemoveFromQueueIcon,
   ShareIcon,
   WarnIcon
 } from './TransportIcons'
@@ -98,6 +99,7 @@ export function TrackList(): React.JSX.Element | null {
   const connected = configValues?.['bandcamp.connected'] ?? false
   const downloadingAlbumIds = useStore((s) => s.downloadingAlbumIds)
   const markAlbumDownloading = useStore((s) => s.markAlbumDownloading)
+  const removeDownload = useStore((s) => s.removeDownload)
 
   const albumEditMode = useStore((s) => s.albumEditMode)
   const setAlbumEditMode = useStore((s) => s.setAlbumEditMode)
@@ -612,10 +614,12 @@ export function TrackList(): React.JSX.Element | null {
           )}
         </div>
         <div className="album-controls-group">
-          {isRemoteAlbum && (
+          {(isRemoteAlbum || album.sale_item_id) && (
             <div className="streaming-controls">
-              <span className="source-pill">{sourceIcon(album.source, 16)}</span>
-              {saleItemId && (
+              <span className="source-pill">
+                {sourceIcon(isRemoteAlbum ? album.source : 'bandcamp', 16)}
+              </span>
+              {isRemoteAlbum && saleItemId && (
                 <button
                   className={`album-download-btn${isDownloading ? ' album-download-btn--downloading' : ''}`}
                   {...tooltip('Download Album')}
@@ -627,6 +631,16 @@ export function TrackList(): React.JSX.Element | null {
                   }}
                 >
                   <DownloadArrowIcon size={16} />
+                </button>
+              )}
+              {!isRemoteAlbum && album.sale_item_id && (
+                <button
+                  className="album-download-btn"
+                  {...tooltip('Remove download')}
+                  aria-label="Remove download"
+                  onClick={() => void removeDownload(album.sale_item_id!)}
+                >
+                  <RemoveFromQueueIcon size={16} />
                 </button>
               )}
               {album.album_url && (

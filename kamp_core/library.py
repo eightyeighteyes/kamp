@@ -1774,6 +1774,145 @@ class LibraryIndex:
         ).fetchone()
         return row is not None
 
+    def local_tracks_for_sale_item_id(self, sale_item_id: str) -> "list[Track]":
+        """Return local (non-bandcamp://) Track objects for a downloaded collection item.
+
+        Used by the server layer to obtain track IDs for the playing-guard check
+        and to collect file paths for deletion before calling remove_download().
+        """
+        rows = self._conn.execute(
+            """
+            SELECT t.* FROM tracks t
+            JOIN albums a ON a.id = t.album_id
+            WHERE a.sale_item_id = ?
+              AND t.file_path NOT LIKE 'bandcamp://%'
+              AND t.file_path NOT LIKE 'bandcamp:\\%'
+            ORDER BY t.disc_number, t.track_number
+            """,
+            (sale_item_id,),
+        ).fetchall()
+        return [_row_to_track(r) for r in rows]
+
+    def streaming_track_for_local_id(self, local_track_id: int) -> "Track | None":
+        """Return the streaming (bandcamp://) equivalent of a local track.
+
+        Joins on (album_id, track_number, disc_number) to find the bandcamp://
+        row that corresponds to the given local track ID.  Used to swap a queue
+        entry to its streaming counterpart before deleting the local file.
+        """
+        row = self._conn.execute(
+            """
+            SELECT s.* FROM tracks s
+            JOIN tracks l ON l.album_id = s.album_id
+                          AND l.track_number = s.track_number
+                          AND l.disc_number = s.disc_number
+            WHERE l.id = ?
+              AND (s.file_path LIKE 'bandcamp://%' OR s.file_path LIKE 'bandcamp:\\%')
+            LIMIT 1
+            """,
+            (local_track_id,),
+        ).fetchone()
+        return _row_to_track(row) if row is not None else None
+
+    def remove_download(self, sale_item_id: str) -> "list[Path]":
+        """Revert a downloaded collection item back to streaming state.
+
+        1. Migrates play counts from local track rows to their matching streaming
+           counterparts (MAX wins) so counts accumulated during local playback are
+           not lost.
+        2. Deletes local track rows for the album.
+        3. Refreshes albums.source so the album immediately shows as 'bandcamp'.
+        4. Sets bandcamp_collection.mode = 'remote'.
+
+        Returns the list of local file paths that the caller should delete from
+        the filesystem (file deletion is handled in the server layer).
+        """
+        row = self._conn.execute(
+            "SELECT id FROM albums WHERE sale_item_id = ?", (sale_item_id,)
+        ).fetchone()
+        if row is None:
+            return []
+        album_id: int = row["id"]
+
+        # Fetch local tracks before deletion so we can migrate play counts and favorites.
+        local_rows = self._conn.execute(
+            """
+            SELECT file_path, play_count, favorite, track_number, disc_number
+            FROM tracks
+            WHERE album_id = ?
+              AND file_path NOT LIKE 'bandcamp://%'
+              AND file_path NOT LIKE 'bandcamp:\\%'
+            """,
+            (album_id,),
+        ).fetchall()
+
+        # Migrate play counts (MAX wins) and favorites (OR wins) to streaming rows.
+        for r in local_rows:
+            self._conn.execute(
+                """
+                UPDATE tracks
+                SET play_count = MAX(play_count, ?),
+                    favorite   = MAX(favorite, ?)
+                WHERE album_id = ?
+                  AND track_number = ?
+                  AND disc_number = ?
+                  AND (file_path LIKE 'bandcamp://%' OR file_path LIKE 'bandcamp:\\%')
+                """,
+                (
+                    r["play_count"],
+                    r["favorite"],
+                    album_id,
+                    r["track_number"],
+                    r["disc_number"],
+                ),
+            )
+
+        file_paths = [Path(r["file_path"]) for r in local_rows]
+
+        # Remove local track rows.
+        self._conn.execute(
+            """
+            DELETE FROM tracks
+            WHERE album_id = ?
+              AND file_path NOT LIKE 'bandcamp://%'
+              AND file_path NOT LIKE 'bandcamp:\\%'
+            """,
+            (album_id,),
+        )
+
+        # Refresh albums.source — same subquery pattern as set_track_source_for_item.
+        self._conn.execute(
+            """
+            UPDATE albums SET source = (
+                SELECT CASE
+                    WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
+                         AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
+                    THEN 'local'
+                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                    ELSE MIN(t.source)
+                END
+                FROM tracks t WHERE t.album_id = albums.id
+            )
+            WHERE id = ?
+            """,
+            (album_id,),
+        )
+
+        self.set_collection_item_mode(sale_item_id, "remote")
+        self._rebuild_fts()
+        self._conn.commit()
+        if self.on_fields_changed:
+            self.on_fields_changed(
+                {
+                    "track.source",
+                    "track.play_count",
+                    "track.favorite",
+                    "album.source",
+                }
+            )
+
+        return file_paths
+
     def reset_collection_sync_state(self) -> None:
         """Set synced_at = NULL for all rows so the next sync re-downloads everything."""
         self._conn.execute("UPDATE bandcamp_collection SET synced_at = NULL")

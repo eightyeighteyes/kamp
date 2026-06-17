@@ -256,7 +256,7 @@ export default function App(): React.JSX.Element {
           } else {
             useStore.getState().clearAlbumQueued(saleItemId)
             useStore.getState().clearAlbumDownloading(saleItemId)
-            if (state === 'done') {
+            if (state === 'done' || state === 'removed') {
               void useStore.getState().loadLibrary()
               void useStore.getState().refreshOpenAlbum()
             }
@@ -645,7 +645,7 @@ export default function App(): React.JSX.Element {
       {flashToast && (
         <div className="flash-toast" role="status">
           <span className="album-rename-toast-text">{flashToast}</span>
-          <div className="album-rename-toast-bar" style={{ animationDuration: '2000ms' }} />
+          <div className="album-rename-toast-bar" style={{ animationDuration: '5000ms' }} />
         </div>
       )}
     </div>

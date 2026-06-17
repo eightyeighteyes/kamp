@@ -668,6 +668,10 @@ _OS_METADATA_NAMES: frozenset[str] = frozenset(
     {".DS_Store", "Thumbs.db", "desktop.ini", ".Spotlight-V100", ".Trashes"}
 )
 
+_COVER_ART_EXTENSIONS: frozenset[str] = frozenset(
+    {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
+)
+
 
 def _scrub_os_metadata(directory: Path) -> None:
     """Remove known OS-generated metadata files from *directory*.
@@ -678,6 +682,27 @@ def _scrub_os_metadata(directory: Path) -> None:
     try:
         for entry in directory.iterdir():
             if entry.name in _OS_METADATA_NAMES:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _scrub_cover_art(directory: Path) -> None:
+    """Remove image files and macOS resource forks from *directory*.
+
+    Called before rmdir() on an album directory being vacated by
+    remove_download, so cover.jpg and similar bundled artwork files don't
+    prevent cleanup.  Only touches the top level — does not recurse.
+    """
+    try:
+        for entry in directory.iterdir():
+            if entry.is_file() and (
+                entry.suffix.lower() in _COVER_ART_EXTENSIONS
+                or entry.name.startswith("._")
+            ):
                 try:
                     entry.unlink()
                 except OSError:
@@ -2842,6 +2867,95 @@ def create_app(
                 "type": "bandcamp.album-download",
                 "sale_item_id": sale_item_id,
                 "state": "queued",
+            }
+        )
+        return {"ok": True}
+
+    @app.delete("/api/v1/bandcamp/collection/{sale_item_id}/download")
+    def remove_downloaded_item(sale_item_id: str) -> dict[str, Any]:
+        """Revert a downloaded Bandcamp album back to streaming state.
+
+        Deletes the local files, removes local track rows from the DB (streaming
+        rows are preserved and become the primary tracks again), and sets
+        bandcamp_collection.mode back to 'remote'.
+
+        Returns 404 if the item is not in the collection.
+        Returns 409 if a track from this album is currently playing.
+        """
+        if not index.get_collection_item(sale_item_id):
+            raise HTTPException(status_code=404, detail="Collection item not found")
+
+        local_tracks = index.local_tracks_for_sale_item_id(sale_item_id)
+
+        def _is_track_locked(tid: int) -> bool:
+            c = queue.current()
+            la = queue.peek_next()
+            return (c is not None and c.id == tid) or (la is not None and la.id == tid)
+
+        locked = [t for t in local_tracks if _is_track_locked(t.id)]
+        if locked and engine.state.playing:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A track in this album is currently playing. "
+                    "Stop playback before removing the download."
+                ),
+            )
+
+        # Swap every local track in the queue to its streaming equivalent so
+        # that on restart the queue can be fully restored from the DB.  Without
+        # this, only the swapped current/next entries survive; all other queue
+        # positions point at local paths that no longer exist after deletion.
+        for local_track in local_tracks:
+            streaming = index.streaming_track_for_local_id(local_track.id)
+            if streaming is not None:
+                queue.update_track_by_id(local_track.id, streaming)
+
+        if locked:
+            # Current track's file is loaded in mpv — unload it so the handle
+            # is released before we delete the file from disk.
+            engine.unload()
+
+        file_paths = index.remove_download(sale_item_id)
+
+        for fp in file_paths:
+            try:
+                fp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        lib_path: Path | None = _state["library_path"]
+        # Album-level dirs (directly contained the track files): scrub OS
+        # metadata and cover-art images before attempting rmdir.
+        album_dirs: set[Path] = {fp.parent for fp in file_paths}
+        for d in album_dirs:
+            if lib_path is not None and d == lib_path:
+                continue
+            _scrub_os_metadata(d)
+            _scrub_cover_art(d)
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        # Parent (artist-level) dirs: only scrub OS metadata — cover art
+        # doesn't live here, and rmdir fails safely if other albums remain.
+        parent_dirs: set[Path] = {
+            fp.parent.parent for fp in file_paths if fp.parent.parent != fp.parent
+        }
+        for d in parent_dirs:
+            if lib_path is not None and d == lib_path:
+                continue
+            _scrub_os_metadata(d)
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": sale_item_id,
+                "state": "removed",
             }
         )
         return {"ok": True}

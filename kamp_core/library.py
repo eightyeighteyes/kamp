@@ -1321,7 +1321,8 @@ class LibraryIndex:
                 """)
             self._conn.execute("""
                 INSERT OR IGNORE INTO artists (name)
-                SELECT DISTINCT album_artist FROM albums WHERE album_artist != ''
+                SELECT DISTINCT album_artist FROM albums
+                WHERE album_artist != '' AND album_artist != 'Various Artists'
                 """)
             album_cols = {
                 r[1] for r in self._conn.execute("PRAGMA table_info(albums)").fetchall()
@@ -2170,7 +2171,9 @@ class LibraryIndex:
                 )
         if album_params:
             # Ensure each album_artist has an artists row before inserting albums.
-            artist_names = list({p[0] for p in album_params if p[0]})
+            artist_names = list(
+                {p[0] for p in album_params if p[0] and p[0] != "Various Artists"}
+            )
             # Also ensure track-level artists from Various Artists albums have rows.
             va_track_artists = list(
                 {

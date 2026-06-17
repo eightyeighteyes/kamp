@@ -37,7 +37,7 @@ export function TransportBar(): React.JSX.Element {
   const selectArtist = useStore((s) => s.selectArtist)
   const setActiveView = useStore((s) => s.setActiveView)
 
-  const { playing, position, duration, volume, current_track } = player
+  const { playing, position, duration, volume, current_track, buffering } = player
 
   const currentAlbum = current_track
     ? albums.find(
@@ -166,8 +166,8 @@ export function TransportBar(): React.JSX.Element {
         </button>
       </div>
 
-      <div className="transport-progress">
-        <span className="time">{formatTime(displayPosition)}</span>
+      <div className={`transport-progress${buffering ? ' is-buffering' : ''}`}>
+        <span className="time">{buffering ? '…' : formatTime(displayPosition)}</span>
         <input
           type="range"
           className="seek-bar"

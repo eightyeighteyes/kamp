@@ -269,6 +269,7 @@ class PlayerStateOut(BaseModel):
     volume: int
     current_track: TrackOut | None
     next_track: TrackOut | None = None
+    buffering: bool = False
 
 
 class PlayRequest(BaseModel):
@@ -814,6 +815,7 @@ def create_app(
         # Pending proxy-fetch requests from the Python daemon subprocess.
         # id → {"id", "url", "method", "headers", "body", "event", "result"}
         "bandcamp_proxy_requests": {},
+        "buffering": False,
     }
 
     # Proxy-fetch events that were broadcast but had no WS client connected to
@@ -847,6 +849,7 @@ def create_app(
 
     def _notify_play_state_changed() -> None:
         """Broadcast a play_state.changed push event to all connected WebSocket clients."""
+        _state["buffering"] = False
         _broadcast({"type": "play_state.changed", **_state_snapshot().model_dump()})
 
     def _notify_album_download_status(sale_item_id: str, state: str) -> None:
@@ -957,7 +960,16 @@ def create_app(
         t.start()
 
     def _resolve_playback(track: "Track") -> str:
-        return resolve_playback_uri(track, index, refresh_stream_url, check_stream_url)
+        if track.is_remote:
+            _state["buffering"] = True
+            _broadcast({"type": "player.state", **_state_snapshot().model_dump()})
+        try:
+            return resolve_playback_uri(
+                track, index, refresh_stream_url, check_stream_url
+            )
+        except Exception:
+            _state["buffering"] = False
+            raise
 
     # Wire play-state change callback directly — the engine fires it from its
     # background reader thread whenever mpv's pause property flips.
@@ -1066,6 +1078,7 @@ def create_app(
             volume=engine.state.volume,
             current_track=TrackOut.from_track(current) if current else None,
             next_track=TrackOut.from_track(nxt) if nxt else None,
+            buffering=_state["buffering"],
         )
 
     # -----------------------------------------------------------------------
@@ -3098,6 +3111,7 @@ def create_app(
 
     @app.post("/api/v1/player/stop")
     def stop() -> dict[str, Any]:
+        _state["buffering"] = False
         engine.stop()
         _notify_track_changed()
         return {"ok": True}
@@ -3680,6 +3694,11 @@ def create_app(
                     if _recv_exc is not None:
                         raise _recv_exc
                     # Each "ping" from the client triggers a fresh snapshot.
+                    # Backstop: if mpv started playing without a pause-property
+                    # change (playing→playing transition), clear the buffering
+                    # flag once position advances so the indicator doesn't linger.
+                    if _state["buffering"] and engine.state.position > 0:
+                        _state["buffering"] = False
                     await ws.send_json(
                         {"type": "player.state", **_state_snapshot().model_dump()}
                     )

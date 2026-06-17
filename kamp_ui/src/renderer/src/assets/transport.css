@@ -230,3 +230,27 @@
   min-width: 24px;
   font-variant-numeric: tabular-nums;
 }
+
+/* Buffering indicator -------------------------------------------------------- */
+
+@keyframes buffering-shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
+.is-buffering .seek-bar::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    90deg,
+    var(--border) 0%,
+    var(--accent) 45%,
+    var(--border) 55%,
+    var(--border) 100%
+  );
+  background-size: 300% 100%;
+  animation: buffering-shimmer 1.4s infinite linear;
+}
+
+.is-buffering .seek-bar::-moz-range-track {
+  background: var(--border);
+  animation: buffering-shimmer 1.4s infinite linear;
+}

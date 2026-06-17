@@ -6,6 +6,7 @@ import { useStore } from '../../store'
 interface ShelfViewProps {
   albums: Album[]
   scrollToPlaying?: boolean
+  showPlayCount?: boolean
 }
 
 const SCROLL_PX = 500
@@ -14,7 +15,11 @@ const SCROLL_PX = 500
 // shelf position.
 const SCROLL_DEBOUNCE_MS = 5000
 
-export function ShelfView({ albums, scrollToPlaying = false }: ShelfViewProps): React.JSX.Element {
+export function ShelfView({
+  albums,
+  scrollToPlaying = false,
+  showPlayCount = false
+}: ShelfViewProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const hasMounted = useRef(false)
   const currentTrack = useStore((s) => s.player.current_track)
@@ -116,6 +121,7 @@ export function ShelfView({ albums, scrollToPlaying = false }: ShelfViewProps): 
           <AlbumCard
             key={album.missing_album ? album.file_path : `${album.album_artist}\0${album.album}`}
             album={album}
+            showPlayCount={showPlayCount}
           />
         ))}
       </div>

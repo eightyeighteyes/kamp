@@ -40,6 +40,7 @@ export function QueuePanel(): React.JSX.Element {
   const insertIntoQueue = useStore((s) => s.insertIntoQueue)
   const insertAlbumAt = useStore((s) => s.insertAlbumAt)
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
+  const insertArtistAt = useStore((s) => s.insertArtistAt)
   const loadPlaylistTracks = useStore((s) => s.loadPlaylistTracks)
   const configValues = useStore((s) => s.configValues)
   const bandcampConnected = configValues?.['bandcamp.connected'] ?? false
@@ -229,6 +230,13 @@ export function QueuePanel(): React.JSX.Element {
       } catch {
         // malformed drag data — ignore
       }
+    } else if (e.dataTransfer.getData('text/kamp-artist')) {
+      try {
+        const { name } = JSON.parse(e.dataTransfer.getData('text/kamp-artist')) as { name: string }
+        void insertArtistAt(name, dropIdx)
+      } catch {
+        // malformed drag data — ignore
+      }
     } else {
       const playlistIdStr = e.dataTransfer.getData('text/kamp-playlist')
       if (playlistIdStr) {
@@ -280,6 +288,13 @@ export function QueuePanel(): React.JSX.Element {
           file_path?: string
         }
         void addAlbumToQueue(album_artist, album, file_path)
+      } catch {
+        // malformed drag data — ignore
+      }
+    } else if (e.dataTransfer.getData('text/kamp-artist')) {
+      try {
+        const { name } = JSON.parse(e.dataTransfer.getData('text/kamp-artist')) as { name: string }
+        void insertArtistAt(name, tracks.length)
       } catch {
         // malformed drag data — ignore
       }

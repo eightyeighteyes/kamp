@@ -254,10 +254,10 @@
    a replaced-element pseudo-element that Chromium silently refuses to animate. */
 @keyframes shimmer-scan {
   from {
-    background-position: 0% center;
+    background-position: 100% center;
   }
   to {
-    background-position: 100% center;
+    background-position: 0% center;
   }
 }
 

@@ -269,6 +269,7 @@ class PlayerStateOut(BaseModel):
     volume: int
     current_track: TrackOut | None
     next_track: TrackOut | None = None
+    buffering: bool = False
 
 
 class PlayRequest(BaseModel):
@@ -814,6 +815,7 @@ def create_app(
         # Pending proxy-fetch requests from the Python daemon subprocess.
         # id → {"id", "url", "method", "headers", "body", "event", "result"}
         "bandcamp_proxy_requests": {},
+        "buffering": False,
     }
 
     # Proxy-fetch events that were broadcast but had no WS client connected to
@@ -847,6 +849,13 @@ def create_app(
 
     def _notify_play_state_changed() -> None:
         """Broadcast a play_state.changed push event to all connected WebSocket clients."""
+        # Only clear buffering when mpv reports it is actively playing. During a
+        # playing→playing track switch, mpv briefly sets pause=True as the old
+        # file ends; clearing on that transition would kill the indicator before
+        # the new file loads. Clearing on playing=True is redundant (file-loaded
+        # already cleared it) but harmless.
+        if engine.state.playing:
+            _state["buffering"] = False
         _broadcast({"type": "play_state.changed", **_state_snapshot().model_dump()})
 
     def _notify_album_download_status(sale_item_id: str, state: str) -> None:
@@ -957,12 +966,34 @@ def create_app(
         t.start()
 
     def _resolve_playback(track: "Track") -> str:
-        return resolve_playback_uri(track, index, refresh_stream_url, check_stream_url)
+        if track.is_remote:
+            _state["buffering"] = True
+            _broadcast({"type": "player.state", **_state_snapshot().model_dump()})
+        try:
+            return resolve_playback_uri(
+                track, index, refresh_stream_url, check_stream_url
+            )
+        except Exception:
+            _state["buffering"] = False
+            raise
 
     # Wire play-state change callback directly — the engine fires it from its
     # background reader thread whenever mpv's pause property flips.
     engine.on_play_state_changed = _notify_play_state_changed
     engine.on_audio_level = _notify_audio_level
+
+    # Outermost on_file_loaded wrapper: clear buffering the moment mpv opens
+    # the new file. Wraps the __main__.py chain (gapless preload + scrobble)
+    # which is already assigned before create_app is called.
+    _outer_on_file_loaded = engine.on_file_loaded
+
+    def _on_file_loaded_clear_buffering() -> None:
+        _state["buffering"] = False
+        _broadcast({"type": "player.state", **_state_snapshot().model_dump()})
+        if _outer_on_file_loaded is not None:
+            _outer_on_file_loaded()
+
+    engine.on_file_loaded = _on_file_loaded_clear_buffering
 
     # Magic playlist field_index: maps field name → set of playlist IDs whose
     # criteria reference that field.  Rebuilt at startup and after CRUD ops.
@@ -1066,6 +1097,7 @@ def create_app(
             volume=engine.state.volume,
             current_track=TrackOut.from_track(current) if current else None,
             next_track=TrackOut.from_track(nxt) if nxt else None,
+            buffering=_state["buffering"],
         )
 
     # -----------------------------------------------------------------------
@@ -3098,6 +3130,7 @@ def create_app(
 
     @app.post("/api/v1/player/stop")
     def stop() -> dict[str, Any]:
+        _state["buffering"] = False
         engine.stop()
         _notify_track_changed()
         return {"ok": True}

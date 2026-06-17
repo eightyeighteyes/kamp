@@ -120,6 +120,13 @@
   gap: 8px;
 }
 
+.seek-bar-wrapper {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
 .seek-bar {
   flex: 1;
   cursor: pointer;
@@ -229,4 +236,48 @@
   color: var(--text-dim);
   min-width: 24px;
   font-variant-numeric: tabular-nums;
+}
+
+/* Buffering indicator -------------------------------------------------------- */
+
+/* Disable interaction; the seek-bar-wrapper::after overlay replaces the
+   visual while buffering, so hide the input itself. */
+.is-buffering .seek-bar {
+  cursor: default;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* Shimmer overlay: a 4px stripe, vertically centred, that scans left→right.
+   Lives on ::after of .seek-bar-wrapper (a real div) so Chromium can paint
+   and animate it — background-position on ::webkit-slider-runnable-track is
+   a replaced-element pseudo-element that Chromium silently refuses to animate. */
+@keyframes shimmer-scan {
+  from {
+    background-position: 100% center;
+  }
+  to {
+    background-position: 0% center;
+  }
+}
+
+.is-buffering .seek-bar-wrapper::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 4px;
+  top: 50%;
+  margin-top: -2px;
+  border-radius: 2px;
+  pointer-events: none;
+  background-color: var(--border);
+  background-image: linear-gradient(
+    90deg,
+    transparent 30%,
+    var(--accent) 50%,
+    transparent 70%
+  );
+  background-size: 300% 100%;
+  animation: shimmer-scan 1.5s ease-in-out infinite;
 }

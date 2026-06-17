@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
@@ -37,7 +37,7 @@ export function TransportBar(): React.JSX.Element {
   const selectArtist = useStore((s) => s.selectArtist)
   const setActiveView = useStore((s) => s.setActiveView)
 
-  const { playing, position, duration, volume, current_track } = player
+  const { playing, position, duration, volume, current_track, buffering } = player
 
   const currentAlbum = current_track
     ? albums.find(
@@ -67,6 +67,16 @@ export function TransportBar(): React.JSX.Element {
   const pointerDown = useRef(false)
   const tooltip = useTooltip()
   const displayPosition = scrubPos !== null ? scrubPos : position
+
+  // Debounce the buffering indicator: only show it if buffering persists for
+  // >250ms. This prevents a 1-2 frame shimmer flash when the cached URL
+  // resolves immediately (CSS animation-delay doesn't suppress a class that
+  // is added then removed within the delay window — only React state can).
+  const [isBuffering, setIsBuffering] = useState(false)
+  useEffect(() => {
+    const timerId = setTimeout(() => setIsBuffering(!!buffering), buffering ? 250 : 0)
+    return () => clearTimeout(timerId)
+  }, [buffering])
 
   // Force-clear scrub state when the track changes. Without this, a pointerup
   // event that didn't reach the slider (release outside its bounds, OS-level
@@ -166,53 +176,58 @@ export function TransportBar(): React.JSX.Element {
         </button>
       </div>
 
-      <div className="transport-progress">
-        <span className="time">{formatTime(displayPosition)}</span>
-        <input
-          type="range"
-          className="seek-bar"
-          min={0}
-          max={duration || 1}
-          step={0.5}
-          value={displayPosition}
-          onPointerDown={(e) => {
-            pointerDown.current = true
-            setScrubPos(position)
-            // Pin pointer events to the slider so pointerup is guaranteed to
-            // fire here even if the user releases the pointer outside the
-            // slider bounds. Without this, scrubPos can wedge — the
-            // track-change reset above (currentPath comparison) is the
-            // escape hatch for any wedge that still slips through.
-            try {
-              e.currentTarget.setPointerCapture(e.pointerId)
-            } catch {
-              // Some browsers reject setPointerCapture on non-trusted events
-              // (synthetic pointer events from automation, etc.) — ignore.
+      <div className={`transport-progress${isBuffering ? ' is-buffering' : ''}`}>
+        <span className="time">{isBuffering ? '…' : formatTime(displayPosition)}</span>
+        <div className="seek-bar-wrapper">
+          <input
+            type="range"
+            className="seek-bar"
+            min={0}
+            max={duration || 1}
+            step={0.5}
+            value={displayPosition}
+            onPointerDown={(e) => {
+              pointerDown.current = true
+              setScrubPos(position)
+              // Pin pointer events to the slider so pointerup is guaranteed to
+              // fire here even if the user releases the pointer outside the
+              // slider bounds. Without this, scrubPos can wedge — the
+              // track-change reset above (currentPath comparison) is the
+              // escape hatch for any wedge that still slips through.
+              try {
+                e.currentTarget.setPointerCapture(e.pointerId)
+              } catch {
+                // Some browsers reject setPointerCapture on non-trusted events
+                // (synthetic pointer events from automation, etc.) — ignore.
+              }
+            }}
+            onChange={(e) => {
+              const val = parseFloat(e.target.value)
+              setScrubPos(val)
+              if (pointerDown.current) seek(val)
+            }}
+            onPointerUp={() => {
+              pointerDown.current = false
+              setScrubPos(null)
+            }}
+            onPointerCancel={() => {
+              // Touch-cancel, OS-level capture loss, or a programmatic
+              // releasePointerCapture call — treat exactly like pointerup so
+              // the slider can never stay wedged on scrubPos.
+              pointerDown.current = false
+              setScrubPos(null)
+            }}
+            style={
+              {
+                '--range-progress':
+                  isBuffering && !duration
+                    ? '100%'
+                    : `${(displayPosition / (duration || 1)) * 100}%`
+              } as React.CSSProperties
             }
-          }}
-          onChange={(e) => {
-            const val = parseFloat(e.target.value)
-            setScrubPos(val)
-            if (pointerDown.current) seek(val)
-          }}
-          onPointerUp={() => {
-            pointerDown.current = false
-            setScrubPos(null)
-          }}
-          onPointerCancel={() => {
-            // Touch-cancel, OS-level capture loss, or a programmatic
-            // releasePointerCapture call — treat exactly like pointerup so
-            // the slider can never stay wedged on scrubPos.
-            pointerDown.current = false
-            setScrubPos(null)
-          }}
-          style={
-            {
-              '--range-progress': `${(displayPosition / (duration || 1)) * 100}%`
-            } as React.CSSProperties
-          }
-        />
-        <span className="time">{formatTime(duration)}</span>
+          />
+        </div>
+        <span className="time">{isBuffering && !duration ? '' : formatTime(duration)}</span>
       </div>
 
       <div className="transport-mode-btns">

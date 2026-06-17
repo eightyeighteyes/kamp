@@ -244,7 +244,8 @@ const initialPlayer: PlayerState = {
   duration: 0,
   volume: 100,
   current_track: null,
-  next_track: null
+  next_track: null,
+  buffering: false
 }
 
 export const useStore = create<PlayerStore>((set, get) => ({

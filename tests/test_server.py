@@ -875,6 +875,10 @@ class TestPlayerStateEndpoint:
         data = c.get("/api/v1/player/state").json()
         assert data["position"] == pytest.approx(42.0)
 
+    def test_buffering_false_by_default(self, client: TestClient) -> None:
+        data = client.get("/api/v1/player/state").json()
+        assert data["buffering"] is False
+
 
 class TestPlayerPlayEndpoint:
     def test_play_loads_album_and_starts_playback(
@@ -1396,6 +1400,43 @@ class TestPlayerWebSocket:
             c.post("/api/v1/player/next")
             msg = ws.receive_json()
         assert msg["type"] == "track.changed"
+
+    def test_buffering_cleared_by_on_file_loaded(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """on_file_loaded clears buffering when mpv opens the new file."""
+        import time
+
+        remote = Track(
+            file_path=Path("bandcamp://999/1"),
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            stream_url="https://cdn.example.com/track.mp3",
+            stream_url_expires_at=time.time() + 7200,
+        )
+        mock_queue.next.return_value = remote
+        mock_index.get_collection_item.return_value = None
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        # Trigger buffering=True via a remote-track play.
+        c.post("/api/v1/player/next")
+        assert c.get("/api/v1/player/state").json()["buffering"] is True
+
+        # Simulate mpv firing file-loaded (new file opened and decoding begun).
+        mock_engine.on_file_loaded()
+
+        assert c.get("/api/v1/player/state").json()["buffering"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -4612,6 +4653,95 @@ class TestResolvePlaybackRemote:
 
         c.post("/api/v1/player/next")
         mock_engine.play.assert_called_once_with("https://cdn.example.com/existing.mp3")
+
+    def test_buffering_cleared_on_resolve_exception(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """If resolve_playback_uri raises, buffering is cleared immediately."""
+        import time
+
+        remote = Track(
+            file_path=Path("bandcamp://999/1"),
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            stream_url="https://cdn.example.com/track.mp3",
+            stream_url_expires_at=time.time() - 1,  # expired — triggers refresh
+        )
+        mock_queue.next.return_value = remote
+        mock_index.get_collection_item.return_value = {
+            "sale_item_id": "999",
+            "album_url": "https://artist.bandcamp.com/album/x",
+        }
+        refresh_fn = MagicMock(side_effect=RuntimeError("network failure"))
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            refresh_stream_url=refresh_fn,
+        )
+        c = TestClient(app, raise_server_exceptions=False)
+
+        c.post("/api/v1/player/next")
+
+        # Buffering must be False after the exception — not stuck on.
+        assert c.get("/api/v1/player/state").json()["buffering"] is False
+
+    def test_buffering_true_after_remote_play_cleared_by_play_state_change(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """Buffering is cleared by on_play_state_changed only when playing=True.
+        A pause transition (playing=False) must NOT clear it — mpv briefly sets
+        pause=True during a playing→playing file switch and we must not lose the
+        indicator before the new file has actually loaded."""
+        import time
+
+        remote = Track(
+            file_path=Path("bandcamp://999/1"),
+            title="Song",
+            artist="Artist",
+            album_artist="Artist",
+            album="Album",
+            year="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            stream_url="https://cdn.example.com/track.mp3",
+            stream_url_expires_at=time.time() + 7200,
+        )
+        mock_queue.next.return_value = remote
+        mock_index.get_collection_item.return_value = None
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        c.post("/api/v1/player/next")
+
+        # Buffering stays True after the endpoint returns — mpv hasn't started yet.
+        assert c.get("/api/v1/player/state").json()["buffering"] is True
+
+        # Simulate mpv's internal pause=True transition (old file ending during
+        # a playing→playing switch) — must NOT clear the indicator.
+        mock_engine.state.playing = False
+        app.state.notify_play_state_changed()
+        assert c.get("/api/v1/player/state").json()["buffering"] is True
+
+        # Simulate mpv reporting playing=True (new file is playing).
+        mock_engine.state.playing = True
+        app.state.notify_play_state_changed()
+        assert c.get("/api/v1/player/state").json()["buffering"] is False
 
 
 # ---------------------------------------------------------------------------

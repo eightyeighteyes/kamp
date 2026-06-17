@@ -12,7 +12,13 @@ interface ListViewProps {
   showPlayCount?: boolean
 }
 
-function ListRow({ album, showPlayCount = false }: { album: Album; showPlayCount?: boolean }): React.JSX.Element {
+function ListRow({
+  album,
+  showPlayCount = false
+}: {
+  album: Album
+  showPlayCount?: boolean
+}): React.JSX.Element {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const setActiveView = useStore((s) => s.setActiveView)
   const activeView = useStore((s) => s.activeView)

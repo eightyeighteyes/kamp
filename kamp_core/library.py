@@ -1834,10 +1834,10 @@ class LibraryIndex:
             return []
         album_id: int = row["id"]
 
-        # Fetch local tracks before deletion so we can migrate play counts.
+        # Fetch local tracks before deletion so we can migrate play counts and favorites.
         local_rows = self._conn.execute(
             """
-            SELECT file_path, play_count, track_number, disc_number
+            SELECT file_path, play_count, favorite, track_number, disc_number
             FROM tracks
             WHERE album_id = ?
               AND file_path NOT LIKE 'bandcamp://%'
@@ -1846,18 +1846,25 @@ class LibraryIndex:
             (album_id,),
         ).fetchall()
 
-        # Migrate play counts: MAX(local, streaming) written to the streaming row.
+        # Migrate play counts (MAX wins) and favorites (OR wins) to streaming rows.
         for r in local_rows:
             self._conn.execute(
                 """
                 UPDATE tracks
-                SET play_count = MAX(play_count, ?)
+                SET play_count = MAX(play_count, ?),
+                    favorite   = MAX(favorite, ?)
                 WHERE album_id = ?
                   AND track_number = ?
                   AND disc_number = ?
                   AND (file_path LIKE 'bandcamp://%' OR file_path LIKE 'bandcamp:\\%')
                 """,
-                (r["play_count"], album_id, r["track_number"], r["disc_number"]),
+                (
+                    r["play_count"],
+                    r["favorite"],
+                    album_id,
+                    r["track_number"],
+                    r["disc_number"],
+                ),
             )
 
         file_paths = [Path(r["file_path"]) for r in local_rows]
@@ -1899,6 +1906,7 @@ class LibraryIndex:
                 {
                     "track.source",
                     "track.play_count",
+                    "track.favorite",
                     "album.source",
                 }
             )

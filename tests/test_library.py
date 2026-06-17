@@ -5880,6 +5880,45 @@ class TestRemoveDownload:
 
         assert row["source"] == "bandcamp"
 
+    def test_remove_download_migrates_favorite_to_streaming_track(
+        self, tmp_path: Path
+    ) -> None:
+        """Favorite set on the local track is carried over to the streaming row."""
+        index = self._setup_downloaded_album(tmp_path)
+        index._conn.execute(
+            "UPDATE tracks SET favorite = 1 WHERE file_path = ?",
+            (str(tmp_path / "track1.mp3"),),
+        )
+        index._conn.commit()
+
+        index.remove_download("sid42")
+
+        row = index._conn.execute(
+            "SELECT favorite FROM tracks WHERE file_path = 'bandcamp://sid42/1'"
+        ).fetchone()
+        index.close()
+
+        assert row["favorite"] == 1
+
+    def test_remove_download_preserves_existing_streaming_favorite(
+        self, tmp_path: Path
+    ) -> None:
+        """Favorite already set on the streaming row is kept even if local is unfavorited."""
+        index = self._setup_downloaded_album(tmp_path)
+        index._conn.execute(
+            "UPDATE tracks SET favorite = 1 WHERE file_path = 'bandcamp://sid42/2'"
+        )
+        index._conn.commit()
+
+        index.remove_download("sid42")
+
+        row = index._conn.execute(
+            "SELECT favorite FROM tracks WHERE file_path = 'bandcamp://sid42/2'"
+        ).fetchone()
+        index.close()
+
+        assert row["favorite"] == 1
+
     def test_remove_download_returns_empty_for_unknown_sale_item_id(
         self, tmp_path: Path
     ) -> None:

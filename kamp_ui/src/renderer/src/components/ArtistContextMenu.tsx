@@ -27,13 +27,12 @@ export function ArtistContextMenu({ x, y, artist, onClose }: Props): React.JSX.E
     void (async () => {
       const [first, ...rest] = artistAlbums
       await playAlbum(first.album_artist, first.album, 0, first.file_path ?? '')
-      // Insert remaining albums at the end of the (now-populated) queue.
-      // Use the insertArtistAt store action indirectly via sequential insertAlbumAt calls.
-      const insertAlbumAt = useStore.getState().insertAlbumAt
-      const loadQueue = useStore.getState().loadQueue
-      void loadQueue()
-      for (let i = 0; i < rest.length; i++) {
-        await insertAlbumAt(rest[i].album_artist, rest[i].album, 1 + i, rest[i].file_path ?? '')
+      // Append remaining albums in order after the first; addAlbumToQueue is
+      // safe here because playAlbum just replaced the queue with only the first
+      // album's tracks. insertAlbumAt with a track-level index is wrong when
+      // the first album has more than one track.
+      for (const a of rest) {
+        await addAlbumToQueue(a.album_artist, a.album, a.file_path ?? '')
       }
     })()
     onClose()

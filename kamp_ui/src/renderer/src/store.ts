@@ -563,7 +563,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   setFlashTrackId: (id) => {
     set({ flashTrackId: id })
-    setTimeout(() => set({ flashTrackId: null }), 700)
+    setTimeout(() => set({ flashTrackId: null }), 2100)
   },
 
   toggleBaseKampEditMode: () => {

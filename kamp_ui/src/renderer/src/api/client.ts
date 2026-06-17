@@ -241,7 +241,16 @@ export const playlistArtUrl = (playlistId: number, version?: number): string => 
   return version != null ? `${base}?v=${version}` : base
 }
 
+export type Artist = {
+  name: string
+  play_time: number // total elapsed playback seconds
+  top_album: string | null
+}
+
 export const getArtists = (): Promise<string[]> => get('/api/v1/artists')
+
+export const getTopArtists = (limit: number): Promise<Artist[]> =>
+  get(`/api/v1/artists/top?limit=${limit}`)
 
 export const getTopTracks = (limit: number): Promise<Track[]> =>
   get(`/api/v1/tracks/top?limit=${limit}`)

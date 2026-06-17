@@ -42,6 +42,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 from kamp_core.library import (
+    ArtistInfo,
     LibraryIndex,
     LibraryScanner,
     MagicCriteria,
@@ -222,6 +223,16 @@ class TrackOut(BaseModel):
             is_available=t.is_available,
             duration=t.duration,
         )
+
+
+class ArtistOut(BaseModel):
+    name: str
+    play_time: float  # total elapsed playback seconds
+    top_album: str | None
+
+    @classmethod
+    def from_artist(cls, a: ArtistInfo) -> "ArtistOut":
+        return cls(name=a.name, play_time=a.play_time, top_album=a.top_album)
 
 
 class AlbumOut(BaseModel):
@@ -1133,6 +1144,10 @@ def create_app(
             )
             for a in index.albums(sort=sort, sort_dir=sort_dir)
         ]
+
+    @app.get("/api/v1/artists/top", response_model=list[ArtistOut])
+    def get_top_artists(limit: int = 10) -> list[ArtistOut]:
+        return [ArtistOut.from_artist(a) for a in index.top_artists(limit)]
 
     @app.get("/api/v1/artists", response_model=list[str])
     def get_artists() -> list[str]:

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from kamp_core.library import AlbumInfo, Track
+from kamp_core.library import AlbumInfo, ArtistInfo, Track
 from kamp_core.playback import PlaybackState
 from kamp_core.server import TrackOut, create_app, resolve_playback_uri
 
@@ -456,6 +456,36 @@ class TestArtistsEndpoint:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
         assert c.get("/api/v1/artists").json() == ["Aesop Rock", "Zeppelin"]
+
+
+class TestTopArtistsEndpoint:
+    def test_returns_empty_list_when_no_artists(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.top_artists.return_value = []
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        response = c.get("/api/v1/artists/top")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_returns_top_artists_ranked_by_play_time(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.top_artists.return_value = [
+            ArtistInfo(name="Earth", play_time=3600.0, top_album="Pentastar"),
+            ArtistInfo(name="Sunn O)))", play_time=1800.0, top_album="Black One"),
+        ]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        response = c.get("/api/v1/artists/top?limit=2")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 2
+        assert data[0]["name"] == "Earth"
+        assert data[0]["play_time"] == pytest.approx(3600.0)
+        assert data[0]["top_album"] == "Pentastar"
+        mock_index.top_artists.assert_called_once_with(2)
 
 
 class TestMissingAlbumEndpoints:

@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 35
+_SCHEMA_VERSION = 36
 
 
 @dataclass
@@ -192,6 +192,12 @@ CREATE TABLE IF NOT EXISTS tracks (
 -- derived-aggregate pattern. COLLATE NOCASE on the UNIQUE constraint prevents
 -- case-variant duplicates (e.g. "CASTLEBEAT" vs "Castlebeat") from coexisting.
 -- favorite is stored here directly; album_favorites table is dropped in v24.
+CREATE TABLE IF NOT EXISTS artists (
+    id        INTEGER PRIMARY KEY,
+    name      TEXT NOT NULL UNIQUE,
+    play_time REAL NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS albums (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     album_artist   TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
@@ -208,6 +214,7 @@ CREATE TABLE IF NOT EXISTS albums (
     last_played_at REAL,
     play_count_avg REAL    NOT NULL DEFAULT 0,
     art_version    REAL,
+    artist_id      INTEGER REFERENCES artists(id),
     -- User-set display overrides for streaming albums (KAMP-467).
     -- NULL means "use the canonical value from Bandcamp".
     display_album        TEXT,
@@ -534,6 +541,15 @@ class ScanResult:
     unchanged: int
     updated: int = 0
     new_tracks: list[Track] = field(default_factory=list)
+
+
+@dataclass
+class ArtistInfo:
+    """Aggregated info for a single artist, returned by top_artists()."""
+
+    name: str
+    play_time: float  # total elapsed playback seconds
+    top_album: str | None  # album with highest play_count_avg for thumbnail
 
 
 @dataclass
@@ -1290,7 +1306,42 @@ class LibraryIndex:
                     self._conn.execute(f"ALTER TABLE albums ADD COLUMN {col} TEXT")
             self._conn.execute("UPDATE schema_version SET version = 35")
             self._conn.commit()
-            version = 35  # noqa: F841
+            version = 35
+
+        if version == 35:
+            # v35 → v36: add artists table (KAMP-258).
+            # Creates artists from distinct album_artist values, adds artist_id FK
+            # column to albums, and backfills historical play_time from play_count * duration.
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS artists (
+                    id        INTEGER PRIMARY KEY,
+                    name      TEXT NOT NULL UNIQUE,
+                    play_time REAL NOT NULL DEFAULT 0
+                )
+                """)
+            self._conn.execute("""
+                INSERT OR IGNORE INTO artists (name)
+                SELECT DISTINCT album_artist FROM albums
+                WHERE album_artist != '' AND album_artist != 'Various Artists'
+                """)
+            album_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(albums)").fetchall()
+            }
+            if "artist_id" not in album_cols:
+                self._conn.execute("ALTER TABLE albums ADD COLUMN artist_id INTEGER")
+            self._conn.execute(
+                "UPDATE albums SET artist_id = (SELECT id FROM artists WHERE name = album_artist)"
+            )
+            self._conn.execute("""
+                UPDATE artists SET play_time = (
+                    SELECT COALESCE(SUM(t.play_count * t.duration), 0)
+                    FROM tracks t JOIN albums a ON t.album_id = a.id
+                    WHERE a.album_artist = artists.name
+                )
+                """)
+            self._conn.execute("UPDATE schema_version SET version = 36")
+            self._conn.commit()
+            version = 36  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table.
@@ -2119,6 +2170,23 @@ class LibraryIndex:
                     )
                 )
         if album_params:
+            # Ensure each album_artist has an artists row before inserting albums.
+            artist_names = list(
+                {p[0] for p in album_params if p[0] and p[0] != "Various Artists"}
+            )
+            # Also ensure track-level artists from Various Artists albums have rows.
+            va_track_artists = list(
+                {
+                    t.artist
+                    for t in named
+                    if t.album_artist == "Various Artists" and t.artist
+                }
+            )
+            all_artist_names = list(set(artist_names + va_track_artists))
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO artists (name) VALUES (?)",
+                [(n,) for n in all_artist_names],
+            )
             self._conn.executemany(
                 """
                 INSERT OR IGNORE INTO albums
@@ -2128,6 +2196,13 @@ class LibraryIndex:
                 """,
                 album_params,
             )
+            # Wire artist_id on any albums rows that are missing it.
+            self._conn.execute("""
+                UPDATE albums SET artist_id = (
+                    SELECT id FROM artists WHERE name = album_artist
+                )
+                WHERE artist_id IS NULL
+                """)
 
         # Step 2: upsert track rows.
         self._conn.executemany(
@@ -2607,6 +2682,58 @@ class LibraryIndex:
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.play_count"})
+
+    def record_play_time(self, file_path: Path, elapsed_seconds: float) -> None:
+        """Add *elapsed_seconds* to the play_time of the artist for the track at *file_path*.
+
+        Called periodically by the daemon's state-saver on track switch and on shutdown.
+        Orthogonal to record_played: that updates tracks.play_count; this updates artists.play_time.
+        For Various Artists albums, credits the track-level artist instead of the album artist.
+        """
+        key = _canonical_track_key(file_path)
+        row = self._conn.execute(
+            "SELECT artist, album_artist FROM tracks WHERE file_path = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return
+        artist_name = (
+            row["artist"]
+            if row["album_artist"] == "Various Artists"
+            else row["album_artist"]
+        )
+        if not artist_name:
+            return
+        # Ensure the artist row exists (needed for track-level artists from VA albums).
+        self._conn.execute(
+            "INSERT OR IGNORE INTO artists (name) VALUES (?)", (artist_name,)
+        )
+        self._conn.execute(
+            "UPDATE artists SET play_time = play_time + ? WHERE name = ?",
+            (elapsed_seconds, artist_name),
+        )
+        self._conn.commit()
+
+    def top_artists(self, limit: int) -> "list[ArtistInfo]":
+        """Return the top *limit* artists by play_time descending, excluding unplayed."""
+        rows = self._conn.execute(
+            """
+            SELECT ar.name, ar.play_time,
+                   (SELECT album FROM albums
+                    WHERE artist_id = ar.id
+                    ORDER BY play_count_avg DESC LIMIT 1) AS top_album
+            FROM artists ar
+            WHERE ar.play_time > 0
+            ORDER BY ar.play_time DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            ArtistInfo(
+                name=r["name"], play_time=r["play_time"], top_album=r["top_album"]
+            )
+            for r in rows
+        ]
 
     def set_favorite(self, file_path: "Path | str", favorite: bool) -> None:
         """Set or clear the favorite flag for the track at *file_path*.

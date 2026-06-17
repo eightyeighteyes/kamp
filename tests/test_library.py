@@ -16,6 +16,7 @@ from pytest_mock import MockerFixture
 
 from kamp_core.library import (
     AlbumInfo,
+    ArtistInfo,
     Condition,
     Group,
     LibraryIndex,
@@ -132,7 +133,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 35
+        assert version == 36
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1457,7 +1458,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1514,7 +1515,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -2015,9 +2016,179 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert row is not None
         assert row[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# record_play_time / top_artists (KAMP-258)
+# ---------------------------------------------------------------------------
+
+
+def _make_indexed_track(
+    index: LibraryIndex,
+    tmp_path: Path,
+    name: str,
+    album_artist: str = "Artist A",
+    album: str = "Album X",
+    track_number: int = 1,
+    duration: float = 240.0,
+    play_count: int = 0,
+) -> Path:
+    p = tmp_path / name
+    _make_mp3(
+        p, artist=album_artist, album_artist=album_artist, album=album, title=name
+    )
+    index.upsert_many(
+        [
+            Track(
+                file_path=p,
+                title=name,
+                artist=album_artist,
+                album_artist=album_artist,
+                album=album,
+                year="",
+                track_number=track_number,
+                disc_number=1,
+                ext="mp3",
+                embedded_art=False,
+                mb_release_id="",
+                mb_recording_id="",
+                duration=duration,
+            )
+        ]
+    )
+    for _ in range(play_count):
+        index.record_played(p)
+    return p
+
+
+class TestTopArtists:
+    """Tests for LibraryIndex.record_play_time() and top_artists()."""
+
+    def test_record_play_time_accumulates(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        p = _make_indexed_track(index, tmp_path, "t.mp3", album_artist="Radiohead")
+        index.record_play_time(p, 120.0)
+        index.record_play_time(p, 60.0)
+        artists = index.top_artists(10)
+        index.close()
+        assert len(artists) == 1
+        assert artists[0].name == "Radiohead"
+        assert artists[0].play_time == pytest.approx(180.0)
+
+    def test_record_play_time_unknown_path_is_noop(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.record_play_time(tmp_path / "missing.mp3", 99.0)
+        artists = index.top_artists(10)
+        index.close()
+        assert artists == []
+
+    def test_top_artists_ranked_by_play_time_desc(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        pa = _make_indexed_track(
+            index, tmp_path, "a.mp3", album_artist="Sunn O)))", album="AA"
+        )
+        pb = _make_indexed_track(
+            index, tmp_path, "b.mp3", album_artist="Earth", album="BB"
+        )
+        pc = _make_indexed_track(
+            index, tmp_path, "c.mp3", album_artist="Boris", album="CC"
+        )
+        index.record_play_time(pa, 300.0)
+        index.record_play_time(pb, 900.0)
+        index.record_play_time(pc, 600.0)
+        result = index.top_artists(10)
+        index.close()
+        assert [a.name for a in result] == ["Earth", "Boris", "Sunn O)))"]
+
+    def test_top_artists_respects_limit(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for i in range(5):
+            p = _make_indexed_track(
+                index,
+                tmp_path,
+                f"{i}.mp3",
+                album_artist=f"Artist{i}",
+                album=f"Album{i}",
+            )
+            index.record_play_time(p, float(i + 1) * 60)
+        result = index.top_artists(3)
+        index.close()
+        assert len(result) == 3
+
+    def test_top_artists_excludes_zero_play_time(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        p_played = _make_indexed_track(
+            index, tmp_path, "played.mp3", album_artist="Played", album="PA"
+        )
+        _make_indexed_track(
+            index, tmp_path, "unplayed.mp3", album_artist="Unplayed", album="UA"
+        )
+        index.record_play_time(p_played, 120.0)
+        result = index.top_artists(10)
+        index.close()
+        assert len(result) == 1
+        assert result[0].name == "Played"
+
+    def test_top_artists_top_album_is_highest_play_count_avg(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        pa = _make_indexed_track(
+            index, tmp_path, "a.mp3", album_artist="X", album="Low", play_count=1
+        )
+        _make_indexed_track(
+            index, tmp_path, "b.mp3", album_artist="X", album="High", play_count=5
+        )
+        index.record_play_time(pa, 60.0)
+        result = index.top_artists(10)
+        index.close()
+        assert len(result) == 1
+        assert result[0].top_album == "High"
+
+    def test_v36_migration_backfills_play_time(self, tmp_path: Path) -> None:
+        """Migration backfills play_time = SUM(play_count * duration) for each artist."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        # Seed a v35 database by opening at v36, then downgrading the version marker.
+        seed = LibraryIndex(db_path)
+        _make_indexed_track(
+            seed, tmp_path, "t1.mp3", album_artist="Bach", duration=300.0
+        )
+        _make_indexed_track(
+            seed, tmp_path, "t2.mp3", album_artist="Bach", duration=120.0
+        )
+        seed.close()
+        # Manually set play counts and downgrade version so migration re-runs.
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("UPDATE tracks SET play_count = 2 WHERE title = 't1.mp3'")
+        conn.execute("UPDATE tracks SET play_count = 3 WHERE title = 't2.mp3'")
+        conn.execute("UPDATE artists SET play_time = 0")
+        conn.execute("UPDATE schema_version SET version = 35")
+        conn.commit()
+        conn.close()
+        # Re-open triggers migration.
+        index = LibraryIndex(db_path)
+        result = index.top_artists(10)
+        index.close()
+        # Expected: 2*300 + 3*120 = 600 + 360 = 960
+        assert len(result) == 1
+        assert result[0].name == "Bach"
+        assert result[0].play_time == pytest.approx(960.0)
+
+    def test_top_artists_returns_artist_info_instances(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        p = _make_indexed_track(
+            index, tmp_path, "t.mp3", album_artist="Arca", album="Kick"
+        )
+        index.record_play_time(p, 200.0)
+        result = index.top_artists(10)
+        index.close()
+        assert isinstance(result[0], ArtistInfo)
+        assert result[0].top_album == "Kick"
 
 
 # ---------------------------------------------------------------------------
@@ -2269,7 +2440,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2365,7 +2536,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -2546,7 +2717,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2641,7 +2812,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 35
+        assert version == 36
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2649,7 +2820,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 35
+        assert version == 36
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3526,7 +3697,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 35
+        assert version == 36
 
         index.close()
 
@@ -4211,7 +4382,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 35
+        assert version == 36
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4246,7 +4417,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 35
+        assert version == 36
         index.close()
 
 
@@ -4694,7 +4865,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 35
+        assert version == 36
 
 
 class TestRemoteTrackSchema:
@@ -5028,7 +5199,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -5089,7 +5260,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 35
+        assert version == 36
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -5756,7 +5927,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -6073,7 +6244,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -6151,7 +6322,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -6357,7 +6528,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -6706,7 +6877,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -6803,7 +6974,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -6918,7 +7089,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -7407,7 +7578,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -7522,7 +7693,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -7620,7 +7791,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -7720,7 +7891,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -8227,7 +8398,7 @@ class TestMagicPlaylists:
         fetched = index.get_magic_playlist_criteria(playlist_id)
         index.close()
 
-        assert version == 35
+        assert version == 36
         assert fetched == criteria
 
     # ------------------------------------------------------------------

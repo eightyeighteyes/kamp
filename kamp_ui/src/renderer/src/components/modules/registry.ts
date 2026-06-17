@@ -3,6 +3,7 @@ import { NewArrivalsModule, NewArrivalsConfig } from './NewArrivalsModule'
 import { LastPlayedModule, LastPlayedConfig } from './LastPlayedModule'
 import { TopAlbumsModule, TopAlbumsConfig } from './TopAlbumsModule'
 import { TopTracksModule, TopTracksConfig } from './TopTracksModule'
+import { TopArtistsModule, TopArtistsConfig } from './TopArtistsModule'
 import { StereoRackModule, StereoRackConfig } from './StereoRackModule'
 
 export type DisplayStyle = 'shelf' | 'grid' | 'list'
@@ -42,6 +43,12 @@ export const MODULE_REGISTRY: ModuleRegistration[] = [
     title: 'Top Tracks',
     component: TopTracksModule,
     configComponent: TopTracksConfig
+  },
+  {
+    id: 'kamp.top-artists',
+    title: 'Top Artists',
+    component: TopArtistsModule,
+    configComponent: TopArtistsConfig
   },
   {
     // defaultVisible: false — not in the default moduleOrder, so it appears in

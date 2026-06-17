@@ -764,6 +764,20 @@ def _cmd_daemon(
     engine.on_file_loaded = _on_file_loaded_scrobble
 
     # Persist current track and position every 5 s so restarts can resume.
+    # Four single-element lists share elapsed-time state between _state_saver
+    # and the shutdown flush below.  Lists are the idiomatic way to share
+    # mutable scalars across nested function scopes without nonlocal in Python.
+    _et_path: list[str | None] = [None]  # file_path string of track in progress
+    _et_acc: list[float] = [0.0]  # seconds accumulated for current track
+    _et_prev_pos: list[float] = [0.0]  # engine position at last tick
+    _et_playing: list[bool] = [False]  # playing state at last tick
+
+    def _flush_elapsed() -> None:
+        """Write _et_acc to DB and reset the accumulator (keep path/pos)."""
+        if _et_path[0] and _et_acc[0] > 0:
+            index.record_play_time(Path(_et_path[0]), _et_acc[0])
+            _et_acc[0] = 0.0
+
     def _state_saver() -> None:
         import time
 
@@ -771,13 +785,38 @@ def _cmd_daemon(
         while True:
             time.sleep(1)
             current = queue.current()
+            pos = engine.state.position
+            playing = engine.state.playing
             if _scrobbler_ref[0] is not None:
-                _scrobbler_ref[0].tick(current, engine.state.playing)
+                _scrobbler_ref[0].tick(current, playing)
             if current:
+                path = str(current.file_path)
+                if path == _et_path[0]:
+                    delta = pos - _et_prev_pos[0]
+                    if 0 < delta <= 2.0:  # cap: > 2 s in 1 s tick = seek
+                        _et_acc[0] += delta
+                    # Flush when playback pauses or stops mid-track so the time
+                    # is recorded immediately rather than waiting for a track switch.
+                    if _et_playing[0] and not playing:
+                        _flush_elapsed()
+                else:
+                    # Track switch — flush accumulated time for the previous track.
+                    _flush_elapsed()
+                    _et_path[0] = path
+                    _et_acc[0] = 0.0
+                    _et_prev_pos[0] = pos or 0.0
+                _et_prev_pos[0] = pos
+                _et_playing[0] = playing
                 if tick % 5 == 0:
                     index.save_player_state(current.file_path, engine.state.position)
                     q_paths, q_order, q_pos, q_shuffle, q_repeat = queue.get_state()
                     index.save_queue_state(q_paths, q_order, q_pos, q_shuffle, q_repeat)
+            elif _et_path[0] is not None:
+                # Queue became empty — flush any accumulated time.
+                _flush_elapsed()
+                _et_path[0] = None
+                _et_prev_pos[0] = 0.0
+                _et_playing[0] = False
             tick += 1
 
     threading.Thread(target=_state_saver, daemon=True, name="state-saver").start()
@@ -1251,6 +1290,8 @@ def _cmd_daemon(
     if _scrobbler_ref[0] is not None:
         _scrobbler_ref[0].shutdown(timeout=2.0)
     engine.shutdown()
+    # Flush any accumulated artist play time before closing the DB.
+    _flush_elapsed()
     index.close()
 
 

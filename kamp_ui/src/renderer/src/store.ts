@@ -72,6 +72,7 @@ type PlayerStore = {
   dismissedHighlightKeys: Set<string>
   topAlbumsCount: number
   topTracksCount: number
+  topArtistsCount: number
   flashTrackId: number | null
   baseKampEditMode: boolean
   stereoRackTrackSize: TrackDisplaySize
@@ -126,7 +127,9 @@ type PlayerStore = {
   dismissHighlight: (album: Album) => void
   setTopAlbumsCount: (n: number) => void
   setTopTracksCount: (n: number) => void
+  setTopArtistsCount: (n: number) => void
   setFlashTrackId: (id: number) => void
+  insertArtistAt: (artistName: string, idx: number) => Promise<void>
   toggleBaseKampEditMode: () => void
   setStereoRackTrackSize: (v: TrackDisplaySize) => void
   setStereoRackPlasmaMode: (v: PlasmaMode) => void
@@ -326,6 +329,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
   })(),
   topTracksCount: (() => {
     const saved = localStorage.getItem('kamp:top-tracks-count')
+    return saved ? parseInt(saved) : 10
+  })(),
+  topArtistsCount: (() => {
+    const saved = localStorage.getItem('kamp:top-artists-count')
     return saved ? parseInt(saved) : 10
   })(),
   flashTrackId: null,
@@ -559,6 +566,26 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setTopTracksCount: (n) => {
     localStorage.setItem('kamp:top-tracks-count', String(n))
     set({ topTracksCount: n })
+  },
+
+  setTopArtistsCount: (n) => {
+    localStorage.setItem('kamp:top-artists-count', String(n))
+    set({ topArtistsCount: n })
+  },
+
+  insertArtistAt: async (artistName, idx) => {
+    const albums = get()
+      .library.albums.filter((a) => a.album_artist === artistName)
+      .sort((a, b) => (b.play_count_avg ?? 0) - (a.play_count_avg ?? 0))
+    for (let i = 0; i < albums.length; i++) {
+      await api.insertAlbumAt(
+        albums[i].album_artist,
+        albums[i].album,
+        idx + i,
+        albums[i].file_path ?? ''
+      )
+    }
+    void get().loadQueue()
   },
 
   setFlashTrackId: (id) => {

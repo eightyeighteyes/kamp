@@ -3747,7 +3747,8 @@ class LibraryIndex:
                    t.id, t.file_path, t.title, t.artist, t.album_artist, t.album,
                    t.year, t.track_number, t.disc_number, t.ext, t.embedded_art,
                    t.mb_release_id, t.mb_recording_id, t.genre, t.label,
-                   t.favorite, t.play_count, t.last_played, t.source, t.is_available, t.duration
+                   t.favorite, t.play_count, t.last_played, t.date_added,
+                   t.source, t.is_available, t.duration
             FROM playlist_tracks pt
             JOIN tracks t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?
@@ -3777,6 +3778,7 @@ class LibraryIndex:
                 "favorite": bool(r["favorite"]),
                 "play_count": r["play_count"],
                 "last_played": r["last_played"],
+                "date_added": r["date_added"],
                 "source": r["source"],
                 "is_available": bool(r["is_available"]),
                 "duration": r["duration"],
@@ -4029,7 +4031,8 @@ class LibraryIndex:
                    tracks.track_number, tracks.disc_number, tracks.ext,
                    tracks.embedded_art, tracks.mb_release_id, tracks.mb_recording_id,
                    tracks.genre, tracks.label, tracks.favorite, tracks.play_count,
-                   tracks.last_played, tracks.source, tracks.is_available, tracks.duration
+                   tracks.last_played, tracks.date_added,
+                   tracks.source, tracks.is_available, tracks.duration
             FROM tracks {album_join}
             WHERE {where_fragment} AND tracks.is_available = 1
             ORDER BY tracks.id
@@ -4066,6 +4069,7 @@ class LibraryIndex:
                 "favorite": bool(r["favorite"]),
                 "play_count": r["play_count"],
                 "last_played": r["last_played"],
+                "date_added": r["date_added"],
                 "source": r["source"],
                 "is_available": bool(r["is_available"]),
                 "duration": r["duration"],

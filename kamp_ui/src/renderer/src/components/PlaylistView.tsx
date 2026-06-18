@@ -33,7 +33,8 @@ const TRACK_SORT_OPTIONS = [
   { key: 'album', label: 'Album' },
   { key: 'duration', label: 'Duration' },
   { key: 'last_played', label: 'Last Played' },
-  { key: 'most_played', label: 'Most Played' }
+  { key: 'most_played', label: 'Most Played' },
+  { key: 'date_added', label: 'Date Added' }
 ]
 
 type TrackSortOrder =
@@ -44,6 +45,7 @@ type TrackSortOrder =
   | 'duration'
   | 'last_played'
   | 'most_played'
+  | 'date_added'
 
 function sortKey(playlistId: number): string {
   return `kamp:playlist:${playlistId}:sort`
@@ -106,6 +108,16 @@ function applySortToTracks(
       case 'most_played':
         cmp = a.play_count - b.play_count
         break
+      case 'date_added': {
+        // Tracks without a date_added (pre-column) always sort last.
+        const aD = a.date_added
+        const bD = b.date_added
+        if (aD === null && bD === null) return 0
+        if (aD === null) return 1
+        if (bD === null) return -1
+        cmp = aD - bD
+        break
+      }
     }
     return dir === 'desc' ? -cmp : cmp
   })
@@ -342,8 +354,11 @@ export function PlaylistView(): React.JSX.Element | null {
 
   const handleTrackSortChange = (key: string): void => {
     const order = key as TrackSortOrder
+    // Default 'date_added' to descending (newest first) when first selected.
+    const dir: 'asc' | 'desc' = order === 'date_added' ? 'desc' : trackSortDir
     setTrackSortOrder(order)
-    persistTrackSort(order, trackSortDir)
+    setTrackSortDir(dir)
+    persistTrackSort(order, dir)
   }
 
   const handleTrackDirChange = (dir: 'asc' | 'desc'): void => {

@@ -7400,6 +7400,22 @@ class TestPlaylists:
         assert index.get_playlist_tracks(pl["id"]) != []
         index.close()
 
+    def test_get_playlist_tracks_includes_date_added(self, tmp_path: Path) -> None:
+        """get_playlist_tracks must expose date_added so the UI can sort by it."""
+        index = self._index(tmp_path)
+        index._conn.execute(
+            "UPDATE tracks SET date_added = 1234.0 WHERE file_path = ?",
+            (str(tmp_path / "a.mp3"),),
+        )
+        index._conn.commit()
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))
+        tracks = index.get_playlist_tracks(pl["id"])
+        index.close()
+
+        assert len(tracks) == 1
+        assert tracks[0]["date_added"] == 1234.0
+
     # ------------------------------------------------------------------
     # reorder
     # ------------------------------------------------------------------
@@ -8748,6 +8764,33 @@ class TestMagicPlaylists:
         assert id_a in ids
         assert unavailable not in [t["file_path"] for t in tracks]
         assert all(t["is_available"] for t in tracks)
+
+    def test_get_magic_playlist_tracks_includes_date_added(
+        self, tmp_path: Path
+    ) -> None:
+        """get_magic_playlist_tracks must expose date_added so the UI can sort by it."""
+        index, id_a, _ = self._seeded_index(tmp_path)
+        index._conn.execute(
+            "UPDATE tracks SET date_added = 9999.0 WHERE id = ?", (id_a,)
+        )
+        index._conn.commit()
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.artist", op="is", value="Alvvays")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Date Sort Test", criteria)
+        tracks = index.get_magic_playlist_tracks(pid)
+        index.close()
+
+        assert len(tracks) == 1
+        assert tracks[0]["date_added"] == 9999.0
 
     def test_count_magic_criteria_returns_match_count(self, tmp_path: Path) -> None:
         index, _, _ = self._seeded_index(tmp_path)

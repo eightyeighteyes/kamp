@@ -134,6 +134,7 @@ export type PlaylistTrack = Track & {
   playlist_track_id: number
   position: number
   last_played: number | null
+  date_added: number | null
 }
 
 // Configurable base URL: defaults to localhost but can be overridden via

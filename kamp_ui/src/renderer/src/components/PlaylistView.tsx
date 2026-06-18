@@ -297,6 +297,21 @@ export function PlaylistView(): React.JSX.Element | null {
     return [...seen.values()]
   }, [displayTracks, displayMode, libraryAlbums])
 
+  const albumTrackPaths = useMemo<Map<string, string[]>>(() => {
+    if (displayMode !== 'albums') return new Map()
+    const map = new Map<string, string[]>()
+    for (const t of displayTracks) {
+      const key = `${t.album_artist || t.artist}::${t.album}`
+      const paths = map.get(key)
+      if (paths) {
+        paths.push(t.file_path)
+      } else {
+        map.set(key, [t.file_path])
+      }
+    }
+    return map
+  }, [displayTracks, displayMode])
+
   if (!playlist) return null
 
   const persistTrackSort = (order: TrackSortOrder, dir: 'asc' | 'desc'): void => {
@@ -693,7 +708,11 @@ export function PlaylistView(): React.JSX.Element | null {
         <div className="track-list-body">
           <div className="album-grid" style={{ padding: 10 }}>
             {albumGroups.map((a) => (
-              <AlbumCard key={`${a.album_artist}::${a.album}`} album={a} />
+              <AlbumCard
+                key={`${a.album_artist}::${a.album}`}
+                album={a}
+                dragTracks={albumTrackPaths.get(`${a.album_artist}::${a.album}`)}
+              />
             ))}
           </div>
           {albumGroups.length === 0 && (

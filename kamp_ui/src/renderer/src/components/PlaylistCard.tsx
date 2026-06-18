@@ -16,6 +16,7 @@ export function PlaylistCard({
 }): React.JSX.Element {
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
+  const setActiveView = useStore((s) => s.setActiveView)
   const [menu, setMenu] = useState<MenuPos | null>(null)
   const [artLoaded, setArtLoaded] = useState(false)
 
@@ -23,6 +24,7 @@ export function PlaylistCard({
     if (menu) return
     setCollectionType('playlists')
     void selectPlaylist(playlist)
+    void setActiveView('library')
     onAfterSelect?.()
   }
 

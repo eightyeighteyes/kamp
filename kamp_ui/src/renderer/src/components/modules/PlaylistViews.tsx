@@ -75,6 +75,7 @@ type MenuPos = { x: number; y: number }
 function PlaylistListRow({ playlist }: { playlist: Playlist }): React.JSX.Element {
   const selectPlaylist = useStore((s) => s.selectPlaylist)
   const setCollectionType = useStore((s) => s.setCollectionType)
+  const setActiveView = useStore((s) => s.setActiveView)
   const [artLoaded, setArtLoaded] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
@@ -82,6 +83,7 @@ function PlaylistListRow({ playlist }: { playlist: Playlist }): React.JSX.Elemen
     if (menu) return
     setCollectionType('playlists')
     void selectPlaylist(playlist)
+    void setActiveView('library')
   }
 
   return (

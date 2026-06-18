@@ -37,7 +37,8 @@ export function MagicPlaylistTitle({ moduleId }: { moduleId: string }): React.JS
 
 export function MagicPlaylistConfig({ moduleId }: { moduleId?: string }): React.JSX.Element {
   const id = moduleId ?? ''
-  const playlists = useStore((s) => s.library.playlists)
+  const allPlaylists = useStore((s) => s.library.playlists)
+  const playlists = allPlaylists.filter((p) => p.criteria != null)
   const configs = useStore((s) => s.magicPlaylistConfigs)
   const setConfig = useStore((s) => s.setMagicPlaylistConfig)
   const displayStyle = useStore((s) => s.moduleDisplayStyles[id] ?? 'shelf')

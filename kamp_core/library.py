@@ -4074,11 +4074,11 @@ class LibraryIndex:
             "recently_added": "ORDER BY t.date_added DESC",
             "most_played": "ORDER BY t.play_count DESC",
         }
-        # Artists lack per-sort columns; fall back to play_time for non-random.
+        # Artist sort is derived from the playlist tracks in scope.
         _ARTIST_SORT = {
             "random": "ORDER BY RANDOM()",
-            "last_played": "ORDER BY ar.play_time DESC",
-            "recently_added": "ORDER BY ar.play_time DESC",
+            "last_played": "ORDER BY artist_last_played DESC NULLS LAST",
+            "recently_added": "ORDER BY artist_recently_added DESC",
             "most_played": "ORDER BY ar.play_time DESC",
         }
 
@@ -4134,15 +4134,16 @@ class LibraryIndex:
                 f"""
                 SELECT
                     ar.name, ar.play_time,
+                    MAX(t.last_played) AS artist_last_played,
+                    MAX(t.date_added) AS artist_recently_added,
                     (SELECT album FROM albums
                      WHERE artist_id = ar.id
                      ORDER BY play_count_avg DESC LIMIT 1) AS top_album
                 FROM artists ar
-                WHERE ar.id IN (
-                    SELECT DISTINCT a.artist_id FROM albums a
-                    JOIN tracks t ON t.album_id = a.id
-                    WHERE t.id IN ({placeholders}) AND a.artist_id IS NOT NULL
-                )
+                JOIN albums a ON a.artist_id = ar.id
+                JOIN tracks t ON t.album_id = a.id
+                WHERE t.id IN ({placeholders}) AND a.artist_id IS NOT NULL
+                GROUP BY ar.id
                 {order}
                 LIMIT ?
                 """,

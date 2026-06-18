@@ -8831,6 +8831,30 @@ class TestPlaylistModuleContent:
         index.close()
         assert result[0]["name"] == "Alvvays"  # play_time=300 > 100
 
+    def test_artists_last_played_sort(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        # Play a Slowdive track most recently — it should sort first.
+        t_b = index.tracks_for_album("Slowdive", "Souvlaki")[0]
+        index.record_track_started(t_b.file_path)
+        result = index.get_playlist_module_content(
+            static_pid, "artists", "last_played", 10
+        )
+        index.close()
+        assert result[0]["name"] == "Slowdive"
+
+    def test_artists_recently_added_sort(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        # Force Slowdive's track date_added to be more recent than Alvvays.
+        index._conn.execute(
+            "UPDATE tracks SET date_added = 9999999999 WHERE album_artist = 'Slowdive'"
+        )
+        index._conn.commit()
+        result = index.get_playlist_module_content(
+            static_pid, "artists", "recently_added", 10
+        )
+        index.close()
+        assert result[0]["name"] == "Slowdive"
+
     def test_artists_have_top_album(self, tmp_path: Path) -> None:
         index, static_pid, _ = self._setup(tmp_path)
         result = index.get_playlist_module_content(static_pid, "artists", "random", 10)

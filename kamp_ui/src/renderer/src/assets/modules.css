@@ -272,14 +272,14 @@
 .stats-sections {
   display: flex;
   flex-direction: column;
-  gap: 32px;
-  padding: 24px 32px;
+  gap: 40px;
+  padding: 32px 40px;
   align-items: center;
 }
 
 .stats-section {
   width: 100%;
-  max-width: 480px;
+  max-width: 560px;
 }
 
 .stats-section-label {
@@ -288,20 +288,20 @@
   letter-spacing: 0.1em;
   color: var(--text-dim);
   text-transform: uppercase;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .stats-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 24px;
+  gap: 32px;
   justify-content: flex-start;
 }
 
 .stats-stat {
   display: flex;
   flex-direction: column;
-  min-width: 80px;
+  min-width: 100px;
 }
 
 .stats-number {

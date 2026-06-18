@@ -10,12 +10,18 @@ import type { ModuleProps } from './registry'
 
 function formatSeconds(n: number): string {
   if (n <= 0) return '—'
-  const days = Math.floor(n / 86400)
-  const hours = Math.floor((n % 86400) / 3600)
-  const minutes = Math.floor((n % 3600) / 60)
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${minutes}m`
-  if (minutes > 0) return `${minutes} min`
+  const totalMinutes = Math.floor(n / 60)
+  const totalHours = Math.floor(n / 3600)
+  const totalDays = Math.floor(n / 86400)
+  const totalYears = Math.floor(totalDays / 365)
+  const months = Math.floor((totalDays % 365) / 30)
+  const days = totalDays % 30
+  const hours = totalHours % 24
+  const minutes = totalMinutes % 60
+  if (totalYears > 0) return `${totalYears}y ${months}mo ${days}d ${hours}h`
+  if (totalDays > 0) return `${totalDays}d ${hours}h`
+  if (totalHours > 0) return `${totalHours}h ${minutes}m`
+  if (totalMinutes > 0) return `${totalMinutes} min`
   return '< 1 min'
 }
 

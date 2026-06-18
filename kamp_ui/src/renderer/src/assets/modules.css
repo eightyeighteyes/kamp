@@ -264,3 +264,139 @@
   color: var(--text-dim);
   font-size: 13px;
 }
+
+/* ---------------------------------------------------------------------------
+   Stats module (KAMP-481)
+--------------------------------------------------------------------------- */
+
+.stats-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  padding: 24px 32px;
+  align-items: center;
+}
+
+.stats-section {
+  width: 100%;
+  max-width: 480px;
+}
+
+.stats-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+
+.stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  justify-content: flex-start;
+}
+
+.stats-stat {
+  display: flex;
+  flex-direction: column;
+  min-width: 80px;
+}
+
+.stats-number {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.stats-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.stats-top-artist {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.stats-top-artist-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  flex: 0 0 auto;
+}
+
+.stats-top-artist-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.stats-top-artist-time {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.stats-top-tracks {
+  margin-top: 16px;
+}
+
+.stats-track-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+}
+
+.stats-track-row:last-child {
+  border-bottom: none;
+}
+
+.stats-track-rank {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  width: 16px;
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.stats-track-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.stats-track-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stats-track-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stats-track-plays {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}

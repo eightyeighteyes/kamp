@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from kamp_core.library import AlbumInfo, ArtistInfo, Track
+from kamp_core.library import AlbumInfo, ArtistInfo, LibraryStats, Track
 from kamp_core.playback import PlaybackState
 from kamp_core.server import TrackOut, create_app, resolve_playback_uri
 
@@ -6373,3 +6373,57 @@ class TestPatchAlbumDisplayEndpoint:
         )
 
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/stats (KAMP-481)
+# ---------------------------------------------------------------------------
+
+
+class TestStatsEndpoint:
+    def test_returns_stats_with_defaults(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.get_stats.return_value = LibraryStats(
+            track_count=100,
+            album_count=12,
+            artist_count=8,
+            total_play_seconds=3600.0,
+            total_track_plays=50,
+            albums_played=5,
+            top_artist_name="Slowdive",
+            top_artist_seconds=1800.0,
+            top_tracks=[],
+        )
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).get("/api/v1/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["track_count"] == 100
+        assert data["album_count"] == 12
+        assert data["artist_count"] == 8
+        assert data["total_play_seconds"] == pytest.approx(3600.0)
+        assert data["total_track_plays"] == 50
+        assert data["albums_played"] == 5
+        assert data["top_artist_name"] == "Slowdive"
+        assert data["top_artist_seconds"] == pytest.approx(1800.0)
+        assert data["top_tracks"] == []
+        mock_index.get_stats.assert_called_once_with(top_tracks_limit=3)
+
+    def test_top_tracks_query_param_forwarded(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.get_stats.return_value = LibraryStats(
+            track_count=0,
+            album_count=0,
+            artist_count=0,
+            total_play_seconds=0.0,
+            total_track_plays=0,
+            albums_played=0,
+            top_artist_name=None,
+            top_artist_seconds=None,
+            top_tracks=[],
+        )
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        TestClient(app).get("/api/v1/stats?top_tracks=5")
+        mock_index.get_stats.assert_called_once_with(top_tracks_limit=5)

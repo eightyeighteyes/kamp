@@ -553,6 +553,21 @@ class ArtistInfo:
 
 
 @dataclass
+class LibraryStats:
+    """Aggregate library and listening statistics, returned by get_stats()."""
+
+    track_count: int
+    album_count: int
+    artist_count: int
+    total_play_seconds: float
+    total_track_plays: int
+    albums_played: int
+    top_artist_name: str | None
+    top_artist_seconds: float | None
+    top_tracks: "list[Track]"
+
+
+@dataclass
 class DeferredOp:
     """A tag/rename operation queued while the target track was playing (KAMP-309)."""
 
@@ -2734,6 +2749,42 @@ class LibraryIndex:
             )
             for r in rows
         ]
+
+    def get_stats(self, top_tracks_limit: int = 3) -> LibraryStats:
+        """Return aggregate library and listening statistics."""
+        c = self._conn
+        track_count = c.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        # The albums table contains only real albums; virtual "missing_album" entries
+        # are synthesised at query time from tracks with empty album tags — they are
+        # not stored here, so no filter is required.
+        album_count = c.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
+        artist_count = c.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+        total_seconds = c.execute(
+            "SELECT COALESCE(SUM(play_time), 0) FROM artists"
+        ).fetchone()[0]
+        total_plays = c.execute(
+            "SELECT COALESCE(SUM(play_count), 0) FROM tracks"
+        ).fetchone()[0]
+        albums_played = c.execute(
+            "SELECT COUNT(*) FROM albums WHERE play_count_avg > 0"
+        ).fetchone()[0]
+        top_artist_row = c.execute(
+            "SELECT name, play_time FROM artists"
+            " WHERE play_time > 0 ORDER BY play_time DESC LIMIT 1"
+        ).fetchone()
+        return LibraryStats(
+            track_count=track_count,
+            album_count=album_count,
+            artist_count=artist_count,
+            total_play_seconds=float(total_seconds),
+            total_track_plays=int(total_plays),
+            albums_played=albums_played,
+            top_artist_name=top_artist_row["name"] if top_artist_row else None,
+            top_artist_seconds=(
+                float(top_artist_row["play_time"]) if top_artist_row else None
+            ),
+            top_tracks=self.top_tracks(top_tracks_limit),
+        )
 
     def set_favorite(self, file_path: "Path | str", favorite: bool) -> None:
         """Set or clear the favorite flag for the track at *file_path*.

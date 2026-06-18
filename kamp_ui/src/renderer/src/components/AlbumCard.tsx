@@ -16,11 +16,13 @@ function sourceIcon(source: string, size: number): React.JSX.Element {
 export function AlbumCard({
   album,
   onAfterSelect,
-  showPlayCount = false
+  showPlayCount = false,
+  dragTracks
 }: {
   album: Album
   onAfterSelect?: () => void
   showPlayCount?: boolean
+  dragTracks?: string[]
 }): React.JSX.Element {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const setActiveView = useStore((s) => s.setActiveView)
@@ -115,14 +117,26 @@ export function AlbumCard({
         setMenu({ x: e.clientX, y: e.clientY })
       }}
       onDragStart={(e) => {
-        e.dataTransfer.setData(
-          'text/kamp-album',
-          JSON.stringify({
-            album_artist: album.album_artist,
-            album: album.album,
-            file_path: album.file_path
-          })
-        )
+        if (dragTracks && dragTracks.length > 0) {
+          e.dataTransfer.setData('text/kamp-file-paths', JSON.stringify(dragTracks))
+          const count = dragTracks.length
+          const ghost = document.createElement('div')
+          ghost.textContent = `${count} track${count === 1 ? '' : 's'}`
+          ghost.style.cssText =
+            'position:fixed;top:-100px;background:var(--accent);color:#fff;padding:4px 10px;border-radius:3px;font-size:12px;font-weight:600'
+          document.body.appendChild(ghost)
+          e.dataTransfer.setDragImage(ghost, 0, 0)
+          requestAnimationFrame(() => document.body.removeChild(ghost))
+        } else {
+          e.dataTransfer.setData(
+            'text/kamp-album',
+            JSON.stringify({
+              album_artist: album.album_artist,
+              album: album.album,
+              file_path: album.file_path
+            })
+          )
+        }
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >

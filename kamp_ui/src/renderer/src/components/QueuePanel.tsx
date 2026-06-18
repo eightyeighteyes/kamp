@@ -768,6 +768,21 @@ export function QueuePanel(): React.JSX.Element {
                         trackIndices={item.trackIndices}
                         isDragging={false}
                         onPointerDown={handleAlbumCardPointerDown}
+                        onContextMenu={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setMenu({
+                            x: e.clientX,
+                            y: e.clientY,
+                            // clear_remaining keeps through trackIdx and removes
+                            // everything after — pass the last track of the album so
+                            // the full album is kept and everything beyond is cleared.
+                            trackIdx: item.trackIndices[item.trackIndices.length - 1],
+                            track: item.tracks[0],
+                            selectedTracks: item.tracks,
+                            unplayedSelectedIndices: item.trackIndices
+                          })
+                        }}
                       />
                     )
                   )

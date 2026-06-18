@@ -9,6 +9,7 @@ interface QueueAlbumCardProps {
   trackIndices: number[]
   isDragging: boolean
   onPointerDown: (trackIndices: number[], startX: number, startY: number) => void
+  onContextMenu: (e: React.MouseEvent) => void
 }
 
 export function QueueAlbumCard({
@@ -17,7 +18,8 @@ export function QueueAlbumCard({
   tracks,
   trackIndices,
   isDragging,
-  onPointerDown
+  onPointerDown,
+  onContextMenu
 }: QueueAlbumCardProps): React.JSX.Element {
   const [artLoaded, setArtLoaded] = useState(false)
   const [artError, setArtError] = useState(false)
@@ -33,6 +35,7 @@ export function QueueAlbumCard({
         e.preventDefault()
         onPointerDown(trackIndices, e.clientX, e.clientY)
       }}
+      onContextMenu={onContextMenu}
     >
       <div className="queue-album-card-art">
         {!artError && (

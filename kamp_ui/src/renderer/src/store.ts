@@ -841,6 +841,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
       .loadPlaylists()
       .catch(() => undefined)
     if (get().library.selectedPlaylist?.id === id) {
+      const fresh = get().library.playlists.find((p) => p.id === id) ?? null
+      set((s) => ({ library: { ...s.library, selectedPlaylist: fresh } }))
       void get().loadPlaylistTracks(id)
     }
     return playlist

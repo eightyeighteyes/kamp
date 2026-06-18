@@ -18,6 +18,7 @@ import { TransportBar } from './components/TransportBar'
 import { SandboxedExtensionLoader } from './components/SandboxedExtensionLoader'
 import { ExtensionPermissionPrompt } from './components/ExtensionPermissionPrompt'
 import { UpdateBanner } from './components/UpdateBanner'
+import { KeyboardShortcutsOverlay } from './components/KeyboardShortcutsOverlay'
 import { registerBuiltInPanel, usePanelLayout } from './hooks/usePanelLayout'
 import { useExtensionState } from './hooks/useExtensionState'
 import type { UnifiedPanel } from './hooks/usePanelLayout'
@@ -116,6 +117,7 @@ export default function App(): React.JSX.Element {
   const extState = useExtensionState()
 
   // Active extension panel id, or null when a built-in view is showing.
+  const [showShortcuts, setShowShortcuts] = useState(false)
   const [activeExtPanel, setActiveExtPanel] = useState<string | null>(null)
   // All discovered extensions (used by PreferencesDialog for the Extensions tab).
   const [allExtensions, setAllExtensions] = useState<ExtensionInfo[]>([])
@@ -303,6 +305,9 @@ export default function App(): React.JSX.Element {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
 
       switch (e.key) {
+        case '?':
+          setShowShortcuts((prev) => !prev)
+          break
         case ' ':
           e.preventDefault()
           void togglePlayPause()
@@ -626,6 +631,7 @@ export default function App(): React.JSX.Element {
       </div>
       {bottomPanel && <SlotPanel panel={bottomPanel} />}
       <UpdateBanner />
+      {showShortcuts && <KeyboardShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
       {!splashGone && <SplashScreen hiding={splashHiding} slowStart={slowStart} />}
       <PreferencesDialog
         extensions={allExtensions}

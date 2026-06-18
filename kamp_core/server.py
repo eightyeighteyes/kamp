@@ -2540,6 +2540,7 @@ def create_app(
                 file_path=a.file_path,
                 art_version=a.art_version,
                 added_at=a.added_at,
+                last_played_at=a.last_played_at,
                 play_count_avg=a.play_count_avg,
                 favorite=a.favorite,
                 has_favorite_track=a.has_favorite_track,

@@ -255,6 +255,21 @@ export const getTopArtists = (limit: number): Promise<Artist[]> =>
 export const getTopTracks = (limit: number): Promise<Track[]> =>
   get(`/api/v1/tracks/top?limit=${limit}`)
 
+export type Stats = {
+  track_count: number
+  album_count: number
+  artist_count: number
+  total_play_seconds: number
+  total_track_plays: number
+  albums_played: number
+  top_artist_name: string | null
+  top_artist_seconds: number | null
+  top_tracks: Track[]
+}
+
+export const getStats = (topTracks = 3): Promise<Stats> =>
+  get(`/api/v1/stats?top_tracks=${topTracks}`)
+
 export type MagicPlaylistContents = 'albums' | 'artists' | 'tracks'
 export type MagicPlaylistSort = 'random' | 'last_played' | 'recently_added' | 'most_played'
 

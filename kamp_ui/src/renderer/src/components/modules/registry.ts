@@ -7,6 +7,7 @@ import { TopArtistsModule, TopArtistsConfig } from './TopArtistsModule'
 import { StereoRackModule, StereoRackConfig } from './StereoRackModule'
 import { MagicPlaylistModule, MagicPlaylistConfig, MagicPlaylistTitle } from './MagicPlaylistModule'
 import { FavoritePlaylistsModule, FavoritePlaylistsConfig } from './FavoritePlaylistsModule'
+import { StatsModule, StatsConfig } from './StatsModule'
 
 export type DisplayStyle = 'shelf' | 'grid' | 'list'
 
@@ -67,6 +68,12 @@ export const MODULE_REGISTRY: ModuleRegistration[] = [
     title: 'Favorite Playlists',
     component: FavoritePlaylistsModule,
     configComponent: FavoritePlaylistsConfig
+  },
+  {
+    id: 'kamp.stats',
+    title: 'Stats',
+    component: StatsModule,
+    configComponent: StatsConfig
   },
   {
     id: 'kamp.magic-playlist-1',

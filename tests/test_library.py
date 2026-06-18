@@ -21,6 +21,7 @@ from kamp_core.library import (
     Group,
     LibraryIndex,
     LibraryScanner,
+    LibraryStats,
     MagicCriteria,
     ScanResult,
     Track,
@@ -9297,3 +9298,151 @@ class TestUpsertSyncProtection:
         result = index.all_tracks()[0]
         index.close()
         assert result.genre == "Electronic"
+
+
+# ---------------------------------------------------------------------------
+# get_stats (KAMP-481)
+# ---------------------------------------------------------------------------
+
+
+class TestGetStats:
+    """Tests for LibraryIndex.get_stats()."""
+
+    def test_empty_library(self, tmp_path: Path) -> None:
+        """An empty index returns zero counts and no top artist."""
+        index = LibraryIndex(tmp_path / "library.db")
+        stats = index.get_stats()
+        index.close()
+        assert isinstance(stats, LibraryStats)
+        assert stats.track_count == 0
+        assert stats.album_count == 0
+        assert stats.artist_count == 0
+        assert stats.total_play_seconds == pytest.approx(0.0)
+        assert stats.total_track_plays == 0
+        assert stats.albums_played == 0
+        assert stats.top_artist_name is None
+        assert stats.top_artist_seconds is None
+        assert stats.top_tracks == []
+
+    def test_counts(self, tmp_path: Path) -> None:
+        """track_count, album_count, and artist_count reflect indexed content."""
+        index = LibraryIndex(tmp_path / "library.db")
+        _make_indexed_track(
+            index, tmp_path, "t1.mp3", album_artist="Slowdive", album="Souvlaki"
+        )
+        _make_indexed_track(
+            index,
+            tmp_path,
+            "t2.mp3",
+            album_artist="Slowdive",
+            album="Souvlaki",
+            track_number=2,
+        )
+        _make_indexed_track(
+            index, tmp_path, "t3.mp3", album_artist="Bark Psychosis", album="Hex"
+        )
+        stats = index.get_stats()
+        index.close()
+        assert stats.track_count == 3
+        assert stats.album_count == 2
+        assert stats.artist_count == 2
+
+    def test_total_play_seconds(self, tmp_path: Path) -> None:
+        """total_play_seconds accumulates from artists.play_time via record_play_time."""
+        index = LibraryIndex(tmp_path / "library.db")
+        p1 = _make_indexed_track(
+            index, tmp_path, "a.mp3", album_artist="Slowdive", album="Just For a Day"
+        )
+        p2 = _make_indexed_track(
+            index, tmp_path, "b.mp3", album_artist="Bark Psychosis", album="Hex"
+        )
+        index.record_play_time(p1, 300.0)
+        index.record_play_time(p2, 120.0)
+        stats = index.get_stats()
+        index.close()
+        assert stats.total_play_seconds == pytest.approx(420.0)
+
+    def test_total_track_plays(self, tmp_path: Path) -> None:
+        """total_track_plays is the sum of play_count across all tracks."""
+        index = LibraryIndex(tmp_path / "library.db")
+        p1 = _make_indexed_track(
+            index, tmp_path, "a.mp3", album_artist="Slowdive", album="Souvlaki"
+        )
+        p2 = _make_indexed_track(
+            index,
+            tmp_path,
+            "b.mp3",
+            album_artist="Slowdive",
+            album="Souvlaki",
+            track_number=2,
+        )
+        index.record_played(p1)
+        index.record_played(p1)
+        index.record_played(p2)
+        stats = index.get_stats()
+        index.close()
+        assert stats.total_track_plays == 3
+
+    def test_albums_played(self, tmp_path: Path) -> None:
+        """albums_played counts albums where play_count_avg > 0."""
+        index = LibraryIndex(tmp_path / "library.db")
+        p1 = _make_indexed_track(
+            index, tmp_path, "a.mp3", album_artist="Slowdive", album="Souvlaki"
+        )
+        _make_indexed_track(
+            index, tmp_path, "b.mp3", album_artist="Bark Psychosis", album="Hex"
+        )
+        index.record_played(p1)
+        stats = index.get_stats()
+        index.close()
+        assert stats.albums_played == 1
+
+    def test_top_artist(self, tmp_path: Path) -> None:
+        """top_artist_name is the artist with the highest play_time."""
+        index = LibraryIndex(tmp_path / "library.db")
+        pa = _make_indexed_track(
+            index, tmp_path, "a.mp3", album_artist="Slowdive", album="AA"
+        )
+        pb = _make_indexed_track(
+            index, tmp_path, "b.mp3", album_artist="Bark Psychosis", album="BB"
+        )
+        index.record_play_time(pa, 100.0)
+        index.record_play_time(pb, 500.0)
+        stats = index.get_stats()
+        index.close()
+        assert stats.top_artist_name == "Bark Psychosis"
+        assert stats.top_artist_seconds == pytest.approx(500.0)
+
+    def test_top_tracks_ordered_by_play_count(self, tmp_path: Path) -> None:
+        """top_tracks are returned in descending play_count order, respecting the limit."""
+        index = LibraryIndex(tmp_path / "library.db")
+        pa = _make_indexed_track(
+            index, tmp_path, "a.mp3", album_artist="Slowdive", album="AA"
+        )
+        pb = _make_indexed_track(
+            index,
+            tmp_path,
+            "b.mp3",
+            album_artist="Slowdive",
+            album="AA",
+            track_number=2,
+        )
+        pc = _make_indexed_track(
+            index,
+            tmp_path,
+            "c.mp3",
+            album_artist="Slowdive",
+            album="AA",
+            track_number=3,
+        )
+        for _ in range(3):
+            index.record_played(pa)
+        for _ in range(5):
+            index.record_played(pb)
+        for _ in range(1):
+            index.record_played(pc)
+        stats = index.get_stats(top_tracks_limit=2)
+        index.close()
+        assert len(stats.top_tracks) == 2
+        assert stats.top_tracks[0].file_path == pb
+        assert stats.top_tracks[1].file_path == pa

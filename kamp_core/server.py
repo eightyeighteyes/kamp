@@ -45,6 +45,7 @@ from kamp_core.library import (
     ArtistInfo,
     LibraryIndex,
     LibraryScanner,
+    LibraryStats,
     MagicCriteria,
     Track,
     _canonical_track_key,
@@ -233,6 +234,32 @@ class ArtistOut(BaseModel):
     @classmethod
     def from_artist(cls, a: ArtistInfo) -> "ArtistOut":
         return cls(name=a.name, play_time=a.play_time, top_album=a.top_album)
+
+
+class StatsOut(BaseModel):
+    track_count: int
+    album_count: int
+    artist_count: int
+    total_play_seconds: float
+    total_track_plays: int
+    albums_played: int
+    top_artist_name: str | None
+    top_artist_seconds: float | None
+    top_tracks: list[TrackOut]
+
+    @classmethod
+    def from_stats(cls, s: LibraryStats) -> "StatsOut":
+        return cls(
+            track_count=s.track_count,
+            album_count=s.album_count,
+            artist_count=s.artist_count,
+            total_play_seconds=s.total_play_seconds,
+            total_track_plays=s.total_track_plays,
+            albums_played=s.albums_played,
+            top_artist_name=s.top_artist_name,
+            top_artist_seconds=s.top_artist_seconds,
+            top_tracks=[TrackOut.from_track(t) for t in s.top_tracks],
+        )
 
 
 class AlbumOut(BaseModel):
@@ -1144,6 +1171,10 @@ def create_app(
             )
             for a in index.albums(sort=sort, sort_dir=sort_dir)
         ]
+
+    @app.get("/api/v1/stats", response_model=StatsOut)
+    def get_stats(top_tracks: int = 3) -> StatsOut:
+        return StatsOut.from_stats(index.get_stats(top_tracks_limit=top_tracks))
 
     @app.get("/api/v1/artists/top", response_model=list[ArtistOut])
     def get_top_artists(limit: int = 10) -> list[ArtistOut]:

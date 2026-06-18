@@ -2,28 +2,8 @@ import React, { useEffect, useState } from 'react'
 import { getStats } from '../../api/client'
 import type { Stats } from '../../api/client'
 import { useStore } from '../../store'
+import { formatLongDuration } from '../../utils/formatTime'
 import type { ModuleProps } from './registry'
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function formatSeconds(n: number): string {
-  if (n <= 0) return '—'
-  const totalMinutes = Math.floor(n / 60)
-  const totalHours = Math.floor(n / 3600)
-  const totalDays = Math.floor(n / 86400)
-  const totalYears = Math.floor(totalDays / 365)
-  const months = Math.floor((totalDays % 365) / 30)
-  const days = totalDays % 30
-  const hours = totalHours % 24
-  const minutes = totalMinutes % 60
-  if (totalYears > 0) return `${totalYears}y ${months}mo ${days}d ${hours}h`
-  if (totalDays > 0) return `${totalDays}d ${hours}h`
-  if (totalHours > 0) return `${totalHours}h ${minutes}m`
-  if (totalMinutes > 0) return `${totalMinutes} min`
-  return '< 1 min'
-}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -113,7 +93,7 @@ export function StatsModule({ displayStyle: _ds }: ModuleProps): React.JSX.Eleme
           <>
             <div className="stats-row">
               <div className="stats-stat">
-                <div className="stats-number">{formatSeconds(stats.total_play_seconds)}</div>
+                <div className="stats-number">{formatLongDuration(stats.total_play_seconds)}</div>
                 <div className="stats-label">Time Listened</div>
               </div>
               <div className="stats-stat">
@@ -132,7 +112,7 @@ export function StatsModule({ displayStyle: _ds }: ModuleProps): React.JSX.Eleme
                 <span className="stats-top-artist-name">{stats.top_artist_name}</span>
                 {stats.top_artist_seconds !== null && (
                   <span className="stats-top-artist-time">
-                    {formatSeconds(stats.top_artist_seconds)}
+                    {formatLongDuration(stats.top_artist_seconds)}
                   </span>
                 )}
               </div>

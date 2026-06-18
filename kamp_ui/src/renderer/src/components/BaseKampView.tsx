@@ -8,6 +8,14 @@ import { ContextMenu } from './ContextMenu'
 
 type Menu = { x: number; y: number; id: string }
 
+const MAGIC_PLAYLIST_IDS = [
+  'kamp.magic-playlist-1',
+  'kamp.magic-playlist-2',
+  'kamp.magic-playlist-3',
+  'kamp.magic-playlist-4',
+  'kamp.magic-playlist-5'
+]
+
 export function BaseKampView(): React.JSX.Element {
   const moduleOrder = useStore((s) => s.moduleOrder)
   const setModuleOrder = useStore((s) => s.setModuleOrder)
@@ -29,6 +37,17 @@ export function BaseKampView(): React.JSX.Element {
 
   const visibleIds = new Set(modules.map((m) => m.id))
   const addableModules = MODULE_REGISTRY.filter((m) => !visibleIds.has(m.id))
+
+  // Collapse all 5 magic playlist slots into a single "Magic Playlist" entry
+  // that adds the next unused slot.
+  const nextUnusedMagicSlot = MAGIC_PLAYLIST_IDS.find((id) =>
+    addableModules.some((m) => m.id === id)
+  )
+  const collapsedAddable = addableModules.filter((m) => !MAGIC_PLAYLIST_IDS.includes(m.id))
+  if (nextUnusedMagicSlot) {
+    const reg = MODULE_REGISTRY.find((m) => m.id === nextUnusedMagicSlot)!
+    collapsedAddable.push({ ...reg, id: nextUnusedMagicSlot })
+  }
 
   function moveModule(id: string, direction: 'top' | 'up' | 'down' | 'bottom'): void {
     const idx = moduleOrder.indexOf(id)
@@ -53,7 +72,7 @@ export function BaseKampView(): React.JSX.Element {
     setModuleOrder(next)
   }
 
-  if (modules.length === 0 && addableModules.length === 0) {
+  if (modules.length === 0 && collapsedAddable.length === 0) {
     return <div className="base-kamp-empty">No modules configured.</div>
   }
 
@@ -132,17 +151,20 @@ export function BaseKampView(): React.JSX.Element {
                 </button>
               </>
             )}
-            {mod.title}
+            {mod.titleComponent ? <mod.titleComponent moduleId={mod.id} /> : mod.title}
           </div>
           <div className={`base-kamp-config-row${editMode ? ' visible' : ''}`}>
-            {mod.configComponent && <mod.configComponent />}
+            {mod.configComponent && <mod.configComponent moduleId={mod.id} />}
           </div>
           <div className="base-kamp-module-body">
-            <mod.component displayStyle={moduleDisplayStyles[mod.id] ?? 'shelf'} />
+            <mod.component
+              displayStyle={moduleDisplayStyles[mod.id] ?? 'shelf'}
+              moduleId={mod.id}
+            />
           </div>
         </section>
       ))}
-      {editMode && addableModules.length > 0 && (
+      {editMode && collapsedAddable.length > 0 && (
         <div className="base-kamp-add-module">
           <span>Add Module</span>
           <select
@@ -154,7 +176,7 @@ export function BaseKampView(): React.JSX.Element {
             <option value="" disabled>
               Select…
             </option>
-            {addableModules.map((m) => (
+            {collapsedAddable.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.title}
               </option>

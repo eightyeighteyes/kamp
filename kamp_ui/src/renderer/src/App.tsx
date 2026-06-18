@@ -92,6 +92,7 @@ export default function App(): React.JSX.Element {
   const setServerStatus = useStore((s) => s.setServerStatus)
   const setAudioLevel = useStore((s) => s.setAudioLevel)
   const bumpLastPlayedVersion = useStore((s) => s.bumpLastPlayedVersion)
+  const bumpMagicPlaylistVersion = useStore((s) => s.bumpMagicPlaylistVersion)
   const serverStatus = useStore((s) => s.serverStatus)
   const flashToast = useStore((s) => s.flashToast)
   const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
@@ -267,6 +268,7 @@ export default function App(): React.JSX.Element {
           if (selectedPlaylist?.id === id) {
             void useStore.getState().loadPlaylistTracks(id)
           }
+          bumpMagicPlaylistVersion()
         }
       )
     }

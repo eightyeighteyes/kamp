@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 _FIELD_MAP: dict[str, tuple[str, str]] = {
     "track.favorite": ("tracks.favorite", "bool"),
     "album.favorite": ("albums.favorite", "bool"),
+    "album.play_count_avg": ("albums.play_count_avg", "float"),
     "track.play_count": ("tracks.play_count", "int"),
     # NULL last_played treated as 0 so numeric comparisons work on unplayed tracks.
     "track.last_played": ("COALESCE(tracks.last_played, 0)", "float"),
@@ -31,7 +32,7 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
 }
 
 # Fields whose SQL expression references the albums table.
-_ALBUM_FIELDS: frozenset[str] = frozenset({"album.favorite"})
+_ALBUM_FIELDS: frozenset[str] = frozenset({"album.favorite", "album.play_count_avg"})
 
 # Operators that need a numeric (CAST) column expression for "year".
 _NUMERIC_OPS: frozenset[str] = frozenset({"gt", "lt", "gte", "lte"})

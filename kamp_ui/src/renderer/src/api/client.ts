@@ -87,6 +87,7 @@ export type ScanResult = {
 export type CriteriaField =
   | 'track.favorite'
   | 'album.favorite'
+  | 'album.play_count_avg'
   | 'track.play_count'
   | 'track.year'
   | 'track.last_played'

@@ -81,6 +81,8 @@ type PlayerStore = {
   topAlbumsCount: number
   topTracksCount: number
   topArtistsCount: number
+  favoritePlaylistsCount: number
+  favoritePlaylistsSortOrder: 'last_played_at' | 'title'
   magicPlaylistConfigs: Record<string, MagicPlaylistModuleConfig>
   magicPlaylistVersion: number
   flashTrackId: number | null
@@ -138,6 +140,8 @@ type PlayerStore = {
   setTopAlbumsCount: (n: number) => void
   setTopTracksCount: (n: number) => void
   setTopArtistsCount: (n: number) => void
+  setFavoritePlaylistsCount: (n: number) => void
+  setFavoritePlaylistsSortOrder: (order: 'last_played_at' | 'title') => void
   setMagicPlaylistConfig: (moduleId: string, config: MagicPlaylistModuleConfig) => void
   bumpMagicPlaylistVersion: () => void
   setFlashTrackId: (id: number) => void
@@ -347,6 +351,13 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const saved = localStorage.getItem('kamp:top-artists-count')
     return saved ? parseInt(saved) : 10
   })(),
+  favoritePlaylistsCount: (() => {
+    const saved = localStorage.getItem('kamp:fav-playlists-count')
+    return saved ? parseInt(saved) : 10
+  })(),
+  favoritePlaylistsSortOrder:
+    (localStorage.getItem('kamp:fav-playlists-sort') as 'last_played_at' | 'title' | null) ??
+    'last_played_at',
   magicPlaylistConfigs: (() => {
     try {
       const saved = localStorage.getItem('kamp:magic-playlist-configs')
@@ -592,6 +603,16 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setTopArtistsCount: (n) => {
     localStorage.setItem('kamp:top-artists-count', String(n))
     set({ topArtistsCount: n })
+  },
+
+  setFavoritePlaylistsCount: (n) => {
+    localStorage.setItem('kamp:fav-playlists-count', String(n))
+    set({ favoritePlaylistsCount: n })
+  },
+
+  setFavoritePlaylistsSortOrder: (order) => {
+    localStorage.setItem('kamp:fav-playlists-sort', order)
+    set({ favoritePlaylistsSortOrder: order })
   },
 
   setMagicPlaylistConfig: (moduleId, config) => {

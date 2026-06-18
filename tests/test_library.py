@@ -8730,6 +8730,164 @@ class TestMagicPlaylists:
         assert count == 0
 
 
+class TestPlaylistModuleContent:
+    """Tests for LibraryIndex.get_playlist_module_content()."""
+
+    def _setup(self, tmp_path: Path) -> tuple[LibraryIndex, int, int]:
+        """Return (index, static_pid, magic_pid) with two tracks seeded."""
+        index = LibraryIndex(tmp_path / "library.db")
+        pa = _make_indexed_track(
+            index,
+            tmp_path,
+            "a.mp3",
+            album_artist="Alvvays",
+            album="Antisocialites",
+            play_count=5,
+        )
+        pb = _make_indexed_track(
+            index,
+            tmp_path,
+            "b.mp3",
+            album_artist="Slowdive",
+            album="Souvlaki",
+            play_count=2,
+        )
+        index.record_play_time(pa, 300.0)
+        index.record_play_time(pb, 100.0)
+        # Static playlist with both tracks.
+        static_pid = index.create_playlist("Static")["id"]
+        t_a = index.tracks_for_album("Alvvays", "Antisocialites")[0]
+        t_b = index.tracks_for_album("Slowdive", "Souvlaki")[0]
+        index.add_track_to_playlist(static_pid, str(t_a.file_path))
+        index.add_track_to_playlist(static_pid, str(t_b.file_path))
+        # Magic playlist matching the same two tracks.
+        magic_pid = index.create_magic_playlist(
+            "Magic",
+            MagicCriteria(
+                groups=[
+                    Group(
+                        conditions=[
+                            Condition(
+                                field="track.album_artist", op="is", value="Alvvays"
+                            ),
+                            Condition(
+                                field="track.album_artist", op="is", value="Slowdive"
+                            ),
+                        ],
+                        match="any",
+                        negate=False,
+                    )
+                ],
+                match="all",
+            ),
+        )
+        return index, static_pid, magic_pid
+
+    # albums ---
+
+    def test_albums_returns_album_dicts(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        result = index.get_playlist_module_content(static_pid, "albums", "random", 10)
+        index.close()
+        assert len(result) == 2
+        album_names = {r["album"] for r in result}
+        assert album_names == {"Antisocialites", "Souvlaki"}
+
+    def test_albums_most_played_sort(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        result = index.get_playlist_module_content(
+            static_pid, "albums", "most_played", 10
+        )
+        index.close()
+        assert result[0]["album"] == "Antisocialites"  # play_count=5 > 2
+
+    def test_albums_limit(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        result = index.get_playlist_module_content(static_pid, "albums", "random", 1)
+        index.close()
+        assert len(result) == 1
+
+    def test_albums_magic_playlist(self, tmp_path: Path) -> None:
+        index, _, magic_pid = self._setup(tmp_path)
+        result = index.get_playlist_module_content(magic_pid, "albums", "random", 10)
+        index.close()
+        assert len(result) == 2
+
+    # artists ---
+
+    def test_artists_returns_artist_dicts(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        result = index.get_playlist_module_content(static_pid, "artists", "random", 10)
+        index.close()
+        assert len(result) == 2
+        names = {r["name"] for r in result}
+        assert names == {"Alvvays", "Slowdive"}
+
+    def test_artists_most_played_sort(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        result = index.get_playlist_module_content(
+            static_pid, "artists", "most_played", 10
+        )
+        index.close()
+        assert result[0]["name"] == "Alvvays"  # play_time=300 > 100
+
+    def test_artists_last_played_sort(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        # Play a Slowdive track most recently — it should sort first.
+        t_b = index.tracks_for_album("Slowdive", "Souvlaki")[0]
+        index.record_track_started(t_b.file_path)
+        result = index.get_playlist_module_content(
+            static_pid, "artists", "last_played", 10
+        )
+        index.close()
+        assert result[0]["name"] == "Slowdive"
+
+    def test_artists_recently_added_sort(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        # Force Slowdive's track date_added to be more recent than Alvvays.
+        index._conn.execute(
+            "UPDATE tracks SET date_added = 9999999999 WHERE album_artist = 'Slowdive'"
+        )
+        index._conn.commit()
+        result = index.get_playlist_module_content(
+            static_pid, "artists", "recently_added", 10
+        )
+        index.close()
+        assert result[0]["name"] == "Slowdive"
+
+    def test_artists_have_top_album(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        result = index.get_playlist_module_content(static_pid, "artists", "random", 10)
+        index.close()
+        by_name = {r["name"]: r for r in result}
+        assert by_name["Alvvays"]["top_album"] == "Antisocialites"
+
+    # tracks ---
+
+    def test_tracks_returns_track_dicts(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        result = index.get_playlist_module_content(static_pid, "tracks", "random", 10)
+        index.close()
+        assert len(result) == 2
+        assert all("file_path" in r for r in result)
+
+    def test_tracks_most_played_sort(self, tmp_path: Path) -> None:
+        index, static_pid, _ = self._setup(tmp_path)
+        result = index.get_playlist_module_content(
+            static_pid, "tracks", "most_played", 10
+        )
+        index.close()
+        assert result[0]["album_artist"] == "Alvvays"
+
+    # missing playlist ---
+
+    def test_missing_playlist_returns_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = index.get_playlist_module_content(9999, "albums", "random", 10)
+        index.close()
+        assert result == []
+
+
 class TestMagicPlaylistReactivity:
     """Tests for the on_fields_changed callback wired into LibraryIndex mutations."""
 

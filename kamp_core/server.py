@@ -3542,6 +3542,17 @@ def create_app(
         index.record_playlist_played(playlist_id)
         return Response(status_code=204)
 
+    @app.get("/api/v1/playlists/{playlist_id}/module-content")
+    def get_playlist_module_content(
+        playlist_id: int,
+        contents: str = "albums",
+        sort: str = "random",
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        return index.get_playlist_module_content(playlist_id, contents, sort, limit)
+
     @app.get(
         "/api/v1/playlists/{playlist_id}/tracks", response_model=list[PlaylistTrackOut]
     )

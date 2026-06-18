@@ -5,18 +5,21 @@ import { TopAlbumsModule, TopAlbumsConfig } from './TopAlbumsModule'
 import { TopTracksModule, TopTracksConfig } from './TopTracksModule'
 import { TopArtistsModule, TopArtistsConfig } from './TopArtistsModule'
 import { StereoRackModule, StereoRackConfig } from './StereoRackModule'
+import { MagicPlaylistModule, MagicPlaylistConfig, MagicPlaylistTitle } from './MagicPlaylistModule'
 
 export type DisplayStyle = 'shelf' | 'grid' | 'list'
 
 export interface ModuleProps {
   displayStyle: DisplayStyle
+  moduleId?: string
 }
 
 export interface ModuleRegistration {
   id: string
   title: string
   component: React.ComponentType<ModuleProps>
-  configComponent?: React.ComponentType
+  configComponent?: React.ComponentType<{ moduleId?: string }>
+  titleComponent?: React.ComponentType<{ moduleId: string }>
 }
 
 export const MODULE_REGISTRY: ModuleRegistration[] = [
@@ -57,5 +60,40 @@ export const MODULE_REGISTRY: ModuleRegistration[] = [
     title: 'Stereo Rack',
     component: StereoRackModule,
     configComponent: StereoRackConfig
+  },
+  {
+    id: 'kamp.magic-playlist-1',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
+  },
+  {
+    id: 'kamp.magic-playlist-2',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
+  },
+  {
+    id: 'kamp.magic-playlist-3',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
+  },
+  {
+    id: 'kamp.magic-playlist-4',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
+  },
+  {
+    id: 'kamp.magic-playlist-5',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
   }
 ]

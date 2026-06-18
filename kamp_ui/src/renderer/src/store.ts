@@ -23,8 +23,16 @@ import type {
   Track
 } from './api/client'
 import type { DisplayStyle } from './components/modules/registry'
+import type { MagicPlaylistContents, MagicPlaylistSort } from './api/client'
 
 export type TrackDisplaySize = 'teeny' | 'less-teeny' | 'large-print'
+
+export type MagicPlaylistModuleConfig = {
+  playlistId: number | null
+  sort: MagicPlaylistSort
+  contents: MagicPlaylistContents
+  items: number
+}
 export type PlasmaMode = 'always' | 'sometimes' | 'never'
 export type TraceStyle = 'clean' | 'glowy' | 'trippy'
 
@@ -73,6 +81,8 @@ type PlayerStore = {
   topAlbumsCount: number
   topTracksCount: number
   topArtistsCount: number
+  magicPlaylistConfigs: Record<string, MagicPlaylistModuleConfig>
+  magicPlaylistVersion: number
   flashTrackId: number | null
   baseKampEditMode: boolean
   stereoRackTrackSize: TrackDisplaySize
@@ -128,6 +138,8 @@ type PlayerStore = {
   setTopAlbumsCount: (n: number) => void
   setTopTracksCount: (n: number) => void
   setTopArtistsCount: (n: number) => void
+  setMagicPlaylistConfig: (moduleId: string, config: MagicPlaylistModuleConfig) => void
+  bumpMagicPlaylistVersion: () => void
   setFlashTrackId: (id: number) => void
   insertArtistAt: (artistName: string, idx: number) => Promise<void>
   toggleBaseKampEditMode: () => void
@@ -335,6 +347,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const saved = localStorage.getItem('kamp:top-artists-count')
     return saved ? parseInt(saved) : 10
   })(),
+  magicPlaylistConfigs: (() => {
+    try {
+      const saved = localStorage.getItem('kamp:magic-playlist-configs')
+      return saved ? (JSON.parse(saved) as Record<string, MagicPlaylistModuleConfig>) : {}
+    } catch {
+      return {}
+    }
+  })(),
+  magicPlaylistVersion: 0,
   flashTrackId: null,
   baseKampEditMode: localStorage.getItem('kamp:base-kamp-edit-mode') === 'true',
   stereoRackTrackSize:
@@ -573,17 +594,23 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ topArtistsCount: n })
   },
 
+  setMagicPlaylistConfig: (moduleId, config) => {
+    const next = { ...get().magicPlaylistConfigs, [moduleId]: config }
+    localStorage.setItem('kamp:magic-playlist-configs', JSON.stringify(next))
+    set({ magicPlaylistConfigs: next })
+  },
+
+  bumpMagicPlaylistVersion: () =>
+    set((s) => ({ magicPlaylistVersion: s.magicPlaylistVersion + 1 })),
+
   insertArtistAt: async (artistName, idx) => {
     const albums = get()
       .library.albums.filter((a) => a.album_artist === artistName)
       .sort((a, b) => (b.play_count_avg ?? 0) - (a.play_count_avg ?? 0))
-    for (let i = 0; i < albums.length; i++) {
-      await api.insertAlbumAt(
-        albums[i].album_artist,
-        albums[i].album,
-        idx + i,
-        albums[i].file_path ?? ''
-      )
+    let offset = 0
+    for (const album of albums) {
+      await api.insertAlbumAt(album.album_artist, album.album, idx + offset, album.file_path ?? '')
+      offset += album.track_count
     }
     void get().loadQueue()
   },

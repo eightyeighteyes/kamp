@@ -109,11 +109,11 @@ export function QueuePanel(): React.JSX.Element {
     setAnchorIdx(null)
   }, [tracks.length, position])
 
-  // Exit album-grouping mode on Escape.
+  // Alt → enter album-grouping mode; Escape → exit it.
   useEffect(() => {
-    if (!albumGroupingActive) return
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setAlbumGroupingActive(false)
+      if (e.key === 'Alt' && !albumGroupingActive) setAlbumGroupingActive(true)
+      if (e.key === 'Escape' && albumGroupingActive) setAlbumGroupingActive(false)
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
@@ -346,13 +346,6 @@ export function QueuePanel(): React.JSX.Element {
 
   function handleRowMouseDown(e: React.MouseEvent, idx: number): void {
     if (e.button !== 0) return
-    // Shift+mousedown on a Next Up row → enter album-grouping mode (distinct from
-    // Shift+click range-selection, which fires later in handleRowClick/mouseup).
-    if (e.shiftKey && position >= 0 && idx > position && !albumGroupingActive) {
-      e.preventDefault()
-      setAlbumGroupingActive(true)
-      return
-    }
     // While grouping mode is active, individual track rows are non-interactive.
     if (albumGroupingActive) return
     if (e.shiftKey && anchorIdx !== null) {

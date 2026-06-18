@@ -312,7 +312,8 @@ function TrackLeft({
   // line for 8s if the calendar date has changed since the last session.
   useEffect(() => {
     if (!isPlaying) return
-    const today = new Date().toISOString().slice(0, 10)
+    const _d = new Date()
+    const today = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`
     const stored = localStorage.getItem(LAST_PLAY_DATE_KEY)
     localStorage.setItem(LAST_PLAY_DATE_KEY, today)
     if (stored === today) return

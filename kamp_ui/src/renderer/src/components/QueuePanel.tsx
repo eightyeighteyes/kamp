@@ -112,7 +112,7 @@ export function QueuePanel(): React.JSX.Element {
   // Alt → enter album-grouping mode; Escape → exit it.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Alt' && !albumGroupingActive) setAlbumGroupingActive(true)
+      if (e.key === 'Alt') setAlbumGroupingActive((prev) => !prev)
       if (e.key === 'Escape' && albumGroupingActive) setAlbumGroupingActive(false)
     }
     document.addEventListener('keydown', onKeyDown)
@@ -285,7 +285,6 @@ export function QueuePanel(): React.JSX.Element {
         const dropIdx = resolveAlbumDropIdx(ev.clientX, ev.clientY)
         if (dropIdx !== null) {
           void reorderQueue(computeNewOrder(tracks.length, trackIndices, dropIdx))
-          setAlbumGroupingActive(false)
         }
       }
     }

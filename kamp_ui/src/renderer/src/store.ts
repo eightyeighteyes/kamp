@@ -577,13 +577,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
     const albums = get()
       .library.albums.filter((a) => a.album_artist === artistName)
       .sort((a, b) => (b.play_count_avg ?? 0) - (a.play_count_avg ?? 0))
-    for (let i = 0; i < albums.length; i++) {
-      await api.insertAlbumAt(
-        albums[i].album_artist,
-        albums[i].album,
-        idx + i,
-        albums[i].file_path ?? ''
-      )
+    let offset = 0
+    for (const album of albums) {
+      await api.insertAlbumAt(album.album_artist, album.album, idx + offset, album.file_path ?? '')
+      offset += album.track_count
     }
     void get().loadQueue()
   },

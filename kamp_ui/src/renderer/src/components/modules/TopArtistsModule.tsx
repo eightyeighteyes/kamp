@@ -3,17 +3,12 @@ import { getTopArtists, artUrl } from '../../api/client'
 import type { Artist } from '../../api/client'
 import { useStore } from '../../store'
 import { ArtistContextMenu } from '../ArtistContextMenu'
+import { formatLongDuration } from '../../utils/formatTime'
 import type { ModuleProps, DisplayStyle } from './registry'
 
 type MenuPos = { x: number; y: number; artist: Artist }
 
 const SCROLL_PX = 500
-
-function formatPlayTime(seconds: number): string {
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  return h > 0 ? `${h}h ${m}m` : `${m}m`
-}
 
 function ArtistCard({ artist }: { artist: Artist }): React.JSX.Element {
   const selectArtist = useStore((s) => s.selectArtist)
@@ -59,7 +54,7 @@ function ArtistCard({ artist }: { artist: Artist }): React.JSX.Element {
       </div>
       <div className="track-card-info">
         <div className="track-card-title">{artist.name}</div>
-        <div className="track-card-play-count">{formatPlayTime(artist.play_time)}</div>
+        <div className="track-card-play-count">{formatLongDuration(artist.play_time)}</div>
       </div>
       {menu && (
         <ArtistContextMenu
@@ -112,7 +107,7 @@ function ArtistListRow({ artist }: { artist: Artist }): React.JSX.Element {
       <div className="module-list-info">
         <div className="module-list-title">{artist.name}</div>
       </div>
-      <span className="track-card-play-count">{formatPlayTime(artist.play_time)}</span>
+      <span className="track-card-play-count">{formatLongDuration(artist.play_time)}</span>
       {menu && (
         <ArtistContextMenu
           x={menu.x}

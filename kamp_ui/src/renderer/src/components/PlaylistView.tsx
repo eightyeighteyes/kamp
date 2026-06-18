@@ -20,7 +20,7 @@ import {
   SparkleIcon,
   WarnIcon
 } from './TransportIcons'
-import { formatTime } from '../utils/formatTime'
+import { formatTime, formatLongDuration } from '../utils/formatTime'
 
 const HERO_DEFAULT = 45
 const HERO_MIN = 15
@@ -636,7 +636,7 @@ export function PlaylistView(): React.JSX.Element | null {
             >
               {playlistTracks.length === 1 ? '1 track' : `${playlistTracks.length} tracks`}
             </span>
-            {totalDuration > 0 && ` · ${formatTime(totalDuration)}`}
+            {totalDuration > 0 && ` · ${formatLongDuration(totalDuration)}`}
           </div>
         </div>
         <div className="album-controls-group">

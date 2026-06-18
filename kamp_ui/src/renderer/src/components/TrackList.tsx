@@ -33,7 +33,7 @@ import {
   WarnIcon
 } from './TransportIcons'
 import { downloadAlbum } from '../api/client'
-import { formatTime } from '../utils/formatTime'
+import { formatTime, formatLongDuration } from '../utils/formatTime'
 
 const TOAST_TTL = 10_000 // ms
 
@@ -604,7 +604,7 @@ export function TrackList(): React.JSX.Element | null {
           />
           {(album.year || totalDuration > 0) && (
             <div className="track-list-album-year">
-              {[album.year, totalDuration > 0 ? formatTime(totalDuration) : '']
+              {[album.year, totalDuration > 0 ? formatLongDuration(totalDuration) : '']
                 .filter(Boolean)
                 .join(' · ')}
             </div>

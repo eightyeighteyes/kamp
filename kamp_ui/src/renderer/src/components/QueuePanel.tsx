@@ -1,11 +1,16 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
 import { QueueContextMenu } from './QueueContextMenu'
+import { QueueAlbumCard } from './QueueAlbumCard'
 import { FavoriteIcon, WarnIcon } from './TransportIcons'
 import type { Track } from '../api/client'
 import { computeNewOrder } from '../utils/computeNewOrder'
+
+type NextUpItem =
+  | { kind: 'track'; track: Track; queueIdx: number }
+  | { kind: 'album'; albumArtist: string; album: string; tracks: Track[]; trackIndices: number[] }
 
 const QUEUE_WIDTH_KEY = 'kamp:queue-width'
 const QUEUE_WIDTH_DEFAULT = 280
@@ -67,8 +72,14 @@ export function QueuePanel(): React.JSX.Element {
   const dragStartXRef = useRef(0)
   const widthAtDragStartRef = useRef(QUEUE_WIDTH_DEFAULT)
   const didDragRef = useRef(false)
+  const [albumGroupingActive, setAlbumGroupingActive] = useState(false)
+  const nowPlayingListRef = useRef<HTMLOListElement>(null)
+  // Tracks the currently highlighted drop-indicator element to avoid a DOM query on clear.
+  const activeDropIndicatorRef = useRef<HTMLElement | null>(null)
 
-  const tracks = queue?.tracks ?? []
+  // Stabilise via useMemo so the ?? [] fallback never produces a new array reference
+  // on renders where queue is null, which would otherwise invalidate nextUpItems every render.
+  const tracks = useMemo(() => queue?.tracks ?? [], [queue])
   const position = queue?.position ?? -1
 
   useEffect(() => {
@@ -98,6 +109,16 @@ export function QueuePanel(): React.JSX.Element {
     setAnchorIdx(null)
   }, [tracks.length, position])
 
+  // Exit album-grouping mode on Escape.
+  useEffect(() => {
+    if (!albumGroupingActive) return
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setAlbumGroupingActive(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [albumGroupingActive])
+
   // Clamp width to 33% when the window shrinks.
   useEffect(() => {
     const onWindowResize = (): void => {
@@ -113,6 +134,170 @@ export function QueuePanel(): React.JSX.Element {
     window.addEventListener('resize', onWindowResize)
     return () => window.removeEventListener('resize', onWindowResize)
   }, [])
+
+  // View model: collapses Next Up tracks into album cards when grouping mode is active.
+  // Card appears at each album's first occurrence in the queue; straddle album (currently
+  // playing) and single-track albums remain as individual rows.
+  const nextUpItems = useMemo((): NextUpItem[] => {
+    if (!albumGroupingActive || position < 0) return []
+    const nowPlayingTrack = tracks[position]
+    const straddleKey = nowPlayingTrack
+      ? `${nowPlayingTrack.album_artist}\0${nowPlayingTrack.album}`
+      : ''
+
+    // First pass: build per-album groups (preserving relative track order within each album)
+    const albumGroupMap = new Map<
+      string,
+      { albumArtist: string; album: string; tracks: Track[]; trackIndices: number[] }
+    >()
+    for (let i = position + 1; i < tracks.length; i++) {
+      const track = tracks[i]
+      const key = `${track.album_artist}\0${track.album}`
+      if (key === straddleKey) continue
+      if (!albumGroupMap.has(key)) {
+        albumGroupMap.set(key, {
+          albumArtist: track.album_artist,
+          album: track.album,
+          tracks: [],
+          trackIndices: []
+        })
+      }
+      const group = albumGroupMap.get(key)!
+      group.tracks.push(track)
+      group.trackIndices.push(i)
+    }
+
+    // Second pass: emit items in queue order, placing each album card at its first occurrence
+    const result: NextUpItem[] = []
+    const emittedAlbumKeys = new Set<string>()
+    for (let i = position + 1; i < tracks.length; i++) {
+      const track = tracks[i]
+      const key = `${track.album_artist}\0${track.album}`
+      if (key === straddleKey) {
+        result.push({ kind: 'track', track, queueIdx: i })
+        continue
+      }
+      if (emittedAlbumKeys.has(key)) continue
+      emittedAlbumKeys.add(key)
+      const group = albumGroupMap.get(key)!
+      if (group.tracks.length < 2) {
+        result.push({ kind: 'track', track: group.tracks[0], queueIdx: group.trackIndices[0] })
+      } else {
+        result.push({ kind: 'album', ...group })
+      }
+    }
+    return result
+  }, [albumGroupingActive, tracks, position])
+
+  function clearAlbumDropIndicators(): void {
+    const el = activeDropIndicatorRef.current
+    if (el) {
+      el.classList.remove('queue-drop-above', 'queue-drop-below', 'queue-now-playing-drop')
+      activeDropIndicatorRef.current = null
+    }
+  }
+
+  function updateAlbumDropIndicators(x: number, y: number): void {
+    clearAlbumDropIndicators()
+    const el = document.elementFromPoint(x, y)
+    const li = el?.closest('li[data-drop-idx]') as HTMLElement | null
+    if (!li) return
+    const dropIdx = parseInt(li.dataset.dropIdx ?? '')
+    if (isNaN(dropIdx)) return
+    if (dropIdx === position) {
+      li.classList.add('queue-now-playing-drop')
+      activeDropIndicatorRef.current = li
+      return
+    }
+    if (dropIdx < position) return
+    const rect = li.getBoundingClientRect()
+    const cls = y < rect.top + rect.height / 2 ? 'queue-drop-above' : 'queue-drop-below'
+    li.classList.add(cls)
+    activeDropIndicatorRef.current = li
+  }
+
+  function resolveAlbumDropIdx(x: number, y: number): number | null {
+    const el = document.elementFromPoint(x, y)
+    const li = el?.closest('li[data-drop-idx]') as HTMLElement | null
+    if (!li) {
+      // Tail drop: pointer in the Next Up list area but not on any row
+      const nextUpEl = listRef.current
+      if (nextUpEl) {
+        const r = nextUpEl.getBoundingClientRect()
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return tracks.length
+      }
+      return null
+    }
+    const dropIdx = parseInt(li.dataset.dropIdx ?? '')
+    if (isNaN(dropIdx)) return null
+    // Now Playing row: insert immediately after current track
+    if (dropIdx === position) return position + 1
+    // History rows: not a valid target in grouping mode
+    if (dropIdx < position) return null
+    const rect = li.getBoundingClientRect()
+    const isTopHalf = y < rect.top + rect.height / 2
+    if (isTopHalf) return dropIdx
+    const next = li.nextElementSibling as HTMLElement | null
+    const nextDropIdx = next?.dataset.dropIdx ? parseInt(next.dataset.dropIdx) : undefined
+    return nextDropIdx ?? tracks.length
+  }
+
+  function handleAlbumCardPointerDown(
+    trackIndices: number[],
+    startX: number,
+    startY: number
+  ): void {
+    let dragStarted = false
+    let ghost: HTMLDivElement | null = null
+
+    const onMove = (ev: PointerEvent): void => {
+      if (!dragStarted) {
+        if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return
+        dragStarted = true
+        ghost = document.createElement('div')
+        ghost.textContent = `${trackIndices.length} tracks`
+        ghost.style.cssText =
+          'position:fixed;top:-100px;left:-100px;background:var(--accent);color:#fff;padding:4px 10px;border-radius:3px;font-size:12px;font-weight:600;pointer-events:none;z-index:9999'
+        document.body.appendChild(ghost)
+      }
+      if (ghost) {
+        ghost.style.left = `${ev.clientX + 12}px`
+        ghost.style.top = `${ev.clientY - 12}px`
+      }
+      updateAlbumDropIndicators(ev.clientX, ev.clientY)
+    }
+
+    const cleanup = (): void => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('keydown', onEscape)
+      if (ghost) {
+        document.body.removeChild(ghost)
+        ghost = null
+      }
+      clearAlbumDropIndicators()
+    }
+
+    const onUp = (ev: PointerEvent): void => {
+      const wasDrag = dragStarted
+      cleanup()
+      if (wasDrag) {
+        const dropIdx = resolveAlbumDropIdx(ev.clientX, ev.clientY)
+        if (dropIdx !== null) {
+          void reorderQueue(computeNewOrder(tracks.length, trackIndices, dropIdx))
+          setAlbumGroupingActive(false)
+        }
+      }
+    }
+
+    const onEscape = (ev: KeyboardEvent): void => {
+      if (ev.key === 'Escape') cleanup()
+    }
+
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('keydown', onEscape)
+  }
 
   function handleResizeMouseDown(e: React.MouseEvent): void {
     e.preventDefault()
@@ -161,6 +346,15 @@ export function QueuePanel(): React.JSX.Element {
 
   function handleRowMouseDown(e: React.MouseEvent, idx: number): void {
     if (e.button !== 0) return
+    // Shift+mousedown on a Next Up row → enter album-grouping mode (distinct from
+    // Shift+click range-selection, which fires later in handleRowClick/mouseup).
+    if (e.shiftKey && position >= 0 && idx > position && !albumGroupingActive) {
+      e.preventDefault()
+      setAlbumGroupingActive(true)
+      return
+    }
+    // While grouping mode is active, individual track rows are non-interactive.
+    if (albumGroupingActive) return
     if (e.shiftKey && anchorIdx !== null) {
       const lo = Math.min(anchorIdx, idx)
       const hi = Math.max(anchorIdx, idx)
@@ -320,6 +514,7 @@ export function QueuePanel(): React.JSX.Element {
     return (
       <li
         key={idx}
+        data-drop-idx={idx}
         className={[
           'queue-track-row',
           isCurrent ? 'current' : '',
@@ -329,7 +524,7 @@ export function QueuePanel(): React.JSX.Element {
         ]
           .filter(Boolean)
           .join(' ')}
-        draggable={!isCurrent}
+        draggable={!isCurrent && !albumGroupingActive}
         onMouseDown={(e) => handleRowMouseDown(e, idx)}
         onMouseUp={() => handleRowMouseUp(idx)}
         onDragStart={(e) => {
@@ -533,7 +728,9 @@ export function QueuePanel(): React.JSX.Element {
             >
               <span>NOW PLAYING</span>
             </div>
-            <ol className="queue-now-playing-list">{renderTrackRow(tracks[position], position)}</ol>
+            <ol ref={nowPlayingListRef} className="queue-now-playing-list">
+              {renderTrackRow(tracks[position], position)}
+            </ol>
           </div>
 
           {/* Scrollable block: Next Up */}
@@ -546,7 +743,7 @@ export function QueuePanel(): React.JSX.Element {
                 e.preventDefault()
               }}
             >
-              <span>NEXT UP</span>
+              <span>NEXT UP{albumGroupingActive ? ' — ALBUM VIEW' : ''}</span>
             </div>
             <ol
               ref={listRef}
@@ -566,9 +763,25 @@ export function QueuePanel(): React.JSX.Element {
               }}
               onDrop={handleListDrop}
             >
-              {tracks
-                .slice(position + 1)
-                .map((track, i) => renderTrackRow(track, position + 1 + i))}
+              {albumGroupingActive
+                ? nextUpItems.map((item) =>
+                    item.kind === 'track' ? (
+                      renderTrackRow(item.track, item.queueIdx)
+                    ) : (
+                      <QueueAlbumCard
+                        key={`album:${item.albumArtist}\0${item.album}`}
+                        albumArtist={item.albumArtist}
+                        album={item.album}
+                        tracks={item.tracks}
+                        trackIndices={item.trackIndices}
+                        isDragging={false}
+                        onPointerDown={handleAlbumCardPointerDown}
+                      />
+                    )
+                  )
+                : tracks
+                    .slice(position + 1)
+                    .map((track, i) => renderTrackRow(track, position + 1 + i))}
             </ol>
           </div>
         </>

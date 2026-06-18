@@ -376,6 +376,13 @@ export function MagicPlaylistModule({ displayStyle, moduleId }: ModuleProps): Re
   const [artists, setArtists] = useState<Artist[]>([])
   const [tracks, setTracks] = useState<PlaylistTrack[]>([])
   const [loading, setLoading] = useState(true)
+  const [randomTick, setRandomTick] = useState(0)
+
+  useEffect(() => {
+    if (config.sort !== 'random') return
+    const id = setInterval(() => setRandomTick((n) => n + 1), 60 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [config.sort])
 
   useEffect(() => {
     if (serverStatus !== 'connected' || config.playlistId == null) return
@@ -403,7 +410,8 @@ export function MagicPlaylistModule({ displayStyle, moduleId }: ModuleProps): Re
     config.sort,
     config.items,
     serverStatus,
-    magicPlaylistVersion
+    magicPlaylistVersion,
+    randomTick
   ])
 
   if (config.playlistId == null) {

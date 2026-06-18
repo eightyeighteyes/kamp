@@ -107,6 +107,9 @@ export type CriteriaOperator =
   | 'lte'
   | 'contains'
   | 'not_contains'
+  | 'in_last_days'
+  | 'in_last_weeks'
+  | 'in_last_months'
 
 export type CriteriaCondition = { field: CriteriaField; op: CriteriaOperator; value: string }
 export type CriteriaGroup = {

@@ -328,3 +328,49 @@ def test_empty_value_for_float_field_raises() -> None:
     g = _group(_cond("track.last_played", "gt", ""))
     with pytest.raises(ValueError, match="empty value"):
         build_query(_criteria(g))
+
+
+# ---------------------------------------------------------------------------
+# Relative-date operators (in_last_days / in_last_weeks / in_last_months)
+# ---------------------------------------------------------------------------
+
+
+def test_in_last_days_produces_relative_sql() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.date_added", "in_last_days", "7")))
+    )
+    assert "strftime('%s','now')" in frag
+    assert "86400" in frag
+    assert params == [7]
+
+
+def test_in_last_weeks_produces_relative_sql() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.date_added", "in_last_weeks", "2")))
+    )
+    assert "strftime('%s','now')" in frag
+    assert "604800" in frag
+    assert params == [2]
+
+
+def test_in_last_months_produces_relative_sql() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.date_added", "in_last_months", "3")))
+    )
+    assert "strftime('%s','now')" in frag
+    assert "2592000" in frag
+    assert params == [3]
+
+
+def test_in_last_days_invalid_value_raises() -> None:
+    g = _group(_cond("track.date_added", "in_last_days", "not_a_number"))
+    with pytest.raises(ValueError, match="integer value"):
+        build_query(_criteria(g))
+
+
+def test_in_last_days_on_last_played_field() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.last_played", "in_last_days", "30")))
+    )
+    assert "COALESCE(tracks.last_played, 0)" in frag
+    assert params == [30]

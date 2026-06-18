@@ -72,6 +72,14 @@ _OP_MAP: dict[str, str] = {
     "not_contains": "NOT LIKE ?",
 }
 
+# Relative-date ops: evaluate at query time so stored criteria stay meaningful
+# regardless of when they were saved.
+_RELATIVE_OPS: dict[str, int] = {
+    "in_last_days": 86400,
+    "in_last_weeks": 604800,
+    "in_last_months": 2592000,  # 30-day month approximation
+}
+
 
 def _condition_sql(cond: "Condition") -> tuple[str, list[Any], bool]:
     """Return ``(sql_fragment, params, needs_album_join)`` for a single condition."""
@@ -95,6 +103,19 @@ def _condition_sql(cond: "Condition") -> tuple[str, list[Any], bool]:
 
     col_expr, vtype = _FIELD_MAP[field]
     needs_join = field in _ALBUM_FIELDS
+
+    # Relative-date ops compute the threshold at query time so stored criteria
+    # remain correct regardless of when they were saved.
+    if op in _RELATIVE_OPS:
+        seconds_per_unit = _RELATIVE_OPS[op]
+        try:
+            amount = int(value)
+        except (ValueError, TypeError):
+            raise ValueError(
+                f"in_last operators require an integer value, got {value!r}"
+            )
+        fragment = f"{col_expr} > CAST(strftime('%s','now') AS INTEGER) - ? * {seconds_per_unit}"
+        return fragment, [amount], needs_join
 
     if op not in _OP_MAP:
         raise ValueError(f"Unknown magic playlist operator: {op!r}")

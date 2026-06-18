@@ -210,10 +210,16 @@ function reducer(state: ModalState, action: Action): ModalState {
 // CriteriaDoc builder
 // ---------------------------------------------------------------------------
 
-const UNIT_SECONDS: Record<'days' | 'weeks' | 'months', number> = {
-  days: 86400,
-  weeks: 604800,
-  months: 2592000
+const UNIT_TO_OP: Record<'days' | 'weeks' | 'months', CriteriaOperator> = {
+  days: 'in_last_days',
+  weeks: 'in_last_weeks',
+  months: 'in_last_months'
+}
+
+const OP_TO_UNIT: Partial<Record<CriteriaOperator, 'days' | 'weeks' | 'months'>> = {
+  in_last_days: 'days',
+  in_last_weeks: 'weeks',
+  in_last_months: 'months'
 }
 
 function buildCriteriaDoc(state: ModalState): CriteriaDoc {
@@ -229,8 +235,8 @@ function buildCriteriaDoc(state: ModalState): CriteriaDoc {
 
         if (fieldType === 'date' && c.dateMeta) {
           if (c.dateMeta.mode === 'relative') {
-            op = 'gt'
-            value = String(Date.now() / 1000 - c.dateMeta.amount * UNIT_SECONDS[c.dateMeta.unit])
+            op = UNIT_TO_OP[c.dateMeta.unit]
+            value = String(c.dateMeta.amount)
           } else if (c.dateMeta.date) {
             value = String(new Date(c.dateMeta.date).getTime() / 1000)
           }
@@ -612,13 +618,17 @@ function initialState(playlist?: Playlist): ModalState {
           op: c.op,
           value: c.value,
           // Loaded as absolute mode; relative intent is not round-tripped
-          dateMeta:
-            FIELD_META[c.field]?.type === 'date'
-              ? {
-                  mode: 'absolute',
-                  date: new Date(Number(c.value) * 1000).toISOString().slice(0, 10)
-                }
-              : undefined
+          dateMeta: (() => {
+            if (FIELD_META[c.field]?.type !== 'date') return undefined
+            const unit = OP_TO_UNIT[c.op as CriteriaOperator]
+            if (unit) {
+              return { mode: 'relative' as const, amount: Number(c.value), unit }
+            }
+            return {
+              mode: 'absolute' as const,
+              date: new Date(Number(c.value) * 1000).toISOString().slice(0, 10)
+            }
+          })()
         }))
       }))
     }

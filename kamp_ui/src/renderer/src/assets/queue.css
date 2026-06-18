@@ -341,3 +341,105 @@
   background: var(--border);
   margin: 4px 0;
 }
+
+/* Album-grouping mode ------------------------------------------------------- */
+
+@keyframes queue-album-card-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.queue-album-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  margin: 0 4px;
+  min-height: 44px;
+  border-radius: 3px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  cursor: grab;
+  animation: queue-album-card-in 120ms ease-out both;
+  user-select: none;
+}
+
+.queue-album-card:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-hover));
+}
+
+.queue-album-card--dragging {
+  opacity: 0.4;
+}
+
+.queue-album-card-art {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--surface-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.queue-album-card-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: opacity 120ms;
+}
+
+.queue-album-card-art-placeholder {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.queue-album-card-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.queue-album-card-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-album-card-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-album-card-count {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Drop indicators during album-card drag */
+.queue-drop-above {
+  border-top: 2px solid var(--accent) !important;
+}
+
+.queue-drop-below {
+  border-bottom: 2px solid var(--accent);
+}
+
+.queue-now-playing-drop {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -2px;
+}

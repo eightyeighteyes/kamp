@@ -4031,7 +4031,7 @@ class LibraryIndex:
                    tracks.genre, tracks.label, tracks.favorite, tracks.play_count,
                    tracks.last_played, tracks.source, tracks.is_available, tracks.duration
             FROM tracks {album_join}
-            WHERE {where_fragment}
+            WHERE {where_fragment} AND tracks.is_available = 1
             ORDER BY tracks.id
         """
         rows = self._conn.execute(sql, params).fetchall()

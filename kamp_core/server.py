@@ -1104,7 +1104,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=_allowed_origins,
         allow_origin_regex=_allowed_origin_regex,
-        allow_methods=["GET", "POST", "DELETE", "PATCH"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         # X-Kamp-Token must be listed so CORS preflight allows it.
         allow_headers=["Content-Type", "X-Kamp-Token"],
     )

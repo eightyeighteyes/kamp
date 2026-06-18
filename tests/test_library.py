@@ -8705,6 +8705,50 @@ class TestMagicPlaylists:
         index.close()
         assert tracks == []
 
+    def test_get_magic_playlist_tracks_excludes_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        """Pre-order tracks (is_available=False) must not appear even if they match criteria."""
+        from kamp_core.library import Track
+
+        index, id_a, _ = self._seeded_index(tmp_path)
+        unavailable = Track(
+            file_path=tmp_path / "preorder.mp3",
+            title="Unreleased Song",
+            artist="Alvvays",
+            album_artist="Alvvays",
+            album="Blue Rev",
+            year="2022",
+            track_number=99,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            is_available=False,
+        )
+        index.upsert_many([unavailable])
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.artist", op="is", value="Alvvays")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("No Preorders", criteria)
+        tracks = index.get_magic_playlist_tracks(pid)
+        index.close()
+
+        ids = [t["id"] for t in tracks]
+        assert id_a in ids
+        assert unavailable not in [t["file_path"] for t in tracks]
+        assert all(t["is_available"] for t in tracks)
+
     def test_count_magic_criteria_returns_match_count(self, tmp_path: Path) -> None:
         index, _, _ = self._seeded_index(tmp_path)
         criteria = MagicCriteria(

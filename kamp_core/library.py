@@ -4022,6 +4022,186 @@ class LibraryIndex:
             for r in rows
         ]
 
+    def get_playlist_module_content(
+        self,
+        playlist_id: int,
+        contents: str,
+        sort: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Return albums, artists, or tracks for a playlist module.
+
+        ``contents`` is one of 'albums', 'artists', 'tracks'.
+        ``sort`` is one of 'random', 'last_played', 'recently_added', 'most_played'.
+        Works for both static (playlist_tracks) and magic playlists.
+        Returns an empty list when the playlist does not exist.
+        """
+        # Check existence.
+        exists = self._conn.execute(
+            "SELECT 1 FROM playlists WHERE id = ?", (playlist_id,)
+        ).fetchone()
+        if exists is None:
+            return []
+
+        # Resolve track ID set.
+        is_magic = self._conn.execute(
+            "SELECT 1 FROM magic_playlist_criteria WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()
+        if is_magic:
+            track_ids = self.evaluate_magic_playlist(playlist_id)
+        else:
+            rows = self._conn.execute(
+                "SELECT track_id FROM playlist_tracks WHERE playlist_id = ?",
+                (playlist_id,),
+            ).fetchall()
+            track_ids = [r[0] for r in rows]
+
+        if not track_ids:
+            return []
+
+        placeholders = ",".join("?" * len(track_ids))
+
+        _ALBUM_SORT = {
+            "random": "ORDER BY RANDOM()",
+            "last_played": "ORDER BY a.last_played_at DESC NULLS LAST",
+            "recently_added": "ORDER BY a.date_added DESC",
+            "most_played": "ORDER BY a.play_count_avg DESC",
+        }
+        _TRACK_SORT = {
+            "random": "ORDER BY RANDOM()",
+            "last_played": "ORDER BY t.last_played DESC NULLS LAST",
+            "recently_added": "ORDER BY t.date_added DESC",
+            "most_played": "ORDER BY t.play_count DESC",
+        }
+        # Artists lack per-sort columns; fall back to play_time for non-random.
+        _ARTIST_SORT = {
+            "random": "ORDER BY RANDOM()",
+            "last_played": "ORDER BY ar.play_time DESC",
+            "recently_added": "ORDER BY ar.play_time DESC",
+            "most_played": "ORDER BY ar.play_time DESC",
+        }
+
+        if contents == "albums":
+            order = _ALBUM_SORT.get(sort, "ORDER BY RANDOM()")
+            rows = self._conn.execute(
+                f"""
+                SELECT
+                    a.album_artist, a.album, a.year, a.play_count_avg,
+                    a.date_added, a.last_played_at, a.embedded_art, a.art_version,
+                    a.display_album, a.display_album_artist, a.source, a.sale_item_id,
+                    COUNT(t.id) AS track_count
+                FROM albums a
+                JOIN tracks t ON t.album_id = a.id
+                WHERE a.id IN (
+                    SELECT DISTINCT album_id FROM tracks WHERE id IN ({placeholders})
+                )
+                GROUP BY a.id
+                {order}
+                LIMIT ?
+                """,
+                (*track_ids, limit),
+            ).fetchall()
+            return [
+                {
+                    "album_artist": r["album_artist"],
+                    "album": r["album"],
+                    "year": r["year"] or "",
+                    "track_count": r["track_count"],
+                    "has_art": bool(r["embedded_art"]) or r["source"] == "bandcamp",
+                    "missing_album": False,
+                    "file_path": "",
+                    "art_version": r["art_version"],
+                    "added_at": r["date_added"],
+                    "last_played_at": r["last_played_at"],
+                    "play_count_avg": r["play_count_avg"] or 0.0,
+                    "favorite": False,
+                    "has_favorite_track": False,
+                    "source": r["source"] or "local",
+                    "has_remote_tracks": r["source"] != "local",
+                    "sale_item_id": r["sale_item_id"],
+                    "is_preorder": False,
+                    "album_url": "",
+                    "display_album": r["display_album"],
+                    "display_album_artist": r["display_album_artist"],
+                }
+                for r in rows
+            ]
+
+        if contents == "artists":
+            order = _ARTIST_SORT.get(sort, "ORDER BY RANDOM()")
+            rows = self._conn.execute(
+                f"""
+                SELECT
+                    ar.name, ar.play_time,
+                    (SELECT album FROM albums
+                     WHERE artist_id = ar.id
+                     ORDER BY play_count_avg DESC LIMIT 1) AS top_album
+                FROM artists ar
+                WHERE ar.id IN (
+                    SELECT DISTINCT a.artist_id FROM albums a
+                    JOIN tracks t ON t.album_id = a.id
+                    WHERE t.id IN ({placeholders}) AND a.artist_id IS NOT NULL
+                )
+                {order}
+                LIMIT ?
+                """,
+                (*track_ids, limit),
+            ).fetchall()
+            return [
+                {
+                    "name": r["name"],
+                    "play_time": r["play_time"],
+                    "top_album": r["top_album"],
+                }
+                for r in rows
+            ]
+
+        # Default: tracks.
+        order = _TRACK_SORT.get(sort, "ORDER BY RANDOM()")
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                t.id, t.file_path, t.title, t.artist, t.album_artist, t.album,
+                t.year, t.track_number, t.disc_number, t.ext, t.embedded_art,
+                t.mb_release_id, t.mb_recording_id, t.genre, t.label,
+                t.favorite, t.play_count, t.last_played, t.source, t.is_available, t.duration
+            FROM tracks t
+            WHERE t.id IN ({placeholders})
+            {order}
+            LIMIT ?
+            """,
+            (*track_ids, limit),
+        ).fetchall()
+        return [
+            {
+                "playlist_track_id": None,
+                "position": 0,
+                "id": r["id"],
+                "file_path": r["file_path"],
+                "title": r["title"],
+                "artist": r["artist"],
+                "album_artist": r["album_artist"],
+                "album": r["album"],
+                "year": r["year"],
+                "track_number": r["track_number"],
+                "disc_number": r["disc_number"],
+                "ext": r["ext"],
+                "embedded_art": bool(r["embedded_art"]),
+                "mb_release_id": r["mb_release_id"],
+                "mb_recording_id": r["mb_recording_id"],
+                "genre": r["genre"],
+                "label": r["label"],
+                "favorite": bool(r["favorite"]),
+                "play_count": r["play_count"],
+                "last_played": r["last_played"],
+                "source": r["source"],
+                "is_available": bool(r["is_available"]),
+                "duration": r["duration"],
+            }
+            for r in rows
+        ]
+
     def count_magic_criteria(self, criteria: "MagicCriteria") -> int:
         """Return the number of tracks that match *criteria* without fetching them."""
         from kamp_core.criteria import build_query

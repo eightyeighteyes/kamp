@@ -5816,6 +5816,30 @@ _SAMPLE_CRITERIA = {
 }
 
 
+class TestPlaylistModuleContentEndpoint:
+    def test_returns_content_list(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = _playlist(id=1)
+        mock_index.get_playlist_module_content.return_value = [
+            {"album_artist": "Alvvays", "album": "Antisocialites"}
+        ]
+        resp = client.get(
+            "/api/v1/playlists/1/module-content?contents=albums&sort=random&limit=5"
+        )
+        assert resp.status_code == 200
+        assert resp.json()[0]["album"] == "Antisocialites"
+        mock_index.get_playlist_module_content.assert_called_once_with(
+            1, "albums", "random", 5
+        )
+
+    def test_returns_404_for_missing_playlist(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_playlist.return_value = None
+        assert client.get("/api/v1/playlists/999/module-content").status_code == 404
+
+
 class TestMagicPlaylistEndpoints:
     """Tests for magic playlist routes added in KAMP-461."""
 

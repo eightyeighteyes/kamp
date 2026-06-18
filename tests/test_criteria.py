@@ -73,6 +73,16 @@ def test_album_favorite_sets_join_flag() -> None:
     assert join is True
 
 
+def test_album_play_count_avg_sets_join_flag() -> None:
+    frag, params, join = build_query(
+        _criteria(_group(_cond("album.play_count_avg", "gt", "3")))
+    )
+    assert "albums.play_count_avg" in frag
+    assert "> ?" in frag
+    assert params == [3.0]
+    assert join is True
+
+
 # ---------------------------------------------------------------------------
 # Numeric fields
 # ---------------------------------------------------------------------------

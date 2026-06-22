@@ -13,7 +13,10 @@ export function computeNewOrder(
 ): number[] {
   const selected = new Set(selectedIdxs)
   const unselected = Array.from({ length: trackCount }, (_, i) => i).filter((i) => !selected.has(i))
-  // Math.min handles tail-drop (dropIdx === trackCount) without an off-by-one.
-  const insertPos = Math.min(dropIdx, unselected.length)
+  // Count surviving items that sit before the drop target's original index. This stays
+  // correct when the dragged items precede the target (those removals shift the array left,
+  // which a raw `dropIdx` would ignore) and naturally caps at unselected.length for tail-drop
+  // (dropIdx === trackCount).
+  const insertPos = unselected.filter((i) => i < dropIdx).length
   return [...unselected.slice(0, insertPos), ...selectedIdxs, ...unselected.slice(insertPos)]
 }

@@ -4,7 +4,7 @@ import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
 import { QueueContextMenu } from './QueueContextMenu'
 import { QueueAlbumCard } from './QueueAlbumCard'
-import { FavoriteIcon, WarnIcon } from './TransportIcons'
+import { FavoriteIcon, WarnIcon, GoToAlbumIcon } from './TransportIcons'
 import type { Track } from '../api/client'
 import { computeNewOrder } from '../utils/computeNewOrder'
 
@@ -72,7 +72,9 @@ export function QueuePanel(): React.JSX.Element {
   const dragStartXRef = useRef(0)
   const widthAtDragStartRef = useRef(QUEUE_WIDTH_DEFAULT)
   const didDragRef = useRef(false)
-  const [albumGroupingActive, setAlbumGroupingActive] = useState(false)
+  const [albumGroupingActive, setAlbumGroupingActive] = useState(
+    () => localStorage.getItem('kamp:album-view') === 'true'
+  )
   const nowPlayingListRef = useRef<HTMLOListElement>(null)
   // Tracks the currently highlighted drop-indicator element to avoid a DOM query on clear.
   const activeDropIndicatorRef = useRef<HTMLElement | null>(null)
@@ -108,6 +110,12 @@ export function QueuePanel(): React.JSX.Element {
 
     setAnchorIdx(null)
   }, [tracks.length, position])
+
+  // Persist album-view state so it survives app relaunch. A single effect keyed on
+  // the state covers every toggle path — the header button, the Alt shortcut, and Escape.
+  useEffect(() => {
+    localStorage.setItem('kamp:album-view', String(albumGroupingActive))
+  }, [albumGroupingActive])
 
   // Alt → enter album-grouping mode; Escape → exit it.
   useEffect(() => {
@@ -341,6 +349,11 @@ export function QueuePanel(): React.JSX.Element {
     const next = !historyCollapsed
     setHistoryCollapsed(next)
     localStorage.setItem('kamp:queue-history-collapsed', String(next))
+  }
+
+  // Persistence is handled by the localStorage effect keyed on albumGroupingActive.
+  function toggleAlbumGrouping(): void {
+    setAlbumGroupingActive((prev) => !prev)
   }
 
   function handleRowMouseDown(e: React.MouseEvent, idx: number): void {
@@ -736,6 +749,14 @@ export function QueuePanel(): React.JSX.Element {
               }}
             >
               <span>NEXT UP{albumGroupingActive ? ' — ALBUM VIEW' : ''}</span>
+              <button
+                className={`queue-album-toggle${albumGroupingActive ? ' queue-album-toggle--active' : ''}`}
+                onClick={toggleAlbumGrouping}
+                title="Album view"
+                aria-pressed={albumGroupingActive}
+              >
+                <GoToAlbumIcon size={14} />
+              </button>
             </div>
             <ol
               ref={listRef}

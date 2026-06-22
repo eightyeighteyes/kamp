@@ -295,6 +295,28 @@
   background: var(--surface-hover);
 }
 
+.queue-album-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+  line-height: 1;
+}
+
+.queue-album-toggle:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.queue-album-toggle--active {
+  color: var(--accent);
+}
+
 /* Right-click context menu on track rows */
 .track-context-menu {
   position: fixed;

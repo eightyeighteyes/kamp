@@ -144,8 +144,9 @@ export function QueuePanel(): React.JSX.Element {
   }, [])
 
   // View model: collapses Next Up tracks into album cards when grouping mode is active.
-  // Card appears at each album's first occurrence in the queue; straddle album (currently
-  // playing) and single-track albums remain as individual rows.
+  // Each *contiguous run* of the same album becomes one card, so the same album appearing
+  // non-contiguously in the queue yields a separate card per run. Straddle album (currently
+  // playing) tracks and single-track runs remain as individual rows.
   const nextUpItems = useMemo((): NextUpItem[] => {
     if (!albumGroupingActive || position < 0) return []
     const nowPlayingTrack = tracks[position]
@@ -153,47 +154,53 @@ export function QueuePanel(): React.JSX.Element {
       ? `${nowPlayingTrack.album_artist}\0${nowPlayingTrack.album}`
       : ''
 
-    // First pass: build per-album groups (preserving relative track order within each album)
-    const albumGroupMap = new Map<
-      string,
-      { albumArtist: string; album: string; tracks: Track[]; trackIndices: number[] }
-    >()
-    for (let i = position + 1; i < tracks.length; i++) {
-      const track = tracks[i]
-      const key = `${track.album_artist}\0${track.album}`
-      if (key === straddleKey) continue
-      if (!albumGroupMap.has(key)) {
-        albumGroupMap.set(key, {
-          albumArtist: track.album_artist,
-          album: track.album,
-          tracks: [],
-          trackIndices: []
-        })
+    const result: NextUpItem[] = []
+    let run: {
+      key: string
+      albumArtist: string
+      album: string
+      tracks: Track[]
+      trackIndices: number[]
+    } | null = null
+
+    // Flush the open run: a single track renders as a row, two or more as an album card.
+    const flush = (): void => {
+      if (!run) return
+      if (run.tracks.length < 2) {
+        result.push({ kind: 'track', track: run.tracks[0], queueIdx: run.trackIndices[0] })
+      } else {
+        const { albumArtist, album, tracks: t, trackIndices } = run
+        result.push({ kind: 'album', albumArtist, album, tracks: t, trackIndices })
       }
-      const group = albumGroupMap.get(key)!
-      group.tracks.push(track)
-      group.trackIndices.push(i)
+      run = null
     }
 
-    // Second pass: emit items in queue order, placing each album card at its first occurrence
-    const result: NextUpItem[] = []
-    const emittedAlbumKeys = new Set<string>()
     for (let i = position + 1; i < tracks.length; i++) {
       const track = tracks[i]
       const key = `${track.album_artist}\0${track.album}`
+      // Straddle (now-playing) album tracks always render individually and break any run.
       if (key === straddleKey) {
+        flush()
         result.push({ kind: 'track', track, queueIdx: i })
         continue
       }
-      if (emittedAlbumKeys.has(key)) continue
-      emittedAlbumKeys.add(key)
-      const group = albumGroupMap.get(key)!
-      if (group.tracks.length < 2) {
-        result.push({ kind: 'track', track: group.tracks[0], queueIdx: group.trackIndices[0] })
+      // Sequential iteration means "same key as the open run" already implies contiguity:
+      // any intervening album (or straddle track) would have flushed the run first.
+      if (run && run.key === key) {
+        run.tracks.push(track)
+        run.trackIndices.push(i)
       } else {
-        result.push({ kind: 'album', ...group })
+        flush()
+        run = {
+          key,
+          albumArtist: track.album_artist,
+          album: track.album,
+          tracks: [track],
+          trackIndices: [i]
+        }
       }
     }
+    flush()
     return result
   }, [albumGroupingActive, tracks, position])
 
@@ -629,7 +636,7 @@ export function QueuePanel(): React.JSX.Element {
   function renderAlbumCard(item: Extract<NextUpItem, { kind: 'album' }>): React.JSX.Element {
     return (
       <QueueAlbumCard
-        key={`album:${item.albumArtist}\0${item.album}`}
+        key={`album:${item.albumArtist}\0${item.album}\0${item.trackIndices[0]}`}
         albumArtist={item.albumArtist}
         album={item.album}
         tracks={item.tracks}

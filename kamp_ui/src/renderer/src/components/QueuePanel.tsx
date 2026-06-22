@@ -752,7 +752,7 @@ export function QueuePanel(): React.JSX.Element {
               <button
                 className={`queue-album-toggle${albumGroupingActive ? ' queue-album-toggle--active' : ''}`}
                 onClick={toggleAlbumGrouping}
-                title="Album view"
+                {...tooltip(TOOLTIPS.QUEUE_ALBUM_VIEW)}
                 aria-pressed={albumGroupingActive}
               >
                 <GoToAlbumIcon size={14} />

@@ -10,6 +10,11 @@ interface QueueAlbumCardProps {
   isDragging: boolean
   onPointerDown: (trackIndices: number[], startX: number, startY: number) => void
   onContextMenu: (e: React.MouseEvent) => void
+  // HTML5 drop handlers so external drags (library album/track/files) can target the card,
+  // mirroring the track-row drop wiring. The card is drop-target only — it never sets draggable.
+  onDragOver?: React.DragEventHandler<HTMLLIElement>
+  onDragLeave?: React.DragEventHandler<HTMLLIElement>
+  onDrop?: React.DragEventHandler<HTMLLIElement>
 }
 
 export function QueueAlbumCard({
@@ -19,7 +24,10 @@ export function QueueAlbumCard({
   trackIndices,
   isDragging,
   onPointerDown,
-  onContextMenu
+  onContextMenu,
+  onDragOver,
+  onDragLeave,
+  onDrop
 }: QueueAlbumCardProps): React.JSX.Element {
   const [artLoaded, setArtLoaded] = useState(false)
   const [artError, setArtError] = useState(false)
@@ -36,6 +44,9 @@ export function QueueAlbumCard({
         onPointerDown(trackIndices, e.clientX, e.clientY)
       }}
       onContextMenu={onContextMenu}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
     >
       <div className="queue-album-card-art">
         {!artError && (

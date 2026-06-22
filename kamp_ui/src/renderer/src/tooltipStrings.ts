@@ -19,6 +19,7 @@ export const TOOLTIPS = {
 
   // Queue panel
   QUEUE_CLOSE: 'Close queue',
+  QUEUE_ALBUM_VIEW: 'Album Queue',
 
   // Panel management / preferences
   PREFERENCES: 'Preferences',

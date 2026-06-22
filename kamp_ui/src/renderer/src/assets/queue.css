@@ -394,6 +394,10 @@
   opacity: 0.4;
 }
 
+.queue-album-card.drag-over {
+  border-top: 2px solid var(--accent);
+}
+
 .queue-album-card-art {
   flex-shrink: 0;
   width: 36px;

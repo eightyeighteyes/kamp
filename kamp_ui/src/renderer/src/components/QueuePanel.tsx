@@ -623,6 +623,52 @@ export function QueuePanel(): React.JSX.Element {
     )
   }
 
+  // Mirrors renderTrackRow: keeping the album-card JSX (and its ref-reading drop
+  // handlers) inside a named function rather than inline in the render map keeps
+  // the react-hooks/refs lint rule from flagging handleDrop's listRef access.
+  function renderAlbumCard(item: Extract<NextUpItem, { kind: 'album' }>): React.JSX.Element {
+    return (
+      <QueueAlbumCard
+        key={`album:${item.albumArtist}\0${item.album}`}
+        albumArtist={item.albumArtist}
+        album={item.album}
+        tracks={item.tracks}
+        trackIndices={item.trackIndices}
+        isDragging={false}
+        onPointerDown={handleAlbumCardPointerDown}
+        onDragOver={(e) => {
+          if (!isQueueDrop(e.dataTransfer.types)) return
+          e.preventDefault()
+          e.stopPropagation()
+          e.currentTarget.classList.add('drag-over')
+          listRef.current?.classList.remove('queue-tail-drop')
+        }}
+        onDragLeave={(e) => {
+          e.stopPropagation()
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            e.currentTarget.classList.remove('drag-over')
+          }
+        }}
+        onDrop={(e) => handleDrop(e, item.trackIndices[0])}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setMenu({
+            x: e.clientX,
+            y: e.clientY,
+            // clear_remaining keeps through trackIdx and removes
+            // everything after — pass the last track of the album so
+            // the full album is kept and everything beyond is cleared.
+            trackIdx: item.trackIndices[item.trackIndices.length - 1],
+            track: item.tracks[0],
+            selectedTracks: item.tracks,
+            unplayedSelectedIndices: item.trackIndices
+          })
+        }}
+      />
+    )
+  }
+
   const listContextMenu = (e: React.MouseEvent): void => {
     e.preventDefault()
     setMenu({
@@ -778,34 +824,9 @@ export function QueuePanel(): React.JSX.Element {
             >
               {albumGroupingActive
                 ? nextUpItems.map((item) =>
-                    item.kind === 'track' ? (
-                      renderTrackRow(item.track, item.queueIdx)
-                    ) : (
-                      <QueueAlbumCard
-                        key={`album:${item.albumArtist}\0${item.album}`}
-                        albumArtist={item.albumArtist}
-                        album={item.album}
-                        tracks={item.tracks}
-                        trackIndices={item.trackIndices}
-                        isDragging={false}
-                        onPointerDown={handleAlbumCardPointerDown}
-                        onContextMenu={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          setMenu({
-                            x: e.clientX,
-                            y: e.clientY,
-                            // clear_remaining keeps through trackIdx and removes
-                            // everything after — pass the last track of the album so
-                            // the full album is kept and everything beyond is cleared.
-                            trackIdx: item.trackIndices[item.trackIndices.length - 1],
-                            track: item.tracks[0],
-                            selectedTracks: item.tracks,
-                            unplayedSelectedIndices: item.trackIndices
-                          })
-                        }}
-                      />
-                    )
+                    item.kind === 'track'
+                      ? renderTrackRow(item.track, item.queueIdx)
+                      : renderAlbumCard(item)
                   )
                 : tracks
                     .slice(position + 1)

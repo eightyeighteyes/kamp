@@ -1212,23 +1212,55 @@ class TestAlbumShuffleOrder:
         assert ordered[1:] == [tracks[1], tracks[2], tracks[3]]
 
     def test_mid_album_anchor(self) -> None:
-        # Anchor at track 1 of AlbumA (0-indexed): tracks[2] (AlbumA idx 2) follows anchor;
-        # tracks[0] (AlbumA idx 0, pre-anchor) ends up somewhere later.
+        # Straddled album is exempt: tracks[0] stays in history, anchor and
+        # rest of its album stay in place, other albums shuffle after.
         tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(3)] + [
             _track_for(i, "ArtistB", "AlbumB") for i in range(2)
         ]
         q = PlaybackQueue()
         q.load(tracks)
-        q.next()  # advance to AlbumA track 1 (idx=1)
-        anchor = q.current()
-        assert anchor == tracks[1]
+        q.next()  # advance to AlbumA track 1, _pos = 1
+        assert q.current() == tracks[1]
         q.set_shuffle(True, album_mode=True)
-        ordered, _ = q.queue_tracks()
-        assert ordered[0] == tracks[1]  # anchor first
-        assert ordered[1] == tracks[2]  # rest of AlbumA after anchor
+        ordered, pos = q.queue_tracks()
+        # _pos is preserved
+        assert pos == 1
+        assert q.current() == tracks[1]
+        # Pre-anchor history stays at position 0
+        assert ordered[0] == tracks[0]
+        # Anchor and rest of its album stay at positions 1-2
+        assert ordered[1] == tracks[1]
+        assert ordered[2] == tracks[2]
+        # AlbumB shuffled in after
         assert len(ordered) == 5
-        # tracks[0] (pre-anchor) appears somewhere
-        assert tracks[0] in ordered
+        assert {t.album for t in ordered[3:]} == {"AlbumB"}
+
+    def test_straddled_album_exempt_pos_preserved(self) -> None:
+        # Scenario from KAMP-499: A-1..A-4 in history, A-5 now playing (pos=4),
+        # A-6..A-10 in next up. Albums B and C are complete in next up.
+        # After album shuffle, Now Playing stays at queue position 5 (index 4).
+        tracks = (
+            [_track_for(i, "ArtistA", "AlbumA") for i in range(10)]
+            + [_track_for(i, "ArtistB", "AlbumB") for i in range(3)]
+            + [_track_for(i, "ArtistC", "AlbumC") for i in range(3)]
+        )
+        q = PlaybackQueue()
+        q.load(tracks)
+        for _ in range(4):
+            q.next()  # advance to tracks[4] (A-5), _pos = 4
+        assert q.current() == tracks[4]
+        q.set_shuffle(True, album_mode=True)
+        ordered, pos = q.queue_tracks()
+        # _pos preserved — Now Playing is still at index 4
+        assert pos == 4
+        assert q.current() == tracks[4]
+        # History (A-1..A-4) unchanged at positions 0-3
+        assert ordered[:4] == tracks[:4]
+        # Straddled album continues: A-5..A-10 at positions 4-9
+        assert ordered[4:10] == tracks[4:10]
+        # Albums B and C shuffled in after
+        assert len(ordered) == 16
+        assert {t.album for t in ordered[10:]} == {"AlbumB", "AlbumC"}
 
     def test_album_mode_false_unchanged(self) -> None:
         # album_mode=False (default) must behave exactly as before: tracks shuffled individually.

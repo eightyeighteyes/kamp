@@ -72,9 +72,8 @@ export function QueuePanel(): React.JSX.Element {
   const dragStartXRef = useRef(0)
   const widthAtDragStartRef = useRef(QUEUE_WIDTH_DEFAULT)
   const didDragRef = useRef(false)
-  const [albumGroupingActive, setAlbumGroupingActive] = useState(
-    () => localStorage.getItem('kamp:album-view') === 'true'
-  )
+  const albumGroupingActive = useStore((s) => s.albumGroupingActive)
+  const setAlbumGroupingActive = useStore((s) => s.setAlbumGroupingActive)
   const nowPlayingListRef = useRef<HTMLOListElement>(null)
   // Tracks the currently highlighted drop-indicator element to avoid a DOM query on clear.
   const activeDropIndicatorRef = useRef<HTMLElement | null>(null)
@@ -112,21 +111,15 @@ export function QueuePanel(): React.JSX.Element {
     setAnchorIdx(null)
   }, [tracks.length, position])
 
-  // Persist album-view state so it survives app relaunch. A single effect keyed on
-  // the state covers every toggle path — the header button, the Alt shortcut, and Escape.
-  useEffect(() => {
-    localStorage.setItem('kamp:album-view', String(albumGroupingActive))
-  }, [albumGroupingActive])
-
   // Alt → enter album-grouping mode; Escape → exit it.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Alt') setAlbumGroupingActive((prev) => !prev)
+      if (e.key === 'Alt') setAlbumGroupingActive(!albumGroupingActive)
       if (e.key === 'Escape' && albumGroupingActive) setAlbumGroupingActive(false)
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [albumGroupingActive])
+  }, [albumGroupingActive, setAlbumGroupingActive])
 
   // Clamp width to 33% when the window shrinks.
   useEffect(() => {
@@ -403,7 +396,7 @@ export function QueuePanel(): React.JSX.Element {
 
   // Persistence is handled by the localStorage effect keyed on albumGroupingActive.
   function toggleAlbumGrouping(): void {
-    setAlbumGroupingActive((prev) => !prev)
+    setAlbumGroupingActive(!albumGroupingActive)
   }
 
   function handleRowMouseDown(e: React.MouseEvent, idx: number): void {

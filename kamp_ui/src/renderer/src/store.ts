@@ -103,6 +103,7 @@ type PlayerStore = {
   artistPanelVisible: boolean
   artistPanelSnapshot: boolean | null // saved visibility before entering Now Playing
   queue: QueueState | null
+  albumGroupingActive: boolean
   downloadingAlbumIds: Set<string>
   queuedAlbumIds: Set<string>
   flashToast: string | null
@@ -200,6 +201,7 @@ type PlayerStore = {
   prev: () => Promise<void>
   seek: (position: number) => Promise<void>
   setVolume: (volume: number) => Promise<void>
+  setAlbumGroupingActive: (active: boolean) => void
   setShuffle: (shuffle: boolean) => Promise<void>
   setRepeat: (repeat: boolean) => Promise<void>
   addAlbumToQueue: (albumArtist: string, album: string, filePath?: string) => Promise<void>
@@ -393,6 +395,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   artistPanelVisible: localStorage.getItem('kamp:artist-panel-visible') !== 'false',
   artistPanelSnapshot: null,
   queue: null,
+  albumGroupingActive: localStorage.getItem('kamp:album-view') === 'true',
   downloadingAlbumIds: new Set<string>(),
   queuedAlbumIds: new Set<string>(),
   flashToast: null,
@@ -1004,8 +1007,13 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set((s) => ({ player: { ...s.player, volume } }))
   },
 
+  setAlbumGroupingActive: (active) => {
+    localStorage.setItem('kamp:album-view', String(active))
+    set({ albumGroupingActive: active })
+  },
+
   setShuffle: async (shuffle) => {
-    await api.setShuffle(shuffle)
+    await api.setShuffle(shuffle, get().albumGroupingActive)
     void get().loadQueue()
   },
 

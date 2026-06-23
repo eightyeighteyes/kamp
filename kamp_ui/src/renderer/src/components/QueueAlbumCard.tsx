@@ -40,11 +40,15 @@ export function QueueAlbumCard({
     <li
       className={`queue-album-card${isDragging ? ' queue-album-card--dragging' : ''}${readOnly ? ' queue-album-card--read-only' : ''}`}
       data-drop-idx={readOnly ? undefined : trackIndices[0]}
-      onPointerDown={readOnly ? undefined : (e) => {
-        if (e.button !== 0) return
-        e.preventDefault()
-        onPointerDown!(trackIndices, e.clientX, e.clientY)
-      }}
+      onPointerDown={
+        readOnly
+          ? undefined
+          : (e) => {
+              if (e.button !== 0) return
+              e.preventDefault()
+              onPointerDown!(trackIndices, e.clientX, e.clientY)
+            }
+      }
       onContextMenu={readOnly ? undefined : onContextMenu}
       onDragOver={readOnly ? undefined : onDragOver}
       onDragLeave={readOnly ? undefined : onDragLeave}

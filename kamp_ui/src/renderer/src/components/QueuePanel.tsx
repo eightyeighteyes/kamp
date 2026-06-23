@@ -206,9 +206,12 @@ export function QueuePanel(): React.JSX.Element {
 
   // Straddle group for the Now Playing album card: contiguous run of tracks around
   // `position` that share the same album key. Used only in album view.
-  const nowPlayingAlbumCard = useMemo(():
-    | { albumArtist: string; album: string; tracks: Track[]; trackIndices: number[] }
-    | null => {
+  const nowPlayingAlbumCard = useMemo((): {
+    albumArtist: string
+    album: string
+    tracks: Track[]
+    trackIndices: number[]
+  } | null => {
     if (!albumGroupingActive || position < 0) return null
     const nowPlayingTrack = tracks[position]
     if (!nowPlayingTrack) return null

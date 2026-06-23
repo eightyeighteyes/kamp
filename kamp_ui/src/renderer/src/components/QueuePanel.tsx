@@ -409,8 +409,12 @@ export function QueuePanel(): React.JSX.Element {
       const sorted: number[] = JSON.parse(multiJson)
       void reorderQueue(computeNewOrder(tracks.length, sorted, dropIdx))
     } else if (queueIdx !== '') {
+      // Route single-track drops through computeNewOrder too (same as the multi branch
+      // above): dropIdx is an insert-before-original-index, but Queue.move() does a
+      // pop-then-insert that lands a downward move one slot too far. reorder takes the
+      // already-corrected permutation and sidesteps that off-by-one.
       const from = Number(queueIdx)
-      if (from !== dropIdx) void moveQueueTrack(from, dropIdx)
+      void reorderQueue(computeNewOrder(tracks.length, [from], dropIdx))
     } else if (trackPath) {
       void insertIntoQueue(trackPath, dropIdx)
     } else if (e.dataTransfer.getData('text/kamp-file-paths')) {

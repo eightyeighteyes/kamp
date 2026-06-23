@@ -37,7 +37,6 @@ const GROUPS: Group[] = [
     label: 'Queue',
     shortcuts: [
       { keys: ['Alt'], description: 'Toggle album grouping mode' },
-      { keys: ['Esc'], description: 'Exit album grouping mode' },
       { keys: ['Shift', 'click'], description: 'Range select in Next Up' }
     ]
   },

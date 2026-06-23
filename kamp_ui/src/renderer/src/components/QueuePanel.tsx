@@ -111,11 +111,10 @@ export function QueuePanel(): React.JSX.Element {
     setAnchorIdx(null)
   }, [tracks.length, position])
 
-  // Alt → enter album-grouping mode; Escape → exit it.
+  // Alt → toggle album-grouping mode.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Alt') setAlbumGroupingActive(!albumGroupingActive)
-      if (e.key === 'Escape' && albumGroupingActive) setAlbumGroupingActive(false)
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)

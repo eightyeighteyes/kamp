@@ -204,6 +204,39 @@ export function QueuePanel(): React.JSX.Element {
     return result
   }, [albumGroupingActive, tracks, position])
 
+  // Straddle group for the Now Playing album card: contiguous run of tracks around
+  // `position` that share the same album key. Used only in album view.
+  const nowPlayingAlbumCard = useMemo((): {
+    albumArtist: string
+    album: string
+    tracks: Track[]
+    trackIndices: number[]
+  } | null => {
+    if (!albumGroupingActive || position < 0) return null
+    const nowPlayingTrack = tracks[position]
+    if (!nowPlayingTrack) return null
+    const key = `${nowPlayingTrack.album_artist}\0${nowPlayingTrack.album}`
+
+    let start = position
+    while (start > 0 && `${tracks[start - 1].album_artist}\0${tracks[start - 1].album}` === key) {
+      start--
+    }
+    let end = position
+    while (
+      end + 1 < tracks.length &&
+      `${tracks[end + 1].album_artist}\0${tracks[end + 1].album}` === key
+    ) {
+      end++
+    }
+
+    return {
+      albumArtist: nowPlayingTrack.album_artist,
+      album: nowPlayingTrack.album,
+      tracks: tracks.slice(start, end + 1),
+      trackIndices: Array.from({ length: end - start + 1 }, (_, i) => start + i)
+    }
+  }, [albumGroupingActive, tracks, position])
+
   function clearAlbumDropIndicators(): void {
     const el = activeDropIndicatorRef.current
     if (el) {
@@ -791,6 +824,17 @@ export function QueuePanel(): React.JSX.Element {
               <span>NOW PLAYING</span>
             </div>
             <ol ref={nowPlayingListRef} className="queue-now-playing-list">
+              {albumGroupingActive && nowPlayingAlbumCard && (
+                <QueueAlbumCard
+                  key={`now-playing-album:${nowPlayingAlbumCard.albumArtist}\0${nowPlayingAlbumCard.album}`}
+                  albumArtist={nowPlayingAlbumCard.albumArtist}
+                  album={nowPlayingAlbumCard.album}
+                  tracks={nowPlayingAlbumCard.tracks}
+                  trackIndices={nowPlayingAlbumCard.trackIndices}
+                  isDragging={false}
+                  readOnly
+                />
+              )}
               {renderTrackRow(tracks[position], position)}
             </ol>
           </div>

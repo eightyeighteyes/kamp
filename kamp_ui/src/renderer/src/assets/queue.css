@@ -394,6 +394,14 @@
   opacity: 0.4;
 }
 
+.queue-album-card--read-only {
+  cursor: default;
+}
+
+.queue-album-card--read-only:hover {
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
 .queue-album-card.drag-over {
   border-top: 2px solid var(--accent);
 }

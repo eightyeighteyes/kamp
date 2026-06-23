@@ -1129,6 +1129,157 @@ class TestShuffleArtistDiversity:
 
 
 # ---------------------------------------------------------------------------
+# Album shuffle
+# ---------------------------------------------------------------------------
+
+
+class TestAlbumShuffleOrder:
+    """Tests for _album_shuffled_order via set_shuffle(album_mode=True)."""
+
+    def _load_multi_album(self) -> tuple[PlaybackQueue, list]:
+        """3-track Album A, 2-track Album B, 1-track Album C — 3 artists."""
+        tracks = (
+            [_track_for(i, "ArtistA", "AlbumA") for i in range(3)]
+            + [_track_for(i, "ArtistB", "AlbumB") for i in range(2)]
+            + [_track_for(i, "ArtistC", "AlbumC") for i in range(1)]
+        )
+        q = PlaybackQueue()
+        q.load(tracks)
+        return q, tracks
+
+    def test_album_runs_kept_intact(self) -> None:
+        # All tracks of each album must appear consecutively in the shuffled order.
+        q, tracks = self._load_multi_album()
+        for _ in range(30):
+            q.set_shuffle(False)
+            q.set_shuffle(True, album_mode=True)
+            ordered, _ = q.queue_tracks()
+            seen_albums: list[str] = []
+            for t in ordered:
+                if not seen_albums or seen_albums[-1] != t.album:
+                    seen_albums.append(t.album)
+            # No album should appear more than once in the album sequence
+            assert len(seen_albums) == len(
+                set(seen_albums)
+            ), f"album run broken: {[t.album for t in ordered]}"
+
+    def test_all_tracks_appear_exactly_once(self) -> None:
+        q, tracks = self._load_multi_album()
+        q.set_shuffle(True, album_mode=True)
+        ordered, _ = q.queue_tracks()
+        assert sorted(t.title for t in ordered) == sorted(t.title for t in tracks)
+
+    def test_current_track_is_first(self) -> None:
+        q, tracks = self._load_multi_album()
+        first = q.current()
+        q.set_shuffle(True, album_mode=True)
+        assert q.current() == first
+
+    def test_artist_diversity_at_album_level(self) -> None:
+        # 2 albums by ArtistA, 2 albums by ArtistB — never need consecutive same artist.
+        tracks = (
+            [_track_for(i, "ArtistA", "AlbumA1") for i in range(2)]
+            + [_track_for(i, "ArtistB", "AlbumB1") for i in range(2)]
+            + [_track_for(i, "ArtistA", "AlbumA2") for i in range(2)]
+            + [_track_for(i, "ArtistB", "AlbumB2") for i in range(2)]
+        )
+        q = PlaybackQueue()
+        q.load(tracks)
+        for _ in range(50):
+            q.set_shuffle(False)
+            q.set_shuffle(True, album_mode=True)
+            ordered, _ = q.queue_tracks()
+            # Extract album sequence (deduplicated consecutive)
+            album_seq = []
+            for t in ordered:
+                if not album_seq or album_seq[-1] != (t.album_artist, t.album):
+                    album_seq.append((t.album_artist, t.album))
+            for (a1, _), (a2, _) in zip(album_seq, album_seq[1:]):
+                assert (
+                    a1 != a2
+                ), f"consecutive same artist albums after shuffle: {album_seq}"
+
+    def test_single_album_queue(self) -> None:
+        # One album only — should not raise; all tracks in original order after anchor.
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(4)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_shuffle(True, album_mode=True)
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 4
+        assert ordered[0] == tracks[0]  # anchor first
+        # Rest of album follows anchor in original order
+        assert ordered[1:] == [tracks[1], tracks[2], tracks[3]]
+
+    def test_mid_album_anchor(self) -> None:
+        # Straddled album is exempt: tracks[0] stays in history, anchor and
+        # rest of its album stay in place, other albums shuffle after.
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(3)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(2)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.next()  # advance to AlbumA track 1, _pos = 1
+        assert q.current() == tracks[1]
+        q.set_shuffle(True, album_mode=True)
+        ordered, pos = q.queue_tracks()
+        # _pos is preserved
+        assert pos == 1
+        assert q.current() == tracks[1]
+        # Pre-anchor history stays at position 0
+        assert ordered[0] == tracks[0]
+        # Anchor and rest of its album stay at positions 1-2
+        assert ordered[1] == tracks[1]
+        assert ordered[2] == tracks[2]
+        # AlbumB shuffled in after
+        assert len(ordered) == 5
+        assert {t.album for t in ordered[3:]} == {"AlbumB"}
+
+    def test_straddled_album_exempt_pos_preserved(self) -> None:
+        # Scenario from KAMP-499: A-1..A-4 in history, A-5 now playing (pos=4),
+        # A-6..A-10 in next up. Albums B and C are complete in next up.
+        # After album shuffle, Now Playing stays at queue position 5 (index 4).
+        tracks = (
+            [_track_for(i, "ArtistA", "AlbumA") for i in range(10)]
+            + [_track_for(i, "ArtistB", "AlbumB") for i in range(3)]
+            + [_track_for(i, "ArtistC", "AlbumC") for i in range(3)]
+        )
+        q = PlaybackQueue()
+        q.load(tracks)
+        for _ in range(4):
+            q.next()  # advance to tracks[4] (A-5), _pos = 4
+        assert q.current() == tracks[4]
+        q.set_shuffle(True, album_mode=True)
+        ordered, pos = q.queue_tracks()
+        # _pos preserved — Now Playing is still at index 4
+        assert pos == 4
+        assert q.current() == tracks[4]
+        # History (A-1..A-4) unchanged at positions 0-3
+        assert ordered[:4] == tracks[:4]
+        # Straddled album continues: A-5..A-10 at positions 4-9
+        assert ordered[4:10] == tracks[4:10]
+        # Albums B and C shuffled in after
+        assert len(ordered) == 16
+        assert {t.album for t in ordered[10:]} == {"AlbumB", "AlbumC"}
+
+    def test_album_mode_false_unchanged(self) -> None:
+        # album_mode=False (default) must behave exactly as before: tracks shuffled individually.
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(10)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        for _ in range(20):
+            q.set_shuffle(False)
+            q.set_shuffle(True, album_mode=False)
+            ordered, _ = q.queue_tracks()
+            assert len(ordered) == 10
+
+    def test_no_tracks_album_mode_no_raise(self) -> None:
+        q = PlaybackQueue()
+        q.set_shuffle(True, album_mode=True)
+        assert q.current() is None
+
+
+# ---------------------------------------------------------------------------
 # MpvPlaybackEngine
 # ---------------------------------------------------------------------------
 

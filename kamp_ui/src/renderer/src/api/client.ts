@@ -424,8 +424,8 @@ export const setVolume = (volume: number): Promise<unknown> =>
   post('/api/v1/player/volume', { volume })
 export const nextTrack = (): Promise<unknown> => post('/api/v1/player/next')
 export const prevTrack = (): Promise<unknown> => post('/api/v1/player/prev')
-export const setShuffle = (shuffle: boolean): Promise<unknown> =>
-  post('/api/v1/player/shuffle', { shuffle })
+export const setShuffle = (shuffle: boolean, albumShuffle = false): Promise<unknown> =>
+  post('/api/v1/player/shuffle', { shuffle, album_shuffle: albumShuffle })
 export const setRepeat = (repeat: boolean): Promise<unknown> =>
   post('/api/v1/player/repeat', { repeat })
 export const addAlbumToQueue = (

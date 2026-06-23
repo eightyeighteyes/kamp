@@ -231,7 +231,7 @@ class PlaybackQueue:
         # Clamp _pos in case it pointed past the new end.
         self._pos = min(self._pos, len(self._order) - 1)
 
-    def set_shuffle(self, shuffle: bool) -> None:
+    def set_shuffle(self, shuffle: bool, album_mode: bool = False) -> None:
         if shuffle == self._shuffle:
             return
         self._shuffle = shuffle
@@ -239,8 +239,13 @@ class PlaybackQueue:
             return
         current_track_idx = self._order[self._pos] if self._pos >= 0 else -1
         if shuffle:
-            self._shuffled_order(current_track_idx)
-            self._pos = 0
+            if album_mode and current_track_idx >= 0:
+                # _album_shuffled_order preserves _pos — the straddled album
+                # stays in place and only complete Next Up albums are shuffled.
+                self._album_shuffled_order(current_track_idx)
+            else:
+                self._shuffled_order(current_track_idx)
+                self._pos = 0
         else:
             # Restore original order; keep current track as reference point
             self._order = list(range(len(self._tracks)))
@@ -483,6 +488,69 @@ class PlaybackQueue:
             prev_album = self._tracks[pick].album
 
         self._order = result
+
+    def _album_shuffled_order(self, anchor_idx: int) -> None:
+        """Shuffle Next Up albums as units; exempt the straddled album.
+
+        Splits _order at _pos into history (unchanged) and future (anchor
+        onwards). The anchor's album is exempted from shuffling — its tracks
+        stay at the front of the future slice in their current order. All
+        other complete albums in the future slice are shuffled with the same
+        greedy album_artist-diversity heuristic as _shuffled_order. _pos is
+        not modified; the anchor remains the now-playing track after the call.
+        """
+        anchor_album_key = (
+            self._tracks[anchor_idx].album_artist,
+            self._tracks[anchor_idx].album,
+        )
+
+        # Keep history (before _pos) exactly as-is; only reshuffle the future.
+        history_order = self._order[: self._pos]
+        future_order = self._order[self._pos :]  # future_order[0] == anchor_idx
+
+        # Exempt the straddled album: its tracks in the future slice stay in place.
+        straddle_future = [
+            idx
+            for idx in future_order
+            if (self._tracks[idx].album_artist, self._tracks[idx].album)
+            == anchor_album_key
+        ]
+        other_future = [
+            idx
+            for idx in future_order
+            if (self._tracks[idx].album_artist, self._tracks[idx].album)
+            != anchor_album_key
+        ]
+
+        # Group other_future into contiguous album runs (preserving adjacency
+        # from the current order, not from _tracks load order).
+        other_runs: list[list[int]] = []
+        for idx in other_future:
+            key = (self._tracks[idx].album_artist, self._tracks[idx].album)
+            if other_runs:
+                last_run_last = other_runs[-1][-1]
+                if (
+                    self._tracks[last_run_last].album_artist,
+                    self._tracks[last_run_last].album,
+                ) == key:
+                    other_runs[-1].append(idx)
+                    continue
+            other_runs.append([idx])
+
+        # Shuffle other_runs with album_artist diversity.
+        prev_artist: str | None = self._tracks[anchor_idx].album_artist
+        shuffled: list[int] = []
+        while other_runs:
+            preferred = [
+                r for r in other_runs if self._tracks[r[0]].album_artist != prev_artist
+            ]
+            pick = random.choice(preferred if preferred else other_runs)
+            shuffled.extend(pick)
+            prev_artist = self._tracks[pick[0]].album_artist
+            other_runs.remove(pick)
+
+        # _pos is preserved: anchor stays at index self._pos in the new order.
+        self._order = history_order + straddle_future + shuffled
 
 
 # ---------------------------------------------------------------------------

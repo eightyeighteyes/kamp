@@ -231,7 +231,7 @@ class PlaybackQueue:
         # Clamp _pos in case it pointed past the new end.
         self._pos = min(self._pos, len(self._order) - 1)
 
-    def set_shuffle(self, shuffle: bool) -> None:
+    def set_shuffle(self, shuffle: bool, album_mode: bool = False) -> None:
         if shuffle == self._shuffle:
             return
         self._shuffle = shuffle
@@ -239,7 +239,10 @@ class PlaybackQueue:
             return
         current_track_idx = self._order[self._pos] if self._pos >= 0 else -1
         if shuffle:
-            self._shuffled_order(current_track_idx)
+            if album_mode:
+                self._album_shuffled_order(current_track_idx)
+            else:
+                self._shuffled_order(current_track_idx)
             self._pos = 0
         else:
             # Restore original order; keep current track as reference point
@@ -481,6 +484,56 @@ class PlaybackQueue:
             remaining.remove(pick)
             prev_artist = self._tracks[pick].artist
             prev_album = self._tracks[pick].album
+
+        self._order = result
+
+    def _album_shuffled_order(self, anchor_idx: int) -> None:
+        """Shuffle _order keeping album runs intact; maximises album_artist diversity.
+
+        Groups self._tracks into contiguous (album_artist, album) runs. The run
+        containing anchor_idx is placed first with anchor at position 0, followed
+        by the rest of that album. The remaining runs (plus any pre-anchor tracks
+        of the anchor's album, treated as their own run) are then shuffled using
+        the same greedy artist-diversity heuristic as _shuffled_order.
+        """
+        # Build contiguous (album_artist, album) runs over all tracks
+        runs: list[list[int]] = []
+        for i in range(len(self._tracks)):
+            key = (self._tracks[i].album_artist, self._tracks[i].album)
+            if runs:
+                last = runs[-1][-1]
+                if (self._tracks[last].album_artist, self._tracks[last].album) == key:
+                    runs[-1].append(i)
+                    continue
+            runs.append([i])
+
+        if anchor_idx < 0:
+            random.shuffle(runs)
+            self._order = [idx for run in runs for idx in run]
+            return
+
+        # Separate the anchor's run; split it at the anchor position
+        anchor_run_pos = next(r for r, run in enumerate(runs) if anchor_idx in run)
+        anchor_run = runs.pop(anchor_run_pos)
+        split = anchor_run.index(anchor_idx)
+        pre_anchor = anchor_run[:split]
+        post_anchor = anchor_run[split + 1 :]
+
+        # Anchor first, then remaining tracks of its album; pre-anchor portion
+        # is shuffled in with other albums as its own run.
+        result: list[int] = [anchor_idx] + post_anchor
+        if pre_anchor:
+            runs.append(pre_anchor)
+
+        prev_artist: str | None = self._tracks[anchor_idx].album_artist
+        while runs:
+            preferred = [
+                r for r in runs if self._tracks[r[0]].album_artist != prev_artist
+            ]
+            pick = random.choice(preferred if preferred else runs)
+            result.extend(pick)
+            prev_artist = self._tracks[pick[0]].album_artist
+            runs.remove(pick)
 
         self._order = result
 

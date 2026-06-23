@@ -1005,7 +1005,16 @@ class TestPlayerControlEndpoints:
     def test_set_shuffle(self, client: TestClient, mock_queue: MagicMock) -> None:
         response = client.post("/api/v1/player/shuffle", json={"shuffle": True})
         assert response.status_code == 200
-        mock_queue.set_shuffle.assert_called_once_with(True)
+        mock_queue.set_shuffle.assert_called_once_with(True, album_mode=False)
+
+    def test_set_shuffle_album_mode(
+        self, client: TestClient, mock_queue: MagicMock
+    ) -> None:
+        response = client.post(
+            "/api/v1/player/shuffle", json={"shuffle": True, "album_shuffle": True}
+        )
+        assert response.status_code == 200
+        mock_queue.set_shuffle.assert_called_once_with(True, album_mode=True)
 
     def test_set_repeat(self, client: TestClient, mock_queue: MagicMock) -> None:
         response = client.post("/api/v1/player/repeat", json={"repeat": True})

@@ -337,6 +337,7 @@ class VolumeRequest(BaseModel):
 
 class ShuffleRequest(BaseModel):
     shuffle: bool
+    album_shuffle: bool = False
 
 
 class RepeatRequest(BaseModel):
@@ -3395,7 +3396,7 @@ def create_app(
 
     @app.post("/api/v1/player/shuffle")
     def set_shuffle(req: ShuffleRequest) -> dict[str, Any]:
-        queue.set_shuffle(req.shuffle)
+        queue.set_shuffle(req.shuffle, album_mode=req.album_shuffle)
         engine.preload_next(queue.peek_next())
         return {"ok": True}
 

@@ -747,7 +747,17 @@ export function QueuePanel(): React.JSX.Element {
         onDoubleClick={handleResizeDoubleClick}
       />
       <div className="queue-panel-header">
-        <span className="queue-panel-label">QUEUE</span>
+        <div className="queue-panel-header-left">
+          <span className="queue-panel-label">QUEUE</span>
+          <button
+            className={`queue-album-toggle${albumGroupingActive ? ' queue-album-toggle--active' : ''}`}
+            onClick={toggleAlbumGrouping}
+            {...tooltip(TOOLTIPS.QUEUE_ALBUM_VIEW)}
+            aria-pressed={albumGroupingActive}
+          >
+            <GoToAlbumIcon size={14} />
+          </button>
+        </div>
         <button
           className="queue-close-btn"
           onClick={toggleQueuePanel}
@@ -857,15 +867,7 @@ export function QueuePanel(): React.JSX.Element {
                 e.preventDefault()
               }}
             >
-              <span>NEXT UP{albumGroupingActive ? ' — ALBUM VIEW' : ''}</span>
-              <button
-                className={`queue-album-toggle${albumGroupingActive ? ' queue-album-toggle--active' : ''}`}
-                onClick={toggleAlbumGrouping}
-                {...tooltip(TOOLTIPS.QUEUE_ALBUM_VIEW)}
-                aria-pressed={albumGroupingActive}
-              >
-                <GoToAlbumIcon size={14} />
-              </button>
+              <span>NEXT UP</span>
             </div>
             <ol
               ref={listRef}

@@ -78,6 +78,7 @@ export function QueuePanel(): React.JSX.Element {
   const nowPlayingListRef = useRef<HTMLOListElement>(null)
   // Tracks the currently highlighted drop-indicator element to avoid a DOM query on clear.
   const activeDropIndicatorRef = useRef<HTMLElement | null>(null)
+  const lastAlbumTapRef = useRef<{ idx: number; time: number } | null>(null)
 
   // Stabilise via useMemo so the ?? [] fallback never produces a new array reference
   // on renders where queue is null, which would otherwise invalidate nextUpItems every render.
@@ -334,6 +335,15 @@ export function QueuePanel(): React.JSX.Element {
         if (dropIdx !== null) {
           void reorderQueue(computeNewOrder(tracks.length, trackIndices, dropIdx))
         }
+      } else {
+        const now = Date.now()
+        const last = lastAlbumTapRef.current
+        if (last && now - last.time < 300 && last.idx === trackIndices[0]) {
+          lastAlbumTapRef.current = null
+          void skipToQueueTrack(trackIndices[0])
+        } else {
+          lastAlbumTapRef.current = { idx: trackIndices[0], time: now }
+        }
       }
     }
 
@@ -398,8 +408,6 @@ export function QueuePanel(): React.JSX.Element {
 
   function handleRowMouseDown(e: React.MouseEvent, idx: number): void {
     if (e.button !== 0) return
-    // While grouping mode is active, individual track rows are non-interactive.
-    if (albumGroupingActive) return
     if (e.shiftKey && anchorIdx !== null) {
       const lo = Math.min(anchorIdx, idx)
       const hi = Math.max(anchorIdx, idx)
@@ -573,7 +581,7 @@ export function QueuePanel(): React.JSX.Element {
         ]
           .filter(Boolean)
           .join(' ')}
-        draggable={!isCurrent && !albumGroupingActive}
+        draggable={!isCurrent}
         onMouseDown={(e) => handleRowMouseDown(e, idx)}
         onMouseUp={() => handleRowMouseUp(idx)}
         onDragStart={(e) => {
@@ -739,7 +747,17 @@ export function QueuePanel(): React.JSX.Element {
         onDoubleClick={handleResizeDoubleClick}
       />
       <div className="queue-panel-header">
-        <span className="queue-panel-label">QUEUE</span>
+        <div className="queue-panel-header-left">
+          <span className="queue-panel-label">QUEUE</span>
+          <button
+            className={`queue-album-toggle${albumGroupingActive ? ' queue-album-toggle--active' : ''}`}
+            onClick={toggleAlbumGrouping}
+            {...tooltip(TOOLTIPS.QUEUE_ALBUM_VIEW)}
+            aria-pressed={albumGroupingActive}
+          >
+            <GoToAlbumIcon size={14} />
+          </button>
+        </div>
         <button
           className="queue-close-btn"
           onClick={toggleQueuePanel}
@@ -849,15 +867,7 @@ export function QueuePanel(): React.JSX.Element {
                 e.preventDefault()
               }}
             >
-              <span>NEXT UP{albumGroupingActive ? ' — ALBUM VIEW' : ''}</span>
-              <button
-                className={`queue-album-toggle${albumGroupingActive ? ' queue-album-toggle--active' : ''}`}
-                onClick={toggleAlbumGrouping}
-                {...tooltip(TOOLTIPS.QUEUE_ALBUM_VIEW)}
-                aria-pressed={albumGroupingActive}
-              >
-                <GoToAlbumIcon size={14} />
-              </button>
+              <span>NEXT UP</span>
             </div>
             <ol
               ref={listRef}

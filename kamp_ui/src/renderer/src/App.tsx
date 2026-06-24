@@ -618,8 +618,8 @@ export default function App(): React.JSX.Element {
         <button
           className="prefs-btn"
           onClick={() => toggleStyleRail()}
-          title="Style"
-          aria-label="Style"
+          title="Style Settings"
+          aria-label="Style Settings"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"

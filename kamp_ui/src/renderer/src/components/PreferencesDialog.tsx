@@ -939,11 +939,6 @@ export function PreferencesDialog({
   const scanStatus = useStore((s) => s.scanStatus)
   const scanProgress = useStore((s) => s.scanProgress)
   const prefsInitialTab = useStore((s) => s.prefsInitialTab)
-  const highlightEnabled = useStore((s) => s.highlightEnabled)
-  const highlightStyle = useStore((s) => s.highlightStyle)
-  const setHighlightEnabled = useStore((s) => s.setHighlightEnabled)
-  const setHighlightStyle = useStore((s) => s.setHighlightStyle)
-
   const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions'>(
     () => prefsInitialTab
   )
@@ -1037,14 +1032,6 @@ export function PreferencesDialog({
       return
     }
     await handleSave(key, value)
-  }
-
-  const handleHighlightSave = async (key: string, value: string): Promise<void> => {
-    if (key === 'highlight.enabled') {
-      setHighlightEnabled(value === 'true')
-    } else if (key === 'highlight.style') {
-      setHighlightStyle(value)
-    }
   }
 
   return (
@@ -1149,31 +1136,6 @@ export function PreferencesDialog({
                       hint="{album_artist}  {year}  {album}  {track}  {title}  {ext}"
                       onSave={handleSave}
                     />
-                    <BoolRow
-                      label="Highlight new arrivals in the library"
-                      configKey="highlight.enabled"
-                      initialValue={highlightEnabled}
-                      onSave={handleHighlightSave}
-                    />
-                    {highlightEnabled && (
-                      <>
-                        <SelectRow
-                          label="Highlight style"
-                          configKey="highlight.style"
-                          options={[
-                            'shiny',
-                            'newmoji',
-                            'vaporwave',
-                            'proud',
-                            'pressed',
-                            'boring',
-                            'static'
-                          ]}
-                          initialValue={highlightStyle}
-                          onSave={handleHighlightSave}
-                        />
-                      </>
-                    )}
                   </div>
 
                   {/* ARTWORK */}

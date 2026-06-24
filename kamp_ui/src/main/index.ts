@@ -573,11 +573,12 @@ function buildAppMenu(): void {
               { type: 'separator' as const }
             ]
           : []),
-        // Explicit accelerators override Electron's built-ins and ensure the
-        // shortcuts fire consistently across macOS keyboard layouts.
         { role: 'resetZoom' as const, accelerator: 'CommandOrControl+0' },
         { role: 'zoomIn' as const, accelerator: 'CommandOrControl+=' },
-        { role: 'zoomOut' as const, accelerator: 'CommandOrControl+-' },
+        // Electron's accelerator parser treats '-' as a separator in some
+        // versions, so 'CommandOrControl+-' never registers. The shortcut is
+        // handled via before-input-event in createWindow() instead.
+        { role: 'zoomOut' as const, accelerator: 'CommandOrControl+-', registerAccelerator: false },
         { type: 'separator' as const },
         { role: 'togglefullscreen' as const }
       ]
@@ -632,6 +633,17 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  // Electron's accelerator parser is ambiguous when the key itself is '-'
+  // (the separator character in some parser paths). Register zoom-out via
+  // before-input-event so the physical key code is matched unambiguously.
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    if (input.type !== 'keyDown' || input.shift || input.alt) return
+    const cmdOrCtrl = process.platform === 'darwin' ? input.meta : input.control
+    if (cmdOrCtrl && input.code === 'Minus') {
+      mainWindow.webContents.setZoomLevel(mainWindow.webContents.getZoomLevel() - 1)
+    }
   })
 
   // HMR for renderer base on electron-vite cli.

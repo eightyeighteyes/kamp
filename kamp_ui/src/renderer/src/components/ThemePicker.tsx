@@ -15,12 +15,12 @@ const THEME_META: Record<ThemeName, ThemeMeta> = {
     label: 'strawberry switchblade',
     note: 'Glasgow, 1983, bows in hair'
   },
-  'beach-house': { label: 'beach house', note: 'dream pop, Baltimore, 2006' },
+  'beach-house': { label: 'beach house', note: 'dreamy Baltimore ocean tones' },
   blackpink: { label: 'blackpink', note: 'K-pop maximalism' },
   'deep-purple': { label: 'deep purple', note: 'Smoke on the Water, Montreux, 1971' },
   'green-day': { label: 'green day', note: 'three chords and a lot of eyeliner' },
-  'foxy-brown': { label: 'foxy brown', note: 'Brooklyn, 1996' },
-  'golden-smog': { label: 'golden smog', note: 'Minneapolis supergroup, loose by design' }
+  'foxy-brown': { label: 'foxy brown', note: 'iconic Brooklynite' },
+  'golden-smog': { label: 'golden smog', note: 'Minneapolis haze and twang' }
 }
 
 const THEME_ORDER: ThemeName[] = [

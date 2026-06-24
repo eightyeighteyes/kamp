@@ -1,6 +1,6 @@
 import React from 'react'
 import { useStore } from '../store'
-import { themes } from '../../../shared/theme'
+import { themes, applyTheme } from '../../../shared/theme'
 import type { ThemeName } from '../../../shared/theme'
 
 type ThemeMeta = {
@@ -23,13 +23,13 @@ const THEME_META: Record<ThemeName, ThemeMeta> = {
 }
 
 const THEME_ORDER: ThemeName[] = [
-  'kamp',
-  'strawberry-switchblade',
-  'beach-house',
   'blackpink',
-  'green-day',
+  'strawberry-switchblade',
   'foxy-brown',
-  'golden-smog'
+  'golden-smog',
+  'green-day',
+  'beach-house',
+  'kamp'
 ]
 
 export function ThemePicker(): React.JSX.Element {
@@ -47,6 +47,8 @@ export function ThemePicker(): React.JSX.Element {
             key={name}
             className={`theme-swatch${isActive ? ' theme-swatch--active' : ''}`}
             onClick={() => setTheme(name)}
+            onMouseEnter={() => applyTheme(name, document.documentElement)}
+            onMouseLeave={() => applyTheme(selectedTheme, document.documentElement)}
             title={meta.note}
             aria-label={`${meta.label}${meta.isDefault ? ' (default)' : ''}`}
             aria-pressed={isActive}

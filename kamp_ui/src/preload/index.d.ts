@@ -25,6 +25,7 @@ declare global {
       getApiToken: () => string | null
       showItemInFolder: (filePath: string) => void
       openExternal: (url: string) => void
+      setBgColor: (color: string) => void
     }
     KampAPI: KampAPI
   }

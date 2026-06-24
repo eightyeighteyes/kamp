@@ -5,12 +5,13 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { TooltipProvider } from './components/TooltipProvider'
-import { theme } from '../../shared/theme'
+import { applyTheme } from '../../shared/theme'
+import type { ThemeName } from '../../shared/theme'
 
-// Apply shared design tokens as CSS custom properties so the stylesheet can
-// reference var(--bg) etc. while the main process uses the same values for
-// BrowserWindow options (e.g. backgroundColor).
-document.documentElement.style.setProperty('--bg', theme.bg)
+// Apply all theme tokens on mount from the persisted selection.
+// theme.ts is the single source of truth — no themes.css needed.
+const savedTheme = (localStorage.getItem('kamp:selected-theme') as ThemeName | null) ?? 'kamp'
+applyTheme(savedTheme, document.documentElement)
 
 // Expose the platform to CSS so platform-specific chrome (e.g. right padding
 // on .view-tabs that clears the Windows titleBarOverlay) can target it.

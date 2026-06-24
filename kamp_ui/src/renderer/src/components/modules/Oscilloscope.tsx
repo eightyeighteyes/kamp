@@ -117,6 +117,26 @@ export function Oscilloscope(): React.JSX.Element {
   // Parsed RGB components for hot-path use (avoids per-frame string build from CSS).
   const accentRgbRef = useRef({ r: 255, g: 255, b: 255 })
 
+  // Watch <html> style attribute for --accent changes. Catches both committed
+  // theme switches (setTheme) and transient hover previews (applyTheme without
+  // store mutation) — both paths call style.setProperty('--accent', ...).
+  useEffect(() => {
+    const el = document.documentElement
+    const readAccent = (): void => {
+      const hex = el.style.getPropertyValue('--accent').trim()
+      if (!hex.startsWith('#') || hex.length < 7) return
+      const r = parseInt(hex.slice(1, 3), 16)
+      const g = parseInt(hex.slice(3, 5), 16)
+      const b = parseInt(hex.slice(5, 7), 16)
+      accentRef.current = `rgba(${r},${g},${b},0.85)`
+      accentRgbRef.current = { r, g, b }
+    }
+    readAccent()
+    const mo = new MutationObserver(readAccent)
+    mo.observe(el, { attributes: true, attributeFilter: ['style'] })
+    return () => mo.disconnect()
+  }, [])
+
   // Standing-wave buffer: one normalized value [-1, 1] per logical pixel column.
   // Amplitude is applied at draw time (buf[x] * displayAmp) so a transient makes
   // the entire waveform scale up in a single frame rather than building over many.
@@ -173,13 +193,6 @@ export function Oscilloscope(): React.JSX.Element {
     }
 
     setup()
-
-    const raw = getComputedStyle(canvas).color
-    const m = raw.match(/\d+/g)
-    if (m && m.length >= 3) {
-      accentRef.current = `rgba(${m[0]},${m[1]},${m[2]},0.85)`
-      accentRgbRef.current = { r: +m[0], g: +m[1], b: +m[2] }
-    }
 
     const ro = new ResizeObserver(setup)
     ro.observe(canvas)

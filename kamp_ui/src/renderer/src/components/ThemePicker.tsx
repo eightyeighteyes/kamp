@@ -25,13 +25,13 @@ const THEME_META: Record<ThemeName, ThemeMeta> = {
 
 const THEME_ORDER: ThemeName[] = [
   'blackpink',
+  'deep-purple',
   'strawberry-switchblade',
   'foxy-brown',
   'golden-smog',
   'green-day',
   'beach-house',
-  'kamp',
-  'deep-purple'
+  'kamp'
 ]
 
 export function ThemePicker(): React.JSX.Element {

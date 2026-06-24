@@ -17,6 +17,7 @@ export function StyleRail(): React.JSX.Element | null {
   return (
     <div className="style-rail">
       <ThemePicker />
+      <div className="style-rail-spacer" />
       <label className="style-rail-control">
         <input
           type="checkbox"

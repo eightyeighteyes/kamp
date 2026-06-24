@@ -1,6 +1,7 @@
 import React from 'react'
 import '../assets/style-rail.css'
 import { useStore } from '../store'
+import { ThemePicker } from './ThemePicker'
 
 const HIGHLIGHT_STYLES = ['shiny', 'newmoji', 'vaporwave', 'proud', 'pressed', 'boring', 'static']
 
@@ -15,6 +16,7 @@ export function StyleRail(): React.JSX.Element | null {
 
   return (
     <div className="style-rail">
+      <ThemePicker />
       <label className="style-rail-control">
         <input
           type="checkbox"

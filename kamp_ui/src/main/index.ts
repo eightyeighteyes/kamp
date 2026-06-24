@@ -912,6 +912,10 @@ app.whenReady().then(async () => {
     void shell.openExternal(url)
   })
 
+  ipcMain.on('kamp:set-bg-color', (_event, color: string) => {
+    BrowserWindow.getAllWindows()[0]?.setBackgroundColor(color)
+  })
+
   ipcMain.handle('update:dismiss', (_event, version: string) => {
     writeUpdateState({ dismissedVersion: version })
   })

@@ -91,7 +91,8 @@ const api = {
   getApiToken: (): string | null => _readKampToken(),
   showItemInFolder: (filePath: string): void =>
     ipcRenderer.send('shell:show-item-in-folder', filePath),
-  openExternal: (url: string): void => ipcRenderer.send('shell:open-external', url)
+  openExternal: (url: string): void => ipcRenderer.send('shell:open-external', url),
+  setBgColor: (color: string): void => ipcRenderer.send('kamp:set-bg-color', color)
 }
 
 const kampAPI = buildKampAPI()

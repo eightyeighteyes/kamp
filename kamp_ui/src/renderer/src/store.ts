@@ -23,6 +23,8 @@ import type {
   Track
 } from './api/client'
 import type { DisplayStyle } from './components/modules/registry'
+import { themes } from '../../shared/theme'
+import type { ThemeName } from '../../shared/theme'
 import type { MagicPlaylistContents, MagicPlaylistSort } from './api/client'
 
 export type TrackDisplaySize = 'teeny' | 'less-teeny' | 'large-print'
@@ -108,6 +110,7 @@ type PlayerStore = {
   queuedAlbumIds: Set<string>
   flashToast: string | null
   styleRailVisible: boolean
+  selectedTheme: ThemeName
 
   // Actions
   setAudioLevel: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void
@@ -152,6 +155,7 @@ type PlayerStore = {
   insertArtistAt: (artistName: string, idx: number) => Promise<void>
   toggleBaseKampEditMode: () => void
   toggleStyleRail: () => void
+  setTheme: (name: ThemeName) => void
   setStereoRackTrackSize: (v: TrackDisplaySize) => void
   setStereoRackPlasmaMode: (v: PlasmaMode) => void
   setStereoRackTraceStyle: (v: TraceStyle) => void
@@ -402,6 +406,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   queuedAlbumIds: new Set<string>(),
   flashToast: null,
   styleRailVisible: false,
+  selectedTheme: (localStorage.getItem('kamp:selected-theme') as ThemeName | null) ?? 'kamp',
   configValues: null,
   prefsOpen: false,
   prefsInitialTab: 'general',
@@ -664,6 +669,17 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   toggleStyleRail: () => {
     set({ styleRailVisible: !get().styleRailVisible })
+  },
+
+  setTheme: (name) => {
+    const tokens = themes[name]
+    localStorage.setItem('kamp:selected-theme', name)
+    document.documentElement.dataset.theme = name
+    // --bg must stay as an inline style because main.tsx initializes it that
+    // way (inline styles take precedence over [data-theme] attribute selectors).
+    document.documentElement.style.setProperty('--bg', tokens.bg)
+    window.api.setBgColor(tokens.bg)
+    set({ selectedTheme: name })
   },
 
   setStereoRackTrackSize: (v) => {

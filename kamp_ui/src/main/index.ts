@@ -574,10 +574,13 @@ function buildAppMenu(): void {
             ]
           : []),
         { role: 'resetZoom' as const, accelerator: 'CommandOrControl+0' },
+        // Custom click handler (not role) so the [-3, +3] clamp applies. The
+        // native accelerator is kept without registerAccelerator:false so macOS
+        // captures Cmd+= at the menu level, which prevents Chromium's built-in
+        // zoom shortcut from also firing and double-stepping.
         {
           label: 'Zoom In',
           accelerator: 'CommandOrControl+=',
-          registerAccelerator: false,
           click: (_, win) => {
             const bw = win as BrowserWindow | undefined
             if (bw) bw.webContents.setZoomLevel(Math.min(3, bw.webContents.getZoomLevel() + 1))
@@ -650,19 +653,16 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // Zoom-out via before-input-event: 'CommandOrControl+-' doesn't parse
-  // reliably in all Electron versions (the parser can treat '-' as a
-  // separator). Physical key codes are unambiguous. Zoom in is also handled
-  // here so both directions share the same [-3, +3] clamp.
+  // Zoom-out: 'CommandOrControl+-' doesn't register reliably (Electron parser
+  // ambiguity on '-'), so intercept via physical key code instead.
+  // Zoom-in uses a native menu accelerator whose OS-level capture prevents
+  // Chromium's built-in Cmd+= from also firing — so no before-input-event
+  // handling needed (and adding it would double-step).
   mainWindow.webContents.on('before-input-event', (_event, input) => {
     if (input.type !== 'keyDown' || input.shift || input.alt) return
     const cmdOrCtrl = process.platform === 'darwin' ? input.meta : input.control
-    if (!cmdOrCtrl) return
-    const level = mainWindow.webContents.getZoomLevel()
-    if (input.code === 'Minus') {
-      mainWindow.webContents.setZoomLevel(Math.max(-3, level - 1))
-    } else if (input.code === 'Equal') {
-      mainWindow.webContents.setZoomLevel(Math.min(3, level + 1))
+    if (cmdOrCtrl && input.code === 'Minus') {
+      mainWindow.webContents.setZoomLevel(Math.max(-3, mainWindow.webContents.getZoomLevel() - 1))
     }
   })
 

@@ -12,6 +12,7 @@ export type ThemeName =
   | 'strawberry-switchblade'
   | 'beach-house'
   | 'blackpink'
+  | 'deep-purple'
   | 'green-day'
   | 'foxy-brown'
   | 'golden-smog'
@@ -80,6 +81,17 @@ export const themes: Record<ThemeName, ThemeTokens> = {
     textDim: '#9a7088',
     accent: '#f72585',
     accentDim: '#3d0525',
+    textOnAccent: '#ffffff'
+  },
+  'deep-purple': {
+    bg: '#0a0810',
+    surface: '#13102a',
+    surfaceHover: '#1c1838',
+    border: '#2c2848',
+    text: '#e8e0f5',
+    textDim: '#7868a0',
+    accent: '#9b5de5',
+    accentDim: '#280d50',
     textOnAccent: '#ffffff'
   },
   'green-day': {

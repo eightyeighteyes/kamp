@@ -577,6 +577,7 @@ function buildAppMenu(): void {
         {
           label: 'Zoom In',
           accelerator: 'CommandOrControl+=',
+          registerAccelerator: false,
           click: (_, win) => {
             const bw = win as BrowserWindow | undefined
             if (bw) bw.webContents.setZoomLevel(Math.min(3, bw.webContents.getZoomLevel() + 1))

@@ -574,11 +574,25 @@ function buildAppMenu(): void {
             ]
           : []),
         { role: 'resetZoom' as const, accelerator: 'CommandOrControl+0' },
-        { role: 'zoomIn' as const, accelerator: 'CommandOrControl+=' },
-        // Electron's accelerator parser treats '-' as a separator in some
-        // versions, so 'CommandOrControl+-' never registers. The shortcut is
-        // handled via before-input-event in createWindow() instead.
-        { role: 'zoomOut' as const, accelerator: 'CommandOrControl+-', registerAccelerator: false },
+        {
+          label: 'Zoom In',
+          accelerator: 'CommandOrControl+=',
+          click: (_, win) => {
+            const bw = win as BrowserWindow | undefined
+            if (bw) bw.webContents.setZoomLevel(Math.min(3, bw.webContents.getZoomLevel() + 1))
+          }
+        },
+        // Zoom-out keyboard shortcut is handled via before-input-event (see
+        // createWindow) because 'CommandOrControl+-' doesn't parse reliably.
+        {
+          label: 'Zoom Out',
+          accelerator: 'CommandOrControl+-',
+          registerAccelerator: false,
+          click: (_, win) => {
+            const bw = win as BrowserWindow | undefined
+            if (bw) bw.webContents.setZoomLevel(Math.max(-3, bw.webContents.getZoomLevel() - 1))
+          }
+        },
         { type: 'separator' as const },
         { role: 'togglefullscreen' as const }
       ]
@@ -635,14 +649,19 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // Electron's accelerator parser is ambiguous when the key itself is '-'
-  // (the separator character in some parser paths). Register zoom-out via
-  // before-input-event so the physical key code is matched unambiguously.
+  // Zoom-out via before-input-event: 'CommandOrControl+-' doesn't parse
+  // reliably in all Electron versions (the parser can treat '-' as a
+  // separator). Physical key codes are unambiguous. Zoom in is also handled
+  // here so both directions share the same [-3, +3] clamp.
   mainWindow.webContents.on('before-input-event', (_event, input) => {
     if (input.type !== 'keyDown' || input.shift || input.alt) return
     const cmdOrCtrl = process.platform === 'darwin' ? input.meta : input.control
-    if (cmdOrCtrl && input.code === 'Minus') {
-      mainWindow.webContents.setZoomLevel(mainWindow.webContents.getZoomLevel() - 1)
+    if (!cmdOrCtrl) return
+    const level = mainWindow.webContents.getZoomLevel()
+    if (input.code === 'Minus') {
+      mainWindow.webContents.setZoomLevel(Math.max(-3, level - 1))
+    } else if (input.code === 'Equal') {
+      mainWindow.webContents.setZoomLevel(Math.min(3, level + 1))
     }
   })
 

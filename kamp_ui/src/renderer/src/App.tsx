@@ -19,6 +19,7 @@ import { SandboxedExtensionLoader } from './components/SandboxedExtensionLoader'
 import { ExtensionPermissionPrompt } from './components/ExtensionPermissionPrompt'
 import { UpdateBanner } from './components/UpdateBanner'
 import { KeyboardShortcutsOverlay } from './components/KeyboardShortcutsOverlay'
+import { StyleRail } from './components/StyleRail'
 import { registerBuiltInPanel, usePanelLayout } from './hooks/usePanelLayout'
 import { useExtensionState } from './hooks/useExtensionState'
 import type { UnifiedPanel } from './hooks/usePanelLayout'
@@ -110,6 +111,7 @@ export default function App(): React.JSX.Element {
   const artistPanelVisible = useStore((s) => s.artistPanelVisible)
   const toggleArtistPanel = useStore((s) => s.toggleArtistPanel)
   const openPrefs = useStore((s) => s.openPrefs)
+  const toggleStyleRail = useStore((s) => s.toggleStyleRail)
   const selectArtist = useStore((s) => s.selectArtist)
   const setUpdateAvailable = useStore((s) => s.setUpdateAvailable)
 
@@ -615,6 +617,14 @@ export default function App(): React.JSX.Element {
         </div>
         <button
           className="prefs-btn"
+          onClick={() => toggleStyleRail()}
+          title="Style"
+          aria-label="Style"
+        >
+          🎨
+        </button>
+        <button
+          className="prefs-btn"
           onClick={() => openPrefs()}
           title="Preferences"
           aria-label="Preferences"
@@ -622,6 +632,7 @@ export default function App(): React.JSX.Element {
           ⚙
         </button>
       </nav>
+      <StyleRail />
       <div className="app-body">
         {!showSetup && isPanelVisible(leftPanel) && <SlotPanel panel={leftPanel!} />}
         <main className="main-content" ref={mainContentRef}>

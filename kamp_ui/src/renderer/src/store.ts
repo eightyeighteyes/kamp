@@ -107,6 +107,7 @@ type PlayerStore = {
   downloadingAlbumIds: Set<string>
   queuedAlbumIds: Set<string>
   flashToast: string | null
+  styleRailVisible: boolean
 
   // Actions
   setAudioLevel: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void
@@ -150,6 +151,7 @@ type PlayerStore = {
   setFlashTrackId: (id: number) => void
   insertArtistAt: (artistName: string, idx: number) => Promise<void>
   toggleBaseKampEditMode: () => void
+  toggleStyleRail: () => void
   setStereoRackTrackSize: (v: TrackDisplaySize) => void
   setStereoRackPlasmaMode: (v: PlasmaMode) => void
   setStereoRackTraceStyle: (v: TraceStyle) => void
@@ -376,7 +378,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   })(),
   magicPlaylistVersion: 0,
   flashTrackId: null,
-  baseKampEditMode: localStorage.getItem('kamp:base-kamp-edit-mode') === 'true',
+  baseKampEditMode: false,
   stereoRackTrackSize:
     (localStorage.getItem('stereo-rack:track-size') as TrackDisplaySize) ?? 'teeny',
   stereoRackPlasmaMode:
@@ -399,6 +401,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   downloadingAlbumIds: new Set<string>(),
   queuedAlbumIds: new Set<string>(),
   flashToast: null,
+  styleRailVisible: false,
   configValues: null,
   prefsOpen: false,
   prefsInitialTab: 'general',
@@ -656,9 +659,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   toggleBaseKampEditMode: () => {
-    const next = !get().baseKampEditMode
-    localStorage.setItem('kamp:base-kamp-edit-mode', String(next))
-    set({ baseKampEditMode: next })
+    set({ baseKampEditMode: !get().baseKampEditMode })
+  },
+
+  toggleStyleRail: () => {
+    set({ styleRailVisible: !get().styleRailVisible })
   },
 
   setStereoRackTrackSize: (v) => {

@@ -564,15 +564,22 @@ function buildAppMenu(): void {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' }
+        // Dev tools are only useful during development — hide them in the packaged app.
+        ...(!app.isPackaged
+          ? [
+              { role: 'reload' as const },
+              { role: 'forceReload' as const },
+              { role: 'toggleDevTools' as const },
+              { type: 'separator' as const }
+            ]
+          : []),
+        // Explicit accelerators override Electron's built-ins and ensure the
+        // shortcuts fire consistently across macOS keyboard layouts.
+        { role: 'resetZoom' as const, accelerator: 'CommandOrControl+0' },
+        { role: 'zoomIn' as const, accelerator: 'CommandOrControl+=' },
+        { role: 'zoomOut' as const, accelerator: 'CommandOrControl+-' },
+        { type: 'separator' as const },
+        { role: 'togglefullscreen' as const }
       ]
     },
     {

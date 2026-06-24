@@ -41,6 +41,14 @@ const GROUPS: Group[] = [
     ]
   },
   {
+    label: 'View',
+    shortcuts: [
+      { keys: [mod, '+'], description: 'Zoom in' },
+      { keys: [mod, '-'], description: 'Zoom out' },
+      { keys: [mod, '0'], description: 'Actual size' }
+    ]
+  },
+  {
     label: 'Help',
     shortcuts: [
       { keys: ['?'], description: 'Show / hide keyboard shortcuts' },

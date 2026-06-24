@@ -63,7 +63,7 @@ export const themes: Record<ThemeName, ThemeTokens> = {
     textOnAccent: '#000000'
   },
   blackpink: {
-    bg: '#0f0a0d',
+    bg: '#000000',
     surface: '#1a1018',
     surfaceHover: '#261820',
     border: '#38182c',
@@ -110,3 +110,22 @@ export const themes: Record<ThemeName, ThemeTokens> = {
 
 /** Primary app background for the default theme — used by the main process at window-creation time. */
 export const theme = themes.kamp
+
+/**
+ * Apply a theme's full token set to a DOM element as CSS custom properties.
+ * Called by the renderer on mount and on every theme switch — `theme.ts` is
+ * the single source of truth; `themes.css` is not needed.
+ */
+export function applyTheme(name: ThemeName, el: HTMLElement): void {
+  const t = themes[name]
+  el.dataset.theme = name
+  el.style.setProperty('--bg', t.bg)
+  el.style.setProperty('--surface', t.surface)
+  el.style.setProperty('--surface-hover', t.surfaceHover)
+  el.style.setProperty('--border', t.border)
+  el.style.setProperty('--text', t.text)
+  el.style.setProperty('--text-dim', t.textDim)
+  el.style.setProperty('--accent', t.accent)
+  el.style.setProperty('--accent-dim', t.accentDim)
+  el.style.setProperty('--text-on-accent', t.textOnAccent)
+}

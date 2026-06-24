@@ -23,7 +23,7 @@ import type {
   Track
 } from './api/client'
 import type { DisplayStyle } from './components/modules/registry'
-import { themes } from '../../shared/theme'
+import { themes, applyTheme } from '../../shared/theme'
 import type { ThemeName } from '../../shared/theme'
 import type { MagicPlaylistContents, MagicPlaylistSort } from './api/client'
 
@@ -672,13 +672,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   setTheme: (name) => {
-    const tokens = themes[name]
     localStorage.setItem('kamp:selected-theme', name)
-    document.documentElement.dataset.theme = name
-    // --bg must stay as an inline style because main.tsx initializes it that
-    // way (inline styles take precedence over [data-theme] attribute selectors).
-    document.documentElement.style.setProperty('--bg', tokens.bg)
-    window.api.setBgColor(tokens.bg)
+    applyTheme(name, document.documentElement)
+    window.api.setBgColor(themes[name].bg)
     set({ selectedTheme: name })
   },
 

@@ -17,14 +17,23 @@ export type ThemeName =
   | 'golden-smog'
 
 export type ThemeTokens = {
+  /** Outermost window background. Must match BrowserWindow.backgroundColor to avoid edge-color flash on resize. */
   bg: string
+  /** Cards, panels, sidebars, transport bar — one step lighter than bg. */
   surface: string
+  /** Hover state for interactive surface elements (album cards, list rows). */
   surfaceHover: string
+  /** Dividers, panel edges, input borders. */
   border: string
+  /** Primary body text — track titles, album names, labels. */
   text: string
+  /** Secondary / muted text — artist names in rows, timestamps, metadata. */
   textDim: string
+  /** The theme's signature color. Selected states, active indicators, album artist in the hero, play button. */
   accent: string
+  /** Accent as a dark background tint — selected row fill, badge backgrounds. Should be a very dark shade of the accent. */
   accentDim: string
+  /** Text rendered on a filled accent surface (e.g. play button label). Black or white depending on accent luminance. */
   textOnAccent: string
 }
 
@@ -41,8 +50,8 @@ export const themes: Record<ThemeName, ThemeTokens> = {
     textOnAccent: '#000000'
   },
   'strawberry-switchblade': {
-    bg: '#110d0f',
-    surface: '#1c1318',
+    bg: '#180107',
+    surface: '#1f030c',
     surfaceHover: '#271b20',
     border: '#3a2028',
     text: '#f0dde3',

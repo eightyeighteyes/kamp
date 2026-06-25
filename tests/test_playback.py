@@ -1313,34 +1313,26 @@ class TestMpvPlaybackEngine:
             engine.pause()
         send.assert_any_call("set_property", "pause", True)
 
-    def test_pause_fades_volume_then_pauses(self) -> None:
+    def test_pause_adds_afade_filter_before_pausing(self) -> None:
         engine, send = _make_engine()
-        engine.state.volume = 100
+        engine.state.position = 45.5
         with patch("kamp_core.playback.time.sleep"):
             engine.pause()
         calls = [c.args for c in send.call_args_list]
-        # Expect 4 decreasing volume steps before the pause command.
-        volume_calls = [c for c in calls if c[0] == "set_property" and c[1] == "volume"]
+        af_add_idx = next(
+            i for i, c in enumerate(calls) if c[0] == "af" and c[1] == "add"
+        )
         pause_idx = next(
             i for i, c in enumerate(calls) if c == ("set_property", "pause", True)
         )
-        fade_calls_before_pause = [
-            c
-            for i, c in enumerate(calls)
-            if i < pause_idx and c[0] == "set_property" and c[1] == "volume"
-        ]
-        assert fade_calls_before_pause == [
-            ("set_property", "volume", 50),
-            ("set_property", "volume", 25),
-            ("set_property", "volume", 12),
-            ("set_property", "volume", 6),
-            ("set_property", "volume", 3),
-            ("set_property", "volume", 0),
-        ]
-        # Volume restored after pause.
-        assert ("set_property", "volume", 100) in [
-            c for i, c in enumerate(calls) if i > pause_idx
-        ]
+        af_remove_idx = next(
+            i for i, c in enumerate(calls) if c[0] == "af" and c[1] == "remove"
+        )
+        # filter added → pause → filter removed
+        assert af_add_idx < pause_idx < af_remove_idx
+        filter_arg = calls[af_add_idx][2]
+        assert "afade=t=out" in filter_arg
+        assert "st=45.500" in filter_arg
 
     def test_resume_sets_pause_false(self) -> None:
         engine, send = _make_engine()
@@ -1348,42 +1340,26 @@ class TestMpvPlaybackEngine:
             engine.resume()
         send.assert_any_call("set_property", "pause", False)
 
-    def test_resume_sets_volume_zero_before_unpause(self) -> None:
+    def test_resume_adds_afade_filter_before_unpausing(self) -> None:
         engine, send = _make_engine()
-        engine.state.volume = 80
+        engine.state.position = 45.5
         with patch("kamp_core.playback.time.sleep"):
             engine.resume()
         calls = [c.args for c in send.call_args_list]
-        zero_idx = next(
-            i for i, c in enumerate(calls) if c == ("set_property", "volume", 0)
+        af_add_idx = next(
+            i for i, c in enumerate(calls) if c[0] == "af" and c[1] == "add"
         )
         unpause_idx = next(
             i for i, c in enumerate(calls) if c == ("set_property", "pause", False)
         )
-        assert zero_idx < unpause_idx
-
-    def test_resume_fades_volume_in_after_unpause(self) -> None:
-        engine, send = _make_engine()
-        engine.state.volume = 100
-        with patch("kamp_core.playback.time.sleep"):
-            engine.resume()
-        calls = [c.args for c in send.call_args_list]
-        unpause_idx = next(
-            i for i, c in enumerate(calls) if c == ("set_property", "pause", False)
+        af_remove_idx = next(
+            i for i, c in enumerate(calls) if c[0] == "af" and c[1] == "remove"
         )
-        fade_calls_after_unpause = [
-            c
-            for i, c in enumerate(calls)
-            if i > unpause_idx and c[0] == "set_property" and c[1] == "volume"
-        ]
-        assert fade_calls_after_unpause == [
-            ("set_property", "volume", 3),
-            ("set_property", "volume", 6),
-            ("set_property", "volume", 12),
-            ("set_property", "volume", 25),
-            ("set_property", "volume", 50),
-            ("set_property", "volume", 100),
-        ]
+        # filter added → unpause → filter removed after fade
+        assert af_add_idx < unpause_idx < af_remove_idx
+        filter_arg = calls[af_add_idx][2]
+        assert "afade=t=in" in filter_arg
+        assert "st=45.500" in filter_arg
 
     def test_seek_sends_seek_command(self) -> None:
         engine, send = _make_engine()
@@ -1468,34 +1444,27 @@ class TestMpvPlaybackEngine:
         send.assert_any_call("set_property", "pause", True)
         send.assert_any_call("seek", 0, "absolute")
 
-    def test_stop_fades_volume_then_pauses_and_seeks(self) -> None:
+    def test_stop_adds_afade_filter_before_pausing(self) -> None:
         engine, send = _make_engine()
-        engine.state.volume = 100
+        engine.state.position = 45.5
         with patch("kamp_core.playback.time.sleep"):
             engine.stop()
         calls = [c.args for c in send.call_args_list]
+        af_add_idx = next(
+            i for i, c in enumerate(calls) if c[0] == "af" and c[1] == "add"
+        )
         pause_idx = next(
             i for i, c in enumerate(calls) if c == ("set_property", "pause", True)
         )
-        fade_calls_before_pause = [
-            c
-            for i, c in enumerate(calls)
-            if i < pause_idx and c[0] == "set_property" and c[1] == "volume"
-        ]
-        assert fade_calls_before_pause == [
-            ("set_property", "volume", 50),
-            ("set_property", "volume", 25),
-            ("set_property", "volume", 12),
-            ("set_property", "volume", 6),
-            ("set_property", "volume", 3),
-            ("set_property", "volume", 0),
-        ]
+        af_remove_idx = next(
+            i for i, c in enumerate(calls) if c[0] == "af" and c[1] == "remove"
+        )
         seek_idx = next(i for i, c in enumerate(calls) if c == ("seek", 0, "absolute"))
-        assert pause_idx < seek_idx
-        # Volume restored after seek.
-        assert ("set_property", "volume", 100) in [
-            c for i, c in enumerate(calls) if i > seek_idx
-        ]
+        # filter added → pause → filter removed → seek
+        assert af_add_idx < pause_idx < af_remove_idx < seek_idx
+        filter_arg = calls[af_add_idx][2]
+        assert "afade=t=out" in filter_arg
+        assert "st=45.500" in filter_arg
 
     def test_load_paused_loads_and_pauses(self) -> None:
         engine, send = _make_engine()

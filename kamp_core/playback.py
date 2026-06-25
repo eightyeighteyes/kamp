@@ -976,13 +976,12 @@ def _make_ipc_transport() -> _IPCTransport:
 # mpv's playlist triggers an immediate gapless EOF, stopping time-pos events.
 _GAPLESS_GUARD_SECS: float = 10.0
 
-# Volume fade applied on user-initiated pause/stop/resume to avoid an audible
-# pop at the sample boundary where audio cuts off or resumes. A geometric
-# (dB-linear) curve is used so each step sounds equally loud — -6 dB per step
-# means the last level before hard-cut-to-0 is ~3% amplitude (inaudible).
-_FADE_STEPS: int = 6
-_FADE_STEP_SECS: float = 0.025  # 25ms per step → 150ms total fade
-_FADE_RATIO: float = 0.5  # -6 dB per step; equal perceived loudness drops
+# Fade applied on user-initiated pause/stop/resume via mpv's afade audio filter.
+# The filter runs inside ffmpeg's audio pipeline (sample-accurate), avoiding the
+# discrete steps produced by set_property volume (which lands at audio-callback
+# boundaries, ~10–20ms on CoreAudio).
+_FADE_DURATION_SECS: float = 0.150  # 150ms total fade
+_FADE_LABEL: str = "@kamp_fade"  # af filter label; unique so af remove is precise
 
 # Properties to observe from mpv for state tracking
 _OBSERVED: list[tuple[int, str]] = [
@@ -1382,45 +1381,33 @@ class MpvPlaybackEngine:
         """True when a next-track is pre-appended to mpv's playlist."""
         return self._lookahead_path is not None or self._lookahead_url is not None
 
-    def _fade_out(self) -> int:
-        """Ramp mpv volume to 0 using a -6 dB/step geometric curve. Returns original volume.
-        Each step sounds equally loud; the final level before the hard cut to 0 is ~3%
-        amplitude, below the audibility threshold for the snap-to-silence transition."""
-        original = self.state.volume
-        vol = float(original)
-        for _ in range(_FADE_STEPS - 1):
-            vol *= _FADE_RATIO
-            self._send_command("set_property", "volume", round(vol))
-            time.sleep(_FADE_STEP_SECS)
-        self._send_command("set_property", "volume", 0)
-        time.sleep(
-            _FADE_STEP_SECS
-        )  # dwell at silence so CoreAudio renders it before pause
-        return original
-
-    def _fade_in(self, target: int) -> None:
-        """Ramp mpv volume from 0 to target using a +6 dB/step geometric curve."""
-        vol = float(target) * (_FADE_RATIO ** (_FADE_STEPS - 1))
-        for _ in range(_FADE_STEPS - 1):
-            self._send_command("set_property", "volume", round(vol))
-            time.sleep(_FADE_STEP_SECS)
-            vol /= _FADE_RATIO
-        self._send_command("set_property", "volume", target)
-        time.sleep(_FADE_STEP_SECS)
+    def _fade_out(self) -> None:
+        """Fade audio to silence using mpv's afade filter (sample-accurate).
+        Adds the filter at the current stream position and sleeps until the fade
+        completes. The caller issues pause and removes the filter afterwards."""
+        pos = max(0.0, self.state.position)
+        self._send_command(
+            "af",
+            "add",
+            f"{_FADE_LABEL}:lavfi=[afade=t=out:st={pos:.3f}:d={_FADE_DURATION_SECS}]",
+        )
+        time.sleep(_FADE_DURATION_SECS + 0.010)  # extra 10ms so silence is rendered
 
     def pause(self) -> None:
-        original = self._fade_out()
+        self._fade_out()
         self._send_command("set_property", "pause", True)
-        # Restore mpv volume so the volume setter works correctly while paused.
-        self._send_command("set_property", "volume", original)
+        self._send_command("af", "remove", _FADE_LABEL)
 
     def resume(self) -> None:
-        # Set volume to 0 before unpausing so audio starts from silence.
-        # The two sends are not atomic; a concurrent volume setter has a
-        # nanosecond-wide window to interleave — accepted risk.
-        self._send_command("set_property", "volume", 0)
+        pos = max(0.0, self.state.position)
+        self._send_command(
+            "af",
+            "add",
+            f"{_FADE_LABEL}:lavfi=[afade=t=in:st={pos:.3f}:d={_FADE_DURATION_SECS}]",
+        )
         self._send_command("set_property", "pause", False)
-        self._fade_in(self.state.volume)
+        time.sleep(_FADE_DURATION_SECS + 0.010)
+        self._send_command("af", "remove", _FADE_LABEL)
 
     def seek(self, position: float) -> None:
         # Hold _lock so this check+clear is atomic with the end-file handler's
@@ -1452,10 +1439,10 @@ class MpvPlaybackEngine:
         # Pause and seek to the beginning rather than unloading the file.
         # mpv's "stop" command unloads the file, making resume() a no-op.
         # Pausing + seeking keeps the track loaded so play() via resume() works.
-        original = self._fade_out()
+        self._fade_out()
         self._send_command("set_property", "pause", True)
+        self._send_command("af", "remove", _FADE_LABEL)
         self._send_command("seek", 0, "absolute")
-        self._send_command("set_property", "volume", original)
 
     def unload(self) -> None:
         # Fully unload the current file from mpv using mpv's "stop" command.

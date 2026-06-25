@@ -1071,14 +1071,14 @@ mp.register_script_message("kamp-resume", function()
         park()
         mp.set_property("pause", "no")
     else
-        -- Normal pause -> resume: PTS is continuous, so arm a fade-in. The output
-        -- buffer was emptied during the pause and the filter resumes at the paused PTS,
-        -- so the fade-in lands on fresh audio with no lead. Arm while STILL PAUSED, then
-        -- unpause: arming AFTER unpausing left a window where the filter was type=in
-        -- with the previous (already-elapsed) start_time, so afade reported the fade
-        -- complete and gain snapped to full -- an audible burst. Arming while paused
-        -- keeps that transient inaudible.
-        arm("in", 0)
+        -- Normal pause -> resume: arm a fade-in. The filter still sits ~audio-buffer
+        -- ahead of the speakers, so the fade-in needs the SAME lead as the fade-out --
+        -- anchored at audio-pts it would land inside already-buffered audio and come up
+        -- almost instantly. Arm while STILL PAUSED, then unpause: arming AFTER unpausing
+        -- left a window where the filter was type=in with the previous (already-elapsed)
+        -- start_time, so afade reported the fade complete and gain snapped to full -- an
+        -- audible burst. Arming while paused keeps that transient inaudible.
+        arm("in", output_lead())
         mp.set_property("pause", "no")
         -- Safety net: force unity once the fade window (plus the buffer it drains
         -- through) has elapsed, so an edge-case fade-in can never strand the gain below

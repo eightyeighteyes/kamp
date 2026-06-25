@@ -981,7 +981,7 @@ _GAPLESS_GUARD_SECS: float = 10.0
 # (dB-linear) curve is used so each step sounds equally loud — -6 dB per step
 # means the last level before hard-cut-to-0 is ~3% amplitude (inaudible).
 _FADE_STEPS: int = 6
-_FADE_STEP_SECS: float = 0.013  # 13ms per step → ~78ms total fade
+_FADE_STEP_SECS: float = 0.025  # 25ms per step → 150ms total fade
 _FADE_RATIO: float = 0.5  # -6 dB per step; equal perceived loudness drops
 
 # Properties to observe from mpv for state tracking

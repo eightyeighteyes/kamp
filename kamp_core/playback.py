@@ -977,9 +977,12 @@ def _make_ipc_transport() -> _IPCTransport:
 _GAPLESS_GUARD_SECS: float = 10.0
 
 # Volume fade applied on user-initiated pause/stop/resume to avoid an audible
-# pop at the sample boundary where audio cuts off or resumes.
-_FADE_STEPS: int = 4
-_FADE_STEP_SECS: float = 0.020  # 20ms per step → 80ms total fade
+# pop at the sample boundary where audio cuts off or resumes. A geometric
+# (dB-linear) curve is used so each step sounds equally loud — -6 dB per step
+# means the last level before hard-cut-to-0 is ~3% amplitude (inaudible).
+_FADE_STEPS: int = 6
+_FADE_STEP_SECS: float = 0.013  # 13ms per step → ~78ms total fade
+_FADE_RATIO: float = 0.5  # -6 dB per step; equal perceived loudness drops
 
 # Properties to observe from mpv for state tracking
 _OBSERVED: list[tuple[int, str]] = [
@@ -1380,20 +1383,30 @@ class MpvPlaybackEngine:
         return self._lookahead_path is not None or self._lookahead_url is not None
 
     def _fade_out(self) -> int:
-        """Ramp mpv volume to 0 over _FADE_STEPS steps. Returns original volume.
-        For state.volume ≤ 3, integer division maps all steps to 0; the fade is
-        instant silence, which is the correct behaviour for a near-muted player."""
+        """Ramp mpv volume to 0 using a -6 dB/step geometric curve. Returns original volume.
+        Each step sounds equally loud; the final level before the hard cut to 0 is ~3%
+        amplitude, below the audibility threshold for the snap-to-silence transition."""
         original = self.state.volume
-        for step in range(_FADE_STEPS - 1, -1, -1):
-            self._send_command("set_property", "volume", original * step // _FADE_STEPS)
+        vol = float(original)
+        for _ in range(_FADE_STEPS - 1):
+            vol *= _FADE_RATIO
+            self._send_command("set_property", "volume", round(vol))
             time.sleep(_FADE_STEP_SECS)
+        self._send_command("set_property", "volume", 0)
+        time.sleep(
+            _FADE_STEP_SECS
+        )  # dwell at silence so CoreAudio renders it before pause
         return original
 
     def _fade_in(self, target: int) -> None:
-        """Ramp mpv volume from 0 to target over _FADE_STEPS steps."""
-        for step in range(1, _FADE_STEPS + 1):
-            self._send_command("set_property", "volume", target * step // _FADE_STEPS)
+        """Ramp mpv volume from 0 to target using a +6 dB/step geometric curve."""
+        vol = float(target) * (_FADE_RATIO ** (_FADE_STEPS - 1))
+        for _ in range(_FADE_STEPS - 1):
+            self._send_command("set_property", "volume", round(vol))
             time.sleep(_FADE_STEP_SECS)
+            vol /= _FADE_RATIO
+        self._send_command("set_property", "volume", target)
+        time.sleep(_FADE_STEP_SECS)
 
     def pause(self) -> None:
         original = self._fade_out()

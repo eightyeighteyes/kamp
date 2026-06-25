@@ -1745,6 +1745,88 @@ class TestAlbumsSort:
         index.close()
         assert [a.album for a in albums_default] == [a.album for a in albums_none]
 
+    def test_sort_by_release_date_newest_first(self, tmp_path: Path) -> None:
+        """Default release_date sort is DESC (newest year first)."""
+        index = self._make_index(tmp_path)
+        albums = index.albums(sort="release_date")
+        index.close()
+        # years: Foley Room=2007, Apostrophe=1974, Hot Rats=1969
+        assert [a.album for a in albums] == ["Foley Room", "Apostrophe", "Hot Rats"]
+
+    def test_sort_by_release_date_asc_oldest_first(self, tmp_path: Path) -> None:
+        """sort_dir='asc' on release_date yields oldest year first."""
+        index = self._make_index(tmp_path)
+        albums = index.albums(sort="release_date", sort_dir="asc")
+        index.close()
+        assert [a.album for a in albums] == ["Hot Rats", "Apostrophe", "Foley Room"]
+
+    def test_sort_by_release_date_empty_year_sorts_last(self, tmp_path: Path) -> None:
+        """Albums with no year sort after dated albums regardless of direction."""
+        index = LibraryIndex(tmp_path / "rd.db")
+        p1 = tmp_path / "rd1.mp3"
+        p2 = tmp_path / "rd2.mp3"
+        p3 = tmp_path / "rd3.mp3"
+        _make_mp3(
+            p1, artist="A", album_artist="A", album="Alpha", year="2020", title="T1"
+        )
+        _make_mp3(p2, artist="B", album_artist="B", album="Beta", year="", title="T2")
+        _make_mp3(
+            p3, artist="C", album_artist="C", album="Gamma", year="1990", title="T3"
+        )
+        index.upsert_many(
+            [
+                Track(
+                    file_path=p1,
+                    title="T1",
+                    artist="A",
+                    album_artist="A",
+                    album="Alpha",
+                    year="2020",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                ),
+                Track(
+                    file_path=p2,
+                    title="T2",
+                    artist="B",
+                    album_artist="B",
+                    album="Beta",
+                    year="",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                ),
+                Track(
+                    file_path=p3,
+                    title="T3",
+                    artist="C",
+                    album_artist="C",
+                    album="Gamma",
+                    year="1990",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                ),
+            ]
+        )
+        desc_albums = index.albums(sort="release_date")
+        asc_albums = index.albums(sort="release_date", sort_dir="asc")
+        index.close()
+        # DESC: 2020, 1990, then empty-year last
+        assert [a.album for a in desc_albums] == ["Alpha", "Gamma", "Beta"]
+        # ASC: 1990, 2020, then empty-year last
+        assert [a.album for a in asc_albums] == ["Gamma", "Alpha", "Beta"]
+
 
 class TestRecordPlayed:
     """Tests for LibraryIndex.record_played()."""

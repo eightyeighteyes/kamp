@@ -34,7 +34,8 @@ const TRACK_SORT_OPTIONS = [
   { key: 'duration', label: 'Duration' },
   { key: 'last_played', label: 'Last Played' },
   { key: 'most_played', label: 'Most Played' },
-  { key: 'date_added', label: 'Date Added' }
+  { key: 'date_added', label: 'Date Added' },
+  { key: 'release_date', label: 'Release Date' }
 ]
 
 type TrackSortOrder =
@@ -46,6 +47,7 @@ type TrackSortOrder =
   | 'last_played'
   | 'most_played'
   | 'date_added'
+  | 'release_date'
 
 function sortKey(playlistId: number): string {
   return `kamp:playlist:${playlistId}:sort`
@@ -116,6 +118,16 @@ function applySortToTracks(
         if (aD === null) return 1
         if (bD === null) return -1
         cmp = aD - bD
+        break
+      }
+      case 'release_date': {
+        // Tracks with no year always sort last regardless of direction.
+        const aY = a.year || null
+        const bY = b.year || null
+        if (aY === null && bY === null) return 0
+        if (aY === null) return 1
+        if (bY === null) return -1
+        cmp = parseInt(aY, 10) - parseInt(bY, 10)
         break
       }
     }

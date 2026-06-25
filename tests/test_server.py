@@ -1875,6 +1875,10 @@ class TestUiStateEndpoints:
         resp = client.post("/api/v1/ui/sort-order", json={"sort_order": "bogus"})
         assert resp.status_code == 422
 
+    def test_set_sort_order_release_date_returns_200(self, client: TestClient) -> None:
+        resp = client.post("/api/v1/ui/sort-order", json={"sort_order": "release_date"})
+        assert resp.status_code == 200
+
     def test_set_sort_order_calls_callback(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:

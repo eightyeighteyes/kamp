@@ -2707,7 +2707,7 @@ def create_app(
         return {"ok": True}
 
     _VALID_SORT_ORDERS = frozenset(
-        {"album_artist", "album", "date_added", "last_played"}
+        {"album_artist", "album", "date_added", "last_played", "release_date"}
     )
 
     @app.post("/api/v1/ui/sort-order")

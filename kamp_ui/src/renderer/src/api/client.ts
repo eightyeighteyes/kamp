@@ -324,7 +324,13 @@ export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
 
 export type UiState = {
   active_view: 'library' | 'now-playing' | 'home'
-  sort_order: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
+  sort_order:
+    | 'album_artist'
+    | 'album'
+    | 'date_added'
+    | 'last_played'
+    | 'most_played'
+    | 'release_date'
   sort_dir: 'asc' | 'desc'
   queue_panel_open: boolean
 }
@@ -334,7 +340,13 @@ export const setActiveViewApi = (
   view: 'library' | 'now-playing' | 'home'
 ): Promise<{ ok: boolean }> => post('/api/v1/ui/active-view', { view })
 export const setSortOrderApi = (
-  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played',
+  sortOrder:
+    | 'album_artist'
+    | 'album'
+    | 'date_added'
+    | 'last_played'
+    | 'most_played'
+    | 'release_date',
   sortDir: 'asc' | 'desc'
 ): Promise<{ ok: boolean }> =>
   post('/api/v1/ui/sort-order', { sort_order: sortOrder, sort_dir: sortDir })

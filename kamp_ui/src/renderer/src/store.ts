@@ -96,7 +96,13 @@ type PlayerStore = {
   albumEditMode: boolean
   albumMetaExpanded: boolean
   albumRenameProgress: { done: number; total: number } | null
-  sortOrder: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
+  sortOrder:
+    | 'album_artist'
+    | 'album'
+    | 'date_added'
+    | 'last_played'
+    | 'most_played'
+    | 'release_date'
   sortDir: 'asc' | 'desc'
   libraryFilter: string[]
   searchQuery: string
@@ -120,7 +126,7 @@ type PlayerStore = {
   loadQueue: () => Promise<void>
   setSearchQuery: (q: string) => void
   setSortOrder: (
-    sort: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played'
+    sort: 'album_artist' | 'album' | 'date_added' | 'last_played' | 'most_played' | 'release_date'
   ) => Promise<void>
   setSortDir: (dir: 'asc' | 'desc') => Promise<void>
   setLibraryFilter: (filters: string[]) => void
@@ -441,7 +447,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setSortOrder: async (sort) => {
     // Reset direction to the natural default for the new sort key so the
     // results make intuitive sense (e.g. "Date Added" → newest first).
-    const naturalDir: 'asc' | 'desc' = ['date_added', 'last_played', 'most_played'].includes(sort)
+    const naturalDir: 'asc' | 'desc' = [
+      'date_added',
+      'last_played',
+      'most_played',
+      'release_date'
+    ].includes(sort)
       ? 'desc'
       : 'asc'
     set({ sortOrder: sort, sortDir: naturalDir })

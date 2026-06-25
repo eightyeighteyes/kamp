@@ -994,7 +994,14 @@ _FADE_SECS = 0.15
 _FADE_LUA = """\
 -- kamp_fade.lua: click-free fades via a persistent afade filter re-armed by af-command.
 
-local LABEL = "@kampfade"
+-- af-command addresses the filter by its BARE mpv label (no "@" -- the "@" is only
+-- the labelling syntax in the --af-append definition) and routes to the inner ffmpeg
+-- filter instance by name ("afade"). Verified empirically against mpv v0.41.0 / ffmpeg
+-- 8.1: label "@kampfade" or target "all" both return "error running command"; only
+-- bare label + inner-name target succeeds. This was the bug behind the "timer, not a
+-- fade" behaviour -- the command silently failed so the gain never moved.
+local LABEL = "kampfade"
+local TARGET = "afade"
 local DUR = 0.15            -- seconds; must match the filter's duration= in _start_mpv
 local PARKED = "1000000000" -- start_time far in the future => filter passes at unity
 
@@ -1002,9 +1009,7 @@ local PARKED = "1000000000" -- start_time far in the future => filter passes at 
 local pause_gen = 0
 
 local function afcmd(command, argument)
-    -- target "all" broadcasts to every filter in the @kampfade subgraph, which holds
-    -- only the afade -- avoids depending on the inner ffmpeg instance name resolving.
-    mp.commandv("af-command", LABEL, command, argument, "all")
+    mp.commandv("af-command", LABEL, command, argument, TARGET)
 end
 
 -- Re-park the fade far in the future so the filter passes audio at unity gain.

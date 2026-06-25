@@ -1325,7 +1325,11 @@ class TestMpvPlaybackEngine:
         # This guards against regressing to that approach.
         lua = playback_module._FADE_LUA
         assert "af-command" in lua
-        assert "@kampfade" in lua
+        # The af-command must address the filter by its BARE label and route to the
+        # inner ffmpeg instance name; "@kampfade"/"all" silently fail (verified against
+        # mpv 0.41 / ffmpeg 8.1) and were the cause of the "timer, not a fade" bug.
+        assert 'LABEL = "kampfade"' in lua
+        assert 'TARGET = "afade"' in lua
         assert "audio-pts" in lua
         # afade is re-armed by rewriting start_time, never by setting the volume property.
         assert "start_time" in lua

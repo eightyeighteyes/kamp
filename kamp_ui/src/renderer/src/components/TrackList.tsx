@@ -92,6 +92,7 @@ export function TrackList(): React.JSX.Element | null {
   const playTrack = useStore((s) => s.playTrack)
   const togglePlayPause = useStore((s) => s.togglePlayPause)
   const setAlbumFavorite = useStore((s) => s.setAlbumFavorite)
+  const setFavorite = useStore((s) => s.setFavorite)
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
   const playAlbumNext = useStore((s) => s.playAlbumNext)
 
@@ -747,7 +748,17 @@ export function TrackList(): React.JSX.Element | null {
                 }}
               >
                 <span className="track-row-fav">
-                  {track.favorite && <FavoriteIcon active size={10} />}
+                  <button
+                    className={`track-row-fav-btn${track.favorite ? ' active' : ''}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void setFavorite(track, !track.favorite)
+                    }}
+                    aria-label={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                    aria-pressed={track.favorite}
+                  >
+                    <FavoriteIcon active={track.favorite} size={10} />
+                  </button>
                 </span>
                 <span className="track-row-num">
                   {isRemoteTrack && !isCurrent && (

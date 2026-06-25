@@ -155,6 +155,27 @@
   color: var(--accent);
 }
 
+.queue-track-fav-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.queue-track-row:hover .queue-track-fav-btn,
+.queue-track-fav-btn.active {
+  opacity: 1;
+}
+
+.queue-panel--resizing .queue-track-row:hover .queue-track-fav-btn {
+  opacity: 0;
+}
+
 .queue-track-num {
   grid-row: 1 / 3;
   align-self: center;

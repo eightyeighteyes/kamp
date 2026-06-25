@@ -46,6 +46,7 @@ export function QueuePanel(): React.JSX.Element {
   const insertIntoQueue = useStore((s) => s.insertIntoQueue)
   const insertAlbumAt = useStore((s) => s.insertAlbumAt)
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
+  const setFavorite = useStore((s) => s.setFavorite)
   const insertArtistAt = useStore((s) => s.insertArtistAt)
   const loadPlaylistTracks = useStore((s) => s.loadPlaylistTracks)
   const configValues = useStore((s) => s.configValues)
@@ -651,7 +652,17 @@ export function QueuePanel(): React.JSX.Element {
         }}
       >
         <span className="queue-track-fav">
-          {track.favorite && <FavoriteIcon active size={10} />}
+          <button
+            className={`queue-track-fav-btn${track.favorite ? ' active' : ''}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              void setFavorite(track, !track.favorite)
+            }}
+            aria-label={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
+            aria-pressed={track.favorite}
+          >
+            <FavoriteIcon active={track.favorite} size={10} />
+          </button>
         </span>
         <span className="queue-track-num">{idx + 1}</span>
         <span className="queue-track-title">

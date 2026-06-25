@@ -713,6 +713,23 @@
   color: var(--accent);
 }
 
+.track-row-fav-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.track-row:hover .track-row-fav-btn,
+.track-row-fav-btn.active {
+  opacity: 1;
+}
+
 .track-row-num {
   display: flex;
   align-items: center;

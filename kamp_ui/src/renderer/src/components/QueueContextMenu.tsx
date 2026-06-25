@@ -139,7 +139,10 @@ export function QueueContextMenu({
                 className="track-context-menu-item"
                 onClick={() => {
                   const found = albums.find(
-                    (a) => a.album_artist === track.album_artist && a.album === track.album
+                    (a) =>
+                      (a.album === track.album || a.display_album === track.album) &&
+                      (a.album_artist === track.album_artist ||
+                        a.display_album_artist === track.album_artist)
                   ) ?? {
                     album_artist: track.album_artist,
                     album: track.album,

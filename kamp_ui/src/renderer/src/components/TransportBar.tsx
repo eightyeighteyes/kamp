@@ -41,7 +41,10 @@ export function TransportBar(): React.JSX.Element {
 
   const currentAlbum = current_track
     ? albums.find(
-        (a) => a.album === current_track.album && a.album_artist === current_track.album_artist
+        (a) =>
+          (a.album === current_track.album || a.display_album === current_track.album) &&
+          (a.album_artist === current_track.album_artist ||
+            a.display_album_artist === current_track.album_artist)
       )
     : undefined
 

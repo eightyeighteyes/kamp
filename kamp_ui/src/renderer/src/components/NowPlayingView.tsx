@@ -27,7 +27,10 @@ export function NowPlayingView(): React.JSX.Element {
 
   const currentAlbum = current_track
     ? albums.find(
-        (a) => a.album === current_track.album && a.album_artist === current_track.album_artist
+        (a) =>
+          (a.album === current_track.album || a.display_album === current_track.album) &&
+          (a.album_artist === current_track.album_artist ||
+            a.display_album_artist === current_track.album_artist)
       )
     : undefined
 
@@ -44,8 +47,8 @@ export function NowPlayingView(): React.JSX.Element {
         <span className="now-playing-art-placeholder">♪</span>
         <img
           src={artUrl(
-            current_track.album_artist,
-            current_track.album,
+            currentAlbum?.album_artist ?? current_track.album_artist,
+            currentAlbum?.album ?? current_track.album,
             current_track.album ? '' : current_track.file_path
           )}
           onLoad={() => setArtLoaded(true)}

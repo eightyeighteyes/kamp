@@ -1023,24 +1023,37 @@ local function park()
     afcmd("start_time", PARKED)
 end
 
--- Arm a fade in the given direction ("in"/"out") starting at the current audio PTS.
-local function arm(direction)
+-- mpv hands ~audio-buffer seconds of audio to the output device before it is heard;
+-- that audio is already past the filter and can no longer be faded. So a fade-out must
+-- be anchored at the FILTER HEAD (audio-pts + audio-buffer + MARGIN), not at the audible
+-- position -- otherwise a short fade lands entirely on already-buffered, full-volume
+-- audio and is inaudible (a 3 s fade was audible only because it overflowed the buffer).
+-- MARGIN covers device latency beyond the soft buffer. The caller then delays the pause
+-- by the same lead so the faded audio has time to drain out. Verified vs mpv 0.41.
+local MARGIN = 0.05
+
+local function output_lead()
+    return (mp.get_property_number("audio-buffer", 0.2) or 0.2) + MARGIN
+end
+
+-- Arm a fade ("in"/"out") starting `ahead` seconds past the current audio PTS.
+local function arm(direction, ahead)
     local pts = mp.get_property_number("audio-pts", 0) or 0
-    -- afade rejects a NEGATIVE start_time: the af-command fails outright, leaving the
-    -- filter at its previous start_time. audio-pts reads slightly negative right after
-    -- a seek-while-paused (buffering/lookahead), so without this clamp the fade-in
-    -- command fails and -- with the filter parked at start_time=1e9 -- gain stays at 0
-    -- (silent) until the track is reloaded. Verified vs mpv 0.41 / ffmpeg 8.1.
+    -- afade rejects a NEGATIVE start_time (the af-command fails, leaving the previous
+    -- start_time); audio-pts reads slightly negative right after a seek-while-paused.
     if pts < 0 then pts = 0 end
     afcmd("type", direction)
-    afcmd("start_time", tostring(pts))
+    afcmd("start_time", tostring(pts + ahead))
 end
 
 mp.register_script_message("kamp-pause", function()
     pause_gen = pause_gen + 1
     local my = pause_gen
-    arm("out")
-    mp.add_timeout(DUR, function()
+    local lead = output_lead()
+    arm("out", lead)
+    -- Pause only after the faded audio has drained through the output buffer, so the
+    -- pause lands on silence rather than cutting off still-full-volume buffered audio.
+    mp.add_timeout(lead + DUR, function()
         if my == pause_gen then
             mp.set_property("pause", "yes")
         end
@@ -1058,17 +1071,20 @@ mp.register_script_message("kamp-resume", function()
         park()
         mp.set_property("pause", "no")
     else
-        -- Normal pause -> resume: PTS is continuous, so arm a fade-in. Arm while STILL
-        -- PAUSED, then unpause. Arming AFTER unpausing left a window where the filter
-        -- was type=in with the previous (already-elapsed) start_time, so afade reported
-        -- the fade complete and gain snapped to full -- an audible burst before the
-        -- real fade-in. Arming while paused keeps that transient inaudible.
-        arm("in")
+        -- Normal pause -> resume: PTS is continuous, so arm a fade-in. The output
+        -- buffer was emptied during the pause and the filter resumes at the paused PTS,
+        -- so the fade-in lands on fresh audio with no lead. Arm while STILL PAUSED, then
+        -- unpause: arming AFTER unpausing left a window where the filter was type=in
+        -- with the previous (already-elapsed) start_time, so afade reported the fade
+        -- complete and gain snapped to full -- an audible burst. Arming while paused
+        -- keeps that transient inaudible.
+        arm("in", 0)
         mp.set_property("pause", "no")
-        -- Safety net: force unity just after the fade window so an edge-case fade-in
-        -- can never strand the gain below full. Seamless when the fade already
-        -- completed; cancelled (via pause_gen) if a new pause/stop arrives first.
-        mp.add_timeout(DUR + 0.05, function()
+        -- Safety net: force unity once the fade window (plus the buffer it drains
+        -- through) has elapsed, so an edge-case fade-in can never strand the gain below
+        -- full. Seamless when the fade already completed; cancelled (via pause_gen) if a
+        -- new pause/stop arrives first.
+        mp.add_timeout(output_lead() + DUR, function()
             if my == pause_gen then park() end
         end)
     end
@@ -1077,8 +1093,9 @@ end)
 mp.register_script_message("kamp-stop", function()
     pause_gen = pause_gen + 1
     local my = pause_gen
-    arm("out")
-    mp.add_timeout(DUR, function()
+    local lead = output_lead()
+    arm("out", lead)
+    mp.add_timeout(lead + DUR, function()
         if my == pause_gen then
             mp.set_property("pause", "yes")
             mp.command("seek 0 absolute")

@@ -978,7 +978,7 @@ _GAPLESS_GUARD_SECS: float = 10.0
 
 # Fade duration in seconds. Must match the duration= set on the @kampfade afade
 # filter in _start_mpv (the Lua re-arms start_time/type, not duration, at runtime).
-_FADE_SECS = 0.25
+_FADE_SECS = 0.15
 
 # Lua script loaded into mpv via --script= so pause/stop/resume fades run inside
 # mpv's own event loop. It does NOT ramp the volume property (that gain is a single
@@ -1002,7 +1002,7 @@ _FADE_LUA = """\
 -- fade" behaviour -- the command silently failed so the gain never moved.
 local LABEL = "kampfade"
 local TARGET = "afade"
-local DUR = 0.25            -- seconds; must match the filter's duration= in _start_mpv
+local DUR = 0.15            -- seconds; must match the filter's duration= in _start_mpv
 local PARKED = "1000000000" -- start_time far in the future => filter passes at unity
 
 -- Cancels a pending post-fade pause when a newer request arrives mid-fade.

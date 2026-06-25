@@ -976,68 +976,83 @@ def _make_ipc_transport() -> _IPCTransport:
 # mpv's playlist triggers an immediate gapless EOF, stopping time-pos events.
 _GAPLESS_GUARD_SECS: float = 10.0
 
-# Lua script loaded into mpv via --script= so that pause/resume/stop fades run
-# inside mpv's own event loop. This avoids the IPC-over-socket latency that made
-# set_property volume ramps land at unpredictable CoreAudio callback boundaries.
-# mp.add_timeout precision is determined by mpv's internal scheduler (sub-ms),
-# and mp.set_property_number is a direct property write with no IPC overhead.
-# The filter chain (--af=lavfi=graph=...) is left untouched to avoid the stutter
-# regression from the af-add approach.
+# Fade duration in seconds. Must match the duration= set on the @kampfade afade
+# filter in _start_mpv (the Lua re-arms start_time/type, not duration, at runtime).
+_FADE_SECS = 0.15
+
+# Lua script loaded into mpv via --script= so pause/stop/resume fades run inside
+# mpv's own event loop. It does NOT ramp the volume property (that gain is a single
+# constant per audio frame -> zipper noise, and reading the mid-fade volume back as
+# a "base" to restore stranded the volume at silence on rapid pause/resume). Instead
+# it drives a persistent ffmpeg `afade` filter (added in _start_mpv, label @kampfade)
+# via `af-command`. afade computes a per-sample gain envelope (raised-cosine, curve=
+# hsin) -- a true continuous fade with no stepping -- and is re-armed simply by
+# rewriting start_time to the current audio PTS. The user `volume` property is never
+# touched, so the fade can never strand it. af-command targets "all" because the
+# @kampfade subgraph holds a single filter, so no inner-instance-name routing is
+# needed (the historical af-command-into-lavfi gotcha).
 _FADE_LUA = """\
--- kamp_fade.lua: smooth volume fades for user-initiated pause/stop/resume.
--- Intercepted via script-message so timing runs on mpv's own event loop.
+-- kamp_fade.lua: click-free fades via a persistent afade filter re-armed by af-command.
 
-local FADE_MS = 150
-local FADE_STEPS = 30
-local STEP_SECS = (FADE_MS / 1000) / FADE_STEPS  -- 0.005 s per step
+local LABEL = "@kampfade"
+local DUR = 0.15            -- seconds; must match the filter's duration= in _start_mpv
+local PARKED = "1000000000" -- start_time far in the future => filter passes at unity
 
--- Generation counter: cancels stale callbacks when a new fade starts.
-local gen = 0
--- Original volume before the current fade; restored after pause/stop.
-local base_vol = 100
+-- Cancels a pending post-fade pause when a newer request arrives mid-fade.
+local pause_gen = 0
 
-local function ramp(from_vol, to_vol, on_done)
-    gen = gen + 1
-    local my_gen = gen
-    for i = 1, FADE_STEPS do
-        local vol = from_vol + (to_vol - from_vol) * (i / FADE_STEPS)
-        mp.add_timeout(i * STEP_SECS, function()
-            if gen == my_gen then
-                mp.set_property_number("volume", vol)
-            end
-        end)
-    end
-    if on_done then
-        mp.add_timeout((FADE_STEPS + 1) * STEP_SECS, function()
-            if gen == my_gen then
-                on_done()
-            end
-        end)
-    end
+local function afcmd(command, argument)
+    -- target "all" broadcasts to every filter in the @kampfade subgraph, which holds
+    -- only the afade -- avoids depending on the inner ffmpeg instance name resolving.
+    mp.commandv("af-command", LABEL, command, argument, "all")
+end
+
+-- Re-park the fade far in the future so the filter passes audio at unity gain.
+local function park()
+    afcmd("type", "out")
+    afcmd("start_time", PARKED)
+end
+
+-- Arm a fade in the given direction ("in"/"out") starting at the current audio PTS.
+local function arm(direction)
+    local pts = mp.get_property_number("audio-pts", 0) or 0
+    afcmd("type", direction)
+    afcmd("start_time", tostring(pts))
 end
 
 mp.register_script_message("kamp-pause", function()
-    base_vol = mp.get_property_number("volume", 100)
-    ramp(base_vol, 0, function()
-        mp.set_property("pause", "yes")
-        mp.set_property_number("volume", base_vol)
+    pause_gen = pause_gen + 1
+    local my = pause_gen
+    arm("out")
+    mp.add_timeout(DUR, function()
+        if my == pause_gen then
+            mp.set_property("pause", "yes")
+        end
     end)
 end)
 
 mp.register_script_message("kamp-resume", function()
-    mp.set_property_number("volume", 0)
-    mp.set_property("pause", "no")
-    ramp(0, base_vol, nil)
+    pause_gen = pause_gen + 1       -- cancel any pending post-fade pause
+    mp.set_property("pause", "no")  -- unpause first so PTS advances into the window
+    arm("in")
 end)
 
 mp.register_script_message("kamp-stop", function()
-    base_vol = mp.get_property_number("volume", 100)
-    ramp(base_vol, 0, function()
-        mp.set_property("pause", "yes")
-        mp.set_property_number("volume", base_vol)
-        mp.command("seek 0 absolute")
+    pause_gen = pause_gen + 1
+    local my = pause_gen
+    arm("out")
+    mp.add_timeout(DUR, function()
+        if my == pause_gen then
+            mp.set_property("pause", "yes")
+            mp.command("seek 0 absolute")
+            park()  -- next play starts at unity gain
+        end
     end)
 end)
+
+-- A fresh track inherits the filter's gain state; re-park so a leftover fade-out
+-- window from a prior pause can't silence the new track when its PTS passes it.
+mp.register_event("file-loaded", park)
 """
 
 # Properties to observe from mpv for state tracking
@@ -1187,6 +1202,13 @@ class MpvPlaybackEngine:
                 # byte length computed from _LEVEL_FILTER_GRAPH so it stays
                 # accurate if the filter string ever changes.
                 f"--af=lavfi=graph=%{len(_LEVEL_FILTER_GRAPH)}%{_LEVEL_FILTER_GRAPH}",
+                # Persistent afade gain stage for click-free pause/stop/resume fades,
+                # appended AFTER the analysis chain so the ametadata parser is untouched.
+                # Parked at unity (start_time far in the future); the kamp_fade.lua
+                # script re-arms type/start_time via af-command. afade interpolates the
+                # gain per-sample (curve=hsin raised cosine) -- no zipper. See _FADE_LUA.
+                "--af-append=@kampfade:lavfi=[afade=type=out:curve=hsin:"
+                f"start_time=1000000000:duration={_FADE_SECS}]",
             ],
             stdout=subprocess.PIPE,
             # Capture stderr so we can surface it if mpv fails to start.

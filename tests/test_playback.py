@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from kamp_core.library import Track
+from kamp_core import playback as playback_module
 from kamp_core.playback import (
     MpvPlaybackEngine,
     PlaybackQueue,
@@ -1316,6 +1317,20 @@ class TestMpvPlaybackEngine:
         engine, send = _make_engine()
         engine.resume()
         send.assert_called_once_with("script-message", "kamp-resume")
+
+    def test_fade_lua_drives_afade_filter_not_volume(self) -> None:
+        # The fade must be a per-sample afade gain stage driven by af-command, NOT a
+        # volume-property ramp. Ramping the volume property steps the gain per audio
+        # frame (zipper noise) and stranded the volume at silence on rapid pause/resume.
+        # This guards against regressing to that approach.
+        lua = playback_module._FADE_LUA
+        assert "af-command" in lua
+        assert "@kampfade" in lua
+        assert "audio-pts" in lua
+        # afade is re-armed by rewriting start_time, never by setting the volume property.
+        assert "start_time" in lua
+        assert 'set_property_number("volume"' not in lua
+        assert 'set_property("volume"' not in lua
 
     def test_seek_sends_seek_command(self) -> None:
         engine, send = _make_engine()

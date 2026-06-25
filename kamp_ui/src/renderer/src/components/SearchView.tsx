@@ -20,6 +20,7 @@ function SearchTrackRow({
 }): React.JSX.Element {
   const playTrack = useStore((s) => s.playTrack)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
+  const setFavorite = useStore((s) => s.setFavorite)
 
   const handleClick = (): void => {
     // Pass file_path for tracks with no album so the server can look them up
@@ -47,7 +48,17 @@ function SearchTrackRow({
       }}
     >
       <span className="search-track-fav">
-        {track.favorite && <FavoriteIcon active size={10} />}
+        <button
+          className={`search-track-fav-btn${track.favorite ? ' active' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            void setFavorite(track, !track.favorite)
+          }}
+          aria-label={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
+          aria-pressed={track.favorite}
+        >
+          <FavoriteIcon active={track.favorite} size={10} />
+        </button>
       </span>
       <span className="search-track-title">{track.title}</span>
       <span className="search-track-meta">

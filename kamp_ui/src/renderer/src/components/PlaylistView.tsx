@@ -147,6 +147,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const reorderPlaylistTracks = useStore((s) => s.reorderPlaylistTracks)
   const removeTrackFromPlaylist = useStore((s) => s.removeTrackFromPlaylist)
   const setPlaylistFavorite = useStore((s) => s.setPlaylistFavorite)
+  const setFavorite = useStore((s) => s.setFavorite)
   const renamePlaylist = useStore((s) => s.renamePlaylist)
   const currentTrack = useStore((s) => s.player.current_track)
   const playing = useStore((s) => s.player.playing)
@@ -829,7 +830,17 @@ export function PlaylistView(): React.JSX.Element | null {
                   }}
                 >
                   <span className="track-row-fav">
-                    {track.favorite && <FavoriteIcon active size={10} />}
+                    <button
+                      className={`track-row-fav-btn${track.favorite ? ' active' : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void setFavorite(track, !track.favorite)
+                      }}
+                      aria-label={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                      aria-pressed={track.favorite}
+                    >
+                      <FavoriteIcon active={track.favorite} size={10} />
+                    </button>
                   </span>
                   <span className="track-row-num">{i + 1}</span>
                   <span className="track-row-title-cell">

@@ -1309,13 +1309,77 @@ class TestMpvPlaybackEngine:
 
     def test_pause_sets_pause_true(self) -> None:
         engine, send = _make_engine()
-        engine.pause()
-        send.assert_called_once_with("set_property", "pause", True)
+        with patch("kamp_core.playback.time.sleep"):
+            engine.pause()
+        send.assert_any_call("set_property", "pause", True)
+
+    def test_pause_fades_volume_then_pauses(self) -> None:
+        engine, send = _make_engine()
+        engine.state.volume = 100
+        with patch("kamp_core.playback.time.sleep"):
+            engine.pause()
+        calls = [c.args for c in send.call_args_list]
+        # Expect 4 decreasing volume steps before the pause command.
+        volume_calls = [c for c in calls if c[0] == "set_property" and c[1] == "volume"]
+        pause_idx = next(
+            i for i, c in enumerate(calls) if c == ("set_property", "pause", True)
+        )
+        fade_calls_before_pause = [
+            c
+            for i, c in enumerate(calls)
+            if i < pause_idx and c[0] == "set_property" and c[1] == "volume"
+        ]
+        assert fade_calls_before_pause == [
+            ("set_property", "volume", 75),
+            ("set_property", "volume", 50),
+            ("set_property", "volume", 25),
+            ("set_property", "volume", 0),
+        ]
+        # Volume restored after pause.
+        assert ("set_property", "volume", 100) in [
+            c for i, c in enumerate(calls) if i > pause_idx
+        ]
 
     def test_resume_sets_pause_false(self) -> None:
         engine, send = _make_engine()
-        engine.resume()
-        send.assert_called_once_with("set_property", "pause", False)
+        with patch("kamp_core.playback.time.sleep"):
+            engine.resume()
+        send.assert_any_call("set_property", "pause", False)
+
+    def test_resume_sets_volume_zero_before_unpause(self) -> None:
+        engine, send = _make_engine()
+        engine.state.volume = 80
+        with patch("kamp_core.playback.time.sleep"):
+            engine.resume()
+        calls = [c.args for c in send.call_args_list]
+        zero_idx = next(
+            i for i, c in enumerate(calls) if c == ("set_property", "volume", 0)
+        )
+        unpause_idx = next(
+            i for i, c in enumerate(calls) if c == ("set_property", "pause", False)
+        )
+        assert zero_idx < unpause_idx
+
+    def test_resume_fades_volume_in_after_unpause(self) -> None:
+        engine, send = _make_engine()
+        engine.state.volume = 80
+        with patch("kamp_core.playback.time.sleep"):
+            engine.resume()
+        calls = [c.args for c in send.call_args_list]
+        unpause_idx = next(
+            i for i, c in enumerate(calls) if c == ("set_property", "pause", False)
+        )
+        fade_calls_after_unpause = [
+            c
+            for i, c in enumerate(calls)
+            if i > unpause_idx and c[0] == "set_property" and c[1] == "volume"
+        ]
+        assert fade_calls_after_unpause == [
+            ("set_property", "volume", 20),
+            ("set_property", "volume", 40),
+            ("set_property", "volume", 60),
+            ("set_property", "volume", 80),
+        ]
 
     def test_seek_sends_seek_command(self) -> None:
         engine, send = _make_engine()
@@ -1395,9 +1459,37 @@ class TestMpvPlaybackEngine:
 
     def test_stop_pauses_and_seeks_to_start(self) -> None:
         engine, send = _make_engine()
-        engine.stop()
+        with patch("kamp_core.playback.time.sleep"):
+            engine.stop()
         send.assert_any_call("set_property", "pause", True)
         send.assert_any_call("seek", 0, "absolute")
+
+    def test_stop_fades_volume_then_pauses_and_seeks(self) -> None:
+        engine, send = _make_engine()
+        engine.state.volume = 100
+        with patch("kamp_core.playback.time.sleep"):
+            engine.stop()
+        calls = [c.args for c in send.call_args_list]
+        pause_idx = next(
+            i for i, c in enumerate(calls) if c == ("set_property", "pause", True)
+        )
+        fade_calls_before_pause = [
+            c
+            for i, c in enumerate(calls)
+            if i < pause_idx and c[0] == "set_property" and c[1] == "volume"
+        ]
+        assert fade_calls_before_pause == [
+            ("set_property", "volume", 75),
+            ("set_property", "volume", 50),
+            ("set_property", "volume", 25),
+            ("set_property", "volume", 0),
+        ]
+        seek_idx = next(i for i, c in enumerate(calls) if c == ("seek", 0, "absolute"))
+        assert pause_idx < seek_idx
+        # Volume restored after seek.
+        assert ("set_property", "volume", 100) in [
+            c for i, c in enumerate(calls) if i > seek_idx
+        ]
 
     def test_load_paused_loads_and_pauses(self) -> None:
         engine, send = _make_engine()

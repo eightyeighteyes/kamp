@@ -976,6 +976,11 @@ def _make_ipc_transport() -> _IPCTransport:
 # mpv's playlist triggers an immediate gapless EOF, stopping time-pos events.
 _GAPLESS_GUARD_SECS: float = 10.0
 
+# Volume fade applied on user-initiated pause/stop/resume to avoid an audible
+# pop at the sample boundary where audio cuts off or resumes.
+_FADE_STEPS: int = 4
+_FADE_STEP_SECS: float = 0.010  # 10ms per step → 40ms total fade
+
 # Properties to observe from mpv for state tracking
 _OBSERVED: list[tuple[int, str]] = [
     (1, "time-pos"),
@@ -1374,11 +1379,35 @@ class MpvPlaybackEngine:
         """True when a next-track is pre-appended to mpv's playlist."""
         return self._lookahead_path is not None or self._lookahead_url is not None
 
+    def _fade_out(self) -> int:
+        """Ramp mpv volume to 0 over _FADE_STEPS steps. Returns original volume.
+        For state.volume ≤ 3, integer division maps all steps to 0; the fade is
+        instant silence, which is the correct behaviour for a near-muted player."""
+        original = self.state.volume
+        for step in range(_FADE_STEPS - 1, -1, -1):
+            self._send_command("set_property", "volume", original * step // _FADE_STEPS)
+            time.sleep(_FADE_STEP_SECS)
+        return original
+
+    def _fade_in(self, target: int) -> None:
+        """Ramp mpv volume from 0 to target over _FADE_STEPS steps."""
+        for step in range(1, _FADE_STEPS + 1):
+            self._send_command("set_property", "volume", target * step // _FADE_STEPS)
+            time.sleep(_FADE_STEP_SECS)
+
     def pause(self) -> None:
+        original = self._fade_out()
         self._send_command("set_property", "pause", True)
+        # Restore mpv volume so the volume setter works correctly while paused.
+        self._send_command("set_property", "volume", original)
 
     def resume(self) -> None:
+        # Set volume to 0 before unpausing so audio starts from silence.
+        # The two sends are not atomic; a concurrent volume setter has a
+        # nanosecond-wide window to interleave — accepted risk.
+        self._send_command("set_property", "volume", 0)
         self._send_command("set_property", "pause", False)
+        self._fade_in(self.state.volume)
 
     def seek(self, position: float) -> None:
         # Hold _lock so this check+clear is atomic with the end-file handler's
@@ -1410,8 +1439,10 @@ class MpvPlaybackEngine:
         # Pause and seek to the beginning rather than unloading the file.
         # mpv's "stop" command unloads the file, making resume() a no-op.
         # Pausing + seeking keeps the track loaded so play() via resume() works.
+        original = self._fade_out()
         self._send_command("set_property", "pause", True)
         self._send_command("seek", 0, "absolute")
+        self._send_command("set_property", "volume", original)
 
     def unload(self) -> None:
         # Fully unload the current file from mpv using mpv's "stop" command.

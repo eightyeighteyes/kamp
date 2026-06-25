@@ -979,7 +979,7 @@ _GAPLESS_GUARD_SECS: float = 10.0
 # Volume fade applied on user-initiated pause/stop/resume to avoid an audible
 # pop at the sample boundary where audio cuts off or resumes.
 _FADE_STEPS: int = 4
-_FADE_STEP_SECS: float = 0.010  # 10ms per step → 40ms total fade
+_FADE_STEP_SECS: float = 0.020  # 20ms per step → 80ms total fade
 
 # Properties to observe from mpv for state tracking
 _OBSERVED: list[tuple[int, str]] = [

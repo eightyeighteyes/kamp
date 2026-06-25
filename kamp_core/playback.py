@@ -976,6 +976,69 @@ def _make_ipc_transport() -> _IPCTransport:
 # mpv's playlist triggers an immediate gapless EOF, stopping time-pos events.
 _GAPLESS_GUARD_SECS: float = 10.0
 
+# Lua script loaded into mpv via --script= so that pause/resume/stop fades run
+# inside mpv's own event loop. This avoids the IPC-over-socket latency that made
+# set_property volume ramps land at unpredictable CoreAudio callback boundaries.
+# mp.add_timeout precision is determined by mpv's internal scheduler (sub-ms),
+# and mp.set_property_number is a direct property write with no IPC overhead.
+# The filter chain (--af=lavfi=graph=...) is left untouched to avoid the stutter
+# regression from the af-add approach.
+_FADE_LUA = """\
+-- kamp_fade.lua: smooth volume fades for user-initiated pause/stop/resume.
+-- Intercepted via script-message so timing runs on mpv's own event loop.
+
+local FADE_MS = 150
+local FADE_STEPS = 30
+local STEP_SECS = (FADE_MS / 1000) / FADE_STEPS  -- 0.005 s per step
+
+-- Generation counter: cancels stale callbacks when a new fade starts.
+local gen = 0
+-- Original volume before the current fade; restored after pause/stop.
+local base_vol = 100
+
+local function ramp(from_vol, to_vol, on_done)
+    gen = gen + 1
+    local my_gen = gen
+    for i = 1, FADE_STEPS do
+        local vol = from_vol + (to_vol - from_vol) * (i / FADE_STEPS)
+        mp.add_timeout(i * STEP_SECS, function()
+            if gen == my_gen then
+                mp.set_property_number("volume", vol)
+            end
+        end)
+    end
+    if on_done then
+        mp.add_timeout((FADE_STEPS + 1) * STEP_SECS, function()
+            if gen == my_gen then
+                on_done()
+            end
+        end)
+    end
+end
+
+mp.register_script_message("kamp-pause", function()
+    base_vol = mp.get_property_number("volume", 100)
+    ramp(base_vol, 0, function()
+        mp.set_property("pause", "yes")
+        mp.set_property_number("volume", base_vol)
+    end)
+end)
+
+mp.register_script_message("kamp-resume", function()
+    mp.set_property_number("volume", 0)
+    mp.set_property("pause", "no")
+    ramp(0, base_vol, nil)
+end)
+
+mp.register_script_message("kamp-stop", function()
+    base_vol = mp.get_property_number("volume", 100)
+    ramp(base_vol, 0, function()
+        mp.set_property("pause", "yes")
+        mp.set_property_number("volume", base_vol)
+        mp.command("seek 0 absolute")
+    end)
+end)
+"""
 
 # Properties to observe from mpv for state tracking
 _OBSERVED: list[tuple[int, str]] = [
@@ -1044,6 +1107,7 @@ class MpvPlaybackEngine:
         # Job Object API is unavailable.
         self._job: _WindowsJobObject | None = None
         self._ipc: _IPCTransport = _make_ipc_transport()
+        self._fade_script: Path | None = None
         self._reader_thread: threading.Thread | None = None
         self._stdout_reader_thread: threading.Thread | None = None
         # See class docstring for the locking contract. Plain Lock (not RLock):
@@ -1092,6 +1156,16 @@ class MpvPlaybackEngine:
                 )
                 self._job = None
 
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".lua",
+            prefix="kamp_fade_",
+            delete=False,
+            encoding="utf-8",
+        ) as fh:
+            fh.write(_FADE_LUA)
+            self._fade_script = Path(fh.name)
+
         self._proc = subprocess.Popen(
             [
                 self._mpv_bin,
@@ -1099,6 +1173,7 @@ class MpvPlaybackEngine:
                 "--idle=yes",
                 "--really-quiet",
                 f"--input-ipc-server={self._ipc.server_arg}",
+                f"--script={self._fade_script}",
                 # Prevent mpv from intercepting media keys via its IOKit HID tap.
                 # Media key events are now handled by the Electron now-playing-helper
                 # subprocess via MPRemoteCommandCenter (registered by the process
@@ -1376,10 +1451,10 @@ class MpvPlaybackEngine:
         return self._lookahead_path is not None or self._lookahead_url is not None
 
     def pause(self) -> None:
-        self._send_command("set_property", "pause", True)
+        self._send_command("script-message", "kamp-pause")
 
     def resume(self) -> None:
-        self._send_command("set_property", "pause", False)
+        self._send_command("script-message", "kamp-resume")
 
     def seek(self, position: float) -> None:
         # Hold _lock so this check+clear is atomic with the end-file handler's
@@ -1411,8 +1486,8 @@ class MpvPlaybackEngine:
         # Pause and seek to the beginning rather than unloading the file.
         # mpv's "stop" command unloads the file, making resume() a no-op.
         # Pausing + seeking keeps the track loaded so play() via resume() works.
-        self._send_command("set_property", "pause", True)
-        self._send_command("seek", 0, "absolute")
+        # The seek is issued by the Lua kamp-stop handler after the fade completes.
+        self._send_command("script-message", "kamp-stop")
 
     def unload(self) -> None:
         # Fully unload the current file from mpv using mpv's "stop" command.
@@ -1454,6 +1529,9 @@ class MpvPlaybackEngine:
             self._ipc.close()
         except Exception:
             pass
+        if self._fade_script is not None:
+            self._fade_script.unlink(missing_ok=True)
+            self._fade_script = None
 
     # ------------------------------------------------------------------
     # Internal: IPC send/receive

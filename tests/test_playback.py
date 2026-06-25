@@ -1307,15 +1307,15 @@ class TestMpvPlaybackEngine:
         engine.play(Path("/music/01.mp3"))
         send.assert_any_call("set_property", "pause", False)
 
-    def test_pause_sets_pause_true(self) -> None:
+    def test_pause_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.pause()
-        send.assert_called_once_with("set_property", "pause", True)
+        send.assert_called_once_with("script-message", "kamp-pause")
 
-    def test_resume_sets_pause_false(self) -> None:
+    def test_resume_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.resume()
-        send.assert_called_once_with("set_property", "pause", False)
+        send.assert_called_once_with("script-message", "kamp-resume")
 
     def test_seek_sends_seek_command(self) -> None:
         engine, send = _make_engine()
@@ -1393,11 +1393,10 @@ class TestMpvPlaybackEngine:
         engine.volume = 75
         send.assert_called_once_with("set_property", "volume", 75)
 
-    def test_stop_pauses_and_seeks_to_start(self) -> None:
+    def test_stop_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.stop()
-        send.assert_any_call("set_property", "pause", True)
-        send.assert_any_call("seek", 0, "absolute")
+        send.assert_called_once_with("script-message", "kamp-stop")
 
     def test_load_paused_loads_and_pauses(self) -> None:
         engine, send = _make_engine()

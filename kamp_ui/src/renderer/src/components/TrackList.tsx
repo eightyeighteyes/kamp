@@ -128,6 +128,7 @@ export function TrackList(): React.JSX.Element | null {
   const toggleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const artOffsetAtPanStartRef = useRef(ART_OFFSET_DEFAULT)
   const panStartYRef = useRef(0)
+  const pendingSingleSelect = useRef<number | null>(null)
   const [heroHeightPct, setHeroHeightPct] = useState<number>(() => {
     const saved = parseFloat(localStorage.getItem(HERO_KEY) ?? '')
     return isNaN(saved) ? HERO_DEFAULT : Math.min(HERO_DEFAULT, Math.max(HERO_MIN, saved))
@@ -139,6 +140,8 @@ export function TrackList(): React.JSX.Element | null {
     )
     return isNaN(saved) ? ART_OFFSET_DEFAULT : Math.min(100, Math.max(0, saved))
   })
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
+  const [anchorIdx, setAnchorIdx] = useState<number | null>(null)
   const [isResizing, setIsResizing] = useState(false)
   const [isArtPanning, setIsArtPanning] = useState(false)
   const [collision, setCollision] = useState<
@@ -160,6 +163,8 @@ export function TrackList(): React.JSX.Element | null {
     setPrevAlbumKey(albumKey)
     setMbState({ status: 'idle' })
     setArtSearchOpen(false)
+    setSelectedIndices(new Set())
+    setAnchorIdx(null)
     const savedOffset = album
       ? parseFloat(localStorage.getItem(artOffsetKey(album.album_artist, album.album)) ?? '')
       : NaN
@@ -347,6 +352,56 @@ export function TrackList(): React.JSX.Element | null {
     if (mbidPromises.length > 0) await Promise.allSettled(mbidPromises)
 
     await refreshOpenAlbum()
+  }
+
+  const handleRowMouseDown = (e: React.MouseEvent, idx: number): void => {
+    if (e.button !== 0) return
+    if (e.shiftKey && anchorIdx !== null) {
+      const lo = Math.min(anchorIdx, idx)
+      const hi = Math.max(anchorIdx, idx)
+      setSelectedIndices(new Set(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i)))
+    } else if (e.metaKey || e.ctrlKey) {
+      setSelectedIndices((prev) => {
+        const next = new Set(prev)
+        next.has(idx) ? next.delete(idx) : next.add(idx)
+        return next
+      })
+      setAnchorIdx(idx)
+    } else if (selectedIndices.has(idx) && selectedIndices.size > 1) {
+      // Defer collapse to mouseup so a drag can start with the full selection.
+      pendingSingleSelect.current = idx
+    } else {
+      setSelectedIndices(new Set([idx]))
+      setAnchorIdx(idx)
+    }
+  }
+
+  const handleRowMouseUp = (idx: number): void => {
+    if (pendingSingleSelect.current === idx) {
+      pendingSingleSelect.current = null
+      setSelectedIndices(new Set([idx]))
+      setAnchorIdx(idx)
+    }
+  }
+
+  const handleDragStart = (e: React.DragEvent, idx: number, track: Track): void => {
+    pendingSingleSelect.current = null
+    const isMulti = selectedIndices.has(idx) && selectedIndices.size > 1
+    if (isMulti) {
+      const sorted = [...selectedIndices].sort((a, b) => a - b)
+      const paths = sorted.map((i) => tracks[i].file_path)
+      e.dataTransfer.setData('text/kamp-file-paths', JSON.stringify(paths))
+      const ghost = document.createElement('div')
+      ghost.textContent = `${sorted.length} tracks`
+      ghost.style.cssText =
+        'position:fixed;top:-100px;background:var(--accent);color:#fff;padding:4px 10px;border-radius:3px;font-size:12px;font-weight:600'
+      document.body.appendChild(ghost)
+      e.dataTransfer.setDragImage(ghost, 0, 0)
+      requestAnimationFrame(() => document.body.removeChild(ghost))
+    } else {
+      e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+    }
+    e.dataTransfer.effectAllowed = 'copy'
   }
 
   const [menu, setMenu] = useState<ContextMenu | null>(null)
@@ -714,11 +769,23 @@ export function TrackList(): React.JSX.Element | null {
             const isRemoteTrack = track.source !== 'local'
             const isTrackOffline = isRemoteTrack && !connected
             const isPreorderUnavailable = track.is_available === false
+            const isSelected = selectedIndices.has(i)
             return (
               <li
                 key={track.id}
-                className={`track-row${isCurrent ? ' current' : ''}${isTrackOffline ? ' track-row--offline' : ''}${isPreorderUnavailable ? ' track-row--preorder-unavailable' : ''}${flashTrackId === track.id ? ' track-row--new-flash' : ''}`}
+                className={[
+                  'track-row',
+                  isCurrent ? 'current' : '',
+                  isTrackOffline ? 'track-row--offline' : '',
+                  isPreorderUnavailable ? 'track-row--preorder-unavailable' : '',
+                  flashTrackId === track.id ? 'track-row--new-flash' : '',
+                  isSelected ? 'selected' : ''
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
                 tabIndex={0}
+                onMouseDown={(e) => handleRowMouseDown(e, i)}
+                onMouseUp={() => handleRowMouseUp(i)}
                 onDoubleClick={() => {
                   if (isTrackOffline || isPreorderUnavailable) return
                   if (isCurrent) {
@@ -736,14 +803,15 @@ export function TrackList(): React.JSX.Element | null {
                 {...(!isTrackOffline && !isPreorderUnavailable
                   ? {
                       draggable: true,
-                      onDragStart: (e: React.DragEvent) => {
-                        e.dataTransfer.setData('text/kamp-track-path', track.file_path)
-                        e.dataTransfer.effectAllowed = 'copy'
-                      }
+                      onDragStart: (e: React.DragEvent) => handleDragStart(e, i, track)
                     }
                   : {})}
                 onContextMenu={(e) => {
                   e.preventDefault()
+                  if (!isSelected) {
+                    setSelectedIndices(new Set([i]))
+                    setAnchorIdx(i)
+                  }
                   setMenu({ x: e.clientX, y: e.clientY, track })
                 }}
               >
@@ -814,7 +882,17 @@ export function TrackList(): React.JSX.Element | null {
       </div>
 
       {menu && (
-        <TrackContextMenu x={menu.x} y={menu.y} track={menu.track} onClose={() => setMenu(null)} />
+        <TrackContextMenu
+          x={menu.x}
+          y={menu.y}
+          track={menu.track}
+          onClose={() => setMenu(null)}
+          selectedTracks={
+            selectedIndices.size > 1
+              ? [...selectedIndices].sort((a, b) => a - b).map((i) => tracks[i])
+              : undefined
+          }
+        />
       )}
       {mbState.status === 'ready' && (
         <MusicBrainzModal

@@ -978,7 +978,7 @@ _GAPLESS_GUARD_SECS: float = 10.0
 
 # Fade duration in seconds. Must match the duration= set on the @kampfade afade
 # filter in _start_mpv (the Lua re-arms start_time/type, not duration, at runtime).
-_FADE_SECS = 0.15
+_FADE_SECS = 0.25
 
 # Lua script loaded into mpv via --script= so pause/stop/resume fades run inside
 # mpv's own event loop. It does NOT ramp the volume property (that gain is a single
@@ -1002,11 +1002,16 @@ _FADE_LUA = """\
 -- fade" behaviour -- the command silently failed so the gain never moved.
 local LABEL = "kampfade"
 local TARGET = "afade"
-local DUR = 0.15            -- seconds; must match the filter's duration= in _start_mpv
+local DUR = 0.25            -- seconds; must match the filter's duration= in _start_mpv
 local PARKED = "1000000000" -- start_time far in the future => filter passes at unity
 
 -- Cancels a pending post-fade pause when a newer request arrives mid-fade.
 local pause_gen = 0
+-- True once a stop has run its course (seek to 0 + park). afade's fade-in re-arm is
+-- unreliable across a seek (its internal sample position no longer lines up with the
+-- new start_time, so a fade-in can stick at silence), so resume-after-stop skips the
+-- fade-in and just restores unity. Set in the stop callback, consumed by resume.
+local stopped = false
 
 local function afcmd(command, argument)
     mp.commandv("af-command", LABEL, command, argument, TARGET)
@@ -1021,6 +1026,12 @@ end
 -- Arm a fade in the given direction ("in"/"out") starting at the current audio PTS.
 local function arm(direction)
     local pts = mp.get_property_number("audio-pts", 0) or 0
+    -- afade rejects a NEGATIVE start_time: the af-command fails outright, leaving the
+    -- filter at its previous start_time. audio-pts reads slightly negative right after
+    -- a seek-while-paused (buffering/lookahead), so without this clamp the fade-in
+    -- command fails and -- with the filter parked at start_time=1e9 -- gain stays at 0
+    -- (silent) until the track is reloaded. Verified vs mpv 0.41 / ffmpeg 8.1.
+    if pts < 0 then pts = 0 end
     afcmd("type", direction)
     afcmd("start_time", tostring(pts))
 end
@@ -1037,9 +1048,30 @@ mp.register_script_message("kamp-pause", function()
 end)
 
 mp.register_script_message("kamp-resume", function()
-    pause_gen = pause_gen + 1       -- cancel any pending post-fade pause
-    mp.set_property("pause", "no")  -- unpause first so PTS advances into the window
-    arm("in")
+    pause_gen = pause_gen + 1  -- cancel any pending post-fade pause
+    local my = pause_gen
+    if stopped then
+        -- Resume after a stop: the track was seeked to 0 and the filter parked at
+        -- unity. A fade-in across that seek is unreliable (it can stick at silence),
+        -- so just guarantee unity and unpause -- a stop is a hard reset anyway.
+        stopped = false
+        park()
+        mp.set_property("pause", "no")
+    else
+        -- Normal pause -> resume: PTS is continuous, so arm a fade-in. Arm while STILL
+        -- PAUSED, then unpause. Arming AFTER unpausing left a window where the filter
+        -- was type=in with the previous (already-elapsed) start_time, so afade reported
+        -- the fade complete and gain snapped to full -- an audible burst before the
+        -- real fade-in. Arming while paused keeps that transient inaudible.
+        arm("in")
+        mp.set_property("pause", "no")
+        -- Safety net: force unity just after the fade window so an edge-case fade-in
+        -- can never strand the gain below full. Seamless when the fade already
+        -- completed; cancelled (via pause_gen) if a new pause/stop arrives first.
+        mp.add_timeout(DUR + 0.05, function()
+            if my == pause_gen then park() end
+        end)
+    end
 end)
 
 mp.register_script_message("kamp-stop", function()
@@ -1050,14 +1082,19 @@ mp.register_script_message("kamp-stop", function()
         if my == pause_gen then
             mp.set_property("pause", "yes")
             mp.command("seek 0 absolute")
-            park()  -- next play starts at unity gain
+            park()        -- next play starts at unity gain
+            stopped = true
         end
     end)
 end)
 
 -- A fresh track inherits the filter's gain state; re-park so a leftover fade-out
--- window from a prior pause can't silence the new track when its PTS passes it.
-mp.register_event("file-loaded", park)
+-- window from a prior pause can't silence the new track when its PTS passes it, and
+-- clear the stopped flag so the next resume fades in normally.
+mp.register_event("file-loaded", function()
+    park()
+    stopped = false
+end)
 """
 
 # Properties to observe from mpv for state tracking

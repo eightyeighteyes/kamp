@@ -415,6 +415,9 @@ _SORT_CLAUSES: dict[str, str] = {
     "date_added": "sort_date_added {dir}, album_artist COLLATE NOCASE",
     "last_played": "sort_last_played {dir}, album_artist COLLATE NOCASE",
     "most_played": "sort_play_count_avg {dir}, album_artist COLLATE NOCASE",
+    # sort_release_date is NULLIF(year,'') aliased in the UNION ALL branches so
+    # empty strings sort last regardless of direction (NULLS LAST convention).
+    "release_date": "sort_release_date {dir} NULLS LAST, album_artist COLLATE NOCASE",
 }
 
 # Natural default direction per sort key — used when sort_dir is not provided.
@@ -426,6 +429,7 @@ _DEFAULT_SORT_DIR: dict[str, str] = {
     "date_added": "DESC",
     "last_played": "DESC",
     "most_played": "DESC",
+    "release_date": "DESC",
 }
 
 
@@ -3049,6 +3053,7 @@ class LibraryIndex:
                 a.date_added        AS sort_date_added,
                 a.last_played_at    AS sort_last_played,
                 a.play_count_avg    AS sort_play_count_avg,
+                NULLIF(a.year, '')  AS sort_release_date,
                 a.art_version,
                 -- has_art: remote-only albums always have CDN art; others use embedded_art.
                 CASE WHEN a.source = 'bandcamp' THEN 1 ELSE a.embedded_art END AS has_art,
@@ -3090,6 +3095,7 @@ class LibraryIndex:
                 t.date_added        AS sort_date_added,
                 t.last_played       AS sort_last_played,
                 CAST(t.play_count AS REAL) AS sort_play_count_avg,
+                NULLIF(t.year, '')  AS sort_release_date,
                 t.file_mtime        AS art_version,
                 t.embedded_art      AS has_art,
                 1                   AS missing_album,

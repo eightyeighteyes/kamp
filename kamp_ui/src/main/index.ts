@@ -564,15 +564,41 @@ function buildAppMenu(): void {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' }
+        // Dev tools are only useful during development — hide them in the packaged app.
+        ...(!app.isPackaged
+          ? [
+              { role: 'reload' as const },
+              { role: 'forceReload' as const },
+              { role: 'toggleDevTools' as const },
+              { type: 'separator' as const }
+            ]
+          : []),
+        { role: 'resetZoom' as const, accelerator: 'CommandOrControl+0' },
+        // Custom click handler (not role) so the [-3, +3] clamp applies. The
+        // native accelerator is kept without registerAccelerator:false so macOS
+        // captures Cmd+= at the menu level, which prevents Chromium's built-in
+        // zoom shortcut from also firing and double-stepping.
+        {
+          label: 'Zoom In',
+          accelerator: 'CommandOrControl+=',
+          click: (_, win) => {
+            const bw = win as BrowserWindow | undefined
+            if (bw) bw.webContents.setZoomLevel(Math.min(3, bw.webContents.getZoomLevel() + 1))
+          }
+        },
+        // Zoom-out keyboard shortcut is handled via before-input-event (see
+        // createWindow) because 'CommandOrControl+-' doesn't parse reliably.
+        {
+          label: 'Zoom Out',
+          accelerator: 'CommandOrControl+-',
+          registerAccelerator: false,
+          click: (_, win) => {
+            const bw = win as BrowserWindow | undefined
+            if (bw) bw.webContents.setZoomLevel(Math.max(-3, bw.webContents.getZoomLevel() - 1))
+          }
+        },
+        { type: 'separator' as const },
+        { role: 'togglefullscreen' as const }
       ]
     },
     {
@@ -625,6 +651,19 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  // Zoom-out: 'CommandOrControl+-' doesn't register reliably (Electron parser
+  // ambiguity on '-'), so intercept via physical key code instead.
+  // Zoom-in uses a native menu accelerator whose OS-level capture prevents
+  // Chromium's built-in Cmd+= from also firing — so no before-input-event
+  // handling needed (and adding it would double-step).
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    if (input.type !== 'keyDown' || input.shift || input.alt) return
+    const cmdOrCtrl = process.platform === 'darwin' ? input.meta : input.control
+    if (cmdOrCtrl && input.code === 'Minus') {
+      mainWindow.webContents.setZoomLevel(Math.max(-3, mainWindow.webContents.getZoomLevel() - 1))
+    }
   })
 
   // HMR for renderer base on electron-vite cli.

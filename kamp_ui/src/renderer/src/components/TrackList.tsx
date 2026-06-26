@@ -321,7 +321,8 @@ export function TrackList(): React.JSX.Element | null {
     const metaOpts: { release_date?: string; label?: string; mb_release_id?: string } = {
       mb_release_id: mbRelease.mbid
     }
-    if (payload.album.release_date === 'mb' && mbRelease.release_date) metaOpts.release_date = mbRelease.release_date
+    if (payload.album.release_date === 'mb' && mbRelease.release_date)
+      metaOpts.release_date = mbRelease.release_date
     if (payload.album.label === 'mb' && mbRelease.label) metaOpts.label = mbRelease.label
     await patchAlbumMeta(album.album_artist, album.album, metaOpts)
 

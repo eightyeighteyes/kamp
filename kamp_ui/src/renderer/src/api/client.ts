@@ -308,11 +308,13 @@ export type SearchResult = {
 export const search = (q: string, sort = 'album_artist'): Promise<SearchResult> =>
   get(`/api/v1/search?q=${encodeURIComponent(q)}&sort=${encodeURIComponent(sort)}`)
 
+export type RepeatMode = 'off' | 'queue' | 'album' | 'single'
+
 export type QueueState = {
   tracks: Track[]
   position: number
   shuffle: boolean
-  repeat: boolean
+  repeat: RepeatMode
 }
 
 export const getQueue = (): Promise<QueueState> => get('/api/v1/player/queue')
@@ -438,8 +440,8 @@ export const nextTrack = (): Promise<unknown> => post('/api/v1/player/next')
 export const prevTrack = (): Promise<unknown> => post('/api/v1/player/prev')
 export const setShuffle = (shuffle: boolean, albumShuffle = false): Promise<unknown> =>
   post('/api/v1/player/shuffle', { shuffle, album_shuffle: albumShuffle })
-export const setRepeat = (repeat: boolean): Promise<unknown> =>
-  post('/api/v1/player/repeat', { repeat })
+export const setRepeat = (mode: RepeatMode): Promise<unknown> =>
+  post('/api/v1/player/repeat', { mode })
 export const addAlbumToQueue = (
   albumArtist: string,
   album: string,

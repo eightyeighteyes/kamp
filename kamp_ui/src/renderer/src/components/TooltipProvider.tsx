@@ -72,8 +72,8 @@ export function TooltipProvider({ children }: { children: React.ReactNode }): Re
         hideTimerRef.current = setTimeout(beginFade, VISIBLE_MS)
       }
 
-      // Hot-switch: during the rescind window, skip the show delay.
-      if (phaseRef.current === 'fading') {
+      // Hot-switch: if already visible or fading, skip the show delay.
+      if (phaseRef.current === 'visible' || phaseRef.current === 'fading') {
         show()
         return
       }

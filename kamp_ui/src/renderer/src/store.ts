@@ -8,6 +8,7 @@
 
 import { create } from 'zustand'
 import * as api from './api/client'
+import type { RepeatMode } from './api/client'
 import type {
   Album,
   AlbumTagsCollision,
@@ -215,7 +216,7 @@ type PlayerStore = {
   setVolume: (volume: number) => Promise<void>
   setAlbumGroupingActive: (active: boolean) => void
   setShuffle: (shuffle: boolean) => Promise<void>
-  setRepeat: (repeat: boolean) => Promise<void>
+  setRepeat: () => Promise<void>
   addAlbumToQueue: (albumArtist: string, album: string, filePath?: string) => Promise<void>
   playAlbumNext: (albumArtist: string, album: string, filePath?: string) => Promise<void>
   insertAlbumAt: (
@@ -1045,8 +1046,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void get().loadQueue()
   },
 
-  setRepeat: async (repeat) => {
-    await api.setRepeat(repeat)
+  setRepeat: async () => {
+    const { queue, albumGroupingActive } = get()
+    const current = (queue?.repeat ?? 'off') as RepeatMode
+    const modes: RepeatMode[] = albumGroupingActive
+      ? ['off', 'queue', 'album', 'single']
+      : ['off', 'queue', 'single']
+    const idx = modes.indexOf(current)
+    const nextMode = modes[(idx === -1 ? 0 : idx + 1) % modes.length]
+    await api.setRepeat(nextMode)
     void get().loadQueue()
   },
 

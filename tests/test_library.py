@@ -47,8 +47,8 @@ def _make_mp3(path: Path, **tags: str) -> None:
         t["TPE2"] = id3.TPE2(encoding=3, text=tags["album_artist"])
     if "album" in tags:
         t["TALB"] = id3.TALB(encoding=3, text=tags["album"])
-    if "year" in tags:
-        t["TDRC"] = id3.TDRC(encoding=3, text=tags["year"])
+    if "release_date" in tags:
+        t["TDRC"] = id3.TDRC(encoding=3, text=tags["release_date"])
     if "title" in tags:
         t["TIT2"] = id3.TIT2(encoding=3, text=tags["title"])
     if "track" in tags:
@@ -66,7 +66,7 @@ def _sample_track(file_path: Path) -> Track:
         artist="The Artist",
         album_artist="The Artist",
         album="The Album",
-        year="2024",
+        release_date="2024",
         track_number=1,
         disc_number=1,
         ext="mp3",
@@ -134,7 +134,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 37
+        assert version == 38
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -685,7 +685,7 @@ class TestLibraryScanner:
             artist="The Artist",
             album_artist="The Artist",
             album="Great Album",
-            year="2010",
+            release_date="2010",
             title="Best Song",
             track="5",
             disc="2",
@@ -700,11 +700,41 @@ class TestLibraryScanner:
         assert t.artist == "The Artist"
         assert t.album_artist == "The Artist"
         assert t.album == "Great Album"
-        assert t.year == "2010"
+        assert t.release_date == "2010"
         assert t.title == "Best Song"
         assert t.track_number == 5
         assert t.disc_number == 2
         assert t.ext == "mp3"
+
+    def test_scan_reads_full_iso_release_date_from_mp3(self, tmp_path: Path) -> None:
+        """Full ISO date from TDRC (e.g. '2023-03-15') is preserved without truncation."""
+        lib = tmp_path / "music"
+        lib.mkdir()
+        _make_mp3(lib / "01.mp3", release_date="2023-03-15")
+
+        index = LibraryIndex(tmp_path / "library.db")
+        LibraryScanner(index).scan(lib)
+        tracks = index.all_tracks()
+        index.close()
+
+        assert tracks[0].release_date == "2023-03-15"
+
+    def test_scan_reads_full_iso_release_date_from_m4a(self, tmp_path: Path) -> None:
+        """Full ISO date from ©day (e.g. '2020-06-12') is preserved without truncation."""
+        lib = tmp_path / "music"
+        lib.mkdir()
+        (lib / "01.m4a").write_bytes(b"\x00" * 32)
+
+        mock_audio = MagicMock()
+        mock_audio.tags = {"\xa9day": ["2020-06-12"]}
+
+        with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
+            index = LibraryIndex(tmp_path / "library.db")
+            LibraryScanner(index).scan(lib)
+            tracks = index.all_tracks()
+            index.close()
+
+        assert tracks[0].release_date == "2020-06-12"
 
     def test_scan_parses_track_number_with_total(self, tmp_path: Path) -> None:
         """TRCK can be "5/12"; only the number part should be stored."""
@@ -820,7 +850,7 @@ class TestLibraryScanner:
         assert t.artist == "M4A Artist"
         assert t.album_artist == "M4A Album Artist"
         assert t.album == "M4A Album"
-        assert t.year == "2023"
+        assert t.release_date == "2023"
         assert t.title == "M4A Track"
         assert t.track_number == 3
         assert t.ext == "m4a"
@@ -853,7 +883,7 @@ class TestLibraryScanner:
         assert t.artist == "FLAC Artist"
         assert t.album_artist == "FLAC Album Artist"
         assert t.album == "FLAC Album"
-        assert t.year == "2022"
+        assert t.release_date == "2022"
         assert t.title == "FLAC Track"
         assert t.track_number == 7
         assert t.disc_number == 2
@@ -889,7 +919,7 @@ class TestLibraryScanner:
         assert t.artist == "Stereolab"
         assert t.album == "Emperor Tomato Ketchup"
         assert t.title == "Metronomic Underground"
-        assert t.year == "1996"
+        assert t.release_date == "1996"
         assert t.mb_release_id == "mbid-etk"
 
     def test_scan_reads_ogg_tags(self, tmp_path: Path) -> None:
@@ -1116,7 +1146,7 @@ class TestLibraryScanner:
                     artist="The Artist",
                     album_artist="The Artist",
                     album="Great Album",
-                    year="2020",
+                    release_date="2020",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1135,7 +1165,7 @@ class TestLibraryScanner:
             artist="The Artist",
             album_artist="The Artist",
             album="Great Album",
-            year="2020",
+            release_date="2020",
             title="Remote",
             track="1",
             disc="1",
@@ -1255,7 +1285,7 @@ class TestSearch:
                 artist="Radiohead",
                 album_artist="Radiohead",
                 album="Kid A",
-                year="2000",
+                release_date="2000",
                 track_number=1,
                 disc_number=1,
                 ext="mp3",
@@ -1269,7 +1299,7 @@ class TestSearch:
                 artist="Radiohead",
                 album_artist="Radiohead",
                 album="Kid A",
-                year="2000",
+                release_date="2000",
                 track_number=2,
                 disc_number=1,
                 ext="mp3",
@@ -1283,7 +1313,7 @@ class TestSearch:
                 artist="Björk",
                 album_artist="Björk",
                 album="Homogenic",
-                year="1997",
+                release_date="1997",
                 track_number=1,
                 disc_number=1,
                 ext="mp3",
@@ -1382,7 +1412,7 @@ class TestSearch:
                 artist="ArtistA",
                 album_artist="ArtistA",
                 album="AlbumA",
-                year="2000",
+                release_date="2000",
                 track_number=1,
                 disc_number=1,
                 ext="mp3",
@@ -1396,7 +1426,7 @@ class TestSearch:
                 artist="ArtistB",
                 album_artist="ArtistB",
                 album="AlbumB",
-                year="2001",
+                release_date="2001",
                 track_number=1,
                 disc_number=1,
                 ext="mp3",
@@ -1459,7 +1489,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1516,7 +1546,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -1543,7 +1573,7 @@ class TestAlbumsSort:
             artist="Zappa",
             album_artist="Zappa",
             album="Hot Rats",
-            year="1969",
+            release_date="1969",
             title="T1",
         )
         _make_mp3(
@@ -1551,7 +1581,7 @@ class TestAlbumsSort:
             artist="Amon Tobin",
             album_artist="Amon Tobin",
             album="Foley Room",
-            year="2007",
+            release_date="2007",
             title="T2",
         )
         _make_mp3(
@@ -1559,7 +1589,7 @@ class TestAlbumsSort:
             artist="Zappa",
             album_artist="Zappa",
             album="Apostrophe",
-            year="1974",
+            release_date="1974",
             title="T3",
         )
         index.upsert_many(
@@ -1570,7 +1600,7 @@ class TestAlbumsSort:
                     artist="Zappa",
                     album_artist="Zappa",
                     album="Hot Rats",
-                    year="1969",
+                    release_date="1969",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1585,7 +1615,7 @@ class TestAlbumsSort:
                     artist="Amon Tobin",
                     album_artist="Amon Tobin",
                     album="Foley Room",
-                    year="2007",
+                    release_date="2007",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1600,7 +1630,7 @@ class TestAlbumsSort:
                     artist="Zappa",
                     album_artist="Zappa",
                     album="Apostrophe",
-                    year="1974",
+                    release_date="1974",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1699,7 +1729,7 @@ class TestAlbumsSort:
                 artist="A",
                 album_artist="A",
                 album="Multi",
-                year="2020",
+                release_date="2020",
                 track_number=i + 1,
                 disc_number=1,
                 ext="mp3",
@@ -1767,11 +1797,23 @@ class TestAlbumsSort:
         p2 = tmp_path / "rd2.mp3"
         p3 = tmp_path / "rd3.mp3"
         _make_mp3(
-            p1, artist="A", album_artist="A", album="Alpha", year="2020", title="T1"
+            p1,
+            artist="A",
+            album_artist="A",
+            album="Alpha",
+            release_date="2020",
+            title="T1",
         )
-        _make_mp3(p2, artist="B", album_artist="B", album="Beta", year="", title="T2")
         _make_mp3(
-            p3, artist="C", album_artist="C", album="Gamma", year="1990", title="T3"
+            p2, artist="B", album_artist="B", album="Beta", release_date="", title="T2"
+        )
+        _make_mp3(
+            p3,
+            artist="C",
+            album_artist="C",
+            album="Gamma",
+            release_date="1990",
+            title="T3",
         )
         index.upsert_many(
             [
@@ -1781,7 +1823,7 @@ class TestAlbumsSort:
                     artist="A",
                     album_artist="A",
                     album="Alpha",
-                    year="2020",
+                    release_date="2020",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1795,7 +1837,7 @@ class TestAlbumsSort:
                     artist="B",
                     album_artist="B",
                     album="Beta",
-                    year="",
+                    release_date="",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1809,7 +1851,7 @@ class TestAlbumsSort:
                     artist="C",
                     album_artist="C",
                     album="Gamma",
-                    year="1990",
+                    release_date="1990",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1844,7 +1886,7 @@ class TestRecordPlayed:
                     artist="A",
                     album_artist="A",
                     album="B",
-                    year="",
+                    release_date="",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1883,7 +1925,7 @@ class TestRecordPlayed:
                     artist="A",
                     album_artist="A",
                     album="B",
-                    year="",
+                    release_date="",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1910,7 +1952,7 @@ class TestRecordPlayed:
                     artist="A",
                     album_artist="A",
                     album="B",
-                    year="",
+                    release_date="",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1939,7 +1981,7 @@ class TestRecordPlayed:
                     artist="A",
                     album_artist="A",
                     album="B",
-                    year="",
+                    release_date="",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -1971,7 +2013,7 @@ class TestRecordPlayed:
                         artist="A",
                         album_artist="A",
                         album="X",
-                        year="",
+                        release_date="",
                         track_number=1,
                         disc_number=1,
                         ext="mp3",
@@ -2000,7 +2042,7 @@ class TestRecordPlayed:
                         artist="A",
                         album_artist="A",
                         album="X",
-                        year="",
+                        release_date="",
                         track_number=i + 1,
                         disc_number=1,
                         ext="mp3",
@@ -2030,7 +2072,7 @@ class TestRecordPlayed:
                         artist="A",
                         album_artist="A",
                         album="X",
-                        year="",
+                        release_date="",
                         track_number=1,
                         disc_number=1,
                         ext="mp3",
@@ -2099,7 +2141,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert row is not None
         assert row[0] == 0
 
@@ -2131,7 +2173,7 @@ def _make_indexed_track(
                 artist=album_artist,
                 album_artist=album_artist,
                 album=album,
-                year="",
+                release_date="",
                 track_number=track_number,
                 disc_number=1,
                 ext="mp3",
@@ -2296,7 +2338,7 @@ class TestRecordTrackStarted:
                     artist="A",
                     album_artist="A",
                     album="B",
-                    year="",
+                    release_date="",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -2351,7 +2393,7 @@ class TestRecordTrackStarted:
                     artist="A",
                     album_artist="A",
                     album="B",
-                    year="",
+                    release_date="",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -2391,7 +2433,7 @@ class TestRecordTrackStarted:
                         artist="X",
                         album_artist="X",
                         album=album,
-                        year="",
+                        release_date="",
                         track_number=1,
                         disc_number=1,
                         ext="mp3",
@@ -2435,7 +2477,7 @@ class TestFavorite:
                     artist="A",
                     album_artist="A",
                     album="B",
-                    year="",
+                    release_date="",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -2523,7 +2565,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2548,7 +2590,7 @@ class TestAlbumFavorite:
                     artist="A",
                     album_artist="Artist",
                     album="Album",
-                    year="2020",
+                    release_date="2020",
                     track_number=1,
                     disc_number=1,
                     ext="mp3",
@@ -2619,7 +2661,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -2800,7 +2842,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2895,7 +2937,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 37
+        assert version == 38
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2903,7 +2945,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 37
+        assert version == 38
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3780,7 +3822,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 37
+        assert version == 38
 
         index.close()
 
@@ -4183,7 +4225,9 @@ class TestWriteMetaTagsToFile:
         mp3.write_bytes(b"\xff\xfb" * 64)
         id3.ID3().save(str(mp3))
 
-        write_meta_tags_to_file(mp3, genre="Blues", label="Chess Records", year="1958")
+        write_meta_tags_to_file(
+            mp3, genre="Blues", label="Chess Records", release_date="1958"
+        )
 
         tags = id3.ID3(str(mp3))
         assert str(tags["TCON"]) == "Blues"
@@ -4198,7 +4242,9 @@ class TestWriteMetaTagsToFile:
         mock_audio = MagicMock()
         mock_audio.tags = {}
         with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
-            write_meta_tags_to_file(m4a, genre="Soul", label="Motown", year="1965")
+            write_meta_tags_to_file(
+                m4a, genre="Soul", label="Motown", release_date="1965"
+            )
 
         assert mock_audio.tags["\xa9gen"] == ["Soul"]
         assert mock_audio.tags["\xa9day"] == ["1965"]
@@ -4215,7 +4261,9 @@ class TestWriteMetaTagsToFile:
         mock_audio = MagicMock()
         mock_audio.tags = {}
         with patch("kamp_core.library.mutagen.flac.FLAC", return_value=mock_audio):
-            write_meta_tags_to_file(flac, genre="Folk", label="Folkways", year="1970")
+            write_meta_tags_to_file(
+                flac, genre="Folk", label="Folkways", release_date="1970"
+            )
 
         assert mock_audio.tags["GENRE"] == ["Folk"]
         assert mock_audio.tags["LABEL"] == ["Folkways"]
@@ -4230,7 +4278,7 @@ class TestWriteMetaTagsToFile:
         with patch(
             "kamp_core.library.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
         ):
-            write_meta_tags_to_file(ogg, genre="Punk", label="SST", year="1984")
+            write_meta_tags_to_file(ogg, genre="Punk", label="SST", release_date="1984")
 
         assert mock_audio.tags["GENRE"] == ["Punk"]
         assert mock_audio.tags["LABEL"] == ["SST"]
@@ -4285,7 +4333,7 @@ class TestUpdateAlbumMeta:
             artist="Artist",
             album_artist="Artist",
             album="Record",
-            year="2020",
+            release_date="2020",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -4313,8 +4361,8 @@ class TestUpdateAlbumMeta:
 
     def test_update_year_persisted(self, tmp_path: Path) -> None:
         index, _ = self._make_index_with_track(tmp_path)
-        tracks = index.update_album_meta("Artist", "Record", year="2024")
-        assert tracks[0].year == "2024"
+        tracks = index.update_album_meta("Artist", "Record", release_date="2024")
+        assert tracks[0].release_date == "2024"
         index.close()
 
     def test_update_only_supplied_fields(self, tmp_path: Path) -> None:
@@ -4326,7 +4374,7 @@ class TestUpdateAlbumMeta:
             artist="Artist",
             album_artist="Artist",
             album="Record",
-            year="1990",
+            release_date="1990",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -4340,7 +4388,7 @@ class TestUpdateAlbumMeta:
         tracks = index.update_album_meta("Artist", "Record", label="ECM")
         assert tracks[0].genre == "Jazz"  # unchanged
         assert tracks[0].label == "ECM"
-        assert tracks[0].year == "1990"  # unchanged
+        assert tracks[0].release_date == "1990"  # unchanged
         index.close()
 
     def test_no_fields_returns_existing_tracks(self, tmp_path: Path) -> None:
@@ -4465,7 +4513,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 37
+        assert version == 38
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4500,7 +4548,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 37
+        assert version == 38
         index.close()
 
 
@@ -4519,7 +4567,7 @@ class TestMarkAlbumArtEmbedded:
             artist="Artist",
             album_artist="Artist",
             album=album,
-            year="2020",
+            release_date="2020",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -4948,7 +4996,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 37
+        assert version == 38
 
 
 class TestRemoteTrackSchema:
@@ -5120,7 +5168,7 @@ class TestRemoteTrackSchema:
         # Insert two remote tracks for the same sale_item_id and one unrelated track.
         index._conn.executemany(
             "INSERT INTO tracks (file_path, title, artist, album_artist, album, "
-            "track_number, disc_number, year, source) VALUES (?,?,?,?,?,?,?,?,?)",
+            "track_number, disc_number, release_date, source) VALUES (?,?,?,?,?,?,?,?,?)",
             [
                 (
                     "bandcamp://42/1",
@@ -5282,7 +5330,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -5343,10 +5391,101 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 37
+        assert version == 38
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
+
+
+# ---------------------------------------------------------------------------
+# Release date backfill helpers (KAMP-513)
+# ---------------------------------------------------------------------------
+
+
+class TestReleaseDateBackfill:
+    """has_remote_tracks_needing_date_backfill and patch_release_date_for_remote_album."""
+
+    def _make_index(self, tmp_path: Path) -> "LibraryIndex":
+        return LibraryIndex(tmp_path / "library.db")
+
+    def test_no_backfill_needed_when_release_date_is_full_iso(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._make_index(tmp_path)
+        track = Track(
+            file_path=Path("bandcamp://sale1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="B",
+            release_date="2020-01-15",
+            track_number=1,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="",
+            label="",
+            source="bandcamp",
+        )
+        index.upsert_many([track])
+        needs = index.has_remote_tracks_needing_date_backfill("sale1")
+        index.close()
+
+        assert needs is False
+
+    def test_backfill_needed_when_release_date_is_year_only(
+        self, tmp_path: Path
+    ) -> None:
+        index = self._make_index(tmp_path)
+        track = Track(
+            file_path=Path("bandcamp://sale2/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="B",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="",
+            label="",
+            source="bandcamp",
+        )
+        index.upsert_many([track])
+        needs = index.has_remote_tracks_needing_date_backfill("sale2")
+        index.close()
+
+        assert needs is True
+
+    def test_backfill_needed_when_release_date_is_empty(self, tmp_path: Path) -> None:
+        index = self._make_index(tmp_path)
+        track = Track(
+            file_path=Path("bandcamp://sale3/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="B",
+            release_date="",
+            track_number=1,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genre="",
+            label="",
+            source="bandcamp",
+        )
+        index.upsert_many([track])
+        needs = index.has_remote_tracks_needing_date_backfill("sale3")
+        index.close()
+
+        assert needs is True
 
 
 # ---------------------------------------------------------------------------
@@ -5372,7 +5511,7 @@ class TestAlbumInfoRemoteFields:
             artist=album_artist,
             album_artist=album_artist,
             album=album,
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -5572,7 +5711,7 @@ class TestAlbumInfoRemoteFields:
                 artist="The Artist",
                 album_artist="The Artist",
                 album="The Album",
-                year="2024",
+                release_date="2024",
                 track_number=1,
                 disc_number=1,
                 ext="",
@@ -5587,7 +5726,7 @@ class TestAlbumInfoRemoteFields:
                 artist="The Artist",
                 album_artist="The Artist",
                 album="The Album",
-                year="2024",
+                release_date="2024",
                 track_number=2,
                 disc_number=1,
                 ext="",
@@ -5699,7 +5838,7 @@ class TestIndexedPathsExcludesRemote:
             artist="A",
             album_artist="A",
             album="B",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -5714,7 +5853,7 @@ class TestIndexedPathsExcludesRemote:
             artist="A",
             album_artist="A",
             album="B",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -5740,7 +5879,7 @@ class TestIndexedPathsExcludesRemote:
             artist="A",
             album_artist="A",
             album="B",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -5755,7 +5894,7 @@ class TestIndexedPathsExcludesRemote:
             artist="A",
             album_artist="A",
             album="B",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -5847,7 +5986,7 @@ class TestQueuePlayerStateStr:
         # Insert with the canonical URI directly via SQL to bypass Path normalization.
         canonical = "bandcamp://999/3"
         index._conn.execute(
-            "INSERT INTO tracks (file_path, title, artist, album_artist, album, year, "
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album, release_date, "
             "track_number, disc_number, ext, embedded_art, mb_release_id, mb_recording_id, "
             "source) VALUES (?, 'Remote', 'A', 'A', 'B', '2024', 1, 1, 'mp3', 0, '', '', 'bandcamp')",
             (canonical,),
@@ -5875,7 +6014,7 @@ class TestQueuePlayerStateStr:
             artist="Remote Artist",
             album_artist="Remote Artist",
             album="Remote Album",
-            year="2024",
+            release_date="2024",
             track_number=2,
             disc_number=1,
             ext="mp3",
@@ -6010,7 +6149,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -6327,7 +6466,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -6405,7 +6544,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -6611,7 +6750,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -6680,7 +6819,7 @@ class TestIsPreorder:
             artist="The Artist",
             album_artist="The Artist",
             album="The Album",
-            year="2024",
+            release_date="2024",
             track_number=track_num,
             disc_number=1,
             ext="mp3",
@@ -6781,7 +6920,7 @@ class TestInheritRemotePlayCounts:
             artist="The Artist",
             album_artist="The Artist",
             album="The Album",
-            year="2024",
+            release_date="2024",
             track_number=track_num,
             disc_number=1,
             ext="mp3",
@@ -6960,7 +7099,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7057,7 +7196,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7172,7 +7311,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -7254,7 +7393,7 @@ class TestAlbumUrlInAlbumInfo:
             artist="The Artist",
             album_artist="The Artist",
             album="The Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -7677,7 +7816,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -7792,7 +7931,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -7890,7 +8029,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -7990,7 +8129,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -8044,7 +8183,7 @@ class TestPlaylists:
             artist="Remote Artist",
             album_artist="Remote Artist",
             album="Remote Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -8497,7 +8636,7 @@ class TestMagicPlaylists:
         fetched = index.get_magic_playlist_criteria(playlist_id)
         index.close()
 
-        assert version == 37
+        assert version == 38
         assert fetched == criteria
 
     # ------------------------------------------------------------------
@@ -8515,7 +8654,7 @@ class TestMagicPlaylists:
             artist="Alvvays",
             album_artist="Alvvays",
             album="Antisocialites",
-            year="2017",
+            release_date="2017",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -8533,7 +8672,7 @@ class TestMagicPlaylists:
             artist="Weezer",
             album_artist="Weezer",
             album="Blue Album",
-            year="1994",
+            release_date="1994",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -8816,7 +8955,7 @@ class TestMagicPlaylists:
             artist="Alvvays",
             album_artist="Alvvays",
             album="Blue Rev",
-            year="2022",
+            release_date="2022",
             track_number=99,
             disc_number=1,
             ext="mp3",
@@ -9071,7 +9210,7 @@ class TestMagicPlaylistReactivity:
             artist="Alvvays",
             album_artist="Alvvays",
             album="Antisocialites",
-            year="2017",
+            release_date="2017",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -9102,7 +9241,7 @@ class TestMagicPlaylistReactivity:
             artist="Weezer",
             album_artist="Weezer",
             album="Blue",
-            year="1994",
+            release_date="1994",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -9164,7 +9303,7 @@ class TestMagicPlaylistReactivity:
             artist="Alvvays",
             album_artist="Alvvays",
             album="Antisocialites",
-            year="2017",
+            release_date="2017",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -9255,7 +9394,7 @@ def _make_bandcamp_track(uri: str, title: str = "Track", album: str = "Album") -
         artist="Band",
         album_artist="Band",
         album=album,
-        year="2020",
+        release_date="2020",
         track_number=1,
         disc_number=1,
         ext="mp3",
@@ -9273,7 +9412,7 @@ def _bandcamp_track() -> Track:
         artist="Band",
         album_artist="Band",
         album="Stream Album",
-        year="",
+        release_date="",
         track_number=1,
         disc_number=1,
         ext="",
@@ -9429,15 +9568,17 @@ class TestUpsertSyncProtection:
         index = LibraryIndex(tmp_path / "library.db")
         track = _bandcamp_track()
         index.upsert_many([track])
-        index.update_album_meta("Band", "Stream Album", label="ECM", year="1975")
+        index.update_album_meta(
+            "Band", "Stream Album", label="ECM", release_date="1975"
+        )
 
-        synced = Track(**{**track.__dict__, "label": "", "year": ""})
+        synced = Track(**{**track.__dict__, "label": "", "release_date": ""})
         index.upsert_many([synced])
 
         result = index.all_tracks()[0]
         index.close()
         assert result.label == "ECM"
-        assert result.year == "1975"
+        assert result.release_date == "1975"
 
     def test_local_track_empty_genre_always_wins(self, tmp_path: Path) -> None:
         """Rescanning a local file with no genre tag must clear the DB genre."""

@@ -44,7 +44,7 @@ def _make_track(
         artist=artist,
         album_artist=artist,
         album="Some Album",
-        year="2020",
+        release_date="2020",
         track_number=1,
         disc_number=1,
         ext="mp3",

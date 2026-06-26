@@ -514,12 +514,16 @@ def sync_collection_stream(
         if purchased_ts is not None:
             index.update_remote_track_date_added(str(sid), purchased_ts)
 
-        # Fetch track metadata for new albums or pre-order albums (always re-inspect
-        # pre-orders so newly released tracks and full-release transitions are caught).
+        # Fetch track metadata for new albums, pre-order albums, or albums whose
+        # remote tracks still carry year-only release_date strings (backfill for
+        # tracks indexed before KAMP-513).  Pre-orders are always re-inspected so
+        # newly released tracks and full-release transitions are caught.
+        needs_backfill = index.has_remote_tracks_needing_date_backfill(str(sid))
         if album_url and (
             is_preorder_already
             or api_says_preorder
             or not index.has_remote_album_tracks(str(sid))
+            or needs_backfill
         ):
             if fetch_index > 0:
                 time.sleep(0.5)
@@ -1098,10 +1102,14 @@ def fetch_album_tracks(
     tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
     trackinfo: list[dict[str, Any]] = tralbum.get("trackinfo") or []
 
-    # Extract year from the release date string (e.g. "01 Jan 2020 00:00:00 GMT").
-    release_date = tralbum.get("album_release_date") or ""
-    year_match = re.search(r"\b(19|20)\d{2}\b", str(release_date))
-    year_str = year_match.group(0) if year_match else ""
+    # Parse the release date string (e.g. "01 Jan 2020 00:00:00 GMT") to ISO form.
+    raw_release_date = str(tralbum.get("album_release_date") or "")
+    parsed_date = email.utils.parsedate(raw_release_date)
+    if parsed_date:
+        release_date_iso = time.strftime("%Y-%m-%d", parsed_date)
+    else:
+        year_match = re.search(r"\b(19|20)\d{2}\b", raw_release_date)
+        release_date_iso = year_match.group(0) if year_match else ""
 
     result: list[Track] = []
     for t in trackinfo:
@@ -1119,7 +1127,7 @@ def fetch_album_tracks(
                 artist=artist,
                 album_artist=band_name,
                 album=item_title,
-                year=year_str,
+                release_date=release_date_iso,
                 track_number=int(track_num),
                 disc_number=1,
                 ext="mp3",

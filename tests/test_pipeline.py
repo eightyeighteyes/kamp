@@ -62,7 +62,7 @@ MOCK_TRACKS = [
         artist="Cool Artist",
         album="Great Album",
         album_artist="Cool Artist",
-        year="2020",
+        release_date="2020",
         track_number=1,
         mbid="",
         release_mbid="release-abc",
@@ -534,7 +534,7 @@ class TestMbTagsConflict:
             artist=artist,
             album=album,
             album_artist=artist,
-            year="2024",
+            release_date="2024",
             track_number=1,
             mbid="",
         )
@@ -610,7 +610,7 @@ MB_CONFLICTING_TRACKS = [
         artist="MB Artist",  # differs from file tags ("File Artist")
         album="MB Album",  # differs from file tags ("File Album")
         album_artist="MB Artist",
-        year="2024",
+        release_date="2024",
         track_number=1,
         mbid="rec-123",
         release_mbid="rel-123",

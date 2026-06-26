@@ -190,12 +190,12 @@ class TestTagDirectory:
         assert release.mbid == "abc-123"
         assert release.release_group_mbid == "rg-456"
         assert release.title == "Great Album"
-        assert release.year == "2020"
+        assert release.release_date == "2020-04-01"
 
         tags = id3.ID3(str(mp3))
         assert str(tags["TALB"]) == "Great Album"
         assert str(tags["TPE1"]) == "Cool Artist"
-        assert str(tags["TDRC"]) == "2020"
+        assert str(tags["TDRC"]) == "2020-04-01"
         assert str(tags["TXXX:MusicBrainz Album Id"]) == "abc-123"
         # Extended tags
         assert str(tags["TSOP"]) == "Artist, Cool"
@@ -550,7 +550,7 @@ class TestWriteM4aTags:
             title="Full Album",
             artist="Full Artist",
             album_artist="Full Album Artist",
-            year="2023",
+            release_date="2023",
             tracks={
                 "1-1": TrackInfo(
                     number=1,
@@ -623,7 +623,7 @@ class TestWriteM4aTags:
             title="Minimal Album",
             artist="Min Artist",
             album_artist="Min Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
         )
         with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
@@ -662,7 +662,7 @@ class TestTagDirectoryM4a:
         assert release.mbid == "abc-123"
         assert initial_tags["\xa9ART"] == ["Cool Artist"]
         assert initial_tags["\xa9alb"] == ["Great Album"]
-        assert initial_tags["\xa9day"] == ["2020"]
+        assert initial_tags["\xa9day"] == ["2020-04-01"]
         assert "----:com.apple.iTunes:MusicBrainz Album Id" in initial_tags
         mock_mp4.save.assert_called()
 
@@ -762,7 +762,7 @@ class TestWriteTagsEdgeCases:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={"1-1": TrackInfo(number=1, disc=1, title="Track One")},
         )
 
@@ -987,7 +987,7 @@ class TestTagDirectoryFlac:
         assert release.mbid == "abc-123"
         assert initial_tags["ARTIST"] == ["Cool Artist"]
         assert initial_tags["ALBUM"] == ["Great Album"]
-        assert initial_tags["DATE"] == ["2020"]
+        assert initial_tags["DATE"] == ["2020-04-01"]
         assert initial_tags["MUSICBRAINZ_ALBUMID"] == ["abc-123"]
         assert initial_tags["MUSICBRAINZ_RELEASEGROUPID"] == ["rg-456"]
         # ORIGINALYEAR is the year-only companion to ORIGINALDATE
@@ -1045,7 +1045,7 @@ class TestTagDirectoryFlac:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
         )
 
@@ -1071,7 +1071,7 @@ class TestTagDirectoryFlac:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
             # all optional fields left at defaults (empty strings / empty lists)
         )
@@ -1119,7 +1119,7 @@ class TestTagDirectoryFlac:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
         )
         track = TrackInfo(number=1, disc=1, title="Track One", recording_mbid="")
@@ -1239,7 +1239,7 @@ class TestTagDirectoryOgg:
         assert release.mbid == "abc-123"
         assert initial_tags["ARTIST"] == ["Cool Artist"]
         assert initial_tags["ALBUM"] == ["Great Album"]
-        assert initial_tags["DATE"] == ["2020"]
+        assert initial_tags["DATE"] == ["2020-04-01"]
         assert initial_tags["MUSICBRAINZ_ALBUMID"] == ["abc-123"]
         assert initial_tags["MUSICBRAINZ_RELEASEGROUPID"] == ["rg-456"]
         assert initial_tags["ORIGINALDATE"] == ["2020-04-01"]
@@ -1291,7 +1291,7 @@ class TestTagDirectoryOgg:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
         )
 
@@ -1676,7 +1676,7 @@ class TestReadTrackMetadataFromFile:
         assert tm.album_artist == "Album Artist"
         assert tm.album == "Album"
         assert tm.title == "Track Title"
-        assert tm.year == "2021"
+        assert tm.release_date == "2021"
         assert tm.track_number == 3
 
     def test_mp3_missing_title_returns_empty(self, tmp_path: Path) -> None:
@@ -1720,7 +1720,7 @@ class TestReadTrackMetadataFromFile:
         assert tm.album_artist == "M4A Album Artist"
         assert tm.album == "M4A Album"
         assert tm.title == "M4A Title"
-        assert tm.year == "2022"
+        assert tm.release_date == "2022"
         assert tm.track_number == 2
 
     def test_m4a_no_tags_returns_empty(self, tmp_path: Path) -> None:
@@ -1752,7 +1752,7 @@ class TestReadTrackMetadataFromFile:
         assert tm.artist == "FLAC Artist"
         assert tm.album == "FLAC Album"
         assert tm.title == "FLAC Title"
-        assert tm.year == "2019"
+        assert tm.release_date == "2019"
         assert tm.track_number == 4
 
     def test_ogg_reads_tags(self, tmp_path: Path) -> None:
@@ -1867,7 +1867,7 @@ def _make_track(**kwargs: object) -> TrackMetadata:
         artist="Artist",
         album="Album",
         album_artist="Artist",
-        year="2023",
+        release_date="2023",
         track_number=1,
         mbid="rec-mbid",
         release_mbid="rel-mbid",
@@ -1897,7 +1897,9 @@ class TestWriteTagsFromTrackMetadata:
         mp3 = tmp_path / "01.mp3"
         mp3.write_bytes(b"\xff\xfb" * 64)
         id3.ID3().save(str(mp3))
-        write_tags_from_track_metadata(mp3, _make_track(year=""), total_tracks=1)
+        write_tags_from_track_metadata(
+            mp3, _make_track(release_date=""), total_tracks=1
+        )
         tags = id3.ID3(str(mp3))
         assert "TDRC" not in tags
 
@@ -2021,7 +2023,9 @@ class TestWriteTagsFromTrackMetadata:
         m4a.write_bytes(b"\x00" * 32)
         mock_audio = MagicMock()
         mock_audio.tags = {}
-        track = _make_track(mbid="", release_mbid="", release_group_mbid="", year="")
+        track = _make_track(
+            mbid="", release_mbid="", release_group_mbid="", release_date=""
+        )
         with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
             write_tags_from_track_metadata(m4a, track, total_tracks=4)
 
@@ -2052,7 +2056,9 @@ class TestWriteTagsFromTrackMetadata:
         flac.write_bytes(b"\x00" * 32)
         mock_audio = MagicMock()
         mock_audio.tags = {}
-        track = _make_track(mbid="", release_mbid="", release_group_mbid="", year="")
+        track = _make_track(
+            mbid="", release_mbid="", release_group_mbid="", release_date=""
+        )
         with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
             write_tags_from_track_metadata(flac, track, total_tracks=3)
 
@@ -2065,7 +2071,9 @@ class TestWriteTagsFromTrackMetadata:
         ogg.write_bytes(b"OggS")
         mock_audio = MagicMock()
         mock_audio.tags = {}
-        track = _make_track(mbid="", release_mbid="", release_group_mbid="", year="")
+        track = _make_track(
+            mbid="", release_mbid="", release_group_mbid="", release_date=""
+        )
         with patch(
             "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
         ):

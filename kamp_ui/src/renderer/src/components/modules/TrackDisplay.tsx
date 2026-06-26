@@ -421,7 +421,7 @@ function TrackLeft({
 type TrackRightProps = {
   position: number
   duration: number
-  year: string
+  release_date: string
   format: string
   isDeadAir?: boolean
   isPaused?: boolean
@@ -430,7 +430,7 @@ type TrackRightProps = {
 function TrackRight({
   position,
   duration,
-  year,
+  release_date,
   format,
   isDeadAir = false,
   isPaused = false
@@ -492,7 +492,7 @@ function TrackRight({
         <span ref={totalColonRef}>:</span>
         {tSs}
       </span>
-      {year && <span className="track-year">{year}</span>}
+      {release_date && <span className="track-year">{release_date}</span>}
       {format && <span className="track-format">{format}</span>}
     </span>
   )
@@ -524,7 +524,7 @@ export function TrackDisplay(): React.JSX.Element {
           <TrackRight
             position={position}
             duration={trackMeta?.duration ?? 0}
-            year={trackMeta?.year ?? ''}
+            release_date={trackMeta?.release_date ?? ''}
             format={trackMeta?.format ?? ''}
             isDeadAir={isDeadAir}
             isPaused={isPaused}

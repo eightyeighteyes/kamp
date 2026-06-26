@@ -22,8 +22,8 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     # NULL last_played treated as 0 so numeric comparisons work on unplayed tracks.
     "track.last_played": ("COALESCE(tracks.last_played, 0)", "float"),
     "track.date_added": ("tracks.date_added", "float"),
-    # year is TEXT in the DB; numeric ops use CAST so "2023" compares correctly.
-    "track.year": ("tracks.year", "year"),
+    # release_date is TEXT; numeric ops use CAST so CAST("2023-03-15" AS INTEGER) = 2023.
+    "track.year": ("tracks.release_date", "year"),
     "track.genre": ("tracks.genre", "text"),
     "track.artist": ("tracks.artist", "text"),
     "track.album_artist": ("tracks.album_artist", "text"),

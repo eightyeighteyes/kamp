@@ -69,7 +69,7 @@ def _read_tags(path: Path) -> dict[str, object]:
     artist = ""
     album_artist = ""
     album = ""
-    year = ""
+    release_date = ""
     track = 0
     disc = 1
     title = path.stem
@@ -81,7 +81,7 @@ def _read_tags(path: Path) -> dict[str, object]:
             artist = str(t.get("TPE1")) if t.get("TPE1") else ""
             album_artist = str(t.get("TPE2")) if t.get("TPE2") else artist
             album = str(t.get("TALB")) if t.get("TALB") else ""
-            year = str(t.get("TDRC"))[:4] if t.get("TDRC") else ""
+            release_date = str(t.get("TDRC")) if t.get("TDRC") else ""
             trck_tag = t.get("TRCK")
             trck = str(trck_tag).split("/")[0] if trck_tag else "0"
             track = int(trck) if trck.isdigit() else 0
@@ -100,7 +100,7 @@ def _read_tags(path: Path) -> dict[str, object]:
                 alb_v = t4.get("\xa9alb")
                 album = str(alb_v[0]) if alb_v else ""
                 day_v = t4.get("\xa9day")
-                year = str(day_v[0])[:4] if day_v else ""
+                release_date = str(day_v[0]) if day_v else ""
                 trkn_v = t4.get("trkn")
                 track = trkn_v[0][0] if trkn_v else 0  # type: ignore[index]
                 disk_v = t4.get("disk")
@@ -118,7 +118,7 @@ def _read_tags(path: Path) -> dict[str, object]:
                 artist = _get("ARTIST")
                 album_artist = _get("ALBUMARTIST") or artist
                 album = _get("ALBUM")
-                year = _get("DATE")[:4] if _get("DATE") else ""
+                release_date = _get("DATE")
                 trck_s = _get("TRACKNUMBER").split("/")[0]
                 track = int(trck_s) if trck_s.isdigit() else 0
                 disc_s = _get("DISCNUMBER").split("/")[0]
@@ -135,7 +135,7 @@ def _read_tags(path: Path) -> dict[str, object]:
                 artist = _oget("ARTIST")
                 album_artist = _oget("ALBUMARTIST") or artist
                 album = _oget("ALBUM")
-                year = _oget("DATE")[:4] if _oget("DATE") else ""
+                release_date = _oget("DATE")
                 trck_s = _oget("TRACKNUMBER").split("/")[0]
                 track = int(trck_s) if trck_s.isdigit() else 0
                 disc_s = _oget("DISCNUMBER").split("/")[0]
@@ -144,7 +144,9 @@ def _read_tags(path: Path) -> dict[str, object]:
     except Exception:
         pass
 
-    return make_path_vars(artist, album_artist, album, year, track, disc, title, ext)
+    return make_path_vars(
+        artist, album_artist, album, release_date, track, disc, title, ext
+    )
 
 
 def _cleanup_watch_folder(watch_dir: Path) -> None:

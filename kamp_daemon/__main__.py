@@ -616,7 +616,7 @@ def _cmd_daemon(
                     artist="",
                     album_artist="",
                     album="",
-                    year="",
+                    release_date="",
                     track_number=0,
                     disc_number=0,
                     ext="",

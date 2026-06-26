@@ -33,7 +33,7 @@ def _make_track(
         artist=artist,
         album=album,
         album_artist=artist,
-        year="2000",
+        release_date="2000",
         track_number=1,
         mbid="mbid-" + title,
     )

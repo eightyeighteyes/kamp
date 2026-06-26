@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 37
+_SCHEMA_VERSION = 38
 
 
 @dataclass
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     artist           TEXT    NOT NULL DEFAULT '',
     album_artist     TEXT    NOT NULL DEFAULT '',
     album            TEXT    NOT NULL DEFAULT '',
-    year             TEXT    NOT NULL DEFAULT '',
+    release_date     TEXT    NOT NULL DEFAULT '',
     track_number     INTEGER NOT NULL DEFAULT 0,
     disc_number      INTEGER NOT NULL DEFAULT 1,
     ext              TEXT    NOT NULL DEFAULT '',
@@ -202,7 +202,7 @@ CREATE TABLE IF NOT EXISTS albums (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     album_artist   TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
     album          TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
-    year           TEXT    NOT NULL DEFAULT '',
+    release_date   TEXT    NOT NULL DEFAULT '',
     embedded_art   INTEGER NOT NULL DEFAULT 0,
     mb_release_id  TEXT    NOT NULL DEFAULT '',
     genre          TEXT    NOT NULL DEFAULT '',
@@ -415,7 +415,7 @@ _SORT_CLAUSES: dict[str, str] = {
     "date_added": "sort_date_added {dir}, album_artist COLLATE NOCASE",
     "last_played": "sort_last_played {dir}, album_artist COLLATE NOCASE",
     "most_played": "sort_play_count_avg {dir}, album_artist COLLATE NOCASE",
-    # sort_release_date is NULLIF(year,'') aliased in the UNION ALL branches so
+    # sort_release_date is NULLIF(release_date,'') aliased in the UNION ALL branches so
     # empty strings sort last regardless of direction (NULLS LAST convention).
     "release_date": "sort_release_date {dir} NULLS LAST, album_artist COLLATE NOCASE",
 }
@@ -454,7 +454,7 @@ class Track:
     artist: str
     album_artist: str
     album: str
-    year: str
+    release_date: str
     track_number: int
     disc_number: int
     ext: str
@@ -493,7 +493,7 @@ class Track:
 class AlbumInfo:
     album_artist: str
     album: str
-    year: str
+    release_date: str
     track_count: int
     has_art: bool = False
     # True when the track has no album tag; album field holds the track title
@@ -1048,7 +1048,7 @@ class LibraryIndex:
 
             self._conn.execute(f"""
                 INSERT OR IGNORE INTO albums
-                    (album_artist, album, year, embedded_art, mb_release_id,
+                    (album_artist, album, release_date, embedded_art, mb_release_id,
                      genre, label, source, date_added, last_played_at,
                      play_count_avg, art_version)
                 SELECT
@@ -1064,7 +1064,7 @@ class LibraryIndex:
                      GROUP BY t2.album
                      ORDER BY COUNT(*) DESC, t2.album ASC
                      LIMIT 1),
-                    MAX(t.year),
+                    {_col('release_date', "MAX(t.release_date)", _col('year', "MAX(t.year)"))},
                     MAX(t.embedded_art),
                     {_col('mb_release_id', "MAX(t.mb_release_id)")},
                     {_col('genre', "MAX(t.genre)")},
@@ -1384,7 +1384,33 @@ class LibraryIndex:
             """)
             self._conn.execute("UPDATE schema_version SET version = 37")
             self._conn.commit()
-            version = 37  # noqa: F841
+            version = 37
+
+        if version < 38:
+            # v37 → v38: rename year → release_date (KAMP-513).
+            # Store full date strings (e.g. "2023-03-15") rather than truncated
+            # 4-digit years, enabling precise sort and display.
+            # Guard: _DDL creates both tables with release_date for fresh databases,
+            # so only rename if the old year column actually exists.
+            _tracks_cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if "year" in _tracks_cols:
+                self._conn.execute(
+                    "ALTER TABLE tracks RENAME COLUMN year TO release_date"
+                )
+            _albums_cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(albums)").fetchall()
+            }
+            if "year" in _albums_cols:
+                self._conn.execute(
+                    "ALTER TABLE albums RENAME COLUMN year TO release_date"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 38")
+            self._conn.commit()
+            version = 38  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table.
@@ -1868,6 +1894,42 @@ class LibraryIndex:
         ).fetchone()
         return row is not None
 
+    def has_remote_tracks_needing_date_backfill(self, sale_item_id: str) -> bool:
+        """Return True if any remote tracks for this album have year-only or empty release_date.
+
+        Used by sync_collection_stream to trigger a re-fetch of the album page so
+        full ISO dates ("2020-01-01") replace year-only strings written before KAMP-513.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM tracks"
+            " WHERE (file_path LIKE ? OR file_path LIKE ?)"
+            "   AND source = 'bandcamp'"
+            "   AND (release_date = '' OR length(release_date) <= 4)"
+            " LIMIT 1",
+            (f"bandcamp://{sale_item_id}/%", f"bandcamp:\\{sale_item_id}\\%"),
+        ).fetchone()
+        return row is not None
+
+    def patch_release_date_for_remote_album(
+        self, sale_item_id: str, release_date: str
+    ) -> None:
+        """Update release_date on all remote tracks for a Bandcamp album.
+
+        Called after a backfill fetch to replace year-only strings with the full
+        ISO date. Does not touch play_count, favorite, or any other field.
+        """
+        self._conn.execute(
+            "UPDATE tracks SET release_date = ?"
+            " WHERE (file_path LIKE ? OR file_path LIKE ?)"
+            "   AND source = 'bandcamp'",
+            (
+                release_date,
+                f"bandcamp://{sale_item_id}/%",
+                f"bandcamp:\\{sale_item_id}\\%",
+            ),
+        )
+        self._conn.commit()
+
     def local_tracks_for_sale_item_id(self, sale_item_id: str) -> "list[Track]":
         """Return local (non-bandcamp://) Track objects for a downloaded collection item.
 
@@ -2203,7 +2265,7 @@ class LibraryIndex:
                     (
                         t.album_artist,
                         t.album,
-                        t.year,
+                        t.release_date,
                         int(t.embedded_art),
                         t.mb_release_id,
                         t.genre,
@@ -2233,7 +2295,7 @@ class LibraryIndex:
             self._conn.executemany(
                 """
                 INSERT OR IGNORE INTO albums
-                    (album_artist, album, year, embedded_art, mb_release_id,
+                    (album_artist, album, release_date, embedded_art, mb_release_id,
                      genre, label, source, date_added)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -2251,7 +2313,7 @@ class LibraryIndex:
         self._conn.executemany(
             """
             INSERT INTO tracks
-                (file_path, title, artist, album_artist, album, year,
+                (file_path, title, artist, album_artist, album, release_date,
                  track_number, disc_number, ext, embedded_art,
                  mb_release_id, mb_recording_id, date_added, file_mtime,
                  genre, label, source, stream_url, stream_url_expires_at,
@@ -2262,11 +2324,11 @@ class LibraryIndex:
                 artist                = excluded.artist,
                 album_artist          = excluded.album_artist,
                 album                 = excluded.album,
-                -- For streaming tracks, preserve user-edited year/genre/label if the
+                -- For streaming tracks, preserve user-edited release_date/genre/label if the
                 -- incoming sync value is empty (Bandcamp never sends these fields).
-                year                  = CASE WHEN excluded.source = 'bandcamp'
-                                             THEN COALESCE(NULLIF(excluded.year,  ''), year)
-                                             ELSE excluded.year  END,
+                release_date          = CASE WHEN excluded.source = 'bandcamp'
+                                             THEN COALESCE(NULLIF(excluded.release_date, ''), release_date)
+                                             ELSE excluded.release_date END,
                 track_number          = excluded.track_number,
                 disc_number           = excluded.disc_number,
                 ext                   = excluded.ext,
@@ -2339,7 +2401,7 @@ class LibraryIndex:
                                                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
                                                    ELSE MIN(t.source) END
                                           FROM tracks t WHERE t.album_id = albums.id),
-                        year           = (SELECT MAX(t.year)           FROM tracks t WHERE t.album_id = albums.id),
+                        release_date   = (SELECT MAX(t.release_date)   FROM tracks t WHERE t.album_id = albums.id),
                         genre          = (SELECT MAX(t.genre)          FROM tracks t WHERE t.album_id = albums.id),
                         label          = (SELECT MAX(t.label)          FROM tracks t WHERE t.album_id = albums.id),
                         mb_release_id  = (SELECT MAX(t.mb_release_id)  FROM tracks t WHERE t.album_id = albums.id)
@@ -2927,10 +2989,10 @@ class LibraryIndex:
         *,
         genre: str | None = None,
         label: str | None = None,
-        year: str | None = None,
+        release_date: str | None = None,
         mb_release_id: str | None = None,
     ) -> list[Track]:
-        """Write genre, label, year, and/or mb_release_id to every track in *album*.
+        """Write genre, label, release_date, and/or mb_release_id to every track in *album*.
 
         Returns the updated Track objects.  Only the provided (non-None) fields
         are changed; the others are left as-is in the database.
@@ -2943,9 +3005,9 @@ class LibraryIndex:
         if label is not None:
             sets.append("label = ?")
             params.append(label)
-        if year is not None:
-            sets.append("year = ?")
-            params.append(year)
+        if release_date is not None:
+            sets.append("release_date = ?")
+            params.append(release_date)
         if mb_release_id is not None:
             sets.append("mb_release_id = ?")
             params.append(mb_release_id)
@@ -2965,7 +3027,7 @@ class LibraryIndex:
         for col, val in [
             ("genre", genre),
             ("label", label),
-            ("year", year),
+            ("release_date", release_date),
             ("mb_release_id", mb_release_id),
         ]:
             if val is not None:
@@ -3070,14 +3132,14 @@ class LibraryIndex:
                 a.id                AS album_id,
                 a.album_artist,
                 a.album,
-                a.year,
+                a.release_date,
                 a.source            AS album_source,
                 a.sale_item_id,
                 a.favorite          AS is_favorite,
                 a.date_added        AS sort_date_added,
                 a.last_played_at    AS sort_last_played,
                 a.play_count_avg    AS sort_play_count_avg,
-                NULLIF(a.year, '')  AS sort_release_date,
+                NULLIF(a.release_date, '')  AS sort_release_date,
                 a.art_version,
                 -- has_art: remote-only albums always have CDN art; others use embedded_art.
                 CASE WHEN a.source = 'bandcamp' THEN 1 ELSE a.embedded_art END AS has_art,
@@ -3112,14 +3174,14 @@ class LibraryIndex:
                 0                   AS album_id,
                 t.album_artist,
                 t.title             AS album,
-                t.year,
+                t.release_date,
                 t.source            AS album_source,
                 NULL                AS sale_item_id,
                 0                   AS is_favorite,
                 t.date_added        AS sort_date_added,
                 t.last_played       AS sort_last_played,
                 CAST(t.play_count AS REAL) AS sort_play_count_avg,
-                NULLIF(t.year, '')  AS sort_release_date,
+                NULLIF(t.release_date, '')  AS sort_release_date,
                 t.file_mtime        AS art_version,
                 t.embedded_art      AS has_art,
                 1                   AS missing_album,
@@ -3141,7 +3203,7 @@ class LibraryIndex:
                 album_id=r["album_id"],
                 album_artist=r["album_artist"],
                 album=r["album"],
-                year=r["year"],
+                release_date=r["release_date"],
                 track_count=r["track_count"],
                 has_art=bool(r["has_art"]),
                 missing_album=bool(r["missing_album"]),
@@ -3779,7 +3841,7 @@ class LibraryIndex:
             """
             SELECT pt.id AS playlist_track_id, pt.position,
                    t.id, t.file_path, t.title, t.artist, t.album_artist, t.album,
-                   t.year, t.track_number, t.disc_number, t.ext, t.embedded_art,
+                   t.release_date, t.track_number, t.disc_number, t.ext, t.embedded_art,
                    t.mb_release_id, t.mb_recording_id, t.genre, t.label,
                    t.favorite, t.play_count, t.last_played, t.date_added,
                    t.source, t.is_available, t.duration
@@ -3800,7 +3862,7 @@ class LibraryIndex:
                 "artist": r["artist"],
                 "album_artist": r["album_artist"],
                 "album": r["album"],
-                "year": r["year"],
+                "release_date": r["release_date"],
                 "track_number": r["track_number"],
                 "disc_number": r["disc_number"],
                 "ext": r["ext"],
@@ -4061,7 +4123,7 @@ class LibraryIndex:
         sql = f"""
             SELECT NULL AS playlist_track_id, 0 AS position,
                    tracks.id, tracks.file_path, tracks.title, tracks.artist,
-                   tracks.album_artist, tracks.album, tracks.year,
+                   tracks.album_artist, tracks.album, tracks.release_date,
                    tracks.track_number, tracks.disc_number, tracks.ext,
                    tracks.embedded_art, tracks.mb_release_id, tracks.mb_recording_id,
                    tracks.genre, tracks.label, tracks.favorite, tracks.play_count,
@@ -4091,7 +4153,7 @@ class LibraryIndex:
                 "artist": r["artist"],
                 "album_artist": r["album_artist"],
                 "album": r["album"],
-                "year": r["year"],
+                "release_date": r["release_date"],
                 "track_number": r["track_number"],
                 "disc_number": r["disc_number"],
                 "ext": r["ext"],
@@ -4176,7 +4238,7 @@ class LibraryIndex:
             rows = self._conn.execute(
                 f"""
                 SELECT
-                    a.album_artist, a.album, a.year, a.play_count_avg,
+                    a.album_artist, a.album, a.release_date, a.play_count_avg,
                     a.date_added, a.last_played_at, a.embedded_art, a.art_version,
                     a.display_album, a.display_album_artist, a.source, a.sale_item_id,
                     COUNT(t.id) AS track_count
@@ -4195,7 +4257,7 @@ class LibraryIndex:
                 {
                     "album_artist": r["album_artist"],
                     "album": r["album"],
-                    "year": r["year"] or "",
+                    "release_date": r["release_date"] or "",
                     "track_count": r["track_count"],
                     "has_art": bool(r["embedded_art"]) or r["source"] == "bandcamp",
                     "missing_album": False,
@@ -4253,7 +4315,7 @@ class LibraryIndex:
             f"""
             SELECT
                 t.id, t.file_path, t.title, t.artist, t.album_artist, t.album,
-                t.year, t.track_number, t.disc_number, t.ext, t.embedded_art,
+                t.release_date, t.track_number, t.disc_number, t.ext, t.embedded_art,
                 t.mb_release_id, t.mb_recording_id, t.genre, t.label,
                 t.favorite, t.play_count, t.last_played, t.source, t.is_available, t.duration
             FROM tracks t
@@ -4273,7 +4335,7 @@ class LibraryIndex:
                 "artist": r["artist"],
                 "album_artist": r["album_artist"],
                 "album": r["album"],
-                "year": r["year"],
+                "release_date": r["release_date"],
                 "track_number": r["track_number"],
                 "disc_number": r["disc_number"],
                 "ext": r["ext"],
@@ -4329,7 +4391,7 @@ _WRITABLE_TRACK_FIELDS: frozenset[str] = frozenset(
         "artist",
         "album_artist",
         "album",
-        "year",
+        "release_date",
         "track_number",
         "disc_number",
         "mb_release_id",
@@ -4391,7 +4453,7 @@ def _track_to_params(
         t.artist,
         t.album_artist,
         t.album,
-        t.year,
+        t.release_date,
         t.track_number,
         t.disc_number,
         t.ext,
@@ -4437,7 +4499,7 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         artist=row["artist"],
         album_artist=row["display_album_artist"] or row["album_artist"],
         album=row["display_album"] or row["album"],
-        year=row["year"],
+        release_date=row["release_date"],
         track_number=row["track_number"],
         disc_number=row["disc_number"],
         ext=row["ext"],
@@ -4563,7 +4625,7 @@ def _read_mp3_tags(path: Path) -> Track:
         artist=artist,
         album_artist=_str("TPE2") or artist,  # fall back to artist when TPE2 absent
         album=_str("TALB"),
-        year=_str("TDRC"),
+        release_date=_str("TDRC"),
         title=_str("TIT2"),
         track_number=_parse_num(_str("TRCK")),
         disc_number=_parse_num(_str("TPOS")) or 1,
@@ -4610,7 +4672,7 @@ def _read_m4a_tags(path: Path) -> Track:
         artist=artist,
         album_artist=_s("aART") or artist,  # fall back to artist when aART absent
         album=_s("\xa9alb"),
-        year=_s("\xa9day"),
+        release_date=_s("\xa9day"),
         title=_s("\xa9nam"),
         track_number=track_number,
         disc_number=disc_number or 1,
@@ -4661,7 +4723,7 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
         album_artist=_s("ALBUMARTIST")
         or artist,  # fall back to artist when ALBUMARTIST absent
         album=_s("ALBUM"),
-        year=_s("DATE"),
+        release_date=_s("DATE"),
         title=_s("TITLE"),
         track_number=_parse_num(_s("TRACKNUMBER")),
         disc_number=_parse_num(_s("DISCNUMBER")) or 1,
@@ -4762,10 +4824,10 @@ def write_meta_tags_to_file(
     *,
     genre: str | None = None,
     label: str | None = None,
-    year: str | None = None,
+    release_date: str | None = None,
     mb_release_id: str | None = None,
 ) -> None:
-    """Write genre, label, year, and/or mb_release_id to an audio file without moving it.
+    """Write genre, label, release_date, and/or mb_release_id to an audio file without moving it.
 
     Only the fields that are not None are written; the others are left
     unchanged on disk.  This is a tag-only operation — no file rename occurs.
@@ -4780,8 +4842,8 @@ def write_meta_tags_to_file(
             tags["TCON"] = id3.TCON(encoding=3, text=genre)
         if label is not None:
             tags["TPUB"] = id3.TPUB(encoding=3, text=label)
-        if year is not None:
-            tags["TDRC"] = id3.TDRC(encoding=3, text=year)
+        if release_date is not None:
+            tags["TDRC"] = id3.TDRC(encoding=3, text=release_date)
         if mb_release_id is not None:
             tags["TXXX:MusicBrainz Album Id"] = id3.TXXX(
                 encoding=3, desc="MusicBrainz Album Id", text=mb_release_id
@@ -4797,8 +4859,8 @@ def write_meta_tags_to_file(
             audio.tags["----:com.apple.iTunes:LABEL"] = [  # type: ignore[index]
                 mutagen.mp4.MP4FreeForm(label.encode())
             ]
-        if year is not None:
-            audio.tags["\xa9day"] = [year]  # type: ignore[index]
+        if release_date is not None:
+            audio.tags["\xa9day"] = [release_date]  # type: ignore[index]
         if mb_release_id is not None:
             audio.tags["----:com.apple.iTunes:MusicBrainz Album Id"] = [  # type: ignore[index]
                 mutagen.mp4.MP4FreeForm(mb_release_id.encode())
@@ -4812,8 +4874,8 @@ def write_meta_tags_to_file(
             audio.tags["GENRE"] = [genre]  # type: ignore[index]
         if label is not None:
             audio.tags["LABEL"] = [label]  # type: ignore[index]
-        if year is not None:
-            audio.tags["DATE"] = [year]  # type: ignore[index]
+        if release_date is not None:
+            audio.tags["DATE"] = [release_date]  # type: ignore[index]
         if mb_release_id is not None:
             audio.tags["MUSICBRAINZ_ALBUMID"] = [mb_release_id]  # type: ignore[index]
         audio.save()
@@ -4825,8 +4887,8 @@ def write_meta_tags_to_file(
             audio.tags["GENRE"] = [genre]  # type: ignore[index]
         if label is not None:
             audio.tags["LABEL"] = [label]  # type: ignore[index]
-        if year is not None:
-            audio.tags["DATE"] = [year]  # type: ignore[index]
+        if release_date is not None:
+            audio.tags["DATE"] = [release_date]  # type: ignore[index]
         if mb_release_id is not None:
             audio.tags["MUSICBRAINZ_ALBUMID"] = [mb_release_id]  # type: ignore[index]
         audio.save()

@@ -31,8 +31,8 @@ def _make_mp3(path: Path, **tags: str) -> None:
         t["TPE2"] = id3.TPE2(encoding=3, text=tags["album_artist"])
     if "album" in tags:
         t["TALB"] = id3.TALB(encoding=3, text=tags["album"])
-    if "year" in tags:
-        t["TDRC"] = id3.TDRC(encoding=3, text=tags["year"])
+    if "release_date" in tags:
+        t["TDRC"] = id3.TDRC(encoding=3, text=tags["release_date"])
     if "track" in tags:
         t["TRCK"] = id3.TRCK(encoding=3, text=tags["track"])
     if "title" in tags:
@@ -48,7 +48,7 @@ def _sample_track(file_path: Path, **overrides: object) -> Track:
         artist="Artist",
         album_artist="Artist",
         album="Album",
-        year="2024",
+        release_date="2024",
         track_number=1,
         disc_number=1,
         ext="mp3",
@@ -246,12 +246,16 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old Title",
         )
         track = _sample_track(
-            mp3, title="Old Title", album_artist="Artist", album="Album", year="2024"
+            mp3,
+            title="Old Title",
+            album_artist="Artist",
+            album="Album",
+            release_date="2024",
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -286,12 +290,16 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old Title",
         )
         track = _sample_track(
-            mp3, title="Old Title", album_artist="Artist", album="Album", year="2024"
+            mp3,
+            title="Old Title",
+            album_artist="Artist",
+            album="Album",
+            release_date="2024",
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -317,12 +325,12 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old",
         )
         track = _sample_track(
-            mp3, title="Old", album_artist="Artist", album="Album", year="2024"
+            mp3, title="Old", album_artist="Artist", album="Album", release_date="2024"
         )
         db = LibraryIndex(tmp_path / "db.sqlite")
         db.upsert_track(track)
@@ -367,12 +375,12 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old",
         )
         track = _sample_track(
-            mp3, title="Old", album_artist="Artist", album="Album", year="2024"
+            mp3, title="Old", album_artist="Artist", album="Album", release_date="2024"
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -406,12 +414,12 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old",
         )
         track = _sample_track(
-            mp3, title="Old", album_artist="Artist", album="Album", year="2024"
+            mp3, title="Old", album_artist="Artist", album="Album", release_date="2024"
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -439,12 +447,12 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old",
         )
         track = _sample_track(
-            mp3, title="Old", album_artist="Artist", album="Album", year="2024"
+            mp3, title="Old", album_artist="Artist", album="Album", release_date="2024"
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -472,7 +480,7 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old Title",
         )
@@ -481,7 +489,11 @@ class TestPatchTrackTagsEndpoint:
         collision_path.write_bytes(b"\xff\xfb" * 64)
 
         track = _sample_track(
-            mp3, title="Old Title", album_artist="Artist", album="Album", year="2024"
+            mp3,
+            title="Old Title",
+            album_artist="Artist",
+            album="Album",
+            release_date="2024",
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -508,7 +520,7 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old Title",
         )
@@ -516,7 +528,11 @@ class TestPatchTrackTagsEndpoint:
         collision_path.write_bytes(b"\xff\xfb" * 64)
 
         track = _sample_track(
-            mp3, title="Old Title", album_artist="Artist", album="Album", year="2024"
+            mp3,
+            title="Old Title",
+            album_artist="Artist",
+            album="Album",
+            release_date="2024",
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -544,13 +560,13 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old",
         )
 
         track = _sample_track(
-            mp3, title="Old", album_artist="Artist", album="Album", year="2024"
+            mp3, title="Old", album_artist="Artist", album="Album", release_date="2024"
         )
         db = LibraryIndex(tmp_path / "db.sqlite")
         db.upsert_track(track)
@@ -599,12 +615,12 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old",
         )
         track = _sample_track(
-            mp3, title="Old", album_artist="Artist", album="Album", year="2024"
+            mp3, title="Old", album_artist="Artist", album="Album", release_date="2024"
         )
         db = LibraryIndex(tmp_path / "db.sqlite")
         db.upsert_track(track)
@@ -632,12 +648,16 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Hello",
         )
         track = _sample_track(
-            mp3, title="Hello", album_artist="Artist", album="Album", year="2024"
+            mp3,
+            title="Hello",
+            album_artist="Artist",
+            album="Album",
+            release_date="2024",
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -664,12 +684,16 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old Title",
         )
         track = _sample_track(
-            mp3, title="Old Title", album_artist="Artist", album="Album", year="2024"
+            mp3,
+            title="Old Title",
+            album_artist="Artist",
+            album="Album",
+            release_date="2024",
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -702,12 +726,16 @@ class TestPatchTrackTagsEndpoint:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track="1",
             title="Old Title",
         )
         track = _sample_track(
-            mp3, title="Old Title", album_artist="Artist", album="Album", year="2024"
+            mp3,
+            title="Old Title",
+            album_artist="Artist",
+            album="Album",
+            release_date="2024",
         )
         client, index = self._client_with_track(
             tmp_path, track, _mock_engine, _mock_queue
@@ -750,7 +778,7 @@ def _make_album_for_tag_edit(
             mp3,
             album_artist=album_artist,
             album=album,
-            year=year,
+            release_date=year,
             track=str(i),
             title=title,
         )
@@ -759,7 +787,7 @@ def _make_album_for_tag_edit(
             title=title,
             album_artist=album_artist,
             album=album,
-            year=year,
+            release_date=year,
             track_number=i,
             mb_recording_id=f"rec-{i}",
         )
@@ -831,7 +859,7 @@ class TestAlbumRenameWithLockedTrack:
                 mp3,
                 album_artist="Artist",
                 album="Old Album",
-                year="2024",
+                release_date="2024",
                 track=str(i),
                 title=title,
             )
@@ -840,7 +868,7 @@ class TestAlbumRenameWithLockedTrack:
                 title=title,
                 album_artist="Artist",
                 album="Old Album",
-                year="2024",
+                release_date="2024",
                 track_number=i,
                 mb_recording_id=f"rec-{i}",
             )

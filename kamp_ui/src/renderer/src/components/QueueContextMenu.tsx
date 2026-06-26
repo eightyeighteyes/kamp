@@ -146,7 +146,7 @@ export function QueueContextMenu({
                   ) ?? {
                     album_artist: track.album_artist,
                     album: track.album,
-                    year: '',
+                    release_date: '',
                     track_count: 0,
                     has_art: false,
                     missing_album: false,

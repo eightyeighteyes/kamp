@@ -9,7 +9,7 @@ interface AlbumMetaPanelProps {
   editMode: boolean
   expanded: boolean
   onToggle: () => void
-  onSave: (opts: { genre?: string; label?: string; year?: string }) => Promise<void>
+  onSave: (opts: { genre?: string; label?: string; release_date?: string }) => Promise<void>
   onHandleMouseDown?: (e: React.MouseEvent) => void
   onHandleDoubleClick?: () => void
 }
@@ -25,8 +25,12 @@ function commonValue(tracks: Track[], key: keyof Track): string {
   return '(mixed)'
 }
 
-function hasAnyMeta(tracks: Track[], year: string): boolean {
-  return !!(year || tracks.some((t) => t.genre || t.label) || tracks.some((t) => t.mb_release_id))
+function hasAnyMeta(tracks: Track[], releaseDate: string): boolean {
+  return !!(
+    releaseDate ||
+    tracks.some((t) => t.genre || t.label) ||
+    tracks.some((t) => t.mb_release_id)
+  )
 }
 
 interface MetaFieldProps {
@@ -94,7 +98,7 @@ export function AlbumMetaPanel({
 
   const [genre, setGenre] = React.useState(() => commonValue(tracks, 'genre'))
   const [label, setLabel] = React.useState(() => commonValue(tracks, 'label'))
-  const [year, setYear] = React.useState(() => commonValue(tracks, 'year'))
+  const [releaseDate, setReleaseDate] = React.useState(() => commonValue(tracks, 'release_date'))
   // Track the last-seen tracks reference so we can sync on external changes
   // (e.g. after a save) without using an effect.
   const [syncedTracks, setSyncedTracks] = React.useState(tracks)
@@ -102,7 +106,7 @@ export function AlbumMetaPanel({
     setSyncedTracks(tracks)
     setGenre(commonValue(tracks, 'genre'))
     setLabel(commonValue(tracks, 'label'))
-    setYear(commonValue(tracks, 'year'))
+    setReleaseDate(commonValue(tracks, 'release_date'))
   }
 
   // Instant show/hide — Electron's renderer produces jank with CSS/JS height
@@ -114,7 +118,7 @@ export function AlbumMetaPanel({
   }, [expanded])
 
   const mbId = tracks[0]?.mb_release_id ?? ''
-  const hasContent = hasAnyMeta(tracks, commonValue(tracks, 'year'))
+  const hasContent = hasAnyMeta(tracks, commonValue(tracks, 'release_date'))
 
   const handleSaveGenre = (): void => {
     const current = commonValue(tracks, 'genre')
@@ -126,9 +130,9 @@ export function AlbumMetaPanel({
     if (label !== current) void onSave({ label })
   }
 
-  const handleSaveYear = (): void => {
-    const current = commonValue(tracks, 'year')
-    if (year !== current) void onSave({ year })
+  const handleSaveReleaseDate = (): void => {
+    const current = commonValue(tracks, 'release_date')
+    if (releaseDate !== current) void onSave({ release_date: releaseDate })
   }
 
   return (
@@ -155,13 +159,13 @@ export function AlbumMetaPanel({
         aria-hidden={!expanded}
       >
         <dl className="album-meta-rows">
-          {(year || editMode) && (
+          {(releaseDate || editMode) && (
             <MetaField
-              label="YEAR"
-              value={year}
+              label="RELEASE DATE"
+              value={releaseDate}
               editMode={editMode}
-              onChange={setYear}
-              onBlur={handleSaveYear}
+              onChange={setReleaseDate}
+              onBlur={handleSaveReleaseDate}
             />
           )}
           <MetaField

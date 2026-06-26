@@ -12,7 +12,7 @@ export type Track = {
   artist: string
   album_artist: string
   album: string
-  year: string
+  release_date: string
   track_number: number
   disc_number: number
   file_path: string
@@ -33,7 +33,7 @@ export type Track = {
 export type Album = {
   album_artist: string
   album: string
-  year: string
+  release_date: string
   track_count: number
   has_art: boolean
   missing_album: boolean
@@ -622,7 +622,7 @@ export type AlbumMetaResult = {
 export const patchAlbumMeta = (
   albumArtist: string,
   album: string,
-  opts: { genre?: string; label?: string; year?: string; mb_release_id?: string }
+  opts: { genre?: string; label?: string; release_date?: string; mb_release_id?: string }
 ): Promise<AlbumMetaResult> => {
   const params = new URLSearchParams({ album_artist: albumArtist, album })
   return patch(`/api/v1/albums/meta?${params}`, opts)
@@ -644,7 +644,7 @@ export type MusicBrainzRelease = {
   release_group_mbid: string
   title: string
   album_artist: string
-  year: string
+  release_date: string
   label: string
   release_type: string
   tracks: MusicBrainzTrack[]

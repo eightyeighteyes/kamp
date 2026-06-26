@@ -134,7 +134,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 36
+        assert version == 37
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -549,7 +549,7 @@ class TestLibraryIndex:
         assert order == [2, 0, 1]
         assert pos == 1
         assert shuffle is True
-        assert repeat is False
+        assert repeat == "off"
 
     def test_load_queue_state_returns_none_when_absent(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -568,7 +568,7 @@ class TestLibraryIndex:
             order=[1, 0],
             pos=1,
             shuffle=True,
-            repeat=True,
+            repeat="queue",
         )
         result = index.load_queue_state()
         index.close()
@@ -579,7 +579,7 @@ class TestLibraryIndex:
         assert order == [1, 0]
         assert pos == 1
         assert shuffle is True
-        assert repeat is True
+        assert repeat == "queue"
 
     def test_clear_queue_state(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1459,7 +1459,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1516,7 +1516,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -2099,7 +2099,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert row is not None
         assert row[0] == 0
 
@@ -2523,7 +2523,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2619,7 +2619,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -2800,7 +2800,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2895,7 +2895,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 36
+        assert version == 37
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2903,7 +2903,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 36
+        assert version == 37
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3780,7 +3780,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 36
+        assert version == 37
 
         index.close()
 
@@ -4465,7 +4465,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 36
+        assert version == 37
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4500,7 +4500,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 36
+        assert version == 37
         index.close()
 
 
@@ -4948,7 +4948,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 36
+        assert version == 37
 
 
 class TestRemoteTrackSchema:
@@ -5282,7 +5282,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -5343,7 +5343,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 36
+        assert version == 37
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -5806,7 +5806,7 @@ class TestQueuePlayerStateStr:
             order=[0, 1],
             pos=0,
             shuffle=False,
-            repeat=False,
+            repeat="off",
         )
         result = index.load_queue_state()
         index.close()
@@ -5822,7 +5822,7 @@ class TestQueuePlayerStateStr:
             order=[0, 1],
             pos=0,
             shuffle=False,
-            repeat=False,
+            repeat="off",
         )
         result = index.load_queue_state()
         index.close()
@@ -6010,7 +6010,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -6327,7 +6327,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -6405,7 +6405,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -6611,7 +6611,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -6960,7 +6960,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7057,7 +7057,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7172,7 +7172,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -7677,7 +7677,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -7792,7 +7792,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -7890,7 +7890,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -7990,7 +7990,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -8497,7 +8497,7 @@ class TestMagicPlaylists:
         fetched = index.get_magic_playlist_criteria(playlist_id)
         index.close()
 
-        assert version == 36
+        assert version == 37
         assert fetched == criteria
 
     # ------------------------------------------------------------------

@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useContext, useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { useTooltip } from '../hooks/useTooltip'
+import { TooltipContext, useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
 import {
   FavoriteIcon,
@@ -30,8 +30,9 @@ export function TransportBar(): React.JSX.Element {
   const queue = useStore((s) => s.queue)
   const setShuffle = useStore((s) => s.setShuffle)
   const setRepeat = useStore((s) => s.setRepeat)
+  const albumGroupingActive = useStore((s) => s.albumGroupingActive)
   const shuffle = queue?.shuffle ?? false
-  const repeat = queue?.repeat ?? false
+  const repeat = queue?.repeat ?? 'off'
   const albums = useStore((s) => s.library.albums)
   const selectAlbum = useStore((s) => s.selectAlbum)
   const selectArtist = useStore((s) => s.selectArtist)
@@ -69,6 +70,19 @@ export function TransportBar(): React.JSX.Element {
   const [scrubPos, setScrubPos] = useState<number | null>(null)
   const pointerDown = useRef(false)
   const tooltip = useTooltip()
+  const { arm, disarm } = useContext(TooltipContext)
+  const repeatBtnRef = useRef<HTMLButtonElement>(null)
+  const repeatHovered = useRef(false)
+  const repeatTooltip = `Repeat: ${repeat.charAt(0).toUpperCase() + repeat.slice(1)}`
+
+  // Re-arm the tooltip if the mode changes while the pointer is still hovering
+  // over the button — onMouseEnter won't fire again after a click.
+  useEffect(() => {
+    if (repeatHovered.current && repeatBtnRef.current) {
+      arm(repeatTooltip, repeatBtnRef.current)
+    }
+  }, [repeatTooltip, arm])
+
   const displayPosition = scrubPos !== null ? scrubPos : position
 
   // Debounce the buffering indicator: only show it if buffering persists for
@@ -244,13 +258,31 @@ export function TransportBar(): React.JSX.Element {
           <ShuffleIcon />
         </button>
         <button
-          className={`transport-btn${repeat ? ' active' : ''}`}
-          onClick={() => void setRepeat(!repeat)}
-          {...tooltip(TOOLTIPS.TRANSPORT_REPEAT)}
+          ref={repeatBtnRef}
+          className={`transport-btn${repeat !== 'off' ? ' active' : ''}`}
+          onClick={() => {
+            if (repeatHovered.current && repeatBtnRef.current) {
+              const modes = albumGroupingActive
+                ? (['off', 'queue', 'album', 'single'] as const)
+                : (['off', 'queue', 'single'] as const)
+              const idx = (modes as readonly string[]).indexOf(repeat)
+              const next = modes[(idx === -1 ? 0 : idx + 1) % modes.length]
+              arm(`Repeat: ${next.charAt(0).toUpperCase() + next.slice(1)}`, repeatBtnRef.current)
+            }
+            void setRepeat()
+          }}
+          onMouseEnter={(e) => {
+            repeatHovered.current = true
+            arm(repeatTooltip, e.currentTarget)
+          }}
+          onMouseLeave={() => {
+            repeatHovered.current = false
+            disarm()
+          }}
           aria-label="Repeat"
-          aria-pressed={repeat}
+          aria-pressed={repeat !== 'off'}
         >
-          <RepeatIcon />
+          <RepeatIcon mode={repeat} />
         </button>
       </div>
 

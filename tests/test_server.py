@@ -76,7 +76,7 @@ def mock_queue() -> MagicMock:
     queue.peek_next.return_value = None
     queue.queue_tracks.return_value = ([], -1)
     queue.shuffle = False
-    queue.repeat = False
+    queue.repeat = "off"
     return queue
 
 
@@ -1017,9 +1017,9 @@ class TestPlayerControlEndpoints:
         mock_queue.set_shuffle.assert_called_once_with(True, album_mode=True)
 
     def test_set_repeat(self, client: TestClient, mock_queue: MagicMock) -> None:
-        response = client.post("/api/v1/player/repeat", json={"repeat": True})
+        response = client.post("/api/v1/player/repeat", json={"mode": "queue"})
         assert response.status_code == 200
-        mock_queue.set_repeat.assert_called_once_with(True)
+        mock_queue.set_repeat_mode.assert_called_once_with("queue")
 
 
 # ---------------------------------------------------------------------------
@@ -1035,7 +1035,7 @@ class TestQueueEndpoint:
         assert data["tracks"] == []
         assert data["position"] == -1
         assert data["shuffle"] is False
-        assert data["repeat"] is False
+        assert data["repeat"] == "off"
 
     def test_returns_tracks_with_position(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -1069,12 +1069,12 @@ class TestQueueEndpoint:
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
         mock_queue.shuffle = True
-        mock_queue.repeat = False
+        mock_queue.repeat = "off"
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
         data = c.get("/api/v1/player/queue").json()
         assert data["shuffle"] is True
-        assert data["repeat"] is False
+        assert data["repeat"] == "off"
 
 
 class TestQueueMutationEndpoints:

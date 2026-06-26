@@ -117,7 +117,7 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        q.set_repeat(True)
+        q.set_repeat_mode("queue")
         q.next()
         q.next()
         assert q.next() == tracks[0]
@@ -142,7 +142,7 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        q.set_repeat(True)
+        q.set_repeat_mode("queue")
         q.next()
         q.next()  # now at last track
         assert q.peek_next() == tracks[0]
@@ -166,8 +166,107 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        q.set_repeat(True)
+        q.set_repeat_mode("queue")
         assert q.prev() == tracks[2]
+
+    # ------------------------------------------------------------------
+    # single mode
+    # ------------------------------------------------------------------
+
+    def test_single_mode_next_loops_current_track(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.set_repeat_mode("single")
+        assert q.next() == tracks[0]
+        assert q.next() == tracks[0]
+
+    def test_single_mode_peek_next_returns_current(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.set_repeat_mode("single")
+        assert q.peek_next() == tracks[0]
+        assert q.current() == tracks[0]  # position unchanged
+
+    def test_single_mode_prev_navigates_backward(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.next()  # advance to tracks[1]
+        q.set_repeat_mode("single")
+        assert q.prev() == tracks[0]
+
+    def test_single_mode_prev_at_start_returns_none(self) -> None:
+        q = PlaybackQueue()
+        q.load([_track(i) for i in range(3)])
+        q.set_repeat_mode("single")
+        assert q.prev() is None
+
+    # ------------------------------------------------------------------
+    # album mode
+    # ------------------------------------------------------------------
+
+    def test_album_mode_next_wraps_within_album_at_end(self) -> None:
+        """After last track of album A, next() wraps to first track of album A."""
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(3)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(2)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_repeat_mode("album")
+        q.next()
+        q.next()  # now at tracks[2], last of AlbumA
+        assert q.next() == tracks[0]  # wraps to first of AlbumA
+
+    def test_album_mode_next_does_not_cross_to_next_album(self) -> None:
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(2)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(2)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_repeat_mode("album")
+        q.next()  # at tracks[1], last of AlbumA
+        assert q.next() == tracks[0]  # wraps within AlbumA, not to AlbumB
+
+    def test_album_mode_prev_wraps_to_end_of_album(self) -> None:
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(3)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(2)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_repeat_mode("album")
+        assert q.prev() == tracks[2]  # at start of AlbumA, wraps to last of AlbumA
+
+    def test_album_mode_solo_album_wraps_on_next(self) -> None:
+        tracks = [_track_for(i, "Artist", "Album") for i in range(3)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_repeat_mode("album")
+        q.next()
+        q.next()  # at last track
+        assert q.next() == tracks[0]
+
+    def test_album_mode_second_album_wraps_within_itself(self) -> None:
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(2)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(3)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.skip_to(2)  # jump to first track of AlbumB
+        q.set_repeat_mode("album")
+        q.next()
+        q.next()  # at last track of AlbumB
+        assert q.next() == tracks[2]  # wraps to first of AlbumB, not AlbumA
+
+    def test_album_mode_peek_next_wraps_without_advancing(self) -> None:
+        tracks = [_track_for(i, "Artist", "Album") for i in range(2)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.next()  # at last track
+        q.set_repeat_mode("album")
+        assert q.peek_next() == tracks[0]
+        assert q.current() == tracks[1]  # position unchanged
 
     def test_skip_to_valid_position(self) -> None:
         q = PlaybackQueue()
@@ -404,7 +503,7 @@ class TestPlaybackQueue:
         assert order == [0, 1, 2]
         assert pos == 0
         assert shuffle is False
-        assert repeat is False
+        assert repeat == "off"
 
     def test_get_state_with_shuffle_returns_original_paths(self) -> None:
         q = PlaybackQueue()
@@ -446,16 +545,16 @@ class TestPlaybackQueue:
     def test_restore_sets_all_fields(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
-        q.restore(tracks, order=[2, 0, 1], pos=0, shuffle=True, repeat=True)
+        q.restore(tracks, order=[2, 0, 1], pos=0, shuffle=True, repeat="queue")
         assert q.current() == tracks[2]
         paths, order, pos, shuffle, repeat = q.get_state()
         assert pos == 0
         assert shuffle is True
-        assert repeat is True
+        assert repeat == "queue"
 
     def test_restore_empty_list(self) -> None:
         q = PlaybackQueue()
-        q.restore([], order=[], pos=0, shuffle=False, repeat=False)
+        q.restore([], order=[], pos=0, shuffle=False, repeat="off")
         assert q.current() is None
         paths, order, pos, shuffle, repeat = q.get_state()
         assert paths == []
@@ -465,7 +564,7 @@ class TestPlaybackQueue:
     def test_restore_then_next(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
-        q.restore(tracks, order=[0, 1, 2], pos=0, shuffle=False, repeat=False)
+        q.restore(tracks, order=[0, 1, 2], pos=0, shuffle=False, repeat="off")
         nxt = q.next()
         assert nxt == tracks[1]
 
@@ -509,7 +608,7 @@ class TestPlaybackQueue:
         )
         local = _track(2)
         q = PlaybackQueue()
-        q.restore([stub, local], order=[0, 1], pos=0, shuffle=False, repeat=False)
+        q.restore([stub, local], order=[0, 1], pos=0, shuffle=False, repeat="off")
 
         tracks, pos = q.queue_tracks()
         assert len(tracks) == 2
@@ -536,7 +635,7 @@ class TestPlaybackQueue:
         )
         local = _track(2)
         q = PlaybackQueue()
-        q.restore([stub, local], order=[0, 1], pos=0, shuffle=False, repeat=False)
+        q.restore([stub, local], order=[0, 1], pos=0, shuffle=False, repeat="off")
 
         # Simulate the _on_track_end loop: skip unreachable tracks.
         track = q.next()
@@ -1120,11 +1219,11 @@ class TestShuffleArtistDiversity:
     def test_shuffle_and_repeat_properties(self) -> None:
         q = PlaybackQueue()
         assert q.shuffle is False
-        assert q.repeat is False
+        assert q.repeat == "off"
         q.set_shuffle(True)
         assert q.shuffle is True
-        q.set_repeat(True)
-        assert q.repeat is True
+        q.set_repeat_mode("queue")
+        assert q.repeat == "queue"
         q.set_shuffle(False)
         assert q.shuffle is False
 

@@ -24,11 +24,13 @@ from abc import ABC, abstractmethod
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from kamp_core.library import Track
 
 logger = logging.getLogger(__name__)
+
+RepeatMode = Literal["off", "queue", "album", "single"]
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +85,7 @@ class PlaybackQueue:
         self._order: list[int] = []  # indices into _tracks
         self._pos: int = -1  # current position in _order
         self._shuffle: bool = False
-        self._repeat: bool = False
+        self._repeat_mode: RepeatMode = "off"
 
     def load(self, tracks: list[Track], start_index: int = 0) -> None:
         """Replace the queue with *tracks* and jump to *start_index*."""
@@ -155,12 +157,54 @@ class PlaybackQueue:
             return None
         return self._tracks[self._order[self._pos]]
 
+    def _album_run_bounds(self) -> tuple[int, int]:
+        """Return (start, end) positions in _order of the current album's contiguous run.
+
+        Walks outward from _pos while consecutive tracks share the same
+        (album_artist, album) key.  In album-shuffle mode the queue already
+        groups albums contiguously, so this reliably identifies the full album
+        window.  In regular shuffle the run may be as short as one track;
+        album repeat degrades to near-single behaviour, which is acceptable.
+        """
+        if self._pos < 0 or not self._order:
+            return 0, max(0, len(self._order) - 1)
+        current = self._tracks[self._order[self._pos]]
+        key = (current.album_artist, current.album)
+        start = self._pos
+        while start > 0:
+            prev_key = (
+                self._tracks[self._order[start - 1]].album_artist,
+                self._tracks[self._order[start - 1]].album,
+            )
+            if prev_key != key:
+                break
+            start -= 1
+        end = self._pos
+        while end < len(self._order) - 1:
+            next_key = (
+                self._tracks[self._order[end + 1]].album_artist,
+                self._tracks[self._order[end + 1]].album,
+            )
+            if next_key != key:
+                break
+            end += 1
+        return start, end
+
     def next(self) -> Track | None:
         if not self._tracks:
             return None
+        if self._repeat_mode == "single":
+            return self.current()
+        if self._repeat_mode == "album":
+            album_start, album_end = self._album_run_bounds()
+            next_pos = self._pos + 1
+            if next_pos > album_end:
+                next_pos = album_start
+            self._pos = next_pos
+            return self.current()
         next_pos = self._pos + 1
         if next_pos >= len(self._order):
-            if self._repeat:
+            if self._repeat_mode == "queue":
                 next_pos = 0
             else:
                 self._pos = -1
@@ -172,9 +216,17 @@ class PlaybackQueue:
         """Return the next track without advancing the position."""
         if not self._tracks:
             return None
+        if self._repeat_mode == "single":
+            return self.current()
+        if self._repeat_mode == "album":
+            album_start, album_end = self._album_run_bounds()
+            next_pos = self._pos + 1
+            if next_pos > album_end:
+                next_pos = album_start
+            return self._tracks[self._order[next_pos]]
         next_pos = self._pos + 1
         if next_pos >= len(self._order):
-            if self._repeat:
+            if self._repeat_mode == "queue":
                 next_pos = 0
             else:
                 return None
@@ -183,9 +235,17 @@ class PlaybackQueue:
     def prev(self) -> Track | None:
         if not self._tracks:
             return None
+        if self._repeat_mode == "album":
+            album_start, album_end = self._album_run_bounds()
+            prev_pos = self._pos - 1
+            if prev_pos < album_start:
+                prev_pos = album_end
+            self._pos = prev_pos
+            return self.current()
         prev_pos = self._pos - 1
         if prev_pos < 0:
-            if self._repeat:
+            # single mode: user navigates backward normally (only next() loops)
+            if self._repeat_mode == "queue":
                 prev_pos = len(self._order) - 1
             else:
                 return None
@@ -251,8 +311,8 @@ class PlaybackQueue:
             self._order = list(range(len(self._tracks)))
             self._pos = current_track_idx if current_track_idx >= 0 else 0
 
-    def set_repeat(self, repeat: bool) -> None:
-        self._repeat = repeat
+    def set_repeat_mode(self, mode: RepeatMode) -> None:
+        self._repeat_mode = mode
 
     def queue_tracks(self) -> tuple[list[Track], int]:
         """Return (tracks_in_playback_order, pos) for API serialisation.
@@ -263,8 +323,8 @@ class PlaybackQueue:
         """
         return [self._tracks[i] for i in self._order], self._pos
 
-    def get_state(self) -> tuple[list[str], list[int], int, bool, bool]:
-        """Return (original_paths, order, pos, shuffle, repeat) for persistence.
+    def get_state(self) -> tuple[list[str], list[int], int, bool, str]:
+        """Return (original_paths, order, pos, shuffle, repeat_mode) for persistence.
 
         *original_paths* is _tracks in load order; *order* is the index
         permutation (_order) so the shuffled sequence can be faithfully
@@ -273,15 +333,21 @@ class PlaybackQueue:
         """
 
         original_paths = [_canonical_track_key(t.file_path) for t in self._tracks]
-        return original_paths, list(self._order), self._pos, self._shuffle, self._repeat
+        return (
+            original_paths,
+            list(self._order),
+            self._pos,
+            self._shuffle,
+            self._repeat_mode,
+        )
 
     @property
     def shuffle(self) -> bool:
         return self._shuffle
 
     @property
-    def repeat(self) -> bool:
-        return self._repeat
+    def repeat(self) -> str:
+        return self._repeat_mode
 
     def restore(
         self,
@@ -289,7 +355,7 @@ class PlaybackQueue:
         order: list[int],
         pos: int,
         shuffle: bool,
-        repeat: bool,
+        repeat: str,
     ) -> None:
         """Restore queue from persisted state.
 
@@ -301,7 +367,8 @@ class PlaybackQueue:
         self._order = list(order) if order else list(range(len(tracks)))
         self._pos = pos if tracks else -1
         self._shuffle = shuffle
-        self._repeat = repeat
+        _valid: tuple[RepeatMode, ...] = ("off", "queue", "album", "single")
+        self._repeat_mode = repeat if repeat in _valid else "off"
 
     def add_to_queue(self, track: Track) -> None:
         """Append *track* to the end of the queue."""

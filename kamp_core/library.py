@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 36
+_SCHEMA_VERSION = 37
 
 
 @dataclass
@@ -242,7 +242,7 @@ CREATE TABLE IF NOT EXISTS queue_state (
     order_json TEXT    NOT NULL DEFAULT '',          -- JSON array of indices (playback permutation)
     pos        INTEGER NOT NULL DEFAULT -1,
     shuffle    INTEGER NOT NULL DEFAULT 0,
-    repeat     INTEGER NOT NULL DEFAULT 0
+    repeat     TEXT    NOT NULL DEFAULT 'off'
 );
 
 -- Append-only audit trail for all library.write mutations issued by extensions.
@@ -1360,7 +1360,31 @@ class LibraryIndex:
                 """)
             self._conn.execute("UPDATE schema_version SET version = 36")
             self._conn.commit()
-            version = 36  # noqa: F841
+            version = 36
+
+        if version == 36:
+            # v36 → v37: change queue_state.repeat from INTEGER to TEXT so repeat
+            # mode can hold "off" | "queue" | "album" | "single" (KAMP-510).
+            # SQLite does not support ALTER COLUMN, so we recreate the table.
+            self._conn.executescript("""
+                CREATE TABLE IF NOT EXISTS queue_state_new (
+                    id         INTEGER PRIMARY KEY CHECK (id = 1),
+                    tracks     TEXT    NOT NULL,
+                    order_json TEXT    NOT NULL DEFAULT '',
+                    pos        INTEGER NOT NULL DEFAULT -1,
+                    shuffle    INTEGER NOT NULL DEFAULT 0,
+                    repeat     TEXT    NOT NULL DEFAULT 'off'
+                );
+                INSERT OR IGNORE INTO queue_state_new (id, tracks, order_json, pos, shuffle, repeat)
+                SELECT id, tracks, order_json, pos, shuffle,
+                       CASE WHEN repeat = 0 THEN 'off' ELSE 'queue' END
+                FROM queue_state;
+                DROP TABLE queue_state;
+                ALTER TABLE queue_state_new RENAME TO queue_state;
+            """)
+            self._conn.execute("UPDATE schema_version SET version = 37")
+            self._conn.commit()
+            version = 37  # noqa: F841
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table.
@@ -3385,7 +3409,7 @@ class LibraryIndex:
         order: list[int],
         pos: int,
         shuffle: bool,
-        repeat: bool,
+        repeat: str,
     ) -> None:
         """Persist the queue in original load order with playback permutation."""
         import json
@@ -3403,14 +3427,14 @@ class LibraryIndex:
                 shuffle    = excluded.shuffle,
                 repeat     = excluded.repeat
             """,
-            (payload, order_payload, pos, int(shuffle), int(repeat)),
+            (payload, order_payload, pos, int(shuffle), repeat),
         )
         self._conn.commit()
 
     def load_queue_state(
         self,
-    ) -> "tuple[list[str], list[int], int, bool, bool] | None":
-        """Return (tracks_in_original_order, order, pos, shuffle, repeat) or None.
+    ) -> "tuple[list[str], list[int], int, bool, str] | None":
+        """Return (tracks_in_original_order, order, pos, shuffle, repeat_mode) or None.
 
         Tracks are returned as raw strings (not Path objects) so remote URIs
         (bandcamp://) are not corrupted by Path normalization.
@@ -3427,7 +3451,11 @@ class LibraryIndex:
         order: list[int] = (
             json.loads(raw_order) if raw_order else list(range(len(paths)))
         )
-        return paths, order, row["pos"], bool(row["shuffle"]), bool(row["repeat"])
+        raw_repeat = row["repeat"]
+        repeat: str = (
+            raw_repeat if raw_repeat in ("off", "queue", "album", "single") else "off"
+        )
+        return paths, order, row["pos"], bool(row["shuffle"]), repeat
 
     def clear_queue_state(self) -> None:
         """Remove the persisted queue state (e.g. after the queue is exhausted)."""

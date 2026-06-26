@@ -23,7 +23,7 @@ import uuid as _uuid
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 from fastapi import (
@@ -341,7 +341,7 @@ class ShuffleRequest(BaseModel):
 
 
 class RepeatRequest(BaseModel):
-    repeat: bool
+    mode: Literal["off", "queue", "album", "single"]
 
 
 class ScanResult(BaseModel):
@@ -414,7 +414,7 @@ class QueueOut(BaseModel):
     tracks: list[TrackOut]
     position: int  # index of the currently playing track; -1 if empty
     shuffle: bool
-    repeat: bool
+    repeat: str
 
 
 class AddToQueueRequest(BaseModel):
@@ -3402,7 +3402,7 @@ def create_app(
 
     @app.post("/api/v1/player/repeat")
     def set_repeat(req: RepeatRequest) -> dict[str, Any]:
-        queue.set_repeat(req.repeat)
+        queue.set_repeat_mode(req.mode)
         engine.preload_next(queue.peek_next())
         return {"ok": True}
 

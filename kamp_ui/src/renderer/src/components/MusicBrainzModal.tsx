@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import type { MusicBrainzRelease, Track } from '../api/client'
 
 // Fields that can be toggled between local and MB values.
-type FieldId = 'title' | 'album_artist' | 'year' | 'label'
+type FieldId = 'title' | 'album_artist' | 'release_date' | 'label'
 
 // Per-track selection key: "disc-track"
 type TrackKey = string
@@ -48,7 +48,7 @@ function defaultSelection(release: MusicBrainzRelease, localTracks: Track[]): Se
   const album: Record<FieldId, 'local' | 'mb'> = {
     title: release.title !== localTracks[0]?.album ? 'mb' : 'local',
     album_artist: release.album_artist !== localTracks[0]?.album_artist ? 'mb' : 'local',
-    year: release.year !== localTracks[0]?.year ? 'mb' : 'local',
+    release_date: release.release_date !== localTracks[0]?.release_date ? 'mb' : 'local',
     label: release.label !== localTracks[0]?.label ? 'mb' : 'local'
   }
 
@@ -93,7 +93,7 @@ function Toggle({
 const FIELD_LABELS: Record<FieldId, string> = {
   title: 'Album',
   album_artist: 'Artist',
-  year: 'Year',
+  release_date: 'Release Date',
   label: 'Label'
 }
 
@@ -144,9 +144,9 @@ export function MusicBrainzModal({
         mbVal: release.album_artist
       },
       {
-        field: 'year',
-        localVal: localAlbum?.year ?? '',
-        mbVal: release.year
+        field: 'release_date',
+        localVal: localAlbum?.release_date ?? '',
+        mbVal: release.release_date
       },
       {
         field: 'label',

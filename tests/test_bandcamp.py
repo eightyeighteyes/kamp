@@ -2455,7 +2455,7 @@ class TestSyncCollectionStream:
             artist="A",
             album_artist="A",
             album="Album",
-            year="2020",
+            release_date="2020",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -2550,7 +2550,7 @@ class TestSyncCollectionStream:
                 artist="A",
                 album_artist="A",
                 album="Album",
-                year="2020",
+                release_date="2020",
                 track_number=n,
                 disc_number=1,
                 ext="mp3",
@@ -2827,12 +2827,12 @@ class TestFetchAlbumTracks:
         assert "999" in str(result[0].file_path)
         assert "3" in str(result[0].file_path)
 
-    def test_year_extracted_from_release_date(self) -> None:
+    def test_iso_date_parsed_from_release_date(self) -> None:
         html = _stream_album_page_html(release_date="15 Mar 2018 00:00:00 GMT")
         result = fetch_album_tracks(
             "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
         )
-        assert all(t.year == "2018" for t in result)
+        assert all(t.release_date == "2018-03-15" for t in result)
 
     def test_per_track_artist_used_when_present(self) -> None:
         tracks = [{"title": "T", "track_num": 1, "artist": "Guest Artist"}]
@@ -2938,7 +2938,7 @@ class TestSyncCollectionStreamPreorder:
             artist="A",
             album_artist="A",
             album="Album",
-            year="2020",
+            release_date="2020",
             track_number=track_num,
             disc_number=1,
             ext="mp3",

@@ -47,7 +47,7 @@ def _track(n: int) -> Track:
         artist="Artist",
         album_artist="Artist",
         album="Album",
-        year="2024",
+        release_date="2024",
         track_number=n,
         disc_number=1,
         ext="mp3",

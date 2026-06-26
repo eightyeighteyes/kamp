@@ -129,20 +129,20 @@ def test_track_date_added_gte() -> None:
 
 def test_track_year_gt_uses_cast() -> None:
     frag, params, _ = build_query(_criteria(_group(_cond("track.year", "gt", "2010"))))
-    assert "CAST(tracks.year AS INTEGER)" in frag
+    assert "CAST(tracks.release_date AS INTEGER)" in frag
     assert "> ?" in frag
     assert params == ["2010"]
 
 
 def test_track_year_lt_uses_cast() -> None:
     frag, params, _ = build_query(_criteria(_group(_cond("track.year", "lt", "2000"))))
-    assert "CAST(tracks.year AS INTEGER)" in frag
+    assert "CAST(tracks.release_date AS INTEGER)" in frag
 
 
 def test_track_year_is_does_not_cast() -> None:
     frag, params, _ = build_query(_criteria(_group(_cond("track.year", "is", "2020"))))
     assert "CAST" not in frag
-    assert "tracks.year" in frag
+    assert "tracks.release_date" in frag
     assert "= ?" in frag
     assert params == ["2020"]
 

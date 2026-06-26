@@ -46,7 +46,7 @@ class ReleaseInfo:
     title: str
     artist: str
     album_artist: str
-    year: str
+    release_date: str
     tracks: dict[str, TrackInfo]  # keyed by filename stem (best-effort) or track number
     # Extended MusicBrainz fields (default to empty so existing callers don't break)
     artist_sort: str = ""
@@ -183,7 +183,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
     title = ""
     album = ""
     album_artist = ""
-    year = ""
+    release_date = ""
     track_number = 0
     genre = ""
     label = ""
@@ -196,7 +196,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
             album_artist = str(tags.get("TPE2")) if tags.get("TPE2") else artist
             album = str(tags.get("TALB")) if tags.get("TALB") else ""
             title = str(tags.get("TIT2")) if tags.get("TIT2") else ""
-            year = str(tags.get("TDRC"))[:4] if tags.get("TDRC") else ""
+            release_date = str(tags.get("TDRC")) if tags.get("TDRC") else ""
             trck = tags.get("TRCK")
             if trck:
                 parts = str(trck).split("/")
@@ -220,7 +220,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
                 # Fall back to sort-name tag (sonm).
                 title = str(nam_v[0]) if nam_v else str((t.get("sonm") or [""])[0])
                 day_v = t.get("\xa9day")
-                year = str(day_v[0])[:4] if day_v else ""
+                release_date = str(day_v[0]) if day_v else ""
                 trkn_v = t.get("trkn")
                 if trkn_v:
                     track_number = trkn_v[0][0]  # type: ignore[index]
@@ -247,7 +247,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
                 tit_v2 = tf.get("TITLE")
                 title = tit_v2[0] if tit_v2 else ""
                 yr_v2 = tf.get("DATE")
-                year = yr_v2[0][:4] if yr_v2 else ""
+                release_date = yr_v2[0] if yr_v2 else ""
                 trck_v2 = tf.get("TRACKNUMBER")
                 if trck_v2:
                     t_s = trck_v2[0].split("/")[0]
@@ -269,7 +269,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
                 tit_v3 = to.get("TITLE")
                 title = tit_v3[0] if tit_v3 else ""
                 yr_v3 = to.get("DATE")
-                year = yr_v3[0][:4] if yr_v3 else ""
+                release_date = yr_v3[0] if yr_v3 else ""
                 trck_v3 = to.get("TRACKNUMBER")
                 if trck_v3:
                     t_s3 = trck_v3[0].split("/")[0]
@@ -290,7 +290,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
         artist=artist,
         album=album,
         album_artist=album_artist or artist,
-        year=year,
+        release_date=release_date,
         track_number=track_number,
         mbid="",
         genre=genre,
@@ -356,8 +356,8 @@ def _write_mp3_tags_from_metadata(
     tags["TPE2"] = id3.TPE2(encoding=3, text=track.album_artist)
     tags["TALB"] = id3.TALB(encoding=3, text=track.album)
     tags["TIT2"] = id3.TIT2(encoding=3, text=track.title)
-    if track.year:
-        tags["TDRC"] = id3.TDRC(encoding=3, text=track.year)
+    if track.release_date:
+        tags["TDRC"] = id3.TDRC(encoding=3, text=track.release_date)
 
     trck_str = (
         f"{track.track_number}/{total_tracks}"
@@ -404,8 +404,8 @@ def _write_m4a_tags_from_metadata(
     audio.tags["\xa9ART"] = [track.artist]
     audio.tags["aART"] = [track.album_artist]
     audio.tags["\xa9alb"] = [track.album]
-    if track.year:
-        audio.tags["\xa9day"] = [track.year]
+    if track.release_date:
+        audio.tags["\xa9day"] = [track.release_date]
 
     audio.tags["trkn"] = [(track.track_number, total_tracks)]
     audio.tags["disk"] = [(disc_number, total_discs)]
@@ -441,8 +441,8 @@ def _write_flac_tags_from_metadata(
     audio.tags["ARTIST"] = [track.artist]
     audio.tags["ALBUMARTIST"] = [track.album_artist]
     audio.tags["ALBUM"] = [track.album]
-    if track.year:
-        audio.tags["DATE"] = [track.year]
+    if track.release_date:
+        audio.tags["DATE"] = [track.release_date]
 
     trck_str = (
         f"{track.track_number}/{total_tracks}"
@@ -481,8 +481,8 @@ def _write_ogg_tags_from_metadata(
     audio.tags["ARTIST"] = [track.artist]
     audio.tags["ALBUMARTIST"] = [track.album_artist]
     audio.tags["ALBUM"] = [track.album]
-    if track.year:
-        audio.tags["DATE"] = [track.year]
+    if track.release_date:
+        audio.tags["DATE"] = [track.release_date]
 
     trck_str = (
         f"{track.track_number}/{total_tracks}"
@@ -1089,7 +1089,7 @@ def _search_releases(artist: str, album: str) -> list[ReleaseInfo]:
 def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
     mbid: str = raw["id"]
     title: str = raw.get("title", "")
-    year: str = raw.get("date", "")[:4]
+    release_date: str = raw.get("date", "")
 
     release_group = raw.get("release-group", {})
     release_group_mbid: str = release_group.get("id", "")
@@ -1161,7 +1161,7 @@ def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
         title=title,
         artist=artist,
         album_artist=album_artist,
-        year=year,
+        release_date=release_date,
         tracks=tracks,
         artist_sort=artist_sort,
         album_artist_sort=album_artist_sort,
@@ -1263,7 +1263,7 @@ def _write_mp3_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -
     tags["TPE1"] = id3.TPE1(encoding=3, text=release.artist)
     tags["TPE2"] = id3.TPE2(encoding=3, text=release.album_artist)
     tags["TALB"] = id3.TALB(encoding=3, text=release.title)
-    tags["TDRC"] = id3.TDRC(encoding=3, text=release.year)
+    tags["TDRC"] = id3.TDRC(encoding=3, text=release.release_date)
     tags["TXXX:MusicBrainz Album Id"] = id3.TXXX(
         encoding=3, desc="MusicBrainz Album Id", text=release.mbid
     )
@@ -1371,7 +1371,7 @@ def _write_m4a_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -
     audio.tags["\xa9ART"] = [release.artist]
     audio.tags["aART"] = [release.album_artist]
     audio.tags["\xa9alb"] = [release.title]
-    audio.tags["\xa9day"] = [release.year]
+    audio.tags["\xa9day"] = [release.release_date]
     audio.tags["----:com.apple.iTunes:MusicBrainz Album Id"] = _ff(release.mbid)
 
     # Sort names
@@ -1457,7 +1457,7 @@ def _assign_vorbis_tags(
     tags["ARTIST"] = _v(release.artist)
     tags["ALBUMARTIST"] = _v(release.album_artist)
     tags["ALBUM"] = _v(release.title)
-    tags["DATE"] = _v(release.year)
+    tags["DATE"] = _v(release.release_date)
     tags["MUSICBRAINZ_ALBUMID"] = _v(release.mbid)
 
     # Sort names

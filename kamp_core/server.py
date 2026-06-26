@@ -182,7 +182,7 @@ class TrackOut(BaseModel):
     artist: str
     album_artist: str
     album: str
-    year: str
+    release_date: str
     track_number: int
     disc_number: int
     file_path: str
@@ -207,7 +207,7 @@ class TrackOut(BaseModel):
             artist=t.artist,
             album_artist=t.album_artist,
             album=t.album,
-            year=t.year,
+            release_date=t.release_date,
             track_number=t.track_number,
             disc_number=t.disc_number,
             file_path=_canonical_track_key(t.file_path),
@@ -265,7 +265,7 @@ class StatsOut(BaseModel):
 class AlbumOut(BaseModel):
     album_artist: str
     album: str
-    year: str
+    release_date: str
     track_count: int
     has_art: bool
     missing_album: bool = False
@@ -538,7 +538,7 @@ class AlbumDisplayRequest(BaseModel):
 class AlbumMetaRequest(BaseModel):
     genre: str | None = None
     label: str | None = None
-    year: str | None = None
+    release_date: str | None = None
     mb_release_id: str | None = None
 
 
@@ -558,7 +558,7 @@ class MusicBrainzReleaseOut(BaseModel):
     release_group_mbid: str
     title: str
     album_artist: str
-    year: str
+    release_date: str
     label: str
     release_type: str
     tracks: list[MusicBrainzTrackOut]
@@ -621,7 +621,7 @@ class PlaylistTrackOut(BaseModel):
     artist: str
     album_artist: str
     album: str
-    year: str
+    release_date: str
     track_number: int
     disc_number: int
     ext: str
@@ -1152,7 +1152,7 @@ def create_app(
             AlbumOut(
                 album_artist=a.album_artist,
                 album=a.album,
-                year=a.year,
+                release_date=a.release_date,
                 track_count=a.track_count,
                 has_art=a.has_art,
                 missing_album=a.missing_album,
@@ -1243,7 +1243,7 @@ def create_app(
             artist=track.artist,
             album_artist=track.album_artist,
             album=track.album,
-            year=track.year,
+            release_date=track.release_date,
             track=track.track_number,
             disc=track.disc_number,
             title=req.title,
@@ -1460,7 +1460,7 @@ def create_app(
                 artist=track.artist,
                 album_artist=new_album_artist,
                 album=new_album,
-                year=track.year,
+                release_date=track.release_date,
                 track=track.track_number,
                 disc=track.disc_number,
                 title=track.title,
@@ -1960,7 +1960,7 @@ def create_app(
         return AlbumOut(
             album_artist=result.album_artist,
             album=result.album,
-            year=result.year,
+            release_date=result.release_date,
             track_count=result.track_count,
             has_art=result.has_art,
             missing_album=result.missing_album,
@@ -1984,7 +1984,7 @@ def create_app(
     def patch_album_meta(
         album_artist: str, album: str, req: "AlbumMetaRequest"
     ) -> "AlbumMetaOut":
-        """Write genre, label, and/or year to every track in an album.
+        """Write genre, label, and/or release_date to every track in an album.
 
         Tag-only: no files are moved or renamed.  Only the fields present in
         the request body are written; omitted fields are left unchanged.
@@ -1998,7 +1998,7 @@ def create_app(
         if (
             req.genre is None
             and req.label is None
-            and req.year is None
+            and req.release_date is None
             and req.mb_release_id is None
         ):
             raise HTTPException(status_code=400, detail="No changes requested")
@@ -2011,7 +2011,7 @@ def create_app(
                     track.file_path,
                     genre=req.genre,
                     label=req.label,
-                    year=req.year,
+                    release_date=req.release_date,
                     mb_release_id=req.mb_release_id,
                 )
             except Exception as exc:
@@ -2028,7 +2028,7 @@ def create_app(
             album,
             genre=req.genre,
             label=req.label,
-            year=req.year,
+            release_date=req.release_date,
             mb_release_id=req.mb_release_id,
         )
         _notify_library_changed()
@@ -2076,7 +2076,7 @@ def create_app(
                 release_group_mbid=r.release_group_mbid,
                 title=r.title,
                 album_artist=r.album_artist,
-                year=r.year,
+                release_date=r.release_date,
                 label=r.label,
                 release_type=r.release_type,
                 tracks=[
@@ -2247,7 +2247,7 @@ def create_app(
                 return AlbumOut(
                     album_artist=a.album_artist,
                     album=a.album,
-                    year=a.year,
+                    release_date=a.release_date,
                     track_count=a.track_count,
                     has_art=a.has_art,
                     missing_album=a.missing_album,
@@ -2376,7 +2376,7 @@ def create_app(
                 return AlbumOut(
                     album_artist=a.album_artist,
                     album=a.album,
-                    year=a.year,
+                    release_date=a.release_date,
                     track_count=a.track_count,
                     has_art=a.has_art,
                     missing_album=a.missing_album,
@@ -2535,7 +2535,7 @@ def create_app(
             AlbumOut(
                 album_artist=a.album_artist,
                 album=a.album,
-                year=a.year,
+                release_date=a.release_date,
                 track_count=a.track_count,
                 has_art=a.has_art,
                 missing_album=a.missing_album,

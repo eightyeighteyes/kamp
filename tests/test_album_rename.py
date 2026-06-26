@@ -41,7 +41,7 @@ def _sample_track(file_path: Path, **overrides: object) -> Track:
         artist="Artist",
         album_artist="Artist",
         album="Old Album",
-        year="2024",
+        release_date="2024",
         track_number=1,
         disc_number=1,
         ext="mp3",
@@ -259,7 +259,7 @@ def _make_album(
             mp3,
             album_artist=album_artist,
             album=album,
-            year=year,
+            release_date=year,
             track=str(i),
             title=title,
         )
@@ -268,7 +268,7 @@ def _make_album(
             title=title,
             album_artist=album_artist,
             album=album,
-            year=year,
+            release_date=year,
             track_number=i,
             mb_recording_id=f"rec-{i}",
         )
@@ -350,7 +350,7 @@ class TestPatchAlbumTagsEndpoint:
                 title=t.title,
                 album_artist="Artist",
                 album="Old Album",
-                year="2024",
+                release_date="2024",
                 track_number=t.track_number,
             )
             for flat, t in flat_files
@@ -404,7 +404,7 @@ class TestPatchAlbumTagsEndpoint:
                 artist="Docks",
                 album_artist="Docks",
                 album="Migjorn",
-                year="2020",
+                release_date="2020",
                 title=t.title,
                 track_number=t.track_number,
             )
@@ -624,7 +624,7 @@ class TestPatchAlbumTagsEndpoint:
                 title=track.title,
                 album_artist="Artist",
                 album="Old Album",
-                year="2024",
+                release_date="2024",
                 track_number=track.track_number,
             )
         ]
@@ -890,7 +890,7 @@ class TestPatchAlbumTagsEndpoint:
                 artist="Docks",
                 album_artist="Docks",
                 album="Migjorn",
-                year="2020",
+                release_date="2020",
                 title=t.title,
                 track_number=t.track_number,
             )
@@ -950,7 +950,7 @@ class TestPatchAlbumTagsEndpoint:
                     artist="Artist",
                     album_artist="Artist",
                     album="Album B",
-                    year="2024",
+                    release_date="2024",
                     track_number=1,
                     disc_number=1,
                     ext="",

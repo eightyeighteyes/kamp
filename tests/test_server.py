@@ -28,7 +28,7 @@ def _track(n: int, album: str = "Album", artist: str = "Artist") -> Track:
         artist=artist,
         album_artist=artist,
         album=album,
-        year="2024",
+        release_date="2024",
         track_number=n,
         disc_number=1,
         ext="mp3",
@@ -39,10 +39,18 @@ def _track(n: int, album: str = "Album", artist: str = "Artist") -> Track:
 
 
 def _album(
-    artist: str, album: str, year: str = "2024", count: int = 10, has_art: bool = False
+    artist: str,
+    album: str,
+    release_date: str = "2024",
+    count: int = 10,
+    has_art: bool = False,
 ) -> AlbumInfo:
     return AlbumInfo(
-        album_artist=artist, album=album, year=year, track_count=count, has_art=has_art
+        album_artist=artist,
+        album=album,
+        release_date=release_date,
+        track_count=count,
+        has_art=has_art,
     )
 
 
@@ -236,14 +244,16 @@ class TestAlbumsEndpoint:
     def test_album_has_required_fields(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
-        mock_index.albums.return_value = [_album("Artist", "Record", year="2020")]
+        mock_index.albums.return_value = [
+            _album("Artist", "Record", release_date="2020")
+        ]
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
         album = c.get("/api/v1/albums").json()[0]
         assert set(album.keys()) >= {
             "album_artist",
             "album",
-            "year",
+            "release_date",
             "track_count",
             "has_art",
         }
@@ -498,7 +508,7 @@ class TestMissingAlbumEndpoints:
             AlbumInfo(
                 album_artist="Mndsgn.",
                 album="Lone Track",
-                year="2020",
+                release_date="2020",
                 track_count=1,
                 has_art=False,
                 missing_album=True,
@@ -1452,7 +1462,7 @@ class TestPlayerWebSocket:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -2816,7 +2826,7 @@ class TestBandcampRemoveDownload:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="flac",
@@ -2854,7 +2864,7 @@ class TestBandcampRemoveDownload:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="flac",
@@ -2871,7 +2881,7 @@ class TestBandcampRemoveDownload:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -2921,7 +2931,7 @@ class TestBandcampRemoveDownload:
                 artist="Artist",
                 album_artist="Artist",
                 album="Album",
-                year="2024",
+                release_date="2024",
                 track_number=n,
                 disc_number=1,
                 ext="flac",
@@ -2939,7 +2949,7 @@ class TestBandcampRemoveDownload:
                 artist="Artist",
                 album_artist="Artist",
                 album="Album",
-                year="2024",
+                release_date="2024",
                 track_number=n,
                 disc_number=1,
                 ext="mp3",
@@ -3668,7 +3678,7 @@ class TestPatchAlbumMetaEndpoint:
             artist="Artist",
             album_artist="Artist",
             album="Record",
-            year="2020",
+            release_date="2020",
             track_number=n,
             disc_number=1,
             ext="mp3",
@@ -3710,7 +3720,7 @@ class TestPatchAlbumMetaEndpoint:
         mock_queue: MagicMock,
     ) -> None:
         track = self._make_track()
-        updated = Track(**{**track.__dict__, "label": "ECM", "year": "1975"})
+        updated = Track(**{**track.__dict__, "label": "ECM", "release_date": "1975"})
         mock_index.tracks_for_album.return_value = [track]
         mock_index.update_album_meta.return_value = [updated]
 
@@ -3719,12 +3729,17 @@ class TestPatchAlbumMetaEndpoint:
             resp = TestClient(app).patch(
                 "/api/v1/albums/meta",
                 params={"album_artist": "Artist", "album": "Record"},
-                json={"label": "ECM", "year": "1975"},
+                json={"label": "ECM", "release_date": "1975"},
             )
 
         assert resp.status_code == 200
         mock_index.update_album_meta.assert_called_once_with(
-            "Artist", "Record", genre=None, label="ECM", year="1975", mb_release_id=None
+            "Artist",
+            "Record",
+            genre=None,
+            label="ECM",
+            release_date="1975",
+            mb_release_id=None,
         )
 
     def test_returns_404_for_unknown_album(
@@ -3794,7 +3809,7 @@ class TestPatchAlbumMetaEndpoint:
             artist="Artist",
             album_artist="Artist",
             album="Record",
-            year="2020",
+            release_date="2020",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -3869,7 +3884,7 @@ class TestPatchAlbumMetaEndpoint:
             artist="",
             album_artist="",
             album="",
-            year="",
+            release_date="",
             track_number=0,
             disc_number=0,
             ext="",
@@ -3905,7 +3920,7 @@ class TestPatchAlbumMetaEndpoint:
             artist="Artist",
             album_artist="Artist",
             album="Record",
-            year="",
+            release_date="",
             track_number=n,
             disc_number=1,
             ext="",
@@ -3940,7 +3955,12 @@ class TestPatchAlbumMetaEndpoint:
         assert resp.status_code == 200
         mock_write.assert_not_called()
         mock_index.update_album_meta.assert_called_once_with(
-            "Artist", "Record", genre="Jazz", label=None, year=None, mb_release_id=None
+            "Artist",
+            "Record",
+            genre="Jazz",
+            label=None,
+            release_date=None,
+            mb_release_id=None,
         )
 
     def test_mixed_album_writes_files_only_for_local_tracks(
@@ -4078,7 +4098,7 @@ class TestItunesArtApplyEndpoint:
         album_info = AlbumInfo(
             album_artist="Joan Jett",
             album="Up Your Alley",
-            year="1988",
+            release_date="1988",
             track_count=1,
             has_art=has_art,
             art_version=12345.0,
@@ -4241,7 +4261,7 @@ class TestItunesArtApplyEndpoint:
             AlbumInfo(
                 album_artist="Joan Jett",
                 album="Up Your Alley",
-                year="1988",
+                release_date="1988",
                 track_count=1,
                 has_art=True,
                 art_version=12345.0,
@@ -4283,7 +4303,7 @@ class TestApplyLocalAlbumArt:
             AlbumInfo(
                 album_artist="Joan Jett",
                 album="Up Your Alley",
-                year="1988",
+                release_date="1988",
                 track_count=1,
                 has_art=has_art,
                 art_version=99.0,
@@ -4386,7 +4406,7 @@ class TestApplyLocalAlbumArt:
             AlbumInfo(
                 album_artist="Joan Jett",
                 album="Up Your Alley",
-                year="1988",
+                release_date="1988",
                 track_count=1,
                 has_art=True,
                 art_version=99.0,
@@ -4455,7 +4475,7 @@ class TestRemoteUriEndpointBypass:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2025",
+            release_date="2025",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -4582,7 +4602,7 @@ class TestResolvePlaybackRemote:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=3,
             disc_number=1,
             ext="mp3",
@@ -4634,7 +4654,7 @@ class TestResolvePlaybackRemote:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=3,
             disc_number=1,
             ext="mp3",
@@ -4678,7 +4698,7 @@ class TestResolvePlaybackRemote:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -4709,7 +4729,7 @@ class TestResolvePlaybackRemote:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -4754,7 +4774,7 @@ class TestResolvePlaybackRemote:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -4811,7 +4831,7 @@ class TestResolvePlaybackUri:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=2,
             disc_number=1,
             ext="mp3",
@@ -4965,7 +4985,7 @@ class TestArtEndpointRemoteGuards:
             artist="The Artist",
             album_artist="The Artist",
             album="The Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -5283,7 +5303,7 @@ class TestArtEndpointRemoteAlbums:
             artist="Artist",
             album_artist="Artist",
             album="Album",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -5554,7 +5574,7 @@ def _playlist_track(
         "artist": "Artist",
         "album_artist": "Artist",
         "album": "Album",
-        "year": "2024",
+        "release_date": "2024",
         "track_number": 1,
         "disc_number": 1,
         "ext": "mp3",
@@ -5668,7 +5688,7 @@ class TestPlaylistEndpoints:
             artist="Ar",
             album_artist="Ar",
             album="Al",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -5770,7 +5790,7 @@ class TestPlaylistEndpoints:
             artist="Ar",
             album_artist="Ar",
             album="Al",
-            year="2024",
+            release_date="2024",
             track_number=1,
             disc_number=1,
             ext="mp3",
@@ -6272,7 +6292,7 @@ def _bandcamp_track(n: int = 1) -> Track:
         artist="Band",
         album_artist="Band",
         album="Long Name",
-        year="2020",
+        release_date="2020",
         track_number=n,
         disc_number=1,
         ext="mp3",
@@ -6331,7 +6351,7 @@ class TestPatchAlbumDisplayEndpoint:
         return AlbumInfo(
             album_artist="Band",
             album="Long Name",
-            year="2020",
+            release_date="2020",
             track_count=1,
             has_art=False,
             source="bandcamp",

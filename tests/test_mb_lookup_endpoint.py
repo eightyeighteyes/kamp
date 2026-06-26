@@ -24,7 +24,7 @@ def _track(n: int, title: str = "") -> Track:
         artist="Band",
         album_artist="Band",
         album="Record",
-        year="2020",
+        release_date="2020",
         track_number=n,
         disc_number=1,
         ext="mp3",
@@ -47,7 +47,7 @@ def _fake_release(mbid: str = "release-1") -> MagicMock:
     r.release_group_mbid = "rg-1"
     r.title = "MB Record"
     r.album_artist = "MB Band"
-    r.year = "2021"
+    r.release_date = "2021"
     r.label = "MB Label"
     r.release_type = "Album"
     r.tracks = {"1-1": track}
@@ -114,7 +114,7 @@ class TestGetAlbumMusicBrainz:
         assert c["mbid"] == "release-1"
         assert c["title"] == "MB Record"
         assert c["album_artist"] == "MB Band"
-        assert c["year"] == "2021"
+        assert c["release_date"] == "2021"
         assert c["label"] == "MB Label"
         assert c["release_type"] == "Album"
         assert len(c["tracks"]) == 1
@@ -251,7 +251,7 @@ class TestPatchAlbumMetaMbReleaseId:
             artist="Band",
             album_artist="Band",
             album="Record",
-            year="2020",
+            release_date="2020",
             track_number=n,
             disc_number=1,
             ext="mp3",
@@ -284,7 +284,7 @@ class TestPatchAlbumMetaMbReleaseId:
             track.file_path,
             genre=None,
             label=None,
-            year=None,
+            release_date=None,
             mb_release_id="new-mbid",
         )
         mock_index.update_album_meta.assert_called_once_with(
@@ -292,7 +292,7 @@ class TestPatchAlbumMetaMbReleaseId:
             "Record",
             genre=None,
             label=None,
-            year=None,
+            release_date=None,
             mb_release_id="new-mbid",
         )
 
@@ -326,7 +326,7 @@ class TestPatchTrackMeta:
             artist="Band",
             album_artist="Band",
             album="Record",
-            year="2020",
+            release_date="2020",
             track_number=1,
             disc_number=1,
             ext="mp3",

@@ -39,7 +39,7 @@ def _sample_track(file_path: Path, **overrides: object) -> Track:
         artist="AA",
         album_artist="AA",
         album="A",
-        year="2024",
+        release_date="2024",
         track_number=1,
         disc_number=1,
         ext="mp3",

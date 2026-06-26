@@ -269,7 +269,7 @@ export function AlbumCard({
           <div className="album-title">{album.display_album ?? album.album}</div>
         )}
         <div className="album-artist">{album.display_album_artist ?? album.album_artist}</div>
-        <div className="album-year">{album.year}</div>
+        <div className="album-year">{album.release_date}</div>
         {showPlayCount && album.play_count_avg > 0 && (
           <div className="album-play-count">avg {album.play_count_avg.toFixed(1)}</div>
         )}

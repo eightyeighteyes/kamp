@@ -121,9 +121,9 @@ function applySortToTracks(
         break
       }
       case 'release_date': {
-        // Tracks with no year always sort last regardless of direction.
-        const aY = a.year || null
-        const bY = b.year || null
+        // Tracks with no release_date always sort last regardless of direction.
+        const aY = a.release_date || null
+        const bY = b.release_date || null
         if (aY === null && bY === null) return 0
         if (aY === null) return 1
         if (bY === null) return -1
@@ -290,7 +290,7 @@ export function PlaylistView(): React.JSX.Element | null {
         seen.set(key, {
           album_artist: albumArtist,
           album: t.album,
-          year: t.year,
+          release_date: t.release_date,
           track_count: 1,
           // Non-local tracks have server-side art even without embedded art.
           has_art: t.embedded_art || t.source !== 'local',

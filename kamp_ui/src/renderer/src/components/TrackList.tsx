@@ -317,11 +317,12 @@ export function TrackList(): React.JSX.Element | null {
 
     const mbRelease = payload.release
 
-    // 1. Album meta (year, label, mb_release_id)
-    const metaOpts: { year?: string; label?: string; mb_release_id?: string } = {
+    // 1. Album meta (release_date, label, mb_release_id)
+    const metaOpts: { release_date?: string; label?: string; mb_release_id?: string } = {
       mb_release_id: mbRelease.mbid
     }
-    if (payload.album.year === 'mb' && mbRelease.year) metaOpts.year = mbRelease.year
+    if (payload.album.release_date === 'mb' && mbRelease.release_date)
+      metaOpts.release_date = mbRelease.release_date
     if (payload.album.label === 'mb' && mbRelease.label) metaOpts.label = mbRelease.label
     await patchAlbumMeta(album.album_artist, album.album, metaOpts)
 
@@ -658,9 +659,9 @@ export function TrackList(): React.JSX.Element | null {
               </h2>
             )}
           />
-          {(album.year || totalDuration > 0) && (
+          {(album.release_date || totalDuration > 0) && (
             <div className="track-list-album-year">
-              {[album.year, totalDuration > 0 ? formatLongDuration(totalDuration) : '']
+              {[album.release_date, totalDuration > 0 ? formatLongDuration(totalDuration) : '']
                 .filter(Boolean)
                 .join(' · ')}
             </div>

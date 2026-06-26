@@ -32,7 +32,7 @@ def _track(
         artist=artist,
         album_artist=album_artist,
         album=album,
-        year="2024",
+        release_date="2024",
         track_number=track_number,
         disc_number=1,
         ext="mp3",

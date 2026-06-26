@@ -1004,42 +1004,29 @@ local LABEL = "kampfade"
 local TARGET = "afade"
 local DUR = 0.15            -- seconds; must match the filter's duration= in _start_mpv
 local PARKED = "1000000000" -- start_time far in the future => filter passes at unity
+local MARGIN = 0.05         -- device latency beyond the soft audio buffer
 
--- Cancels a pending post-fade pause when a newer request arrives mid-fade.
+-- Cancels a pending post-fade pause / resume-unmute when a newer request arrives.
 local pause_gen = 0
--- True once a stop has run its course (seek to 0 + park). afade's fade-in re-arm is
--- unreliable across a seek (its internal sample position no longer lines up with the
--- new start_time, so a fade-in can stick at silence), so resume-after-stop skips the
--- fade-in and just restores unity. Set in the stop callback, consumed by resume.
+-- True once a stop has run its course (seek to 0). Resume-after-stop is a hard reset
+-- (start at unity, no fade-in) since a fade-in across that seek is unreliable.
 local stopped = false
 
 local function afcmd(command, argument)
     mp.commandv("af-command", LABEL, command, argument, TARGET)
 end
 
--- Park the fade far in the future so it never triggers. type=out parks at UNITY (gain
--- 1, the normal playing state); type=in parks at SILENCE (gain 0). The silent park is
--- used whenever the output buffer is (re)filled while paused -- a fresh load_paused or a
--- seek-while-paused -- so the buffered audio holds silence and the next resume fades in
--- from quiet, instead of dumping ~audio-buffer seconds of full-volume audio first.
-local function park_unity()
+-- Park the fade far in the future so it never triggers: passes audio at unity gain.
+local function park()
     afcmd("type", "out")
     afcmd("start_time", PARKED)
 end
-local function park_silent()
-    afcmd("type", "in")
-    afcmd("start_time", PARKED)
-end
 
--- mpv hands ~audio-buffer seconds of audio to the output device before it is heard;
--- that audio is already past the filter and can no longer be faded. So a fade-out must
--- be anchored at the FILTER HEAD (audio-pts + audio-buffer + MARGIN), not at the audible
--- position -- otherwise a short fade lands entirely on already-buffered, full-volume
--- audio and is inaudible (a 3 s fade was audible only because it overflowed the buffer).
--- MARGIN covers device latency beyond the soft buffer. The caller then delays the pause
--- by the same lead so the faded audio has time to drain out. Verified vs mpv 0.41.
-local MARGIN = 0.05
-
+-- mpv hands ~audio-buffer seconds of audio to the output device before it is heard; that
+-- audio is already past the filter and can no longer be faded. So a fade is anchored at
+-- the FILTER HEAD (audio-pts + audio-buffer + MARGIN), not the audible position --
+-- otherwise a short fade lands entirely on already-buffered audio and is inaudible (a
+-- 3 s fade was audible only because it overflowed the buffer). Verified vs mpv 0.41.
 local function output_lead()
     return (mp.get_property_number("audio-buffer", 0.2) or 0.2) + MARGIN
 end
@@ -1057,14 +1044,13 @@ end
 mp.register_script_message("kamp-pause", function()
     pause_gen = pause_gen + 1
     local my = pause_gen
+    mp.set_property_bool("mute", false)  -- clear any pending resume-unmute gate
     local lead = output_lead()
     arm("out", lead)
     -- Pause only after the faded audio has drained through the output buffer, so the
     -- pause lands on silence rather than cutting off still-full-volume buffered audio.
     mp.add_timeout(lead + DUR, function()
-        if my == pause_gen then
-            mp.set_property("pause", "yes")
-        end
+        if my == pause_gen then mp.set_property("pause", "yes") end
     end)
 end)
 
@@ -1072,64 +1058,57 @@ mp.register_script_message("kamp-resume", function()
     pause_gen = pause_gen + 1  -- cancel any pending post-fade pause
     local my = pause_gen
     if stopped then
-        -- Resume after a stop: the track was seeked to 0. A fade-in across that seek is
-        -- unreliable (it can stick at silence), so just guarantee unity and unpause -- a
-        -- stop is a hard reset anyway.
+        -- Resume after a stop is a hard reset: start at unity, no fade-in.
         stopped = false
-        park_unity()
+        mp.set_property_bool("mute", false)
+        park()
         mp.set_property("pause", "no")
-    else
-        -- Normal pause -> resume: arm a fade-in. The filter still sits ~audio-buffer
-        -- ahead of the speakers, so the fade-in needs the SAME lead as the fade-out --
-        -- anchored at audio-pts it would land inside already-buffered audio and come up
-        -- almost instantly. Arm while STILL PAUSED, then unpause: arming AFTER unpausing
-        -- left a window where the filter was type=in with the previous (already-elapsed)
-        -- start_time, so afade reported the fade complete and gain snapped to full -- an
-        -- audible burst. Arming while paused keeps that transient inaudible.
-        arm("in", output_lead())
-        mp.set_property("pause", "no")
-        -- Safety net: force unity once the fade window (plus the buffer it drains
-        -- through) has elapsed, so an edge-case fade-in can never strand the gain below
-        -- full. Seamless when the fade already completed; cancelled (via pause_gen) if a
-        -- new pause/stop arrives first.
-        mp.add_timeout(output_lead() + DUR, function()
-            if my == pause_gen then park_unity() end
-        end)
+        return
     end
+    -- The output buffer may hold FULL-VOLUME audio: mpv resets the afade filter to its
+    -- unity definition on every seek/load, so a seek-while-paused -- or the load_paused
+    -- that restores a mid-track position on app start -- refills the buffer at full
+    -- volume, and the fade filter (which sits before the buffer) cannot retroactively
+    -- fade it. So gate the OUTPUT with `mute` (which sits AFTER the filter and survives
+    -- seeks) while that buffer drains, then unmute exactly as the fade-in window reaches
+    -- the speakers. Result: resume always fades in from silence regardless of what was
+    -- buffered. arm() anchors the fade-in at the filter head (one lead ahead), so it
+    -- reaches output right when the buffer finishes draining.
+    local lead = output_lead()
+    mp.set_property_bool("mute", true)
+    arm("in", lead)
+    mp.set_property("pause", "no")
+    mp.add_timeout(lead, function()
+        if my == pause_gen then mp.set_property_bool("mute", false) end
+    end)
+    -- Safety net: force unity after the fade window so an edge-case fade-in can never
+    -- strand the gain below full.
+    mp.add_timeout(lead + DUR, function()
+        if my == pause_gen then park() end
+    end)
 end)
 
 mp.register_script_message("kamp-stop", function()
     pause_gen = pause_gen + 1
     local my = pause_gen
+    mp.set_property_bool("mute", false)
     local lead = output_lead()
     arm("out", lead)
     mp.add_timeout(lead + DUR, function()
         if my == pause_gen then
             mp.set_property("pause", "yes")
             mp.command("seek 0 absolute")
-            park_unity()  -- next play starts at unity gain
+            park()
             stopped = true
         end
     end)
 end)
 
--- A fresh track inherits the filter's gain state, so re-park it (this also clears any
--- leftover fade-out window from a prior pause). Park SILENT if it loaded paused (e.g.
--- load_paused restoring mid-track on startup) so the buffer fills quiet and the first
--- resume fades in; park UNITY if it loaded playing (play/next/prev). The pause property
--- is reliably settled at file-loaded (verified: play() -> false, load_paused() -> true).
+-- A fresh load resets the filter to its unity definition anyway; re-park to be explicit
+-- and clear the stopped flag so the next resume fades in normally.
 mp.register_event("file-loaded", function()
+    park()
     stopped = false
-    if mp.get_property_bool("pause", false) then park_silent() else park_unity() end
-end)
-
--- A seek flushes and refills the output buffer. While paused (user scrubbing the
--- transport, or the seek that load_paused applies on startup), hold the filter silent so
--- the refill is quiet and the next resume fades in -- without this the buffer fills at
--- full volume and resume plays it loud before the fade-in starts. Seeks while playing
--- leave the gain untouched.
-mp.register_event("seek", function()
-    if mp.get_property_bool("pause", false) then park_silent() end
 end)
 """
 

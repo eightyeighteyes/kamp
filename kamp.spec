@@ -89,6 +89,13 @@ datas = [
     # pyproject.toml is used by _get_version() as the canonical version source;
     # include it so the frozen app reports the correct version string.
     ("pyproject.toml", "."),
+    # kamp_fade.lua drives click-free pause/stop/resume fades inside mpv's event
+    # loop; playback.py loads it via --script=Path(__file__).parent/"kamp_fade.lua".
+    # collect_submodules only gathers .py modules, so this non-Python sibling must
+    # be staged explicitly into kamp_core/ — without it the frozen app passes mpv
+    # a nonexistent --script path, the script silently never loads, and the
+    # script-message-driven transport controls become no-ops (KAMP-519).
+    ("kamp_core/kamp_fade.lua", "kamp_core"),
 ]
 
 a = Analysis(

@@ -1099,6 +1099,19 @@ class MpvPlaybackEngine:
                 )
                 self._job = None
 
+        # mpv silently ignores a --script= path that doesn't exist, which turns
+        # the script-message-driven transport controls into no-ops with no error
+        # anywhere. Surface it loudly: in the frozen app this file must be staged
+        # into the bundle by kamp.spec (KAMP-519); a missing file here means the
+        # packaging regressed.
+        if not _FADE_SCRIPT.exists():
+            logger.warning(
+                "Fade script not found at %s — pause/stop/resume fades and the "
+                "transport controls that depend on them will be no-ops. "
+                "(packaging bug: kamp_fade.lua not bundled?)",
+                _FADE_SCRIPT,
+            )
+
         self._proc = subprocess.Popen(
             [
                 self._mpv_bin,

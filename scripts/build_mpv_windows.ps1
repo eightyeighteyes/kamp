@@ -133,12 +133,25 @@ meson setup build \
 Write-Host "==> Building mpv (ninja)"
 Invoke-Msys "export PATH=/mingw64/bin:`$PATH && cd $mpvSrcUnix && ninja -C build"
 
-# Copy the built executable. mpv's meson build emits 'mpv.exe' on Windows.
+# Copy the built executable. mpv's meson build emits TWO front-ends on Windows:
+#   mpv.exe -- GUI subsystem (no console); what the daemon spawns headlessly.
+#   mpv.com -- console subsystem; the only variant that writes --version etc.
+#              to a stream the parent process can capture.
+# We ship/spawn mpv.exe, but stage mpv.com too so the smoke test below can read
+# the version banner -- mpv.exe (GUI subsystem) emits nothing to stdout/stderr,
+# so `mpv.exe --version` always captures empty, which silently defeated the
+# Lua-feature assertion even after a 2>&1 merge.
 $mpvExeWin = Join-Path $msys2 "tmp\mpv-src\build\mpv.exe"
 if (-not (Test-Path $mpvExeWin)) {
     throw "Expected build artifact $mpvExeWin not found after ninja"
 }
 Copy-Item -Force $mpvExeWin (Join-Path $out "mpv.exe")
+
+$mpvComWin = Join-Path $msys2 "tmp\mpv-src\build\mpv.com"
+if (-not (Test-Path $mpvComWin)) {
+    throw "Expected build artifact $mpvComWin not found after ninja"
+}
+Copy-Item -Force $mpvComWin (Join-Path $out "mpv.com")
 
 # Walk mpv.exe's import table via ldd (the MSYS2 analog of macOS otool -L)
 # and copy every transitive dep that lives under /mingw64/bin into the same
@@ -180,15 +193,17 @@ if (-not ($copiedDlls -contains "lua51.dll")) {
 # 0xc0000135 ("DLL not found") exit code. This is the Windows analog of
 # the macOS Homebrew-leak audit. Also assert luajit is among the compiled-in
 # features so a future -Dlua regression fails the build, not the user.
-Write-Host "==> Smoke-testing mpv.exe --version from staged directory"
+#
+# Run mpv.com (console subsystem), NOT mpv.exe: only mpv.com writes the version
+# banner to a stream PowerShell can capture. Both front-ends load the identical
+# sibling-DLL set, so mpv.com validates the staged layout just as well, while
+# also making the Lua-feature grep meaningful (mpv.exe emits nothing).
+Write-Host "==> Smoke-testing mpv.com --version from staged directory"
 Push-Location $out
 try {
-    # Capture both stdout and stderr: mpv.exe on Windows writes --version output
-    # via the Windows console API, which bypasses PowerShell's stdout capture
-    # unless we merge streams with 2>&1.
-    $versionOut = & .\mpv.exe --version 2>&1
+    $versionOut = & .\mpv.com --version 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "mpv.exe --version exited with code $LASTEXITCODE -- check that all transitive DLLs were copied"
+        throw "mpv.com --version exited with code $LASTEXITCODE -- check that all transitive DLLs were copied"
     }
     $versionOut | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" }
     # LuaJIT ships as lua51.dll on Windows (Lua 5.1 API-compatible); mpv may
@@ -196,9 +211,9 @@ try {
     # The lua51.dll presence check above is the authoritative assertion; here
     # we just confirm some Lua variant compiled in (guards against -Dlua=disabled).
     if (-not ($versionOut | Select-String -Pattern "lua" -Quiet)) {
-        throw "Built mpv.exe does not list any Lua in its enabled features -- Lua scripting is off (KAMP-519). Check -Dlua=enabled and that mingw-w64-x86_64-luajit was installed."
+        throw "Built mpv does not list any Lua in its enabled features -- Lua scripting is off (KAMP-519). Check -Dlua=enabled and that mingw-w64-x86_64-luajit was installed."
     }
-    Write-Host "-> Verified Lua (luajit/lua51) is in mpv.exe's enabled features"
+    Write-Host "-> Verified Lua (luajit/lua51) is in mpv's enabled features"
 }
 finally {
     Pop-Location

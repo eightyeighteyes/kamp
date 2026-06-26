@@ -4,6 +4,7 @@ import type { ExtensionInfo, ExtensionSettingSchema } from '../../../shared/kamp
 import type { ExtensionStateHook } from '../hooks/useExtensionState'
 import { useExtensionInstall } from '../hooks/useExtensionInstall'
 import { connectLastfm, disconnectLastfm, disconnectBandcamp } from '../api/client'
+import { DiscordIcon } from './TransportIcons'
 
 // Keys whose values must be integers — sent as strings over the wire but
 // stored as numbers in the config.
@@ -1174,7 +1175,10 @@ export function PreferencesDialog({
                         className="prefs-choose-btn"
                         onClick={() => window.api.openExternal(DISCORD_INVITE_URL)}
                       >
-                        Join Discord
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <DiscordIcon size={16} />
+                          Join Discord
+                        </span>
                       </button>
                       <p className="prefs-hint">Give feedback and connect with other Kamp users.</p>
                     </div>

@@ -191,13 +191,18 @@ if (-not ($copiedDlls -contains "lua51.dll")) {
 
 # Smoke test: a sibling-DLL layout problem would surface here as a
 # 0xc0000135 ("DLL not found") exit code. This is the Windows analog of
-# the macOS Homebrew-leak audit. Also assert luajit is among the compiled-in
-# features so a future -Dlua regression fails the build, not the user.
+# the macOS Homebrew-leak audit. Run mpv.com (console subsystem) so the
+# version banner is captured into the CI log for diagnostics; mpv.exe (GUI
+# subsystem) emits nothing. Both front-ends load the identical sibling-DLL
+# set, so either validates the staged layout via its exit code.
 #
-# Run mpv.com (console subsystem), NOT mpv.exe: only mpv.com writes the version
-# banner to a stream PowerShell can capture. Both front-ends load the identical
-# sibling-DLL set, so mpv.com validates the staged layout just as well, while
-# also making the Lua-feature grep meaningful (mpv.exe emits nothing).
+# NOTE: do NOT try to assert Lua here by grepping --version. `mpv --version`
+# only prints mpv/libplacebo/FFmpeg version banners -- it does not enumerate
+# scripting backends (lua/javascript), so there is no "lua" line to match on
+# any platform. The authoritative Lua-enabled assertion is the lua51.dll
+# import-table check above: mpv links lua51.dll only when built -Dlua=enabled,
+# and nothing else in the bundle pulls it in, so its presence is proof and a
+# -Dlua regression fails that check (not the user).
 Write-Host "==> Smoke-testing mpv.com --version from staged directory"
 Push-Location $out
 try {
@@ -206,14 +211,7 @@ try {
         throw "mpv.com --version exited with code $LASTEXITCODE -- check that all transitive DLLs were copied"
     }
     $versionOut | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" }
-    # LuaJIT ships as lua51.dll on Windows (Lua 5.1 API-compatible); mpv may
-    # report the feature as "luajit" or "lua" depending on pkg-config detection.
-    # The lua51.dll presence check above is the authoritative assertion; here
-    # we just confirm some Lua variant compiled in (guards against -Dlua=disabled).
-    if (-not ($versionOut | Select-String -Pattern "lua" -Quiet)) {
-        throw "Built mpv does not list any Lua in its enabled features -- Lua scripting is off (KAMP-519). Check -Dlua=enabled and that mingw-w64-x86_64-luajit was installed."
-    }
-    Write-Host "-> Verified Lua (luajit/lua51) is in mpv's enabled features"
+    Write-Host "-> mpv.com runs from the staged directory (all sibling DLLs resolved)"
 }
 finally {
     Pop-Location

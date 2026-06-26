@@ -1323,7 +1323,7 @@ class TestMpvPlaybackEngine:
         # volume-property ramp. Ramping the volume property steps the gain per audio
         # frame (zipper noise) and stranded the volume at silence on rapid pause/resume.
         # This guards against regressing to that approach.
-        lua = playback_module._FADE_LUA
+        lua = playback_module._FADE_SCRIPT.read_text()
         assert "af-command" in lua
         # The af-command must address the filter by its BARE label and route to the
         # inner ffmpeg instance name; "@kampfade"/"all" silently fail (verified against

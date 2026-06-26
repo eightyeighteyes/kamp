@@ -7281,10 +7281,11 @@ class TestMigrationV28:
             "INSERT INTO tracks (file_path, title, source, file_mtime, duration)"
             " VALUES ('local/a.mp3', 'A', 'local', 1000.0, 0)"
         )
-        # local track that already has duration — mtime must NOT be nulled
+        # local track that already has duration — mtime must NOT be nulled by v28.
+        # Give it a full ISO year so v38 also does not null it.
         conn.execute(
-            "INSERT INTO tracks (file_path, title, source, file_mtime, duration)"
-            " VALUES ('local/b.mp3', 'B', 'local', 2000.0, 180.0)"
+            "INSERT INTO tracks (file_path, title, source, file_mtime, duration, year)"
+            " VALUES ('local/b.mp3', 'B', 'local', 2000.0, 180.0, '2020-06-15')"
         )
         # bandcamp track with zero duration — should not be touched
         conn.execute(
@@ -9423,6 +9424,112 @@ def _bandcamp_track() -> Track:
         label="",
         source="bandcamp",
     )
+
+
+class TestMigrationV38:
+    """v38 migration: rename year → release_date; null mtime for short dates (KAMP-513)."""
+
+    def _build_v37_db(self, db_path: Path) -> None:
+        """Build a minimal v37 database with the old 'year' column."""
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (37)")
+        conn.execute(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0, disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '', mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL,"
+            " genre TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',"
+            " source TEXT NOT NULL DEFAULT 'local', stream_url TEXT,"
+            " stream_url_expires_at REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " album_artist TEXT NOT NULL, album TEXT NOT NULL,"
+            " year TEXT NOT NULL DEFAULT '')"
+        )
+        conn.execute(
+            "CREATE TABLE settings (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE sessions (service TEXT NOT NULL PRIMARY KEY, session_json TEXT, updated_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE VIRTUAL TABLE tracks_fts USING fts5(title, artist, album_artist, album)"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_migration_renames_year_to_release_date_in_tracks(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "library.db"
+        self._build_v37_db(db_path)
+        LibraryIndex(db_path).close()
+
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(db_path))
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(tracks)").fetchall()}
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        conn.close()
+
+        assert version == 38
+        assert "release_date" in cols
+        assert "year" not in cols
+
+    def test_migration_nulls_mtime_for_local_year_only_tracks(
+        self, tmp_path: Path
+    ) -> None:
+        """Local tracks with year-only release_date get NULL mtime so the next scan
+        re-reads the file and picks up the full ISO date (e.g. '2023-03-15')."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "library.db"
+        self._build_v37_db(db_path)
+
+        conn = _sqlite3.connect(str(db_path))
+        # Local track with year-only — should get NULL mtime after migration
+        conn.execute(
+            "INSERT INTO tracks (file_path, year, source, file_mtime)"
+            " VALUES ('/music/a.mp3', '2020', 'local', 999.0)"
+        )
+        # Local track with full ISO date — mtime should be preserved
+        conn.execute(
+            "INSERT INTO tracks (file_path, year, source, file_mtime)"
+            " VALUES ('/music/b.mp3', '2020-06-15', 'local', 888.0)"
+        )
+        # Remote track with year-only — source != 'local', mtime should be untouched
+        conn.execute(
+            "INSERT INTO tracks (file_path, year, source, file_mtime)"
+            " VALUES ('bandcamp://1/1', '2019', 'bandcamp', 777.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        LibraryIndex(db_path).close()
+
+        conn = _sqlite3.connect(str(db_path))
+        rows = {
+            r[0]: r[1]
+            for r in conn.execute("SELECT file_path, file_mtime FROM tracks").fetchall()
+        }
+        conn.close()
+
+        assert (
+            rows["/music/a.mp3"] is None
+        ), "year-only local track must have NULL mtime"
+        assert (
+            rows["/music/b.mp3"] == 888.0
+        ), "full-date local track mtime must be preserved"
+        assert rows["bandcamp://1/1"] == 777.0, "remote track mtime must be untouched"
 
 
 class TestDisplayOverrides:

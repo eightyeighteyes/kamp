@@ -1408,6 +1408,14 @@ class LibraryIndex:
                 self._conn.execute(
                     "ALTER TABLE albums RENAME COLUMN year TO release_date"
                 )
+            # Null file_mtime for local tracks whose release_date is year-only
+            # (≤ 4 chars) so the next scan re-reads their tags from disk and
+            # picks up the full ISO date (e.g. "2023-03-15") without requiring
+            # any user action.
+            self._conn.execute(
+                "UPDATE tracks SET file_mtime = NULL"
+                " WHERE source = 'local' AND length(release_date) <= 4"
+            )
             self._conn.execute("UPDATE schema_version SET version = 38")
             self._conn.commit()
             version = 38  # noqa: F841

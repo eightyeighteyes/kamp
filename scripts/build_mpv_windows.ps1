@@ -70,7 +70,8 @@ pacman -S --needed --noconfirm \
     mingw-w64-x86_64-pkgconf \
     mingw-w64-x86_64-ffmpeg \
     mingw-w64-x86_64-libass \
-    mingw-w64-x86_64-libplacebo
+    mingw-w64-x86_64-libplacebo \
+    mingw-w64-x86_64-luajit
 '@
 
 Write-Host "==> Cloning mpv $MpvTag"
@@ -79,9 +80,9 @@ Invoke-Msys "rm -rf $mpvSrcUnix && git clone --depth=1 --branch $MpvTag https://
 
 # Audio-only meson configuration. Windows-only differences from the macOS
 # build: no coreaudio, no avfoundation; WASAPI is built-in (auto-enabled when
-# building on win32 -- no flag needed). All video/scripting/optical-disc
-# features are disabled the same way as on macOS, plus the Windows-specific
-# video output and hwaccel backends (d3d11, direct3d/D3D9, gl/gl-win32/
+# building on win32 -- no flag needed). All video/optical-disc features are
+# disabled the same way as on macOS, plus the Windows-specific video output
+# and hwaccel backends (d3d11, direct3d/D3D9, gl/gl-win32/
 # gl-dxinterop, vaapi/vaapi-win32, vdpau, egl-angle, caca, d3d-hwaccel/
 # d3d9-hwaccel) which would otherwise auto-enable and pull video/vaapi.c
 # via video/out/d3d11/context.h -- triggering a DXGI_DEBUG_D3D11 redefinition
@@ -96,7 +97,7 @@ meson setup build \
     -Dbuildtype=release \
     -Dvapoursynth=disabled \
     -Djavascript=disabled \
-    -Dlua=disabled \
+    -Dlua=enabled \
     -Dlibbluray=disabled \
     -Ddvdnav=disabled \
     -Dcdda=disabled \
@@ -166,16 +167,31 @@ foreach ($line in $lddRaw) {
 Write-Host "-> Copied $($copiedDlls.Count) mingw DLLs alongside mpv.exe"
 $copiedDlls | Sort-Object | ForEach-Object { Write-Host "    $_" }
 
+# luajit (mingw-w64-x86_64-luajit) ships as lua51.dll; mpv links it dynamically
+# so the generic ldd walk above should have carried it. Fail loud if it didn't:
+# without it the kamp_fade.lua script never loads and pause/stop/resume become
+# silent no-ops (KAMP-519) -- a regression that is invisible until you press a
+# transport button in the packaged app.
+if (-not ($copiedDlls -contains "lua51.dll")) {
+    throw "lua51.dll was not bundled -- luajit missing from mpv.exe import table. Lua scripting (kamp_fade.lua) would not load; pause/stop/resume would be no-ops (KAMP-519)."
+}
+
 # Smoke test: a sibling-DLL layout problem would surface here as a
 # 0xc0000135 ("DLL not found") exit code. This is the Windows analog of
-# the macOS Homebrew-leak audit.
+# the macOS Homebrew-leak audit. Also assert luajit is among the compiled-in
+# features so a future -Dlua regression fails the build, not the user.
 Write-Host "==> Smoke-testing mpv.exe --version from staged directory"
 Push-Location $out
 try {
-    & .\mpv.exe --version | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" }
+    $versionOut = & .\mpv.exe --version
     if ($LASTEXITCODE -ne 0) {
         throw "mpv.exe --version exited with code $LASTEXITCODE -- check that all transitive DLLs were copied"
     }
+    $versionOut | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" }
+    if (-not ($versionOut | Select-String -Pattern "luajit" -Quiet)) {
+        throw "Built mpv.exe does not list luajit in its enabled features -- Lua scripting is off (KAMP-519). Check -Dlua=enabled and that luajit was installed."
+    }
+    Write-Host "-> Verified luajit is in mpv.exe's enabled features"
 }
 finally {
     Pop-Location

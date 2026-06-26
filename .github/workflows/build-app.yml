@@ -102,7 +102,7 @@ jobs:
         # _AVCaptureDeviceTypeContinuityCamera symbol in libavdevice, which causes
         # dyld to abort on macOS 13.
         run: |
-          brew install dylibbundler meson ninja libass vulkan-headers
+          brew install dylibbundler meson ninja libass vulkan-headers luajit
           # Build FFmpeg from source outside Homebrew on both architectures.
           # Homebrew's sonoma bottle targets macOS 14.0 on both arm64 and x86_64,
           # causing dyld to abort on macOS 13. Building manually with
@@ -165,7 +165,7 @@ jobs:
             -Dbuildtype=release \
             -Dvapoursynth=disabled \
             -Djavascript=disabled \
-            -Dlua=disabled \
+            -Dlua=enabled \
             -Dlibbluray=disabled \
             -Ddvdnav=disabled \
             -Dcdda=disabled \
@@ -222,14 +222,26 @@ jobs:
             exit 1
           fi
           echo "OK: mpv and bundled dylibs are clean"
-          echo "→ Verifying no VapourSynth or LuaJIT in bundle:"
-          UNWANTED=$(ls kamp_ui/resources/mpv-libs/ | grep -E 'vapoursynth|luajit' || true)
+          echo "→ Verifying no VapourSynth in bundle:"
+          # VapourSynth embeds a Python.framework that dylibbundler cannot
+          # relocate cleanly (the reason for the audio-only source build); it
+          # must never appear. luajit is NOT checked here anymore — it is now
+          # required (see below): pause/stop/resume run inside kamp_fade.lua,
+          # which only loads if mpv has Lua support (KAMP-519).
+          UNWANTED=$(ls kamp_ui/resources/mpv-libs/ | grep -E 'vapoursynth' || true)
           if [ -n "$UNWANTED" ]; then
             echo "$UNWANTED"
-            echo "ERROR: non-audio dylibs found in mpv-libs — check meson feature flags" >&2
+            echo "ERROR: VapourSynth dylibs found in mpv-libs — check meson feature flags" >&2
             exit 1
           fi
-          echo "OK: no non-audio dylibs in bundle"
+          echo "OK: no VapourSynth dylibs in bundle"
+          echo "→ Verifying luajit IS bundled (required for kamp_fade.lua / transport controls):"
+          if ! ls kamp_ui/resources/mpv-libs/ | grep -q luajit; then
+            ls kamp_ui/resources/mpv-libs/
+            echo "ERROR: no luajit dylib in mpv-libs — Lua scripting is off, so pause/stop/resume would be silent no-ops (KAMP-519). Check -Dlua=enabled and that luajit was installed." >&2
+            exit 1
+          fi
+          echo "OK: luajit is bundled"
           echo "→ Verifying no Swift system dylibs were bundled:"
           SWIFT_LIBS=$(ls kamp_ui/resources/mpv-libs/ | grep '^libswift' || true)
           if [ -n "$SWIFT_LIBS" ]; then

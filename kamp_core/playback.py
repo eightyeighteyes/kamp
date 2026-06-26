@@ -976,6 +976,14 @@ def _make_ipc_transport() -> _IPCTransport:
 # mpv's playlist triggers an immediate gapless EOF, stopping time-pos events.
 _GAPLESS_GUARD_SECS: float = 10.0
 
+# Fade duration in seconds. Must match the duration= set on the @kampfade afade
+# filter in _start_mpv (the Lua re-arms start_time/type, not duration, at runtime).
+_FADE_SECS = 0.15
+
+# Lua script that drives click-free pause/stop/resume fades inside mpv's event loop.
+# See kamp_core/kamp_fade.lua for implementation and rationale.
+_FADE_SCRIPT = Path(__file__).parent / "kamp_fade.lua"
+
 # Properties to observe from mpv for state tracking
 _OBSERVED: list[tuple[int, str]] = [
     (1, "time-pos"),
@@ -1098,6 +1106,7 @@ class MpvPlaybackEngine:
                 "--idle=yes",
                 "--really-quiet",
                 f"--input-ipc-server={self._ipc.server_arg}",
+                f"--script={_FADE_SCRIPT}",
                 # Prevent mpv from intercepting media keys via its IOKit HID tap.
                 # Media key events are now handled by the Electron now-playing-helper
                 # subprocess via MPRemoteCommandCenter (registered by the process
@@ -1111,6 +1120,13 @@ class MpvPlaybackEngine:
                 # byte length computed from _LEVEL_FILTER_GRAPH so it stays
                 # accurate if the filter string ever changes.
                 f"--af=lavfi=graph=%{len(_LEVEL_FILTER_GRAPH)}%{_LEVEL_FILTER_GRAPH}",
+                # Persistent afade gain stage for click-free pause/stop/resume fades,
+                # appended AFTER the analysis chain so the ametadata parser is untouched.
+                # Parked at unity (start_time far in the future); the kamp_fade.lua
+                # script re-arms type/start_time via af-command. afade interpolates the
+                # gain per-sample (curve=hsin raised cosine) -- no zipper. See _FADE_LUA.
+                "--af-append=@kampfade:lavfi=[afade=type=out:curve=hsin:"
+                f"start_time=1000000000:duration={_FADE_SECS}]",
             ],
             stdout=subprocess.PIPE,
             # Capture stderr so we can surface it if mpv fails to start.
@@ -1375,10 +1391,10 @@ class MpvPlaybackEngine:
         return self._lookahead_path is not None or self._lookahead_url is not None
 
     def pause(self) -> None:
-        self._send_command("set_property", "pause", True)
+        self._send_command("script-message", "kamp-pause")
 
     def resume(self) -> None:
-        self._send_command("set_property", "pause", False)
+        self._send_command("script-message", "kamp-resume")
 
     def seek(self, position: float) -> None:
         # Hold _lock so this check+clear is atomic with the end-file handler's
@@ -1410,8 +1426,8 @@ class MpvPlaybackEngine:
         # Pause and seek to the beginning rather than unloading the file.
         # mpv's "stop" command unloads the file, making resume() a no-op.
         # Pausing + seeking keeps the track loaded so play() via resume() works.
-        self._send_command("set_property", "pause", True)
-        self._send_command("seek", 0, "absolute")
+        # The seek is issued by the Lua kamp-stop handler after the fade completes.
+        self._send_command("script-message", "kamp-stop")
 
     def unload(self) -> None:
         # Fully unload the current file from mpv using mpv's "stop" command.

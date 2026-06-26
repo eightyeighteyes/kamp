@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from kamp_core.library import Track
+from kamp_core import playback as playback_module
 from kamp_core.playback import (
     MpvPlaybackEngine,
     PlaybackQueue,
@@ -1307,15 +1308,33 @@ class TestMpvPlaybackEngine:
         engine.play(Path("/music/01.mp3"))
         send.assert_any_call("set_property", "pause", False)
 
-    def test_pause_sets_pause_true(self) -> None:
+    def test_pause_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.pause()
-        send.assert_called_once_with("set_property", "pause", True)
+        send.assert_called_once_with("script-message", "kamp-pause")
 
-    def test_resume_sets_pause_false(self) -> None:
+    def test_resume_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.resume()
-        send.assert_called_once_with("set_property", "pause", False)
+        send.assert_called_once_with("script-message", "kamp-resume")
+
+    def test_fade_lua_drives_afade_filter_not_volume(self) -> None:
+        # The fade must be a per-sample afade gain stage driven by af-command, NOT a
+        # volume-property ramp. Ramping the volume property steps the gain per audio
+        # frame (zipper noise) and stranded the volume at silence on rapid pause/resume.
+        # This guards against regressing to that approach.
+        lua = playback_module._FADE_SCRIPT.read_text()
+        assert "af-command" in lua
+        # The af-command must address the filter by its BARE label and route to the
+        # inner ffmpeg instance name; "@kampfade"/"all" silently fail (verified against
+        # mpv 0.41 / ffmpeg 8.1) and were the cause of the "timer, not a fade" bug.
+        assert 'LABEL = "kampfade"' in lua
+        assert 'TARGET = "afade"' in lua
+        assert "audio-pts" in lua
+        # afade is re-armed by rewriting start_time, never by setting the volume property.
+        assert "start_time" in lua
+        assert 'set_property_number("volume"' not in lua
+        assert 'set_property("volume"' not in lua
 
     def test_seek_sends_seek_command(self) -> None:
         engine, send = _make_engine()
@@ -1393,11 +1412,10 @@ class TestMpvPlaybackEngine:
         engine.volume = 75
         send.assert_called_once_with("set_property", "volume", 75)
 
-    def test_stop_pauses_and_seeks_to_start(self) -> None:
+    def test_stop_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.stop()
-        send.assert_any_call("set_property", "pause", True)
-        send.assert_any_call("seek", 0, "absolute")
+        send.assert_called_once_with("script-message", "kamp-stop")
 
     def test_load_paused_loads_and_pauses(self) -> None:
         engine, send = _make_engine()

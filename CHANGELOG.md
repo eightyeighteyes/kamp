@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.25.0](https://github.com/eightyeighteyes/kamp/compare/v1.24.0...v1.25.0) (2026-06-27)
+
+
+### Features
+
+* **library:** sort by release date (KAMP-512) ([#601](https://github.com/eightyeighteyes/kamp/issues/601)) ([c783eee](https://github.com/eightyeighteyes/kamp/commit/c783eeed629796a7d2a36b391e2079fcf6c1c44a))
+* **queue:** album card double-click, straddle track drag, toggle relocation (KAMP-498) ([#593](https://github.com/eightyeighteyes/kamp/issues/593)) ([bd660ff](https://github.com/eightyeighteyes/kamp/commit/bd660ff4bb3468f6a33ed9e08636cbbbe9e5a508))
+* **queue:** album-aware shuffle in album view (KAMP-499) ([#594](https://github.com/eightyeighteyes/kamp/issues/594)) ([90eb4dc](https://github.com/eightyeighteyes/kamp/commit/90eb4dc54625ce2e2e1b90138b5499451df34a87))
+* **queue:** discoverable album view toggle (KAMP-492) ([#587](https://github.com/eightyeighteyes/kamp/issues/587)) ([b6dd573](https://github.com/eightyeighteyes/kamp/commit/b6dd57355963dc0287d08e5fe284c11ac28781cd))
+* **queue:** show now-playing album card in album view (KAMP-493) ([#592](https://github.com/eightyeighteyes/kamp/issues/592)) ([dfb06e3](https://github.com/eightyeighteyes/kamp/commit/dfb06e39812287518559dfcea4899b38b2ef4296))
+* **ui:** add Discord logo to the Join Discord button in Preferences ([#605](https://github.com/eightyeighteyes/kamp/issues/605)) ([b068f95](https://github.com/eightyeighteyes/kamp/commit/b068f95ddc04223aa472da0b47f3210afdbc838c))
+* **ui:** color palette theme picker with 7 band-named themes (KAMP-504) ([#597](https://github.com/eightyeighteyes/kamp/issues/597)) ([6e4c5ef](https://github.com/eightyeighteyes/kamp/commit/6e4c5ef62b4477418a72f64463a9870532451223))
+* **ui:** hover-to-favorite button on track rows (KAMP-509) ([#600](https://github.com/eightyeighteyes/kamp/issues/600)) ([68fc959](https://github.com/eightyeighteyes/kamp/commit/68fc959e6f361e4636bb61bb31567be267d4103e))
+* **ui:** multi-track selection in album TrackList (KAMP-514) ([#602](https://github.com/eightyeighteyes/kamp/issues/602)) ([491c5ac](https://github.com/eightyeighteyes/kamp/commit/491c5aca8fd05e27d0f8ab298e3321939ae38612))
+* **ui:** style rail with palette toggle for dynamic style settings (KAMP-505) ([#596](https://github.com/eightyeighteyes/kamp/issues/596)) ([8bf93c4](https://github.com/eightyeighteyes/kamp/commit/8bf93c41be42a750edca48b34eacf98cdcf11eb3))
+* **ui:** zoom shortcuts, view menu cleanup, and display scaling constraints (KAMP-516) ([#598](https://github.com/eightyeighteyes/kamp/issues/598)) ([65715e7](https://github.com/eightyeighteyes/kamp/commit/65715e763bad4f0bd925dfdb270c8b7390eb83ea))
+
+
+### Bug Fixes
+
+* **build:** re-enable Lua in bundled mpv so transport controls work (KAMP-519) ([#604](https://github.com/eightyeighteyes/kamp/issues/604)) ([700f232](https://github.com/eightyeighteyes/kamp/commit/700f2326c1e07ee47accf11f0afa8c006079c046))
+* **config:** add release_date to ui.sort_order allowed values ([#608](https://github.com/eightyeighteyes/kamp/issues/608)) ([d223fe6](https://github.com/eightyeighteyes/kamp/commit/d223fe62e1422a5ec9089fe35e65f775570be195))
+* **queue:** album cards accept external drops between albums ([#589](https://github.com/eightyeighteyes/kamp/issues/589)) ([28efca1](https://github.com/eightyeighteyes/kamp/commit/28efca1804b51612454390833a24720203758387))
+* **queue:** album view groups by contiguous run, not album identity ([#590](https://github.com/eightyeighteyes/kamp/issues/590)) ([0536fad](https://github.com/eightyeighteyes/kamp/commit/0536fadc36483db5e07c219f178a5414a2d18e1c))
+* **queue:** correct computeNewOrder insert position for downward drags (KAMP-494) ([#591](https://github.com/eightyeighteyes/kamp/issues/591)) ([f17fdfe](https://github.com/eightyeighteyes/kamp/commit/f17fdfed9d72b0444913aee0ee03dcbc36a12eaf))
+* **queue:** unbind Escape from dismissing album grouping mode (KAMP-502) ([#595](https://github.com/eightyeighteyes/kamp/issues/595)) ([938b0c0](https://github.com/eightyeighteyes/kamp/commit/938b0c027b10c783c83546ea3e8624e83ae0b12b))
+* **ui:** widen album lookup predicate to match display_album after rename (KAMP-503) ([#599](https://github.com/eightyeighteyes/kamp/issues/599)) ([92f0101](https://github.com/eightyeighteyes/kamp/commit/92f01013f57134c984a2d1cce5f2ff92c3f5aae5))
+
 ## [1.24.0](https://github.com/eightyeighteyes/kamp/compare/v1.23.0...v1.24.0) (2026-06-18)
 
 

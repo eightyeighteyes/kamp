@@ -462,7 +462,7 @@ jobs:
       - name: Cache electron-builder binaries
         # electron-builder downloads dmgbuild and other native helpers on first run.
         # Caching avoids transient network failures and speeds up subsequent builds.
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v5
         with:
           path: ~/Library/Caches/electron-builder
           key: electron-builder-cache-${{ matrix.arch }}-${{ hashFiles('kamp_ui/package-lock.json') }}
@@ -697,7 +697,7 @@ jobs:
           Write-Host "OK: bundle layout intact ($($required.Count) required paths present)"
 
       - name: Cache electron-builder binaries
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v5
         with:
           path: ~\AppData\Local\electron-builder\Cache
           key: electron-builder-cache-win-x64-${{ hashFiles('kamp_ui/package-lock.json') }}

@@ -100,9 +100,16 @@ def _item(
 
 def _stream_album_page_html(
     tracks: list[dict[str, Any]] | None = None,
-    release_date: str = "01 Jan 2020 00:00:00 GMT",
+    release_date: str | None = "01 Jan 2020 00:00:00 GMT",
+    item_type: str | None = None,
+    current: dict[str, Any] | None = None,
 ) -> str:
-    """Build fake album page HTML with data-tralbum for fetch_album_tracks tests."""
+    """Build fake album page HTML with data-tralbum for fetch_album_tracks tests.
+
+    ``item_type='track'`` plus ``current`` model a standalone single-track page,
+    where ``trackinfo`` carries one entry with ``track_num=None`` and the release
+    date lives in ``current.release_date`` rather than ``album_release_date``.
+    """
     import html as _html
     import json as _json
 
@@ -111,7 +118,14 @@ def _stream_album_page_html(
             {"title": f"Track {i}", "track_num": i, "artist": None, "duration": 200.0}
             for i in range(1, 4)
         ]
-    tralbum = {"trackinfo": tracks, "album_release_date": release_date}
+    tralbum: dict[str, Any] = {
+        "trackinfo": tracks,
+        "album_release_date": release_date,
+    }
+    if item_type is not None:
+        tralbum["item_type"] = item_type
+    if current is not None:
+        tralbum["current"] = current
     encoded = _html.escape(_json.dumps(tralbum), quote=True)
     return f'<html><body data-tralbum="{encoded}"></body></html>'
 
@@ -1523,9 +1537,8 @@ class TestDownloadItem:
             with patch("kamp_daemon.bandcamp._resolve_cdn_redirect") as mock_resolve:
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: (
-                        calls.append((url, sess)),
-                        dest.write_bytes(b"fake"),
+                    side_effect=lambda url, dest, sess, fmt: (
+                        calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
                     ),
                 ):
                     _download_item(
@@ -1553,9 +1566,8 @@ class TestDownloadItem:
             ) as mock_resolve:
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: (
-                        calls.append((url, sess)),
-                        dest.write_bytes(b"fake"),
+                    side_effect=lambda url, dest, sess, fmt: (
+                        calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
                     ),
                 ):
                     _download_item(
@@ -1602,7 +1614,9 @@ class TestDownloadItem:
             ):
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: dest.write_bytes(b"x"),
+                    side_effect=lambda url, dest, sess, fmt: dest.with_name(
+                        dest.name + ".zip"
+                    ),
                 ):
                     path = _download_item(
                         item, _bc_config(tmp_path), watch_folder, MagicMock()
@@ -1628,13 +1642,16 @@ class TestDownloadFile:
         return resp
 
     def test_writes_chunked_response_to_dest(self, tmp_path: Path) -> None:
-        dest = tmp_path / "album.zip"
+        dest_base = tmp_path / "album"
         session = MagicMock()
         session.get.return_value = self._make_resp([_FAKE_ZIP])
 
-        _download_file("https://cdn.example.com/f.zip", dest, session)
+        final = _download_file(
+            "https://cdn.example.com/f.zip", dest_base, session, "mp3-v0"
+        )
 
-        assert dest.read_bytes() == _FAKE_ZIP
+        assert final == tmp_path / "album.zip"
+        assert final.read_bytes() == _FAKE_ZIP
         session.get.assert_called_once_with(
             "https://cdn.example.com/f.zip",
             stream=True,
@@ -1644,18 +1661,52 @@ class TestDownloadFile:
 
     def test_renames_from_part_file(self, tmp_path: Path) -> None:
         """Download writes to .part first, then renames — no partial file visible."""
-        dest = tmp_path / "album.zip"
+        dest_base = tmp_path / "album"
         session = MagicMock()
         session.get.return_value = self._make_resp([_FAKE_ZIP])
 
-        _download_file("https://cdn.example.com/f.zip", dest, session)
+        _download_file("https://cdn.example.com/f.zip", dest_base, session, "mp3-v0")
 
-        assert dest.exists()
-        assert not (tmp_path / "album.zip.part").exists()
+        assert (tmp_path / "album.zip").exists()
+        assert not (tmp_path / "album.part").exists()
+
+    def test_single_track_saved_as_audio_file(self, tmp_path: Path) -> None:
+        """A bare audio response (single-track purchase) is saved with an audio
+        extension, not .zip (KAMP-526)."""
+        dest_base = tmp_path / "Ohm Foam - Gush"
+        session = MagicMock()
+        session.get.return_value = self._make_resp(
+            [b"ID3\x03\x00\x00\x00" + b"\x00" * 16], content_type="audio/mpeg"
+        )
+
+        final = _download_file(
+            "https://cdn.example.com/track?enc=mp3-v0", dest_base, session, "mp3-v0"
+        )
+
+        assert final == tmp_path / "Ohm Foam - Gush.mp3"
+        assert final.exists()
+        assert not (tmp_path / "Ohm Foam - Gush.part").exists()
+
+    def test_single_track_extension_from_format_when_content_type_generic(
+        self, tmp_path: Path
+    ) -> None:
+        """When the audio Content-Type is unrecognised, the configured format
+        drives the extension (KAMP-526)."""
+        dest_base = tmp_path / "Artist - Song"
+        session = MagicMock()
+        session.get.return_value = self._make_resp(
+            [b"fLaC\x00\x00\x00\x22"], content_type="application/octet-stream"
+        )
+
+        final = _download_file(
+            "https://cdn.example.com/track?enc=flac", dest_base, session, "flac"
+        )
+
+        assert final == tmp_path / "Artist - Song.flac"
 
     def test_cleans_up_part_file_on_error(self, tmp_path: Path) -> None:
         """On download failure the .part file is removed."""
-        dest = tmp_path / "album.zip"
+        dest_base = tmp_path / "album"
         resp = MagicMock()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
@@ -1665,25 +1716,31 @@ class TestDownloadFile:
         session.get.return_value = resp
 
         with pytest.raises(RuntimeError):
-            _download_file("https://cdn.example.com/f.zip", dest, session)
+            _download_file(
+                "https://cdn.example.com/f.zip", dest_base, session, "mp3-v0"
+            )
 
-        assert not dest.exists()
-        assert not (tmp_path / "album.zip.part").exists()
+        assert not (tmp_path / "album.zip").exists()
+        assert not (tmp_path / "album.part").exists()
 
-    def test_raises_when_cdn_returns_non_zip(self, tmp_path: Path) -> None:
-        """Non-ZIP CDN response (e.g. HTML error page) raises BandcampAPIError."""
-        dest = tmp_path / "album.zip"
+    def test_raises_when_cdn_returns_neither_zip_nor_audio(
+        self, tmp_path: Path
+    ) -> None:
+        """An HTML error page (neither ZIP nor audio) raises BandcampAPIError."""
+        dest_base = tmp_path / "album"
         html_body = b"<html>Error: access denied</html>"
         session = MagicMock()
         session.get.return_value = self._make_resp(
             [html_body], content_type="text/html"
         )
 
-        with pytest.raises(BandcampAPIError, match="not a ZIP"):
-            _download_file("https://cdn.example.com/f.zip", dest, session)
+        with pytest.raises(BandcampAPIError, match="neither a ZIP nor audio"):
+            _download_file(
+                "https://cdn.example.com/f.zip", dest_base, session, "mp3-v0"
+            )
 
-        assert not dest.exists()
-        assert not (tmp_path / "album.zip.part").exists()
+        assert not (tmp_path / "album.zip").exists()
+        assert not (tmp_path / "album.part").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -2034,12 +2091,18 @@ class TestResolveCdnRedirect:
 # ---------------------------------------------------------------------------
 
 
-def _album_page_html(tracks: list[dict]) -> str:
-    """Build fake Bandcamp album page HTML with data-tralbum attribute."""
+def _album_page_html(tracks: list[dict], item_type: str | None = None) -> str:
+    """Build fake Bandcamp album page HTML with data-tralbum attribute.
+
+    Pass ``item_type='track'`` to model a standalone single-track page, whose
+    lone ``trackinfo`` entry carries ``track_num=None``.
+    """
     import html as html_lib
     import json
 
-    tralbum = {"trackinfo": tracks}
+    tralbum: dict[str, Any] = {"trackinfo": tracks}
+    if item_type is not None:
+        tralbum["item_type"] = item_type
     encoded = html_lib.escape(json.dumps(tralbum))
     return f'<html><body><div data-tralbum="{encoded}"></div></body></html>'
 
@@ -2117,6 +2180,21 @@ class TestFetchStreamUrl:
 
         with pytest.raises(BandcampAPIError, match="track_num=99 not found"):
             fetch_stream_url(self._album_url, 99, sess)
+
+    def test_resolves_single_track_page_with_null_track_num(self) -> None:
+        """A standalone /track/ page's lone entry has track_num=None; playing the
+        track (indexed as number 1) must still resolve its CDN URL (KAMP-526)."""
+        track_data = [
+            {"track_num": None, "file": {"mp3-v0": "https://cdn.example.com/gush.mp3"}}
+        ]
+        html = _album_page_html(track_data, item_type="track")
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        url, _ = fetch_stream_url("https://ohmfoam.bandcamp.com/track/gush", 1, sess)
+
+        assert url == "https://cdn.example.com/gush.mp3"
 
     def test_uses_ts_plus_24h_as_expires_at(self) -> None:
         """ts= is the URL creation time; expiry is ts + 86400 (Bandcamp's ~24h window)."""
@@ -2867,6 +2945,64 @@ class TestFetchAlbumTracks:
         )
         assert len(result) == 1
         assert result[0].title == "Good"
+
+    def test_single_track_page_indexes_one_track_as_number_1(self) -> None:
+        """A standalone /track/ page (item_type='track') has one trackinfo entry
+        with track_num=None; it must be indexed as track_number 1, not skipped
+        (KAMP-526)."""
+        tracks = [
+            {
+                "title": "Gush",
+                "track_num": None,
+                "artist": None,
+                "duration": 410.9,
+                "file": {"mp3-128": "https://cdn.example.com/gush.mp3"},
+            }
+        ]
+        html = _stream_album_page_html(
+            tracks=tracks,
+            release_date=None,
+            item_type="track",
+            current={"release_date": "29 Jun 2026 00:00:00 GMT"},
+        )
+        result = fetch_album_tracks(
+            "https://ohmfoam.bandcamp.com/track/gush",
+            390616303,
+            "Ohm Foam",
+            "Gush",
+            self._make_session(html),
+        )
+        assert len(result) == 1
+        assert result[0].title == "Gush"
+        assert result[0].track_number == 1
+        # Virtual path carries sale_item_id and the normalised track number.
+        # Path renders bandcamp://.../1 with backslashes on Windows, which
+        # resolve_playback_uri also normalises before parsing — do the same here.
+        normalised_fp = str(result[0].file_path).replace("\\", "/")
+        assert "390616303" in normalised_fp
+        assert normalised_fp.endswith("/1")
+        assert result[0].is_available is True
+
+    def test_single_track_release_date_falls_back_to_current(self) -> None:
+        """When album_release_date is absent, the date comes from
+        current.release_date (KAMP-526)."""
+        tracks = [
+            {"title": "Gush", "track_num": None, "artist": None, "file": {"x": "y"}}
+        ]
+        html = _stream_album_page_html(
+            tracks=tracks,
+            release_date=None,
+            item_type="track",
+            current={"release_date": "29 Jun 2026 00:00:00 GMT"},
+        )
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/track/gush",
+            1,
+            "B",
+            "Gush",
+            self._make_session(html),
+        )
+        assert result[0].release_date == "2026-06-29"
 
     def test_is_available_true_when_file_present(self) -> None:
         """Tracks with a file entry are marked available (KAMP-423)."""

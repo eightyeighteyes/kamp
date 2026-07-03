@@ -1537,9 +1537,8 @@ class TestDownloadItem:
             with patch("kamp_daemon.bandcamp._resolve_cdn_redirect") as mock_resolve:
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: (
-                        calls.append((url, sess)),
-                        dest.write_bytes(b"fake"),
+                    side_effect=lambda url, dest, sess, fmt: (
+                        calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
                     ),
                 ):
                     _download_item(
@@ -1567,9 +1566,8 @@ class TestDownloadItem:
             ) as mock_resolve:
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: (
-                        calls.append((url, sess)),
-                        dest.write_bytes(b"fake"),
+                    side_effect=lambda url, dest, sess, fmt: (
+                        calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
                     ),
                 ):
                     _download_item(
@@ -1616,7 +1614,9 @@ class TestDownloadItem:
             ):
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: dest.write_bytes(b"x"),
+                    side_effect=lambda url, dest, sess, fmt: dest.with_name(
+                        dest.name + ".zip"
+                    ),
                 ):
                     path = _download_item(
                         item, _bc_config(tmp_path), watch_folder, MagicMock()
@@ -1642,13 +1642,16 @@ class TestDownloadFile:
         return resp
 
     def test_writes_chunked_response_to_dest(self, tmp_path: Path) -> None:
-        dest = tmp_path / "album.zip"
+        dest_base = tmp_path / "album"
         session = MagicMock()
         session.get.return_value = self._make_resp([_FAKE_ZIP])
 
-        _download_file("https://cdn.example.com/f.zip", dest, session)
+        final = _download_file(
+            "https://cdn.example.com/f.zip", dest_base, session, "mp3-v0"
+        )
 
-        assert dest.read_bytes() == _FAKE_ZIP
+        assert final == tmp_path / "album.zip"
+        assert final.read_bytes() == _FAKE_ZIP
         session.get.assert_called_once_with(
             "https://cdn.example.com/f.zip",
             stream=True,
@@ -1658,18 +1661,52 @@ class TestDownloadFile:
 
     def test_renames_from_part_file(self, tmp_path: Path) -> None:
         """Download writes to .part first, then renames — no partial file visible."""
-        dest = tmp_path / "album.zip"
+        dest_base = tmp_path / "album"
         session = MagicMock()
         session.get.return_value = self._make_resp([_FAKE_ZIP])
 
-        _download_file("https://cdn.example.com/f.zip", dest, session)
+        _download_file("https://cdn.example.com/f.zip", dest_base, session, "mp3-v0")
 
-        assert dest.exists()
-        assert not (tmp_path / "album.zip.part").exists()
+        assert (tmp_path / "album.zip").exists()
+        assert not (tmp_path / "album.part").exists()
+
+    def test_single_track_saved_as_audio_file(self, tmp_path: Path) -> None:
+        """A bare audio response (single-track purchase) is saved with an audio
+        extension, not .zip (KAMP-526)."""
+        dest_base = tmp_path / "Ohm Foam - Gush"
+        session = MagicMock()
+        session.get.return_value = self._make_resp(
+            [b"ID3\x03\x00\x00\x00" + b"\x00" * 16], content_type="audio/mpeg"
+        )
+
+        final = _download_file(
+            "https://cdn.example.com/track?enc=mp3-v0", dest_base, session, "mp3-v0"
+        )
+
+        assert final == tmp_path / "Ohm Foam - Gush.mp3"
+        assert final.exists()
+        assert not (tmp_path / "Ohm Foam - Gush.part").exists()
+
+    def test_single_track_extension_from_format_when_content_type_generic(
+        self, tmp_path: Path
+    ) -> None:
+        """When the audio Content-Type is unrecognised, the configured format
+        drives the extension (KAMP-526)."""
+        dest_base = tmp_path / "Artist - Song"
+        session = MagicMock()
+        session.get.return_value = self._make_resp(
+            [b"fLaC\x00\x00\x00\x22"], content_type="application/octet-stream"
+        )
+
+        final = _download_file(
+            "https://cdn.example.com/track?enc=flac", dest_base, session, "flac"
+        )
+
+        assert final == tmp_path / "Artist - Song.flac"
 
     def test_cleans_up_part_file_on_error(self, tmp_path: Path) -> None:
         """On download failure the .part file is removed."""
-        dest = tmp_path / "album.zip"
+        dest_base = tmp_path / "album"
         resp = MagicMock()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
@@ -1679,25 +1716,31 @@ class TestDownloadFile:
         session.get.return_value = resp
 
         with pytest.raises(RuntimeError):
-            _download_file("https://cdn.example.com/f.zip", dest, session)
+            _download_file(
+                "https://cdn.example.com/f.zip", dest_base, session, "mp3-v0"
+            )
 
-        assert not dest.exists()
-        assert not (tmp_path / "album.zip.part").exists()
+        assert not (tmp_path / "album.zip").exists()
+        assert not (tmp_path / "album.part").exists()
 
-    def test_raises_when_cdn_returns_non_zip(self, tmp_path: Path) -> None:
-        """Non-ZIP CDN response (e.g. HTML error page) raises BandcampAPIError."""
-        dest = tmp_path / "album.zip"
+    def test_raises_when_cdn_returns_neither_zip_nor_audio(
+        self, tmp_path: Path
+    ) -> None:
+        """An HTML error page (neither ZIP nor audio) raises BandcampAPIError."""
+        dest_base = tmp_path / "album"
         html_body = b"<html>Error: access denied</html>"
         session = MagicMock()
         session.get.return_value = self._make_resp(
             [html_body], content_type="text/html"
         )
 
-        with pytest.raises(BandcampAPIError, match="not a ZIP"):
-            _download_file("https://cdn.example.com/f.zip", dest, session)
+        with pytest.raises(BandcampAPIError, match="neither a ZIP nor audio"):
+            _download_file(
+                "https://cdn.example.com/f.zip", dest_base, session, "mp3-v0"
+            )
 
-        assert not dest.exists()
-        assert not (tmp_path / "album.zip.part").exists()
+        assert not (tmp_path / "album.zip").exists()
+        assert not (tmp_path / "album.part").exists()
 
 
 # ---------------------------------------------------------------------------

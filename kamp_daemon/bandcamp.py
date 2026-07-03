@@ -1318,7 +1318,10 @@ def _download_item(
         )
 
     safe_name = re.sub(r'[<>:"/\\|?*]', "_", f"{band_name} - {item_title}")
-    dest = watch_dir / f"{safe_name}.zip"
+    # No extension yet: full-album purchases download as .zip, standalone
+    # single-track purchases as a bare audio file.  _download_file sniffs the
+    # payload and appends the correct extension (KAMP-526).
+    dest_base = watch_dir / safe_name
 
     logger.info("Downloading %r by %r…", item_title, band_name)
     cdn_url = _get_cdn_url(redownload_url, bc_config.format, session)
@@ -1327,31 +1330,71 @@ def _download_item(
         # Dev mode: the requests.Session carries Bandcamp cookies.
         # popplers5 requires cookies to serve the ZIP; pass the authenticated
         # session directly so requests follows any redirect automatically.
-        _download_file(cdn_url, dest, session)
-    else:
-        # Frozen mode: Electron's net.fetch carries cookies and follows the
-        # popplers5 → bcbits.com redirect via the proxy HEAD call.
-        # Download from bcbits.com directly — its pre-signed URLs need no cookies.
-        final_url = _resolve_cdn_redirect(cdn_url, session)
-        dl_session = _requests.Session()
-        dl_session.headers["User-Agent"] = _UA
-        _download_file(final_url, dest, dl_session)
-    return dest
+        return _download_file(cdn_url, dest_base, session, bc_config.format)
+    # Frozen mode: Electron's net.fetch carries cookies and follows the
+    # popplers5 → bcbits.com redirect via the proxy HEAD call.
+    # Download from bcbits.com directly — its pre-signed URLs need no cookies.
+    final_url = _resolve_cdn_redirect(cdn_url, session)
+    dl_session = _requests.Session()
+    dl_session.headers["User-Agent"] = _UA
+    return _download_file(final_url, dest_base, dl_session, bc_config.format)
+
+
+# Content-Type → file extension for bare audio downloads (single tracks).
+_AUDIO_CONTENT_TYPE_EXT = {
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/flac": ".flac",
+    "audio/x-flac": ".flac",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/aac": ".m4a",
+    "audio/ogg": ".ogg",
+    "audio/vorbis": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+}
+
+# Configured download format → file extension, used as a fallback when the
+# Content-Type header is missing or unrecognised.
+_FORMAT_EXT = {
+    "mp3-v0": ".mp3",
+    "mp3-320": ".mp3",
+    "flac": ".flac",
+    "aac-hi": ".m4a",
+    "alac": ".m4a",
+    "vorbis": ".ogg",
+    "wav": ".wav",
+}
+
+
+def _audio_extension(content_type: str, fmt: str) -> str:
+    """Pick the file extension for a bare-audio download from its Content-Type,
+    falling back to the configured format, then to ``.mp3``."""
+    ct = content_type.split(";")[0].strip().lower()
+    return _AUDIO_CONTENT_TYPE_EXT.get(ct) or _FORMAT_EXT.get(fmt) or ".mp3"
 
 
 def _download_file(
     cdn_url: str,
-    dest: Path,
+    dest_base: Path,
     session: _requests.Session,
-) -> None:
-    """Stream *cdn_url* to *dest*, following redirects.
+    fmt: str,
+) -> Path:
+    """Stream *cdn_url* to a file under *dest_base*, following redirects.
+
+    Full-album purchases arrive as a ZIP; standalone single-track purchases are
+    served as a bare audio file (KAMP-526).  The payload type is detected from
+    the magic bytes and Content-Type, and the file is saved with the matching
+    extension (``.zip`` for albums, ``.mp3``/``.flac``/… for single tracks) so
+    the watch-folder pipeline ingests it correctly.  Returns the final path.
 
     Downloads to a ``*.part`` sibling first, then renames atomically on
     completion.  This keeps the watch-folder watcher from picking up the
     file mid-download — ``.part`` is not a watched extension, so only the
     finished file triggers the ingest pipeline.
     """
-    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp = dest_base.with_name(dest_base.name + ".part")
     try:
         with session.get(
             cdn_url, stream=True, timeout=300, allow_redirects=True
@@ -1368,18 +1411,33 @@ def _download_file(
                 for chunk in resp.iter_content(chunk_size=1024 * 1024):
                     fh.write(chunk)
 
-        # Guard against CDN returning an HTML error page with HTTP 200.
-        # ZIP files always start with the PK local-file magic (0x50 0x4B 0x03 0x04).
         with open(tmp, "rb") as fh:
             magic = fh.read(4)
-        if not magic.startswith(b"PK"):
+        ct = content_type.split(";")[0].strip().lower()
+        if magic.startswith(b"PK"):
+            # ZIP local-file magic (0x50 0x4B 0x03 0x04) — a full-album download.
+            final = dest_base.with_name(dest_base.name + ".zip")
+        elif (
+            ct.startswith("audio/")
+            or magic[:3] == b"ID3"
+            or magic[:4] == b"fLaC"
+            or magic[:1] == b"\xff"
+        ):
+            # Bare audio file — a standalone single-track purchase.
+            final = dest_base.with_name(
+                dest_base.name + _audio_extension(content_type, fmt)
+            )
+        else:
+            # Neither ZIP nor audio: the CDN served an HTML error page with
+            # HTTP 200 (e.g. missing cookies on popplers5).
             raise BandcampAPIError(
-                f"CDN response is not a ZIP file "
+                f"CDN response is neither a ZIP nor audio "
                 f"(first-bytes={magic!r}, content-type={content_type!r}) — "
                 f"url={cdn_url}"
             )
 
-        tmp.rename(dest)
+        tmp.rename(final)
+        return final
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

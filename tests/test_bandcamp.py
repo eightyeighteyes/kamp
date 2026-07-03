@@ -2976,8 +2976,11 @@ class TestFetchAlbumTracks:
         assert result[0].title == "Gush"
         assert result[0].track_number == 1
         # Virtual path carries sale_item_id and the normalised track number.
-        assert "390616303" in str(result[0].file_path)
-        assert str(result[0].file_path).endswith("/1")
+        # Path renders bandcamp://.../1 with backslashes on Windows, which
+        # resolve_playback_uri also normalises before parsing — do the same here.
+        normalised_fp = str(result[0].file_path).replace("\\", "/")
+        assert "390616303" in normalised_fp
+        assert normalised_fp.endswith("/1")
         assert result[0].is_available is True
 
     def test_single_track_release_date_falls_back_to_current(self) -> None:

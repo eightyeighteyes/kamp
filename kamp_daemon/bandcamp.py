@@ -1045,8 +1045,14 @@ def fetch_stream_url(
     tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
     tracks: list[dict[str, Any]] = tralbum.get("trackinfo") or []
 
+    # A standalone single-track page exposes its lone track with track_num=None;
+    # it is indexed as #1 by fetch_album_tracks, so match it the same way here
+    # (KAMP-526).  The is_single guard keeps multi-track album track 1 unaffected.
+    is_single = tralbum.get("item_type") == "track"
+
     for t in tracks:
-        if t.get("track_num") == track_number:
+        page_track_num = t.get("track_num") or (1 if is_single else None)
+        if page_track_num == track_number:
             files: dict[str, Any] = t.get("file") or {}
             url = files.get("mp3-v0") or files.get("mp3-128")
             if not url:
@@ -1102,8 +1108,18 @@ def fetch_album_tracks(
     tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
     trackinfo: list[dict[str, Any]] = tralbum.get("trackinfo") or []
 
+    # Standalone single-track purchases (item_type='track') expose their lone
+    # track with track_num=None and carry the release date under current rather
+    # than album_release_date.  Normalise both so the track is indexed as #1 and
+    # dated correctly instead of being silently dropped (KAMP-526).
+    is_single_track = tralbum.get("item_type") == "track"
+
     # Parse the release date string (e.g. "01 Jan 2020 00:00:00 GMT") to ISO form.
-    raw_release_date = str(tralbum.get("album_release_date") or "")
+    raw_release_date = str(
+        tralbum.get("album_release_date")
+        or (tralbum.get("current") or {}).get("release_date")
+        or ""
+    )
     parsed_date = email.utils.parsedate(raw_release_date)
     if parsed_date:
         release_date_iso = time.strftime("%Y-%m-%d", parsed_date)
@@ -1113,7 +1129,7 @@ def fetch_album_tracks(
 
     result: list[Track] = []
     for t in trackinfo:
-        track_num = t.get("track_num")
+        track_num = t.get("track_num") or (1 if is_single_track else None)
         if not track_num:
             continue
         # Per-track artist field is set on compilations/splits; fall back to band_name.

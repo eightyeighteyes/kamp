@@ -100,9 +100,16 @@ def _item(
 
 def _stream_album_page_html(
     tracks: list[dict[str, Any]] | None = None,
-    release_date: str = "01 Jan 2020 00:00:00 GMT",
+    release_date: str | None = "01 Jan 2020 00:00:00 GMT",
+    item_type: str | None = None,
+    current: dict[str, Any] | None = None,
 ) -> str:
-    """Build fake album page HTML with data-tralbum for fetch_album_tracks tests."""
+    """Build fake album page HTML with data-tralbum for fetch_album_tracks tests.
+
+    ``item_type='track'`` plus ``current`` model a standalone single-track page,
+    where ``trackinfo`` carries one entry with ``track_num=None`` and the release
+    date lives in ``current.release_date`` rather than ``album_release_date``.
+    """
     import html as _html
     import json as _json
 
@@ -111,7 +118,14 @@ def _stream_album_page_html(
             {"title": f"Track {i}", "track_num": i, "artist": None, "duration": 200.0}
             for i in range(1, 4)
         ]
-    tralbum = {"trackinfo": tracks, "album_release_date": release_date}
+    tralbum: dict[str, Any] = {
+        "trackinfo": tracks,
+        "album_release_date": release_date,
+    }
+    if item_type is not None:
+        tralbum["item_type"] = item_type
+    if current is not None:
+        tralbum["current"] = current
     encoded = _html.escape(_json.dumps(tralbum), quote=True)
     return f'<html><body data-tralbum="{encoded}"></body></html>'
 
@@ -2034,12 +2048,18 @@ class TestResolveCdnRedirect:
 # ---------------------------------------------------------------------------
 
 
-def _album_page_html(tracks: list[dict]) -> str:
-    """Build fake Bandcamp album page HTML with data-tralbum attribute."""
+def _album_page_html(tracks: list[dict], item_type: str | None = None) -> str:
+    """Build fake Bandcamp album page HTML with data-tralbum attribute.
+
+    Pass ``item_type='track'`` to model a standalone single-track page, whose
+    lone ``trackinfo`` entry carries ``track_num=None``.
+    """
     import html as html_lib
     import json
 
-    tralbum = {"trackinfo": tracks}
+    tralbum: dict[str, Any] = {"trackinfo": tracks}
+    if item_type is not None:
+        tralbum["item_type"] = item_type
     encoded = html_lib.escape(json.dumps(tralbum))
     return f'<html><body><div data-tralbum="{encoded}"></div></body></html>'
 
@@ -2117,6 +2137,21 @@ class TestFetchStreamUrl:
 
         with pytest.raises(BandcampAPIError, match="track_num=99 not found"):
             fetch_stream_url(self._album_url, 99, sess)
+
+    def test_resolves_single_track_page_with_null_track_num(self) -> None:
+        """A standalone /track/ page's lone entry has track_num=None; playing the
+        track (indexed as number 1) must still resolve its CDN URL (KAMP-526)."""
+        track_data = [
+            {"track_num": None, "file": {"mp3-v0": "https://cdn.example.com/gush.mp3"}}
+        ]
+        html = _album_page_html(track_data, item_type="track")
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        url, _ = fetch_stream_url("https://ohmfoam.bandcamp.com/track/gush", 1, sess)
+
+        assert url == "https://cdn.example.com/gush.mp3"
 
     def test_uses_ts_plus_24h_as_expires_at(self) -> None:
         """ts= is the URL creation time; expiry is ts + 86400 (Bandcamp's ~24h window)."""
@@ -2867,6 +2902,61 @@ class TestFetchAlbumTracks:
         )
         assert len(result) == 1
         assert result[0].title == "Good"
+
+    def test_single_track_page_indexes_one_track_as_number_1(self) -> None:
+        """A standalone /track/ page (item_type='track') has one trackinfo entry
+        with track_num=None; it must be indexed as track_number 1, not skipped
+        (KAMP-526)."""
+        tracks = [
+            {
+                "title": "Gush",
+                "track_num": None,
+                "artist": None,
+                "duration": 410.9,
+                "file": {"mp3-128": "https://cdn.example.com/gush.mp3"},
+            }
+        ]
+        html = _stream_album_page_html(
+            tracks=tracks,
+            release_date=None,
+            item_type="track",
+            current={"release_date": "29 Jun 2026 00:00:00 GMT"},
+        )
+        result = fetch_album_tracks(
+            "https://ohmfoam.bandcamp.com/track/gush",
+            390616303,
+            "Ohm Foam",
+            "Gush",
+            self._make_session(html),
+        )
+        assert len(result) == 1
+        assert result[0].title == "Gush"
+        assert result[0].track_number == 1
+        # Virtual path carries sale_item_id and the normalised track number.
+        assert "390616303" in str(result[0].file_path)
+        assert str(result[0].file_path).endswith("/1")
+        assert result[0].is_available is True
+
+    def test_single_track_release_date_falls_back_to_current(self) -> None:
+        """When album_release_date is absent, the date comes from
+        current.release_date (KAMP-526)."""
+        tracks = [
+            {"title": "Gush", "track_num": None, "artist": None, "file": {"x": "y"}}
+        ]
+        html = _stream_album_page_html(
+            tracks=tracks,
+            release_date=None,
+            item_type="track",
+            current={"release_date": "29 Jun 2026 00:00:00 GMT"},
+        )
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/track/gush",
+            1,
+            "B",
+            "Gush",
+            self._make_session(html),
+        )
+        assert result[0].release_date == "2026-06-29"
 
     def test_is_available_true_when_file_present(self) -> None:
         """Tracks with a file entry are marked available (KAMP-423)."""

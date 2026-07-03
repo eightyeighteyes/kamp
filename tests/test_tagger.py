@@ -31,8 +31,10 @@ from kamp_daemon.tagger import (
     read_release_mbids,
     read_track_metadata_from_file,
     tag_directory,
+    write_sale_item_id,
     write_tags_from_track_metadata,
 )
+from kamp_core.library import _read_mp3_tags
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2160,3 +2162,68 @@ class TestLookupReleasesFromTracks:
 
         # Only one call — the empty-title track is skipped.
         assert mock_rec.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# KAMP-523: provenance tag (write_sale_item_id)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSaleItemId:
+    def test_mp3_roundtrip_through_scanner(self, tmp_path: Path) -> None:
+        # End-to-end proof: what the tagger stamps is what the scanner reads back
+        # into Track.sale_item_id and uses to link by identity.
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        write_sale_item_id(mp3, "389857692")
+        assert _read_mp3_tags(mp3).sale_item_id == "389857692"
+
+    def test_empty_id_is_noop(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        write_sale_item_id(mp3, "")
+        assert _read_mp3_tags(mp3).sale_item_id == ""
+
+    def test_m4a_sets_freeform_key(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "01.m4a"
+        _make_m4a(m4a)
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = {}
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_mp4):
+            write_sale_item_id(m4a, "S1")
+        stored = mock_mp4.tags["----:com.apple.iTunes:KAMP_SALE_ITEM_ID"][0]
+        assert bytes(stored) == b"S1"
+        mock_mp4.save.assert_called_once()
+
+    def test_flac_sets_vorbis_key(self, tmp_path: Path) -> None:
+        flac = tmp_path / "01.flac"
+        flac.write_bytes(b"fLaC")
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
+            write_sale_item_id(flac, "S2")
+        assert mock_audio.tags["KAMP_SALE_ITEM_ID"] == ["S2"]
+        mock_audio.save.assert_called_once()
+
+    def test_ogg_sets_vorbis_key(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = None  # exercise the add_tags() branch
+
+        def _add_tags() -> None:
+            mock_audio.tags = {}
+
+        mock_audio.add_tags.side_effect = _add_tags
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            write_sale_item_id(ogg, "S3")
+        assert mock_audio.tags["KAMP_SALE_ITEM_ID"] == ["S3"]
+        mock_audio.add_tags.assert_called_once()
+
+    def test_unsupported_format_warns(self, tmp_path: Path) -> None:
+        wav = tmp_path / "01.wav"
+        wav.write_bytes(b"RIFF")
+        # Should not raise — just logs a warning.
+        write_sale_item_id(wav, "S4")

@@ -415,6 +415,12 @@ def sync_new_purchases(
                 added_at=_parse_purchased(item.get("purchased")),
                 num_streamable_tracks=api_streamable,
             )
+            # KAMP-523: hand the download's identity to the ingest pipeline so it
+            # writes the metadata we already own and stamps a provenance tag,
+            # instead of re-deriving identity from tags via MusicBrainz.
+            index.add_pending_ingest(
+                str(path), str(sid), str(item.get("tralbum_id", ""))
+            )
             logger.info(
                 "Downloaded: %s (mode=%s, streamable_tracks=%d)",
                 path.name,
@@ -647,6 +653,9 @@ def download_single_album(
     # by the file watcher will add local tracks, and the albums/tracks queries
     # deduplicate by preferring non-bandcamp:// records when both exist.
     index.set_collection_item_mode(sale_item_id, "local")
+    # KAMP-523: record the download → pipeline provenance handoff (see
+    # sync_new_purchases for the rationale).
+    index.add_pending_ingest(str(dest), sale_item_id, str(item.get("tralbum_id", "")))
 
     if status_callback:
         status_callback("")

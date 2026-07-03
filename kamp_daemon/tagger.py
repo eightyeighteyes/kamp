@@ -505,6 +505,55 @@ def _write_ogg_tags_from_metadata(
     logger.debug("Wrote metadata tags to OGG %s", path)
 
 
+# KAMP-523: the private tag that carries Bandcamp provenance. The scanner reads
+# it back (kamp_core.library._read_*_tags) and links the file to its album by
+# identity, so a download re-attaches to its streaming origin even when the
+# descriptive tags diverge.
+_SALE_ITEM_ID_MP3 = "TXXX:KAMP_SALE_ITEM_ID"
+_SALE_ITEM_ID_M4A = "----:com.apple.iTunes:KAMP_SALE_ITEM_ID"
+_SALE_ITEM_ID_VORBIS = "KAMP_SALE_ITEM_ID"
+
+
+def write_sale_item_id(path: Path, sale_item_id: str) -> None:
+    """Stamp *sale_item_id* into a file's KAMP_SALE_ITEM_ID private tag.
+
+    Written per codec, mirroring the MusicBrainz-ID tag conventions. A no-op
+    for an empty id or an unsupported format (logged, not raised).
+    """
+    if not sale_item_id:
+        return
+    suffix = path.suffix.lower()
+    if suffix == ".mp3":
+        try:
+            tags = id3.ID3(str(path))
+        except Exception:
+            tags = id3.ID3()
+        tags[_SALE_ITEM_ID_MP3] = id3.TXXX(
+            encoding=3, desc="KAMP_SALE_ITEM_ID", text=sale_item_id
+        )
+        tags.save(str(path))
+    elif suffix == ".m4a":
+        audio = mutagen.mp4.MP4(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        assert audio.tags is not None
+        audio.tags[_SALE_ITEM_ID_M4A] = [mutagen.mp4.MP4FreeForm(sale_item_id.encode())]
+        audio.save()
+    elif suffix in (".flac", ".ogg"):
+        audio = (
+            mutagen.flac.FLAC(str(path))
+            if suffix == ".flac"
+            else mutagen.oggvorbis.OggVorbis(str(path))
+        )
+        if audio.tags is None:
+            audio.add_tags()
+        assert audio.tags is not None
+        audio.tags[_SALE_ITEM_ID_VORBIS] = [sale_item_id]
+        audio.save()
+    else:
+        logger.warning("Unsupported format for provenance tag: %s", path)
+
+
 def _lookup_release_by_acoustid(
     audio_files: list[Path],
 ) -> tuple[ReleaseInfo, dict[Path, str]]:

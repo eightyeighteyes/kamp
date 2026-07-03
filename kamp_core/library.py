@@ -1491,7 +1491,19 @@ class LibraryIndex:
             # LEFT UNTOUCHED — auto-merging them risks collapsing genuinely
             # distinct releases (self-titled EPs, VA comps). A one-time DB backup
             # is taken before any merge, and every merge is logged at INFO.
-            self._heal_forked_albums()
+            #
+            # Defense in depth: a heal failure must never brick the DB. If any
+            # merge raises unexpectedly, roll the heal back and continue — the
+            # fork stays un-healed (identity linking still resolves it at runtime
+            # via LIMIT 1) but the database always opens.
+            try:
+                self._heal_forked_albums()
+            except Exception:
+                self._conn.rollback()
+                logger.exception(
+                    "KAMP-523 heal failed — rolled back; forks left for runtime"
+                    " identity linking to resolve"
+                )
             self._create_sale_item_id_unique_index()
             self._conn.execute("UPDATE schema_version SET version = 39")
             self._conn.commit()
@@ -1554,8 +1566,15 @@ class LibraryIndex:
             for drop in ids[1:]:
                 merge_into[drop] = keep
 
-        # (b) A local row that normalizes onto a sale_item_id-bearing row whose
-        #     collection band/title also matches — the classic whitespace fork.
+        # (b) A row WITH NO sale_item_id of its own that normalizes onto a
+        #     sale_item_id-bearing row whose collection band/title also matches —
+        #     the classic whitespace fork (the old code minted an un-provenanced
+        #     local album next to the streaming origin).
+        #
+        # `loc.sale_item_id IS NULL` is load-bearing: a row that carries its OWN
+        # non-null id is a distinct release (Bandcamp ids are 1:1 with releases),
+        # so it must never be folded into a different id's album — doing so would
+        # collapse two genuinely-different purchases that merely share a name.
         # Guarded on the settled band_name/item_title columns (older
         # bandcamp_collection schemas predate them), mirroring the v24 migration.
         bcc_cols = {
@@ -1573,7 +1592,7 @@ class LibraryIndex:
              AND TRIM(loc.album_artist) = TRIM(org.album_artist) COLLATE NOCASE
              AND TRIM(loc.album)        = TRIM(org.album)        COLLATE NOCASE
             JOIN bandcamp_collection bc ON bc.sale_item_id = org.sale_item_id
-            WHERE (loc.sale_item_id IS NULL OR loc.sale_item_id != org.sale_item_id)
+            WHERE loc.sale_item_id IS NULL
               AND TRIM(loc.album_artist) = TRIM(bc.band_name)  COLLATE NOCASE
               AND TRIM(loc.album)        = TRIM(bc.item_title) COLLATE NOCASE
             """).fetchall() if {"band_name", "item_title"} <= bcc_cols else []):
@@ -1611,7 +1630,7 @@ class LibraryIndex:
         whitespace), and recompute albums.source.
         """
         keep_row = self._conn.execute(
-            "SELECT album_artist, artist_id FROM albums WHERE id=?", (keep,)
+            "SELECT album_artist, album, artist_id FROM albums WHERE id=?", (keep,)
         ).fetchone()
         drop_row = self._conn.execute(
             "SELECT artist_id FROM albums WHERE id=?", (drop,)
@@ -1619,6 +1638,7 @@ class LibraryIndex:
         if keep_row is None or drop_row is None:  # pragma: no cover - defensive
             return
         canon = keep_row["album_artist"].strip()
+        keep_album = keep_row["album"]
         keep_artist = keep_row["artist_id"]
         drop_artist = drop_row["artist_id"]
 
@@ -1654,25 +1674,45 @@ class LibraryIndex:
                 (drop_artist, drop_artist),
             )
         # 4. Normalize the surviving names to canonical (trimmed) form so the
-        #    whitespace divergence that forked them cannot recur.
-        self._conn.execute("UPDATE albums SET album_artist=? WHERE id=?", (canon, keep))
-        self._conn.execute(
-            "UPDATE tracks SET album_artist=?, artist=? WHERE album_id=?",
-            (canon, canon, keep),
-        )
-        if keep_artist:
+        #    whitespace divergence that forked them cannot recur — BUT only if no
+        #    other album already occupies the (canon, keep_album) slot. A distinct
+        #    release that legitimately shares this name (different sale_item_id)
+        #    would otherwise trip UNIQUE(album_artist, album) and abort the whole
+        #    migration, bricking the DB. When a collision looms we keep the
+        #    current name; the sale_item_id link preserves identity regardless.
+        collision = self._conn.execute(
+            "SELECT 1 FROM albums WHERE album_artist=? AND album=? AND id!=?",
+            (canon, keep_album, keep),
+        ).fetchone()
+        if collision is None and canon != keep_row["album_artist"]:
             self._conn.execute(
-                "UPDATE artists SET name=? WHERE id=?"
-                " AND NOT EXISTS (SELECT 1 FROM artists WHERE name=? AND id!=?)",
-                (canon, keep_artist, canon, keep_artist),
+                "UPDATE albums SET album_artist=? WHERE id=?", (canon, keep)
             )
-        # 5. Keep bandcamp_collection.band_name consistent with the canonical name.
-        self._conn.execute(
-            "UPDATE bandcamp_collection SET band_name=?"
-            " WHERE sale_item_id = (SELECT sale_item_id FROM albums WHERE id=?)"
-            "   AND sale_item_id IS NOT NULL",
-            (canon, keep),
-        )
+            self._conn.execute(
+                "UPDATE tracks SET album_artist=?, artist=? WHERE album_id=?",
+                (canon, canon, keep),
+            )
+            if keep_artist:
+                self._conn.execute(
+                    "UPDATE artists SET name=? WHERE id=?"
+                    " AND NOT EXISTS (SELECT 1 FROM artists WHERE name=? AND id!=?)",
+                    (canon, keep_artist, canon, keep_artist),
+                )
+            # Keep bandcamp_collection.band_name consistent with the canonical name.
+            self._conn.execute(
+                "UPDATE bandcamp_collection SET band_name=?"
+                " WHERE sale_item_id = (SELECT sale_item_id FROM albums WHERE id=?)"
+                "   AND sale_item_id IS NOT NULL",
+                (canon, keep),
+            )
+        elif collision is not None:
+            logger.warning(
+                "KAMP-523 heal: album %d kept name %r (canonical %r collides with a"
+                " distinct release) — merge completed without rename",
+                keep,
+                keep_row["album_artist"],
+                canon,
+            )
         # 6. Recompute albums.source from the surviving tracks.
         self._conn.execute(
             """

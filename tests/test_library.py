@@ -10237,3 +10237,53 @@ class TestHealForkedAlbums:
         healed = LibraryIndex(db)
         assert len(_album_rows(healed)) == 1
         healed.close()
+
+    def test_canonical_rename_collision_does_not_brick_db(self, tmp_path: Path) -> None:
+        # A distinct release (different sale_item_id) legitimately shares the
+        # canonical (album_artist, album) that a merge would rename onto. The
+        # rename must be skipped, the merge must still complete, and BOTH albums
+        # must survive — the DB must open, not crash-loop on UNIQUE. (Reality
+        # Checker P0 regression.)
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        # SX: origin with a trailing-space name (canonical would be "Artist").
+        index.upsert_collection_item(
+            "SX", mode="local", band_name="Artist ", item_title="Album"
+        )
+        index.upsert_many([_prov_stream_track("SX", "Artist ", "Album")])
+        # SY: a genuinely different release already occupying "Artist"/"Album".
+        index.upsert_collection_item(
+            "SY", mode="local", band_name="Artist", item_title="Album"
+        )
+        index.upsert_many([_prov_stream_track("SY", "Artist", "Album")])
+        index.close()
+
+        # Inject a second row sharing SX's sale_item_id → forces a pass-(a) merge
+        # whose canonical rename ("Artist ") -> ("Artist") would collide with SY.
+        self._downgrade_to_v38(db)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO albums (album_artist, album, source, sale_item_id)"
+            " VALUES ('Artist Dup', 'Album', 'local', 'SX')"
+        )
+        conn.commit()
+        conn.close()
+
+        healed = LibraryIndex(db)  # must not raise
+        by_sid = {
+            r["sale_item_id"]: r["album_artist"]
+            for r in healed._conn.execute(
+                "SELECT sale_item_id, album_artist FROM albums"
+                " WHERE sale_item_id IS NOT NULL"
+            ).fetchall()
+        }
+        # Both releases survive distinctly; SX kept its (un-renamed) name.
+        assert by_sid == {"SX": "Artist ", "SY": "Artist"}
+        # The duplicate SX row was merged away (one row per sale_item_id).
+        assert (
+            healed._conn.execute(
+                "SELECT COUNT(*) FROM albums WHERE sale_item_id = 'SX'"
+            ).fetchone()[0]
+            == 1
+        )
+        healed.close()

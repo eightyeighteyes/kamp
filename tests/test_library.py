@@ -10008,6 +10008,33 @@ class TestProvenanceLinking:
         assert albums[0]["album_artist"] == "Local Artist"
         index.close()
 
+    def test_empty_album_single_links_to_origin_by_identity(
+        self, tmp_path: Path
+    ) -> None:
+        # A standalone Bandcamp single ships with no album tag (album == ""), so
+        # it is excluded from `named` — but it carries a provenance stamp and must
+        # still re-attach to its streaming single (which KAMP-526 gives an album
+        # name = title). Regression for the Ohm Foam "Gush" duplicate card.
+        index = LibraryIndex(tmp_path / "library.db")
+        origin = self._seed_streaming_album(index, "S1", "Ohm Foam", "Gush")
+
+        dl = _download_track(tmp_path / "gush.mp3", "Ohm Foam", "", "S1")
+        dl.title = "Gush"
+        index.upsert_many([dl])
+
+        albums = _album_rows(index)
+        assert len(albums) == 1, f"nameless single forked: {albums}"
+        assert albums[0]["id"] == origin
+        linked = index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "gush.mp3"),),
+        ).fetchone()[0]
+        assert linked == origin
+        # The album now holds a local file, so it reads as a local (downloaded)
+        # release rather than a stream.
+        assert albums[0]["source"] == "local"
+        index.close()
+
     def test_unprovenanced_files_still_match_by_trimmed_name(
         self, tmp_path: Path
     ) -> None:
@@ -10033,10 +10060,38 @@ class TestProvenanceLinking:
 
 
 class TestDownloadOverrides:
-    def test_empty_when_album_not_synced(self, tmp_path: Path) -> None:
+    def test_empty_when_item_unknown(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         ov = index.download_overrides_for_sale_item("NOPE")
         assert ov.album_artist == "" and ov.album == "" and ov.titles == {}
+        index.close()
+
+    def test_effective_canonical_names_without_user_edits(self, tmp_path: Path) -> None:
+        # No display edits: return the synced album row's canonical names so the
+        # download is stamped to match its origin (this is what gives a nameless
+        # single its album name).
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item(
+            "S1", mode="local", band_name="Ohm Foam", item_title="Gush"
+        )
+        index.upsert_many([_prov_stream_track("S1", "Ohm Foam", "Gush")])
+        ov = index.download_overrides_for_sale_item("S1")
+        assert ov.album_artist == "Ohm Foam"
+        assert ov.album == "Gush"
+        index.close()
+
+    def test_falls_back_to_collection_when_album_row_absent(
+        self, tmp_path: Path
+    ) -> None:
+        # Downloaded without syncing streaming rows: the collection ledger still
+        # supplies the names (band_name / item_title).
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item(
+            "S1", mode="local", band_name="Ohm Foam ", item_title="Gush"
+        )
+        ov = index.download_overrides_for_sale_item("S1")
+        assert ov.album_artist == "Ohm Foam"  # trimmed
+        assert ov.album == "Gush"
         index.close()
 
     def test_returns_user_edits(self, tmp_path: Path) -> None:

@@ -609,11 +609,13 @@ class DeferredOp:
 
 @dataclass
 class DownloadOverrides:
-    """User-set display overrides to apply to a Bandcamp download (KAMP-523).
+    """Effective album names + user title edits for a Bandcamp download (KAMP-523).
 
-    Empty strings / an empty dict mean "no override" — the pipeline keeps the
-    file's own (Bandcamp-provided) tag in that case. ``titles`` is keyed by
-    track_number and only contains entries the user actually edited.
+    ``album_artist`` / ``album`` are the *effective* names to stamp on the
+    downloaded files (user display override, else synced canonical, else the
+    collection ledger) so a download matches its streaming origin — empty only
+    when the item is entirely unknown. ``titles`` is keyed by track_number and
+    holds only the tracks the user actually renamed.
     """
 
     album_artist: str
@@ -2577,7 +2579,12 @@ class LibraryIndex:
         # are actually present in bandcamp_collection are trusted (a stale tag on
         # a file the user moved elsewhere falls back to the string match, and the
         # FK on albums.sale_item_id can never be violated).
-        prov_sids = {t.sale_item_id for t in named if t.sale_item_id}
+        # ALL tracks, not just `named`: a standalone single ships with no album
+        # tag (album == ""), so it is excluded from `named` — but it still
+        # carries a provenance stamp and must re-attach to its streaming origin
+        # by identity (KAMP-523 single case). Its empty album just means it links
+        # to an *existing* album row rather than minting one.
+        prov_sids = {t.sale_item_id for t in tracks if t.sale_item_id}
         valid_sids: set[str] = set()
         existing_album_by_sid: dict[str, int] = {}
         if prov_sids:
@@ -2724,13 +2731,22 @@ class LibraryIndex:
         # album where present, else stamping the id onto the newly-created
         # name-keyed row so the download and its origin share one album row.
         prov_paths: set[str] = set()
+        prov_album_ids: set[int] = set()
         if valid_sids:
             prov_targets: dict[str, int] = {}
             for sid in prov_sids & valid_sids:
                 if sid in existing_album_by_sid:
                     prov_targets[sid] = existing_album_by_sid[sid]
                     continue
-                rep = next(t for t in named if t.sale_item_id == sid)
+                # No album carries this id yet. We can only mint/adopt one from a
+                # track that HAS a name; a nameless single (album == "") with no
+                # existing album row is left unlinked rather than creating a blank
+                # album — in practice its streaming origin row already exists.
+                rep = next(
+                    (t for t in tracks if t.sale_item_id == sid and t.album), None
+                )
+                if rep is None:
+                    continue
                 # Stamp the id onto the just-inserted name-keyed row (or an
                 # existing un-provenanced local row with the same names).
                 self._conn.execute(
@@ -2745,11 +2761,13 @@ class LibraryIndex:
                 ).fetchone()
                 if row is not None:
                     prov_targets[sid] = row["id"]
-            for t in named:
+            # Link every provenanced track (named or nameless) to its album.
+            for t in tracks:
                 if not (_provenanced(t) and t.sale_item_id in prov_targets):
                     continue
                 fp = _canonical_track_key(t.file_path)
                 prov_paths.add(fp)
+                prov_album_ids.add(prov_targets[t.sale_item_id])
                 self._conn.execute(
                     "UPDATE tracks SET album_id = ? WHERE file_path = ?",
                     (prov_targets[t.sale_item_id], fp),
@@ -2775,15 +2793,24 @@ class LibraryIndex:
             )
 
         # Step 4: refresh denormalized aggregate columns on the touched album rows.
-        # Run once per batch (not per track) using a correlated subquery.
+        # Run once per batch (not per track) using a correlated subquery. Include
+        # albums reached only through provenance linking (prov_album_ids) — a
+        # nameless single's target album is not in file_paths (built from named),
+        # yet its source/aggregates must be recomputed now that a local track
+        # attached to it.
+        touched_album_ids: set[int] = set(prov_album_ids)
         if file_paths:
             all_placeholders = ",".join("?" * len(file_paths))
-            album_ids_rows = self._conn.execute(
-                f"SELECT DISTINCT album_id FROM tracks"
-                f" WHERE file_path IN ({all_placeholders}) AND album_id IS NOT NULL",
-                file_paths,
-            ).fetchall()
-            album_ids = [r[0] for r in album_ids_rows]
+            touched_album_ids.update(
+                r[0]
+                for r in self._conn.execute(
+                    f"SELECT DISTINCT album_id FROM tracks"
+                    f" WHERE file_path IN ({all_placeholders}) AND album_id IS NOT NULL",
+                    file_paths,
+                ).fetchall()
+            )
+        if touched_album_ids:
+            album_ids = list(touched_album_ids)
             if album_ids:
                 id_placeholders = ",".join("?" * len(album_ids))
                 self._conn.execute(
@@ -3808,43 +3835,64 @@ class LibraryIndex:
         return _row_to_track(row) if row else None
 
     def download_overrides_for_sale_item(self, sale_item_id: str) -> DownloadOverrides:
-        """Return the user's display overrides for a Bandcamp item (KAMP-523).
+        """Return the effective album names + user title edits for a download (KAMP-523).
 
-        Used by the ingest pipeline to honour edits the user made on the
-        streaming version (renamed album/artist/tracks) instead of re-deriving
-        those fields. Returns empty overrides when nothing was edited or the
-        album has not been synced — the caller then keeps the file's own tags.
+        The ingest pipeline applies these to the downloaded files so a download
+        carries the same (album_artist, album) as its streaming origin — using
+        the metadata we already have instead of re-deriving it. album_artist and
+        album are the *effective* names: the user's display_* override if set,
+        else the synced album row's canonical value, else the bandcamp_collection
+        band_name/item_title (which always exists for a download). This is what
+        gives a standalone single its album name (Bandcamp singles ship with no
+        album tag, so the file would otherwise land album-less and fork off a
+        second card — KAMP-523 single case).
 
-        titles collapses on track_number; a track_number that appears on more
-        than one disc is dropped (ambiguous) rather than risk mis-applying a
-        title across discs.
+        titles carries per-track user renames keyed by track_number; a
+        track_number appearing on more than one disc is dropped (ambiguous)
+        rather than risk mis-applying a title across discs.
+
+        Returns empty names only when the item is unknown (no album row and no
+        collection row) — the caller then keeps the file's own tags.
         """
         album = self._conn.execute(
-            "SELECT id, display_album, display_album_artist FROM albums"
+            "SELECT id, album, album_artist, display_album, display_album_artist"
+            " FROM albums WHERE sale_item_id = ?",
+            (sale_item_id,),
+        ).fetchone()
+
+        titles: dict[int, str] = {}
+        if album is not None:
+            ambiguous: set[int] = set()
+            for r in self._conn.execute(
+                "SELECT track_number, display_title FROM tracks"
+                " WHERE album_id = ? AND file_path LIKE 'bandcamp://%'"
+                "   AND display_title IS NOT NULL AND display_title != ''",
+                (album["id"],),
+            ).fetchall():
+                tno = r["track_number"]
+                if tno in titles:
+                    ambiguous.add(tno)
+                titles[tno] = r["display_title"]
+            for tno in ambiguous:
+                titles.pop(tno, None)
+            return DownloadOverrides(
+                album_artist=album["display_album_artist"] or album["album_artist"],
+                album=album["display_album"] or album["album"],
+                titles=titles,
+            )
+
+        # No synced album row (downloaded without syncing streaming rows): fall
+        # back to the collection ledger, which the downloader always wrote.
+        bc = self._conn.execute(
+            "SELECT band_name, item_title FROM bandcamp_collection"
             " WHERE sale_item_id = ?",
             (sale_item_id,),
         ).fetchone()
-        if album is None:
+        if bc is None:
             return DownloadOverrides(album_artist="", album="", titles={})
-
-        titles: dict[int, str] = {}
-        ambiguous: set[int] = set()
-        for r in self._conn.execute(
-            "SELECT track_number, display_title FROM tracks"
-            " WHERE album_id = ? AND file_path LIKE 'bandcamp://%'"
-            "   AND display_title IS NOT NULL AND display_title != ''",
-            (album["id"],),
-        ).fetchall():
-            tno = r["track_number"]
-            if tno in titles:
-                ambiguous.add(tno)
-            titles[tno] = r["display_title"]
-        for tno in ambiguous:
-            titles.pop(tno, None)
-
         return DownloadOverrides(
-            album_artist=(album["display_album_artist"] or "").strip(),
-            album=(album["display_album"] or "").strip(),
+            album_artist=(bc["band_name"] or "").strip(),
+            album=(bc["item_title"] or "").strip(),
             titles=titles,
         )
 

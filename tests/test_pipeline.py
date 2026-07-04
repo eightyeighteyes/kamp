@@ -1103,6 +1103,59 @@ class TestKnownBandcampBranch:
         assert str(tags["TXXX:MusicBrainz Album Id"]) == "rel-77"
         assert str(tags["TXXX:KAMP_SALE_ITEM_ID"]) == "S7"
 
+    def test_nameless_single_gets_album_name_and_provenance(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        # A Bandcamp single arrives with no album tag; the pipeline must stamp the
+        # known album name (= the item title) so it doesn't ingest album-less and
+        # fork off a second card. Ohm Foam "Gush" regression.
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+
+        from kamp_core.library import LibraryIndex, Track
+
+        idx = LibraryIndex(db)
+        idx.upsert_collection_item(
+            "SG", mode="local", band_name="Ohm Foam", item_title="Gush"
+        )
+        idx.upsert_many(
+            [
+                Track(
+                    file_path=Path("bandcamp://SG/1"),
+                    title="Gush",
+                    artist="Ohm Foam",
+                    album_artist="Ohm Foam",
+                    album="Gush",
+                    release_date="",
+                    track_number=1,
+                    disc_number=1,
+                    ext="",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    source="bandcamp",
+                )
+            ]
+        )
+        extracted = config.paths.watch_folder / "single"
+        extracted.mkdir()
+        gush = extracted / "Gush.mp3"
+        _make_bandcamp_mp3(gush, "Ohm Foam", "", "Gush", 1)  # no album tag
+        idx.add_pending_ingest(str(extracted), "SG", "TG")
+        idx.close()
+
+        with patch("kamp_daemon.pipeline_impl.KampMusicBrainzTagger") as mock_tagger:
+            mock_tagger.return_value.tag_release.side_effect = Exception("no network")
+            run(extracted, config, index_path=db)
+
+        moved = list(config.paths.library.rglob("*.mp3"))
+        assert len(moved) == 1
+        tags = id3.ID3(str(moved[0]))
+        assert str(tags["TALB"]) == "Gush"  # album name filled from known metadata
+        assert str(tags["TPE2"]) == "Ohm Foam"
+        assert str(tags["TXXX:KAMP_SALE_ITEM_ID"]) == "SG"
+
     def test_pending_ingest_cleared_on_quarantine(
         self, tmp_path: Path, config: Config
     ) -> None:

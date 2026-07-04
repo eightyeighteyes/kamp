@@ -330,6 +330,12 @@ def _tag_known_bandcamp(
 
     total = len(audio_files)
     for audio_file, track in zip(audio_files, tracks):
+        # A standalone single ships with no track number (track_number == 0),
+        # but KAMP-526 numbers the streaming single as track 1. Align them so the
+        # scanner's favorite/play-count inheritance and the title override below —
+        # all keyed on (album_id, track_number, disc_number) — actually match.
+        if total == 1 and track.track_number == 0:
+            track.track_number = 1
         if overrides is not None:
             if overrides.album_artist:
                 track.album_artist = overrides.album_artist

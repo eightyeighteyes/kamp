@@ -27,6 +27,7 @@ from kamp_daemon.pipeline_impl import (
     _quarantine,
     run,
 )
+from kamp_core.library import _read_mp3_tags
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1155,6 +1156,11 @@ class TestKnownBandcampBranch:
         assert str(tags["TALB"]) == "Gush"  # album name filled from known metadata
         assert str(tags["TPE2"]) == "Ohm Foam"
         assert str(tags["TXXX:KAMP_SALE_ITEM_ID"]) == "SG"
+        # Aligned to the streaming single's track number (1) so favorite /
+        # play-count inheritance matches on (album_id, track_number, disc_number).
+        # Written "1/1" (track/total); the scanner parses the leading number.
+        assert str(tags["TRCK"]) == "1/1"
+        assert _read_mp3_tags(moved[0]).track_number == 1
 
     def test_pending_ingest_cleared_on_quarantine(
         self, tmp_path: Path, config: Config

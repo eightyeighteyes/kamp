@@ -10035,6 +10035,31 @@ class TestProvenanceLinking:
         assert albums[0]["source"] == "local"
         index.close()
 
+    def test_single_favorite_inherits_once_track_number_aligned(
+        self, tmp_path: Path
+    ) -> None:
+        # With the streaming single favorited and the downloaded single aligned to
+        # track 1 (as the pipeline now does), inherit_remote_favorites carries the
+        # favorite across. Regression for the Ohm Foam "Gush" favorite loss.
+        index = LibraryIndex(tmp_path / "library.db")
+        self._seed_streaming_album(index, "S1", "Ohm Foam", "Gush")
+        stream = index.get_track_by_path("bandcamp://S1/1")
+        assert stream is not None
+        index._conn.execute("UPDATE tracks SET favorite = 1 WHERE id = ?", (stream.id,))
+        index._conn.commit()
+
+        dl = _download_track(tmp_path / "gush.mp3", "Ohm Foam", "Gush", "S1", n=1)
+        dl.title = "Gush"
+        index.upsert_many([dl])
+        index.inherit_remote_favorites([dl])
+
+        fav = index._conn.execute(
+            "SELECT favorite FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "gush.mp3"),),
+        ).fetchone()[0]
+        assert fav == 1
+        index.close()
+
     def test_unprovenanced_files_still_match_by_trimmed_name(
         self, tmp_path: Path
     ) -> None:

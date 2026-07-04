@@ -13,6 +13,10 @@ import logging
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kamp_core.library import DownloadOverrides, LibraryIndex, PendingIngest
 
 from .artwork import ArtworkError, _detect_mime, _embed, find_local_artwork
 from .config import Config
@@ -27,6 +31,7 @@ from .tagger import (
     is_tagged,
     read_release_mbids,
     read_track_metadata_from_file,
+    write_sale_item_id,
     write_tags_from_track_metadata,
 )
 
@@ -72,6 +77,7 @@ def run(
     _on_directory: Callable[[Path], None] | None = None,
     stage_callback: Callable[[str], None] | None = None,
     notify_callback: Callable[[str], None] | None = None,
+    index_path: Path | None = None,
 ) -> None:
     """Process a single watch folder item (ZIP or directory) end-to-end.
 
@@ -89,6 +95,30 @@ def run(
     assert config.paths.library is not None
     watch_folder: Path = config.paths.watch_folder
     library: Path = config.paths.library
+
+    # KAMP-523: if the downloader recorded this artifact's Bandcamp identity, we
+    # own its metadata and must re-attach it to its streaming origin. Look the
+    # handoff up now, on the original artifact path, before extraction mutates
+    # it. Best-effort: any failure falls back to the normal MusicBrainz path.
+    # index_path is None for a bare directory drop or in unit tests — provenance
+    # only applies to downloads recorded by the daemon, which passes the real DB
+    # path. Keeping it a parameter (rather than deriving _state_dir() here) keeps
+    # the pipeline from ever touching the live DB under test.
+    index: "LibraryIndex | None" = None
+    provenance: "PendingIngest | None" = None
+    overrides: "DownloadOverrides | None" = None
+    if index_path is not None:
+        try:
+            from kamp_core.library import LibraryIndex  # noqa: PLC0415
+
+            index = LibraryIndex(index_path)
+            provenance = index.pending_ingest_for_path(str(path))
+            if provenance is not None:
+                overrides = index.download_overrides_for_sale_item(
+                    provenance.sale_item_id
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Provenance lookup failed (non-fatal): %s", exc)
 
     try:
         # --- 1. Extract -------------------------------------------------------
@@ -131,7 +161,16 @@ def run(
         # is untagged, run the full pass for the whole directory to stay consistent.
         if stage_callback:
             stage_callback("Tagging")
-        if all(is_tagged(f) for f in audio_files):
+        if provenance is not None:
+            # KAMP-523: we already own this release's identity and metadata.
+            # Keep the file's Bandcamp tags, overlay the user's display edits,
+            # stamp the provenance tag, and record an MBID best-effort — never
+            # let MusicBrainz rewrite the names (that divergence is the bug).
+            # This branch wins over the is_tagged skip below by design.
+            mbid, rg_mbid, title = _tag_known_bandcamp(
+                audio_files, provenance, overrides, ctx
+            )
+        elif all(is_tagged(f) for f in audio_files):
             logger.info("All files already tagged — skipping MusicBrainz lookup")
             mbid, rg_mbid = read_release_mbids(audio_files[0])
             title = "(already tagged)"
@@ -203,6 +242,10 @@ def run(
                     min_dimension=config.artwork.min_dimension,
                     max_bytes=config.artwork.max_bytes,
                     save_format=config.artwork.save_format,
+                    # KAMP-523: for a Bandcamp download, prefer the artwork we
+                    # already have (the cover bundled in the ZIP) and don't reach
+                    # out to the MusicBrainz Cover Art Archive.
+                    skip_network=provenance is not None,
                 )
         except ArtworkError as exc:
             # Artwork failure is non-fatal: log and continue.
@@ -246,6 +289,71 @@ def run(
         # quarantine, or unexpected error.
         if stage_callback:
             stage_callback("")
+        # KAMP-523: drop the provenance handoff whether we succeeded or
+        # quarantined — it has served its purpose and must never be replayed
+        # against a later, unrelated file at the same path.
+        if index is not None:
+            try:
+                if provenance is not None:
+                    index.clear_pending_ingest(str(path))
+            finally:
+                index.close()
+
+
+def _tag_known_bandcamp(
+    audio_files: list[Path],
+    provenance: "PendingIngest",
+    overrides: "DownloadOverrides | None",
+    ctx: KampGround,
+) -> tuple[str, str, str]:
+    """Tag a Bandcamp download from metadata we already own (KAMP-523).
+
+    Keeps each file's Bandcamp-provided tags, overlays the user's display edits
+    (renamed album/artist/tracks), stamps the KAMP_SALE_ITEM_ID provenance tag,
+    and records a release MBID best-effort. The MusicBrainz name output is never
+    applied — that divergence is exactly what forks a downloaded album from its
+    streaming origin. Returns (release_mbid, release_group_mbid, title).
+    """
+    tracks = [read_track_metadata_from_file(f) for f in audio_files]
+
+    # Best-effort MBID only: run the tagger but ignore its names, and never let
+    # a lookup failure quarantine the download (Bandcamp self-releases are often
+    # absent from MusicBrainz).
+    mbid, rg_mbid = "", ""
+    try:
+        enriched = KampMusicBrainzTagger(ctx).tag_release(tracks)
+        if enriched:
+            mbid = enriched[0].release_mbid
+            rg_mbid = enriched[0].release_group_mbid
+    except Exception as exc:
+        logger.warning("MBID lookup for Bandcamp download failed (non-fatal): %s", exc)
+
+    total = len(audio_files)
+    for audio_file, track in zip(audio_files, tracks):
+        # A standalone single ships with no track number (track_number == 0),
+        # but KAMP-526 numbers the streaming single as track 1. Align them so the
+        # scanner's favorite/play-count inheritance and the title override below —
+        # all keyed on (album_id, track_number, disc_number) — actually match.
+        if total == 1 and track.track_number == 0:
+            track.track_number = 1
+        if overrides is not None:
+            if overrides.album_artist:
+                track.album_artist = overrides.album_artist
+            if overrides.album:
+                track.album = overrides.album
+            edited_title = overrides.titles.get(track.track_number)
+            if edited_title:
+                track.title = edited_title
+        track.release_mbid = mbid
+        track.release_group_mbid = rg_mbid
+        write_tags_from_track_metadata(audio_file, track, total_tracks=total)
+        write_sale_item_id(audio_file, provenance.sale_item_id)
+
+    if overrides is not None and overrides.album:
+        title = overrides.album
+    else:
+        title = tracks[0].album if tracks else ""
+    return mbid, rg_mbid, title
 
 
 def _fetch_and_embed_via_extension(
@@ -257,6 +365,7 @@ def _fetch_and_embed_via_extension(
     min_dimension: int,
     max_bytes: int,
     save_format: str = "embedded",
+    skip_network: bool = False,
 ) -> tuple[bytes, str] | None:
     """Fetch cover art via KampCoverArtArchive extension and embed in audio files.
 
@@ -269,6 +378,11 @@ def _fetch_and_embed_via_extension(
     ``(image_bytes, mime_type)`` tuple is returned so the caller can write a
     cover file after the audio files have been moved to the library.
     Returns ``None`` when no qualifying art was found or when art was embedded.
+
+    When *skip_network* is True (Bandcamp downloads, KAMP-523), only the bundled
+    local image is used — the MusicBrainz Cover Art Archive is never queried, so
+    we keep the artwork we already own rather than fetching a possibly-different
+    one.
     """
     from .artwork import _load_local_artwork, has_embedded_art
 
@@ -282,6 +396,12 @@ def _fetch_and_embed_via_extension(
         if image_bytes is not None:
             logger.info("Using bundled artwork from %s", local)
             mime_type = _detect_mime(image_bytes)
+
+    if image_bytes is None and skip_network:
+        logger.info(
+            "Bandcamp download: no bundled art found — skipping Cover Art Archive"
+        )
+        return None
 
     if image_bytes is None:
         # Skip the Cover Art Archive network call when all files already have

@@ -27,6 +27,7 @@ from kamp_daemon.pipeline_impl import (
     _quarantine,
     run,
 )
+from kamp_core.library import _read_mp3_tags
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -953,3 +954,235 @@ class TestFetchAndEmbedViaExtension:
             )
 
         mock_embed.assert_called_once_with(mp3, image_data)
+
+
+# ---------------------------------------------------------------------------
+# KAMP-523: known-Bandcamp ingest branch (provenance)
+# ---------------------------------------------------------------------------
+
+
+def _make_bandcamp_mp3(
+    path: Path, artist: str, album: str, title: str, track: int
+) -> None:
+    path.write_bytes(b"\xff\xfb" * 64)
+    tags = id3.ID3()
+    tags["TPE1"] = id3.TPE1(encoding=3, text=artist)
+    tags["TPE2"] = id3.TPE2(encoding=3, text=artist)
+    tags["TALB"] = id3.TALB(encoding=3, text=album)
+    tags["TIT2"] = id3.TIT2(encoding=3, text=title)
+    tags["TRCK"] = id3.TRCK(encoding=3, text=str(track))
+    tags.save(str(path))
+
+
+class TestKnownBandcampBranch:
+    def _seed_db(self, db_path: Path) -> None:
+        from kamp_core.library import LibraryIndex, Track
+
+        idx = LibraryIndex(db_path)
+        idx.upsert_collection_item(
+            "S1", mode="local", band_name="Artist X ", item_title="Album Y"
+        )
+        # Streaming rows for the album (so display overrides have somewhere to live).
+        streaming = [
+            Track(
+                file_path=Path(f"bandcamp://S1/{n}"),
+                title=f"Track {n}",
+                artist="Artist X ",
+                album_artist="Artist X ",
+                album="Album Y",
+                release_date="",
+                track_number=n,
+                disc_number=1,
+                ext="",
+                embedded_art=False,
+                mb_release_id="",
+                mb_recording_id="",
+                source="bandcamp",
+            )
+            for n in (1, 2)
+        ]
+        idx.upsert_many(streaming)
+        # User edits on the streaming version.
+        idx.update_album_display(
+            "Artist X ", "Album Y", "Display Album", "Display Artist"
+        )
+        t1 = idx.get_track_by_path("bandcamp://S1/1")
+        assert t1 is not None
+        idx.update_track_display_title(t1.id, "Renamed Track 1")
+        idx.close()
+
+    def test_writes_known_metadata_and_provenance_without_musicbrainz(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+        self._seed_db(db)
+
+        extracted = config.paths.watch_folder / "album"
+        extracted.mkdir()
+        f1 = extracted / "01.mp3"
+        f2 = extracted / "02.mp3"
+        _make_bandcamp_mp3(f1, "Artist X", "Album Y", "Track 1", 1)
+        _make_bandcamp_mp3(f2, "Artist X", "Album Y", "Track 2", 2)
+
+        from kamp_core.library import LibraryIndex
+
+        idx = LibraryIndex(db)
+        idx.add_pending_ingest(str(extracted), "S1", "T1")
+        idx.close()
+
+        # MusicBrainz must never be required — make any lookup blow up and prove
+        # the download still ingests (best-effort MBID, non-fatal).
+        with patch("kamp_daemon.pipeline_impl.KampMusicBrainzTagger") as mock_tagger:
+            mock_tagger.return_value.tag_release.side_effect = Exception("no network")
+            run(extracted, config, index_path=db)
+
+        moved = list(config.paths.library.rglob("*.mp3"))
+        assert len(moved) == 2
+        # Track 1 carries the user's edits + the provenance stamp; MB names never
+        # applied.
+        track1 = next(p for p in moved if p.name.startswith("01"))
+        tags = id3.ID3(str(track1))
+        assert str(tags["TPE2"]) == "Display Artist"
+        assert str(tags["TALB"]) == "Display Album"
+        assert str(tags["TIT2"]) == "Renamed Track 1"
+        assert str(tags["TXXX:KAMP_SALE_ITEM_ID"]) == "S1"
+
+        # Provenance handoff consumed.
+        idx = LibraryIndex(db)
+        assert idx.pending_ingest_for_path(str(extracted)) is None
+        idx.close()
+
+    def test_records_mbid_and_keeps_bandcamp_names_without_overrides(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        # No user edits synced (empty overrides): keep the file's Bandcamp names,
+        # but still record the release MBID a successful lookup returns.
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+
+        from kamp_core.library import LibraryIndex
+
+        idx = LibraryIndex(db)
+        idx.upsert_collection_item(
+            "S7", mode="local", band_name="Bandcamp Artist", item_title="Bandcamp Album"
+        )
+        extracted = config.paths.watch_folder / "album"
+        extracted.mkdir()
+        f1 = extracted / "01.mp3"
+        _make_bandcamp_mp3(f1, "Bandcamp Artist", "Bandcamp Album", "Real Title", 1)
+        idx.add_pending_ingest(str(extracted), "S7", "T7")
+        idx.close()
+
+        enriched = [
+            TrackMetadata(
+                title="MB Title",  # deliberately different — must NOT be applied
+                artist="MB Artist",
+                album="MB Album",
+                album_artist="MB Artist",
+                release_date="1999",
+                track_number=1,
+                mbid="rec-1",
+                release_mbid="rel-77",
+                release_group_mbid="rg-77",
+            )
+        ]
+        with patch("kamp_daemon.pipeline_impl.KampMusicBrainzTagger") as mock_tagger:
+            mock_tagger.return_value.tag_release.return_value = enriched
+            run(extracted, config, index_path=db)
+
+        moved = list(config.paths.library.rglob("*.mp3"))
+        assert len(moved) == 1
+        tags = id3.ID3(str(moved[0]))
+        # Bandcamp names kept; MB names ignored.
+        assert str(tags["TPE2"]) == "Bandcamp Artist"
+        assert str(tags["TALB"]) == "Bandcamp Album"
+        assert str(tags["TIT2"]) == "Real Title"
+        # MBID recorded, provenance stamped.
+        assert str(tags["TXXX:MusicBrainz Album Id"]) == "rel-77"
+        assert str(tags["TXXX:KAMP_SALE_ITEM_ID"]) == "S7"
+
+    def test_nameless_single_gets_album_name_and_provenance(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        # A Bandcamp single arrives with no album tag; the pipeline must stamp the
+        # known album name (= the item title) so it doesn't ingest album-less and
+        # fork off a second card. Ohm Foam "Gush" regression.
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+
+        from kamp_core.library import LibraryIndex, Track
+
+        idx = LibraryIndex(db)
+        idx.upsert_collection_item(
+            "SG", mode="local", band_name="Ohm Foam", item_title="Gush"
+        )
+        idx.upsert_many(
+            [
+                Track(
+                    file_path=Path("bandcamp://SG/1"),
+                    title="Gush",
+                    artist="Ohm Foam",
+                    album_artist="Ohm Foam",
+                    album="Gush",
+                    release_date="",
+                    track_number=1,
+                    disc_number=1,
+                    ext="",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    source="bandcamp",
+                )
+            ]
+        )
+        extracted = config.paths.watch_folder / "single"
+        extracted.mkdir()
+        gush = extracted / "Gush.mp3"
+        _make_bandcamp_mp3(gush, "Ohm Foam", "", "Gush", 1)  # no album tag
+        idx.add_pending_ingest(str(extracted), "SG", "TG")
+        idx.close()
+
+        with patch("kamp_daemon.pipeline_impl.KampMusicBrainzTagger") as mock_tagger:
+            mock_tagger.return_value.tag_release.side_effect = Exception("no network")
+            run(extracted, config, index_path=db)
+
+        moved = list(config.paths.library.rglob("*.mp3"))
+        assert len(moved) == 1
+        tags = id3.ID3(str(moved[0]))
+        assert str(tags["TALB"]) == "Gush"  # album name filled from known metadata
+        assert str(tags["TPE2"]) == "Ohm Foam"
+        assert str(tags["TXXX:KAMP_SALE_ITEM_ID"]) == "SG"
+        # Aligned to the streaming single's track number (1) so favorite /
+        # play-count inheritance matches on (album_id, track_number, disc_number).
+        # Written "1/1" (track/total); the scanner parses the leading number.
+        assert str(tags["TRCK"]) == "1/1"
+        assert _read_mp3_tags(moved[0]).track_number == 1
+
+    def test_pending_ingest_cleared_on_quarantine(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+        self._seed_db(db)
+
+        # A directory with no audio files quarantines during extraction.
+        empty = config.paths.watch_folder / "album"
+        empty.mkdir()
+        (empty / "notes.txt").write_text("no audio here")
+
+        from kamp_core.library import LibraryIndex
+
+        idx = LibraryIndex(db)
+        idx.add_pending_ingest(str(empty), "S1", "T1")
+        idx.close()
+
+        run(empty, config, index_path=db)
+
+        idx = LibraryIndex(db)
+        assert idx.pending_ingest_for_path(str(empty)) is None
+        idx.close()

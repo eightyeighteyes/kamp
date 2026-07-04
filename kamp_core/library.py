@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 38
+_SCHEMA_VERSION = 39
 
 
 @dataclass
@@ -329,6 +329,24 @@ CREATE TABLE IF NOT EXISTS download_queue (
     queued_at    REAL    NOT NULL DEFAULT (unixepoch())
 );
 
+-- Download → pipeline provenance handoff (KAMP-523). When the Bandcamp
+-- downloader drops an artifact (album ZIP or bare single) in the watch folder,
+-- it records the artifact path -> sale_item_id here. The ingest pipeline runs
+-- in a spawn subprocess that only receives (path, config); it looks this row up
+-- to (a) write the metadata we already own instead of re-deriving it via
+-- MusicBrainz and (b) stamp a durable provenance tag so the scan re-attaches the
+-- files to their streaming origin by identity, not by fragile tag matching.
+-- UNIQUE(artifact_path) makes a re-download idempotent. The row is deleted when
+-- the pipeline finishes (success or quarantine); a startup sweep clears rows
+-- whose artifact no longer exists (crash/restart mid-flight).
+CREATE TABLE IF NOT EXISTS pending_ingest (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_path TEXT    NOT NULL UNIQUE,
+    sale_item_id  TEXT    NOT NULL,
+    tralbum_id    TEXT    NOT NULL DEFAULT '',
+    created_at    REAL    NOT NULL
+);
+
 -- User-defined playlists (KAMP-441). Local-only; Bandcamp playlist sync is future work.
 CREATE TABLE IF NOT EXISTS playlists (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -478,6 +496,11 @@ class Track:
     # Runtime flag; not persisted to DB. False for stub tracks created during
     # queue restore when the DB row is missing (e.g. after a DB wipe).
     reachable: bool = field(default=True, compare=False)
+    # Bandcamp provenance stamp read from the file's KAMP_SALE_ITEM_ID tag
+    # (KAMP-523). Runtime-only: it is NOT stored on the tracks table — it is
+    # consumed by upsert_many to link the file to its album by identity, and the
+    # link persists via album_id, so a later re-scan re-reads it from the file.
+    sale_item_id: str = field(default="", compare=False)
 
     @property
     def is_remote(self) -> bool:
@@ -584,6 +607,39 @@ class DeferredOp:
     last_error: str | None
 
 
+@dataclass
+class DownloadOverrides:
+    """Effective album names + user title edits for a Bandcamp download (KAMP-523).
+
+    ``album_artist`` / ``album`` are the *effective* names to stamp on the
+    downloaded files (user display override, else synced canonical, else the
+    collection ledger) so a download matches its streaming origin — empty only
+    when the item is entirely unknown. ``titles`` is keyed by track_number and
+    holds only the tracks the user actually renamed.
+    """
+
+    album_artist: str
+    album: str
+    titles: dict[int, str]
+
+
+@dataclass
+class PendingIngest:
+    """A download → pipeline provenance handoff row (KAMP-523).
+
+    Maps a watch-folder artifact (album ZIP or bare single) to the Bandcamp
+    identity the downloader knew at download time, so the ingest pipeline can
+    write known metadata and stamp a provenance tag instead of re-deriving
+    identity from tags via MusicBrainz.
+    """
+
+    id: int
+    artifact_path: str
+    sale_item_id: str
+    tralbum_id: str
+    created_at: float
+
+
 class LibraryIndex:
     """Persistent SQLite index of all tracks in the music library."""
 
@@ -650,6 +706,10 @@ class LibraryIndex:
         if row is None:
             # Brand-new database — stamp current version and populate FTS.
             self._rebuild_fts()
+            # Fresh DBs have no forks, so the identity-uniqueness index is safe
+            # to create immediately (migrations, which also create it after the
+            # heal, do not run for a brand-new DB).
+            self._create_sale_item_id_unique_index()
             self._conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,)
             )
@@ -1418,7 +1478,258 @@ class LibraryIndex:
             )
             self._conn.execute("UPDATE schema_version SET version = 38")
             self._conn.commit()
-            version = 38  # noqa: F841
+            version = 38
+
+        if version < 39:
+            # v38 → v39: heal albums forked by tag divergence (KAMP-523) and
+            # enforce one album per sale_item_id.
+            #
+            # Only the *provably-same-release* forks are merged automatically:
+            #   (a) two album rows carrying the same non-null sale_item_id, and
+            #   (b) a source='local' row whose TRIM/NOCASE (album_artist, album)
+            #       collapses onto a sale_item_id-bearing row AND matches that
+            #       id's bandcamp_collection band/title.
+            # Ambiguous string-only forks (no sale_item_id on either side) are
+            # LEFT UNTOUCHED — auto-merging them risks collapsing genuinely
+            # distinct releases (self-titled EPs, VA comps). A one-time DB backup
+            # is taken before any merge, and every merge is logged at INFO.
+            #
+            # Defense in depth: a heal failure must never brick the DB. If any
+            # merge raises unexpectedly, roll the heal back and continue — the
+            # fork stays un-healed (identity linking still resolves it at runtime
+            # via LIMIT 1) but the database always opens.
+            try:
+                self._heal_forked_albums()
+            except Exception:
+                self._conn.rollback()
+                logger.exception(
+                    "KAMP-523 heal failed — rolled back; forks left for runtime"
+                    " identity linking to resolve"
+                )
+            self._create_sale_item_id_unique_index()
+            self._conn.execute("UPDATE schema_version SET version = 39")
+            self._conn.commit()
+            version = 39  # noqa: F841
+
+    def _create_sale_item_id_unique_index(self) -> None:
+        """Enforce one album per sale_item_id via a partial UNIQUE index (KAMP-523).
+
+        Defensive: if a duplicate somehow survives the heal, log and continue
+        rather than aborting the migration (identity linking still resolves
+        deterministically via LIMIT 1) — a failed migration would make the DB
+        unopenable, which is far worse than a missing guard index.
+        """
+        album_cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(albums)").fetchall()
+        }
+        if "sale_item_id" not in album_cols:
+            # Minimal/partial schema (only seen in narrow migration unit tests);
+            # a real DB gains the column in the v24 albums migration.
+            return
+        try:
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS albums_sale_item_id_uidx"
+                " ON albums(sale_item_id) WHERE sale_item_id IS NOT NULL"
+            )
+        except sqlite3.IntegrityError:  # pragma: no cover - defensive
+            logger.warning(
+                "Could not create UNIQUE index on albums.sale_item_id — duplicate"
+                " sale_item_ids remain; identity linking falls back to"
+                " deterministic LIMIT-1 resolution."
+            )
+
+    def _heal_forked_albums(self) -> None:
+        """Merge albums forked by tag divergence, for the provably-same subset.
+
+        See the v39 migration comment for the safety rationale. This backs the DB
+        up before any merge and logs every merge at INFO. Generalizes the
+        human-in-the-loop scripts/merge_forked_album.sh for the identity-provable
+        pairs only.
+        """
+        album_cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(albums)").fetchall()
+        }
+        if "sale_item_id" not in album_cols:
+            # Minimal/partial schema (narrow migration unit tests only); a real
+            # DB gains sale_item_id in the v24 albums migration, so there is
+            # nothing Bandcamp-linked to heal here.
+            return
+
+        merge_into: dict[int, int] = {}
+
+        # (a) Multiple album rows carrying the same non-null sale_item_id.
+        for r in self._conn.execute(
+            "SELECT sale_item_id, GROUP_CONCAT(id) AS ids, COUNT(*) AS n"
+            " FROM albums WHERE sale_item_id IS NOT NULL"
+            " GROUP BY sale_item_id HAVING n > 1"
+        ).fetchall():
+            ids = sorted(int(x) for x in r["ids"].split(","))
+            keep = ids[0]
+            for drop in ids[1:]:
+                merge_into[drop] = keep
+
+        # (b) A row WITH NO sale_item_id of its own that normalizes onto a
+        #     sale_item_id-bearing row whose collection band/title also matches —
+        #     the classic whitespace fork (the old code minted an un-provenanced
+        #     local album next to the streaming origin).
+        #
+        # `loc.sale_item_id IS NULL` is load-bearing: a row that carries its OWN
+        # non-null id is a distinct release (Bandcamp ids are 1:1 with releases),
+        # so it must never be folded into a different id's album — doing so would
+        # collapse two genuinely-different purchases that merely share a name.
+        # Guarded on the settled band_name/item_title columns (older
+        # bandcamp_collection schemas predate them), mirroring the v24 migration.
+        bcc_cols = {
+            r[1]
+            for r in self._conn.execute(
+                "PRAGMA table_info(bandcamp_collection)"
+            ).fetchall()
+        }
+        for r in (self._conn.execute("""
+            SELECT loc.id AS drop_id, org.id AS keep_id
+            FROM albums loc
+            JOIN albums org
+              ON org.sale_item_id IS NOT NULL
+             AND loc.id != org.id
+             AND TRIM(loc.album_artist) = TRIM(org.album_artist) COLLATE NOCASE
+             AND TRIM(loc.album)        = TRIM(org.album)        COLLATE NOCASE
+            JOIN bandcamp_collection bc ON bc.sale_item_id = org.sale_item_id
+            WHERE loc.sale_item_id IS NULL
+              AND TRIM(loc.album_artist) = TRIM(bc.band_name)  COLLATE NOCASE
+              AND TRIM(loc.album)        = TRIM(bc.item_title) COLLATE NOCASE
+            """).fetchall() if {"band_name", "item_title"} <= bcc_cols else []):
+            keep, drop = r["keep_id"], r["drop_id"]
+            if drop != keep and drop not in merge_into:
+                merge_into[drop] = keep
+
+        if not merge_into:
+            return
+
+        # Back up before mutating. Connection.backup copies the live DB (incl.
+        # WAL) consistently — a plain file copy could miss un-checkpointed WAL.
+        ts = _time.strftime("%Y%m%d-%H%M%S")
+        backup_path = self._db_path.with_name(f"{self._db_path.name}.bak-{ts}")
+        try:
+            dest = sqlite3.connect(str(backup_path))
+            with dest:
+                self._conn.backup(dest)
+            dest.close()
+            logger.info("KAMP-523 heal: backed up library to %s", backup_path)
+        except Exception as exc:  # pragma: no cover - backup is best-effort
+            logger.warning("KAMP-523 heal: backup failed (%s); aborting heal", exc)
+            return
+
+        for drop, keep in merge_into.items():
+            self._merge_album_pair(keep, drop)
+        logger.info("KAMP-523 heal: merged %d forked album row(s)", len(merge_into))
+
+    def _merge_album_pair(self, keep: int, drop: int) -> None:
+        """Fold album *drop* into *keep*, merging the duplicate artist too.
+
+        Mirrors scripts/merge_forked_album.sh: move tracks, merge artists
+        (preserving play_time), delete the orphan album, normalize the surviving
+        names to their trimmed canonical form (so the pair can't re-fork on
+        whitespace), and recompute albums.source.
+        """
+        keep_row = self._conn.execute(
+            "SELECT album_artist, album, artist_id FROM albums WHERE id=?", (keep,)
+        ).fetchone()
+        drop_row = self._conn.execute(
+            "SELECT artist_id FROM albums WHERE id=?", (drop,)
+        ).fetchone()
+        if keep_row is None or drop_row is None:  # pragma: no cover - defensive
+            return
+        canon = keep_row["album_artist"].strip()
+        keep_album = keep_row["album"]
+        keep_artist = keep_row["artist_id"]
+        drop_artist = drop_row["artist_id"]
+
+        logger.info(
+            "KAMP-523 heal: merging album %d into %d (canonical artist %r)",
+            drop,
+            keep,
+            canon,
+        )
+
+        # 1. Move the drop album's tracks onto keep.
+        self._conn.execute(
+            "UPDATE tracks SET album_id=? WHERE album_id=?", (keep, drop)
+        )
+        # 2. Delete the now-empty duplicate album.
+        self._conn.execute("DELETE FROM albums WHERE id=?", (drop,))
+        # 3. Merge the duplicate artist: fold play_time into the survivor,
+        #    repoint album refs, delete the loser if nothing else references it.
+        if keep_artist and drop_artist and keep_artist != drop_artist:
+            self._conn.execute(
+                "UPDATE artists SET play_time = play_time"
+                " + (SELECT IFNULL(play_time,0) FROM artists WHERE id=?)"
+                " WHERE id=?",
+                (drop_artist, keep_artist),
+            )
+            self._conn.execute(
+                "UPDATE albums SET artist_id=? WHERE artist_id=?",
+                (keep_artist, drop_artist),
+            )
+            self._conn.execute(
+                "DELETE FROM artists WHERE id=?"
+                " AND NOT EXISTS (SELECT 1 FROM albums WHERE artist_id=?)",
+                (drop_artist, drop_artist),
+            )
+        # 4. Normalize the surviving names to canonical (trimmed) form so the
+        #    whitespace divergence that forked them cannot recur — BUT only if no
+        #    other album already occupies the (canon, keep_album) slot. A distinct
+        #    release that legitimately shares this name (different sale_item_id)
+        #    would otherwise trip UNIQUE(album_artist, album) and abort the whole
+        #    migration, bricking the DB. When a collision looms we keep the
+        #    current name; the sale_item_id link preserves identity regardless.
+        collision = self._conn.execute(
+            "SELECT 1 FROM albums WHERE album_artist=? AND album=? AND id!=?",
+            (canon, keep_album, keep),
+        ).fetchone()
+        if collision is None and canon != keep_row["album_artist"]:
+            self._conn.execute(
+                "UPDATE albums SET album_artist=? WHERE id=?", (canon, keep)
+            )
+            self._conn.execute(
+                "UPDATE tracks SET album_artist=?, artist=? WHERE album_id=?",
+                (canon, canon, keep),
+            )
+            if keep_artist:
+                self._conn.execute(
+                    "UPDATE artists SET name=? WHERE id=?"
+                    " AND NOT EXISTS (SELECT 1 FROM artists WHERE name=? AND id!=?)",
+                    (canon, keep_artist, canon, keep_artist),
+                )
+            # Keep bandcamp_collection.band_name consistent with the canonical name.
+            self._conn.execute(
+                "UPDATE bandcamp_collection SET band_name=?"
+                " WHERE sale_item_id = (SELECT sale_item_id FROM albums WHERE id=?)"
+                "   AND sale_item_id IS NOT NULL",
+                (canon, keep),
+            )
+        elif collision is not None:
+            logger.warning(
+                "KAMP-523 heal: album %d kept name %r (canonical %r collides with a"
+                " distinct release) — merge completed without rename",
+                keep,
+                keep_row["album_artist"],
+                canon,
+            )
+        # 6. Recompute albums.source from the surviving tracks.
+        self._conn.execute(
+            """
+            UPDATE albums SET source = (
+                SELECT CASE
+                    WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
+                     AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
+                        THEN 'local'
+                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                    ELSE MIN(t.source) END
+                FROM tracks t WHERE t.album_id = albums.id
+            ) WHERE id=?
+            """,
+            (keep,),
+        )
 
     def _rebuild_fts(self) -> None:
         """Rebuild the FTS index from the current contents of the tracks table.
@@ -2258,14 +2569,62 @@ class LibraryIndex:
         if not tracks:
             return
 
+        named = [t for t in tracks if t.album]
+
+        # KAMP-523: resolve Bandcamp provenance up front. A track carrying a
+        # KAMP_SALE_ITEM_ID tag (written by the download pipeline) links to its
+        # album by *identity*, never by the fragile (album_artist, album) string
+        # match — so a downloaded album re-attaches to its streaming origin even
+        # when the tagger rewrote the names beyond whitespace/case. Only ids that
+        # are actually present in bandcamp_collection are trusted (a stale tag on
+        # a file the user moved elsewhere falls back to the string match, and the
+        # FK on albums.sale_item_id can never be violated).
+        # ALL tracks, not just `named`: a standalone single ships with no album
+        # tag (album == ""), so it is excluded from `named` — but it still
+        # carries a provenance stamp and must re-attach to its streaming origin
+        # by identity (KAMP-523 single case). Its empty album just means it links
+        # to an *existing* album row rather than minting one.
+        prov_sids = {t.sale_item_id for t in tracks if t.sale_item_id}
+        valid_sids: set[str] = set()
+        existing_album_by_sid: dict[str, int] = {}
+        if prov_sids:
+            sid_list = list(prov_sids)
+            sid_ph = ",".join("?" * len(sid_list))
+            valid_sids = {
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT sale_item_id FROM bandcamp_collection"
+                    f" WHERE sale_item_id IN ({sid_ph})",
+                    sid_list,
+                ).fetchall()
+            }
+            for r in self._conn.execute(
+                f"SELECT id, sale_item_id FROM albums WHERE sale_item_id IN ({sid_ph})",
+                sid_list,
+            ).fetchall():
+                # setdefault: the partial UNIQUE index makes this at most one row
+                # per id post-migration; if an un-healed fork still has two, the
+                # lowest id wins deterministically.
+                existing_album_by_sid.setdefault(r["sale_item_id"], r["id"])
+
+        def _provenanced(t: Track) -> bool:
+            return bool(t.sale_item_id) and t.sale_item_id in valid_sids
+
+        # A provenanced track whose album already exists by identity must NOT
+        # spawn a name-keyed album row — that duplicate album (and its duplicate
+        # artist row) is exactly the fork this ticket prevents.
+        def _needs_name_album(t: Track) -> bool:
+            return not (_provenanced(t) and t.sale_item_id in existing_album_by_sid)
+
         # Step 1: upsert parent album rows for named albums. INSERT OR IGNORE so
         # existing album metadata (e.g. favorite flag) is never overwritten here.
-        named = [t for t in tracks if t.album]
         seen: set[tuple[str, str]] = set()
         album_params: list[
             tuple[str, str, str, int, str, str, str, str, float | None]
         ] = []
         for t in named:
+            if not _needs_name_album(t):
+                continue
             key = (t.album_artist.lower(), t.album.lower())
             if key not in seen:
                 seen.add(key)
@@ -2366,30 +2725,92 @@ class LibraryIndex:
 
         # Step 3: assign album_id on the track rows we just inserted/updated.
         file_paths = [_canonical_track_key(t.file_path) for t in named]
-        if file_paths:
-            placeholders = ",".join("?" * len(file_paths))
+
+        # Step 3a (KAMP-523): link provenanced tracks by identity. Resolve each
+        # trusted sale_item_id to its album — adopting the existing streaming
+        # album where present, else stamping the id onto the newly-created
+        # name-keyed row so the download and its origin share one album row.
+        prov_paths: set[str] = set()
+        prov_album_ids: set[int] = set()
+        if valid_sids:
+            prov_targets: dict[str, int] = {}
+            for sid in prov_sids & valid_sids:
+                if sid in existing_album_by_sid:
+                    prov_targets[sid] = existing_album_by_sid[sid]
+                    continue
+                # No album carries this id yet. We can only mint/adopt one from a
+                # track that HAS a name; a nameless single (album == "") with no
+                # existing album row is left unlinked rather than creating a blank
+                # album — in practice its streaming origin row already exists.
+                rep = next(
+                    (t for t in tracks if t.sale_item_id == sid and t.album), None
+                )
+                if rep is None:
+                    continue
+                # Stamp the id onto the just-inserted name-keyed row (or an
+                # existing un-provenanced local row with the same names).
+                self._conn.execute(
+                    "UPDATE albums SET sale_item_id = ?"
+                    " WHERE album_artist = ? COLLATE NOCASE"
+                    "   AND album        = ? COLLATE NOCASE"
+                    "   AND (sale_item_id IS NULL OR sale_item_id = ?)",
+                    (sid, rep.album_artist, rep.album, sid),
+                )
+                row = self._conn.execute(
+                    "SELECT id FROM albums WHERE sale_item_id = ?", (sid,)
+                ).fetchone()
+                if row is not None:
+                    prov_targets[sid] = row["id"]
+            # Link every provenanced track (named or nameless) to its album.
+            for t in tracks:
+                if not (_provenanced(t) and t.sale_item_id in prov_targets):
+                    continue
+                fp = _canonical_track_key(t.file_path)
+                prov_paths.add(fp)
+                prov_album_ids.add(prov_targets[t.sale_item_id])
+                self._conn.execute(
+                    "UPDATE tracks SET album_id = ? WHERE file_path = ?",
+                    (prov_targets[t.sale_item_id], fp),
+                )
+
+        # Step 3b: link the remaining (un-provenanced) tracks by name. TRIM on
+        # both sides folds the leading/trailing-whitespace divergence that used
+        # to fork albums (belt-and-suspenders behind the identity link above).
+        plain_paths = [fp for fp in file_paths if fp not in prov_paths]
+        if plain_paths:
+            placeholders = ",".join("?" * len(plain_paths))
             self._conn.execute(
                 f"""
                 UPDATE tracks SET album_id = (
                     SELECT a.id FROM albums a
-                    WHERE a.album_artist = tracks.album_artist COLLATE NOCASE
-                      AND a.album        = tracks.album        COLLATE NOCASE
+                    WHERE TRIM(a.album_artist) = TRIM(tracks.album_artist) COLLATE NOCASE
+                      AND TRIM(a.album)        = TRIM(tracks.album)        COLLATE NOCASE
                 )
                 WHERE file_path IN ({placeholders})
                   AND album != ''
                 """,
-                file_paths,
+                plain_paths,
             )
 
         # Step 4: refresh denormalized aggregate columns on the touched album rows.
-        # Run once per batch (not per track) using a correlated subquery.
+        # Run once per batch (not per track) using a correlated subquery. Include
+        # albums reached only through provenance linking (prov_album_ids) — a
+        # nameless single's target album is not in file_paths (built from named),
+        # yet its source/aggregates must be recomputed now that a local track
+        # attached to it.
+        touched_album_ids: set[int] = set(prov_album_ids)
         if file_paths:
-            album_ids_rows = self._conn.execute(
-                f"SELECT DISTINCT album_id FROM tracks"
-                f" WHERE file_path IN ({placeholders}) AND album_id IS NOT NULL",
-                file_paths,
-            ).fetchall()
-            album_ids = [r[0] for r in album_ids_rows]
+            all_placeholders = ",".join("?" * len(file_paths))
+            touched_album_ids.update(
+                r[0]
+                for r in self._conn.execute(
+                    f"SELECT DISTINCT album_id FROM tracks"
+                    f" WHERE file_path IN ({all_placeholders}) AND album_id IS NOT NULL",
+                    file_paths,
+                ).fetchall()
+            )
+        if touched_album_ids:
+            album_ids = list(touched_album_ids)
             if album_ids:
                 id_placeholders = ",".join("?" * len(album_ids))
                 self._conn.execute(
@@ -2640,6 +3061,68 @@ class LibraryIndex:
             "SELECT id, track_id FROM deferred_ops ORDER BY id ASC"
         ).fetchall()
         return [{"op_id": r["id"], "track_id": r["track_id"]} for r in rows]
+
+    # ------------------------------------------------------------------
+    # Pending ingest — download → pipeline provenance handoff (KAMP-523)
+    # ------------------------------------------------------------------
+
+    def add_pending_ingest(
+        self, artifact_path: str, sale_item_id: str, tralbum_id: str = ""
+    ) -> None:
+        """Record that *artifact_path* is a Bandcamp download of *sale_item_id*.
+
+        INSERT OR REPLACE on the UNIQUE(artifact_path) so a re-download of the
+        same artifact path refreshes the identity rather than erroring.
+        """
+        import time as _t
+
+        self._conn.execute(
+            "INSERT OR REPLACE INTO pending_ingest"
+            " (artifact_path, sale_item_id, tralbum_id, created_at) VALUES (?,?,?,?)",
+            (artifact_path, sale_item_id, tralbum_id, _t.time()),
+        )
+        self._conn.commit()
+
+    def pending_ingest_for_path(self, artifact_path: str) -> PendingIngest | None:
+        """Return the pending-ingest row for *artifact_path*, or None.
+
+        The pipeline receives the watch-folder path it was triggered on; this
+        looks the provenance up before any extraction/move mutates the path.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM pending_ingest WHERE artifact_path=?",
+            (artifact_path,),
+        ).fetchone()
+        return _row_to_pending_ingest(row) if row is not None else None
+
+    def clear_pending_ingest(self, artifact_path: str) -> None:
+        """Delete the pending-ingest row for *artifact_path* (idempotent).
+
+        Called from the pipeline's finally/quarantine paths so a completed or
+        failed ingest never leaves a stale handoff behind.
+        """
+        self._conn.execute(
+            "DELETE FROM pending_ingest WHERE artifact_path=?", (artifact_path,)
+        )
+        self._conn.commit()
+
+    def sweep_orphan_pending_ingest(self) -> int:
+        """Delete pending-ingest rows whose artifact no longer exists on disk.
+
+        Guards against rows left behind by a crash/restart between download and
+        ingest. Returns the number of rows removed. Called once at daemon start.
+        """
+        rows = self._conn.execute(
+            "SELECT id, artifact_path FROM pending_ingest"
+        ).fetchall()
+        stale = [r["id"] for r in rows if not Path(r["artifact_path"]).exists()]
+        if stale:
+            placeholders = ",".join("?" * len(stale))
+            self._conn.execute(
+                f"DELETE FROM pending_ingest WHERE id IN ({placeholders})", stale
+            )
+            self._conn.commit()
+        return len(stale)
 
     # ------------------------------------------------------------------
     # Download queue (KAMP-408)
@@ -3350,6 +3833,68 @@ class LibraryIndex:
             "SELECT * FROM tracks WHERE mb_recording_id = ?", (mb_recording_id,)
         ).fetchone()
         return _row_to_track(row) if row else None
+
+    def download_overrides_for_sale_item(self, sale_item_id: str) -> DownloadOverrides:
+        """Return the effective album names + user title edits for a download (KAMP-523).
+
+        The ingest pipeline applies these to the downloaded files so a download
+        carries the same (album_artist, album) as its streaming origin — using
+        the metadata we already have instead of re-deriving it. album_artist and
+        album are the *effective* names: the user's display_* override if set,
+        else the synced album row's canonical value, else the bandcamp_collection
+        band_name/item_title (which always exists for a download). This is what
+        gives a standalone single its album name (Bandcamp singles ship with no
+        album tag, so the file would otherwise land album-less and fork off a
+        second card — KAMP-523 single case).
+
+        titles carries per-track user renames keyed by track_number; a
+        track_number appearing on more than one disc is dropped (ambiguous)
+        rather than risk mis-applying a title across discs.
+
+        Returns empty names only when the item is unknown (no album row and no
+        collection row) — the caller then keeps the file's own tags.
+        """
+        album = self._conn.execute(
+            "SELECT id, album, album_artist, display_album, display_album_artist"
+            " FROM albums WHERE sale_item_id = ?",
+            (sale_item_id,),
+        ).fetchone()
+
+        titles: dict[int, str] = {}
+        if album is not None:
+            ambiguous: set[int] = set()
+            for r in self._conn.execute(
+                "SELECT track_number, display_title FROM tracks"
+                " WHERE album_id = ? AND file_path LIKE 'bandcamp://%'"
+                "   AND display_title IS NOT NULL AND display_title != ''",
+                (album["id"],),
+            ).fetchall():
+                tno = r["track_number"]
+                if tno in titles:
+                    ambiguous.add(tno)
+                titles[tno] = r["display_title"]
+            for tno in ambiguous:
+                titles.pop(tno, None)
+            return DownloadOverrides(
+                album_artist=album["display_album_artist"] or album["album_artist"],
+                album=album["display_album"] or album["album"],
+                titles=titles,
+            )
+
+        # No synced album row (downloaded without syncing streaming rows): fall
+        # back to the collection ledger, which the downloader always wrote.
+        bc = self._conn.execute(
+            "SELECT band_name, item_title FROM bandcamp_collection"
+            " WHERE sale_item_id = ?",
+            (sale_item_id,),
+        ).fetchone()
+        if bc is None:
+            return DownloadOverrides(album_artist="", album="", titles={})
+        return DownloadOverrides(
+            album_artist=(bc["band_name"] or "").strip(),
+            album=(bc["item_title"] or "").strip(),
+            titles=titles,
+        )
 
     def search(self, query: str) -> list[Track]:
         """Full-text search across title, artist, album_artist, and album.
@@ -4492,6 +5037,16 @@ def _row_to_deferred_op(row: sqlite3.Row) -> DeferredOp:
     )
 
 
+def _row_to_pending_ingest(row: sqlite3.Row) -> PendingIngest:
+    return PendingIngest(
+        id=row["id"],
+        artifact_path=row["artifact_path"],
+        sale_item_id=row["sale_item_id"],
+        tralbum_id=row["tralbum_id"],
+        created_at=row["created_at"],
+    )
+
+
 def _row_to_track(row: sqlite3.Row) -> Track:
     # DB rows store canonical bandcamp:// form (ensured by _track_to_params and
     # migration v22). Path() on POSIX still collapses the double-slash to single,
@@ -4644,6 +5199,7 @@ def _read_mp3_tags(path: Path) -> Track:
         genre=_str("TCON"),
         label=_str("TPUB"),
         duration=duration,
+        sale_item_id=_str("TXXX:KAMP_SALE_ITEM_ID"),
     )
 
 
@@ -4691,6 +5247,7 @@ def _read_m4a_tags(path: Path) -> Track:
         genre=_s("\xa9gen"),
         label=_s("----:com.apple.iTunes:LABEL"),
         duration=duration,
+        sale_item_id=_s("----:com.apple.iTunes:KAMP_SALE_ITEM_ID"),
     )
 
 
@@ -4741,6 +5298,7 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
         genre=_s("GENRE"),
         label=_s("LABEL") or _s("ORGANIZATION"),
         duration=duration,
+        sale_item_id=_s("KAMP_SALE_ITEM_ID"),
     )
 
 

@@ -567,6 +567,13 @@ def _cmd_daemon(
 
     index = LibraryIndex(db_path)
 
+    # KAMP-523: clear any download → ingest provenance rows whose artifact no
+    # longer exists (crash/restart between download and ingest), so a stale row
+    # can never be replayed against an unrelated file at the same path.
+    _swept = index.sweep_orphan_pending_ingest()
+    if _swept:
+        _logger.info("Cleared %d orphaned pending-ingest row(s) at startup", _swept)
+
     # Migrate legacy bandcamp_session.json → sessions DB table (one-time).
     # After migration the file is deleted so subsequent starts skip this block.
     _legacy_session = _state_dir() / "bandcamp_session.json"

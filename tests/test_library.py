@@ -134,7 +134,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 38
+        assert version == 39
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1489,7 +1489,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1546,7 +1546,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -2141,7 +2141,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert row is not None
         assert row[0] == 0
 
@@ -2565,7 +2565,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2661,7 +2661,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -2842,7 +2842,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -2937,7 +2937,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 38
+        assert version == 39
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -2945,7 +2945,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 38
+        assert version == 39
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3822,7 +3822,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 38
+        assert version == 39
 
         index.close()
 
@@ -4513,7 +4513,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 38
+        assert version == 39
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4548,7 +4548,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 38
+        assert version == 39
         index.close()
 
 
@@ -4996,7 +4996,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 38
+        assert version == 39
 
 
 class TestRemoteTrackSchema:
@@ -5330,7 +5330,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -5391,7 +5391,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 38
+        assert version == 39
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -6149,7 +6149,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -6466,7 +6466,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -6544,7 +6544,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -6750,7 +6750,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -7099,7 +7099,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7196,7 +7196,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7312,7 +7312,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -7817,7 +7817,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -7932,7 +7932,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -8030,7 +8030,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -8130,7 +8130,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -8637,7 +8637,7 @@ class TestMagicPlaylists:
         fetched = index.get_magic_playlist_criteria(playlist_id)
         index.close()
 
-        assert version == 38
+        assert version == 39
         assert fetched == criteria
 
     # ------------------------------------------------------------------
@@ -9481,7 +9481,7 @@ class TestMigrationV38:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 38
+        assert version == 39
         assert "release_date" in cols
         assert "year" not in cols
 
@@ -9863,3 +9863,507 @@ class TestGetStats:
         assert len(stats.top_tracks) == 2
         assert stats.top_tracks[0].file_path == pb
         assert stats.top_tracks[1].file_path == pa
+
+
+# ---------------------------------------------------------------------------
+# KAMP-523: identity-based provenance (download re-attaches to streaming origin)
+# ---------------------------------------------------------------------------
+
+
+def _prov_stream_track(sid: str, artist: str, album: str, n: int = 1) -> Track:
+    """A streaming (bandcamp://) track row for *sid*."""
+    return Track(
+        file_path=Path(f"bandcamp://{sid}/{n}"),
+        title=f"Track {n}",
+        artist=artist,
+        album_artist=artist,
+        album=album,
+        release_date="",
+        track_number=n,
+        disc_number=1,
+        ext="",
+        embedded_art=False,
+        mb_release_id="",
+        mb_recording_id="",
+        source="bandcamp",
+    )
+
+
+def _download_track(path: Path, artist: str, album: str, sid: str, n: int = 1) -> Track:
+    """A local downloaded file carrying a KAMP_SALE_ITEM_ID provenance stamp."""
+    t = Track(
+        file_path=path,
+        title=f"Track {n}",
+        artist=artist,
+        album_artist=artist,
+        album=album,
+        release_date="2020",
+        track_number=n,
+        disc_number=1,
+        ext="mp3",
+        embedded_art=False,
+        mb_release_id="",
+        mb_recording_id="",
+    )
+    t.sale_item_id = sid
+    return t
+
+
+def _album_rows(index: LibraryIndex) -> list[sqlite3.Row]:
+    return index._conn.execute(
+        "SELECT id, album_artist, album, source, sale_item_id FROM albums"
+    ).fetchall()
+
+
+class TestProvenanceLinking:
+    def _seed_streaming_album(
+        self,
+        index: LibraryIndex,
+        sid: str,
+        band_name: str,
+        item_title: str,
+    ) -> int:
+        """Create a bandcamp_collection item + its streaming album row."""
+        index.upsert_collection_item(
+            sid, mode="local", band_name=band_name, item_title=item_title
+        )
+        index.upsert_many([_prov_stream_track(sid, band_name, item_title)])
+        row = index._conn.execute(
+            "SELECT id FROM albums WHERE sale_item_id = ?", (sid,)
+        ).fetchone()
+        assert row is not None, "streaming album should carry sale_item_id"
+        return row["id"]
+
+    def test_download_reattaches_despite_trailing_whitespace(
+        self, tmp_path: Path
+    ) -> None:
+        # The reported bug: Bandcamp delivered a trailing space in band_name; the
+        # downloaded files were tagged clean. Identity linking must still merge.
+        index = LibraryIndex(tmp_path / "library.db")
+        origin = self._seed_streaming_album(
+            index, "S1", "Homeboy Sandman & Edan ", "Humble Pi"
+        )
+
+        dl = _download_track(
+            tmp_path / "hp.mp3", "Homeboy Sandman & Edan", "Humble Pi", "S1"
+        )
+        index.upsert_many([dl])
+
+        albums = _album_rows(index)
+        assert len(albums) == 1, f"expected one album, got {albums}"
+        assert albums[0]["id"] == origin
+        assert albums[0]["sale_item_id"] == "S1"
+        # exactly one artist row
+        n_artists = index._conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+        assert n_artists == 1
+        # the local file is linked to the origin album
+        linked = index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "hp.mp3"),),
+        ).fetchone()[0]
+        assert linked == origin
+        index.close()
+
+    def test_download_reattaches_despite_punctuation_divergence(
+        self, tmp_path: Path
+    ) -> None:
+        # A divergence no amount of TRIM/NOCASE could fix: "/" vs "&".
+        index = LibraryIndex(tmp_path / "library.db")
+        origin = self._seed_streaming_album(
+            index, "S2", "Homeboy Sandman / Edan", "Humble Pi"
+        )
+        dl = _download_track(
+            tmp_path / "hp.mp3", "Homeboy Sandman & Edan", "Humble Pi", "S2"
+        )
+        index.upsert_many([dl])
+        albums = _album_rows(index)
+        assert len(albums) == 1
+        assert albums[0]["id"] == origin
+        index.close()
+
+    def test_download_stamps_id_when_origin_album_absent(self, tmp_path: Path) -> None:
+        # Downloaded without ever syncing streaming rows: still exactly one album,
+        # and it carries the sale_item_id.
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item(
+            "S3", mode="local", band_name="Artist", item_title="Album"
+        )
+        dl = _download_track(tmp_path / "a.mp3", "Artist", "Album", "S3")
+        index.upsert_many([dl])
+        albums = _album_rows(index)
+        assert len(albums) == 1
+        assert albums[0]["sale_item_id"] == "S3"
+        index.close()
+
+    def test_stale_sale_item_id_falls_back_to_name_match(self, tmp_path: Path) -> None:
+        # A file carrying a sale_item_id not present in bandcamp_collection (e.g.
+        # moved in from elsewhere) must NOT link by identity — it falls back to
+        # the name match, and never violates the FK.
+        index = LibraryIndex(tmp_path / "library.db")
+        dl = _download_track(tmp_path / "a.mp3", "Local Artist", "Local Album", "GHOST")
+        index.upsert_many([dl])
+        albums = _album_rows(index)
+        assert len(albums) == 1
+        assert albums[0]["sale_item_id"] is None
+        assert albums[0]["album_artist"] == "Local Artist"
+        index.close()
+
+    def test_empty_album_single_links_to_origin_by_identity(
+        self, tmp_path: Path
+    ) -> None:
+        # A standalone Bandcamp single ships with no album tag (album == ""), so
+        # it is excluded from `named` — but it carries a provenance stamp and must
+        # still re-attach to its streaming single (which KAMP-526 gives an album
+        # name = title). Regression for the Ohm Foam "Gush" duplicate card.
+        index = LibraryIndex(tmp_path / "library.db")
+        origin = self._seed_streaming_album(index, "S1", "Ohm Foam", "Gush")
+
+        dl = _download_track(tmp_path / "gush.mp3", "Ohm Foam", "", "S1")
+        dl.title = "Gush"
+        index.upsert_many([dl])
+
+        albums = _album_rows(index)
+        assert len(albums) == 1, f"nameless single forked: {albums}"
+        assert albums[0]["id"] == origin
+        linked = index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "gush.mp3"),),
+        ).fetchone()[0]
+        assert linked == origin
+        # The album now holds a local file, so it reads as a local (downloaded)
+        # release rather than a stream.
+        assert albums[0]["source"] == "local"
+        index.close()
+
+    def test_single_favorite_inherits_once_track_number_aligned(
+        self, tmp_path: Path
+    ) -> None:
+        # With the streaming single favorited and the downloaded single aligned to
+        # track 1 (as the pipeline now does), inherit_remote_favorites carries the
+        # favorite across. Regression for the Ohm Foam "Gush" favorite loss.
+        index = LibraryIndex(tmp_path / "library.db")
+        self._seed_streaming_album(index, "S1", "Ohm Foam", "Gush")
+        stream = index.get_track_by_path("bandcamp://S1/1")
+        assert stream is not None
+        index._conn.execute("UPDATE tracks SET favorite = 1 WHERE id = ?", (stream.id,))
+        index._conn.commit()
+
+        dl = _download_track(tmp_path / "gush.mp3", "Ohm Foam", "Gush", "S1", n=1)
+        dl.title = "Gush"
+        index.upsert_many([dl])
+        index.inherit_remote_favorites([dl])
+
+        fav = index._conn.execute(
+            "SELECT favorite FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "gush.mp3"),),
+        ).fetchone()[0]
+        assert fav == 1
+        index.close()
+
+    def test_unprovenanced_files_still_match_by_trimmed_name(
+        self, tmp_path: Path
+    ) -> None:
+        # Two genuinely-local files whose album_artist differs only by a trailing
+        # space collapse to one album via the TRIM fallback.
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = _sample_track(tmp_path / "1.mp3")
+        t2 = _sample_track(tmp_path / "2.mp3")
+        t2.album_artist = t1.album_artist + " "
+        index.upsert_many([t1, t2])
+        albums = _album_rows(index)
+        # One album row already existed for the trimmed name; the spaced variant
+        # links to it rather than forking (COLLATE NOCASE lets both names coexist
+        # as rows, but the track links via the TRIM match).
+        linked = {
+            r[0]
+            for r in index._conn.execute(
+                "SELECT album_id FROM tracks WHERE album_id IS NOT NULL"
+            ).fetchall()
+        }
+        assert len(linked) == 1
+        index.close()
+
+
+class TestDownloadOverrides:
+    def test_empty_when_item_unknown(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        ov = index.download_overrides_for_sale_item("NOPE")
+        assert ov.album_artist == "" and ov.album == "" and ov.titles == {}
+        index.close()
+
+    def test_effective_canonical_names_without_user_edits(self, tmp_path: Path) -> None:
+        # No display edits: return the synced album row's canonical names so the
+        # download is stamped to match its origin (this is what gives a nameless
+        # single its album name).
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item(
+            "S1", mode="local", band_name="Ohm Foam", item_title="Gush"
+        )
+        index.upsert_many([_prov_stream_track("S1", "Ohm Foam", "Gush")])
+        ov = index.download_overrides_for_sale_item("S1")
+        assert ov.album_artist == "Ohm Foam"
+        assert ov.album == "Gush"
+        index.close()
+
+    def test_falls_back_to_collection_when_album_row_absent(
+        self, tmp_path: Path
+    ) -> None:
+        # Downloaded without syncing streaming rows: the collection ledger still
+        # supplies the names (band_name / item_title).
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item(
+            "S1", mode="local", band_name="Ohm Foam ", item_title="Gush"
+        )
+        ov = index.download_overrides_for_sale_item("S1")
+        assert ov.album_artist == "Ohm Foam"  # trimmed
+        assert ov.album == "Gush"
+        index.close()
+
+    def test_returns_user_edits(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("S1", mode="local", band_name="A", item_title="B")
+        index.upsert_many([_prov_stream_track("S1", "A", "B", n=1)])
+        index.update_album_display("A", "B", "Disp Album", "Disp Artist")
+        t1 = index.get_track_by_path("bandcamp://S1/1")
+        assert t1 is not None
+        index.update_track_display_title(t1.id, "Edited Title")
+        ov = index.download_overrides_for_sale_item("S1")
+        assert ov.album_artist == "Disp Artist"
+        assert ov.album == "Disp Album"
+        assert ov.titles == {1: "Edited Title"}
+        index.close()
+
+    def test_ambiguous_track_number_across_discs_is_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        # Two discs both have a track 1 with a display title → ambiguous, so no
+        # per-track override is offered for track 1 (avoids cross-disc misapply).
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item("S1", mode="local", band_name="A", item_title="B")
+        d1 = _prov_stream_track("S1", "A", "B", n=1)
+        d2 = _prov_stream_track("S1", "A", "B", n=1)
+        d2.file_path = Path("bandcamp://S1/2")
+        d2.disc_number = 2
+        index.upsert_many([d1, d2])
+        for uri in ("bandcamp://S1/1", "bandcamp://S1/2"):
+            t = index.get_track_by_path(uri)
+            assert t is not None
+            index.update_track_display_title(t.id, "Edited")
+        ov = index.download_overrides_for_sale_item("S1")
+        assert 1 not in ov.titles
+        index.close()
+
+
+class TestPendingIngest:
+    def test_add_get_clear_roundtrip(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.add_pending_ingest("/watch/a.zip", "S1", "T1")
+        row = index.pending_ingest_for_path("/watch/a.zip")
+        assert row is not None
+        assert row.sale_item_id == "S1"
+        assert row.tralbum_id == "T1"
+        assert index.pending_ingest_for_path("/watch/missing.zip") is None
+        index.clear_pending_ingest("/watch/a.zip")
+        assert index.pending_ingest_for_path("/watch/a.zip") is None
+        index.close()
+
+    def test_add_is_idempotent_on_repeat_download(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.add_pending_ingest("/watch/a.zip", "S1")
+        index.add_pending_ingest("/watch/a.zip", "S2")  # re-download same path
+        row = index.pending_ingest_for_path("/watch/a.zip")
+        assert row is not None and row.sale_item_id == "S2"
+        n = index._conn.execute("SELECT COUNT(*) FROM pending_ingest").fetchone()[0]
+        assert n == 1
+        index.close()
+
+    def test_sweep_removes_only_orphans(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        real = tmp_path / "real.zip"
+        real.write_bytes(b"zip")
+        index.add_pending_ingest(str(real), "S1")
+        index.add_pending_ingest(str(tmp_path / "gone.zip"), "S2")
+        removed = index.sweep_orphan_pending_ingest()
+        assert removed == 1
+        assert index.pending_ingest_for_path(str(real)) is not None
+        assert index.pending_ingest_for_path(str(tmp_path / "gone.zip")) is None
+        index.close()
+
+
+class TestHealForkedAlbums:
+    def _downgrade_to_v38(self, db_path: Path) -> None:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("DROP INDEX IF EXISTS albums_sale_item_id_uidx")
+        conn.execute("UPDATE schema_version SET version = 38")
+        conn.commit()
+        conn.close()
+
+    def test_whitespace_fork_with_sale_item_id_collapses(self, tmp_path: Path) -> None:
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        # Origin streaming album (spaced name + sale_item_id).
+        index.upsert_collection_item(
+            "S1", mode="local", band_name="Artist X ", item_title="Album Y"
+        )
+        index.upsert_many([_prov_stream_track("S1", "Artist X ", "Album Y")])
+        index.close()
+
+        # Inject the fork the OLD code would have minted: a local album with the
+        # trimmed name, its own duplicate artist row (linked), and a local track.
+        # Done after the downgrade so the UNIQUE index isn't in the way.
+        self._downgrade_to_v38(db)
+        conn = sqlite3.connect(str(db))
+        conn.execute("INSERT INTO artists (name) VALUES ('Artist X')")
+        fork_artist = conn.execute(
+            "SELECT id FROM artists WHERE name = 'Artist X'"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO albums (album_artist, album, source, artist_id)"
+            " VALUES ('Artist X', 'Album Y', 'local', ?)",
+            (fork_artist,),
+        )
+        fork_id = conn.execute(
+            "SELECT id FROM albums WHERE album_artist = 'Artist X' AND sale_item_id IS NULL"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO tracks (file_path, album_artist, album, source, album_id)"
+            " VALUES ('/lib/x.mp3', 'Artist X', 'Album Y', 'local', ?)",
+            (fork_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        healed = LibraryIndex(db)  # triggers v39 heal
+        albums = _album_rows(healed)
+        assert len(albums) == 1, f"fork not healed: {albums}"
+        assert albums[0]["sale_item_id"] == "S1"
+        # local track moved under the surviving album
+        moved = healed._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = '/lib/x.mp3'"
+        ).fetchone()[0]
+        assert moved == albums[0]["id"]
+        # duplicate artist merged away
+        n_artists = healed._conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+        assert n_artists == 1
+        # a backup was written
+        assert any(p.name.startswith("library.db.bak-") for p in tmp_path.iterdir())
+        healed.close()
+
+    def test_two_rows_sharing_sale_item_id_collapse(self, tmp_path: Path) -> None:
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        index.upsert_collection_item(
+            "S9", mode="local", band_name="Band", item_title="Rec"
+        )
+        index.upsert_many([_prov_stream_track("S9", "Band", "Rec")])
+        index.close()
+
+        # A second album row illegally carrying the same sale_item_id (injected
+        # after the downgrade so the UNIQUE index isn't in the way).
+        self._downgrade_to_v38(db)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO albums (album_artist, album, source, sale_item_id)"
+            " VALUES ('Band', 'Rec (Deluxe)', 'local', 'S9')"
+        )
+        conn.commit()
+        conn.close()
+
+        healed = LibraryIndex(db)
+        rows = healed._conn.execute(
+            "SELECT COUNT(*) FROM albums WHERE sale_item_id = 'S9'"
+        ).fetchone()[0]
+        assert rows == 1
+        healed.close()
+
+    def test_string_only_fork_without_id_left_untouched(self, tmp_path: Path) -> None:
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        # Two distinct local albums that merely normalize alike, neither linked
+        # to Bandcamp — must NOT be merged (could be genuinely different).
+        index._conn.execute(
+            "INSERT INTO albums (album_artist, album, source) VALUES ('S T', 'EP', 'local')"
+        )
+        index._conn.execute(
+            "INSERT INTO albums (album_artist, album, source) VALUES ('S T ', 'EP', 'local')"
+        )
+        index._conn.commit()
+        index.close()
+
+        self._downgrade_to_v38(db)
+        healed = LibraryIndex(db)
+        n = healed._conn.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
+        assert n == 2, "string-only forks must be left untouched"
+        # No backup taken when nothing merges.
+        assert not any(p.name.startswith("library.db.bak-") for p in tmp_path.iterdir())
+        healed.close()
+
+    def test_heal_is_idempotent(self, tmp_path: Path) -> None:
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        index.upsert_collection_item(
+            "S1", mode="local", band_name="Artist X ", item_title="Album Y"
+        )
+        index.upsert_many([_prov_stream_track("S1", "Artist X ", "Album Y")])
+        index._conn.execute(
+            "INSERT INTO albums (album_artist, album, source) VALUES ('Artist X', 'Album Y', 'local')"
+        )
+        index._conn.commit()
+        index.close()
+
+        self._downgrade_to_v38(db)
+        LibraryIndex(db).close()  # first heal
+        # Re-open again: version is 39, migration does not re-run; still one album.
+        healed = LibraryIndex(db)
+        assert len(_album_rows(healed)) == 1
+        healed.close()
+
+    def test_canonical_rename_collision_does_not_brick_db(self, tmp_path: Path) -> None:
+        # A distinct release (different sale_item_id) legitimately shares the
+        # canonical (album_artist, album) that a merge would rename onto. The
+        # rename must be skipped, the merge must still complete, and BOTH albums
+        # must survive — the DB must open, not crash-loop on UNIQUE. (Reality
+        # Checker P0 regression.)
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        # SX: origin with a trailing-space name (canonical would be "Artist").
+        index.upsert_collection_item(
+            "SX", mode="local", band_name="Artist ", item_title="Album"
+        )
+        index.upsert_many([_prov_stream_track("SX", "Artist ", "Album")])
+        # SY: a genuinely different release already occupying "Artist"/"Album".
+        index.upsert_collection_item(
+            "SY", mode="local", band_name="Artist", item_title="Album"
+        )
+        index.upsert_many([_prov_stream_track("SY", "Artist", "Album")])
+        index.close()
+
+        # Inject a second row sharing SX's sale_item_id → forces a pass-(a) merge
+        # whose canonical rename ("Artist ") -> ("Artist") would collide with SY.
+        self._downgrade_to_v38(db)
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO albums (album_artist, album, source, sale_item_id)"
+            " VALUES ('Artist Dup', 'Album', 'local', 'SX')"
+        )
+        conn.commit()
+        conn.close()
+
+        healed = LibraryIndex(db)  # must not raise
+        by_sid = {
+            r["sale_item_id"]: r["album_artist"]
+            for r in healed._conn.execute(
+                "SELECT sale_item_id, album_artist FROM albums"
+                " WHERE sale_item_id IS NOT NULL"
+            ).fetchall()
+        }
+        # Both releases survive distinctly; SX kept its (un-renamed) name.
+        assert by_sid == {"SX": "Artist ", "SY": "Artist"}
+        # The duplicate SX row was merged away (one row per sale_item_id).
+        assert (
+            healed._conn.execute(
+                "SELECT COUNT(*) FROM albums WHERE sale_item_id = 'SX'"
+            ).fetchone()[0]
+            == 1
+        )
+        healed.close()

@@ -59,6 +59,7 @@ def _pipeline_worker(
 
         import musicbrainzngs
 
+        from .config import _state_dir
         from .pipeline_impl import run
 
         # The subprocess starts with a clean interpreter — set_useragent must be
@@ -76,6 +77,9 @@ def _pipeline_worker(
             _on_directory=lambda d: stage_q.put(f"{_DIR_SENTINEL}{d}"),
             stage_callback=lambda s: stage_q.put(s),
             notify_callback=lambda s: stage_q.put(s),
+            # KAMP-523: the live DB path so the pipeline can consume the
+            # download → ingest provenance handoff (see pipeline_impl.run).
+            index_path=_state_dir() / "library.db",
         )
         result_q.put(("ok", None))
     except Exception as exc:  # noqa: BLE001

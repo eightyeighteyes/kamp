@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 39
+_SCHEMA_VERSION = 40
 
 
 @dataclass
@@ -1509,7 +1509,32 @@ class LibraryIndex:
             self._create_sale_item_id_unique_index()
             self._conn.execute("UPDATE schema_version SET version = 39")
             self._conn.commit()
-            version = 39  # noqa: F841
+            version = 39
+
+        if version < 40:
+            # v39 → v40: heal albums orphaned by filesystem deletion of their
+            # tracks (KAMP-522). Before the scan learned to prune, deleting an
+            # album folder left a zero-track ghost row behind; sweep those once
+            # on upgrade. Inlined (not via prune_empty_albums) so the migration's
+            # behaviour stays frozen if that method later changes. The
+            # sale_item_id guard preserves Bandcamp preorder/streaming rows.
+            album_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(albums)").fetchall()
+            }
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            # Real DBs gain these columns in the v24 albums migration; only the
+            # narrow migration unit tests build a partial schema without them.
+            if "sale_item_id" in album_cols and "album_id" in track_cols:
+                self._conn.execute(
+                    "DELETE FROM albums WHERE sale_item_id IS NULL"
+                    " AND NOT EXISTS"
+                    " (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id)"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 40")
+            self._conn.commit()
+            version = 40  # noqa: F841
 
     def _create_sale_item_id_unique_index(self) -> None:
         """Enforce one album per sale_item_id via a partial UNIQUE index (KAMP-523).
@@ -3211,6 +3236,26 @@ class LibraryIndex:
                 }
             )
 
+    def prune_empty_albums(self) -> int:
+        """Delete purely-local album rows that no longer have any tracks (KAMP-522).
+
+        When the user deletes an album folder from disk, the scan removes the
+        track rows but leaves the parent ``albums`` row orphaned; it then shows
+        up in the UI as a ghost card with zero tracks. This sweeps those rows.
+
+        The ``sale_item_id IS NULL`` guard is load-bearing: Bandcamp-backed rows
+        (preorders, fetch-failed streaming albums, downloaded purchases) can
+        legitimately have zero *local* tracks and must survive — a forked album
+        also keeps its ``bandcamp://`` rows, so ``NOT EXISTS`` protects it too.
+        Returns the number of album rows removed.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM albums WHERE sale_item_id IS NULL"
+            " AND NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.album_id = albums.id)"
+        )
+        self._conn.commit()
+        return cur.rowcount
+
     def all_tracks(self) -> list[Track]:
         """Return all indexed tracks in insertion order."""
         rows = self._conn.execute("SELECT * FROM tracks").fetchall()
@@ -3339,7 +3384,13 @@ class LibraryIndex:
         # are synthesised at query time from tracks with empty album tags — they are
         # not stored here, so no filter is required.
         album_count = c.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
-        artist_count = c.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+        # Count distinct album_artist values, matching the user-visible artists()
+        # list — a pruned album's artist row lingers in the artists table (its
+        # play_time still feeds total_play_seconds), so counting that table would
+        # drift above the shown artist list after a deletion (KAMP-522).
+        artist_count = c.execute(
+            "SELECT COUNT(DISTINCT album_artist) FROM albums"
+        ).fetchone()[0]
         total_seconds = c.execute(
             "SELECT COALESCE(SUM(play_time), 0) FROM artists"
         ).fetchone()[0]
@@ -5639,6 +5690,15 @@ class LibraryScanner:
             if path not in reconciled_old_paths:
                 self._index.remove_track(path)
                 removed += 1
+
+        # A removal may have emptied an album; prune the now-orphaned local
+        # rows so a deleted album folder disappears entirely (KAMP-522) rather
+        # than lingering as a zero-track ghost. Only when something was removed
+        # — idle scans never touch the albums table.
+        if removed:
+            pruned = self._index.prune_empty_albums()
+            if pruned:
+                logger.info("Pruned %d empty album(s) after scan removals", pruned)
 
         unchanged = len(on_disk & in_index) - len(to_update)
 

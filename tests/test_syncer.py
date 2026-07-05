@@ -651,8 +651,15 @@ class TestSyncAllPurchases:
 
 
 class TestLogout:
-    def test_clears_db_session_and_collection(self, tmp_path: Path) -> None:
-        """logout() clears the DB session row and bandcamp_collection."""
+    def test_clears_session_but_preserves_collection_ledger(
+        self, tmp_path: Path
+    ) -> None:
+        """logout() clears the session row but PRESERVES bandcamp_collection.
+
+        The ledger is the file→purchase provenance map (KAMP-528); wiping it on
+        every logout needlessly destroys that mapping. Only the session is cleared;
+        the next sync reconciles the ledger.
+        """
         from kamp_core.library import LibraryIndex
 
         db_path = tmp_path / "library.db"
@@ -667,7 +674,7 @@ class TestLogout:
                 logout()
 
             assert index.get_session("bandcamp") is None
-            assert index.get_collection_state() == {}
+            assert index.get_collection_state() == {"999": "local"}
         finally:
             index.close()
 

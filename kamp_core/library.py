@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 40
+_SCHEMA_VERSION = 41
 
 
 class NoStreamableVersionError(Exception):
@@ -197,7 +197,16 @@ CREATE TABLE IF NOT EXISTS tracks (
     -- NULL means "use the canonical value from Bandcamp".
     display_title        TEXT,
     display_album        TEXT,
-    display_album_artist TEXT
+    display_album_artist TEXT,
+    -- Track-level Bandcamp provenance (KAMP-528). Mirrors albums.sale_item_id but
+    -- resolves standalone singles: a purchased single has no album row, so the
+    -- only place to record "this file came from sale_item_id X" is here. Written
+    -- from the KAMP_SALE_ITEM_ID file tag on upsert (valid_sids only, FK-safe).
+    -- The supporting index (tracks_sale_item_id_idx) is created by
+    -- _create_tracks_sale_item_id_index(), NOT here: on an upgrade, executescript
+    -- runs the whole _DDL before the v41 migration adds this column, so a
+    -- CREATE INDEX in _DDL would reference a not-yet-existing column and fail.
+    sale_item_id         TEXT    REFERENCES bandcamp_collection(sale_item_id)
 );
 
 -- First-class album entity (KAMP-418). Replaces the GROUP BY (album_artist, album)
@@ -726,6 +735,7 @@ class LibraryIndex:
             # to create immediately (migrations, which also create it after the
             # heal, do not run for a brand-new DB).
             self._create_sale_item_id_unique_index()
+            self._create_tracks_sale_item_id_index()
             self._conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,)
             )
@@ -1550,7 +1560,74 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 40")
             self._conn.commit()
-            version = 40  # noqa: F841
+            version = 40
+
+        if version < 41:
+            # v40 → v41: add track-level Bandcamp provenance (KAMP-528). Standalone
+            # singles have no album row, so albums.sale_item_id cannot record their
+            # origin; tracks.sale_item_id can. The KAMP_SALE_ITEM_ID file tag is
+            # already read into Track.sale_item_id — this column lets it persist.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if "sale_item_id" not in track_cols:
+                # Default is NULL, so SQLite accepts an added REFERENCES column
+                # even under foreign_keys=ON (a non-NULL default would be rejected).
+                self._conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN sale_item_id TEXT"
+                    " REFERENCES bandcamp_collection(sale_item_id)"
+                )
+            self._create_tracks_sale_item_id_index()
+            # The backfill/re-read below touch albums.sale_item_id, tracks.album_id
+            # and tracks.source. Real DBs gain all of these by v24/v20; only the
+            # narrow migration unit tests build a partial schema without them, so
+            # guard on presence (mirrors the v40 block).
+            album_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(albums)").fetchall()
+            }
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if "sale_item_id" in album_cols and "album_id" in track_cols:
+                # Backfill album → track: copy each provenanced album's sale_item_id
+                # down onto its tracks. FK-safe (album sids already satisfy the
+                # albums→collection FK) and idempotent (only fills NULLs).
+                self._conn.execute("""
+                    UPDATE tracks SET sale_item_id = (
+                        SELECT a.sale_item_id FROM albums a WHERE a.id = tracks.album_id
+                    )
+                    WHERE album_id IS NOT NULL
+                      AND sale_item_id IS NULL
+                      AND (SELECT a.sale_item_id FROM albums a
+                           WHERE a.id = tracks.album_id) IS NOT NULL
+                    """)
+            # A pre-existing standalone single (no album row) can't be reached by the
+            # backfill above. It is not force-re-read here: nulling file_mtime for all
+            # album-less local tracks would re-scan every loose file for the sake of a
+            # rare historical case. Such singles recover via link_track_to_sale_item_id
+            # or a natural re-scan; newly downloaded singles are always scanned fresh
+            # and stamped by upsert_many.
+            self._conn.execute("UPDATE schema_version SET version = 41")
+            self._conn.commit()
+            version = 41  # noqa: F841
+
+    def _create_tracks_sale_item_id_index(self) -> None:
+        """Create the lookup index on tracks.sale_item_id (KAMP-528).
+
+        Kept out of _DDL: executescript runs the whole _DDL before the v41
+        migration adds the column, so a CREATE INDEX there would reference a
+        not-yet-existing column on an upgrading DB. Guarded on column presence so
+        the narrow migration unit tests (which build a partial schema) don't fail.
+        """
+        track_cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+        }
+        if "sale_item_id" not in track_cols:
+            return
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS tracks_sale_item_id_idx"
+            " ON tracks(sale_item_id)"
+        )
 
     def _create_sale_item_id_unique_index(self) -> None:
         """Enforce one album per sale_item_id via a partial UNIQUE index (KAMP-523).
@@ -2295,19 +2372,48 @@ class LibraryIndex:
 
         Used by the server layer to obtain track IDs for the playing-guard check
         and to collect file paths for deletion before calling remove_download().
+
+        Honors provenance at BOTH levels (KAMP-528): a track whose album carries
+        the sale_item_id, OR a track that carries it directly (a standalone single
+        with no album row). LEFT JOIN so a NULL-album single still matches, and
+        DISTINCT so a track that satisfies both arms after the album→track backfill
+        is not returned twice.
         """
         rows = self._conn.execute(
             """
-            SELECT t.* FROM tracks t
-            JOIN albums a ON a.id = t.album_id
-            WHERE a.sale_item_id = ?
+            SELECT DISTINCT t.* FROM tracks t
+            LEFT JOIN albums a ON a.id = t.album_id
+            WHERE (a.sale_item_id = ? OR t.sale_item_id = ?)
               AND t.file_path NOT LIKE 'bandcamp://%'
               AND t.file_path NOT LIKE 'bandcamp:\\%'
             ORDER BY t.disc_number, t.track_number
             """,
-            (sale_item_id,),
+            (sale_item_id, sale_item_id),
         ).fetchall()
         return [_row_to_track(r) for r in rows]
+
+    def link_track_to_sale_item_id(self, track_id: int, sale_item_id: str) -> bool:
+        """Attach Bandcamp provenance to a single track by id (KAMP-528).
+
+        The recovery path for a standalone single that has no album row: there is
+        nowhere to record its origin except tracks.sale_item_id. Validates that
+        *sale_item_id* exists in bandcamp_collection first — both for a clear
+        caller-facing failure and to keep the FK to bandcamp_collection satisfied
+        (a bare UPDATE with an unknown sid would raise IntegrityError). Returns
+        True if the track was found and linked, False otherwise.
+        """
+        known = self._conn.execute(
+            "SELECT 1 FROM bandcamp_collection WHERE sale_item_id = ?",
+            (sale_item_id,),
+        ).fetchone()
+        if known is None:
+            return False
+        cur = self._conn.execute(
+            "UPDATE tracks SET sale_item_id = ? WHERE id = ?",
+            (sale_item_id, track_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def streaming_track_for_local_id(self, local_track_id: int) -> "Track | None":
         """Return the streaming (bandcamp://) equivalent of a local track.
@@ -2502,7 +2608,17 @@ class LibraryIndex:
         self._conn.commit()
 
     def clear_bandcamp_collection(self) -> None:
-        """Delete all rows from bandcamp_collection (called on logout)."""
+        """Delete all rows from bandcamp_collection (explicit account reset).
+
+        No longer called on logout — logout preserves the ledger (the file→purchase
+        provenance map) so the next sync reconciles rather than rebuilds. This
+        remains for an explicit account switch/reset. Null the child provenance
+        FKs first (albums AND tracks, KAMP-528): with foreign_keys=ON, deleting a
+        parent row still referenced by a provenanced album or track raises
+        IntegrityError — which is exactly what used to make logout crash.
+        """
+        self._conn.execute("UPDATE albums SET sale_item_id = NULL")
+        self._conn.execute("UPDATE tracks SET sale_item_id = NULL")
         self._conn.execute("DELETE FROM bandcamp_collection")
         self._conn.commit()
 
@@ -2893,6 +3009,23 @@ class LibraryIndex:
                 self._conn.execute(
                     "UPDATE tracks SET album_id = ? WHERE file_path = ?",
                     (prov_targets[t.sale_item_id], fp),
+                )
+
+        # Step 3a' (KAMP-528): persist track-level provenance for EVERY provenanced
+        # track, independent of whether an album link resolved above. This is the
+        # standalone-single case: a nameless single has no album row (so it is
+        # absent from prov_targets) yet must still record its origin — the only
+        # place that can is tracks.sale_item_id. Gated on valid_sids so the FK to
+        # bandcamp_collection can never be violated; only set, never clear (mirrors
+        # album_id linking and the ON CONFLICT clause, which leaves it untouched).
+        # Canonical key so bandcamp:// / Windows-form paths match their stored row.
+        if valid_sids:
+            for t in tracks:
+                if not _provenanced(t):
+                    continue
+                self._conn.execute(
+                    "UPDATE tracks SET sale_item_id = ? WHERE file_path = ?",
+                    (t.sale_item_id, _canonical_track_key(t.file_path)),
                 )
 
         # Step 3b: link the remaining (un-provenanced) tracks by name. TRIM on
@@ -5233,6 +5366,7 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         stream_url_expires_at=row["stream_url_expires_at"],
         is_available=bool(row["is_available"]),
         duration=row["duration"],
+        sale_item_id=row["sale_item_id"] or "",
     )
 
 

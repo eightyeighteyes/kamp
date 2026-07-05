@@ -224,27 +224,29 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
               Download this album
             </button>
           )}
-          {album.source === 'local' && album.sale_item_id && (
-            <button
-              className="track-context-menu-item track-context-menu-item--action"
-              onClick={() => {
-                void removeDownload(album.sale_item_id!)
-                onClose()
-              }}
-            >
-              <span
-                style={{
-                  marginRight: 6,
-                  verticalAlign: 'middle',
-                  flexShrink: 0,
-                  display: 'inline-flex'
+          {album.source === 'local' &&
+            album.sale_item_id &&
+            (album.num_streamable_tracks ?? 0) > 0 && (
+              <button
+                className="track-context-menu-item track-context-menu-item--action"
+                onClick={() => {
+                  void removeDownload(album.sale_item_id!)
+                  onClose()
                 }}
               >
-                <RemoveFromQueueIcon size={12} />
-              </span>
-              Remove download
-            </button>
-          )}
+                <span
+                  style={{
+                    marginRight: 6,
+                    verticalAlign: 'middle',
+                    flexShrink: 0,
+                    display: 'inline-flex'
+                  }}
+                >
+                  <RemoveFromQueueIcon size={12} />
+                </span>
+                Remove download
+              </button>
+            )}
           {album.source === 'local' && (
             <button
               className="track-context-menu-item"

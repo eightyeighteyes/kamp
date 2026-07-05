@@ -94,6 +94,18 @@ _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 _SCHEMA_VERSION = 40
 
 
+class NoStreamableVersionError(Exception):
+    """Raised by remove_download when the album cannot fall back to streaming.
+
+    Reverting a downloaded album deletes its local track rows; that is only safe
+    when every local track has a matching bandcamp:// stream row to fall back to.
+    When one or more do not (download-mode purchase never streamed, a partial
+    materialization, or a multi-disc download whose disc>1 tracks have no stream
+    counterpart), removal would strand those tracks — so we abort and delete
+    nothing rather than destroy the album (KAMP-527).
+    """
+
+
 @dataclass
 class Condition:
     """A single field-level filter in a magic playlist."""
@@ -547,6 +559,10 @@ class AlbumInfo:
     sale_item_id: str | None = None
     # True when the album is a Bandcamp pre-order (some tracks not yet released).
     is_preorder: bool = False
+    # Number of streamable tracks Bandcamp reports for this purchase (KAMP-527).
+    # 0 means no streamable version exists — "Remove download" would strand the
+    # album, so the UI hides that action. Snapshot; the server re-verifies.
+    num_streamable_tracks: int = 0
     # Bandcamp album page URL — non-empty for streaming/downloaded Bandcamp albums.
     album_url: str = ""
     # Stable integer PK of the albums row; 0 for missing-album virtual entries.
@@ -2317,6 +2333,10 @@ class LibraryIndex:
     def remove_download(self, sale_item_id: str) -> "list[Path]":
         """Revert a downloaded collection item back to streaming state.
 
+        0. Fail-safe guard: raise NoStreamableVersionError (before touching
+           anything) unless every local track has a matching bandcamp:// row to
+           fall back to. The daemon materializes those stream rows on demand
+           first; if it cannot, we must not delete the download (KAMP-527).
         1. Migrates play counts from local track rows to their matching streaming
            counterparts (MAX wins) so counts accumulated during local playback are
            not lost.
@@ -2325,7 +2345,9 @@ class LibraryIndex:
         4. Sets bandcamp_collection.mode = 'remote'.
 
         Returns the list of local file paths that the caller should delete from
-        the filesystem (file deletion is handled in the server layer).
+        the filesystem (file deletion is handled in the server layer). All
+        mutations run under rollback discipline so a mid-flight failure never
+        leaks a partial delete into a later commit on this pooled connection.
         """
         row = self._conn.execute(
             "SELECT id FROM albums WHERE sale_item_id = ?", (sale_item_id,)
@@ -2346,61 +2368,102 @@ class LibraryIndex:
             (album_id,),
         ).fetchall()
 
-        # Migrate play counts (MAX wins) and favorites (OR wins) to streaming rows.
-        for r in local_rows:
-            self._conn.execute(
-                """
-                UPDATE tracks
-                SET play_count = MAX(play_count, ?),
-                    favorite   = MAX(favorite, ?)
-                WHERE album_id = ?
-                  AND track_number = ?
-                  AND disc_number = ?
-                  AND (file_path LIKE 'bandcamp://%' OR file_path LIKE 'bandcamp:\\%')
-                """,
-                (
-                    r["play_count"],
-                    r["favorite"],
-                    album_id,
-                    r["track_number"],
-                    r["disc_number"],
-                ),
+        # KAMP-527 fail-safe: refuse to delete unless EVERY local track has a
+        # bandcamp:// counterpart (matched on track_number + disc_number) to fall
+        # back to. Checked before any mutation so an abort touches nothing. This
+        # covers the download-mode case (no stream rows at all), a partial
+        # materialization, and multi-disc downloads whose disc>1 tracks have no
+        # stream row. Without it the album would be deleted with no way back.
+        uncovered = self._conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM tracks l
+            WHERE l.album_id = ?
+              AND l.file_path NOT LIKE 'bandcamp://%'
+              AND l.file_path NOT LIKE 'bandcamp:\\%'
+              AND NOT EXISTS (
+                  SELECT 1 FROM tracks s
+                  WHERE s.album_id = l.album_id
+                    AND s.track_number = l.track_number
+                    AND s.disc_number = l.disc_number
+                    AND (s.file_path LIKE 'bandcamp://%'
+                         OR s.file_path LIKE 'bandcamp:\\%')
+              )
+            """,
+            (album_id,),
+        ).fetchone()["n"]
+        if uncovered > 0:
+            raise NoStreamableVersionError(
+                f"{uncovered} track(s) for sale_item_id={sale_item_id} have no "
+                "streamable counterpart; refusing to delete the download."
             )
 
         file_paths = [Path(r["file_path"]) for r in local_rows]
 
-        # Remove local track rows.
-        self._conn.execute(
-            """
-            DELETE FROM tracks
-            WHERE album_id = ?
-              AND file_path NOT LIKE 'bandcamp://%'
-              AND file_path NOT LIKE 'bandcamp:\\%'
-            """,
-            (album_id,),
-        )
+        # All mutations run under a single transaction guarded by rollback: a
+        # mid-flight failure must NOT leave a partial delete uncommitted on this
+        # thread-local connection, or the next unrelated commit() would flush it
+        # and silently destroy the local tracks (KAMP-527 deferred-commit bug).
+        try:
+            # Migrate play counts (MAX wins) and favorites (OR wins) to streaming rows.
+            for r in local_rows:
+                self._conn.execute(
+                    """
+                    UPDATE tracks
+                    SET play_count = MAX(play_count, ?),
+                        favorite   = MAX(favorite, ?)
+                    WHERE album_id = ?
+                      AND track_number = ?
+                      AND disc_number = ?
+                      AND (file_path LIKE 'bandcamp://%' OR file_path LIKE 'bandcamp:\\%')
+                    """,
+                    (
+                        r["play_count"],
+                        r["favorite"],
+                        album_id,
+                        r["track_number"],
+                        r["disc_number"],
+                    ),
+                )
 
-        # Refresh albums.source — same subquery pattern as set_track_source_for_item.
-        self._conn.execute(
-            """
-            UPDATE albums SET source = (
-                SELECT CASE
-                    WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
-                         AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                    THEN 'local'
-                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                    ELSE MIN(t.source)
-                END
-                FROM tracks t WHERE t.album_id = albums.id
+            # Remove local track rows.
+            self._conn.execute(
+                """
+                DELETE FROM tracks
+                WHERE album_id = ?
+                  AND file_path NOT LIKE 'bandcamp://%'
+                  AND file_path NOT LIKE 'bandcamp:\\%'
+                """,
+                (album_id,),
             )
-            WHERE id = ?
-            """,
-            (album_id,),
-        )
 
-        self.set_collection_item_mode(sale_item_id, "remote")
-        self._rebuild_fts()
-        self._conn.commit()
+            # Refresh albums.source — same subquery pattern as set_track_source_for_item.
+            self._conn.execute(
+                """
+                UPDATE albums SET source = (
+                    SELECT CASE
+                        WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
+                             AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
+                        THEN 'local'
+                        WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                        ELSE MIN(t.source)
+                    END
+                    FROM tracks t WHERE t.album_id = albums.id
+                )
+                WHERE id = ?
+                """,
+                (album_id,),
+            )
+
+            self._conn.execute(
+                "UPDATE bandcamp_collection SET mode = 'remote', synced_at = NULL"
+                " WHERE sale_item_id = ?",
+                (sale_item_id,),
+            )
+            self._rebuild_fts()
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
         if self.on_fields_changed:
             self.on_fields_changed(
                 {
@@ -2412,6 +2475,26 @@ class LibraryIndex:
             )
 
         return file_paths
+
+    def materialize_stream_tracks(
+        self, sale_item_id: str, tracks: "list[Track]"
+    ) -> int:
+        """Upsert on-demand bandcamp:// stream rows for a downloaded album.
+
+        Used by the DELETE-download endpoint (KAMP-527) to create the streamable
+        representation a download-mode album never had, so remove_download has
+        something to fall back to. Stamps *sale_item_id* on each Track so
+        upsert_many links them by identity to the EXISTING album row rather than
+        forking a new name-keyed album (KAMP-523 identity path). upsert_many
+        already carries rollback discipline, so a mid-flight failure leaves no
+        partial writes on this connection. Returns the number of tracks upserted.
+        """
+        if not tracks:
+            return 0
+        for t in tracks:
+            t.sale_item_id = str(sale_item_id)
+        self.upsert_many(tracks)
+        return len(tracks)
 
     def reset_collection_sync_state(self) -> None:
         """Set synced_at = NULL for all rows so the next sync re-downloads everything."""
@@ -2590,10 +2673,24 @@ class LibraryIndex:
         self.upsert_many([track])
 
     def upsert_many(self, tracks: list[Track]) -> None:
-        """Insert or replace multiple tracks in a single transaction."""
+        """Insert or replace multiple tracks in a single transaction.
+
+        Wrapped in rollback discipline: a mid-flight failure (FK violation, a
+        locked database after the busy timeout, disk error) must not leave the
+        partial writes uncommitted on this thread-local connection, or the next
+        unrelated commit() would flush them (the KAMP-527 deferred-commit bug,
+        also fixed in remove_download).
+        """
         if not tracks:
             return
+        try:
+            self._upsert_many(tracks)
+        except Exception:
+            self._conn.rollback()
+            raise
 
+    def _upsert_many(self, tracks: list[Track]) -> None:
+        """Body of upsert_many; see the wrapper for rollback discipline."""
         named = [t for t in tracks if t.album]
 
         # KAMP-523: resolve Bandcamp provenance up front. A track carrying a
@@ -3698,6 +3795,8 @@ class LibraryIndex:
                 CASE WHEN bc.mode = 'local' THEN 1 ELSE 0 END AS in_bc,
                 -- is_preorder: True when the album is a Bandcamp pre-order (KAMP-423).
                 CASE WHEN bc.mode = 'preorder' THEN 1 ELSE 0 END AS is_preorder,
+                -- num_streamable_tracks: 0 => no streamable version (KAMP-527).
+                COALESCE(bc.num_streamable_tracks, 0) AS num_streamable_tracks,
                 -- album_url: Bandcamp page URL for sharing (KAMP-367).
                 COALESCE(bc.album_url, '') AS album_url,
                 -- display overrides for streaming albums (KAMP-467).
@@ -3732,6 +3831,7 @@ class LibraryIndex:
                 t.favorite          AS has_favorite_track,
                 0                   AS in_bc,
                 0                   AS is_preorder,
+                0                   AS num_streamable_tracks,
                 ''                  AS album_url,
                 NULL                AS display_album,
                 NULL                AS display_album_artist,
@@ -3760,6 +3860,7 @@ class LibraryIndex:
                 has_remote_tracks=r["album_source"] != "local",
                 in_bandcamp_collection=bool(r["in_bc"]),
                 is_preorder=bool(r["is_preorder"]),
+                num_streamable_tracks=r["num_streamable_tracks"],
                 album_url=r["album_url"] or "",
                 sale_item_id=r["sale_item_id"],
                 display_album=r["display_album"],

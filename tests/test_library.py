@@ -6550,6 +6550,248 @@ class TestRemoveDownload:
 
         assert result == []
 
+    # --- KAMP-527: fail-safe guard when no streamable representation exists ---
+
+    def _setup_download_only_album(self, tmp_path: Path) -> LibraryIndex:
+        """A downloaded album with local tracks but NO bandcamp:// stream rows.
+
+        This is the download-mode population from KAMP-527: provenance is linked
+        (albums.sale_item_id set) but the streaming Track rows were never created
+        because the user bought+downloaded rather than streamed.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item(
+            "sid99",
+            mode="local",
+            band_name="The Artist",
+            item_title="The Album",
+            album_url="https://the-artist.bandcamp.com/album/the-album",
+            num_streamable_tracks=2,
+            synced_at=1.0,
+        )
+
+        local1 = _sample_track(tmp_path / "track1.mp3")
+        local1.track_number = 1
+        local2 = _sample_track(tmp_path / "track2.mp3")
+        local2.track_number = 2
+        index.upsert_many([local1, local2])
+
+        index._conn.execute(
+            "UPDATE albums SET sale_item_id = 'sid99', source = 'local'"
+            " WHERE album = 'The Album'"
+        )
+        index._conn.commit()
+        return index
+
+    def test_remove_download_raises_when_no_stream_rows(self, tmp_path: Path) -> None:
+        from kamp_core.library import NoStreamableVersionError
+
+        index = self._setup_download_only_album(tmp_path)
+        with pytest.raises(NoStreamableVersionError):
+            index.remove_download("sid99")
+
+        # Nothing was deleted — the two local tracks remain.
+        remaining = index._conn.execute(
+            "SELECT COUNT(*) AS n FROM tracks WHERE file_path NOT LIKE 'bandcamp://%'"
+        ).fetchone()["n"]
+        index.close()
+        assert remaining == 2
+
+    def test_remove_download_no_stream_rows_deferred_commit_safe(
+        self, tmp_path: Path
+    ) -> None:
+        """The aborted removal must roll back so a LATER unrelated commit on the
+        same (thread-local) connection does not flush a partial deletion.
+        """
+        from kamp_core.library import NoStreamableVersionError
+
+        index = self._setup_download_only_album(tmp_path)
+        with pytest.raises(NoStreamableVersionError):
+            index.remove_download("sid99")
+
+        # Simulate the next unrelated write + commit on the same connection.
+        index._conn.execute(
+            "UPDATE bandcamp_collection SET synced_at = 2.0 WHERE sale_item_id = 'sid99'"
+        )
+        index._conn.commit()
+
+        remaining = index._conn.execute(
+            "SELECT COUNT(*) AS n FROM tracks WHERE file_path NOT LIKE 'bandcamp://%'"
+        ).fetchone()["n"]
+        index.close()
+        assert remaining == 2
+
+    def test_remove_download_partial_stream_rows_raises(self, tmp_path: Path) -> None:
+        """A stream counterpart for only some local tracks is still unsafe: the
+        uncovered local track would be lost, so the whole op aborts.
+        """
+        from kamp_core.library import NoStreamableVersionError
+
+        index = self._setup_download_only_album(tmp_path)
+        # Materialize a stream row for track 1 only.
+        streaming1 = _sample_track(Path("bandcamp://sid99/1"))
+        streaming1.track_number = 1
+        streaming1.source = "bandcamp"
+        streaming1.sale_item_id = "sid99"
+        index.upsert_many([streaming1])
+
+        with pytest.raises(NoStreamableVersionError):
+            index.remove_download("sid99")
+
+        remaining = index._conn.execute(
+            "SELECT COUNT(*) AS n FROM tracks WHERE file_path NOT LIKE 'bandcamp://%'"
+        ).fetchone()["n"]
+        index.close()
+        assert remaining == 2
+
+    def test_remove_download_multidisc_local_without_stream_raises(
+        self, tmp_path: Path
+    ) -> None:
+        """A local disc-2 track has no stream counterpart (fetch_album_tracks only
+        ever yields disc 1), so removal must abort rather than silently lose it.
+        """
+        from kamp_core.library import NoStreamableVersionError
+
+        index = self._setup_download_only_album(tmp_path)
+        # Give the album a matching stream row for disc 1 tracks…
+        for n in (1, 2):
+            s = _sample_track(Path(f"bandcamp://sid99/{n}"))
+            s.track_number = n
+            s.source = "bandcamp"
+            s.sale_item_id = "sid99"
+            index.upsert_many([s])
+        # …then add a disc-2 local track with no stream counterpart.
+        d2 = _sample_track(tmp_path / "disc2track1.mp3")
+        d2.track_number = 1
+        d2.disc_number = 2
+        index.upsert_many([d2])
+        index._conn.execute(
+            "UPDATE albums SET sale_item_id = 'sid99', source = 'local'"
+            " WHERE album = 'The Album'"
+        )
+        index._conn.commit()
+
+        with pytest.raises(NoStreamableVersionError):
+            index.remove_download("sid99")
+
+        remaining = index._conn.execute(
+            "SELECT COUNT(*) AS n FROM tracks WHERE file_path NOT LIKE 'bandcamp://%'"
+        ).fetchone()["n"]
+        index.close()
+        assert remaining == 3
+
+    def test_materialize_stream_tracks_attaches_to_existing_album(
+        self, tmp_path: Path
+    ) -> None:
+        """Materialized stream rows link by identity to the existing album row
+        (no fork) so remove_download can then migrate + revert cleanly.
+        """
+        index = self._setup_download_only_album(tmp_path)
+        album_id = index._conn.execute(
+            "SELECT id FROM albums WHERE sale_item_id = 'sid99'"
+        ).fetchone()["id"]
+
+        s1 = _sample_track(Path("bandcamp://sid99/1"))
+        s1.track_number = 1
+        s1.source = "bandcamp"
+        s2 = _sample_track(Path("bandcamp://sid99/2"))
+        s2.track_number = 2
+        s2.source = "bandcamp"
+        n = index.materialize_stream_tracks("sid99", [s1, s2])
+
+        # No duplicate album row, and the stream rows joined the existing album.
+        album_count = index._conn.execute(
+            "SELECT COUNT(*) AS n FROM albums WHERE sale_item_id = 'sid99'"
+        ).fetchone()["n"]
+        stream_album_ids = [
+            r["album_id"]
+            for r in index._conn.execute(
+                "SELECT album_id FROM tracks WHERE file_path LIKE 'bandcamp://sid99/%'"
+            ).fetchall()
+        ]
+        index.close()
+        assert n == 2
+        assert album_count == 1
+        assert stream_album_ids == [album_id, album_id]
+
+    def test_remove_download_succeeds_after_materialize(self, tmp_path: Path) -> None:
+        """End-to-end: materialize then remove_download reverts to streaming."""
+        index = self._setup_download_only_album(tmp_path)
+        s1 = _sample_track(Path("bandcamp://sid99/1"))
+        s1.track_number = 1
+        s1.source = "bandcamp"
+        s2 = _sample_track(Path("bandcamp://sid99/2"))
+        s2.track_number = 2
+        s2.source = "bandcamp"
+        index.materialize_stream_tracks("sid99", [s1, s2])
+
+        paths = index.remove_download("sid99")
+
+        local_remaining = index._conn.execute(
+            "SELECT COUNT(*) AS n FROM tracks WHERE file_path NOT LIKE 'bandcamp://%'"
+        ).fetchone()["n"]
+        source = index._conn.execute(
+            "SELECT source FROM albums WHERE sale_item_id = 'sid99'"
+        ).fetchone()["source"]
+        index.close()
+        assert len(paths) == 2
+        assert local_remaining == 0
+        assert source == "bandcamp"
+
+    def test_materialize_stream_tracks_empty_is_noop(self, tmp_path: Path) -> None:
+        index = self._setup_download_only_album(tmp_path)
+        assert index.materialize_stream_tracks("sid99", []) == 0
+        index.close()
+
+    def test_remove_download_rolls_back_on_mid_transaction_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """If a mutation fails after the guard passes, the partial delete must be
+        rolled back so a later unrelated commit cannot flush it (KAMP-527).
+        """
+        index = self._setup_downloaded_album(tmp_path)  # has stream + local rows
+
+        # Force a failure late in the transaction, after the DELETE has run.
+        def _boom() -> None:
+            raise RuntimeError("simulated failure during remove_download")
+
+        with patch.object(index, "_rebuild_fts", _boom):
+            with pytest.raises(RuntimeError):
+                index.remove_download("sid42")
+
+        # The next unrelated write + commit must NOT flush the aborted delete.
+        index._conn.execute(
+            "UPDATE bandcamp_collection SET synced_at = 9.0 WHERE sale_item_id = 'sid42'"
+        )
+        index._conn.commit()
+
+        local_remaining = index._conn.execute(
+            "SELECT COUNT(*) AS n FROM tracks WHERE file_path NOT LIKE 'bandcamp://%'"
+        ).fetchone()["n"]
+        index.close()
+        assert local_remaining == 2
+
+    def test_upsert_many_rolls_back_on_mid_transaction_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """upsert_many carries the same rollback discipline: a mid-flight failure
+        leaves no partial writes to leak into the next commit (KAMP-527).
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        t1 = _sample_track(tmp_path / "a.mp3")
+        t1.track_number = 1
+
+        with patch.object(index, "_rebuild_fts", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                index.upsert_many([t1])
+
+        # Nothing from the aborted upsert should survive a later commit.
+        index._conn.execute("PRAGMA user_version = 1")  # any harmless write
+        index._conn.commit()
+        n = index._conn.execute("SELECT COUNT(*) AS n FROM tracks").fetchone()["n"]
+        index.close()
+        assert n == 0
+
 
 class TestMigrationV23:
     """v22 → v23: download_queue table created on upgrade from v22."""

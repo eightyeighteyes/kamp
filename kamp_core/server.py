@@ -47,6 +47,7 @@ from kamp_core.library import (
     LibraryScanner,
     LibraryStats,
     MagicCriteria,
+    NoStreamableVersionError,
     Track,
     _canonical_track_key,
     extract_art,
@@ -293,6 +294,9 @@ class AlbumOut(BaseModel):
     sale_item_id: str | None = None
     # True when the album is a Bandcamp pre-order (some tracks not yet released).
     is_preorder: bool = False
+    # Streamable-track count Bandcamp reports; 0 => no streamable version, so the
+    # UI hides "Remove download" (KAMP-527). Snapshot; the server re-verifies.
+    num_streamable_tracks: int = 0
     # Bandcamp album page URL — non-empty for Bandcamp albums (KAMP-367).
     album_url: str = ""
     # User-set display overrides for streaming albums (KAMP-467). None means no override.
@@ -788,6 +792,61 @@ def _validate_proxy_url(url: str) -> str:
     return url
 
 
+def _materialize_stream_tracks_or_422(
+    index: LibraryIndex,
+    item: dict[str, Any],
+    get_bandcamp_session: "Callable[[], dict[str, Any] | None] | None",
+) -> None:
+    """Fetch + upsert bandcamp:// stream rows for a download-mode album (KAMP-527).
+
+    Called from the DELETE-download endpoint before any deletion so a downloaded
+    album gains the streamable representation it never had. Any failure — no
+    session, no album_url, network/parse error, or an empty result (Bandcamp has
+    no streamable version) — raises HTTP 422 so the caller deletes nothing. The
+    underlying upsert carries its own rollback discipline.
+    """
+    album_url = item.get("album_url") or ""
+    sale_item_id = str(item.get("sale_item_id") or "")
+    session_data = get_bandcamp_session() if get_bandcamp_session else None
+    if not session_data or not album_url:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Log in to Bandcamp to revert this download — a streamable "
+                "version must be fetched before the local files are removed."
+            ),
+        )
+    from kamp_daemon.bandcamp import (  # noqa: PLC0415
+        _make_requests_session,
+        fetch_album_tracks,
+    )
+
+    try:
+        session = _make_requests_session(session_data)
+        tracks = fetch_album_tracks(
+            album_url,
+            int(sale_item_id),
+            item.get("band_name") or "",
+            item.get("item_title") or "",
+            session,
+        )
+    except Exception as exc:  # network, parse, or auth failure
+        raise HTTPException(
+            status_code=422,
+            detail="Could not fetch the streamable version from Bandcamp.",
+        ) from exc
+
+    if not tracks:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No streamable version available for this album. Removing the "
+                "download would remove it from your library, so it was kept."
+            ),
+        )
+    index.materialize_stream_tracks(sale_item_id, tracks)
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -1167,6 +1226,7 @@ def create_app(
                 has_remote_tracks=a.has_remote_tracks,
                 sale_item_id=a.sale_item_id,
                 is_preorder=a.is_preorder,
+                num_streamable_tracks=a.num_streamable_tracks,
                 album_url=a.album_url,
                 display_album=a.display_album,
                 display_album_artist=a.display_album_artist,
@@ -1975,6 +2035,7 @@ def create_app(
             has_remote_tracks=result.has_remote_tracks,
             sale_item_id=result.sale_item_id,
             is_preorder=result.is_preorder,
+            num_streamable_tracks=result.num_streamable_tracks,
             album_url=result.album_url,
             display_album=result.display_album,
             display_album_artist=result.display_album_artist,
@@ -2262,6 +2323,7 @@ def create_app(
                     has_remote_tracks=a.has_remote_tracks,
                     sale_item_id=a.sale_item_id,
                     is_preorder=a.is_preorder,
+                    num_streamable_tracks=a.num_streamable_tracks,
                     album_url=a.album_url,
                     display_album=a.display_album,
                     display_album_artist=a.display_album_artist,
@@ -2391,6 +2453,7 @@ def create_app(
                     has_remote_tracks=a.has_remote_tracks,
                     sale_item_id=a.sale_item_id,
                     is_preorder=a.is_preorder,
+                    num_streamable_tracks=a.num_streamable_tracks,
                     album_url=a.album_url,
                     display_album=a.display_album,
                     display_album_artist=a.display_album_artist,
@@ -2550,6 +2613,7 @@ def create_app(
                 has_remote_tracks=a.has_remote_tracks,
                 sale_item_id=a.sale_item_id,
                 is_preorder=a.is_preorder,
+                num_streamable_tracks=a.num_streamable_tracks,
                 album_url=a.album_url,
                 display_album=a.display_album,
                 display_album_artist=a.display_album_artist,
@@ -2966,8 +3030,12 @@ def create_app(
 
         Returns 404 if the item is not in the collection.
         Returns 409 if a track from this album is currently playing.
+        Returns 422 if no streamable version can be produced (logged out,
+        network/parse failure, or no streamable tracks) — in which case nothing
+        is deleted.
         """
-        if not index.get_collection_item(sale_item_id):
+        item = index.get_collection_item(sale_item_id)
+        if not item:
             raise HTTPException(status_code=404, detail="Collection item not found")
 
         local_tracks = index.local_tracks_for_sale_item_id(sale_item_id)
@@ -2987,6 +3055,16 @@ def create_app(
                 ),
             )
 
+        # KAMP-527: download-mode albums have no bandcamp:// stream rows to fall
+        # back to. Materialize them on demand (a network call) BEFORE the queue
+        # swap and delete — this is why the daemon-side endpoint owns it rather
+        # than the pure LibraryIndex method. If we cannot (logged out, fetch
+        # fails, or Bandcamp has no streamable version), abort with 422 and
+        # delete nothing; remove_download's own per-track guard is the final
+        # safety net that still refuses to strand any local track.
+        if not index.has_remote_album_tracks(sale_item_id):
+            _materialize_stream_tracks_or_422(index, item, get_bandcamp_session)
+
         # Swap every local track in the queue to its streaming equivalent so
         # that on restart the queue can be fully restored from the DB.  Without
         # this, only the swapped current/next entries survive; all other queue
@@ -3001,7 +3079,18 @@ def create_app(
             # is released before we delete the file from disk.
             engine.unload()
 
-        file_paths = index.remove_download(sale_item_id)
+        try:
+            file_paths = index.remove_download(sale_item_id)
+        except NoStreamableVersionError as exc:
+            # The per-track guard refused: at least one local track has no stream
+            # counterpart (e.g. a multi-disc download). Nothing was deleted.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No streamable version available for this album. Removing the "
+                    "download would remove it from your library, so it was kept."
+                ),
+            ) from exc
 
         for fp in file_paths:
             try:

@@ -3047,13 +3047,30 @@ class LibraryIndex:
                 plain_paths,
             )
 
+        # Step 3c (KAMP-529): attach un-provenanced loose local singles. A
+        # standalone single's local file has an empty album tag, so Step 3b
+        # skips it (album != '') and it has no album row to sid-link — it lingers
+        # as a loose track duplicating the streaming single. Re-link it to its
+        # streaming single-album by identity (local.title == the single-album's
+        # album field). Shared with the v42 migration via one helper.
+        single_paths = [
+            _canonical_track_key(t.file_path)
+            for t in tracks
+            if t.source == "local"
+            and not t.album.strip()
+            and t.album_artist.strip()
+            and t.title.strip()
+            and not _provenanced(t)
+        ]
+        touched_from_singles = self._attach_loose_local_singles(single_paths)
+
         # Step 4: refresh denormalized aggregate columns on the touched album rows.
         # Run once per batch (not per track) using a correlated subquery. Include
-        # albums reached only through provenance linking (prov_album_ids) — a
-        # nameless single's target album is not in file_paths (built from named),
-        # yet its source/aggregates must be recomputed now that a local track
-        # attached to it.
-        touched_album_ids: set[int] = set(prov_album_ids)
+        # albums reached only through provenance linking (prov_album_ids) and
+        # single re-linking (touched_from_singles) — a nameless single's target
+        # album is not in file_paths (built from named), yet its source/aggregates
+        # must be recomputed now that a local track attached to it.
+        touched_album_ids: set[int] = set(prov_album_ids) | touched_from_singles
         if file_paths:
             all_placeholders = ",".join("?" * len(file_paths))
             touched_album_ids.update(
@@ -3124,6 +3141,126 @@ class LibraryIndex:
                     "track.year",
                 }
             )
+
+    def _attach_loose_local_singles(
+        self, file_paths: "list[str] | None" = None
+    ) -> set[int]:
+        """Attach un-provenanced loose local singles to their streaming single-album (KAMP-529).
+
+        A standalone Bandcamp single's local file carries an empty album tag, so
+        the (album_artist, album) name-match in ``_upsert_many`` (Step 3b) skips
+        it and it has no album row to sid-link — it lingers as a loose track that
+        duplicates the streaming single kamp indexes for the same purchase. The
+        streaming single is a 1-track album whose ``album`` field equals the item
+        title, so the match key already lives there: ``local.title`` ==
+        ``streaming_single_album.album``.
+
+        Attach only on an *unambiguous* identity match: non-empty
+        album_artist/title, the streaming side is a genuine 1-track ``bandcamp``
+        single, and exactly one candidate exists on each side of the
+        (album_artist, title) pair — otherwise skip and log. ``sale_item_id`` is
+        deliberately NOT stamped on the local row: the album already carries it,
+        and stamping a never-downloaded row would create a second claimant for
+        the KAMP-523 download re-attach path. Shared by the scan path and the v42
+        migration so the two never drift.
+
+        When *file_paths* is given, only those local rows are considered (scan
+        path); ``None`` scans every loose local single (one-shot migration).
+        Idempotent: an attached single gains an album_id and drops out of the
+        candidate set. Returns the set of album_ids that gained a track.
+        """
+        params: list[Any] = []
+        scope = ""
+        if file_paths is not None:
+            if not file_paths:
+                return set()
+            scope = f" AND t.file_path IN ({','.join('?' * len(file_paths))})"
+            params = list(file_paths)
+        candidates = self._conn.execute(
+            f"""
+            SELECT t.id, t.file_path, t.album_artist, t.title
+            FROM tracks t
+            WHERE t.source = 'local'
+              AND t.album_id IS NULL
+              AND TRIM(t.album) = ''
+              AND TRIM(t.album_artist) != ''
+              AND TRIM(t.title) != ''
+              {scope}
+            """,
+            params,
+        ).fetchall()
+
+        touched: set[int] = set()
+        for c in candidates:
+            # Ambiguity guard (DB-wide, not batch-scoped): more than one loose
+            # local single sharing this (album_artist, title) is not safe to
+            # auto-attach — leave all of them untouched.
+            local_dupes = self._conn.execute(
+                """
+                SELECT COUNT(*) FROM tracks
+                WHERE source = 'local' AND album_id IS NULL AND TRIM(album) = ''
+                  AND TRIM(album_artist) = TRIM(?) COLLATE NOCASE
+                  AND TRIM(title)        = TRIM(?) COLLATE NOCASE
+                """,
+                (c["album_artist"], c["title"]),
+            ).fetchone()[0]
+            if local_dupes != 1:
+                logger.info(
+                    "KAMP-529 single-attach: skipping ambiguous local single"
+                    " (%s - %s): %d loose candidates",
+                    c["album_artist"],
+                    c["title"],
+                    local_dupes,
+                )
+                continue
+            # Streaming single-album: exactly one track, a bandcamp row, whose
+            # album equals this single's title under the same artist.
+            matches = self._conn.execute(
+                """
+                SELECT a.id FROM albums a
+                WHERE TRIM(a.album_artist) = TRIM(?) COLLATE NOCASE
+                  AND TRIM(a.album)        = TRIM(?) COLLATE NOCASE
+                  AND (SELECT COUNT(*) FROM tracks x WHERE x.album_id = a.id) = 1
+                  AND EXISTS (
+                        SELECT 1 FROM tracks x
+                        WHERE x.album_id = a.id AND x.source = 'bandcamp'
+                      )
+                """,
+                (c["album_artist"], c["title"]),
+            ).fetchall()
+            if len(matches) != 1:
+                if len(matches) > 1:
+                    logger.info(
+                        "KAMP-529 single-attach: skipping ambiguous streaming"
+                        " match for (%s - %s): %d candidate albums",
+                        c["album_artist"],
+                        c["title"],
+                        len(matches),
+                    )
+                continue
+            album_id = matches[0]["id"]
+            # Align track_number/disc to the streaming track so per-track joins
+            # (favorite/play-count inheritance, remove_download) line up.
+            stream = self._conn.execute(
+                "SELECT track_number, disc_number FROM tracks"
+                " WHERE album_id = ? AND source = 'bandcamp' LIMIT 1",
+                (album_id,),
+            ).fetchone()
+            self._conn.execute(
+                "UPDATE tracks SET album_id = ?, track_number = ?, disc_number = ?"
+                " WHERE id = ?",
+                (album_id, stream["track_number"], stream["disc_number"], c["id"]),
+            )
+            touched.add(album_id)
+            logger.info(
+                "KAMP-529 single-attach: linked local single '%s - %s'"
+                " (track id %d) to streaming album %d",
+                c["album_artist"],
+                c["title"],
+                c["id"],
+                album_id,
+            )
+        return touched
 
     def move_track(
         self,

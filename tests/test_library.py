@@ -10872,6 +10872,197 @@ class TestPendingIngest:
         index.close()
 
 
+class TestLooseSingleAttach:
+    """KAMP-529 Step 3c: an un-provenanced loose local single (empty album tag)
+    re-links by identity to its streaming single-album, so the two stop
+    duplicating. Negative cases assert we never merge on an ambiguous key."""
+
+    def _stream_single(
+        self,
+        sid: str,
+        artist: str,
+        album_title: str,
+        title: "str | None" = None,
+    ) -> Track:
+        """A 1-track streaming (bandcamp) single-album whose album == item title."""
+        return Track(
+            file_path=Path(f"bandcamp://{sid}/1"),
+            title=title or album_title,
+            artist=artist,
+            album_artist=artist,
+            album=album_title,
+            release_date="",
+            track_number=1,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+
+    def _loose_local(self, path: Path, artist: str, title: str) -> Track:
+        """A user's loose local single: empty album tag, track_number 0."""
+        return Track(
+            file_path=path,
+            title=title,
+            artist=artist,
+            album_artist=artist,
+            album="",
+            release_date="",
+            track_number=0,
+            disc_number=1,
+            ext="flac",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="local",
+        )
+
+    def _album_id_of(self, index: LibraryIndex, path: Path) -> "int | None":
+        return index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = ?", (str(path),)
+        ).fetchone()[0]
+
+    def test_loose_single_attaches_to_streaming_album(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._stream_single("100", "Megahit", "Celebrity")])
+        stream_album = index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = 'bandcamp://100/1'"
+        ).fetchone()[0]
+
+        local = self._loose_local(tmp_path / "celebrity.flac", "Megahit", "Celebrity")
+        index.upsert_many([local])
+
+        # The local single now shares the streaming album and inherits track_number.
+        row = index._conn.execute(
+            "SELECT album_id, track_number FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "celebrity.flac"),),
+        ).fetchone()
+        assert row["album_id"] == stream_album
+        assert row["track_number"] == 1
+        # One album, and it no longer shows as a separate loose card.
+        assert len(_album_rows(index)) == 1
+        # Collapses everywhere: album view + search return the local row only.
+        detail = index.tracks_for_album("Megahit", "Celebrity")
+        assert len(detail) == 1 and detail[0].source == "local"
+        results = index.search("celebrity")
+        assert len(results) == 1 and results[0].source == "local"
+        index.close()
+
+    def test_prefix_titled_streaming_single_still_matches(self, tmp_path: Path) -> None:
+        """Bandcamp prefixes some single titles with 'Artist - '; the album field
+        stays clean, so matching on album (not track title) still links."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                self._stream_single(
+                    "101",
+                    "Neon Nox, Powernerd",
+                    "Duality",
+                    title="Neon Nox, Powernerd - Duality",
+                )
+            ]
+        )
+        local = self._loose_local(
+            tmp_path / "duality.flac", "Neon Nox, Powernerd", "Duality"
+        )
+        index.upsert_many([local])
+        assert self._album_id_of(index, tmp_path / "duality.flac") is not None
+        assert len(index.tracks_for_album("Neon Nox, Powernerd", "Duality")) == 1
+        index.close()
+
+    def test_no_attach_when_album_is_multitrack(self, tmp_path: Path) -> None:
+        """album.album == local.title but the album is NOT a single (>1 track):
+        the local file must not be absorbed into a multi-track album."""
+        index = LibraryIndex(tmp_path / "library.db")
+        # Two bandcamp tracks under one album titled "Celebrity" → a 2-track album,
+        # not a single. Track 2 gets a distinct path/number.
+        track2 = Track(
+            file_path=Path("bandcamp://102/2"),
+            title="Another",
+            artist="Various",
+            album_artist="Various",
+            album="Celebrity",
+            release_date="",
+            track_number=2,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        index.upsert_many([self._stream_single("102", "Various", "Celebrity"), track2])
+        local = self._loose_local(tmp_path / "c.flac", "Various", "Celebrity")
+        index.upsert_many([local])
+        assert self._album_id_of(index, tmp_path / "c.flac") is None
+        index.close()
+
+    def test_no_attach_when_album_artist_blank(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._stream_single("103", "", "Untitled")])
+        local = self._loose_local(tmp_path / "u.flac", "", "Untitled")
+        index.upsert_many([local])
+        assert self._album_id_of(index, tmp_path / "u.flac") is None
+        index.close()
+
+    def test_no_attach_when_two_loose_singles_share_identity(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._stream_single("104", "Megahit", "Celebrity")])
+        a = self._loose_local(tmp_path / "a.flac", "Megahit", "Celebrity")
+        b = self._loose_local(tmp_path / "b.flac", "Megahit", "Celebrity")
+        index.upsert_many([a, b])
+        assert self._album_id_of(index, tmp_path / "a.flac") is None
+        assert self._album_id_of(index, tmp_path / "b.flac") is None
+        index.close()
+
+    def test_no_attach_when_two_streaming_singles_match(self, tmp_path: Path) -> None:
+        """Two streaming single-albums TRIM/NOCASE-match the same title (they differ
+        only by trailing whitespace, which the albums UNIQUE index permits): the
+        match is ambiguous, so the loose single is left untouched."""
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid, album_name in (("200", "Celebrity"), ("201", "Celebrity ")):
+            index._conn.execute(
+                "INSERT INTO albums (album_artist, album, source) VALUES ('Megahit', ?, 'bandcamp')",
+                (album_name,),
+            )
+            aid = index._conn.execute(
+                "SELECT id FROM albums ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+            index._conn.execute(
+                "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+                " track_number, source, album_id) VALUES (?, 'Celebrity', 'Megahit',"
+                " 'Megahit', ?, 1, 'bandcamp', ?)",
+                (f"bandcamp://{sid}/1", album_name, aid),
+            )
+        index._conn.commit()
+        local = self._loose_local(tmp_path / "c.flac", "Megahit", "Celebrity")
+        index.upsert_many([local])
+        assert self._album_id_of(index, tmp_path / "c.flac") is None
+        index.close()
+
+    def test_attach_is_idempotent(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._stream_single("105", "Megahit", "Celebrity")])
+        local = self._loose_local(tmp_path / "celebrity.flac", "Megahit", "Celebrity")
+        index.upsert_many([local])
+        first = self._album_id_of(index, tmp_path / "celebrity.flac")
+        # A second pass (helper directly) must not move it or inflate the album.
+        touched = index._attach_loose_local_singles()
+        assert touched == set()
+        assert self._album_id_of(index, tmp_path / "celebrity.flac") == first
+        assert (
+            index._conn.execute(
+                "SELECT COUNT(*) FROM tracks WHERE album_id = ?", (first,)
+            ).fetchone()[0]
+            == 2
+        )
+        index.close()
+
+
 class TestHealForkedAlbums:
     def _downgrade_to_v38(self, db_path: Path) -> None:
         conn = sqlite3.connect(str(db_path))

@@ -3118,6 +3118,154 @@ class TestBandcampRemoveDownload:
         assert not album_dir.exists()
         assert artist_dir.exists()  # kept — other album still present
 
+    # --- KAMP-527: on-demand stream materialization for download-mode albums ---
+
+    def _download_only_item(self) -> dict[str, Any]:
+        return {
+            "sale_item_id": "42",
+            "mode": "local",
+            "band_name": "Artist",
+            "item_title": "Album",
+            "album_url": "https://artist.bandcamp.com/album/album",
+            "num_streamable_tracks": 2,
+        }
+
+    def test_materializes_stream_tracks_when_missing(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """A download-mode album with no stream rows fetches + materializes them
+        before remove_download runs."""
+        mock_index.get_collection_item.return_value = self._download_only_item()
+        mock_index.has_remote_album_tracks.return_value = False
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_index.remove_download.return_value = []
+        mock_engine.state.playing = False
+
+        fetched = [MagicMock(name="track1"), MagicMock(name="track2")]
+        with (
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_tracks", return_value=fetched
+            ) as fat,
+            patch("kamp_daemon.bandcamp._make_requests_session"),
+        ):
+            app = create_app(
+                index=mock_index,
+                engine=mock_engine,
+                queue=mock_queue,
+                get_bandcamp_session=lambda: {"cookies": []},
+            )
+            resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert resp.status_code == 200
+        fat.assert_called_once()
+        mock_index.materialize_stream_tracks.assert_called_once_with("42", fetched)
+        mock_index.remove_download.assert_called_once_with("42")
+
+    def test_returns_422_when_no_session_for_materialization(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        mock_index.get_collection_item.return_value = self._download_only_item()
+        mock_index.has_remote_album_tracks.return_value = False
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_engine.state.playing = False
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_bandcamp_session=lambda: None,
+        )
+        resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert resp.status_code == 422
+        mock_index.materialize_stream_tracks.assert_not_called()
+        mock_index.remove_download.assert_not_called()
+
+    def test_returns_422_when_no_streamable_version_available(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """fetch_album_tracks returning nothing => no streamable version; abort."""
+        mock_index.get_collection_item.return_value = self._download_only_item()
+        mock_index.has_remote_album_tracks.return_value = False
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_engine.state.playing = False
+
+        with (
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[]),
+            patch("kamp_daemon.bandcamp._make_requests_session"),
+        ):
+            app = create_app(
+                index=mock_index,
+                engine=mock_engine,
+                queue=mock_queue,
+                get_bandcamp_session=lambda: {"cookies": []},
+            )
+            resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert resp.status_code == 422
+        mock_index.materialize_stream_tracks.assert_not_called()
+        mock_index.remove_download.assert_not_called()
+
+    def test_returns_422_when_fetch_raises(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        mock_index.get_collection_item.return_value = self._download_only_item()
+        mock_index.has_remote_album_tracks.return_value = False
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_engine.state.playing = False
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_tracks",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("kamp_daemon.bandcamp._make_requests_session"),
+        ):
+            app = create_app(
+                index=mock_index,
+                engine=mock_engine,
+                queue=mock_queue,
+                get_bandcamp_session=lambda: {"cookies": []},
+            )
+            resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert resp.status_code == 422
+        mock_index.remove_download.assert_not_called()
+
+    def test_returns_422_when_remove_download_reports_no_streamable(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Stream rows appear present (skip materialize) but remove_download's own
+        per-track guard rejects the removal => surface a clean 422."""
+        from kamp_core.library import NoStreamableVersionError
+
+        mock_index.get_collection_item.return_value = self._download_only_item()
+        mock_index.has_remote_album_tracks.return_value = True
+        mock_index.local_tracks_for_sale_item_id.return_value = []
+        mock_index.streaming_track_for_local_id.return_value = None
+        mock_index.remove_download.side_effect = NoStreamableVersionError("nope")
+        mock_engine.state.playing = False
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
+
+        assert resp.status_code == 422
+
 
 # Bandcamp session-cookies endpoint
 # ---------------------------------------------------------------------------

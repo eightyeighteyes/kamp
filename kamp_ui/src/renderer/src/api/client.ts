@@ -60,6 +60,9 @@ export type Album = {
   sale_item_id?: string
   // True when this album is a Bandcamp pre-order (some tracks not yet released).
   is_preorder?: boolean
+  // Streamable-track count Bandcamp reports; 0 => no streamable version, so
+  // "Remove download" is hidden (it would strand the album) — KAMP-527.
+  num_streamable_tracks?: number
   // Bandcamp album page URL — non-empty for Bandcamp albums; used for sharing.
   album_url?: string
   // User-set display overrides for streaming albums (KAMP-467). Undefined means no override.

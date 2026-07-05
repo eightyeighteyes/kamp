@@ -562,10 +562,13 @@ class Syncer:
 
 
 def logout() -> None:
-    """Clear the Bandcamp session and collection state from the DB.
+    """Clear the Bandcamp session from the DB, preserving the collection ledger.
 
-    After logout the next sync will re-authenticate interactively and
-    re-examine the full collection.
+    Only the session is cleared. The bandcamp_collection table is the file→purchase
+    provenance map (which local files came from which sale_item_id, KAMP-528), so
+    wiping it on every logout needlessly destroys that mapping — and, with the FK
+    from provenanced albums/tracks, the bare DELETE would raise. The next sync after
+    re-authentication reconciles the ledger instead of rebuilding it from scratch.
     """
     from kamp_core.library import LibraryIndex
 
@@ -576,10 +579,9 @@ def logout() -> None:
         index = LibraryIndex(db_path)
         try:
             index.clear_session("bandcamp")
-            index.clear_bandcamp_collection()
         finally:
             index.close()
-        logger.info("Bandcamp logout: session and collection state cleared.")
+        logger.info("Bandcamp logout: session cleared; collection ledger preserved.")
 
     import shutil
 

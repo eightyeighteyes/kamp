@@ -4197,6 +4197,19 @@ class LibraryIndex:
             JOIN tracks t ON f.rowid = t.id
             LEFT JOIN albums al ON al.id = t.album_id
             WHERE tracks_fts MATCH ?
+              -- KAMP-529: local-wins collapse. Hide a streaming (bandcamp) row
+              -- when its album also holds a local track, so a downloaded track
+              -- surfaces once in search instead of doubling. Same album-level
+              -- rule as tracks_for_album; keyed on album_id (NULL-safe) and
+              -- source (Windows path-form safe), not on track_number.
+              AND NOT (
+                    t.source = 'bandcamp'
+                    AND t.album_id IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM tracks x
+                        WHERE x.album_id = t.album_id AND x.source = 'local'
+                    )
+                  )
             ORDER BY (t.favorite OR COALESCE(al.favorite, 0)) DESC, f.rank
             """,
             (fts_expr,),

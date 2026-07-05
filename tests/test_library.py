@@ -1553,6 +1553,80 @@ class TestSearch:
         assert results[0].album_artist == "ArtistB"
         assert results[1].album_artist == "ArtistA"
 
+    def test_search_hides_streaming_twin_when_local_in_same_album(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-529: when a local track and its bandcamp:// streaming twin share an
+        album, search returns only the local row — mirroring the album detail
+        view's local-wins collapse so downloaded tracks don't double in search."""
+        index = LibraryIndex(tmp_path / "library.db")
+        streaming = Track(
+            file_path=Path("bandcamp://555/1"),
+            title="Adrenaline",
+            artist="MAGNAVOLT",
+            album_artist="MAGNAVOLT",
+            album="EDGEZONE FM",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        local = Track(
+            file_path=tmp_path / "adrenaline.flac",
+            title="Adrenaline",
+            artist="MAGNAVOLT",
+            album_artist="MAGNAVOLT",
+            album="EDGEZONE FM",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="flac",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="local",
+        )
+        index.upsert_many([streaming, local])
+        results = index.search("adrenaline")
+        index.close()
+        assert len(results) == 1
+        assert results[0].source == "local"
+        assert not str(results[0].file_path).startswith("bandcamp://")
+
+    def test_search_keeps_streaming_row_when_album_has_no_local(
+        self, tmp_path: Path
+    ) -> None:
+        """A purely-streaming album (no local twin) still surfaces its bandcamp://
+        row in search — the collapse must not hide un-downloaded tracks."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                Track(
+                    file_path=Path("bandcamp://556/1"),
+                    title="Streaming Only",
+                    artist="MAGNAVOLT",
+                    album_artist="MAGNAVOLT",
+                    album="Remote Album",
+                    release_date="2020",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    source="bandcamp",
+                )
+            ]
+        )
+        results = index.search("streaming only")
+        index.close()
+        assert len(results) == 1
+        assert results[0].source == "bandcamp"
+
     def test_v1_database_migrated_to_current(self, tmp_path: Path) -> None:
         """Existing v1 databases are fully migrated (FTS + date columns) on open."""
         import sqlite3 as _sqlite3

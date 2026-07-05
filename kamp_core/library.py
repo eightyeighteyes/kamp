@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 41
+_SCHEMA_VERSION = 42
 
 
 class NoStreamableVersionError(Exception):
@@ -1609,7 +1609,57 @@ class LibraryIndex:
             # and stamped by upsert_many.
             self._conn.execute("UPDATE schema_version SET version = 41")
             self._conn.commit()
-            version = 41  # noqa: F841
+            version = 41
+
+        if version < 42:
+            # v41 → v42: re-link un-provenanced loose local singles to their
+            # streaming single-album (KAMP-529). A pre-existing standalone single
+            # (empty album tag, no album row) duplicates the streaming single kamp
+            # indexes for the same purchase. upsert_many Step 3c handles this going
+            # forward, but an unchanged file is never re-scanned, so heal the rows
+            # already on disk once. Guarded on the columns the helper needs (the
+            # narrow migration-unit-test schemas build a partial tracks table).
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if {"album_id", "source", "album", "album_artist", "title"} <= track_cols:
+                has_loose = self._conn.execute(
+                    "SELECT 1 FROM tracks WHERE source = 'local' AND album_id IS NULL"
+                    " AND TRIM(album) = '' AND TRIM(album_artist) != ''"
+                    " AND TRIM(title) != '' LIMIT 1"
+                ).fetchone()
+                # Back up only when there is something to touch (mirrors the v39
+                # heal); abort the heal if the snapshot fails.
+                if has_loose and self._backup_db("KAMP-529 heal"):
+                    touched = self._attach_loose_local_singles()
+                    logger.info(
+                        "KAMP-529 heal: re-linked loose local singles into"
+                        " %d album(s)",
+                        len(touched),
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 42")
+            self._conn.commit()
+            version = 42  # noqa: F841
+
+    def _backup_db(self, label: str) -> bool:
+        """Snapshot the live DB (incl. WAL) before a mutating heal; return success.
+
+        Connection.backup copies consistently where a plain file copy could miss
+        un-checkpointed WAL. Best-effort: on failure, log and return False so the
+        caller can abort the mutation rather than run it without a restore point.
+        """
+        ts = _time.strftime("%Y%m%d-%H%M%S")
+        backup_path = self._db_path.with_name(f"{self._db_path.name}.bak-{ts}")
+        try:
+            dest = sqlite3.connect(str(backup_path))
+            with dest:
+                self._conn.backup(dest)
+            dest.close()
+            logger.info("%s: backed up library to %s", label, backup_path)
+            return True
+        except Exception as exc:  # pragma: no cover - backup is best-effort
+            logger.warning("%s: backup failed (%s); skipping heal", label, exc)
+            return False
 
     def _create_tracks_sale_item_id_index(self) -> None:
         """Create the lookup index on tracks.sale_item_id (KAMP-528).

@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 42
+_SCHEMA_VERSION = 43
 
 
 class NoStreamableVersionError(Exception):
@@ -1646,7 +1646,49 @@ class LibraryIndex:
                     )
             self._conn.execute("UPDATE schema_version SET version = 42")
             self._conn.commit()
-            version = 42  # noqa: F841
+            version = 42
+
+        if version < 43:
+            # v42 → v43: an earlier v42 build attached loose singles by setting
+            # album_id but left their album tag empty, so they kept rendering as
+            # duplicate "missing album" grid cards (albums() keys that branch on
+            # album='') and their album source was never refreshed. A DB already
+            # advanced to 42 by that build is gated out of the fixed v42 heal, so
+            # re-stamp the album name onto any local track carrying an album_id but
+            # no album tag, then refresh aggregates. A DB healed correctly by the
+            # fixed v42 (or a fresh upgrade) has no such rows and this is a no-op.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if {"album_id", "album", "album_artist", "source"} <= track_cols:
+                touched = [
+                    r[0]
+                    for r in self._conn.execute(
+                        "SELECT DISTINCT t.album_id FROM tracks t"
+                        " JOIN albums a ON a.id = t.album_id"
+                        " WHERE t.source = 'local' AND t.album_id IS NOT NULL"
+                        " AND TRIM(t.album) = '' AND TRIM(a.album) != ''"
+                    ).fetchall()
+                ]
+                if touched and self._backup_db("KAMP-529 v43 heal"):
+                    self._conn.execute(
+                        "UPDATE tracks SET"
+                        " album = (SELECT a.album FROM albums a WHERE a.id = tracks.album_id),"
+                        " album_artist = (SELECT a.album_artist FROM albums a WHERE a.id = tracks.album_id)"
+                        " WHERE source = 'local' AND album_id IS NOT NULL"
+                        " AND TRIM(album) = ''"
+                        " AND (SELECT TRIM(a.album) FROM albums a WHERE a.id = tracks.album_id) != ''"
+                    )
+                    self._refresh_album_aggregates(touched)
+                    self._rebuild_fts()
+                    logger.info(
+                        "KAMP-529 v43 heal: re-stamped album name on attached"
+                        " singles in %d album(s)",
+                        len(touched),
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 43")
+            self._conn.commit()
+            version = 43  # noqa: F841
 
     def _backup_db(self, label: str) -> bool:
         """Snapshot the live DB (incl. WAL) before a mutating heal; return success.

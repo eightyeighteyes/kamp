@@ -134,7 +134,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 42
+        assert version == 43
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1673,7 +1673,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1730,7 +1730,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -2325,7 +2325,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert row is not None
         assert row[0] == 0
 
@@ -2780,7 +2780,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2876,7 +2876,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -3057,7 +3057,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -3152,7 +3152,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 42
+        assert version == 43
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -3160,7 +3160,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 42
+        assert version == 43
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -4037,7 +4037,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 42
+        assert version == 43
 
         index.close()
 
@@ -4728,7 +4728,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 42
+        assert version == 43
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4763,7 +4763,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 42
+        assert version == 43
         index.close()
 
 
@@ -5278,7 +5278,7 @@ class TestBandcampCollection:
         reopened.close()
 
         assert row["sale_item_id"] == "bf-1"
-        assert version == 42
+        assert version == 43
         assert row2["sale_item_id"] == "bf-1"
 
     def test_reset_collection_sync_state(self, tmp_path: Path) -> None:
@@ -5411,7 +5411,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 42
+        assert version == 43
 
 
 class TestRemoteTrackSchema:
@@ -5745,7 +5745,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -5806,7 +5806,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 42
+        assert version == 43
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -6564,7 +6564,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -7123,7 +7123,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -7201,7 +7201,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -7407,7 +7407,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -7756,7 +7756,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7853,7 +7853,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7969,7 +7969,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -8474,7 +8474,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -8589,7 +8589,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -8687,7 +8687,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -8787,7 +8787,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -9294,7 +9294,7 @@ class TestMagicPlaylists:
         fetched = index.get_magic_playlist_criteria(playlist_id)
         index.close()
 
-        assert version == 42
+        assert version == 43
         assert fetched == criteria
 
     # ------------------------------------------------------------------
@@ -10138,7 +10138,7 @@ class TestMigrationV38:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 42
+        assert version == 43
         assert "release_date" in cols
         assert "year" not in cols
 
@@ -11107,7 +11107,7 @@ class TestLooseSingleAttach:
         cards = [a for a in reopened.albums() if a.album == "Celebrity"]
         reopened.close()
 
-        assert version == 42
+        assert version == 43
         assert row["album_id"] == stream_album
         assert row["track_number"] == 1
         # The heal took a backup snapshot before mutating.
@@ -11127,8 +11127,55 @@ class TestLooseSingleAttach:
             0
         ]
         index.close()
-        assert version == 42
+        assert version == 43
         assert not list(tmp_path.glob("library.db.bak-*"))
+
+    def test_v43_migration_restamps_attached_but_unstamped_single(
+        self, tmp_path: Path
+    ) -> None:
+        """The first v42 build attached a single (set album_id) but left its album
+        tag empty, so it kept showing as a duplicate loose grid card. A DB already
+        at v42 is gated out of the fixed v42 heal, so v43 re-stamps it in place —
+        the tester upgrades without reverting."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        index.upsert_many([self._stream_single("400", "Megahit", "Celebrity")])
+        album_id = index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = 'bandcamp://400/1'"
+        ).fetchone()[0]
+        # Reproduce the buggy v42 state: album_id set, album tag empty, and the
+        # album row still reads 'bandcamp' (aggregates never refreshed).
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " track_number, source, album_id) VALUES (?, 'Celebrity', 'Megahit',"
+            " 'Megahit', '', 1, 'local', ?)",
+            (str(tmp_path / "celebrity.flac"), album_id),
+        )
+        index._conn.execute(
+            "UPDATE albums SET source = 'bandcamp' WHERE id = ?", (album_id,)
+        )
+        index._conn.execute("UPDATE schema_version SET version = 42")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        stamped = reopened._conn.execute(
+            "SELECT album FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "celebrity.flac"),),
+        ).fetchone()[0]
+        version = reopened._conn.execute(
+            "SELECT version FROM schema_version"
+        ).fetchone()[0]
+        cards = [a for a in reopened.albums() if a.album == "Celebrity"]
+        reopened.close()
+
+        assert version == 43
+        assert stamped == "Celebrity"
+        # No duplicate loose card, and the album now reads as owned.
+        assert len(cards) == 1
+        assert cards[0].missing_album is False
+        assert cards[0].source in ("local", "mixed")
+        assert list(tmp_path.glob("library.db.bak-*"))
 
 
 class TestHealForkedAlbums:

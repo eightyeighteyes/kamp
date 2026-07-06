@@ -1632,6 +1632,13 @@ class LibraryIndex:
                 # heal); abort the heal if the snapshot fails.
                 if has_loose and self._backup_db("KAMP-529 heal"):
                     touched = self._attach_loose_local_singles()
+                    if touched:
+                        # Recompute album source/aggregates and rebuild FTS so the
+                        # grid and search immediately reflect the attached tracks —
+                        # the scan path gets this via upsert_many, the migration
+                        # must do it explicitly.
+                        self._refresh_album_aggregates(list(touched))
+                        self._rebuild_fts()
                     logger.info(
                         "KAMP-529 heal: re-linked loose local singles into"
                         " %d album(s)",
@@ -3132,51 +3139,7 @@ class LibraryIndex:
                 ).fetchall()
             )
         if touched_album_ids:
-            album_ids = list(touched_album_ids)
-            if album_ids:
-                id_placeholders = ",".join("?" * len(album_ids))
-                self._conn.execute(
-                    f"""
-                    UPDATE albums SET
-                        embedded_art   = (SELECT MAX(t.embedded_art)  FROM tracks t WHERE t.album_id = albums.id),
-                        date_added     = (SELECT MIN(t.date_added)    FROM tracks t WHERE t.album_id = albums.id),
-                        last_played_at = (SELECT MAX(t.last_played)   FROM tracks t WHERE t.album_id = albums.id),
-                        art_version    = (SELECT MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
-                                          FROM tracks t WHERE t.album_id = albums.id),
-                        play_count_avg = (SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
-                                          FROM tracks t WHERE t.album_id = albums.id),
-                        source         = (SELECT
-                                              CASE WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
-                                                        AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                                                   THEN 'local'
-                                                   WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                                                   ELSE MIN(t.source) END
-                                          FROM tracks t WHERE t.album_id = albums.id),
-                        release_date   = (SELECT MAX(t.release_date)   FROM tracks t WHERE t.album_id = albums.id),
-                        genre          = (SELECT MAX(t.genre)          FROM tracks t WHERE t.album_id = albums.id),
-                        label          = (SELECT MAX(t.label)          FROM tracks t WHERE t.album_id = albums.id),
-                        mb_release_id  = (SELECT MAX(t.mb_release_id)  FROM tracks t WHERE t.album_id = albums.id)
-                    WHERE id IN ({id_placeholders})
-                    """,
-                    album_ids,
-                )
-                # Backfill sale_item_id from bandcamp_collection for albums that were
-                # just inserted without it. This covers the streaming-sync order where
-                # upsert_collection_item fires before upsert_many, so the UPDATE inside
-                # upsert_collection_item is a no-op (no albums row yet at that point).
-                self._conn.execute(
-                    f"""
-                    UPDATE albums SET sale_item_id = (
-                        SELECT bc.sale_item_id FROM bandcamp_collection bc
-                        WHERE bc.band_name  = albums.album_artist COLLATE NOCASE
-                          AND bc.item_title = albums.album        COLLATE NOCASE
-                        LIMIT 1
-                    )
-                    WHERE id IN ({id_placeholders})
-                      AND sale_item_id IS NULL
-                    """,
-                    album_ids,
-                )
+            self._refresh_album_aggregates(list(touched_album_ids))
 
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()
@@ -3191,6 +3154,61 @@ class LibraryIndex:
                     "track.year",
                 }
             )
+
+    def _refresh_album_aggregates(self, album_ids: list[int]) -> None:
+        """Recompute denormalized album columns from the album's tracks.
+
+        Refreshes source/art/counts/dates and backfills sale_item_id from
+        bandcamp_collection. Shared by upsert_many Step 4 and the v42
+        single-attach migration: without this an album whose source was
+        'bandcamp' keeps reading as remote after a local track attaches, so the
+        grid never reflects the newly-owned copy.
+        """
+        if not album_ids:
+            return
+        id_placeholders = ",".join("?" * len(album_ids))
+        self._conn.execute(
+            f"""
+            UPDATE albums SET
+                embedded_art   = (SELECT MAX(t.embedded_art)  FROM tracks t WHERE t.album_id = albums.id),
+                date_added     = (SELECT MIN(t.date_added)    FROM tracks t WHERE t.album_id = albums.id),
+                last_played_at = (SELECT MAX(t.last_played)   FROM tracks t WHERE t.album_id = albums.id),
+                art_version    = (SELECT MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
+                                  FROM tracks t WHERE t.album_id = albums.id),
+                play_count_avg = (SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
+                                  FROM tracks t WHERE t.album_id = albums.id),
+                source         = (SELECT
+                                      CASE WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
+                                                AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
+                                           THEN 'local'
+                                           WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                                           ELSE MIN(t.source) END
+                                  FROM tracks t WHERE t.album_id = albums.id),
+                release_date   = (SELECT MAX(t.release_date)   FROM tracks t WHERE t.album_id = albums.id),
+                genre          = (SELECT MAX(t.genre)          FROM tracks t WHERE t.album_id = albums.id),
+                label          = (SELECT MAX(t.label)          FROM tracks t WHERE t.album_id = albums.id),
+                mb_release_id  = (SELECT MAX(t.mb_release_id)  FROM tracks t WHERE t.album_id = albums.id)
+            WHERE id IN ({id_placeholders})
+            """,
+            album_ids,
+        )
+        # Backfill sale_item_id from bandcamp_collection for albums that were just
+        # inserted without it. Covers the streaming-sync order where
+        # upsert_collection_item fires before upsert_many, so the UPDATE inside
+        # upsert_collection_item is a no-op (no albums row yet at that point).
+        self._conn.execute(
+            f"""
+            UPDATE albums SET sale_item_id = (
+                SELECT bc.sale_item_id FROM bandcamp_collection bc
+                WHERE bc.band_name  = albums.album_artist COLLATE NOCASE
+                  AND bc.item_title = albums.album        COLLATE NOCASE
+                LIMIT 1
+            )
+            WHERE id IN ({id_placeholders})
+              AND sale_item_id IS NULL
+            """,
+            album_ids,
+        )
 
     def _attach_loose_local_singles(
         self, file_paths: "list[str] | None" = None
@@ -3290,16 +3308,29 @@ class LibraryIndex:
                 continue
             album_id = matches[0]["id"]
             # Align track_number/disc to the streaming track so per-track joins
-            # (favorite/play-count inheritance, remove_download) line up.
+            # (favorite/play-count inheritance, remove_download) line up, and stamp
+            # the album's canonical name onto the (previously album-less) single so
+            # it stops rendering as its own "missing album" grid card — setting
+            # album_id alone leaves album='' and the loose card persists (KAMP-529).
             stream = self._conn.execute(
                 "SELECT track_number, disc_number FROM tracks"
                 " WHERE album_id = ? AND source = 'bandcamp' LIMIT 1",
                 (album_id,),
             ).fetchone()
+            alb = self._conn.execute(
+                "SELECT album_artist, album FROM albums WHERE id = ?", (album_id,)
+            ).fetchone()
             self._conn.execute(
-                "UPDATE tracks SET album_id = ?, track_number = ?, disc_number = ?"
-                " WHERE id = ?",
-                (album_id, stream["track_number"], stream["disc_number"], c["id"]),
+                "UPDATE tracks SET album_id = ?, track_number = ?, disc_number = ?,"
+                " album = ?, album_artist = ? WHERE id = ?",
+                (
+                    album_id,
+                    stream["track_number"],
+                    stream["disc_number"],
+                    alb["album"],
+                    alb["album_artist"],
+                    c["id"],
+                ),
             )
             touched.add(album_id)
             logger.info(

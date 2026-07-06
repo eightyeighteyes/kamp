@@ -10934,13 +10934,15 @@ class TestLooseSingleAttach:
         local = self._loose_local(tmp_path / "celebrity.flac", "Megahit", "Celebrity")
         index.upsert_many([local])
 
-        # The local single now shares the streaming album and inherits track_number.
+        # The local single now shares the streaming album, inherits track_number,
+        # and is stamped with the album name so it stops being "album-less".
         row = index._conn.execute(
-            "SELECT album_id, track_number FROM tracks WHERE file_path = ?",
+            "SELECT album_id, track_number, album FROM tracks WHERE file_path = ?",
             (str(tmp_path / "celebrity.flac"),),
         ).fetchone()
         assert row["album_id"] == stream_album
         assert row["track_number"] == 1
+        assert row["album"] == "Celebrity"
         # One album, and it no longer shows as a separate loose card.
         assert len(_album_rows(index)) == 1
         # Collapses everywhere: album view + search return the local row only.
@@ -10948,6 +10950,13 @@ class TestLooseSingleAttach:
         assert len(detail) == 1 and detail[0].source == "local"
         results = index.search("celebrity")
         assert len(results) == 1 and results[0].source == "local"
+        # And the GRID shows exactly one "Celebrity" card, not a duplicate loose
+        # missing-album entry alongside the album card. The album now reads as
+        # owned (source flips off 'bandcamp').
+        cards = [a for a in index.albums() if a.album == "Celebrity"]
+        assert len(cards) == 1
+        assert cards[0].missing_album is False
+        assert cards[0].source in ("local", "mixed")
         index.close()
 
     def test_prefix_titled_streaming_single_still_matches(self, tmp_path: Path) -> None:
@@ -11094,6 +11103,8 @@ class TestLooseSingleAttach:
         version = reopened._conn.execute(
             "SELECT version FROM schema_version"
         ).fetchone()[0]
+        # Capture the grid before closing the connection.
+        cards = [a for a in reopened.albums() if a.album == "Celebrity"]
         reopened.close()
 
         assert version == 42
@@ -11101,6 +11112,11 @@ class TestLooseSingleAttach:
         assert row["track_number"] == 1
         # The heal took a backup snapshot before mutating.
         assert list(tmp_path.glob("library.db.bak-*"))
+        # The grid no longer shows a duplicate: one "Celebrity" card, not a loose
+        # missing-album entry beside the album card, and the album reads as owned.
+        assert len(cards) == 1
+        assert cards[0].missing_album is False
+        assert cards[0].source in ("local", "mixed")
 
     def test_v42_migration_no_backup_when_nothing_to_heal(self, tmp_path: Path) -> None:
         """A fresh DB (or one with no loose singles) is stamped current without a

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import type { Album } from '../../api/client'
 import { AlbumCard } from '../AlbumCard'
 import { useStore } from '../../store'
@@ -29,9 +29,44 @@ export function ShelfView({
   // making albums a dependency of the scroll effect.
   const albumsRef = useRef(albums)
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Whether the shelf can actually scroll in each direction. Both start false
+  // so no arrow flashes before the first measurement (which the ResizeObserver
+  // fires after layout). Arrows are only rendered when the corresponding
+  // direction has somewhere to scroll to.
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
 
   useEffect(() => {
     albumsRef.current = albums
+  }, [albums])
+
+  // Measure scroll position and toggle arrow visibility. Wired to the shelf's
+  // scroll event, a ResizeObserver (window widen/narrow — the repro path), and
+  // the albums list changing.
+  useEffect(() => {
+    const shelf = scrollRef.current
+    if (!shelf) return
+
+    const computeScrollState = (): void => {
+      const { scrollLeft, clientWidth, scrollWidth } = shelf
+      // 40px buffer: the shelf's scroll-padding/first-child margin means its
+      // resting leftmost position is a few px off zero, so scrollLeft rarely
+      // settles at exactly 0. Treat anything within 40px of the start as
+      // "leftmost" rather than fighting the CSS geometry.
+      setCanScrollLeft(scrollLeft > 40)
+      // 1px tolerance: scrollLeft + clientWidth can differ from scrollWidth by
+      // a fractional pixel on high-DPI displays even when fully scrolled.
+      setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 1)
+    }
+
+    computeScrollState()
+    shelf.addEventListener('scroll', computeScrollState, { passive: true })
+    const observer = new ResizeObserver(computeScrollState)
+    observer.observe(shelf)
+    return () => {
+      shelf.removeEventListener('scroll', computeScrollState)
+      observer.disconnect()
+    }
   }, [albums])
 
   // Cancel any pending scroll timer on unmount.
@@ -108,14 +143,16 @@ export function ShelfView({
 
   return (
     <div className="module-shelf-wrapper">
-      <button
-        className="module-shelf-arrow module-shelf-arrow--left"
-        onClick={() => scroll('left')}
-        aria-label="Scroll left"
-        tabIndex={-1}
-      >
-        ‹
-      </button>
+      {canScrollLeft && (
+        <button
+          className="module-shelf-arrow module-shelf-arrow--left"
+          onClick={() => scroll('left')}
+          aria-label="Scroll left"
+          tabIndex={-1}
+        >
+          ‹
+        </button>
+      )}
       <div className="module-shelf" ref={scrollRef} role="region" aria-label="Album shelf">
         {albums.map((album) => (
           <AlbumCard
@@ -125,14 +162,16 @@ export function ShelfView({
           />
         ))}
       </div>
-      <button
-        className="module-shelf-arrow module-shelf-arrow--right"
-        onClick={() => scroll('right')}
-        aria-label="Scroll right"
-        tabIndex={-1}
-      >
-        ›
-      </button>
+      {canScrollRight && (
+        <button
+          className="module-shelf-arrow module-shelf-arrow--right"
+          onClick={() => scroll('right')}
+          aria-label="Scroll right"
+          tabIndex={-1}
+        >
+          ›
+        </button>
+      )}
     </div>
   )
 }

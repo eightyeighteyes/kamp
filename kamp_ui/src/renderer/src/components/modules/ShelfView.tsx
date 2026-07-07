@@ -49,7 +49,11 @@ export function ShelfView({
 
     const computeScrollState = (): void => {
       const { scrollLeft, clientWidth, scrollWidth } = shelf
-      setCanScrollLeft(scrollLeft > 0)
+      // 40px buffer: the shelf's scroll-padding/first-child margin means its
+      // resting leftmost position is a few px off zero, so scrollLeft rarely
+      // settles at exactly 0. Treat anything within 40px of the start as
+      // "leftmost" rather than fighting the CSS geometry.
+      setCanScrollLeft(scrollLeft > 40)
       // 1px tolerance: scrollLeft + clientWidth can differ from scrollWidth by
       // a fractional pixel on high-DPI displays even when fully scrolled.
       setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 1)

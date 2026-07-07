@@ -134,7 +134,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 41
+        assert version == 43
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1553,6 +1553,80 @@ class TestSearch:
         assert results[0].album_artist == "ArtistB"
         assert results[1].album_artist == "ArtistA"
 
+    def test_search_hides_streaming_twin_when_local_in_same_album(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-529: when a local track and its bandcamp:// streaming twin share an
+        album, search returns only the local row — mirroring the album detail
+        view's local-wins collapse so downloaded tracks don't double in search."""
+        index = LibraryIndex(tmp_path / "library.db")
+        streaming = Track(
+            file_path=Path("bandcamp://555/1"),
+            title="Adrenaline",
+            artist="MAGNAVOLT",
+            album_artist="MAGNAVOLT",
+            album="EDGEZONE FM",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        local = Track(
+            file_path=tmp_path / "adrenaline.flac",
+            title="Adrenaline",
+            artist="MAGNAVOLT",
+            album_artist="MAGNAVOLT",
+            album="EDGEZONE FM",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="flac",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="local",
+        )
+        index.upsert_many([streaming, local])
+        results = index.search("adrenaline")
+        index.close()
+        assert len(results) == 1
+        assert results[0].source == "local"
+        assert not str(results[0].file_path).startswith("bandcamp://")
+
+    def test_search_keeps_streaming_row_when_album_has_no_local(
+        self, tmp_path: Path
+    ) -> None:
+        """A purely-streaming album (no local twin) still surfaces its bandcamp://
+        row in search — the collapse must not hide un-downloaded tracks."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                Track(
+                    file_path=Path("bandcamp://556/1"),
+                    title="Streaming Only",
+                    artist="MAGNAVOLT",
+                    album_artist="MAGNAVOLT",
+                    album="Remote Album",
+                    release_date="2020",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    source="bandcamp",
+                )
+            ]
+        )
+        results = index.search("streaming only")
+        index.close()
+        assert len(results) == 1
+        assert results[0].source == "bandcamp"
+
     def test_v1_database_migrated_to_current(self, tmp_path: Path) -> None:
         """Existing v1 databases are fully migrated (FTS + date columns) on open."""
         import sqlite3 as _sqlite3
@@ -1599,7 +1673,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1656,7 +1730,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -2251,7 +2325,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert row is not None
         assert row[0] == 0
 
@@ -2706,7 +2780,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -2802,7 +2876,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -2983,7 +3057,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -3078,7 +3152,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 41
+        assert version == 43
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -3086,7 +3160,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 41
+        assert version == 43
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -3963,7 +4037,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 41
+        assert version == 43
 
         index.close()
 
@@ -4654,7 +4728,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 41
+        assert version == 43
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -4689,7 +4763,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 41
+        assert version == 43
         index.close()
 
 
@@ -5204,7 +5278,7 @@ class TestBandcampCollection:
         reopened.close()
 
         assert row["sale_item_id"] == "bf-1"
-        assert version == 41
+        assert version == 43
         assert row2["sale_item_id"] == "bf-1"
 
     def test_reset_collection_sync_state(self, tmp_path: Path) -> None:
@@ -5337,7 +5411,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 41
+        assert version == 43
 
 
 class TestRemoteTrackSchema:
@@ -5671,7 +5745,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -5732,7 +5806,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 41
+        assert version == 43
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -6490,7 +6564,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -7049,7 +7123,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -7127,7 +7201,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -7333,7 +7407,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -7682,7 +7756,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7779,7 +7853,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -7895,7 +7969,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -8400,7 +8474,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -8515,7 +8589,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -8613,7 +8687,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -8713,7 +8787,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -9220,7 +9294,7 @@ class TestMagicPlaylists:
         fetched = index.get_magic_playlist_criteria(playlist_id)
         index.close()
 
-        assert version == 41
+        assert version == 43
         assert fetched == criteria
 
     # ------------------------------------------------------------------
@@ -10064,7 +10138,7 @@ class TestMigrationV38:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 41
+        assert version == 43
         assert "release_date" in cols
         assert "year" not in cols
 
@@ -10796,6 +10870,312 @@ class TestPendingIngest:
         assert index.pending_ingest_for_path(str(real)) is not None
         assert index.pending_ingest_for_path(str(tmp_path / "gone.zip")) is None
         index.close()
+
+
+class TestLooseSingleAttach:
+    """KAMP-529 Step 3c: an un-provenanced loose local single (empty album tag)
+    re-links by identity to its streaming single-album, so the two stop
+    duplicating. Negative cases assert we never merge on an ambiguous key."""
+
+    def _stream_single(
+        self,
+        sid: str,
+        artist: str,
+        album_title: str,
+        title: "str | None" = None,
+    ) -> Track:
+        """A 1-track streaming (bandcamp) single-album whose album == item title."""
+        return Track(
+            file_path=Path(f"bandcamp://{sid}/1"),
+            title=title or album_title,
+            artist=artist,
+            album_artist=artist,
+            album=album_title,
+            release_date="",
+            track_number=1,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+
+    def _loose_local(self, path: Path, artist: str, title: str) -> Track:
+        """A user's loose local single: empty album tag, track_number 0."""
+        return Track(
+            file_path=path,
+            title=title,
+            artist=artist,
+            album_artist=artist,
+            album="",
+            release_date="",
+            track_number=0,
+            disc_number=1,
+            ext="flac",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="local",
+        )
+
+    def _album_id_of(self, index: LibraryIndex, path: Path) -> "int | None":
+        return index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = ?", (str(path),)
+        ).fetchone()[0]
+
+    def test_loose_single_attaches_to_streaming_album(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._stream_single("100", "Megahit", "Celebrity")])
+        stream_album = index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = 'bandcamp://100/1'"
+        ).fetchone()[0]
+
+        local = self._loose_local(tmp_path / "celebrity.flac", "Megahit", "Celebrity")
+        index.upsert_many([local])
+
+        # The local single now shares the streaming album, inherits track_number,
+        # and is stamped with the album name so it stops being "album-less".
+        row = index._conn.execute(
+            "SELECT album_id, track_number, album FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "celebrity.flac"),),
+        ).fetchone()
+        assert row["album_id"] == stream_album
+        assert row["track_number"] == 1
+        assert row["album"] == "Celebrity"
+        # One album, and it no longer shows as a separate loose card.
+        assert len(_album_rows(index)) == 1
+        # Collapses everywhere: album view + search return the local row only.
+        detail = index.tracks_for_album("Megahit", "Celebrity")
+        assert len(detail) == 1 and detail[0].source == "local"
+        results = index.search("celebrity")
+        assert len(results) == 1 and results[0].source == "local"
+        # And the GRID shows exactly one "Celebrity" card, not a duplicate loose
+        # missing-album entry alongside the album card. The album now reads as
+        # owned (source flips off 'bandcamp').
+        cards = [a for a in index.albums() if a.album == "Celebrity"]
+        assert len(cards) == 1
+        assert cards[0].missing_album is False
+        assert cards[0].source in ("local", "mixed")
+        index.close()
+
+    def test_prefix_titled_streaming_single_still_matches(self, tmp_path: Path) -> None:
+        """Bandcamp prefixes some single titles with 'Artist - '; the album field
+        stays clean, so matching on album (not track title) still links."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                self._stream_single(
+                    "101",
+                    "Neon Nox, Powernerd",
+                    "Duality",
+                    title="Neon Nox, Powernerd - Duality",
+                )
+            ]
+        )
+        local = self._loose_local(
+            tmp_path / "duality.flac", "Neon Nox, Powernerd", "Duality"
+        )
+        index.upsert_many([local])
+        assert self._album_id_of(index, tmp_path / "duality.flac") is not None
+        assert len(index.tracks_for_album("Neon Nox, Powernerd", "Duality")) == 1
+        index.close()
+
+    def test_no_attach_when_album_is_multitrack(self, tmp_path: Path) -> None:
+        """album.album == local.title but the album is NOT a single (>1 track):
+        the local file must not be absorbed into a multi-track album."""
+        index = LibraryIndex(tmp_path / "library.db")
+        # Two bandcamp tracks under one album titled "Celebrity" → a 2-track album,
+        # not a single. Track 2 gets a distinct path/number.
+        track2 = Track(
+            file_path=Path("bandcamp://102/2"),
+            title="Another",
+            artist="Various",
+            album_artist="Various",
+            album="Celebrity",
+            release_date="",
+            track_number=2,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        index.upsert_many([self._stream_single("102", "Various", "Celebrity"), track2])
+        local = self._loose_local(tmp_path / "c.flac", "Various", "Celebrity")
+        index.upsert_many([local])
+        assert self._album_id_of(index, tmp_path / "c.flac") is None
+        index.close()
+
+    def test_no_attach_when_album_artist_blank(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._stream_single("103", "", "Untitled")])
+        local = self._loose_local(tmp_path / "u.flac", "", "Untitled")
+        index.upsert_many([local])
+        assert self._album_id_of(index, tmp_path / "u.flac") is None
+        index.close()
+
+    def test_no_attach_when_two_loose_singles_share_identity(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._stream_single("104", "Megahit", "Celebrity")])
+        a = self._loose_local(tmp_path / "a.flac", "Megahit", "Celebrity")
+        b = self._loose_local(tmp_path / "b.flac", "Megahit", "Celebrity")
+        index.upsert_many([a, b])
+        assert self._album_id_of(index, tmp_path / "a.flac") is None
+        assert self._album_id_of(index, tmp_path / "b.flac") is None
+        index.close()
+
+    def test_no_attach_when_two_streaming_singles_match(self, tmp_path: Path) -> None:
+        """Two streaming single-albums TRIM/NOCASE-match the same title (they differ
+        only by trailing whitespace, which the albums UNIQUE index permits): the
+        match is ambiguous, so the loose single is left untouched."""
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid, album_name in (("200", "Celebrity"), ("201", "Celebrity ")):
+            index._conn.execute(
+                "INSERT INTO albums (album_artist, album, source) VALUES ('Megahit', ?, 'bandcamp')",
+                (album_name,),
+            )
+            aid = index._conn.execute(
+                "SELECT id FROM albums ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+            index._conn.execute(
+                "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+                " track_number, source, album_id) VALUES (?, 'Celebrity', 'Megahit',"
+                " 'Megahit', ?, 1, 'bandcamp', ?)",
+                (f"bandcamp://{sid}/1", album_name, aid),
+            )
+        index._conn.commit()
+        local = self._loose_local(tmp_path / "c.flac", "Megahit", "Celebrity")
+        index.upsert_many([local])
+        assert self._album_id_of(index, tmp_path / "c.flac") is None
+        index.close()
+
+    def test_attach_is_idempotent(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._stream_single("105", "Megahit", "Celebrity")])
+        local = self._loose_local(tmp_path / "celebrity.flac", "Megahit", "Celebrity")
+        index.upsert_many([local])
+        first = self._album_id_of(index, tmp_path / "celebrity.flac")
+        # A second pass (helper directly) must not move it or inflate the album.
+        touched = index._attach_loose_local_singles()
+        assert touched == set()
+        assert self._album_id_of(index, tmp_path / "celebrity.flac") == first
+        assert (
+            index._conn.execute(
+                "SELECT COUNT(*) FROM tracks WHERE album_id = ?", (first,)
+            ).fetchone()[0]
+            == 2
+        )
+        index.close()
+
+    def test_v42_migration_relinks_preexisting_loose_single(
+        self, tmp_path: Path
+    ) -> None:
+        """A loose single already on disk (indexed before this fix, so never
+        attached by Step 3c) is re-linked on upgrade by the v42 heal, which also
+        snapshots the DB first."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        index.upsert_many([self._stream_single("300", "Megahit", "Celebrity")])
+        stream_album = index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = 'bandcamp://300/1'"
+        ).fetchone()[0]
+        # Insert the loose local single by raw SQL so Step 3c does NOT run on it,
+        # reproducing a row indexed by an older build. Then downgrade to v41.
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " track_number, source) VALUES (?, 'Celebrity', 'Megahit', 'Megahit',"
+            " '', 0, 'local')",
+            (str(tmp_path / "celebrity.flac"),),
+        )
+        index._conn.execute("UPDATE schema_version SET version = 41")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        row = reopened._conn.execute(
+            "SELECT album_id, track_number FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "celebrity.flac"),),
+        ).fetchone()
+        version = reopened._conn.execute(
+            "SELECT version FROM schema_version"
+        ).fetchone()[0]
+        # Capture the grid before closing the connection.
+        cards = [a for a in reopened.albums() if a.album == "Celebrity"]
+        reopened.close()
+
+        assert version == 43
+        assert row["album_id"] == stream_album
+        assert row["track_number"] == 1
+        # The heal took a backup snapshot before mutating.
+        assert list(tmp_path.glob("library.db.bak-*"))
+        # The grid no longer shows a duplicate: one "Celebrity" card, not a loose
+        # missing-album entry beside the album card, and the album reads as owned.
+        assert len(cards) == 1
+        assert cards[0].missing_album is False
+        assert cards[0].source in ("local", "mixed")
+
+    def test_v42_migration_no_backup_when_nothing_to_heal(self, tmp_path: Path) -> None:
+        """A fresh DB (or one with no loose singles) is stamped current without a
+        wasteful backup snapshot."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        index.close()
+        assert version == 43
+        assert not list(tmp_path.glob("library.db.bak-*"))
+
+    def test_v43_migration_restamps_attached_but_unstamped_single(
+        self, tmp_path: Path
+    ) -> None:
+        """The first v42 build attached a single (set album_id) but left its album
+        tag empty, so it kept showing as a duplicate loose grid card. A DB already
+        at v42 is gated out of the fixed v42 heal, so v43 re-stamps it in place —
+        the tester upgrades without reverting."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        index.upsert_many([self._stream_single("400", "Megahit", "Celebrity")])
+        album_id = index._conn.execute(
+            "SELECT album_id FROM tracks WHERE file_path = 'bandcamp://400/1'"
+        ).fetchone()[0]
+        # Reproduce the buggy v42 state: album_id set, album tag empty, and the
+        # album row still reads 'bandcamp' (aggregates never refreshed).
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " track_number, source, album_id) VALUES (?, 'Celebrity', 'Megahit',"
+            " 'Megahit', '', 1, 'local', ?)",
+            (str(tmp_path / "celebrity.flac"), album_id),
+        )
+        index._conn.execute(
+            "UPDATE albums SET source = 'bandcamp' WHERE id = ?", (album_id,)
+        )
+        index._conn.execute("UPDATE schema_version SET version = 42")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        stamped = reopened._conn.execute(
+            "SELECT album FROM tracks WHERE file_path = ?",
+            (str(tmp_path / "celebrity.flac"),),
+        ).fetchone()[0]
+        version = reopened._conn.execute(
+            "SELECT version FROM schema_version"
+        ).fetchone()[0]
+        cards = [a for a in reopened.albums() if a.album == "Celebrity"]
+        reopened.close()
+
+        assert version == 43
+        assert stamped == "Celebrity"
+        # No duplicate loose card, and the album now reads as owned.
+        assert len(cards) == 1
+        assert cards[0].missing_album is False
+        assert cards[0].source in ("local", "mixed")
+        assert list(tmp_path.glob("library.db.bak-*"))
 
 
 class TestHealForkedAlbums:

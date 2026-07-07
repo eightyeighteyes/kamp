@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 41
+_SCHEMA_VERSION = 43
 
 
 class NoStreamableVersionError(Exception):
@@ -1609,7 +1609,106 @@ class LibraryIndex:
             # and stamped by upsert_many.
             self._conn.execute("UPDATE schema_version SET version = 41")
             self._conn.commit()
-            version = 41  # noqa: F841
+            version = 41
+
+        if version < 42:
+            # v41 → v42: re-link un-provenanced loose local singles to their
+            # streaming single-album (KAMP-529). A pre-existing standalone single
+            # (empty album tag, no album row) duplicates the streaming single kamp
+            # indexes for the same purchase. upsert_many Step 3c handles this going
+            # forward, but an unchanged file is never re-scanned, so heal the rows
+            # already on disk once. Guarded on the columns the helper needs (the
+            # narrow migration-unit-test schemas build a partial tracks table).
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if {"album_id", "source", "album", "album_artist", "title"} <= track_cols:
+                has_loose = self._conn.execute(
+                    "SELECT 1 FROM tracks WHERE source = 'local' AND album_id IS NULL"
+                    " AND TRIM(album) = '' AND TRIM(album_artist) != ''"
+                    " AND TRIM(title) != '' LIMIT 1"
+                ).fetchone()
+                # Back up only when there is something to touch (mirrors the v39
+                # heal); abort the heal if the snapshot fails.
+                if has_loose and self._backup_db("KAMP-529 heal"):
+                    touched = self._attach_loose_local_singles()
+                    if touched:
+                        # Recompute album source/aggregates and rebuild FTS so the
+                        # grid and search immediately reflect the attached tracks —
+                        # the scan path gets this via upsert_many, the migration
+                        # must do it explicitly.
+                        self._refresh_album_aggregates(list(touched))
+                        self._rebuild_fts()
+                    logger.info(
+                        "KAMP-529 heal: re-linked loose local singles into"
+                        " %d album(s)",
+                        len(touched),
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 42")
+            self._conn.commit()
+            version = 42
+
+        if version < 43:
+            # v42 → v43: an earlier v42 build attached loose singles by setting
+            # album_id but left their album tag empty, so they kept rendering as
+            # duplicate "missing album" grid cards (albums() keys that branch on
+            # album='') and their album source was never refreshed. A DB already
+            # advanced to 42 by that build is gated out of the fixed v42 heal, so
+            # re-stamp the album name onto any local track carrying an album_id but
+            # no album tag, then refresh aggregates. A DB healed correctly by the
+            # fixed v42 (or a fresh upgrade) has no such rows and this is a no-op.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if {"album_id", "album", "album_artist", "source"} <= track_cols:
+                touched = [
+                    r[0]
+                    for r in self._conn.execute(
+                        "SELECT DISTINCT t.album_id FROM tracks t"
+                        " JOIN albums a ON a.id = t.album_id"
+                        " WHERE t.source = 'local' AND t.album_id IS NOT NULL"
+                        " AND TRIM(t.album) = '' AND TRIM(a.album) != ''"
+                    ).fetchall()
+                ]
+                if touched and self._backup_db("KAMP-529 v43 heal"):
+                    self._conn.execute(
+                        "UPDATE tracks SET"
+                        " album = (SELECT a.album FROM albums a WHERE a.id = tracks.album_id),"
+                        " album_artist = (SELECT a.album_artist FROM albums a WHERE a.id = tracks.album_id)"
+                        " WHERE source = 'local' AND album_id IS NOT NULL"
+                        " AND TRIM(album) = ''"
+                        " AND (SELECT TRIM(a.album) FROM albums a WHERE a.id = tracks.album_id) != ''"
+                    )
+                    self._refresh_album_aggregates(touched)
+                    self._rebuild_fts()
+                    logger.info(
+                        "KAMP-529 v43 heal: re-stamped album name on attached"
+                        " singles in %d album(s)",
+                        len(touched),
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 43")
+            self._conn.commit()
+            version = 43  # noqa: F841
+
+    def _backup_db(self, label: str) -> bool:
+        """Snapshot the live DB (incl. WAL) before a mutating heal; return success.
+
+        Connection.backup copies consistently where a plain file copy could miss
+        un-checkpointed WAL. Best-effort: on failure, log and return False so the
+        caller can abort the mutation rather than run it without a restore point.
+        """
+        ts = _time.strftime("%Y%m%d-%H%M%S")
+        backup_path = self._db_path.with_name(f"{self._db_path.name}.bak-{ts}")
+        try:
+            dest = sqlite3.connect(str(backup_path))
+            with dest:
+                self._conn.backup(dest)
+            dest.close()
+            logger.info("%s: backed up library to %s", label, backup_path)
+            return True
+        except Exception as exc:  # pragma: no cover - backup is best-effort
+            logger.warning("%s: backup failed (%s); skipping heal", label, exc)
+            return False
 
     def _create_tracks_sale_item_id_index(self) -> None:
         """Create the lookup index on tracks.sale_item_id (KAMP-528).
@@ -3047,13 +3146,30 @@ class LibraryIndex:
                 plain_paths,
             )
 
+        # Step 3c (KAMP-529): attach un-provenanced loose local singles. A
+        # standalone single's local file has an empty album tag, so Step 3b
+        # skips it (album != '') and it has no album row to sid-link — it lingers
+        # as a loose track duplicating the streaming single. Re-link it to its
+        # streaming single-album by identity (local.title == the single-album's
+        # album field). Shared with the v42 migration via one helper.
+        single_paths = [
+            _canonical_track_key(t.file_path)
+            for t in tracks
+            if t.source == "local"
+            and not t.album.strip()
+            and t.album_artist.strip()
+            and t.title.strip()
+            and not _provenanced(t)
+        ]
+        touched_from_singles = self._attach_loose_local_singles(single_paths)
+
         # Step 4: refresh denormalized aggregate columns on the touched album rows.
         # Run once per batch (not per track) using a correlated subquery. Include
-        # albums reached only through provenance linking (prov_album_ids) — a
-        # nameless single's target album is not in file_paths (built from named),
-        # yet its source/aggregates must be recomputed now that a local track
-        # attached to it.
-        touched_album_ids: set[int] = set(prov_album_ids)
+        # albums reached only through provenance linking (prov_album_ids) and
+        # single re-linking (touched_from_singles) — a nameless single's target
+        # album is not in file_paths (built from named), yet its source/aggregates
+        # must be recomputed now that a local track attached to it.
+        touched_album_ids: set[int] = set(prov_album_ids) | touched_from_singles
         if file_paths:
             all_placeholders = ",".join("?" * len(file_paths))
             touched_album_ids.update(
@@ -3065,51 +3181,7 @@ class LibraryIndex:
                 ).fetchall()
             )
         if touched_album_ids:
-            album_ids = list(touched_album_ids)
-            if album_ids:
-                id_placeholders = ",".join("?" * len(album_ids))
-                self._conn.execute(
-                    f"""
-                    UPDATE albums SET
-                        embedded_art   = (SELECT MAX(t.embedded_art)  FROM tracks t WHERE t.album_id = albums.id),
-                        date_added     = (SELECT MIN(t.date_added)    FROM tracks t WHERE t.album_id = albums.id),
-                        last_played_at = (SELECT MAX(t.last_played)   FROM tracks t WHERE t.album_id = albums.id),
-                        art_version    = (SELECT MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
-                                          FROM tracks t WHERE t.album_id = albums.id),
-                        play_count_avg = (SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
-                                          FROM tracks t WHERE t.album_id = albums.id),
-                        source         = (SELECT
-                                              CASE WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
-                                                        AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                                                   THEN 'local'
-                                                   WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                                                   ELSE MIN(t.source) END
-                                          FROM tracks t WHERE t.album_id = albums.id),
-                        release_date   = (SELECT MAX(t.release_date)   FROM tracks t WHERE t.album_id = albums.id),
-                        genre          = (SELECT MAX(t.genre)          FROM tracks t WHERE t.album_id = albums.id),
-                        label          = (SELECT MAX(t.label)          FROM tracks t WHERE t.album_id = albums.id),
-                        mb_release_id  = (SELECT MAX(t.mb_release_id)  FROM tracks t WHERE t.album_id = albums.id)
-                    WHERE id IN ({id_placeholders})
-                    """,
-                    album_ids,
-                )
-                # Backfill sale_item_id from bandcamp_collection for albums that were
-                # just inserted without it. This covers the streaming-sync order where
-                # upsert_collection_item fires before upsert_many, so the UPDATE inside
-                # upsert_collection_item is a no-op (no albums row yet at that point).
-                self._conn.execute(
-                    f"""
-                    UPDATE albums SET sale_item_id = (
-                        SELECT bc.sale_item_id FROM bandcamp_collection bc
-                        WHERE bc.band_name  = albums.album_artist COLLATE NOCASE
-                          AND bc.item_title = albums.album        COLLATE NOCASE
-                        LIMIT 1
-                    )
-                    WHERE id IN ({id_placeholders})
-                      AND sale_item_id IS NULL
-                    """,
-                    album_ids,
-                )
+            self._refresh_album_aggregates(list(touched_album_ids))
 
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()
@@ -3124,6 +3196,194 @@ class LibraryIndex:
                     "track.year",
                 }
             )
+
+    def _refresh_album_aggregates(self, album_ids: list[int]) -> None:
+        """Recompute denormalized album columns from the album's tracks.
+
+        Refreshes source/art/counts/dates and backfills sale_item_id from
+        bandcamp_collection. Shared by upsert_many Step 4 and the v42
+        single-attach migration: without this an album whose source was
+        'bandcamp' keeps reading as remote after a local track attaches, so the
+        grid never reflects the newly-owned copy.
+        """
+        if not album_ids:
+            return
+        id_placeholders = ",".join("?" * len(album_ids))
+        self._conn.execute(
+            f"""
+            UPDATE albums SET
+                embedded_art   = (SELECT MAX(t.embedded_art)  FROM tracks t WHERE t.album_id = albums.id),
+                date_added     = (SELECT MIN(t.date_added)    FROM tracks t WHERE t.album_id = albums.id),
+                last_played_at = (SELECT MAX(t.last_played)   FROM tracks t WHERE t.album_id = albums.id),
+                art_version    = (SELECT MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
+                                  FROM tracks t WHERE t.album_id = albums.id),
+                play_count_avg = (SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
+                                  FROM tracks t WHERE t.album_id = albums.id),
+                source         = (SELECT
+                                      CASE WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
+                                                AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
+                                           THEN 'local'
+                                           WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
+                                           ELSE MIN(t.source) END
+                                  FROM tracks t WHERE t.album_id = albums.id),
+                release_date   = (SELECT MAX(t.release_date)   FROM tracks t WHERE t.album_id = albums.id),
+                genre          = (SELECT MAX(t.genre)          FROM tracks t WHERE t.album_id = albums.id),
+                label          = (SELECT MAX(t.label)          FROM tracks t WHERE t.album_id = albums.id),
+                mb_release_id  = (SELECT MAX(t.mb_release_id)  FROM tracks t WHERE t.album_id = albums.id)
+            WHERE id IN ({id_placeholders})
+            """,
+            album_ids,
+        )
+        # Backfill sale_item_id from bandcamp_collection for albums that were just
+        # inserted without it. Covers the streaming-sync order where
+        # upsert_collection_item fires before upsert_many, so the UPDATE inside
+        # upsert_collection_item is a no-op (no albums row yet at that point).
+        self._conn.execute(
+            f"""
+            UPDATE albums SET sale_item_id = (
+                SELECT bc.sale_item_id FROM bandcamp_collection bc
+                WHERE bc.band_name  = albums.album_artist COLLATE NOCASE
+                  AND bc.item_title = albums.album        COLLATE NOCASE
+                LIMIT 1
+            )
+            WHERE id IN ({id_placeholders})
+              AND sale_item_id IS NULL
+            """,
+            album_ids,
+        )
+
+    def _attach_loose_local_singles(
+        self, file_paths: "list[str] | None" = None
+    ) -> set[int]:
+        """Attach un-provenanced loose local singles to their streaming single-album (KAMP-529).
+
+        A standalone Bandcamp single's local file carries an empty album tag, so
+        the (album_artist, album) name-match in ``_upsert_many`` (Step 3b) skips
+        it and it has no album row to sid-link — it lingers as a loose track that
+        duplicates the streaming single kamp indexes for the same purchase. The
+        streaming single is a 1-track album whose ``album`` field equals the item
+        title, so the match key already lives there: ``local.title`` ==
+        ``streaming_single_album.album``.
+
+        Attach only on an *unambiguous* identity match: non-empty
+        album_artist/title, the streaming side is a genuine 1-track ``bandcamp``
+        single, and exactly one candidate exists on each side of the
+        (album_artist, title) pair — otherwise skip and log. ``sale_item_id`` is
+        deliberately NOT stamped on the local row: the album already carries it,
+        and stamping a never-downloaded row would create a second claimant for
+        the KAMP-523 download re-attach path. Shared by the scan path and the v42
+        migration so the two never drift.
+
+        When *file_paths* is given, only those local rows are considered (scan
+        path); ``None`` scans every loose local single (one-shot migration).
+        Idempotent: an attached single gains an album_id and drops out of the
+        candidate set. Returns the set of album_ids that gained a track.
+        """
+        params: list[Any] = []
+        scope = ""
+        if file_paths is not None:
+            if not file_paths:
+                return set()
+            scope = f" AND t.file_path IN ({','.join('?' * len(file_paths))})"
+            params = list(file_paths)
+        candidates = self._conn.execute(
+            f"""
+            SELECT t.id, t.file_path, t.album_artist, t.title
+            FROM tracks t
+            WHERE t.source = 'local'
+              AND t.album_id IS NULL
+              AND TRIM(t.album) = ''
+              AND TRIM(t.album_artist) != ''
+              AND TRIM(t.title) != ''
+              {scope}
+            """,
+            params,
+        ).fetchall()
+
+        touched: set[int] = set()
+        for c in candidates:
+            # Ambiguity guard (DB-wide, not batch-scoped): more than one loose
+            # local single sharing this (album_artist, title) is not safe to
+            # auto-attach — leave all of them untouched.
+            local_dupes = self._conn.execute(
+                """
+                SELECT COUNT(*) FROM tracks
+                WHERE source = 'local' AND album_id IS NULL AND TRIM(album) = ''
+                  AND TRIM(album_artist) = TRIM(?) COLLATE NOCASE
+                  AND TRIM(title)        = TRIM(?) COLLATE NOCASE
+                """,
+                (c["album_artist"], c["title"]),
+            ).fetchone()[0]
+            if local_dupes != 1:
+                logger.info(
+                    "KAMP-529 single-attach: skipping ambiguous local single"
+                    " (%s - %s): %d loose candidates",
+                    c["album_artist"],
+                    c["title"],
+                    local_dupes,
+                )
+                continue
+            # Streaming single-album: exactly one track, a bandcamp row, whose
+            # album equals this single's title under the same artist.
+            matches = self._conn.execute(
+                """
+                SELECT a.id FROM albums a
+                WHERE TRIM(a.album_artist) = TRIM(?) COLLATE NOCASE
+                  AND TRIM(a.album)        = TRIM(?) COLLATE NOCASE
+                  AND (SELECT COUNT(*) FROM tracks x WHERE x.album_id = a.id) = 1
+                  AND EXISTS (
+                        SELECT 1 FROM tracks x
+                        WHERE x.album_id = a.id AND x.source = 'bandcamp'
+                      )
+                """,
+                (c["album_artist"], c["title"]),
+            ).fetchall()
+            if len(matches) != 1:
+                if len(matches) > 1:
+                    logger.info(
+                        "KAMP-529 single-attach: skipping ambiguous streaming"
+                        " match for (%s - %s): %d candidate albums",
+                        c["album_artist"],
+                        c["title"],
+                        len(matches),
+                    )
+                continue
+            album_id = matches[0]["id"]
+            # Align track_number/disc to the streaming track so per-track joins
+            # (favorite/play-count inheritance, remove_download) line up, and stamp
+            # the album's canonical name onto the (previously album-less) single so
+            # it stops rendering as its own "missing album" grid card — setting
+            # album_id alone leaves album='' and the loose card persists (KAMP-529).
+            stream = self._conn.execute(
+                "SELECT track_number, disc_number FROM tracks"
+                " WHERE album_id = ? AND source = 'bandcamp' LIMIT 1",
+                (album_id,),
+            ).fetchone()
+            alb = self._conn.execute(
+                "SELECT album_artist, album FROM albums WHERE id = ?", (album_id,)
+            ).fetchone()
+            self._conn.execute(
+                "UPDATE tracks SET album_id = ?, track_number = ?, disc_number = ?,"
+                " album = ?, album_artist = ? WHERE id = ?",
+                (
+                    album_id,
+                    stream["track_number"],
+                    stream["disc_number"],
+                    alb["album"],
+                    alb["album_artist"],
+                    c["id"],
+                ),
+            )
+            touched.add(album_id)
+            logger.info(
+                "KAMP-529 single-attach: linked local single '%s - %s'"
+                " (track id %d) to streaming album %d",
+                c["album_artist"],
+                c["title"],
+                c["id"],
+                album_id,
+            )
+        return touched
 
     def move_track(
         self,
@@ -4197,6 +4457,19 @@ class LibraryIndex:
             JOIN tracks t ON f.rowid = t.id
             LEFT JOIN albums al ON al.id = t.album_id
             WHERE tracks_fts MATCH ?
+              -- KAMP-529: local-wins collapse. Hide a streaming (bandcamp) row
+              -- when its album also holds a local track, so a downloaded track
+              -- surfaces once in search instead of doubling. Same album-level
+              -- rule as tracks_for_album; keyed on album_id (NULL-safe) and
+              -- source (Windows path-form safe), not on track_number.
+              AND NOT (
+                    t.source = 'bandcamp'
+                    AND t.album_id IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM tracks x
+                        WHERE x.album_id = t.album_id AND x.source = 'local'
+                    )
+                  )
             ORDER BY (t.favorite OR COALESCE(al.favorite, 0)) DESC, f.rank
             """,
             (fts_expr,),

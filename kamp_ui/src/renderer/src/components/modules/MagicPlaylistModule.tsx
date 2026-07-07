@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { getMagicPlaylistModuleContent, artUrl } from '../../api/client'
 import type { Album, Artist, PlaylistTrack } from '../../api/client'
 import { useStore } from '../../store'
@@ -377,12 +377,32 @@ export function MagicPlaylistModule({ displayStyle, moduleId }: ModuleProps): Re
   const [tracks, setTracks] = useState<PlaylistTrack[]>([])
   const [loading, setLoading] = useState(true)
   const [randomTick, setRandomTick] = useState(0)
+  // Hover guard for the random re-shuffle: refs (not state) so hovering never
+  // forces a re-render. A tick that fires while the cursor is over the module is
+  // deferred and applied on mouse-leave, so items never change under the user.
+  const hoveredRef = useRef(false)
+  const pendingShuffleRef = useRef(false)
 
   useEffect(() => {
     if (config.sort !== 'random') return
-    const id = setInterval(() => setRandomTick((n) => n + 1), 60 * 60 * 1000)
-    return () => clearInterval(id)
+    // Re-shuffle every 5 minutes, but hold back a tick while the module is
+    // hovered — the deferred shuffle is applied by onMouseLeave below.
+    const timer = setInterval(
+      () => {
+        if (hoveredRef.current) {
+          pendingShuffleRef.current = true
+        } else {
+          setRandomTick((n) => n + 1)
+        }
+      },
+      5 * 60 * 1000
+    )
+    return () => clearInterval(timer)
   }, [config.sort])
+
+  // Random modules refresh only on their own timer (randomTick), not on every
+  // library event; deterministic sorts still update when the library changes.
+  const libraryTrigger = config.sort === 'random' ? 0 : magicPlaylistVersion
 
   useEffect(() => {
     if (serverStatus !== 'connected' || config.playlistId == null) return
@@ -410,40 +430,64 @@ export function MagicPlaylistModule({ displayStyle, moduleId }: ModuleProps): Re
     config.sort,
     config.items,
     serverStatus,
-    magicPlaylistVersion,
+    libraryTrigger,
     randomTick
   ])
 
-  if (config.playlistId == null) {
-    return <div className="module-empty">Choose a playlist in the settings above.</div>
-  }
+  const renderBody = (): React.JSX.Element => {
+    if (config.playlistId == null) {
+      return <div className="module-empty">Choose a playlist in the settings above.</div>
+    }
 
-  if (loading) {
-    return (
-      <div className="module-skeleton-row">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="module-skeleton-card" />
-        ))}
-      </div>
-    )
-  }
+    if (loading) {
+      return (
+        <div className="module-skeleton-row">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="module-skeleton-card" />
+          ))}
+        </div>
+      )
+    }
 
-  // Albums
-  if (config.contents === 'albums') {
-    if (albums.length === 0) return <div className="module-empty">No albums found.</div>
-    if (displayStyle === 'list') return <ListView albums={albums} />
-    if (displayStyle === 'grid') return <GridView albums={albums} />
-    return <ShelfView albums={albums} />
-  }
+    // Albums
+    if (config.contents === 'albums') {
+      if (albums.length === 0) return <div className="module-empty">No albums found.</div>
+      if (displayStyle === 'list') return <ListView albums={albums} />
+      if (displayStyle === 'grid') return <GridView albums={albums} />
+      return <ShelfView albums={albums} />
+    }
 
-  // Artists
-  if (config.contents === 'artists') {
-    if (artists.length === 0) return <div className="module-empty">No artists found.</div>
+    // Artists
+    if (config.contents === 'artists') {
+      if (artists.length === 0) return <div className="module-empty">No artists found.</div>
+      if (displayStyle === 'list') {
+        return (
+          <div className="module-list">
+            {artists.map((artist) => (
+              <MagicArtistListRow key={artist.name} artist={artist} />
+            ))}
+          </div>
+        )
+      }
+      if (displayStyle === 'grid') {
+        return (
+          <div className="album-grid module-grid">
+            {artists.map((artist) => (
+              <MagicArtistCard key={artist.name} artist={artist} />
+            ))}
+          </div>
+        )
+      }
+      return <MagicArtistShelf artists={artists} />
+    }
+
+    // Tracks
+    if (tracks.length === 0) return <div className="module-empty">No tracks found.</div>
     if (displayStyle === 'list') {
       return (
         <div className="module-list">
-          {artists.map((artist) => (
-            <MagicArtistListRow key={artist.name} artist={artist} />
+          {tracks.map((track) => (
+            <MagicTrackListRow key={track.id} track={track} />
           ))}
         </div>
       )
@@ -451,34 +495,33 @@ export function MagicPlaylistModule({ displayStyle, moduleId }: ModuleProps): Re
     if (displayStyle === 'grid') {
       return (
         <div className="album-grid module-grid">
-          {artists.map((artist) => (
-            <MagicArtistCard key={artist.name} artist={artist} />
+          {tracks.map((track) => (
+            <MagicTrackCard key={track.id} track={track} />
           ))}
         </div>
       )
     }
-    return <MagicArtistShelf artists={artists} />
+    return <MagicTrackShelf tracks={tracks} />
   }
 
-  // Tracks
-  if (tracks.length === 0) return <div className="module-empty">No tracks found.</div>
-  if (displayStyle === 'list') {
-    return (
-      <div className="module-list">
-        {tracks.map((track) => (
-          <MagicTrackListRow key={track.id} track={track} />
-        ))}
-      </div>
-    )
-  }
-  if (displayStyle === 'grid') {
-    return (
-      <div className="album-grid module-grid">
-        {tracks.map((track) => (
-          <MagicTrackCard key={track.id} track={track} />
-        ))}
-      </div>
-    )
-  }
-  return <MagicTrackShelf tracks={tracks} />
+  // Wrapper carries the hover guard for the random re-shuffle. It's a plain
+  // block that passes width through, so it does not affect the shelf/grid/list
+  // layouts inside .base-kamp-module-body.
+  return (
+    <div
+      className="magic-playlist-module-body"
+      onMouseEnter={() => {
+        hoveredRef.current = true
+      }}
+      onMouseLeave={() => {
+        hoveredRef.current = false
+        if (pendingShuffleRef.current) {
+          pendingShuffleRef.current = false
+          setRandomTick((n) => n + 1)
+        }
+      }}
+    >
+      {renderBody()}
+    </div>
+  )
 }

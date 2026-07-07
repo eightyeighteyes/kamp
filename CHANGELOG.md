@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.25.1](https://github.com/eightyeighteyes/kamp/compare/v1.25.0...v1.25.1) (2026-07-07)
+
+
+### Bug Fixes
+
+* **bandcamp:** identity-based provenance so downloads re-attach to origin (KAMP-523) ([#615](https://github.com/eightyeighteyes/kamp/issues/615)) ([1a44e27](https://github.com/eightyeighteyes/kamp/commit/1a44e279b5e98e811cc6bc8cf087b788fa0ec3a4))
+* **bandcamp:** materialize stream tracks before removing a download (KAMP-527) ([#622](https://github.com/eightyeighteyes/kamp/issues/622)) ([f2fb0b9](https://github.com/eightyeighteyes/kamp/commit/f2fb0b9bb04514ef191f5df7a5e41b60f0bb927e))
+* **bandcamp:** persist track-level provenance so standalone singles are recoverable (KAMP-528) ([#623](https://github.com/eightyeighteyes/kamp/issues/623)) ([5c7634d](https://github.com/eightyeighteyes/kamp/commit/5c7634dbbf8c43bc0628bc9b9c65c965afb04bba))
+* **bandcamp:** support standalone single-track purchases (index, playback, download) — KAMP-526 ([#613](https://github.com/eightyeighteyes/kamp/issues/613)) ([5afa27f](https://github.com/eightyeighteyes/kamp/commit/5afa27f861e9e981fff7e00bf0dc610de1f4d0c4))
+* **base-kamp:** give magic playlist random re-shuffle a cooldown (KAMP-530) ([#626](https://github.com/eightyeighteyes/kamp/issues/626)) ([acef4b0](https://github.com/eightyeighteyes/kamp/commit/acef4b0210e94cb186f2f97c6d531c74e45cc704))
+* **library:** dedupe local files against streaming collection rows (KAMP-529) ([#624](https://github.com/eightyeighteyes/kamp/issues/624)) ([9257fec](https://github.com/eightyeighteyes/kamp/commit/9257fecd1d104c71ea2776e3aa6c8545d54a0573))
+* **library:** prune empty local albums when their files are deleted (KAMP-522) ([#616](https://github.com/eightyeighteyes/kamp/issues/616)) ([9dd5542](https://github.com/eightyeighteyes/kamp/commit/9dd554241ca690730e6809330e948d1547a57671))
+* **ui:** hide shelf arrows when there's nothing to scroll to (KAMP-531) ([#625](https://github.com/eightyeighteyes/kamp/issues/625)) ([2af8a59](https://github.com/eightyeighteyes/kamp/commit/2af8a59339f1afb71660dd424e7be87580deed8d))
+
 ## [1.25.0](https://github.com/eightyeighteyes/kamp/compare/v1.24.0...v1.25.0) (2026-06-27)
 
 

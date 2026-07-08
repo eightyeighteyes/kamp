@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 44
+_SCHEMA_VERSION = 45
 
 
 class NoStreamableVersionError(Exception):
@@ -1749,7 +1749,50 @@ class LibraryIndex:
             # migration tests, which build a partial tracks table.
             self._conn.execute("UPDATE schema_version SET version = 44")
             self._conn.commit()
-            version = 44  # noqa: F841
+            version = 44
+
+        if version < 45:
+            # v44 → v45: populate track_sources/track_stats from the authoritative
+            # tracks columns (KAMP-540). Additive and behavior-neutral — nothing
+            # reads the children yet (KAMP-542 flips reads). Guarded on the columns
+            # the backfill reads, since the narrow migration-unit-test schemas build
+            # a partial tracks table; when they're absent the tables just stay empty
+            # and we still bump the version. No backup: the backfill only INSERTs
+            # into the (empty) child tables and never touches tracks, so it is
+            # undone by dropping the child rows. Wrapped in try/except so a
+            # pathological uri collision can't brick the DB — the children are left
+            # for KAMP-541's collapse (which re-derives from tracks) to populate.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            needed = {
+                "id",
+                "file_path",
+                "source",
+                "sale_item_id",
+                "favorite",
+                "play_count",
+                "last_played",
+                "ext",
+                "duration",
+                "embedded_art",
+                "file_mtime",
+                "is_available",
+                "stream_url",
+                "stream_url_expires_at",
+            }
+            if needed <= track_cols:
+                try:
+                    self._backfill_canonical_children()
+                except Exception:
+                    self._conn.rollback()
+                    logger.exception(
+                        "KAMP-540 v45 backfill failed — rolled back; children left"
+                        " for KAMP-541 to populate"
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 45")
+            self._conn.commit()
+            version = 45  # noqa: F841
 
     def _backup_db(self, label: str) -> bool:
         """Snapshot the live DB (incl. WAL) before a mutating heal; return success.
@@ -1770,6 +1813,69 @@ class LibraryIndex:
         except Exception as exc:  # pragma: no cover - backup is best-effort
             logger.warning("%s: backup failed (%s); skipping heal", label, exc)
             return False
+
+    def _backfill_canonical_children(self) -> None:
+        """Populate track_sources/track_stats from existing tracks rows (KAMP-540).
+
+        One track_sources row and one track_stats row per tracks row that has no
+        source row yet (the NOT EXISTS guard makes re-runs a no-op). Derives the
+        source fields via _derive_source_fields so the migration and the scan path
+        produce identical rows. Additive only — never mutates tracks.
+        """
+        rows = self._conn.execute(
+            "SELECT id, file_path, source, sale_item_id, ext, duration,"
+            " embedded_art, file_mtime, is_available, stream_url,"
+            " stream_url_expires_at, favorite, play_count, last_played"
+            " FROM tracks"
+            " WHERE NOT EXISTS"
+            " (SELECT 1 FROM track_sources s WHERE s.track_id = tracks.id)"
+        ).fetchall()
+        source_params: list[tuple[Any, ...]] = []
+        stats_params: list[tuple[Any, ...]] = []
+        for r in rows:
+            uri, kind, provider, provider_item_id = _derive_source_fields(
+                r["file_path"], r["source"], r["sale_item_id"]
+            )
+            source_params.append(
+                (
+                    r["id"],
+                    kind,
+                    provider,
+                    provider_item_id,
+                    uri,
+                    r["ext"],
+                    r["duration"],
+                    r["embedded_art"],
+                    r["file_mtime"],
+                    r["is_available"],
+                    r["stream_url"],
+                    r["stream_url_expires_at"],
+                )
+            )
+            stats_params.append(
+                (r["id"], r["favorite"], r["play_count"], r["last_played"])
+            )
+        if source_params:
+            self._conn.executemany(
+                "INSERT INTO track_sources"
+                " (track_id, kind, provider, provider_item_id, uri, ext, duration,"
+                "  embedded_art, file_mtime, is_available, stream_url,"
+                "  stream_url_expires_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                source_params,
+            )
+        if stats_params:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO track_stats"
+                " (track_id, favorite, play_count, last_played)"
+                " VALUES (?, ?, ?, ?)",
+                stats_params,
+            )
+        if source_params:
+            logger.info(
+                "KAMP-540 v45 backfill: populated %d track_sources/track_stats rows",
+                len(source_params),
+            )
 
     def _create_tracks_sale_item_id_index(self) -> None:
         """Create the lookup index on tracks.sale_item_id (KAMP-528).
@@ -3244,6 +3350,48 @@ class LibraryIndex:
         if touched_album_ids:
             self._refresh_album_aggregates(list(touched_album_ids))
 
+        # Step 5 (KAMP-540): keep the canonical child tables in sync. Every
+        # upserted track gets a refreshed track_sources row (per-source cols read
+        # back from the now-current tracks row) and, if it has none yet, a
+        # track_stats row mirroring its stats (INSERT OR IGNORE so a re-scan never
+        # resets favorite/play_count). Reads still use the old tracks columns —
+        # this only populates the children for KAMP-541/542.
+        src_params: list[tuple[Any, ...]] = []
+        for t in tracks:
+            key = _canonical_track_key(t.file_path)
+            _uri, kind, provider, provider_item_id = _derive_source_fields(
+                t.file_path, t.source, t.sale_item_id
+            )
+            src_params.append((kind, provider, provider_item_id, key))
+        if src_params:
+            self._conn.executemany(
+                "INSERT INTO track_sources"
+                " (track_id, kind, provider, provider_item_id, uri, ext, duration,"
+                "  embedded_art, file_mtime, is_available, stream_url,"
+                "  stream_url_expires_at)"
+                " SELECT id, ?, ?, ?, file_path, ext, duration, embedded_art,"
+                "        file_mtime, is_available, stream_url, stream_url_expires_at"
+                " FROM tracks WHERE file_path = ?"
+                " ON CONFLICT(uri) DO UPDATE SET"
+                "   track_id = excluded.track_id, kind = excluded.kind,"
+                "   provider = excluded.provider,"
+                "   provider_item_id = excluded.provider_item_id,"
+                "   ext = excluded.ext, duration = excluded.duration,"
+                "   embedded_art = excluded.embedded_art,"
+                "   file_mtime = excluded.file_mtime,"
+                "   is_available = excluded.is_available,"
+                "   stream_url = excluded.stream_url,"
+                "   stream_url_expires_at = excluded.stream_url_expires_at",
+                src_params,
+            )
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO track_stats"
+                " (track_id, favorite, play_count, last_played)"
+                " SELECT id, favorite, play_count, last_played"
+                " FROM tracks WHERE file_path = ?",
+                [(p[3],) for p in src_params],
+            )
+
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()
         self._conn.commit()
@@ -3820,6 +3968,28 @@ class LibraryIndex:
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
+    def _mirror_track_stats(self, key: str, cols: "tuple[str, ...]") -> None:
+        """Mirror stat column(s) from the tracks row at *key* into track_stats.
+
+        Absolute-value dual-write (KAMP-540): reads the *post-update* value(s)
+        from tracks and upserts them into track_stats keyed by track_id — never a
+        relative delta, so it survives the KAMP-541 collapse. No-op when *key*
+        matches no track. Creates the track_stats row (mirroring current tracks
+        values) if the v45 backfill / a scan hasn't yet. *cols* are internal
+        column-name literals, never user input.
+        """
+        import time
+
+        col_list = ", ".join(cols)
+        assigns = ", ".join(f"{c} = excluded.{c}" for c in cols)
+        self._conn.execute(
+            f"INSERT INTO track_stats (track_id, {col_list}, updated_at)"
+            f" SELECT id, {col_list}, ? FROM tracks WHERE file_path = ?"
+            f" ON CONFLICT(track_id) DO UPDATE SET {assigns},"
+            f" updated_at = excluded.updated_at",
+            (time.time(), key),
+        )
+
     def record_track_started(self, file_path: Path) -> None:
         """Record the current time as last_played for the track at *file_path*.
 
@@ -3845,6 +4015,7 @@ class LibraryIndex:
             """,
             (now, key, now),
         )
+        self._mirror_track_stats(key, ("last_played",))
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.last_played"})
@@ -3871,6 +4042,8 @@ class LibraryIndex:
             """,
             (key,),
         )
+        # Mirror the post-increment absolute value (not a +1) into track_stats.
+        self._mirror_track_stats(key, ("play_count",))
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.play_count"})
@@ -3980,6 +4153,7 @@ class LibraryIndex:
             "UPDATE tracks SET favorite = ? WHERE file_path = ?",
             (int(favorite), key),
         )
+        self._mirror_track_stats(key, ("favorite",))
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.favorite"})
@@ -5607,6 +5781,36 @@ def _canonical_track_key(path: "Path | str") -> str:
         rest = s.split("bandcamp:", 1)[1].lstrip("/\\").replace("\\", "/")
         return "bandcamp://" + rest
     return s
+
+
+def _derive_source_fields(
+    file_path: "Path | str", source: str, sale_item_id: "str | None"
+) -> "tuple[str, str, str, str | None]":
+    """Map a legacy tracks row onto its canonical track_sources fields (KAMP-540).
+
+    Returns (uri, kind, provider, provider_item_id) per design note §3:
+    - uri: the canonical file_path (bandcamp:// slash forms normalised).
+    - kind: 'file' for a local file, else 'stream'.
+    - provider: 'bandcamp' for a streamed row or a download-provenanced local
+      file (has a sale_item_id); '' for an unaffiliated rip.
+    - provider_item_id: the sale_item_id; for a pure streaming row (which stores
+      the id only in its bandcamp://<sid>/<n> URI, not tracks.sale_item_id) the
+      id is parsed back out of the URI.
+
+    Shared by the v45 backfill and upsert_many so the scan and the migration
+    derive identical rows.
+    """
+    uri = _canonical_track_key(file_path)
+    kind = "file" if source == "local" else "stream"
+    provider = "bandcamp" if (source == "bandcamp" or sale_item_id) else ""
+    provider_item_id = sale_item_id or None
+    if (
+        provider == "bandcamp"
+        and not provider_item_id
+        and uri.startswith("bandcamp://")
+    ):
+        provider_item_id = uri[len("bandcamp://") :].split("/", 1)[0] or None
+    return uri, kind, provider, provider_item_id
 
 
 def _track_to_params(

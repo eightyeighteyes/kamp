@@ -607,14 +607,14 @@ class TestLibraryIndex:
 
     def test_save_and_load_player_state(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        index.save_player_state(tmp_path / "track.mp3", 42.5)
+        index.save_player_state(7, 42.5)
         result = index.load_player_state()
         index.close()
 
         assert result is not None
-        path, position = result
-        assert isinstance(path, str)
-        assert path == str(tmp_path / "track.mp3")
+        ref, position = result
+        assert isinstance(ref, str)
+        assert ref == "7"  # track id stored as text (KAMP-536)
         assert position == 42.5
 
     def test_load_player_state_returns_none_when_empty(self, tmp_path: Path) -> None:
@@ -626,7 +626,7 @@ class TestLibraryIndex:
 
     def test_clear_player_state_removes_saved_state(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        index.save_player_state(tmp_path / "track.mp3", 42.5)
+        index.save_player_state(7, 42.5)
         index.clear_player_state()
         result = index.load_player_state()
         index.close()
@@ -635,30 +635,30 @@ class TestLibraryIndex:
 
     def test_save_player_state_overwrites_previous(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        index.save_player_state(tmp_path / "first.mp3", 10.0)
-        index.save_player_state(tmp_path / "second.mp3", 99.0)
+        index.save_player_state(1, 10.0)
+        index.save_player_state(2, 99.0)
         result = index.load_player_state()
         index.close()
 
         assert result is not None
-        path, position = result
-        assert isinstance(path, str)
-        assert path == str(tmp_path / "second.mp3")
+        ref, position = result
+        assert isinstance(ref, str)
+        assert ref == "2"
         assert position == 99.0
 
     def test_save_and_load_queue_state(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        tracks = [tmp_path / "a.mp3", tmp_path / "b.mp3", tmp_path / "c.mp3"]
+        track_ids = [10, 20, 30]
         index.save_queue_state(
-            tracks, order=[2, 0, 1], pos=1, shuffle=True, repeat=False
+            track_ids, order=[2, 0, 1], pos=1, shuffle=True, repeat=False
         )
         result = index.load_queue_state()
         index.close()
 
         assert result is not None
-        paths, order, pos, shuffle, repeat = result
-        assert all(isinstance(p, str) for p in paths)
-        assert paths == [str(t) for t in tracks]
+        entries, order, pos, shuffle, repeat = result
+        assert all(isinstance(e, int) for e in entries)
+        assert entries == [10, 20, 30]
         assert order == [2, 0, 1]
         assert pos == 1
         assert shuffle is True
@@ -673,11 +673,9 @@ class TestLibraryIndex:
 
     def test_save_queue_state_overwrites_previous(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
+        index.save_queue_state([10], order=[0], pos=0, shuffle=False, repeat=False)
         index.save_queue_state(
-            [tmp_path / "a.mp3"], order=[0], pos=0, shuffle=False, repeat=False
-        )
-        index.save_queue_state(
-            [tmp_path / "b.mp3", tmp_path / "c.mp3"],
+            [20, 30],
             order=[1, 0],
             pos=1,
             shuffle=True,
@@ -687,8 +685,8 @@ class TestLibraryIndex:
         index.close()
 
         assert result is not None
-        paths, order, pos, shuffle, repeat = result
-        assert paths == [str(tmp_path / "b.mp3"), str(tmp_path / "c.mp3")]
+        entries, order, pos, shuffle, repeat = result
+        assert entries == [20, 30]
         assert order == [1, 0]
         assert pos == 1
         assert shuffle is True
@@ -696,9 +694,7 @@ class TestLibraryIndex:
 
     def test_clear_queue_state(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        index.save_queue_state(
-            [tmp_path / "a.mp3"], order=[0], pos=0, shuffle=False, repeat=False
-        )
+        index.save_queue_state([10], order=[0], pos=0, shuffle=False, repeat=False)
         index.clear_queue_state()
         result = index.load_queue_state()
         index.close()
@@ -6447,56 +6443,64 @@ class TestIndexedPathsExcludesRemote:
 class TestQueuePlayerStateStr:
     def test_load_player_state_returns_str(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        index.save_player_state(tmp_path / "track.mp3", 10.0)
+        index.save_player_state(5, 10.0)
         result = index.load_player_state()
         index.close()
 
         assert result is not None
-        path, _ = result
-        assert isinstance(path, str)
+        ref, _ = result
+        assert isinstance(ref, str)
+        assert ref == "5"
 
-    def test_load_player_state_preserves_remote_uri(self, tmp_path: Path) -> None:
+    def test_load_player_state_preserves_legacy_path(self, tmp_path: Path) -> None:
+        # Back-compat: a pre-queue-by-id build stored a raw path/URI in
+        # player_state.track_path; load returns it unchanged so the daemon can
+        # resolve it by path (KAMP-536).
         index = LibraryIndex(tmp_path / "library.db")
-        index.save_player_state("bandcamp://999/3", 22.5)
+        index._conn.execute(
+            "INSERT INTO player_state (id, track_path, position) VALUES (1, ?, ?)",
+            ("bandcamp://999/3", 22.5),
+        )
+        index._conn.commit()
         result = index.load_player_state()
         index.close()
 
         assert result is not None
-        path, position = result
-        assert path == "bandcamp://999/3"
+        ref, position = result
+        assert ref == "bandcamp://999/3"
         assert position == 22.5
 
-    def test_load_queue_state_returns_list_of_str(self, tmp_path: Path) -> None:
+    def test_load_queue_state_returns_list_of_int(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         index.save_queue_state(
-            [tmp_path / "a.mp3", tmp_path / "b.mp3"],
-            order=[0, 1],
-            pos=0,
-            shuffle=False,
-            repeat="off",
+            [11, 22], order=[0, 1], pos=0, shuffle=False, repeat="off"
         )
         result = index.load_queue_state()
         index.close()
 
         assert result is not None
-        paths, _, _, _, _ = result
-        assert all(isinstance(p, str) for p in paths)
+        entries, _, _, _, _ = result
+        assert all(isinstance(e, int) for e in entries)
+        assert entries == [11, 22]
 
-    def test_load_queue_state_preserves_remote_uri(self, tmp_path: Path) -> None:
+    def test_load_queue_state_preserves_legacy_paths(self, tmp_path: Path) -> None:
+        # Back-compat: a pre-queue-by-id DB stored JSON path strings; load returns
+        # them unchanged so the daemon resolves each by path (KAMP-536).
+        import json
+
         index = LibraryIndex(tmp_path / "library.db")
-        index.save_queue_state(
-            ["bandcamp://999/1", "bandcamp://999/2"],
-            order=[0, 1],
-            pos=0,
-            shuffle=False,
-            repeat="off",
+        index._conn.execute(
+            "INSERT INTO queue_state (id, tracks, order_json, pos, shuffle, repeat) "
+            "VALUES (1, ?, ?, 0, 0, 'off')",
+            (json.dumps(["bandcamp://999/1", "bandcamp://999/2"]), json.dumps([0, 1])),
         )
+        index._conn.commit()
         result = index.load_queue_state()
         index.close()
 
         assert result is not None
-        paths, _, _, _, _ = result
-        assert paths == ["bandcamp://999/1", "bandcamp://999/2"]
+        entries, _, _, _, _ = result
+        assert entries == ["bandcamp://999/1", "bandcamp://999/2"]
 
     def test_get_track_by_path_accepts_str(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")

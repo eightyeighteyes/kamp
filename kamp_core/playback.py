@@ -323,18 +323,20 @@ class PlaybackQueue:
         """
         return [self._tracks[i] for i in self._order], self._pos
 
-    def get_state(self) -> tuple[list[str], list[int], int, bool, str]:
-        """Return (original_paths, order, pos, shuffle, repeat_mode) for persistence.
+    def get_state(self) -> tuple[list[int], list[int], int, bool, str]:
+        """Return (original_ids, order, pos, shuffle, repeat_mode) for persistence.
 
-        *original_paths* is _tracks in load order; *order* is the index
-        permutation (_order) so the shuffled sequence can be faithfully
+        *original_ids* is _tracks in load order (track ids); *order* is the
+        index permutation (_order) so the shuffled sequence can be faithfully
         restored and toggling shuffle off recovers the true original order.
-        Paths are returned as strings to match load_queue_state()'s list[str].
+        Persisting track ids rather than paths (KAMP-536) keeps the queue stable
+        across the canonical-track refactor: the later collapse repoints the
+        saved queue with a plain id update instead of rewriting path strings.
         """
 
-        original_paths = [_canonical_track_key(t.file_path) for t in self._tracks]
+        original_ids = [t.id for t in self._tracks]
         return (
-            original_paths,
+            original_ids,
             list(self._order),
             self._pos,
             self._shuffle,

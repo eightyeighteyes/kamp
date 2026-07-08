@@ -602,21 +602,23 @@ def _cmd_daemon(
     saved_queue = index.load_queue_state()
     saved_player = index.load_player_state()
     if saved_queue and saved_player:
-        saved_paths, q_order, q_pos, q_shuffle, q_repeat = saved_queue
+        saved_entries, q_order, q_pos, q_shuffle, q_repeat = saved_queue
         _, saved_position = saved_player
-        # Resolve original-order paths → Track objects.
-        # Remote tracks that can't be found in the DB (e.g. after a DB wipe) are
-        # kept as minimal stub Tracks with reachable=False so they remain visible
-        # in the queue UI rather than silently disappearing.  Local tracks that
-        # aren't found (deleted files) are still dropped.
+
+        # Resolve original-order entries → Track objects (KAMP-536 queue-by-id).
+        # Entries are track ids; a DB last written by an older build yields legacy
+        # path strings, resolved by path. Remote tracks missing from the DB (e.g.
+        # a legacy bandcamp: path after a DB wipe) are kept as minimal stub Tracks
+        # with reachable=False so they remain visible in the queue UI rather than
+        # silently disappearing. Ids/local paths not found (deleted) are dropped.
         # Build a mapping old_index → new_index so the playback permutation
         # (q_order) can be remapped to the compacted resolved list.
-        resolved: list[Any] = []
-        old_to_new: dict[int, int] = {}
-        for i, p in enumerate(saved_paths):
+        def _resolve_saved_entry(entry: "int | str") -> "Track | None":
+            if isinstance(entry, int):
+                return index.get_track_by_id(entry)
+            p = str(entry)
             t = index.get_track_by_path(p)
             if t is None and p.startswith("bandcamp:"):
-                # Remote track missing from DB — keep as unreachable stub.
                 t = Track(
                     file_path=Path(p),
                     title=p.split("/")[-1] or p,
@@ -633,6 +635,12 @@ def _cmd_daemon(
                     source="bandcamp",
                     reachable=False,
                 )
+            return t
+
+        resolved: list[Any] = []
+        old_to_new: dict[int, int] = {}
+        for i, entry in enumerate(saved_entries):
+            t = _resolve_saved_entry(entry)
             if t is not None:
                 old_to_new[i] = len(resolved)
                 resolved.append(t)
@@ -663,8 +671,12 @@ def _cmd_daemon(
                 engine.load_paused(current.playback_uri, saved_position)
     elif saved_player:
         # Fallback: no queue state — restore single track (pre-TASK-47 behaviour).
-        saved_path, saved_position = saved_player
-        track = index.get_track_by_path(saved_path)
+        saved_ref, saved_position = saved_player
+        track = (
+            index.get_track_by_id(int(saved_ref))
+            if saved_ref.lstrip("-").isdigit()
+            else index.get_track_by_path(saved_ref)
+        )
         if track:
             queue.load([track], 0)
             engine.load_paused(track.playback_uri, saved_position)
@@ -815,9 +827,9 @@ def _cmd_daemon(
                 _et_prev_pos[0] = pos
                 _et_playing[0] = playing
                 if tick % 5 == 0:
-                    index.save_player_state(current.file_path, engine.state.position)
-                    q_paths, q_order, q_pos, q_shuffle, q_repeat = queue.get_state()
-                    index.save_queue_state(q_paths, q_order, q_pos, q_shuffle, q_repeat)
+                    index.save_player_state(current.id, engine.state.position)
+                    q_ids, q_order, q_pos, q_shuffle, q_repeat = queue.get_state()
+                    index.save_queue_state(q_ids, q_order, q_pos, q_shuffle, q_repeat)
             elif _et_path[0] is not None:
                 # Queue became empty — flush any accumulated time.
                 _flush_elapsed()

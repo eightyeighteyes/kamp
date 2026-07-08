@@ -4608,8 +4608,14 @@ class LibraryIndex:
         ).fetchall()
         return [_playlist_row_to_dict(r) for r in rows]
 
-    def save_player_state(self, track_path: "str | Path", position: float) -> None:
-        """Persist the current track path and playback position."""
+    def save_player_state(self, track_id: int, position: float) -> None:
+        """Persist the current track id and playback position.
+
+        The value is stored in the (legacy-named) track_path column as the
+        stringified track id (KAMP-536 queue-by-id). load_player_state() reads
+        it back and callers resolve it via get_track_by_id; a legacy path value
+        written by an older build is still resolvable via get_track_by_path.
+        """
         self._conn.execute(
             """
             INSERT INTO player_state (id, track_path, position) VALUES (1, ?, ?)
@@ -4617,7 +4623,7 @@ class LibraryIndex:
                 track_path = excluded.track_path,
                 position   = excluded.position
             """,
-            (str(track_path), position),
+            (str(track_id), position),
         )
         self._conn.commit()
 
@@ -4627,10 +4633,12 @@ class LibraryIndex:
         self._conn.commit()
 
     def load_player_state(self) -> "tuple[str, float] | None":
-        """Return (track_path, position) from the last session, or None.
+        """Return (track_ref, position) from the last session, or None.
 
-        Returns the raw string stored in the DB — callers must not wrap it in
-        Path() since it may be a remote URI (bandcamp://) that Path normalizes.
+        *track_ref* is the current track's id as a string (KAMP-536); a legacy
+        build may have stored a path/URI instead. Returned raw so the caller can
+        resolve it (digit string → get_track_by_id, otherwise get_track_by_path)
+        without Path() normalizing a remote bandcamp:// URI.
         """
         row = self._conn.execute(
             "SELECT track_path, position FROM player_state WHERE id = 1"
@@ -4639,16 +4647,20 @@ class LibraryIndex:
 
     def save_queue_state(
         self,
-        tracks: "Sequence[Path | str]",
+        track_ids: "Sequence[int]",
         order: list[int],
         pos: int,
         shuffle: bool,
         repeat: str,
     ) -> None:
-        """Persist the queue in original load order with playback permutation."""
+        """Persist the queue in original load order with playback permutation.
+
+        *track_ids* are track ids in original load order (KAMP-536 queue-by-id);
+        the later collapse migration repoints these with a plain id update.
+        """
         import json
 
-        payload = json.dumps([str(p) for p in tracks])
+        payload = json.dumps([int(t) for t in track_ids])
         order_payload = json.dumps(order)
         self._conn.execute(
             """
@@ -4667,11 +4679,14 @@ class LibraryIndex:
 
     def load_queue_state(
         self,
-    ) -> "tuple[list[str], list[int], int, bool, str] | None":
-        """Return (tracks_in_original_order, order, pos, shuffle, repeat_mode) or None.
+    ) -> "tuple[list[int | str], list[int], int, bool, str] | None":
+        """Return (entries_in_original_order, order, pos, shuffle, repeat_mode) or None.
 
-        Tracks are returned as raw strings (not Path objects) so remote URIs
-        (bandcamp://) are not corrupted by Path normalization.
+        *entries* are track ids (KAMP-536 queue-by-id). A DB last written by an
+        older build yields legacy path strings instead; entries are returned as
+        parsed JSON (ints or strs) so the caller resolves each by type — int via
+        get_track_by_id, str via get_track_by_path (protecting bandcamp:// URIs
+        from Path normalization).
         """
         import json
 
@@ -4680,16 +4695,16 @@ class LibraryIndex:
         ).fetchone()
         if not row:
             return None
-        paths: list[str] = list(json.loads(row["tracks"]))
+        entries: list[int | str] = list(json.loads(row["tracks"]))
         raw_order = row["order_json"]
         order: list[int] = (
-            json.loads(raw_order) if raw_order else list(range(len(paths)))
+            json.loads(raw_order) if raw_order else list(range(len(entries)))
         )
         raw_repeat = row["repeat"]
         repeat: str = (
             raw_repeat if raw_repeat in ("off", "queue", "album", "single") else "off"
         )
-        return paths, order, row["pos"], bool(row["shuffle"]), repeat
+        return entries, order, row["pos"], bool(row["shuffle"]), repeat
 
     def clear_queue_state(self) -> None:
         """Remove the persisted queue state (e.g. after the queue is exhausted)."""

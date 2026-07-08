@@ -371,17 +371,17 @@ unaccounted for.
 
 | Site | Stores | Phase |
 |------|--------|-------|
-| `tracks.file_path` (UNIQUE, identity) | URI | v44 (535) — moves to `track_sources.uri` |
-| `tracks.sale_item_id` | provenance | v44 (535) — moves to `track_sources.provider_item_id` |
-| `tracks.favorite/play_count/last_played` | stats | v44 (535) — move to `track_stats` |
-| per-source cols on `tracks` | delivery | v44 (535) — move to `track_sources` |
-| `playlist_tracks.track_id` (FK CASCADE) | id | v44 repoint (535) |
-| `deferred_ops.track_id` (UNIQUE) | id | v44 repoint (535) |
-| `tracks_fts` rowid = id | id | v44 repoint (535) |
-| `player_state.track_path` | path | v44 rewrite → id (535) |
-| `queue_state.tracks` (JSON paths) | paths | v44 rewrite → id (535); runtime queue-by-id (536) |
-| `criteria.py` `_FIELD_MAP` stats fields | column refs | core (536) — JOIN `track_stats` |
-| `criteria.py` `track.source` | column ref | core (536) — EXISTS value-map + `criteria_json` compat |
+| `tracks.file_path` (UNIQUE, identity) | URI | populate → `track_sources.uri` (540); dropped (539) |
+| `tracks.sale_item_id` | provenance | populate → `track_sources.provider_item_id` (540); dropped (539) |
+| `tracks.favorite/play_count/last_played` | stats | populate + dual-write → `track_stats` (540); reads switch (542); dropped (539) |
+| per-source cols on `tracks` | delivery | populate → `track_sources` (540); reads switch (541/542); dropped (539) |
+| `playlist_tracks.track_id` (FK CASCADE) | id | collapse repoint (541) |
+| `deferred_ops.track_id` (UNIQUE) | id | collapse repoint (541) |
+| `tracks_fts` rowid = id | id | collapse repoint (541) |
+| `player_state.track_path` | path | rewrite → id (536 queue-by-id); collapse repoint by id (541) |
+| `queue_state.tracks` (JSON paths) | paths | rewrite → ids (536 queue-by-id); collapse repoint by id (541) |
+| `criteria.py` `_FIELD_MAP` stats fields | column refs | read-switch (542) — JOIN `track_stats` |
+| `criteria.py` `track.source` | column ref | read-switch (542) — EXISTS value-map + `criteria_json` compat |
 | `server.py` `TrackOut` + siblings (`file_path` identity) | field | API (537) — key on id; `file_path` computed then removed (539) |
 | UI (~24 files) React key / favorite-target | field | UI (538) |
 | `extension_audit_log.track_mbid` | mb id | no change — protected by COALESCE-non-empty on `mb_recording_id` |
@@ -391,24 +391,38 @@ unaccounted for.
 
 ## 10. Phase routing
 
+The "core rewrite" was decomposed (after two reviews found a single collapse PR mis-scoped
+and irreversible) into a linear sequence of **independently-shippable** tickets — each
+merges to a working `main` on its own, no integration branch. Doing the two behavior-neutral
+pieces first (queue-by-id, populate+dual-write) shrinks the irreversible collapse and removes
+its couplings.
+
 | Phase | Ticket | Owns |
 |-------|--------|------|
 | Design spike | KAMP-534 | this note |
 | Schema (expand) | KAMP-535 | §2 tables created **empty** in `_DDL` + version bump; no backfill/collapse |
-| Core rewrite + collapse | KAMP-536 | the §7 collapse migration (matching, repoints, quarantine report); reads/writes vs. `track_sources`/`track_stats`; queue-by-id; `criteria.py`; rename `_canonical_track_key` → `_canonical_track_uri` (both copies); dual-write old columns |
+| Queue-by-id | KAMP-536 | queue identity path→`track_id` (persistence + in-memory + daemon restore); behavior-neutral. Turns the collapse's `queue_state` repoint into a plain id update |
+| Populate + dual-write | KAMP-540 | backfill one `track_sources`+`track_stats` row per `tracks` row; writers dual-write stats as an **absolute mirror**; `upsert_many` maintains children on scan; reads stay on old columns; behavior-neutral |
+| Collapse + source reads + delete-download | KAMP-541 | the §7 collapse migration (matching, survivor-id, repoints **by id**, quarantine, backup-first, one txn); preferred-source playback + stream-refresh reads; rework `remove_download`/`materialize_stream_tracks` and delete the `streaming_track_for_local_id` swap. **Fixes KAMP-532.** Atomic/irreversible |
+| Read-switch | KAMP-542 | remaining stats reads → `track_stats`; ~62 `bandcamp://`/`source=` sites → `track_sources` EXISTS; `criteria.py` JOIN + `track.source` value-map; rename `_canonical_track_key`→`_canonical_track_uri`; behavior-neutral |
 | Server API | KAMP-537 | `TrackOut` on id + `sources`; computed `file_path` |
 | UI | KAMP-538 | React key / favorite-target → id |
-| Cleanup + contract + regression | KAMP-539 | drop duplicated `tracks` columns; remove reconcile helpers; delete computed `file_path`; full regression |
+| Contract + regression | KAMP-539 | drop duplicated `tracks` columns; delete now-dead reconcile helpers + computed `file_path`; full regression |
 
-> **Hand-off invariant (KAMP-535 → KAMP-536):** after the expand phase the child tables
-> are **empty**, and there is **no** 1:1 guarantee — a fresh install and any track scanned
-> between 535 and 536 have no child row. KAMP-536 must derive from the old `tracks`
-> columns, **LEFT JOIN** the children (never inner-join and silently drop tracks), and
-> dual-write the old columns as the safety net until KAMP-539 contracts.
+Order: **535 → 536 → 540 → 541 → 542 → (537/538) → 539.**
 
-> **Note for KAMP-535/536/537:** their current Jira descriptions were written against the
-> earlier *two-table* `mode`-enum proposal. Reconcile them to this three-table,
-> `kind`+`provider`, `track_stats` design before starting each.
+> **Hand-off invariant (populate → collapse):** the child tables are **empty** until KAMP-540,
+> and there is **no** 1:1 guarantee — a fresh install and any track scanned before KAMP-540
+> has no child row. KAMP-541 must derive from the old `tracks` columns, **LEFT JOIN** the
+> children (never inner-join and silently drop tracks), and rely on dual-write keeping the old
+> columns authoritative until KAMP-539 contracts.
+
+> **Why the delete-download helpers moved out of KAMP-539:** the collapse *breaks* (not just
+> orphans) `remove_download`/`materialize_stream_tracks`/`streaming_track_for_local_id` —
+> they assume two rows per track and are live-called by delete-download (would 422 on every
+> removal). So their rework lands with the collapse (KAMP-541), and one `UNIQUE file_path`
+> column can't represent a track that is both local and streamable, so source/URI reads move
+> with the collapse too — only pure-stats reads defer to KAMP-542.
 
 ---
 

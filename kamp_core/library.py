@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 43
+_SCHEMA_VERSION = 44
 
 
 class NoStreamableVersionError(Exception):
@@ -207,6 +207,52 @@ CREATE TABLE IF NOT EXISTS tracks (
     -- runs the whole _DDL before the v41 migration adds this column, so a
     -- CREATE INDEX in _DDL would reference a not-yet-existing column and fail.
     sale_item_id         TEXT    REFERENCES bandcamp_collection(sale_item_id)
+);
+
+-- Canonical-track model, expand phase (KAMP-535, epic KAMP-533). A track's
+-- identity (tracks) is being split from the per-delivery sources that provide
+-- its bytes (track_sources) and its mutable listener stats (track_stats), so the
+-- streaming and downloaded copies of one track stop diverging (KAMP-532). These
+-- two child tables are created EMPTY here; nothing reads or writes them yet.
+-- KAMP-536 populates them (collapsing sibling rows) and switches reads over;
+-- KAMP-539 drops the now-duplicated columns from tracks. Both tables reference
+-- tracks(id) — no FK points back the other way — so existing INSERT/DELETE paths
+-- on tracks are unaffected while these stay empty. See
+-- docs/design/KAMP-533-canonical-track-identity.md §2.
+--
+-- track_sources: one row per way-to-get-the-bytes. Two orthogonal axes replace
+-- the old tracks.source enum — kind (how bytes arrive) and provider (which
+-- catalog/adapter). provider_item_id generalizes sale_item_id with NO hard FK
+-- (adapter-validated). Only uri is UNIQUE: .mp3+.flac of one track and the same
+-- track streamable from two providers are legitimate plural sources.
+CREATE TABLE IF NOT EXISTS track_sources (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id              INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    kind                  TEXT    NOT NULL CHECK (kind IN ('file', 'stream')),
+    provider              TEXT    NOT NULL DEFAULT '',
+    provider_item_id      TEXT,
+    uri                   TEXT    NOT NULL UNIQUE,
+    ext                   TEXT    NOT NULL DEFAULT '',
+    duration              REAL    NOT NULL DEFAULT 0,
+    embedded_art          INTEGER NOT NULL DEFAULT 0,
+    file_mtime            REAL,
+    is_available          INTEGER NOT NULL DEFAULT 1,
+    stream_url            TEXT,
+    stream_url_expires_at REAL
+);
+CREATE INDEX IF NOT EXISTS track_sources_track_idx    ON track_sources(track_id);
+CREATE INDEX IF NOT EXISTS track_sources_provider_idx ON track_sources(provider, provider_item_id);
+
+-- track_stats: mutable listener state, separated so identity stays immutable and
+-- multi-client (single-listener endpoint fanout) writes have one home. No
+-- profile_id — stats are one row per track. updated_at is a last-writer-wins
+-- timestamp for concurrent edits from multiple devices.
+CREATE TABLE IF NOT EXISTS track_stats (
+    track_id    INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    favorite    INTEGER NOT NULL DEFAULT 0,
+    play_count  INTEGER NOT NULL DEFAULT 0,
+    last_played REAL,
+    updated_at  REAL
 );
 
 -- First-class album entity (KAMP-418). Replaces the GROUP BY (album_artist, album)
@@ -1688,7 +1734,22 @@ class LibraryIndex:
                     )
             self._conn.execute("UPDATE schema_version SET version = 43")
             self._conn.commit()
-            version = 43  # noqa: F841
+            version = 43
+
+        if version < 44:
+            # v43 → v44: canonical-track model, expand phase (KAMP-535, epic
+            # KAMP-533). track_sources and track_stats are created empty by _DDL
+            # (executescript runs it before this block, and on a fresh DB the
+            # row-is-None branch stamps the current version so no block runs) —
+            # both fresh installs and upgrades converge on the empty tables. This
+            # block only bumps the version; there is deliberately NO backfill (the
+            # v7/v8 no-op pattern). KAMP-536 populates the tables from the still-
+            # authoritative tracks columns and switches reads over. A backfill here
+            # would be thrown away by that collapse and would crash the narrow
+            # migration tests, which build a partial tracks table.
+            self._conn.execute("UPDATE schema_version SET version = 44")
+            self._conn.commit()
+            version = 44  # noqa: F841
 
     def _backup_db(self, label: str) -> bool:
         """Snapshot the live DB (incl. WAL) before a mutating heal; return success.

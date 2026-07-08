@@ -217,11 +217,28 @@ it later, not in v44.
 
 ---
 
-## 7. Migration v44 — spec
+## 7. Migration — spec
 
-All of the following land in **one migration**. The items under "one-way doors" change
-the *shape* of the tables v44 creates and the *site list* KAMP-536/537 sweep; deferring
-any one guarantees a second migration + re-sweep.
+> **Sequencing (expand/contract) — refined during KAMP-535.** Dropping columns from
+> `tracks` breaks every reader (`Track`, `_row_to_track`, the ~62 `bandcamp://` sites,
+> `TrackOut`, `criteria.py`), and that rewrite is KAMP-536 — so the transform cannot land
+> in a single migration that also ships to a working `main`. It is split across the
+> phases as expand → migrate → contract:
+> - **v44 / KAMP-535 (expand):** create `track_sources` + `track_stats` **empty** (in
+>   `_DDL`), bump the schema version. No backfill, no collapse, no drops. Provably
+>   zero behavior change; the old `tracks` columns stay authoritative.
+> - **KAMP-536 (collapse + read switch):** a later migration performs the collapse/merge
+>   below and the code switches reads/writes to the new tables (dual-writing the old
+>   columns as a safety net). The old columns remain the source the collapse reads from.
+> - **KAMP-539 (contract):** drop the now-duplicated columns from `tracks` once nothing
+>   reads them.
+>
+> Everything below (matching, survivor-id, merge, repoint, crash-safety) is the
+> **collapse migration** and lands in KAMP-536, not v44. v44 itself is only the empty-
+> table creation + version bump.
+
+All of the following land in **one migration** (the KAMP-536 collapse). The items under
+"one-way doors" fix the *shape* of the tables and the *site list* the rewrite sweeps.
 
 ### One-way doors (must all be in v44)
 - Two-axis `track_sources` (`kind` + `provider`), soft `(provider, provider_item_id)`
@@ -377,11 +394,17 @@ unaccounted for.
 | Phase | Ticket | Owns |
 |-------|--------|------|
 | Design spike | KAMP-534 | this note |
-| Schema + v44 migration | KAMP-535 | §2 tables, §7 migration, repoints, quarantine report |
-| Core rewrite | KAMP-536 | reads/writes vs. `track_sources`/`track_stats`; queue-by-id; `criteria.py`; rename `_canonical_track_key` → `_canonical_track_uri` (both copies) |
+| Schema (expand) | KAMP-535 | §2 tables created **empty** in `_DDL` + version bump; no backfill/collapse |
+| Core rewrite + collapse | KAMP-536 | the §7 collapse migration (matching, repoints, quarantine report); reads/writes vs. `track_sources`/`track_stats`; queue-by-id; `criteria.py`; rename `_canonical_track_key` → `_canonical_track_uri` (both copies); dual-write old columns |
 | Server API | KAMP-537 | `TrackOut` on id + `sources`; computed `file_path` |
 | UI | KAMP-538 | React key / favorite-target → id |
-| Cleanup + regression | KAMP-539 | remove reconcile helpers; delete computed `file_path`; full regression |
+| Cleanup + contract + regression | KAMP-539 | drop duplicated `tracks` columns; remove reconcile helpers; delete computed `file_path`; full regression |
+
+> **Hand-off invariant (KAMP-535 → KAMP-536):** after the expand phase the child tables
+> are **empty**, and there is **no** 1:1 guarantee — a fresh install and any track scanned
+> between 535 and 536 have no child row. KAMP-536 must derive from the old `tracks`
+> columns, **LEFT JOIN** the children (never inner-join and silently drop tracks), and
+> dual-write the old columns as the safety net until KAMP-539 contracts.
 
 > **Note for KAMP-535/536/537:** their current Jira descriptions were written against the
 > earlier *two-table* `mode`-enum proposal. Reconcile them to this three-table,

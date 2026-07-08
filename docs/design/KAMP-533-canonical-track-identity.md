@@ -42,9 +42,13 @@ Two facts make the fix cheaper than it looks:
 - **`sessions` is already keyed per-service** (`service TEXT PRIMARY KEY`) — auth is
   already provider-agnostic. Sources should be too.
 
-`_canonical_track_key` ([library.py](../../kamp_core/library.py)) is a **misnomer**
-relative to this design: it only normalizes `bandcamp://` slash forms; it does not
-unify a local row with its streaming sibling.
+`_canonical_track_key` ([library.py](../../kamp_core/library.py), mirrored in
+[playback.py](../../kamp_core/playback.py)) is a **misnomer** relative to this design:
+it only normalizes `bandcamp://` slash forms — a *URI* operation — and does not unify a
+local row with its streaming sibling. Under the new model it operates on
+`track_sources.uri`, and "…_track_key" wrongly implies it yields a track identity (now
+`tracks.id`). Both copies are **renamed `_canonical_track_uri`** in the core phase
+(KAMP-536).
 
 ---
 
@@ -266,8 +270,8 @@ any one guarantees a second migration + re-sweep.
   never merged.
 
 ### Constraint pre-flight
-- **De-dup normalized `uri`** (via `_canonical_track_key`) before inserting
-  `track_sources` — two rows differing only by `bandcamp:/` vs `bandcamp://` slash form
+- **De-dup normalized `uri`** (via `_canonical_track_uri`, the renamed
+  `_canonical_track_key`) before inserting `track_sources` — two rows differing only by `bandcamp:/` vs `bandcamp://` slash form
   are distinct under today's `file_path UNIQUE` but collide under `uri UNIQUE`. Pick a
   winner deterministically.
 - **Validate each `provider_item_id`** against its provider collection table; NULL-with-
@@ -374,7 +378,7 @@ unaccounted for.
 |-------|--------|------|
 | Design spike | KAMP-534 | this note |
 | Schema + v44 migration | KAMP-535 | §2 tables, §7 migration, repoints, quarantine report |
-| Core rewrite | KAMP-536 | reads/writes vs. `track_sources`/`track_stats`; queue-by-id; `criteria.py` |
+| Core rewrite | KAMP-536 | reads/writes vs. `track_sources`/`track_stats`; queue-by-id; `criteria.py`; rename `_canonical_track_key` → `_canonical_track_uri` (both copies) |
 | Server API | KAMP-537 | `TrackOut` on id + `sources`; computed `file_path` |
 | UI | KAMP-538 | React key / favorite-target → id |
 | Cleanup + regression | KAMP-539 | remove reconcile helpers; delete computed `file_path`; full regression |

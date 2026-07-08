@@ -38,6 +38,7 @@ def _track(n: int) -> Track:
         embedded_art=False,
         mb_release_id="",
         mb_recording_id="",
+        id=n + 1,  # distinct track id (queue persists by id, KAMP-536)
     )
 
 
@@ -76,6 +77,7 @@ def _remote_track(sale_id: str = "123456", track_num: int = 1) -> Track:
         source="bandcamp",
         stream_url="https://cdn.bcbits.com/stream/track.mp3",
         stream_url_expires_at=9999999999.0,
+        id=900 + track_num,  # distinct track id (queue persists by id, KAMP-536)
     )
 
 
@@ -494,25 +496,25 @@ class TestPlaybackQueue:
         assert tracks == []
         assert pos == -1
 
-    def test_get_state_returns_original_paths_and_order(self) -> None:
+    def test_get_state_returns_original_ids_and_order(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        paths, order, pos, shuffle, repeat = q.get_state()
-        assert paths == [str(t.file_path) for t in tracks]
+        ids, order, pos, shuffle, repeat = q.get_state()
+        assert ids == [t.id for t in tracks]
         assert order == [0, 1, 2]
         assert pos == 0
         assert shuffle is False
         assert repeat == "off"
 
-    def test_get_state_with_shuffle_returns_original_paths(self) -> None:
+    def test_get_state_with_shuffle_returns_original_ids(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(5)]
         q.load(tracks)
         q.set_shuffle(True)
-        paths, order, pos, shuffle, repeat = q.get_state()
-        # paths must be in ORIGINAL load order, not shuffled
-        assert paths == [str(t.file_path) for t in tracks]
+        ids, order, pos, shuffle, repeat = q.get_state()
+        # ids must be in ORIGINAL load order, not shuffled
+        assert ids == [t.id for t in tracks]
         # order[0] must be the original index of the currently playing track (0)
         assert order[0] == 0
         assert set(order) == {0, 1, 2, 3, 4}
@@ -521,18 +523,18 @@ class TestPlaybackQueue:
 
     def test_get_state_empty_queue(self) -> None:
         q = PlaybackQueue()
-        paths, order, pos, shuffle, repeat = q.get_state()
-        assert paths == []
+        ids, order, pos, shuffle, repeat = q.get_state()
+        assert ids == []
         assert order == []
         assert pos == -1
 
-    def test_get_state_remote_track_canonical_uri(self) -> None:
-        """Remote tracks serialise as bandcamp:// (double-slash) even on POSIX."""
+    def test_get_state_remote_track_returns_id(self) -> None:
+        """Remote tracks persist by track id like any other (KAMP-536)."""
         q = PlaybackQueue()
         remote = _remote_track(sale_id="999", track_num=3)
         q.load([remote])
-        paths, _, _, _, _ = q.get_state()
-        assert paths == ["bandcamp://999/3"]
+        ids, _, _, _, _ = q.get_state()
+        assert ids == [remote.id]
 
     def test_update_favorite_str_path_matches_remote_track(self) -> None:
         """update_favorite accepts a str URI so remote tracks can be matched."""
@@ -547,7 +549,7 @@ class TestPlaybackQueue:
         tracks = [_track(i) for i in range(3)]
         q.restore(tracks, order=[2, 0, 1], pos=0, shuffle=True, repeat="queue")
         assert q.current() == tracks[2]
-        paths, order, pos, shuffle, repeat = q.get_state()
+        _ids, order, pos, shuffle, repeat = q.get_state()
         assert pos == 0
         assert shuffle is True
         assert repeat == "queue"
@@ -556,8 +558,8 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         q.restore([], order=[], pos=0, shuffle=False, repeat="off")
         assert q.current() is None
-        paths, order, pos, shuffle, repeat = q.get_state()
-        assert paths == []
+        ids, order, pos, shuffle, repeat = q.get_state()
+        assert ids == []
         assert order == []
         assert pos == -1
 
@@ -580,10 +582,11 @@ class TestPlaybackQueue:
         q.next()
         before_toggle = q.current()
 
-        # Simulate save/restore (what happens across a quit/restart).
-        paths, order, pos, shuffle, repeat = q.get_state()
+        # Simulate save/restore (what happens across a quit/restart): the queue
+        # persists track ids, and the daemon resolves each id back to a Track.
+        ids, order, pos, shuffle, repeat = q.get_state()
         q2 = PlaybackQueue()
-        resolved = [next(t for t in tracks if str(t.file_path) == p) for p in paths]
+        resolved = [next(t for t in tracks if t.id == i) for i in ids]
         q2.restore(resolved, order=order, pos=pos, shuffle=shuffle, repeat=repeat)
 
         assert q2.current() == before_toggle

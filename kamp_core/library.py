@@ -731,6 +731,7 @@ class LibraryIndex:
         if db_path.exists():
             db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         self._migrate()
+        self._create_tracks_with_stats_view()
 
     def _make_conn(self) -> sqlite3.Connection:
         """Open a new SQLite connection configured for use in this index."""
@@ -1902,6 +1903,38 @@ class LibraryIndex:
             self._conn.execute("UPDATE schema_version SET version = 48")
             self._conn.commit()
             version = 48  # noqa: F841
+
+    def _create_tracks_with_stats_view(self) -> None:
+        """(Re)create the read-only ``tracks_with_stats`` view (KAMP-542).
+
+        Projects every ``tracks`` column but shadows ``favorite``/``play_count``/
+        ``last_played`` from ``track_stats`` — the authoritative store since the
+        KAMP-540 dual-write — so read paths resolve stats from the child table and
+        KAMP-539 can drop the legacy columns. While both coexist the shadow
+        COALESCEs back to the legacy column, so a track that somehow lacks a
+        ``track_stats`` row still reads its real value rather than a spurious 0;
+        once 539 drops the legacy columns the fallback becomes the type default.
+
+        Built from ``PRAGMA table_info`` and recreated on every open so it always
+        matches the current ``tracks`` schema (survives 539's column drop with no
+        edit here). Read-only by construction: every writer (UPDATE/INSERT/upsert,
+        the ``tracks_fts`` rowid join, the stat mirrors) stays on the base table,
+        whose ``id`` the view preserves so FTS rowid joins still resolve.
+        """
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")]
+        # column -> SQL default used once the legacy column is dropped (KAMP-539).
+        stats_default = {"favorite": "0", "play_count": "0", "last_played": "NULL"}
+        projected = [f"t.{c}" for c in cols if c not in stats_default]
+        for name, default in stats_default.items():
+            fallback = f"t.{name}" if name in cols else default
+            projected.append(f"COALESCE(ts.{name}, {fallback}) AS {name}")
+        self._conn.executescript(
+            "DROP VIEW IF EXISTS tracks_with_stats;\n"
+            "CREATE VIEW tracks_with_stats AS SELECT "
+            + ", ".join(projected)
+            + " FROM tracks t LEFT JOIN track_stats ts ON ts.track_id = t.id;"
+        )
+        self._conn.commit()
 
     def _backup_db(self, label: str) -> bool:
         """Snapshot the live DB (incl. WAL) before a mutating heal; return success.
@@ -3127,7 +3160,7 @@ class LibraryIndex:
         """
         rows = self._conn.execute(
             """
-            SELECT DISTINCT t.* FROM tracks t
+            SELECT DISTINCT t.* FROM tracks_with_stats t
             LEFT JOIN albums a ON a.id = t.album_id
             WHERE (a.sale_item_id = ? OR t.sale_item_id = ?)
               AND t.file_path NOT LIKE 'bandcamp://%'
@@ -3966,11 +3999,11 @@ class LibraryIndex:
             UPDATE albums SET
                 embedded_art   = (SELECT MAX(t.embedded_art)  FROM tracks t WHERE t.album_id = albums.id),
                 date_added     = (SELECT MIN(t.date_added)    FROM tracks t WHERE t.album_id = albums.id),
-                last_played_at = (SELECT MAX(t.last_played)   FROM tracks t WHERE t.album_id = albums.id),
+                last_played_at = (SELECT MAX(t.last_played)   FROM tracks_with_stats t WHERE t.album_id = albums.id),
                 art_version    = (SELECT MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
                                   FROM tracks t WHERE t.album_id = albums.id),
                 play_count_avg = (SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
-                                  FROM tracks t WHERE t.album_id = albums.id),
+                                  FROM tracks_with_stats t WHERE t.album_id = albums.id),
                 source         = (SELECT
                                       CASE WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
                                                 AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
@@ -4550,13 +4583,14 @@ class LibraryIndex:
 
     def all_tracks(self) -> list[Track]:
         """Return all indexed tracks in insertion order."""
-        rows = self._conn.execute("SELECT * FROM tracks").fetchall()
+        rows = self._conn.execute("SELECT * FROM tracks_with_stats").fetchall()
         return [_row_to_track(r) for r in rows]
 
     def top_tracks(self, limit: int) -> list[Track]:
         """Return the top *limit* tracks by play_count descending, excluding unplayed."""
         rows = self._conn.execute(
-            "SELECT * FROM tracks WHERE play_count > 0 ORDER BY play_count DESC LIMIT ?",
+            "SELECT * FROM tracks_with_stats WHERE play_count > 0"
+            " ORDER BY play_count DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [_row_to_track(r) for r in rows]
@@ -4650,18 +4684,21 @@ class LibraryIndex:
             "UPDATE tracks SET play_count = play_count + 1 WHERE file_path = ?",
             (key,),
         )
+        # Mirror the post-increment absolute value (not a +1) into track_stats
+        # BEFORE recomputing the album average — that recompute now reads
+        # play_count through the tracks_with_stats view (i.e. from track_stats),
+        # so the mirror must land first or the average sees the stale value.
+        self._mirror_track_stats(key, ("play_count",))
         self._conn.execute(
             """
             UPDATE albums SET play_count_avg = (
                 SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
-                FROM tracks t WHERE t.album_id = albums.id
+                FROM tracks_with_stats t WHERE t.album_id = albums.id
             )
             WHERE id = (SELECT album_id FROM tracks WHERE file_path = ?)
             """,
             (key,),
         )
-        # Mirror the post-increment absolute value (not a +1) into track_stats.
-        self._mirror_track_stats(key, ("play_count",))
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.play_count"})
@@ -4737,7 +4774,7 @@ class LibraryIndex:
             "SELECT COALESCE(SUM(play_time), 0) FROM artists"
         ).fetchone()[0]
         total_plays = c.execute(
-            "SELECT COALESCE(SUM(play_count), 0) FROM tracks"
+            "SELECT COALESCE(SUM(play_count), 0) FROM tracks_with_stats"
         ).fetchone()[0]
         albums_played = c.execute(
             "SELECT COUNT(*) FROM albums WHERE play_count_avg > 0"
@@ -4973,7 +5010,7 @@ class LibraryIndex:
         )
         self._conn.commit()
         row = self._conn.execute(
-            "SELECT * FROM tracks WHERE id = ?", (track_id,)
+            "SELECT * FROM tracks_with_stats WHERE id = ?", (track_id,)
         ).fetchone()
         return _row_to_track(row) if row else None
 
@@ -5053,7 +5090,7 @@ class LibraryIndex:
                 -- effective album title used for sort-by-album ordering.
                 COALESCE(a.display_album, a.album) AS sort_album
             FROM albums a
-            LEFT JOIN tracks t ON t.album_id = a.id
+            LEFT JOIN tracks_with_stats t ON t.album_id = a.id
             LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id
             GROUP BY a.id
             UNION ALL
@@ -5084,7 +5121,7 @@ class LibraryIndex:
                 NULL                AS display_album,
                 NULL                AS display_album_artist,
                 t.title             AS sort_album
-            FROM tracks t
+            FROM tracks_with_stats t
             WHERE t.album = ''
             ORDER BY {order_by}
             """).fetchall()  # noqa: S608 — order_by is from a whitelist, not user input
@@ -5151,7 +5188,8 @@ class LibraryIndex:
         if album_id is None:
             return []
         rows = self._conn.execute(
-            "SELECT * FROM tracks WHERE album_id = ? ORDER BY disc_number, track_number",
+            "SELECT * FROM tracks_with_stats WHERE album_id = ?"
+            " ORDER BY disc_number, track_number",
             (album_id,),
         ).fetchall()
         return [_row_to_track(r) for r in rows]
@@ -5162,7 +5200,7 @@ class LibraryIndex:
             """
             SELECT t.*
             FROM playlist_tracks pt
-            JOIN tracks t ON t.id = pt.track_id
+            JOIN tracks_with_stats t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?
             ORDER BY pt.position ASC
             """,
@@ -5206,7 +5244,7 @@ class LibraryIndex:
         """
         key = path if isinstance(path, str) else str(path)
         row = self._conn.execute(
-            "SELECT * FROM tracks WHERE file_path = ?", (key,)
+            "SELECT * FROM tracks_with_stats WHERE file_path = ?", (key,)
         ).fetchone()
         if row is not None:
             return _row_to_track(row)
@@ -5217,7 +5255,8 @@ class LibraryIndex:
         # sources: a moved/renamed local file's *old* path is a stale file source
         # and must still resolve to nothing (the file is genuinely gone).
         src = self._conn.execute(
-            "SELECT t.* FROM track_sources s JOIN tracks t ON t.id = s.track_id"
+            "SELECT t.* FROM track_sources s"
+            " JOIN tracks_with_stats t ON t.id = s.track_id"
             " WHERE s.uri = ? AND s.kind = 'stream' LIMIT 1",
             (_canonical_track_key(key),),
         ).fetchone()
@@ -5226,7 +5265,7 @@ class LibraryIndex:
     def get_track_by_id(self, track_id: int) -> "Track | None":
         """Return the track with *track_id*, or None if not indexed."""
         row = self._conn.execute(
-            "SELECT * FROM tracks WHERE id = ?", (track_id,)
+            "SELECT * FROM tracks_with_stats WHERE id = ?", (track_id,)
         ).fetchone()
         return _row_to_track(row) if row else None
 
@@ -5235,7 +5274,8 @@ class LibraryIndex:
         if not mb_recording_id:
             return None
         row = self._conn.execute(
-            "SELECT * FROM tracks WHERE mb_recording_id = ?", (mb_recording_id,)
+            "SELECT * FROM tracks_with_stats WHERE mb_recording_id = ?",
+            (mb_recording_id,),
         ).fetchone()
         return _row_to_track(row) if row else None
 
@@ -5314,7 +5354,7 @@ class LibraryIndex:
             """
             SELECT t.*
             FROM tracks_fts f
-            JOIN tracks t ON f.rowid = t.id
+            JOIN tracks_with_stats t ON f.rowid = t.id
             LEFT JOIN albums al ON al.id = t.album_id
             WHERE tracks_fts MATCH ?
               -- KAMP-541: the collapse leaves one canonical row per track, so the
@@ -5821,7 +5861,7 @@ class LibraryIndex:
                    t.favorite, t.play_count, t.last_played, t.date_added,
                    t.source, t.is_available, t.duration
             FROM playlist_tracks pt
-            JOIN tracks t ON t.id = pt.track_id
+            JOIN tracks_with_stats t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?
             ORDER BY pt.position ASC
             """,
@@ -6072,7 +6112,10 @@ class LibraryIndex:
             if needs_album_join
             else ""
         )
-        sql = f"SELECT tracks.id FROM tracks {album_join} WHERE {where_fragment} ORDER BY tracks.id"
+        sql = (
+            f"SELECT tracks.id FROM tracks_with_stats AS tracks {album_join}"
+            f" WHERE {where_fragment} ORDER BY tracks.id"
+        )
         rows = self._conn.execute(sql, params).fetchall()
         return [r[0] for r in rows]
 
@@ -6104,7 +6147,7 @@ class LibraryIndex:
                    tracks.genre, tracks.label, tracks.favorite, tracks.play_count,
                    tracks.last_played, tracks.date_added,
                    tracks.source, tracks.is_available, tracks.duration
-            FROM tracks {album_join}
+            FROM tracks_with_stats AS tracks {album_join}
             WHERE {where_fragment} AND tracks.is_available = 1
             ORDER BY tracks.id
         """
@@ -6267,7 +6310,7 @@ class LibraryIndex:
                      ORDER BY play_count_avg DESC LIMIT 1) AS top_album
                 FROM artists ar
                 JOIN albums a ON a.artist_id = ar.id
-                JOIN tracks t ON t.album_id = a.id
+                JOIN tracks_with_stats t ON t.album_id = a.id
                 WHERE t.id IN ({placeholders}) AND a.artist_id IS NOT NULL
                 GROUP BY ar.id
                 {order}
@@ -6293,7 +6336,7 @@ class LibraryIndex:
                 t.release_date, t.track_number, t.disc_number, t.ext, t.embedded_art,
                 t.mb_release_id, t.mb_recording_id, t.genre, t.label,
                 t.favorite, t.play_count, t.last_played, t.source, t.is_available, t.duration
-            FROM tracks t
+            FROM tracks_with_stats t
             WHERE t.id IN ({placeholders})
             {order}
             LIMIT ?
@@ -6339,7 +6382,7 @@ class LibraryIndex:
             if needs_album_join
             else ""
         )
-        sql = f"SELECT COUNT(*) FROM tracks {album_join} WHERE {where_fragment}"
+        sql = f"SELECT COUNT(*) FROM tracks_with_stats AS tracks {album_join} WHERE {where_fragment}"
         row = self._conn.execute(sql, params).fetchone()
         return int(row[0])
 

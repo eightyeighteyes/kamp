@@ -76,6 +76,23 @@ def _sample_track(file_path: Path) -> Track:
     )
 
 
+def _mirror_stats(index: "LibraryIndex") -> None:
+    """Propagate every track's legacy stat columns into track_stats (KAMP-542).
+
+    Reads now resolve favorite/play_count/last_played through the
+    tracks_with_stats view (i.e. from track_stats), so a test that seeds those
+    values with a direct ``UPDATE tracks`` must mirror them, exactly as the
+    production stat writers do.
+    """
+    index._conn.execute(
+        "INSERT INTO track_stats (track_id, favorite, play_count, last_played)"
+        " SELECT id, favorite, play_count, last_played FROM tracks WHERE true"
+        " ON CONFLICT(track_id) DO UPDATE SET favorite=excluded.favorite,"
+        " play_count=excluded.play_count, last_played=excluded.last_played"
+    )
+    index._conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # LibraryIndex
 # ---------------------------------------------------------------------------
@@ -8464,6 +8481,7 @@ class TestInheritRemotePlayCounts:
         index.upsert_many([local])
         index._conn.execute("UPDATE tracks SET play_count = 10 WHERE source = 'local'")
         index._conn.commit()
+        _mirror_stats(index)
         index.inherit_remote_play_counts([local])
 
         result = index.tracks_for_album("The Artist", "The Album")
@@ -10182,6 +10200,7 @@ class TestMagicPlaylists:
             (str(tmp_path / "a.mp3"),),
         )
         index._conn.commit()
+        _mirror_stats(index)
         row_a = index._conn.execute(
             "SELECT id FROM tracks WHERE file_path = ?", (str(tmp_path / "a.mp3"),)
         ).fetchone()
@@ -11204,6 +11223,71 @@ class TestUpsertSyncProtection:
         result = index.all_tracks()[0]
         index.close()
         assert result.genre == "Electronic"
+
+
+# ---------------------------------------------------------------------------
+# Stats read-switch — reads resolve from track_stats (KAMP-542)
+# ---------------------------------------------------------------------------
+
+
+class TestStatsReadFromTrackStats:
+    """Every stats read resolves via track_stats, not the legacy tracks columns.
+
+    Proven differentially: deliberately desync track_stats from the tracks
+    columns (favorite/play_count/last_played) — which cannot happen in
+    production, where every writer mirrors — and assert the read paths report
+    the track_stats values. Guards KAMP-542's core promise so KAMP-539 can drop
+    the legacy columns.
+    """
+
+    def _desynced(self, tmp_path: Path) -> tuple["LibraryIndex", int]:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([_sample_track(tmp_path / "a.mp3")])
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        # Legacy columns say 0/NULL; track_stats (authoritative) says otherwise.
+        index._conn.execute(
+            "UPDATE tracks SET favorite = 0, play_count = 0, last_played = NULL"
+        )
+        index._conn.execute(
+            "INSERT INTO track_stats (track_id, favorite, play_count, last_played)"
+            " VALUES (?, 1, 9, 555.0) ON CONFLICT(track_id) DO UPDATE SET"
+            " favorite = 1, play_count = 9, last_played = 555.0",
+            (tid,),
+        )
+        index._conn.commit()
+        return index, tid
+
+    def test_get_track_by_id_and_path_read_track_stats(self, tmp_path: Path) -> None:
+        index, tid = self._desynced(tmp_path)
+        by_id = index.get_track_by_id(tid)
+        by_path = index.get_track_by_path(str(tmp_path / "a.mp3"))
+        index.close()
+        for t in (by_id, by_path):
+            assert t is not None
+            assert t.favorite is True
+            assert t.play_count == 9
+            assert t.last_played == 555.0
+
+    def test_top_tracks_and_album_read_track_stats(self, tmp_path: Path) -> None:
+        index, _ = self._desynced(tmp_path)
+        top = index.top_tracks(5)  # WHERE play_count > 0 — legacy col is 0
+        album = index.tracks_for_album("The Artist", "The Album")
+        index.close()
+        assert [t.play_count for t in top] == [
+            9
+        ]  # would be [] if reading tracks.play_count
+        assert album[0].favorite is True
+
+    def test_view_falls_back_to_legacy_when_no_stats_row(self, tmp_path: Path) -> None:
+        """A track with no track_stats row still reads its legacy value (transition safety)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([_sample_track(tmp_path / "a.mp3")])
+        index._conn.execute("UPDATE tracks SET favorite = 1, play_count = 4")
+        index._conn.execute("DELETE FROM track_stats")
+        index._conn.commit()
+        t = index.get_track_by_path(str(tmp_path / "a.mp3"))
+        index.close()
+        assert t is not None and t.favorite is True and t.play_count == 4
 
 
 # ---------------------------------------------------------------------------

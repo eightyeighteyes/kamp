@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 45
+_SCHEMA_VERSION = 46
 
 
 class NoStreamableVersionError(Exception):
@@ -1792,7 +1792,47 @@ class LibraryIndex:
                     )
             self._conn.execute("UPDATE schema_version SET version = 45")
             self._conn.commit()
-            version = 45  # noqa: F841
+            version = 45
+
+        if version < 46:
+            # v45 → v46: collapse each track's streaming+local sibling rows into
+            # ONE canonical tracks row (KAMP-541, design §7). Irreversible — take a
+            # backup first (mirrors the v39 heal), run the whole collapse in one
+            # transaction, and bump the version LAST so a crash rolls back cleanly.
+            # Guarded on the columns the bucketing reads (narrow migration-unit-test
+            # schemas build a partial tracks table). On any failure, roll back and
+            # leave the two-row model intact rather than brick the DB.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            needed = {
+                "id",
+                "album_id",
+                "track_number",
+                "disc_number",
+                "sale_item_id",
+                "source",
+            }
+            # Only back up + collapse when there is actually a sibling pair to
+            # merge — a library with no downloaded-streaming duplicates needs
+            # neither the backup nor the work.
+            if (
+                needed <= track_cols
+                and self._has_collapsible_siblings()
+                and self._backup_db("KAMP-541 v46 collapse")
+            ):
+                try:
+                    self._collapse_canonical_tracks()
+                except Exception:
+                    self._conn.rollback()
+                    logger.exception(
+                        "KAMP-541 v46 collapse failed — rolled back; the two-row"
+                        " model is preserved. Restore from the pre-v46 backup if"
+                        " needed."
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 46")
+            self._conn.commit()
+            version = 46  # noqa: F841
 
     def _backup_db(self, label: str) -> bool:
         """Snapshot the live DB (incl. WAL) before a mutating heal; return success.
@@ -1875,6 +1915,260 @@ class LibraryIndex:
             logger.info(
                 "KAMP-540 v45 backfill: populated %d track_sources/track_stats rows",
                 len(source_params),
+            )
+
+    # ------------------------------------------------------------------
+    # KAMP-541 canonical-track collapse (shared by the v46 migration and the
+    # scan-time reconcile in upsert_many)
+    # ------------------------------------------------------------------
+
+    def _ensure_track_source(self, track_id: int) -> None:
+        """Derive a track_sources row from the tracks columns if one is missing.
+
+        Honours the KAMP-540 hand-off invariant: a track scanned before 540 (or
+        whose 540 backfill was skipped) may have no source row. Never bare-merge
+        assuming it exists. Skips on a uri-UNIQUE collision (slash-form dup).
+        """
+        if self._conn.execute(
+            "SELECT 1 FROM track_sources WHERE track_id = ? LIMIT 1", (track_id,)
+        ).fetchone():
+            return
+        r = self._conn.execute(
+            "SELECT file_path, source, sale_item_id, ext, duration, embedded_art,"
+            " file_mtime, is_available, stream_url, stream_url_expires_at"
+            " FROM tracks WHERE id = ?",
+            (track_id,),
+        ).fetchone()
+        if r is None:
+            return
+        uri, kind, provider, provider_item_id = _derive_source_fields(
+            r["file_path"], r["source"], r["sale_item_id"]
+        )
+        if self._conn.execute(
+            "SELECT 1 FROM track_sources WHERE uri = ?", (uri,)
+        ).fetchone():
+            return  # slash-form dup already present under another track — skip
+        self._conn.execute(
+            "INSERT INTO track_sources (track_id, kind, provider, provider_item_id,"
+            " uri, ext, duration, embedded_art, file_mtime, is_available, stream_url,"
+            " stream_url_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                track_id,
+                kind,
+                provider,
+                provider_item_id,
+                uri,
+                r["ext"],
+                r["duration"],
+                r["embedded_art"],
+                r["file_mtime"],
+                r["is_available"],
+                r["stream_url"],
+                r["stream_url_expires_at"],
+            ),
+        )
+
+    def _repoint_track_refs(self, loser_id: int, survivor_id: int) -> None:
+        """Repoint every reference from *loser_id* to *survivor_id* (KAMP-541).
+
+        playlist_tracks (no UNIQUE — dedupe within a playlist by hand), deferred_ops
+        (UNIQUE track_id — keep the survivor's op, drop the loser's), and the id-
+        keyed player_state / queue_state (KAMP-536). Callers commit.
+        """
+        import json
+
+        c = self._conn
+        # playlist_tracks: drop the loser's entry in any playlist that already
+        # holds the survivor (would otherwise become a phantom duplicate — no
+        # UNIQUE constraint to catch it), then repoint the rest. Position gaps are
+        # harmless (reads ORDER BY position).
+        c.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ? AND playlist_id IN"
+            " (SELECT playlist_id FROM playlist_tracks WHERE track_id = ?)",
+            (loser_id, survivor_id),
+        )
+        c.execute(
+            "UPDATE playlist_tracks SET track_id = ? WHERE track_id = ?",
+            (survivor_id, loser_id),
+        )
+        # deferred_ops: UNIQUE(track_id) — a blind UPDATE would abort if both have
+        # a pending op. Keep the survivor's, drop the loser's; else repoint.
+        if c.execute(
+            "SELECT 1 FROM deferred_ops WHERE track_id = ?", (survivor_id,)
+        ).fetchone():
+            c.execute("DELETE FROM deferred_ops WHERE track_id = ?", (loser_id,))
+        else:
+            c.execute(
+                "UPDATE deferred_ops SET track_id = ? WHERE track_id = ?",
+                (survivor_id, loser_id),
+            )
+        # player_state.track_path stores the id as text (KAMP-536).
+        c.execute(
+            "UPDATE player_state SET track_path = ? WHERE track_path = ?",
+            (str(survivor_id), str(loser_id)),
+        )
+        # queue_state.tracks is a JSON array of ids (KAMP-536).
+        qrow = c.execute("SELECT tracks FROM queue_state WHERE id = 1").fetchone()
+        if qrow is not None:
+            try:
+                ids = json.loads(qrow["tracks"])
+            except (ValueError, TypeError):
+                ids = []
+            if isinstance(ids, list) and loser_id in ids:
+                ids = [survivor_id if x == loser_id else x for x in ids]
+                c.execute(
+                    "UPDATE queue_state SET tracks = ? WHERE id = 1", (json.dumps(ids),)
+                )
+
+    def _merge_track_into(self, survivor_id: int, loser_id: int) -> None:
+        """Merge the loser track row into the survivor (KAMP-541, design §7).
+
+        Both must be the same logical track. Combines stats onto the survivor's
+        tracks columns (MAX/MAX/latest — so reads still on those columns converge,
+        fixing KAMP-532), COALESCE-merges identity (streaming display_* win;
+        non-empty mb/genre/label win), re-parents track_sources, repoints refs,
+        deletes the loser, re-derives track_stats from the merged columns, and
+        realigns the survivor's legacy columns to its preferred source. Caller
+        owns the transaction/commit.
+        """
+        c = self._conn
+        self._ensure_track_source(survivor_id)
+        self._ensure_track_source(loser_id)
+        # Stats onto the survivor's tracks columns.
+        c.execute(
+            "UPDATE tracks SET"
+            " favorite = MAX(favorite, COALESCE((SELECT favorite FROM tracks WHERE id=?),0)),"
+            " play_count = MAX(play_count, COALESCE((SELECT play_count FROM tracks WHERE id=?),0)),"
+            " last_played = NULLIF(MAX(COALESCE(last_played,0),"
+            "     COALESCE((SELECT last_played FROM tracks WHERE id=?),0)), 0)"
+            " WHERE id=?",
+            (loser_id, loser_id, loser_id, survivor_id),
+        )
+        # Identity: streaming display_* win if the survivor's is NULL; non-empty
+        # mb/genre/label fill a blank survivor field from the loser.
+        c.execute(
+            "UPDATE tracks SET"
+            " mb_release_id = CASE WHEN mb_release_id != '' THEN mb_release_id"
+            "   ELSE (SELECT mb_release_id FROM tracks WHERE id=?) END,"
+            " mb_recording_id = CASE WHEN mb_recording_id != '' THEN mb_recording_id"
+            "   ELSE (SELECT mb_recording_id FROM tracks WHERE id=?) END,"
+            " genre = CASE WHEN genre != '' THEN genre"
+            "   ELSE (SELECT genre FROM tracks WHERE id=?) END,"
+            " label = CASE WHEN label != '' THEN label"
+            "   ELSE (SELECT label FROM tracks WHERE id=?) END,"
+            " display_title = COALESCE(display_title, (SELECT display_title FROM tracks WHERE id=?)),"
+            " display_album = COALESCE(display_album, (SELECT display_album FROM tracks WHERE id=?)),"
+            " display_album_artist = COALESCE(display_album_artist,"
+            "   (SELECT display_album_artist FROM tracks WHERE id=?))"
+            " WHERE id=?",
+            (
+                loser_id,
+                loser_id,
+                loser_id,
+                loser_id,
+                loser_id,
+                loser_id,
+                loser_id,
+                survivor_id,
+            ),
+        )
+        # Re-parent the loser's sources onto the survivor.
+        c.execute(
+            "UPDATE track_sources SET track_id = ? WHERE track_id = ?",
+            (survivor_id, loser_id),
+        )
+        self._repoint_track_refs(loser_id, survivor_id)
+        # Delete the loser (its sources are re-parented; its stats cascade away).
+        c.execute("DELETE FROM tracks WHERE id = ?", (loser_id,))
+        # Re-derive the survivor's track_stats from the merged tracks columns.
+        c.execute(
+            "INSERT INTO track_stats (track_id, favorite, play_count, last_played)"
+            " SELECT id, favorite, play_count, last_played FROM tracks WHERE id=?"
+            " ON CONFLICT(track_id) DO UPDATE SET favorite=excluded.favorite,"
+            " play_count=excluded.play_count, last_played=excluded.last_played",
+            (survivor_id,),
+        )
+        self._sync_tracks_row_to_preferred_source(survivor_id)
+
+    def _has_collapsible_siblings(self) -> bool:
+        """True if any bucket would hold >1 tracks row (KAMP-541 pre-flight).
+
+        Cheap existence check so the v46 collapse skips the backup + work on a
+        library that has no downloaded-streaming duplicates. Over-triggers only on
+        buckets that later quarantine — acceptable (a backup is never wrong).
+        """
+        return (
+            self._conn.execute(
+                "SELECT 1 WHERE"
+                " EXISTS (SELECT 1 FROM tracks WHERE album_id IS NOT NULL"
+                "   GROUP BY album_id, track_number, disc_number HAVING COUNT(*) > 1)"
+                " OR EXISTS (SELECT 1 FROM tracks"
+                "   WHERE album_id IS NULL AND sale_item_id IS NOT NULL"
+                "   GROUP BY sale_item_id HAVING COUNT(*) > 1)"
+            ).fetchone()
+            is not None
+        )
+
+    def _collapse_canonical_tracks(self) -> None:
+        """Merge every streaming+local sibling pair into one canonical track.
+
+        Buckets sibling tracks rows (album rows by (album_id, track_number,
+        disc_number) with agreeing sale_item_id; loose singles by sale_item_id
+        only; everything else solo), quarantines ambiguous buckets (>2 rows, or a
+        duplicate (provider,kind)), and merges each mergeable bucket into its
+        lower-id survivor. Caller wraps this in a transaction + backup.
+        """
+        rows = self._conn.execute(
+            "SELECT id, album_id, track_number, disc_number, sale_item_id, source"
+            " FROM tracks"
+        ).fetchall()
+
+        def _kind(r: sqlite3.Row) -> str:
+            return "file" if r["source"] == "local" else "stream"
+
+        def _provider(r: sqlite3.Row) -> str:
+            return (
+                "bandcamp" if (r["source"] == "bandcamp" or r["sale_item_id"]) else ""
+            )
+
+        buckets: dict[tuple[Any, ...], list[sqlite3.Row]] = {}
+        for r in rows:
+            if r["album_id"] is None:
+                key = (
+                    ("sid", r["sale_item_id"])
+                    if r["sale_item_id"]
+                    else ("solo", r["id"])
+                )
+            else:
+                key = ("album", r["album_id"], r["track_number"], r["disc_number"])
+            buckets.setdefault(key, []).append(r)
+
+        touched_album_ids: set[int] = set()
+        quarantined = 0
+        for bucket in buckets.values():
+            if len(bucket) < 2:
+                continue
+            distinct_sids = {r["sale_item_id"] for r in bucket if r["sale_item_id"]}
+            pks = [(_provider(r), _kind(r)) for r in bucket]
+            if len(bucket) > 2 or len(distinct_sids) > 1 or len(set(pks)) != len(pks):
+                quarantined += 1
+                continue
+            ordered = sorted(bucket, key=lambda r: r["id"])
+            survivor_id = ordered[0]["id"]
+            for r in ordered:
+                if r["album_id"] is not None:
+                    touched_album_ids.add(r["album_id"])
+            for loser in ordered[1:]:
+                self._merge_track_into(survivor_id, loser["id"])
+
+        if touched_album_ids:
+            self._refresh_album_aggregates(list(touched_album_ids))
+        self._rebuild_fts()
+        if quarantined:
+            logger.warning(
+                "KAMP-541 collapse: %d ambiguous bucket(s) quarantined (left"
+                " un-merged; resolve manually)",
+                quarantined,
             )
 
     def _create_tracks_sale_item_id_index(self) -> None:

@@ -3346,7 +3346,7 @@ class LibraryIndex:
         attached = 0
         try:
             for t in tracks:
-                uri = _canonical_track_key(t.file_path)
+                uri = _canonical_track_uri(t.file_path)
                 row = self._conn.execute(
                     "SELECT t.id FROM tracks t"
                     " LEFT JOIN albums a ON a.id = t.album_id"
@@ -3807,7 +3807,7 @@ class LibraryIndex:
         )
 
         # Step 3: assign album_id on the track rows we just inserted/updated.
-        file_paths = [_canonical_track_key(t.file_path) for t in named]
+        file_paths = [_canonical_track_uri(t.file_path) for t in named]
 
         # Step 3a (KAMP-523): link provenanced tracks by identity. Resolve each
         # trusted sale_item_id to its album — adopting the existing streaming
@@ -3848,7 +3848,7 @@ class LibraryIndex:
             for t in tracks:
                 if not (_provenanced(t) and t.sale_item_id in prov_targets):
                     continue
-                fp = _canonical_track_key(t.file_path)
+                fp = _canonical_track_uri(t.file_path)
                 prov_paths.add(fp)
                 prov_album_ids.add(prov_targets[t.sale_item_id])
                 self._conn.execute(
@@ -3870,7 +3870,7 @@ class LibraryIndex:
                     continue
                 self._conn.execute(
                     "UPDATE tracks SET sale_item_id = ? WHERE file_path = ?",
-                    (t.sale_item_id, _canonical_track_key(t.file_path)),
+                    (t.sale_item_id, _canonical_track_uri(t.file_path)),
                 )
 
         # Step 3b: link the remaining (un-provenanced) tracks by name. TRIM on
@@ -3899,7 +3899,7 @@ class LibraryIndex:
         # streaming single-album by identity (local.title == the single-album's
         # album field). Shared with the v42 migration via one helper.
         single_paths = [
-            _canonical_track_key(t.file_path)
+            _canonical_track_uri(t.file_path)
             for t in tracks
             if t.source == "local"
             and not t.album.strip()
@@ -3937,7 +3937,7 @@ class LibraryIndex:
         # this only populates the children for KAMP-541/542.
         src_params: list[tuple[Any, ...]] = []
         for t in tracks:
-            key = _canonical_track_key(t.file_path)
+            key = _canonical_track_uri(t.file_path)
             _uri, kind, provider, provider_item_id = _derive_source_fields(
                 t.file_path, t.source, t.sale_item_id
             )
@@ -4609,7 +4609,7 @@ class LibraryIndex:
         to the normalized uri when nothing matches, leaving the caller's write a
         harmless no-op exactly as before.
         """
-        key = _canonical_track_key(uri)
+        key = _canonical_track_uri(uri)
         if self._conn.execute(
             "SELECT 1 FROM tracks WHERE file_path = ? LIMIT 1", (key,)
         ).fetchone():
@@ -4711,7 +4711,7 @@ class LibraryIndex:
         Orthogonal to record_played: that updates tracks.play_count; this updates artists.play_time.
         For Various Artists albums, credits the track-level artist instead of the album artist.
         """
-        key = _canonical_track_key(file_path)
+        key = _canonical_track_uri(file_path)
         row = self._conn.execute(
             "SELECT artist, album_artist FROM tracks WHERE file_path = ?", (key,)
         ).fetchone()
@@ -5259,7 +5259,7 @@ class LibraryIndex:
             "SELECT t.* FROM track_sources s"
             " JOIN tracks_with_stats t ON t.id = s.track_id"
             " WHERE s.uri = ? AND s.kind = 'stream' LIMIT 1",
-            (_canonical_track_key(key),),
+            (_canonical_track_uri(key),),
         ).fetchone()
         return _row_to_track(src) if src else None
 
@@ -6421,7 +6421,7 @@ _WRITABLE_TRACK_FIELDS: frozenset[str] = frozenset(
 )
 
 
-def _canonical_track_key(path: "Path | str") -> str:
+def _canonical_track_uri(path: "Path | str") -> str:
     """Return the canonical file_path key for *path*.
 
     For bandcamp:// URIs, normalises the single-slash POSIX form (bandcamp:/)
@@ -6461,7 +6461,7 @@ def _derive_source_fields(
     Shared by the v45 backfill and upsert_many so the scan and the migration
     derive identical rows.
     """
-    uri = _canonical_track_key(file_path)
+    uri = _canonical_track_uri(file_path)
     kind = "file" if source == "local" else "stream"
     provider = "bandcamp" if (source == "bandcamp" or sale_item_id) else ""
     provider_item_id = sale_item_id or None
@@ -6500,7 +6500,7 @@ def _track_to_params(
     float,
 ]:
     return (
-        _canonical_track_key(t.file_path),
+        _canonical_track_uri(t.file_path),
         t.title,
         t.artist,
         t.album_artist,
@@ -6549,7 +6549,7 @@ def _row_to_pending_ingest(row: sqlite3.Row) -> PendingIngest:
 def _row_to_track(row: sqlite3.Row) -> Track:
     # DB rows store canonical bandcamp:// form (ensured by _track_to_params and
     # migration v22). Path() on POSIX still collapses the double-slash to single,
-    # but all callers that need a stable string key use _canonical_track_key() or
+    # but all callers that need a stable string key use _canonical_track_uri() or
     # get_track_by_path(str) rather than str(track.file_path), so this is safe.
     return Track(
         id=row["id"],

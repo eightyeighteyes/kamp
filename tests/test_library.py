@@ -6954,7 +6954,7 @@ class TestAlbumInfoRemoteFields:
     def test_sale_item_id_populated_for_bandcamp_album(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         # Use upsert_many via the helper so the albums row (and its sale_item_id FK)
-        # is created. upsert_many's _canonical_track_key preserves bandcamp:// paths.
+        # is created. upsert_many's _canonical_track_uri preserves bandcamp:// paths.
         self._insert_bc_tracks(index, "abc123")
         index.upsert_collection_item(
             "abc123",
@@ -6982,7 +6982,7 @@ class TestAlbumInfoRemoteFields:
         """Insert two bandcamp:// tracks via upsert_many so the albums row is created.
 
         Uses the same album_artist / album defaults as _insert_track so tests can
-        mix the two helpers in the same album group.  _canonical_track_key inside
+        mix the two helpers in the same album group.  _canonical_track_uri inside
         upsert_many preserves the bandcamp:// double-slash form even though Path()
         collapses it to a single slash on POSIX.
         """

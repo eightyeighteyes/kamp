@@ -3087,17 +3087,17 @@ def create_app(
         # fails, or Bandcamp has no streamable version), abort with 422 and
         # delete nothing; remove_download's own per-track guard is the final
         # safety net that still refuses to strand any local track.
-        if not index.has_remote_album_tracks(sale_item_id):
+        # KAMP-541: a downloaded track keeps its stream as a track_sources row, so
+        # "has a stream to fall back to" is a source check. When some track lacks
+        # one (download-mode album never streamed), materialize the stream sources
+        # on demand (a network call) before removing; if that fails, abort with 422.
+        if not index.all_downloads_streamable(sale_item_id):
             _materialize_stream_tracks_or_422(index, item, get_bandcamp_session)
 
-        # Swap every local track in the queue to its streaming equivalent so
-        # that on restart the queue can be fully restored from the DB.  Without
-        # this, only the swapped current/next entries survive; all other queue
-        # positions point at local paths that no longer exist after deletion.
-        for local_track in local_tracks:
-            streaming = index.streaming_track_for_local_id(local_track.id)
-            if streaming is not None:
-                queue.update_track_by_id(local_track.id, streaming)
+        # No queue swap needed (KAMP-541 + queue-by-id): the canonical track
+        # survives the removal — its file source is dropped and it reverts to its
+        # stream source with the SAME track id — so the id-keyed queue entries
+        # stay valid across a restart.
 
         if locked:
             # Current track's file is loaded in mpv — unload it so the handle

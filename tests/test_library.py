@@ -471,6 +471,160 @@ class TestLibraryIndex:
         index.close()
         assert n == 0
 
+    def test_v46_collapse_quarantines_ambiguous_bucket(self, tmp_path: Path) -> None:
+        """A bucket with >2 rows is left un-merged (KAMP-541 quarantine)."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        c = index._conn
+        c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        # Three rows sharing (album, track, disc) — ambiguous, must not collapse.
+        for i, (fp, src) in enumerate(
+            [
+                ("bandcamp://x/1", "bandcamp"),
+                ("/m/a.mp3", "local"),
+                ("/m/b.flac", "local"),
+            ]
+        ):
+            c.execute(
+                "INSERT INTO tracks (file_path, source, album_id, track_number,"
+                " disc_number) VALUES (?, ?, ?, 1, 1)",
+                (fp, src, alb),
+            )
+        c.execute("UPDATE schema_version SET version = 45")
+        c.commit()
+        index.close()
+
+        healed = LibraryIndex(db)  # v46 runs, quarantines
+        n = healed._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        healed.close()
+        assert n == 3  # all left in place
+
+    def test_v46_collapse_derives_missing_source_and_dedupes_deferred_op(
+        self, tmp_path: Path
+    ) -> None:
+        """Collapse derives an absent source and keeps the survivor's deferred op (KAMP-541)."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        c = index._conn
+        c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('bandcamp://y/1','bandcamp',?,1,1)",
+            (alb,),
+        )
+        stream_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('/m/y.mp3','local',?,1,1)",
+            (alb,),
+        )
+        local_id = c.execute("SELECT id FROM tracks WHERE source='local'").fetchone()[0]
+        # Intentionally NO track_sources rows (simulate a pre-540 skip) -> collapse
+        # must derive them. Both rows carry a pending deferred op (UNIQUE track_id).
+        c.executemany(
+            "INSERT INTO deferred_ops (op_type, track_id, payload_json, created_at)"
+            " VALUES ('track_retag', ?, '{}', ?)",
+            [(stream_id, 1.0), (local_id, 2.0)],
+        )
+        c.execute("UPDATE schema_version SET version = 45")
+        c.commit()
+        index.close()
+
+        healed = LibraryIndex(db)
+        hc = healed._conn
+        n_tracks = hc.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        n_src = hc.execute("SELECT COUNT(*) FROM track_sources").fetchone()[0]
+        n_ops = hc.execute("SELECT COUNT(*) FROM deferred_ops").fetchone()[0]
+        op_tid = hc.execute("SELECT track_id FROM deferred_ops").fetchone()["track_id"]
+        healed.close()
+        assert n_tracks == 1  # merged
+        assert n_src == 2  # both sources derived + re-parented
+        assert n_ops == 1 and op_tid == stream_id  # survivor's op kept, loser's dropped
+
+    def test_upsert_attaches_new_download_to_existing_canonical(
+        self, tmp_path: Path
+    ) -> None:
+        """A downloaded file for an existing stream track attaches as a source (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute(
+            "INSERT INTO albums (album_artist, album) VALUES ('The Artist','The Album')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " source, album_id, track_number, disc_number)"
+            " VALUES ('bandcamp://z/1','A Song','The Artist','The Artist','The Album',"
+            " 'bandcamp',?,1,1)",
+            (alb,),
+        )
+        stream_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, provider, uri)"
+            " VALUES (?, 'stream', 'bandcamp', 'bandcamp://z/1')",
+            (stream_id,),
+        )
+        c.commit()
+
+        # Scan a local file for the same album+track: it must attach, not fork.
+        index.upsert_many([_sample_track(tmp_path / "track1.mp3")])
+
+        n_tracks = c.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        kinds = sorted(
+            r["kind"]
+            for r in c.execute(
+                "SELECT kind FROM track_sources WHERE track_id = ?", (stream_id,)
+            )
+        )
+        index.close()
+        assert n_tracks == 1
+        assert kinds == ["file", "stream"]
+
+    def test_remove_download_refuses_when_no_stream_source(
+        self, tmp_path: Path
+    ) -> None:
+        """remove_download refuses if a track would be left with no stream (KAMP-527)."""
+        from kamp_core.library import NoStreamableVersionError
+
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sidX')")
+        c.execute(
+            "INSERT INTO albums (album_artist, album, sale_item_id) VALUES ('A','Alb','sidX')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('/m/x.mp3','local',?,1,1)",
+            (alb,),
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, provider, provider_item_id, uri)"
+            " VALUES (?, 'file', 'bandcamp', 'sidX', '/m/x.mp3')",
+            (tid,),
+        )
+        c.commit()
+
+        with pytest.raises(NoStreamableVersionError):
+            index.remove_download("sidX")
+        assert c.execute("SELECT COUNT(*) FROM track_sources").fetchone()[0] == 1
+        index.close()
+
+    def test_remove_track_legacy_row_without_source(self, tmp_path: Path) -> None:
+        """A pre-collapse tracks row with no source is removed by file_path (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES ('/m/legacy.mp3', 'local')"
+        )
+        index._conn.commit()
+        index.remove_track(Path("/m/legacy.mp3"))
+        n = index._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        index.close()
+        assert n == 0
+
     def test_v46_collapse_merges_siblings_and_repoints(self, tmp_path: Path) -> None:
         """v46 collapses a stream+local sibling pair into one track (KAMP-541)."""
         import json
@@ -6588,18 +6742,10 @@ class TestAlbumInfoRemoteFields:
         assert albums[0].source == "local"
         assert albums[0].has_remote_tracks is False
 
-    def test_tracks_for_album_excludes_bc_rows_when_local_tracks_exist(
-        self, tmp_path: Path
-    ) -> None:
-        """tracks_for_album returns only local tracks when both exist."""
-        index = LibraryIndex(tmp_path / "library.db")
-        self._insert_bc_tracks(index, "555")
-        self._insert_track(index, tmp_path, "t1.mp3", source="local")
-        tracks = index.tracks_for_album("The Artist", "The Album")
-        index.close()
-
-        assert len(tracks) == 1
-        assert "bandcamp:" not in str(tracks[0].file_path)
+    # (KAMP-541) The old "tracks_for_album excludes bandcamp rows when a local
+    # sibling exists" test is removed: the local-wins filter is gone because the
+    # collapse leaves one canonical row per track. De-dup is covered by the
+    # collapse migration + scan-reconcile tests.
 
     def test_tracks_for_album_returns_bc_rows_when_no_local_tracks(
         self, tmp_path: Path
@@ -7094,8 +7240,10 @@ class TestRemoveDownload:
             "UPDATE tracks SET play_count = 7 WHERE file_path = ?",
             (str(tmp_path / "track1.mp3"),),
         )
+        # Post-KAMP-541 the stream+local rows collapse into one canonical track
+        # holding the MAX play_count (track2: stream 5 > local 3 -> 5).
         index._conn.execute(
-            "UPDATE tracks SET play_count = 3 WHERE file_path = ?",
+            "UPDATE tracks SET play_count = 5 WHERE file_path = ?",
             (str(tmp_path / "track2.mp3"),),
         )
         index._conn.commit()
@@ -7226,15 +7374,19 @@ class TestRemoveDownload:
     def test_remove_download_preserves_existing_streaming_favorite(
         self, tmp_path: Path
     ) -> None:
-        """Favorite already set on the streaming row is kept even if local is unfavorited."""
+        """A favorite on the canonical track is kept when the download is removed."""
         index = self._setup_downloaded_album(tmp_path)
+        # Post-KAMP-541 there is one canonical track (file_path = local path until
+        # the download is removed); favorite it there.
         index._conn.execute(
-            "UPDATE tracks SET favorite = 1 WHERE file_path = 'bandcamp://sid42/2'"
+            "UPDATE tracks SET favorite = 1 WHERE file_path = ?",
+            (str(tmp_path / "track2.mp3"),),
         )
         index._conn.commit()
 
         index.remove_download("sid42")
 
+        # After removal the track reverts to its stream source (file_path).
         row = index._conn.execute(
             "SELECT favorite FROM tracks WHERE file_path = 'bandcamp://sid42/2'"
         ).fetchone()
@@ -7384,13 +7536,10 @@ class TestRemoveDownload:
     def test_materialize_stream_tracks_attaches_to_existing_album(
         self, tmp_path: Path
     ) -> None:
-        """Materialized stream rows link by identity to the existing album row
-        (no fork) so remove_download can then migrate + revert cleanly.
+        """Materialize attaches a stream source to each existing canonical track
+        (no fork, no duplicate album) so remove_download can then revert cleanly (KAMP-541).
         """
         index = self._setup_download_only_album(tmp_path)
-        album_id = index._conn.execute(
-            "SELECT id FROM albums WHERE sale_item_id = 'sid99'"
-        ).fetchone()["id"]
 
         s1 = _sample_track(Path("bandcamp://sid99/1"))
         s1.track_number = 1
@@ -7400,20 +7549,17 @@ class TestRemoveDownload:
         s2.source = "bandcamp"
         n = index.materialize_stream_tracks("sid99", [s1, s2])
 
-        # No duplicate album row, and the stream rows joined the existing album.
         album_count = index._conn.execute(
             "SELECT COUNT(*) AS n FROM albums WHERE sale_item_id = 'sid99'"
         ).fetchone()["n"]
-        stream_album_ids = [
-            r["album_id"]
-            for r in index._conn.execute(
-                "SELECT album_id FROM tracks WHERE file_path LIKE 'bandcamp://sid99/%'"
-            ).fetchall()
-        ]
+        stream_srcs = index._conn.execute(
+            "SELECT COUNT(*) FROM track_sources WHERE kind = 'stream'"
+        ).fetchone()[0]
         index.close()
         assert n == 2
         assert album_count == 1
-        assert stream_album_ids == [album_id, album_id]
+        # Attached as sources of the two existing canonical tracks, not as rows.
+        assert stream_srcs == 2
 
     def test_remove_download_succeeds_after_materialize(self, tmp_path: Path) -> None:
         """End-to-end: materialize then remove_download reverts to streaming."""
@@ -11490,11 +11636,13 @@ class TestLooseSingleAttach:
         touched = index._attach_loose_local_singles()
         assert touched == set()
         assert self._album_id_of(index, tmp_path / "celebrity.flac") == first
+        # Post-KAMP-541 the loose local single and its stream twin collapse into
+        # one canonical track (file + stream sources), so the album holds 1 row.
         assert (
             index._conn.execute(
                 "SELECT COUNT(*) FROM tracks WHERE album_id = ?", (first,)
             ).fetchone()[0]
-            == 2
+            == 1
         )
         index.close()
 

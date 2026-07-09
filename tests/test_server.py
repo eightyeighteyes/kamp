@@ -2843,146 +2843,6 @@ class TestBandcampRemoveDownload:
         resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
         assert resp.status_code == 409
 
-    def test_swaps_queue_to_streaming_when_stopped(
-        self,
-        mock_index: MagicMock,
-        mock_engine: MagicMock,
-        mock_queue: MagicMock,
-    ) -> None:
-        """When the local track is queued but transport is stopped, swap the
-        queue entry to the streaming equivalent and proceed without a 409."""
-        from kamp_core.library import Track
-        from pathlib import Path as _Path
-
-        mock_index.get_collection_item.return_value = {
-            "sale_item_id": "42",
-            "mode": "local",
-        }
-        local_track = Track(
-            file_path=_Path("/music/Artist/Album/01.flac"),
-            title="Track",
-            artist="Artist",
-            album_artist="Artist",
-            album="Album",
-            release_date="2024",
-            track_number=1,
-            disc_number=1,
-            ext="flac",
-            embedded_art=False,
-            mb_release_id="",
-            mb_recording_id="",
-        )
-        local_track.id = 77
-        local_track.album_id = 5
-
-        streaming_track = Track(
-            file_path=_Path("bandcamp://42/1"),
-            title="Track",
-            artist="Artist",
-            album_artist="Artist",
-            album="Album",
-            release_date="2024",
-            track_number=1,
-            disc_number=1,
-            ext="mp3",
-            embedded_art=False,
-            mb_release_id="",
-            mb_recording_id="",
-        )
-        streaming_track.id = 78
-
-        mock_index.local_tracks_for_sale_item_id.return_value = [local_track]
-        mock_index.streaming_track_for_local_id.return_value = streaming_track
-        mock_index.remove_download.return_value = []
-        mock_queue.current.return_value = local_track
-        mock_queue.peek_next.return_value = None
-        mock_engine.state.playing = False
-
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
-
-        assert resp.status_code == 200
-        mock_queue.update_track_by_id.assert_called_once_with(77, streaming_track)
-        mock_engine.unload.assert_called_once()
-
-    def test_swaps_all_queued_tracks_not_just_current(
-        self,
-        mock_index: MagicMock,
-        mock_engine: MagicMock,
-        mock_queue: MagicMock,
-    ) -> None:
-        """All local tracks in the queue are swapped, not just current/next.
-
-        Without this, tracks beyond 'next' survive in memory but point at local
-        paths that no longer exist in the DB after deletion, so they are silently
-        dropped when the queue is restored on the next restart."""
-        from kamp_core.library import Track
-        from pathlib import Path as _Path
-
-        mock_index.get_collection_item.return_value = {
-            "sale_item_id": "42",
-            "mode": "local",
-        }
-
-        def _make_local(n: int) -> Track:
-            t = Track(
-                file_path=_Path(f"/music/Artist/Album/0{n}.flac"),
-                title=f"Track {n}",
-                artist="Artist",
-                album_artist="Artist",
-                album="Album",
-                release_date="2024",
-                track_number=n,
-                disc_number=1,
-                ext="flac",
-                embedded_art=False,
-                mb_release_id="",
-                mb_recording_id="",
-            )
-            t.id = 100 + n
-            return t
-
-        def _make_streaming(n: int) -> Track:
-            t = Track(
-                file_path=_Path(f"bandcamp://42/{n}"),
-                title=f"Track {n}",
-                artist="Artist",
-                album_artist="Artist",
-                album="Album",
-                release_date="2024",
-                track_number=n,
-                disc_number=1,
-                ext="mp3",
-                embedded_art=False,
-                mb_release_id="",
-                mb_recording_id="",
-            )
-            t.id = 200 + n
-            return t
-
-        local_tracks = [_make_local(i) for i in range(1, 5)]
-        streaming_tracks = {100 + i: _make_streaming(i) for i in range(1, 5)}
-
-        mock_index.local_tracks_for_sale_item_id.return_value = local_tracks
-        mock_index.streaming_track_for_local_id.side_effect = (
-            lambda tid: streaming_tracks.get(tid)
-        )
-        mock_index.remove_download.return_value = []
-        # Only track 1 is current; tracks 2–4 are further in the queue (not locked).
-        mock_queue.current.return_value = local_tracks[0]
-        mock_queue.peek_next.return_value = local_tracks[1]
-        mock_engine.state.playing = False
-
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        resp = TestClient(app).delete("/api/v1/bandcamp/collection/42/download")
-
-        assert resp.status_code == 200
-        # All four tracks must have been swapped.
-        swapped_ids = {
-            call.args[0] for call in mock_queue.update_track_by_id.call_args_list
-        }
-        assert swapped_ids == {101, 102, 103, 104}
-
     def test_returns_200_and_broadcasts_removed(
         self,
         mock_index: MagicMock,
@@ -3139,7 +2999,7 @@ class TestBandcampRemoveDownload:
         """A download-mode album with no stream rows fetches + materializes them
         before remove_download runs."""
         mock_index.get_collection_item.return_value = self._download_only_item()
-        mock_index.has_remote_album_tracks.return_value = False
+        mock_index.all_downloads_streamable.return_value = False
         mock_index.local_tracks_for_sale_item_id.return_value = []
         mock_index.remove_download.return_value = []
         mock_engine.state.playing = False
@@ -3171,7 +3031,7 @@ class TestBandcampRemoveDownload:
         mock_queue: MagicMock,
     ) -> None:
         mock_index.get_collection_item.return_value = self._download_only_item()
-        mock_index.has_remote_album_tracks.return_value = False
+        mock_index.all_downloads_streamable.return_value = False
         mock_index.local_tracks_for_sale_item_id.return_value = []
         mock_engine.state.playing = False
 
@@ -3195,7 +3055,7 @@ class TestBandcampRemoveDownload:
     ) -> None:
         """fetch_album_tracks returning nothing => no streamable version; abort."""
         mock_index.get_collection_item.return_value = self._download_only_item()
-        mock_index.has_remote_album_tracks.return_value = False
+        mock_index.all_downloads_streamable.return_value = False
         mock_index.local_tracks_for_sale_item_id.return_value = []
         mock_engine.state.playing = False
 
@@ -3222,7 +3082,7 @@ class TestBandcampRemoveDownload:
         mock_queue: MagicMock,
     ) -> None:
         mock_index.get_collection_item.return_value = self._download_only_item()
-        mock_index.has_remote_album_tracks.return_value = False
+        mock_index.all_downloads_streamable.return_value = False
         mock_index.local_tracks_for_sale_item_id.return_value = []
         mock_engine.state.playing = False
 
@@ -3255,9 +3115,8 @@ class TestBandcampRemoveDownload:
         from kamp_core.library import NoStreamableVersionError
 
         mock_index.get_collection_item.return_value = self._download_only_item()
-        mock_index.has_remote_album_tracks.return_value = True
+        mock_index.all_downloads_streamable.return_value = True
         mock_index.local_tracks_for_sale_item_id.return_value = []
-        mock_index.streaming_track_for_local_id.return_value = None
         mock_index.remove_download.side_effect = NoStreamableVersionError("nope")
         mock_engine.state.playing = False
 

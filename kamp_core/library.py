@@ -2169,10 +2169,17 @@ class LibraryIndex:
                 continue
             if len(cands) == 1:
                 # *row* is the just-scanned local file (it has the file source);
-                # *other* is the stream-only canonical. Prefer the file row as the
-                # survivor (consistent with the collapse) so the canonical keeps
-                # the owned copy's content and metadata.
-                self._merge_track_into(row["id"], cands[0]["id"])
+                # *cands[0]* is the pre-existing stream-only canonical. Keep the
+                # INCUMBENT as survivor (opposite of the offline migration, which
+                # prefers the file row): at runtime a live queue / open album view
+                # already references the incumbent's id and its bandcamp:// uri, and
+                # the merge deletes the loser — so surviving the incumbent keeps
+                # those references valid (preferred_source still resolves the newly
+                # attached file for playback, and the stale bandcamp:// uri still
+                # resolves to the survivor via resolve_track_id). Content and art
+                # are realigned onto the survivor by _sync_tracks_row_to_preferred_
+                # source inside the merge, so nothing owned is lost.
+                self._merge_track_into(cands[0]["id"], row["id"])
 
     def _heal_collapse_art(self) -> None:
         """Re-sync every track's legacy per-source columns from its preferred source.
@@ -4064,6 +4071,23 @@ class LibraryIndex:
             )
         return touched
 
+    def _rename_file_source(
+        self, old_path: "Path | str", new_path: "Path | str"
+    ) -> None:
+        """Repoint a track's file track_sources.uri after its file moves on disk.
+
+        The scanner reads indexed file paths from track_sources (kind='file',
+        KAMP-541), so a tag-edit / album rename that physically moved a file must
+        update its file source uri in lock-step with tracks.file_path. Otherwise
+        the next scan sees the old uri as a vanished file (remove_track drops the
+        source — deleting a local-only track and its stats) and the new path as
+        unindexed (re-fork). Caller owns the commit.
+        """
+        self._conn.execute(
+            "UPDATE track_sources SET uri = ? WHERE kind = 'file' AND uri = ?",
+            (str(new_path), str(old_path)),
+        )
+
     def move_track(
         self,
         old_path: Path,
@@ -4075,12 +4099,14 @@ class LibraryIndex:
 
         Called by the tag-edit endpoint after a file is physically moved on
         disk.  The row's primary stats (date_added, play_count, last_played,
-        favorite, mb IDs) are intentionally unchanged.
+        favorite, mb IDs) are intentionally unchanged. The track's file source
+        uri is repointed alongside file_path (see _rename_file_source).
         """
         self._conn.execute(
             "UPDATE tracks SET file_path = ?, title = ?, file_mtime = ? WHERE file_path = ?",
             (str(new_path), new_title, new_mtime, str(old_path)),
         )
+        self._rename_file_source(old_path, new_path)
         self._rebuild_fts()
         self._conn.commit()
 
@@ -4104,6 +4130,7 @@ class LibraryIndex:
                WHERE file_path = ?""",
             (str(new_path), new_album, new_album_artist, new_mtime, str(old_path)),
         )
+        self._rename_file_source(old_path, new_path)
         self._rebuild_fts()
         self._conn.commit()
 
@@ -4158,6 +4185,7 @@ class LibraryIndex:
                         str(old_path),
                     ),
                 )
+                self._rename_file_source(old_path, new_path)
             # Update the albums row. The UNIQUE (album_artist, album) COLLATE NOCASE
             # constraint raises IntegrityError if the new name already exists.
             if album_id is not None:
@@ -4467,6 +4495,31 @@ class LibraryIndex:
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
+    def _canonical_key_for(self, uri: "Path | str") -> str:
+        """Translate *uri* to the tracks.file_path of the row it addresses.
+
+        A track is addressable by its own file_path OR by any of its
+        track_sources uris. After the KAMP-541 collapse a live client can still
+        hold a delivery uri — e.g. a queued bandcamp:// stream uri — for a track
+        that has since collapsed onto its downloaded local file, so that uri is
+        now the track's *stream source* while file_path has realigned to the
+        local path. Direct-match first (the common case); only when the uri is
+        not itself a file_path do we redirect through track_sources. Falls back
+        to the normalized uri when nothing matches, leaving the caller's write a
+        harmless no-op exactly as before.
+        """
+        key = _canonical_track_key(uri)
+        if self._conn.execute(
+            "SELECT 1 FROM tracks WHERE file_path = ? LIMIT 1", (key,)
+        ).fetchone():
+            return key
+        row = self._conn.execute(
+            "SELECT t.file_path FROM track_sources s JOIN tracks t"
+            " ON t.id = s.track_id WHERE s.uri = ? AND s.kind = 'stream' LIMIT 1",
+            (key,),
+        ).fetchone()
+        return str(row["file_path"]) if row is not None else key
+
     def _mirror_track_stats(self, key: str, cols: "tuple[str, ...]") -> None:
         """Mirror stat column(s) from the tracks row at *key* into track_stats.
 
@@ -4500,7 +4553,7 @@ class LibraryIndex:
         import time
 
         now = time.time()
-        key = _canonical_track_key(file_path)
+        key = self._canonical_key_for(file_path)
         self._conn.execute(
             "UPDATE tracks SET last_played = ? WHERE file_path = ?",
             (now, key),
@@ -4526,7 +4579,7 @@ class LibraryIndex:
         updated here; last_played is managed exclusively by record_track_started().
         Also refreshes the parent album's play_count_avg.
         """
-        key = _canonical_track_key(file_path)
+        key = self._canonical_key_for(file_path)
         self._conn.execute(
             "UPDATE tracks SET play_count = play_count + 1 WHERE file_path = ?",
             (key,),
@@ -4644,10 +4697,12 @@ class LibraryIndex:
     def set_favorite(self, file_path: "Path | str", favorite: bool) -> None:
         """Set or clear the favorite flag for the track at *file_path*.
 
-        Accepts str so remote track URIs (bandcamp://) are not corrupted
-        by Path normalization on POSIX (// → /).
+        *file_path* may be a track's own file_path or any of its delivery uris
+        (a queued bandcamp:// stream uri whose track has since collapsed onto its
+        local file); _canonical_key_for redirects the latter to the surviving
+        row so the favorite lands on the canonical track (KAMP-541).
         """
-        key = file_path if isinstance(file_path, str) else str(file_path)
+        key = self._canonical_key_for(file_path)
         self._conn.execute(
             "UPDATE tracks SET favorite = ? WHERE file_path = ?",
             (int(favorite), key),
@@ -5087,7 +5142,20 @@ class LibraryIndex:
         row = self._conn.execute(
             "SELECT * FROM tracks WHERE file_path = ?", (key,)
         ).fetchone()
-        return _row_to_track(row) if row else None
+        if row is not None:
+            return _row_to_track(row)
+        # Fall back to a stream delivery uri: after the KAMP-541 collapse a client
+        # may hold a track's bandcamp:// stream uri while file_path has realigned
+        # to its downloaded local file. Resolve through track_sources so the stale
+        # uri still finds the surviving canonical row. Restricted to stream
+        # sources: a moved/renamed local file's *old* path is a stale file source
+        # and must still resolve to nothing (the file is genuinely gone).
+        src = self._conn.execute(
+            "SELECT t.* FROM track_sources s JOIN tracks t ON t.id = s.track_id"
+            " WHERE s.uri = ? AND s.kind = 'stream' LIMIT 1",
+            (_canonical_track_key(key),),
+        ).fetchone()
+        return _row_to_track(src) if src else None
 
     def get_track_by_id(self, track_id: int) -> "Track | None":
         """Return the track with *track_id*, or None if not indexed."""

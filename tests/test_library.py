@@ -583,11 +583,25 @@ class TestLibraryIndex:
                 "SELECT kind FROM track_sources WHERE track_id = ?", (surviving_id,)
             )
         )
-        index.close()
+        # The runtime reconcile keeps the INCUMBENT (the pre-existing canonical a
+        # live queue / open album view already references) rather than the file
+        # row the offline migration prefers — see _reconcile_scanned_tracks.
         assert n_tracks == 1
         assert kinds == ["file", "stream"]
-        # Prefer-file: the local (new) row survives; the stream row is merged away.
-        assert surviving_id != stream_id
+        assert surviving_id == stream_id
+        # The stale queued stream uri still resolves to the survivor, and its
+        # preferred source is now the downloaded file (KAMP-541 regression guard:
+        # a favorite via the transport 404'd and a queue jump replayed the stream).
+        assert index.get_track_by_path("bandcamp://z/1").id == stream_id
+        assert index.preferred_source(stream_id)["kind"] == "file"
+        index.set_favorite("bandcamp://z/1", True)
+        assert (
+            c.execute(
+                "SELECT favorite FROM track_stats WHERE track_id = ?", (stream_id,)
+            ).fetchone()["favorite"]
+            == 1
+        )
+        index.close()
 
     def test_remove_download_refuses_when_no_stream_source(
         self, tmp_path: Path

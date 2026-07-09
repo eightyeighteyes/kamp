@@ -173,6 +173,10 @@ class TestLibraryIndexTagEdit:
         # Stats preserved.
         assert updated.id == original.id
         assert updated.mb_recording_id == original.mb_recording_id
+        # The file source uri follows the rename (KAMP-541): the scanner reads
+        # indexed paths from track_sources, so a stale old uri would make the
+        # next scan drop this track and re-fork the moved file.
+        assert list(index.indexed_paths()) == [new_path]
         index.close()
 
     def test_move_track_preserves_stats(self, tmp_path: Path) -> None:

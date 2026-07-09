@@ -544,7 +544,8 @@ class TestLibraryIndex:
         healed.close()
         assert n_tracks == 1  # merged
         assert n_src == 2  # both sources derived + re-parented
-        assert n_ops == 1 and op_tid == stream_id  # survivor's op kept, loser's dropped
+        # Prefer-file: the local row survives, so its deferred op is kept.
+        assert n_ops == 1 and op_tid == local_id
 
     def test_upsert_attaches_new_download_to_existing_canonical(
         self, tmp_path: Path
@@ -575,15 +576,18 @@ class TestLibraryIndex:
         index.upsert_many([_sample_track(tmp_path / "track1.mp3")])
 
         n_tracks = c.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        surviving_id = c.execute("SELECT id FROM tracks").fetchone()[0]
         kinds = sorted(
             r["kind"]
             for r in c.execute(
-                "SELECT kind FROM track_sources WHERE track_id = ?", (stream_id,)
+                "SELECT kind FROM track_sources WHERE track_id = ?", (surviving_id,)
             )
         )
         index.close()
         assert n_tracks == 1
         assert kinds == ["file", "stream"]
+        # Prefer-file: the local (new) row survives; the stream row is merged away.
+        assert surviving_id != stream_id
 
     def test_remove_download_refuses_when_no_stream_source(
         self, tmp_path: Path
@@ -759,7 +763,9 @@ class TestLibraryIndex:
         )
         alb = c.execute("SELECT id FROM albums").fetchone()[0]
         c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sid9')")
-        # Stream row first (lower id → survivor), favorite=1 pc=2; local second, pc=5.
+        # Stream row first (lower id), favorite=1 pc=2; local second, pc=5. Under
+        # prefer-file the LOCAL row survives; the playlist/queue point at the stream
+        # (loser) so the repoint is exercised.
         c.execute(
             "INSERT INTO tracks (file_path, title, album, album_artist, source,"
             " album_id, track_number, disc_number, sale_item_id, favorite, play_count)"
@@ -794,12 +800,12 @@ class TestLibraryIndex:
         pl = c.execute("SELECT id FROM playlists").fetchone()[0]
         c.execute(
             "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?,?,0)",
-            (pl, local_id),
+            (pl, stream_id),
         )
         c.execute(
             "INSERT INTO queue_state (id, tracks, order_json, pos, shuffle, repeat)"
             " VALUES (1, ?, '[0]', 0, 0, 'off')",
-            (json.dumps([local_id]),),
+            (json.dumps([stream_id]),),
         )
         c.execute("UPDATE schema_version SET version = 45")
         c.commit()
@@ -827,13 +833,13 @@ class TestLibraryIndex:
         healed.close()
 
         assert n_tracks == 1
-        assert surv["id"] == stream_id  # lower id survives
+        assert surv["id"] == local_id  # prefer-file: the local row survives
         assert (surv["favorite"], surv["play_count"]) == (1, 5)  # MAX merge
         assert (st["favorite"], st["play_count"]) == (1, 5)  # track_stats re-derived
         assert n_src == 2  # both sources re-parented onto the survivor
         assert surv["file_path"] == "/m/1.mp3"  # realigned to preferred (file) source
-        assert pl_tid == stream_id  # playlist repointed loser→survivor
-        assert q == [stream_id]  # queue repointed
+        assert pl_tid == local_id  # playlist repointed loser→survivor
+        assert q == [local_id]  # queue repointed
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")

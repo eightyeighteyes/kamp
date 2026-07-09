@@ -2168,8 +2168,11 @@ class LibraryIndex:
             else:
                 continue
             if len(cands) == 1:
-                other = cands[0]["id"]
-                self._merge_track_into(min(row["id"], other), max(row["id"], other))
+                # *row* is the just-scanned local file (it has the file source);
+                # *other* is the stream-only canonical. Prefer the file row as the
+                # survivor (consistent with the collapse) so the canonical keeps
+                # the owned copy's content and metadata.
+                self._merge_track_into(row["id"], cands[0]["id"])
 
     def _heal_collapse_art(self) -> None:
         """Re-sync every track's legacy per-source columns from its preferred source.
@@ -2221,7 +2224,8 @@ class LibraryIndex:
         disc_number) with agreeing sale_item_id; loose singles by sale_item_id
         only; everything else solo), quarantines ambiguous buckets (>2 rows, or a
         duplicate (provider,kind)), and merges each mergeable bucket into its
-        lower-id survivor. Caller wraps this in a transaction + backup.
+        survivor — the local file row if present, else the lowest id. Caller wraps
+        this in a transaction + backup.
         """
         rows = self._conn.execute(
             "SELECT id, album_id, track_number, disc_number, sale_item_id, source"
@@ -2258,7 +2262,11 @@ class LibraryIndex:
             if len(bucket) > 2 or len(distinct_sids) > 1 or len(set(pks)) != len(pks):
                 quarantined += 1
                 continue
-            ordered = sorted(bucket, key=lambda r: r["id"])
+            # Survivor = the local file row if present, else the lowest id. The
+            # file row already carries the content we keep (art, mtime, path, and
+            # the user's tags), so the merge transplants less and the canonical
+            # defaults to the owned copy's metadata rather than the stream's.
+            ordered = sorted(bucket, key=lambda r: (r["source"] != "local", r["id"]))
             survivor_id = ordered[0]["id"]
             for r in ordered:
                 if r["album_id"] is not None:

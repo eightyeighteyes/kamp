@@ -711,6 +711,42 @@ class PendingIngest:
     created_at: float
 
 
+# A track's effective (preferred) delivery, reconstructed from track_sources
+# (KAMP-542). Reproduces post-collapse tracks.source exactly: the preferred
+# source is chosen by the same ordering as preferred_source(), and its kind is
+# mapped file->'local' / stream->'bandcamp' — the identical mapping
+# _sync_tracks_row_to_preferred_source writes to tracks.source. Correlated on the
+# outer tracks alias `t`; lets the source classifiers read track_sources so
+# KAMP-539 can drop tracks.source. `t.file_path LIKE 'bandcamp://%'` (which the
+# album formula used) equals "this effective source is a stream", i.e.
+# `<eff> <> 'local'`.
+_EFFECTIVE_SOURCE_EXPR = (
+    "COALESCE("
+    "(SELECT CASE WHEN s.kind = 'file' THEN 'local' ELSE 'bandcamp' END"
+    " FROM track_sources s WHERE s.track_id = t.id"
+    " ORDER BY s.is_available DESC, (s.kind = 'file') DESC, s.id LIMIT 1)"
+    ", t.source)"  # fall back to the legacy column when a track has no sources
+    # (a pre-540 row or a bare test fixture); tracks.source is NOT NULL. The
+    # fallback is dropped with the column in KAMP-539.
+)
+
+# Album `source` badge ('local' / 'bandcamp' / 'mixed'), correlated on the outer
+# `albums.id`. Behavior-preserving reconstruction of the legacy formula (which
+# read tracks.source and file_path LIKE 'bandcamp://%'): computes each track's
+# effective source once in a derived table, then applies the identical CASE. The
+# 'mixed' arm is unreachable post-collapse — preserved verbatim so the badge is
+# byte-for-byte unchanged (see KAMP-542; the quirk is tracked separately).
+_ALBUM_SOURCE_SUBQUERY = (
+    "(SELECT CASE"
+    "   WHEN COUNT(CASE WHEN es.eff = 'local' THEN 1 END) > 0"
+    "    AND COUNT(CASE WHEN es.eff <> 'local' THEN 1 END) > 0 THEN 'local'"
+    "   WHEN COUNT(DISTINCT es.eff) > 1 THEN 'mixed'"
+    "   ELSE MIN(es.eff) END"
+    "  FROM (SELECT " + _EFFECTIVE_SOURCE_EXPR + " AS eff"
+    "        FROM tracks t WHERE t.album_id = albums.id) es)"
+)
+
+
 class LibraryIndex:
     """Persistent SQLite index of all tracks in the music library."""
 
@@ -2601,17 +2637,7 @@ class LibraryIndex:
             )
         # 6. Recompute albums.source from the surviving tracks.
         self._conn.execute(
-            """
-            UPDATE albums SET source = (
-                SELECT CASE
-                    WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
-                     AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                        THEN 'local'
-                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                    ELSE MIN(t.source) END
-                FROM tracks t WHERE t.album_id = albums.id
-            ) WHERE id=?
-            """,
+            f"UPDATE albums SET source = {_ALBUM_SOURCE_SUBQUERY} WHERE id=?",
             (keep,),
         )
 
@@ -3048,19 +3074,8 @@ class LibraryIndex:
         # Refresh albums.source via the sale_item_id FK. Remote tracks may not have
         # album_id populated yet, so join through albums.sale_item_id instead.
         self._conn.execute(
-            """
-            UPDATE albums SET source = (
-                SELECT CASE
-                    WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
-                         AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                    THEN 'local'
-                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                    ELSE MIN(t.source)
-                END
-                FROM tracks t WHERE t.album_id = albums.id
-            )
-            WHERE sale_item_id = ?
-            """,
+            f"UPDATE albums SET source = {_ALBUM_SOURCE_SUBQUERY}"
+            " WHERE sale_item_id = ?",
             (sale_item_id,),
         )
         self._conn.commit()
@@ -3234,15 +3249,7 @@ class LibraryIndex:
     def _refresh_album_source(self, album_id: int) -> None:
         """Recompute albums.source for one album from its tracks' legacy columns."""
         self._conn.execute(
-            "UPDATE albums SET source = ("
-            "  SELECT CASE"
-            "    WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0"
-            "         AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0"
-            "    THEN 'local'"
-            "    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'"
-            "    ELSE MIN(t.source) END"
-            "  FROM tracks t WHERE t.album_id = albums.id)"
-            " WHERE id = ?",
+            f"UPDATE albums SET source = {_ALBUM_SOURCE_SUBQUERY} WHERE id = ?",
             (album_id,),
         )
 
@@ -4004,13 +4011,7 @@ class LibraryIndex:
                                   FROM tracks t WHERE t.album_id = albums.id),
                 play_count_avg = (SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
                                   FROM tracks_with_stats t WHERE t.album_id = albums.id),
-                source         = (SELECT
-                                      CASE WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
-                                                AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                                           THEN 'local'
-                                           WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                                           ELSE MIN(t.source) END
-                                  FROM tracks t WHERE t.album_id = albums.id),
+                source         = {_ALBUM_SOURCE_SUBQUERY},
                 release_date   = (SELECT MAX(t.release_date)   FROM tracks t WHERE t.album_id = albums.id),
                 genre          = (SELECT MAX(t.genre)          FROM tracks t WHERE t.album_id = albums.id),
                 label          = (SELECT MAX(t.label)          FROM tracks t WHERE t.album_id = albums.id),
@@ -5101,7 +5102,7 @@ class LibraryIndex:
                 t.album_artist,
                 t.title             AS album,
                 t.release_date,
-                t.source            AS album_source,
+                {_EFFECTIVE_SOURCE_EXPR} AS album_source,
                 NULL                AS sale_item_id,
                 0                   AS is_favorite,
                 t.date_added        AS sort_date_added,
@@ -5368,15 +5369,18 @@ class LibraryIndex:
     # Source expression reused by both playlist search methods.  Matches the
     # album source computation: 'mixed' when both local and non-local tracks are
     # present; otherwise the sole source value, defaulting to 'local' if empty.
-    _PLAYLIST_SOURCE_EXPR = """
+    # Reads track_sources via _EFFECTIVE_SOURCE_EXPR instead of tracks.source
+    # (KAMP-542) — behavior-identical, since post-collapse tracks.source equals a
+    # track's effective source. Correlated on the outer `t` (LEFT JOIN tracks t).
+    _PLAYLIST_SOURCE_EXPR = f"""
         CASE
-            WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
-             AND COUNT(CASE WHEN t.source != 'local' THEN 1 END) > 0
+            WHEN COUNT(CASE WHEN {_EFFECTIVE_SOURCE_EXPR} = 'local' THEN 1 END) > 0
+             AND COUNT(CASE WHEN {_EFFECTIVE_SOURCE_EXPR} != 'local' THEN 1 END) > 0
             THEN 'mixed'
-            WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
+            WHEN COUNT(CASE WHEN {_EFFECTIVE_SOURCE_EXPR} = 'local' THEN 1 END) > 0
             THEN 'local'
             WHEN COUNT(t.id) = 0 THEN 'local'
-            ELSE MIN(t.source)
+            ELSE MIN({_EFFECTIVE_SOURCE_EXPR})
         END
     """
 

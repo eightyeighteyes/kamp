@@ -6515,18 +6515,27 @@ class TestRemoteTrackSchema:
         assert row_before is not None
         assert row_before["source"] == "bandcamp"
 
-        # set_track_source_for_item is called (e.g. during sync cleanup).
+        # set_track_source_for_item writes tracks.source directly without touching
+        # track_sources. It is dead code post-collapse — server.py:3030 documents
+        # that it is never called — so it leaves tracks.source and track_sources
+        # inconsistent.
         index.set_track_source_for_item("sale-3", "local")
+        index._refresh_album_source(
+            index._conn.execute(
+                "SELECT id FROM albums WHERE sale_item_id = 'sale-3'"
+            ).fetchone()[0]
+        )
 
         row_after = index._conn.execute(
             "SELECT source FROM albums WHERE sale_item_id = 'sale-3'"
         ).fetchone()
         index.close()
 
-        # Remote tracks now have source='local' but file_path still starts with
-        # bandcamp://, so the dedup logic produces 'local' (local wins).
+        # The badge now derives from track_sources (KAMP-542), which this obsolete
+        # method does not update, so it stays 'bandcamp' (the track still has only
+        # a stream source). Pre-542 it flipped to 'local' by reading tracks.source.
         assert row_after is not None
-        assert row_after["source"] == "local"
+        assert row_after["source"] == "bandcamp"
 
     def test_migration_v20_adds_stream_columns(self, tmp_path: Path) -> None:
         """A v19 DB gains the three new columns on open."""
@@ -6816,8 +6825,19 @@ class TestAlbumInfoRemoteFields:
         index.close()
 
         assert len(albums) == 1
-        assert albums[0].source == "mixed"
-        assert albums[0].has_remote_tracks is True
+        # Post-collapse the badge is reconstructed from track_sources (KAMP-542).
+        # A genuinely mixed album (one local-preferred + one stream-preferred
+        # track) reads 'local', not 'mixed' — the pre-existing quirk tracked in
+        # KAMP-546. The old formula returned 'mixed' here only because this
+        # fixture's "bandcamp" track has a mangled, non-bandcamp:// file_path
+        # (tmp_path / "bandcamp://999/2"), a state that cannot occur in production
+        # where a stream track's file_path IS its bandcamp:// uri.
+        assert albums[0].source == "local"
+        # has_remote_tracks is derived from the badge (album_source != 'local'), so
+        # it follows the same KAMP-546 quirk: a realistic mixed album reads
+        # 'local' -> has_remote_tracks False. This already matches production on
+        # main (where a realistic mixed album's badge is 'local').
+        assert albums[0].has_remote_tracks is False
 
     def test_in_bandcamp_collection_true(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -11288,6 +11308,86 @@ class TestStatsReadFromTrackStats:
         t = index.get_track_by_path(str(tmp_path / "a.mp3"))
         index.close()
         assert t is not None and t.favorite is True and t.play_count == 4
+
+
+# ---------------------------------------------------------------------------
+# Album source classifier reconstruction (KAMP-542)
+# ---------------------------------------------------------------------------
+
+
+class TestAlbumSourceClassifier:
+    """The album `source` badge reads track_sources (not tracks.source) but is
+    byte-for-byte behavior-preserving vs the legacy formula, including the
+    post-collapse quirk where a mixed album reads 'local' and 'mixed' is
+    unreachable (tracked separately; preserved here per KAMP-542)."""
+
+    def _album(self, index: "LibraryIndex", name: str, tracks: list) -> int:
+        c = index._conn
+        c.execute(
+            "INSERT INTO albums (album_artist, album) VALUES (?, ?)", (name, name)
+        )
+        alb = c.execute("SELECT id FROM albums WHERE album = ?", (name,)).fetchone()[0]
+        for i, (src, fp, kinds) in enumerate(tracks, 1):
+            c.execute(
+                "INSERT INTO tracks (file_path, source, album_id, track_number,"
+                " disc_number) VALUES (?, ?, ?, ?, 1)",
+                (fp, src, alb, i),
+            )
+            tid = c.execute(
+                "SELECT id FROM tracks WHERE file_path = ?", (fp,)
+            ).fetchone()[0]
+            for k in kinds:
+                uri = fp if k == "file" else f"bandcamp://{name}/{i}"
+                c.execute(
+                    "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, ?, ?)",
+                    (tid, k, uri),
+                )
+        index._conn.commit()
+        return alb
+
+    def test_badge_matches_legacy_output(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        cases = {
+            "downloaded": (
+                [("local", "/m/a1.mp3", ["file"]), ("local", "/m/a2.mp3", ["file"])],
+                "local",
+            ),
+            "stream_only": (
+                [
+                    ("bandcamp", "bandcamp://S/1", ["stream"]),
+                    ("bandcamp", "bandcamp://S/2", ["stream"]),
+                ],
+                "bandcamp",
+            ),
+            # Post-collapse quirk: a mixed album reads 'local' (preserved, not 'mixed').
+            "mixed": (
+                [
+                    ("local", "/m/c1.mp3", ["file"]),
+                    ("bandcamp", "bandcamp://C/2", ["stream"]),
+                ],
+                "local",
+            ),
+            "downloaded_and_streamable": (
+                [
+                    ("local", "/m/d1.mp3", ["file", "stream"]),
+                    ("local", "/m/d2.mp3", ["file", "stream"]),
+                ],
+                "local",
+            ),
+        }
+        ids = {
+            name: self._album(index, name, tracks)
+            for name, (tracks, _) in cases.items()
+        }
+        index._refresh_album_aggregates(list(ids.values()))
+        got = {
+            name: index._conn.execute(
+                "SELECT source FROM albums WHERE id = ?", (ids[name],)
+            ).fetchone()[0]
+            for name in cases
+        }
+        index.close()
+        assert got == {name: expected for name, (_, expected) in cases.items()}
 
 
 # ---------------------------------------------------------------------------

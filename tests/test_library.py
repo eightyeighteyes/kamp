@@ -613,6 +613,80 @@ class TestLibraryIndex:
         assert c.execute("SELECT COUNT(*) FROM track_sources").fetchone()[0] == 1
         index.close()
 
+    def test_all_downloads_streamable(self, tmp_path: Path) -> None:
+        """all_downloads_streamable is True only when every download has a stream (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sidS')")
+        c.execute(
+            "INSERT INTO albums (album_artist, album, sale_item_id) VALUES ('A','Alb','sidS')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('/m/s.mp3','local',?,1,1)",
+            (alb,),
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', '/m/s.mp3')",
+            (tid,),
+        )
+        c.commit()
+        assert index.all_downloads_streamable("sidS") is False  # no stream yet
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'stream', 'bandcamp://sidS/1')",
+            (tid,),
+        )
+        c.commit()
+        assert index.all_downloads_streamable("sidS") is True
+        index.close()
+
+    def test_materialize_skips_when_no_matching_track(self, tmp_path: Path) -> None:
+        """materialize_stream_tracks attaches nothing when no track matches (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sid99')")
+        c.execute(
+            "INSERT INTO albums (album_artist, album, sale_item_id) VALUES ('A','Alb','sid99')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('/m/1.mp3','local',?,1,1)",
+            (alb,),
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', '/m/1.mp3')",
+            (tid,),
+        )
+        c.commit()
+
+        phantom = _sample_track(Path("bandcamp://sid99/9"))
+        phantom.track_number = 9  # no local track has track_number 9
+        phantom.source = "bandcamp"
+        n = index.materialize_stream_tracks("sid99", [phantom])
+        streams = c.execute(
+            "SELECT COUNT(*) FROM track_sources WHERE kind = 'stream'"
+        ).fetchone()[0]
+        index.close()
+        assert n == 0 and streams == 0
+
+    def test_sync_to_preferred_noop_without_sources(self, tmp_path: Path) -> None:
+        """_sync_tracks_row_to_preferred_source is a no-op for a sourceless track (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES ('/m/n.mp3', 'local')"
+        )
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        index._sync_tracks_row_to_preferred_source(tid)  # must not raise
+        fp = index._conn.execute(
+            "SELECT file_path FROM tracks WHERE id = ?", (tid,)
+        ).fetchone()[0]
+        index.close()
+        assert fp == "/m/n.mp3"  # unchanged
+
     def test_remove_track_legacy_row_without_source(self, tmp_path: Path) -> None:
         """A pre-collapse tracks row with no source is removed by file_path (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")

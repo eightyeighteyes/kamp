@@ -4887,6 +4887,43 @@ class TestResolvePlaybackUri:
             "bandcamp://777/2", "https://cdn.example.com/new.mp3", 9999.0
         )
 
+    def test_resolves_via_stream_source_and_refreshes_onto_source(
+        self, tmp_path: Path
+    ) -> None:
+        """A track with a stream source resolves+refreshes via track_sources (KAMP-541)."""
+        from kamp_core.library import LibraryIndex
+
+        idx = LibraryIndex(tmp_path / "l.db")
+        c = idx._conn
+        c.execute(
+            "INSERT INTO bandcamp_collection (sale_item_id, album_url)"
+            " VALUES ('sid', 'https://a.bandcamp.com/album/x')"
+        )
+        c.execute(
+            "INSERT INTO tracks (file_path, source) VALUES ('bandcamp://sid/2', 'bandcamp')"
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, provider, provider_item_id, uri,"
+            " stream_url, stream_url_expires_at)"
+            " VALUES (?, 'stream', 'bandcamp', 'sid', 'bandcamp://sid/2',"
+            " 'https://cdn/old.mp3', 0.0)",
+            (tid,),
+        )
+        c.commit()
+        track = idx.get_track_by_id(tid)
+        refresh_fn = MagicMock(return_value=("https://cdn/new.mp3", 9999.0))
+
+        result = resolve_playback_uri(track, idx, refresh_fn)
+
+        refresh_fn.assert_called_once_with("https://a.bandcamp.com/album/x", 2)
+        persisted = c.execute(
+            "SELECT stream_url FROM track_sources WHERE track_id = ?", (tid,)
+        ).fetchone()[0]
+        idx.close()
+        assert result == "https://cdn/new.mp3"
+        assert persisted == "https://cdn/new.mp3"  # written onto the source row
+
     def test_head_check_passes_returns_cached_url(self) -> None:
         """If HEAD returns 2xx, no refresh is triggered and the cached URL is used."""
         import time

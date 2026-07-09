@@ -426,18 +426,20 @@ class TestLibraryIndex:
     ) -> None:
         """Removing a local file drops its source but keeps a track that still streams (KAMP-541 C2)."""
         index = LibraryIndex(tmp_path / "library.db")
+        # Use a real platform path so str(fp) matches the stored uri on Windows too.
+        fp = tmp_path / "a.mp3"
         index._conn.execute(
-            "INSERT INTO tracks (file_path, source) VALUES ('/m/a.mp3', 'local')"
+            "INSERT INTO tracks (file_path, source) VALUES (?, 'local')", (str(fp),)
         )
         tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
         index._conn.executemany(
             "INSERT INTO track_sources (track_id, kind, uri, is_available)"
             " VALUES (?, ?, ?, ?)",
-            [(tid, "file", "/m/a.mp3", 1), (tid, "stream", "bandcamp://9/1", 1)],
+            [(tid, "file", str(fp), 1), (tid, "stream", "bandcamp://9/1", 1)],
         )
         index._conn.commit()
 
-        index.remove_track(Path("/m/a.mp3"))
+        index.remove_track(fp)
 
         track_still_there = index._conn.execute(
             "SELECT id FROM tracks WHERE id = ?", (tid,)
@@ -455,17 +457,18 @@ class TestLibraryIndex:
     def test_remove_track_deletes_sourceless_track(self, tmp_path: Path) -> None:
         """Removing the only (file) source deletes the canonical track (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")
+        fp = tmp_path / "solo.mp3"
         index._conn.execute(
-            "INSERT INTO tracks (file_path, source) VALUES ('/m/solo.mp3', 'local')"
+            "INSERT INTO tracks (file_path, source) VALUES (?, 'local')", (str(fp),)
         )
         tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
         index._conn.execute(
-            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', '/m/solo.mp3')",
-            (tid,),
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', ?)",
+            (tid, str(fp)),
         )
         index._conn.commit()
 
-        index.remove_track(Path("/m/solo.mp3"))
+        index.remove_track(fp)
 
         n = index._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
         index.close()
@@ -690,11 +693,12 @@ class TestLibraryIndex:
     def test_remove_track_legacy_row_without_source(self, tmp_path: Path) -> None:
         """A pre-collapse tracks row with no source is removed by file_path (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")
+        fp = tmp_path / "legacy.mp3"
         index._conn.execute(
-            "INSERT INTO tracks (file_path, source) VALUES ('/m/legacy.mp3', 'local')"
+            "INSERT INTO tracks (file_path, source) VALUES (?, 'local')", (str(fp),)
         )
         index._conn.commit()
-        index.remove_track(Path("/m/legacy.mp3"))
+        index.remove_track(fp)
         n = index._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
         index.close()
         assert n == 0

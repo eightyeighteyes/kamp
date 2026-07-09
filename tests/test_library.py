@@ -10280,6 +10280,35 @@ class TestMagicPlaylists:
         index.close()
         assert result == [id_a]
 
+    def test_evaluate_filters_by_source_via_track_sources(self, tmp_path: Path) -> None:
+        """track.source criteria resolves via track_sources, not tracks.source (KAMP-542)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([_sample_track(tmp_path / "a.mp3")])
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        # Desync: the track has a file (local) source, but its legacy source column
+        # is set to 'bandcamp'. The criterion must follow the source (local).
+        index._conn.execute(
+            "UPDATE tracks SET source = 'bandcamp' WHERE id = ?", (tid,)
+        )
+        index._conn.commit()
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.source", op="is", value="local")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Local", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [
+            tid
+        ]  # matched by the file source, not tracks.source='bandcamp'
+
     def test_evaluate_filters_by_genre_contains(self, tmp_path: Path) -> None:
         index, id_a, id_b = self._seeded_index(tmp_path)
         criteria = MagicCriteria(

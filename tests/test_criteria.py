@@ -205,7 +205,10 @@ def test_track_source_is() -> None:
     frag, params, _ = build_query(
         _criteria(_group(_cond("track.source", "is", "bandcamp")))
     )
-    assert "tracks.source" in frag
+    # KAMP-542: track.source resolves via track_sources (the preferred delivery),
+    # not the tracks.source column, so KAMP-539 can drop it. The compared value is
+    # unchanged, so stored criteria_json migrates without a rewrite.
+    assert "track_sources" in frag
     assert params == ["bandcamp"]
 
 

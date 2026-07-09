@@ -6735,6 +6735,35 @@ class TestReleaseDateBackfill:
 
         assert needs is True
 
+    def test_downloaded_track_with_stream_source_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """A downloaded (file-preferred) track carrying a stream source for the
+        album is NOT flagged/patched, even with a year-only release_date — the
+        backfill targets stream-preferred tracks only (KAMP-542). Guards the
+        effective-source restriction: a naive EXISTS(stream source) would wrongly
+        match it and overwrite its file-tag release_date."""
+        index = self._make_index(tmp_path)
+        c = index._conn
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number,"
+            " disc_number, release_date) VALUES ('/m/a.mp3','local',NULL,1,1,'2020')"
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.executemany(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, ?, ?)",
+            [(tid, "file", "/m/a.mp3"), (tid, "stream", "bandcamp://sale9/1")],
+        )
+        c.commit()
+
+        assert index.has_remote_tracks_needing_date_backfill("sale9") is False
+        index.patch_release_date_for_remote_album("sale9", "2020-05-01")
+        after = c.execute(
+            "SELECT release_date FROM tracks WHERE id = ?", (tid,)
+        ).fetchone()[0]
+        index.close()
+        assert after == "2020"  # untouched — it is downloaded, not stream-preferred
+
     def test_backfill_needed_when_release_date_is_empty(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
         track = Track(

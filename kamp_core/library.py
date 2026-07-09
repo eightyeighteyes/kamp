@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 47
+_SCHEMA_VERSION = 48
 
 
 class NoStreamableVersionError(Exception):
@@ -1862,7 +1862,46 @@ class LibraryIndex:
                         )
             self._conn.execute("UPDATE schema_version SET version = 47")
             self._conn.commit()
-            version = 47  # noqa: F841
+            version = 47
+
+        if version < 48:
+            # v47 → v48: heal stream-only duplicate rows the bandcamp sync forked
+            # for already-downloaded albums. Before the symmetric _reconcile_scanned_
+            # tracks fix, a stream synced for a download-only album (its bandcamp://
+            # tracks row was absent, so has_remote_album_tracks returned False) was
+            # upserted as a SEPARATE stream-only row beside the local canonical,
+            # re-creating the KAMP-532 split. Re-running the collapse merges each
+            # such pair (survivor = the local file row) — idempotent, and a no-op on
+            # a library with no sibling buckets. Same backup-first / one-transaction
+            # / version-last discipline as v46.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            needed = {
+                "id",
+                "album_id",
+                "track_number",
+                "disc_number",
+                "sale_item_id",
+                "source",
+            }
+            if (
+                needed <= track_cols
+                and self._has_collapsible_siblings()
+                and self._backup_db("KAMP-541 v48 sync-fork heal")
+            ):
+                try:
+                    self._collapse_canonical_tracks()
+                except Exception:
+                    self._conn.rollback()
+                    logger.exception(
+                        "KAMP-541 v48 sync-fork heal failed — rolled back; the"
+                        " duplicate stream rows remain. Restore from the pre-v48"
+                        " backup if needed."
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 48")
+            self._conn.commit()
+            version = 48  # noqa: F841
 
     def _backup_db(self, label: str) -> bool:
         """Snapshot the live DB (incl. WAL) before a mutating heal; return success.
@@ -2121,16 +2160,24 @@ class LibraryIndex:
         self._sync_tracks_row_to_preferred_source(survivor_id)
 
     def _reconcile_scanned_tracks(self, canonical_keys: "list[str]") -> None:
-        """Attach a newly-scanned file to its existing canonical track (KAMP-541).
+        """Attach a newly-upserted delivery to its existing canonical (KAMP-541).
 
-        For each just-upserted file that is a sibling of exactly ONE canonical
-        track that has no file source of its own (i.e. a stream-only row — the
-        common "download a streamed album" case), merge the freshly-forked row
-        into the lower-id survivor via _merge_track_into, so the download attaches
-        as a source rather than resurrecting the two-row duplicate. Conservative:
-        matches by (album_id, track_number, disc_number) with agreeing sale_item_id
-        or, for a loose single, by sale_item_id; a >1 or ambiguous match is left
-        alone (the migration quarantines those). Caller owns the commit.
+        Symmetric in the two directions a fork can arrive:
+          - a downloaded FILE for an album that was streamed (the file scanner's
+            "download a streamed album" case), and
+          - a synced STREAM for an album that was already downloaded (bandcamp
+            sync bringing a stream in for the first time — otherwise upsert_many
+            forks a stream-only row next to the local canonical, re-creating the
+            KAMP-532 duplicate).
+
+        For each just-upserted row, find the ONE sibling that lacks the kind this
+        row supplies (a stream-only sibling for a file row; a file-only sibling
+        for a stream row) and merge into it, keeping the INCUMBENT (the sibling
+        that existed before this upsert batch) as survivor so live references
+        stay valid. Matches by (album_id, track_number, disc_number) with
+        agreeing sale_item_id, or by sale_item_id for a loose single; a >1 or
+        ambiguous match is left alone (the migration quarantines those). Caller
+        owns the commit.
         """
         for key in canonical_keys:
             row = self._conn.execute(
@@ -2140,16 +2187,23 @@ class LibraryIndex:
             ).fetchone()
             if row is None:
                 continue
-            no_file_src = (
+            # The sibling must be missing the kind this row supplies, so the merge
+            # yields a clean file+stream canonical rather than a duplicate kind.
+            row_has_file = self._conn.execute(
+                "SELECT 1 FROM track_sources WHERE track_id = ? AND kind = 'file'",
+                (row["id"],),
+            ).fetchone()
+            missing_kind = "file" if row_has_file else "stream"
+            no_kind_src = (
                 " AND NOT EXISTS (SELECT 1 FROM track_sources s"
-                " WHERE s.track_id = t.id AND s.kind = 'file')"
+                f" WHERE s.track_id = t.id AND s.kind = '{missing_kind}')"
             )
             if row["album_id"] is not None:
                 cands = self._conn.execute(
                     "SELECT t.id FROM tracks t WHERE t.id != ? AND t.album_id = ?"
                     " AND t.track_number = ? AND t.disc_number = ?"
                     " AND (t.sale_item_id IS NULL OR ? IS NULL OR t.sale_item_id = ?)"
-                    + no_file_src,
+                    + no_kind_src,
                     (
                         row["id"],
                         row["album_id"],
@@ -2162,22 +2216,21 @@ class LibraryIndex:
             elif row["sale_item_id"]:
                 cands = self._conn.execute(
                     "SELECT t.id FROM tracks t WHERE t.id != ? AND t.album_id IS NULL"
-                    " AND t.sale_item_id = ?" + no_file_src,
+                    " AND t.sale_item_id = ?" + no_kind_src,
                     (row["id"], row["sale_item_id"]),
                 ).fetchall()
             else:
                 continue
             if len(cands) == 1:
-                # *row* is the just-scanned local file (it has the file source);
-                # *cands[0]* is the pre-existing stream-only canonical. Keep the
-                # INCUMBENT as survivor (opposite of the offline migration, which
-                # prefers the file row): at runtime a live queue / open album view
-                # already references the incumbent's id and its bandcamp:// uri, and
-                # the merge deletes the loser — so surviving the incumbent keeps
-                # those references valid (preferred_source still resolves the newly
-                # attached file for playback, and the stale bandcamp:// uri still
-                # resolves to the survivor via resolve_track_id). Content and art
-                # are realigned onto the survivor by _sync_tracks_row_to_preferred_
+                # *row* is the just-upserted delivery; *cands[0]* is the
+                # pre-existing sibling. Keep the INCUMBENT as survivor (opposite
+                # of the offline migration, which prefers the file row): a live
+                # queue / open album view already references the incumbent's id
+                # and uri, and the merge deletes the loser — so surviving the
+                # incumbent keeps those references valid (preferred_source still
+                # resolves the file for playback, and a stale bandcamp:// uri
+                # still resolves via resolve_track_id). Content and art are
+                # realigned onto the survivor by _sync_tracks_row_to_preferred_
                 # source inside the merge, so nothing owned is lost.
                 self._merge_track_into(cands[0]["id"], row["id"])
 
@@ -3000,14 +3053,27 @@ class LibraryIndex:
         return [dict(r) for r in rows]
 
     def has_remote_album_tracks(self, sale_item_id: str) -> bool:
-        """Return True if the tracks table already has entries for this remote album.
+        """Return True if this remote album's stream tracks are already present.
 
-        Checks canonical bandcamp:// (POSIX) and Windows bandcamp:\\ path forms so
-        incremental stream syncs can skip album-page fetches for existing albums.
+        Checks legacy bandcamp:// (POSIX) and Windows bandcamp:\\ tracks.file_path
+        forms AND (post-KAMP-541 collapse) stream track_sources whose uri encodes
+        this sale_item_id. After the collapse the stream lives as a source on the
+        downloaded canonical rather than as its own tracks row, so a file_path-only
+        check would miss it and make the incremental sync re-fetch and re-insert a
+        duplicate stream row.
         """
         row = self._conn.execute(
-            "SELECT 1 FROM tracks WHERE file_path LIKE ? OR file_path LIKE ? LIMIT 1",
-            (f"bandcamp://{sale_item_id}/%", f"bandcamp:\\{sale_item_id}\\%"),
+            "SELECT 1 FROM tracks WHERE file_path LIKE ? OR file_path LIKE ?"
+            " UNION ALL"
+            " SELECT 1 FROM track_sources WHERE kind = 'stream'"
+            "   AND (uri LIKE ? OR uri LIKE ?)"
+            " LIMIT 1",
+            (
+                f"bandcamp://{sale_item_id}/%",
+                f"bandcamp:\\{sale_item_id}\\%",
+                f"bandcamp://{sale_item_id}/%",
+                f"bandcamp:\\{sale_item_id}\\%",
+            ),
         ).fetchone()
         return row is not None
 

@@ -421,6 +421,56 @@ class TestLibraryIndex:
         assert pref["kind"] == "stream"
         assert pref["uri"] == "bandcamp://9/1"
 
+    def test_remove_track_keeps_track_with_surviving_stream(
+        self, tmp_path: Path
+    ) -> None:
+        """Removing a local file drops its source but keeps a track that still streams (KAMP-541 C2)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES ('/m/a.mp3', 'local')"
+        )
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        index._conn.executemany(
+            "INSERT INTO track_sources (track_id, kind, uri, is_available)"
+            " VALUES (?, ?, ?, ?)",
+            [(tid, "file", "/m/a.mp3", 1), (tid, "stream", "bandcamp://9/1", 1)],
+        )
+        index._conn.commit()
+
+        index.remove_track(Path("/m/a.mp3"))
+
+        track_still_there = index._conn.execute(
+            "SELECT id FROM tracks WHERE id = ?", (tid,)
+        ).fetchone()
+        srcs = [
+            r["kind"]
+            for r in index._conn.execute(
+                "SELECT kind FROM track_sources WHERE track_id = ?", (tid,)
+            )
+        ]
+        index.close()
+        assert track_still_there is not None  # track survives
+        assert srcs == ["stream"]  # only the stream source remains
+
+    def test_remove_track_deletes_sourceless_track(self, tmp_path: Path) -> None:
+        """Removing the only (file) source deletes the canonical track (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES ('/m/solo.mp3', 'local')"
+        )
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        index._conn.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', '/m/solo.mp3')",
+            (tid,),
+        )
+        index._conn.commit()
+
+        index.remove_track(Path("/m/solo.mp3"))
+
+        n = index._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        index.close()
+        assert n == 0
+
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         index.upsert_track(_sample_track(tmp_path / "01.mp3"))

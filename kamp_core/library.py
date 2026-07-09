@@ -2971,6 +2971,33 @@ class LibraryIndex:
         )
         self._conn.commit()
 
+    def _sync_tracks_row_to_preferred_source(self, track_id: int) -> None:
+        """Realign a track's legacy columns to its preferred source (KAMP-541).
+
+        Keeps `tracks.file_path`/`source`/per-source columns coherent with
+        `track_sources` while both coexist (the columns are dropped in KAMP-539),
+        e.g. after a local file is removed and the track reverts to its stream
+        source. Caller commits. No-op if the track has no sources.
+        """
+        src = self.preferred_source(track_id)
+        if src is None:
+            return
+        self._conn.execute(
+            "UPDATE tracks SET file_path = ?, source = ?, ext = ?, duration = ?,"
+            " is_available = ?, stream_url = ?, stream_url_expires_at = ?"
+            " WHERE id = ?",
+            (
+                src["uri"],
+                "local" if src["kind"] == "file" else "bandcamp",
+                src["ext"],
+                src["duration"],
+                src["is_available"],
+                src["stream_url"],
+                src["stream_url_expires_at"],
+                track_id,
+            ),
+        )
+
     def update_track_display_title(
         self, track_id: int, display_title: str | None
     ) -> "Track | None":
@@ -3949,8 +3976,37 @@ class LibraryIndex:
         self._conn.commit()
 
     def remove_track(self, file_path: Path) -> None:
-        """Remove the track with the given file path from the index."""
-        self._conn.execute("DELETE FROM tracks WHERE file_path = ?", (str(file_path),))
+        """Remove a local file from the index (KAMP-541).
+
+        Drops the file's `track_sources` row. The canonical `tracks` row is
+        deleted only when no source remains — a track that still has a stream
+        source survives (reverting to stream-only) instead of being cascade-
+        deleted along with its stream source and stats (the KAMP-527 data-loss
+        class). Legacy fallback: a pre-collapse row with no source is deleted by
+        `file_path` as before.
+        """
+        uri = str(file_path)
+        src = self._conn.execute(
+            "SELECT track_id FROM track_sources WHERE uri = ? AND kind = 'file'",
+            (uri,),
+        ).fetchone()
+        if src is not None:
+            track_id = src["track_id"]
+            self._conn.execute(
+                "DELETE FROM track_sources WHERE uri = ? AND kind = 'file'", (uri,)
+            )
+            remaining = self._conn.execute(
+                "SELECT COUNT(*) FROM track_sources WHERE track_id = ?", (track_id,)
+            ).fetchone()[0]
+            if remaining == 0:
+                self._conn.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+            else:
+                # Keep the track; realign its legacy columns to a surviving source
+                # so file_path/source reads stay coherent and the freed local path
+                # can be re-added later without a UNIQUE collision.
+                self._sync_tracks_row_to_preferred_source(track_id)
+        else:
+            self._conn.execute("DELETE FROM tracks WHERE file_path = ?", (uri,))
         # Sync FTS — rebuilding is simpler than per-row deletes with FTS5 content tables.
         self._rebuild_fts()
         self._conn.commit()
@@ -4599,24 +4655,29 @@ class LibraryIndex:
     def indexed_paths(self) -> set[Path]:
         """Return the set of local file paths currently in the index.
 
-        Remote tracks (source != 'local') are excluded so the scanner never
-        tries to stat a bandcamp:// URI or treats it as a missing file.
+        KAMP-541: reads the `kind='file'` sources from track_sources, not
+        `tracks WHERE source='local'`. After a track is collapsed its local file
+        lives as a source of a canonical row whose `tracks.file_path` may be the
+        streaming uri — enumerating file sources keeps that path "indexed" so the
+        scanner does not re-fork a duplicate row for it. Stream sources are
+        excluded (their uri is not a real filesystem path).
         """
         rows = self._conn.execute(
-            "SELECT file_path FROM tracks WHERE source = 'local'"
+            "SELECT uri FROM track_sources WHERE kind = 'file'"
         ).fetchall()
-        return {Path(r["file_path"]) for r in rows}
+        return {Path(r["uri"]) for r in rows}
 
     def indexed_paths_with_mtime(self) -> dict[Path, float | None]:
         """Return a mapping of local indexed file paths to their stored file_mtime.
 
-        Remote tracks (source != 'local') are excluded for the same reason as
-        indexed_paths() — their URI is not a real filesystem path.
+        KAMP-541: reads `kind='file'` sources from track_sources (see
+        indexed_paths). Stream sources are excluded — their URI is not a real
+        filesystem path.
         """
         rows = self._conn.execute(
-            "SELECT file_path, file_mtime FROM tracks WHERE source = 'local'"
+            "SELECT uri, file_mtime FROM track_sources WHERE kind = 'file'"
         ).fetchall()
-        return {Path(r["file_path"]): r["file_mtime"] for r in rows}
+        return {Path(r["uri"]): r["file_mtime"] for r in rows}
 
     def get_track_by_path(self, path: "str | Path") -> "Track | None":
         """Return the track for *path*, or None if not indexed.

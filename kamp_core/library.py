@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 46
+_SCHEMA_VERSION = 47
 
 
 class NoStreamableVersionError(Exception):
@@ -1832,7 +1832,37 @@ class LibraryIndex:
                     )
             self._conn.execute("UPDATE schema_version SET version = 46")
             self._conn.commit()
-            version = 46  # noqa: F841
+            version = 46
+
+        if version < 47:
+            # v46 → v47: heal album art lost by the KAMP-541 collapse. The collapse
+            # kept the streaming survivor's embedded_art=0 / file_mtime=NULL instead
+            # of the downloaded file's, so downloaded-and-streamed albums (art comes
+            # from tracks.embedded_art / file_mtime aggregates) showed no cover.
+            # Re-sync every track's legacy columns from its preferred source (now
+            # including embedded_art + file_mtime) and refresh album art. Gated on
+            # the exact symptom so a clean DB does no work + takes no backup.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if {"embedded_art", "file_mtime", "file_path", "source"} <= track_cols:
+                symptom = self._conn.execute(
+                    "SELECT 1 FROM tracks t"
+                    " JOIN track_sources s ON s.track_id = t.id AND s.kind = 'file'"
+                    " WHERE s.embedded_art != t.embedded_art LIMIT 1"
+                ).fetchone()
+                if symptom is not None and self._backup_db("KAMP-541 v47 art heal"):
+                    try:
+                        self._heal_collapse_art()
+                    except Exception:
+                        self._conn.rollback()
+                        logger.exception(
+                            "KAMP-541 v47 art heal failed — rolled back; album art"
+                            " may still be missing on collapsed albums."
+                        )
+            self._conn.execute("UPDATE schema_version SET version = 47")
+            self._conn.commit()
+            version = 47  # noqa: F841
 
     def _backup_db(self, label: str) -> bool:
         """Snapshot the live DB (incl. WAL) before a mutating heal; return success.
@@ -2140,6 +2170,30 @@ class LibraryIndex:
             if len(cands) == 1:
                 other = cands[0]["id"]
                 self._merge_track_into(min(row["id"], other), max(row["id"], other))
+
+    def _heal_collapse_art(self) -> None:
+        """Re-sync every track's legacy per-source columns from its preferred source.
+
+        The KAMP-541 v46 collapse omitted embedded_art/file_mtime when realigning a
+        merged track to its preferred (file) source, so downloaded-and-streamed
+        albums lost their cover art. Re-running the (now-fixed) sync over every
+        track restores embedded_art + file_mtime, then album aggregates are
+        refreshed. Idempotent — a single-source track syncs to itself. Caller owns
+        the transaction/commit.
+        """
+        ids = [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT DISTINCT track_id FROM track_sources"
+            ).fetchall()
+        ]
+        for tid in ids:
+            self._sync_tracks_row_to_preferred_source(tid)
+        album_ids = [
+            r[0] for r in self._conn.execute("SELECT id FROM albums").fetchall()
+        ]
+        self._refresh_album_aggregates(album_ids)
+        self._rebuild_fts()
 
     def _has_collapsible_siblings(self) -> bool:
         """True if any bucket would hold >1 tracks row (KAMP-541 pre-flight).
@@ -3294,7 +3348,7 @@ class LibraryIndex:
         """
         row = self._conn.execute(
             "SELECT id, kind, provider, provider_item_id, uri, ext, duration,"
-            " is_available, stream_url, stream_url_expires_at"
+            " embedded_art, file_mtime, is_available, stream_url, stream_url_expires_at"
             " FROM track_sources WHERE track_id = ?"
             " ORDER BY is_available DESC, (kind = 'file') DESC, id"
             " LIMIT 1",
@@ -3326,13 +3380,15 @@ class LibraryIndex:
             return
         self._conn.execute(
             "UPDATE tracks SET file_path = ?, source = ?, ext = ?, duration = ?,"
-            " is_available = ?, stream_url = ?, stream_url_expires_at = ?"
-            " WHERE id = ?",
+            " embedded_art = ?, file_mtime = ?, is_available = ?, stream_url = ?,"
+            " stream_url_expires_at = ? WHERE id = ?",
             (
                 src["uri"],
                 "local" if src["kind"] == "file" else "bandcamp",
                 src["ext"],
                 src["duration"],
+                src["embedded_art"],
+                src["file_mtime"],
                 src["is_available"],
                 src["stream_url"],
                 src["stream_url_expires_at"],

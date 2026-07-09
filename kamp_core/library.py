@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 45
+_SCHEMA_VERSION = 48
 
 
 class NoStreamableVersionError(Exception):
@@ -1792,7 +1792,116 @@ class LibraryIndex:
                     )
             self._conn.execute("UPDATE schema_version SET version = 45")
             self._conn.commit()
-            version = 45  # noqa: F841
+            version = 45
+
+        if version < 46:
+            # v45 → v46: collapse each track's streaming+local sibling rows into
+            # ONE canonical tracks row (KAMP-541, design §7). Irreversible — take a
+            # backup first (mirrors the v39 heal), run the whole collapse in one
+            # transaction, and bump the version LAST so a crash rolls back cleanly.
+            # Guarded on the columns the bucketing reads (narrow migration-unit-test
+            # schemas build a partial tracks table). On any failure, roll back and
+            # leave the two-row model intact rather than brick the DB.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            needed = {
+                "id",
+                "album_id",
+                "track_number",
+                "disc_number",
+                "sale_item_id",
+                "source",
+            }
+            # Only back up + collapse when there is actually a sibling pair to
+            # merge — a library with no downloaded-streaming duplicates needs
+            # neither the backup nor the work.
+            if (
+                needed <= track_cols
+                and self._has_collapsible_siblings()
+                and self._backup_db("KAMP-541 v46 collapse")
+            ):
+                try:
+                    self._collapse_canonical_tracks()
+                except Exception:
+                    self._conn.rollback()
+                    logger.exception(
+                        "KAMP-541 v46 collapse failed — rolled back; the two-row"
+                        " model is preserved. Restore from the pre-v46 backup if"
+                        " needed."
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 46")
+            self._conn.commit()
+            version = 46
+
+        if version < 47:
+            # v46 → v47: heal album art lost by the KAMP-541 collapse. The collapse
+            # kept the streaming survivor's embedded_art=0 / file_mtime=NULL instead
+            # of the downloaded file's, so downloaded-and-streamed albums (art comes
+            # from tracks.embedded_art / file_mtime aggregates) showed no cover.
+            # Re-sync every track's legacy columns from its preferred source (now
+            # including embedded_art + file_mtime) and refresh album art. Gated on
+            # the exact symptom so a clean DB does no work + takes no backup.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            if {"embedded_art", "file_mtime", "file_path", "source"} <= track_cols:
+                symptom = self._conn.execute(
+                    "SELECT 1 FROM tracks t"
+                    " JOIN track_sources s ON s.track_id = t.id AND s.kind = 'file'"
+                    " WHERE s.embedded_art != t.embedded_art LIMIT 1"
+                ).fetchone()
+                if symptom is not None and self._backup_db("KAMP-541 v47 art heal"):
+                    try:
+                        self._heal_collapse_art()
+                    except Exception:
+                        self._conn.rollback()
+                        logger.exception(
+                            "KAMP-541 v47 art heal failed — rolled back; album art"
+                            " may still be missing on collapsed albums."
+                        )
+            self._conn.execute("UPDATE schema_version SET version = 47")
+            self._conn.commit()
+            version = 47
+
+        if version < 48:
+            # v47 → v48: heal stream-only duplicate rows the bandcamp sync forked
+            # for already-downloaded albums. Before the symmetric _reconcile_scanned_
+            # tracks fix, a stream synced for a download-only album (its bandcamp://
+            # tracks row was absent, so has_remote_album_tracks returned False) was
+            # upserted as a SEPARATE stream-only row beside the local canonical,
+            # re-creating the KAMP-532 split. Re-running the collapse merges each
+            # such pair (survivor = the local file row) — idempotent, and a no-op on
+            # a library with no sibling buckets. Same backup-first / one-transaction
+            # / version-last discipline as v46.
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            needed = {
+                "id",
+                "album_id",
+                "track_number",
+                "disc_number",
+                "sale_item_id",
+                "source",
+            }
+            if (
+                needed <= track_cols
+                and self._has_collapsible_siblings()
+                and self._backup_db("KAMP-541 v48 sync-fork heal")
+            ):
+                try:
+                    self._collapse_canonical_tracks()
+                except Exception:
+                    self._conn.rollback()
+                    logger.exception(
+                        "KAMP-541 v48 sync-fork heal failed — rolled back; the"
+                        " duplicate stream rows remain. Restore from the pre-v48"
+                        " backup if needed."
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 48")
+            self._conn.commit()
+            version = 48  # noqa: F841
 
     def _backup_db(self, label: str) -> bool:
         """Snapshot the live DB (incl. WAL) before a mutating heal; return success.
@@ -1875,6 +1984,364 @@ class LibraryIndex:
             logger.info(
                 "KAMP-540 v45 backfill: populated %d track_sources/track_stats rows",
                 len(source_params),
+            )
+
+    # ------------------------------------------------------------------
+    # KAMP-541 canonical-track collapse (shared by the v46 migration and the
+    # scan-time reconcile in upsert_many)
+    # ------------------------------------------------------------------
+
+    def _ensure_track_source(self, track_id: int) -> None:
+        """Derive a track_sources row from the tracks columns if one is missing.
+
+        Honours the KAMP-540 hand-off invariant: a track scanned before 540 (or
+        whose 540 backfill was skipped) may have no source row. Never bare-merge
+        assuming it exists. Skips on a uri-UNIQUE collision (slash-form dup).
+        """
+        if self._conn.execute(
+            "SELECT 1 FROM track_sources WHERE track_id = ? LIMIT 1", (track_id,)
+        ).fetchone():
+            return
+        r = self._conn.execute(
+            "SELECT file_path, source, sale_item_id, ext, duration, embedded_art,"
+            " file_mtime, is_available, stream_url, stream_url_expires_at"
+            " FROM tracks WHERE id = ?",
+            (track_id,),
+        ).fetchone()
+        if r is None:
+            return
+        uri, kind, provider, provider_item_id = _derive_source_fields(
+            r["file_path"], r["source"], r["sale_item_id"]
+        )
+        if self._conn.execute(
+            "SELECT 1 FROM track_sources WHERE uri = ?", (uri,)
+        ).fetchone():
+            return  # slash-form dup already present under another track — skip
+        self._conn.execute(
+            "INSERT INTO track_sources (track_id, kind, provider, provider_item_id,"
+            " uri, ext, duration, embedded_art, file_mtime, is_available, stream_url,"
+            " stream_url_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                track_id,
+                kind,
+                provider,
+                provider_item_id,
+                uri,
+                r["ext"],
+                r["duration"],
+                r["embedded_art"],
+                r["file_mtime"],
+                r["is_available"],
+                r["stream_url"],
+                r["stream_url_expires_at"],
+            ),
+        )
+
+    def _repoint_track_refs(self, loser_id: int, survivor_id: int) -> None:
+        """Repoint every reference from *loser_id* to *survivor_id* (KAMP-541).
+
+        playlist_tracks (no UNIQUE — dedupe within a playlist by hand), deferred_ops
+        (UNIQUE track_id — keep the survivor's op, drop the loser's), and the id-
+        keyed player_state / queue_state (KAMP-536). Callers commit.
+        """
+        import json
+
+        c = self._conn
+        # playlist_tracks: drop the loser's entry in any playlist that already
+        # holds the survivor (would otherwise become a phantom duplicate — no
+        # UNIQUE constraint to catch it), then repoint the rest. Position gaps are
+        # harmless (reads ORDER BY position).
+        c.execute(
+            "DELETE FROM playlist_tracks WHERE track_id = ? AND playlist_id IN"
+            " (SELECT playlist_id FROM playlist_tracks WHERE track_id = ?)",
+            (loser_id, survivor_id),
+        )
+        c.execute(
+            "UPDATE playlist_tracks SET track_id = ? WHERE track_id = ?",
+            (survivor_id, loser_id),
+        )
+        # deferred_ops: UNIQUE(track_id) — a blind UPDATE would abort if both have
+        # a pending op. Keep the survivor's, drop the loser's; else repoint.
+        if c.execute(
+            "SELECT 1 FROM deferred_ops WHERE track_id = ?", (survivor_id,)
+        ).fetchone():
+            c.execute("DELETE FROM deferred_ops WHERE track_id = ?", (loser_id,))
+        else:
+            c.execute(
+                "UPDATE deferred_ops SET track_id = ? WHERE track_id = ?",
+                (survivor_id, loser_id),
+            )
+        # player_state.track_path stores the id as text (KAMP-536).
+        c.execute(
+            "UPDATE player_state SET track_path = ? WHERE track_path = ?",
+            (str(survivor_id), str(loser_id)),
+        )
+        # queue_state.tracks is a JSON array of ids (KAMP-536).
+        qrow = c.execute("SELECT tracks FROM queue_state WHERE id = 1").fetchone()
+        if qrow is not None:
+            try:
+                ids = json.loads(qrow["tracks"])
+            except (ValueError, TypeError):
+                ids = []
+            if isinstance(ids, list) and loser_id in ids:
+                ids = [survivor_id if x == loser_id else x for x in ids]
+                c.execute(
+                    "UPDATE queue_state SET tracks = ? WHERE id = 1", (json.dumps(ids),)
+                )
+
+    def _merge_track_into(self, survivor_id: int, loser_id: int) -> None:
+        """Merge the loser track row into the survivor (KAMP-541, design §7).
+
+        Both must be the same logical track. Combines stats onto the survivor's
+        tracks columns (MAX/MAX/latest — so reads still on those columns converge,
+        fixing KAMP-532), COALESCE-merges identity (streaming display_* win;
+        non-empty mb/genre/label win), re-parents track_sources, repoints refs,
+        deletes the loser, re-derives track_stats from the merged columns, and
+        realigns the survivor's legacy columns to its preferred source. Caller
+        owns the transaction/commit.
+        """
+        c = self._conn
+        self._ensure_track_source(survivor_id)
+        self._ensure_track_source(loser_id)
+        # Stats onto the survivor's tracks columns.
+        c.execute(
+            "UPDATE tracks SET"
+            " favorite = MAX(favorite, COALESCE((SELECT favorite FROM tracks WHERE id=?),0)),"
+            " play_count = MAX(play_count, COALESCE((SELECT play_count FROM tracks WHERE id=?),0)),"
+            " last_played = NULLIF(MAX(COALESCE(last_played,0),"
+            "     COALESCE((SELECT last_played FROM tracks WHERE id=?),0)), 0)"
+            " WHERE id=?",
+            (loser_id, loser_id, loser_id, survivor_id),
+        )
+        # Identity: streaming display_* win if the survivor's is NULL; non-empty
+        # mb/genre/label fill a blank survivor field from the loser.
+        c.execute(
+            "UPDATE tracks SET"
+            " mb_release_id = CASE WHEN mb_release_id != '' THEN mb_release_id"
+            "   ELSE (SELECT mb_release_id FROM tracks WHERE id=?) END,"
+            " mb_recording_id = CASE WHEN mb_recording_id != '' THEN mb_recording_id"
+            "   ELSE (SELECT mb_recording_id FROM tracks WHERE id=?) END,"
+            " genre = CASE WHEN genre != '' THEN genre"
+            "   ELSE (SELECT genre FROM tracks WHERE id=?) END,"
+            " label = CASE WHEN label != '' THEN label"
+            "   ELSE (SELECT label FROM tracks WHERE id=?) END,"
+            " display_title = COALESCE(display_title, (SELECT display_title FROM tracks WHERE id=?)),"
+            " display_album = COALESCE(display_album, (SELECT display_album FROM tracks WHERE id=?)),"
+            " display_album_artist = COALESCE(display_album_artist,"
+            "   (SELECT display_album_artist FROM tracks WHERE id=?))"
+            " WHERE id=?",
+            (
+                loser_id,
+                loser_id,
+                loser_id,
+                loser_id,
+                loser_id,
+                loser_id,
+                loser_id,
+                survivor_id,
+            ),
+        )
+        # Re-parent the loser's sources onto the survivor.
+        c.execute(
+            "UPDATE track_sources SET track_id = ? WHERE track_id = ?",
+            (survivor_id, loser_id),
+        )
+        self._repoint_track_refs(loser_id, survivor_id)
+        # Delete the loser (its sources are re-parented; its stats cascade away).
+        c.execute("DELETE FROM tracks WHERE id = ?", (loser_id,))
+        # Re-derive the survivor's track_stats from the merged tracks columns.
+        c.execute(
+            "INSERT INTO track_stats (track_id, favorite, play_count, last_played)"
+            " SELECT id, favorite, play_count, last_played FROM tracks WHERE id=?"
+            " ON CONFLICT(track_id) DO UPDATE SET favorite=excluded.favorite,"
+            " play_count=excluded.play_count, last_played=excluded.last_played",
+            (survivor_id,),
+        )
+        self._sync_tracks_row_to_preferred_source(survivor_id)
+
+    def _reconcile_scanned_tracks(self, canonical_keys: "list[str]") -> None:
+        """Attach a newly-upserted delivery to its existing canonical (KAMP-541).
+
+        Symmetric in the two directions a fork can arrive:
+          - a downloaded FILE for an album that was streamed (the file scanner's
+            "download a streamed album" case), and
+          - a synced STREAM for an album that was already downloaded (bandcamp
+            sync bringing a stream in for the first time — otherwise upsert_many
+            forks a stream-only row next to the local canonical, re-creating the
+            KAMP-532 duplicate).
+
+        For each just-upserted row, find the ONE sibling that lacks the kind this
+        row supplies (a stream-only sibling for a file row; a file-only sibling
+        for a stream row) and merge into it, keeping the INCUMBENT (the sibling
+        that existed before this upsert batch) as survivor so live references
+        stay valid. Matches by (album_id, track_number, disc_number) with
+        agreeing sale_item_id, or by sale_item_id for a loose single; a >1 or
+        ambiguous match is left alone (the migration quarantines those). Caller
+        owns the commit.
+        """
+        for key in canonical_keys:
+            row = self._conn.execute(
+                "SELECT id, album_id, track_number, disc_number, sale_item_id"
+                " FROM tracks WHERE file_path = ?",
+                (key,),
+            ).fetchone()
+            if row is None:
+                continue
+            # The sibling must be missing the kind this row supplies, so the merge
+            # yields a clean file+stream canonical rather than a duplicate kind.
+            row_has_file = self._conn.execute(
+                "SELECT 1 FROM track_sources WHERE track_id = ? AND kind = 'file'",
+                (row["id"],),
+            ).fetchone()
+            missing_kind = "file" if row_has_file else "stream"
+            no_kind_src = (
+                " AND NOT EXISTS (SELECT 1 FROM track_sources s"
+                f" WHERE s.track_id = t.id AND s.kind = '{missing_kind}')"
+            )
+            if row["album_id"] is not None:
+                cands = self._conn.execute(
+                    "SELECT t.id FROM tracks t WHERE t.id != ? AND t.album_id = ?"
+                    " AND t.track_number = ? AND t.disc_number = ?"
+                    " AND (t.sale_item_id IS NULL OR ? IS NULL OR t.sale_item_id = ?)"
+                    + no_kind_src,
+                    (
+                        row["id"],
+                        row["album_id"],
+                        row["track_number"],
+                        row["disc_number"],
+                        row["sale_item_id"],
+                        row["sale_item_id"],
+                    ),
+                ).fetchall()
+            elif row["sale_item_id"]:
+                cands = self._conn.execute(
+                    "SELECT t.id FROM tracks t WHERE t.id != ? AND t.album_id IS NULL"
+                    " AND t.sale_item_id = ?" + no_kind_src,
+                    (row["id"], row["sale_item_id"]),
+                ).fetchall()
+            else:
+                continue
+            if len(cands) == 1:
+                # *row* is the just-upserted delivery; *cands[0]* is the
+                # pre-existing sibling. Keep the INCUMBENT as survivor (opposite
+                # of the offline migration, which prefers the file row): a live
+                # queue / open album view already references the incumbent's id
+                # and uri, and the merge deletes the loser — so surviving the
+                # incumbent keeps those references valid (preferred_source still
+                # resolves the file for playback, and a stale bandcamp:// uri
+                # still resolves via resolve_track_id). Content and art are
+                # realigned onto the survivor by _sync_tracks_row_to_preferred_
+                # source inside the merge, so nothing owned is lost.
+                self._merge_track_into(cands[0]["id"], row["id"])
+
+    def _heal_collapse_art(self) -> None:
+        """Re-sync every track's legacy per-source columns from its preferred source.
+
+        The KAMP-541 v46 collapse omitted embedded_art/file_mtime when realigning a
+        merged track to its preferred (file) source, so downloaded-and-streamed
+        albums lost their cover art. Re-running the (now-fixed) sync over every
+        track restores embedded_art + file_mtime, then album aggregates are
+        refreshed. Idempotent — a single-source track syncs to itself. Caller owns
+        the transaction/commit.
+        """
+        ids = [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT DISTINCT track_id FROM track_sources"
+            ).fetchall()
+        ]
+        for tid in ids:
+            self._sync_tracks_row_to_preferred_source(tid)
+        album_ids = [
+            r[0] for r in self._conn.execute("SELECT id FROM albums").fetchall()
+        ]
+        self._refresh_album_aggregates(album_ids)
+        self._rebuild_fts()
+
+    def _has_collapsible_siblings(self) -> bool:
+        """True if any bucket would hold >1 tracks row (KAMP-541 pre-flight).
+
+        Cheap existence check so the v46 collapse skips the backup + work on a
+        library that has no downloaded-streaming duplicates. Over-triggers only on
+        buckets that later quarantine — acceptable (a backup is never wrong).
+        """
+        return (
+            self._conn.execute(
+                "SELECT 1 WHERE"
+                " EXISTS (SELECT 1 FROM tracks WHERE album_id IS NOT NULL"
+                "   GROUP BY album_id, track_number, disc_number HAVING COUNT(*) > 1)"
+                " OR EXISTS (SELECT 1 FROM tracks"
+                "   WHERE album_id IS NULL AND sale_item_id IS NOT NULL"
+                "   GROUP BY sale_item_id HAVING COUNT(*) > 1)"
+            ).fetchone()
+            is not None
+        )
+
+    def _collapse_canonical_tracks(self) -> None:
+        """Merge every streaming+local sibling pair into one canonical track.
+
+        Buckets sibling tracks rows (album rows by (album_id, track_number,
+        disc_number) with agreeing sale_item_id; loose singles by sale_item_id
+        only; everything else solo), quarantines ambiguous buckets (>2 rows, or a
+        duplicate (provider,kind)), and merges each mergeable bucket into its
+        survivor — the local file row if present, else the lowest id. Caller wraps
+        this in a transaction + backup.
+        """
+        rows = self._conn.execute(
+            "SELECT id, album_id, track_number, disc_number, sale_item_id, source"
+            " FROM tracks"
+        ).fetchall()
+
+        def _kind(r: sqlite3.Row) -> str:
+            return "file" if r["source"] == "local" else "stream"
+
+        def _provider(r: sqlite3.Row) -> str:
+            return (
+                "bandcamp" if (r["source"] == "bandcamp" or r["sale_item_id"]) else ""
+            )
+
+        buckets: dict[tuple[Any, ...], list[sqlite3.Row]] = {}
+        for r in rows:
+            if r["album_id"] is None:
+                key = (
+                    ("sid", r["sale_item_id"])
+                    if r["sale_item_id"]
+                    else ("solo", r["id"])
+                )
+            else:
+                key = ("album", r["album_id"], r["track_number"], r["disc_number"])
+            buckets.setdefault(key, []).append(r)
+
+        touched_album_ids: set[int] = set()
+        quarantined = 0
+        for bucket in buckets.values():
+            if len(bucket) < 2:
+                continue
+            distinct_sids = {r["sale_item_id"] for r in bucket if r["sale_item_id"]}
+            pks = [(_provider(r), _kind(r)) for r in bucket]
+            if len(bucket) > 2 or len(distinct_sids) > 1 or len(set(pks)) != len(pks):
+                quarantined += 1
+                continue
+            # Survivor = the local file row if present, else the lowest id. The
+            # file row already carries the content we keep (art, mtime, path, and
+            # the user's tags), so the merge transplants less and the canonical
+            # defaults to the owned copy's metadata rather than the stream's.
+            ordered = sorted(bucket, key=lambda r: (r["source"] != "local", r["id"]))
+            survivor_id = ordered[0]["id"]
+            for r in ordered:
+                if r["album_id"] is not None:
+                    touched_album_ids.add(r["album_id"])
+            for loser in ordered[1:]:
+                self._merge_track_into(survivor_id, loser["id"])
+
+        if touched_album_ids:
+            self._refresh_album_aggregates(list(touched_album_ids))
+        self._rebuild_fts()
+        if quarantined:
+            logger.warning(
+                "KAMP-541 collapse: %d ambiguous bucket(s) quarantined (left"
+                " un-merged; resolve manually)",
+                quarantined,
             )
 
     def _create_tracks_sale_item_id_index(self) -> None:
@@ -2586,14 +3053,27 @@ class LibraryIndex:
         return [dict(r) for r in rows]
 
     def has_remote_album_tracks(self, sale_item_id: str) -> bool:
-        """Return True if the tracks table already has entries for this remote album.
+        """Return True if this remote album's stream tracks are already present.
 
-        Checks canonical bandcamp:// (POSIX) and Windows bandcamp:\\ path forms so
-        incremental stream syncs can skip album-page fetches for existing albums.
+        Checks legacy bandcamp:// (POSIX) and Windows bandcamp:\\ tracks.file_path
+        forms AND (post-KAMP-541 collapse) stream track_sources whose uri encodes
+        this sale_item_id. After the collapse the stream lives as a source on the
+        downloaded canonical rather than as its own tracks row, so a file_path-only
+        check would miss it and make the incremental sync re-fetch and re-insert a
+        duplicate stream row.
         """
         row = self._conn.execute(
-            "SELECT 1 FROM tracks WHERE file_path LIKE ? OR file_path LIKE ? LIMIT 1",
-            (f"bandcamp://{sale_item_id}/%", f"bandcamp:\\{sale_item_id}\\%"),
+            "SELECT 1 FROM tracks WHERE file_path LIKE ? OR file_path LIKE ?"
+            " UNION ALL"
+            " SELECT 1 FROM track_sources WHERE kind = 'stream'"
+            "   AND (uri LIKE ? OR uri LIKE ?)"
+            " LIMIT 1",
+            (
+                f"bandcamp://{sale_item_id}/%",
+                f"bandcamp:\\{sale_item_id}\\%",
+                f"bandcamp://{sale_item_id}/%",
+                f"bandcamp:\\{sale_item_id}\\%",
+            ),
         ).fetchone()
         return row is not None
 
@@ -2681,26 +3161,57 @@ class LibraryIndex:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def streaming_track_for_local_id(self, local_track_id: int) -> "Track | None":
-        """Return the streaming (bandcamp://) equivalent of a local track.
+    def _file_sources_for_item(self, sale_item_id: str) -> "list[sqlite3.Row]":
+        """Rows (track_id, src_id, uri, album_id) for file sources of a download.
 
-        Joins on (album_id, track_number, disc_number) to find the bandcamp://
-        row that corresponds to the given local track ID.  Used to swap a queue
-        entry to its streaming counterpart before deleting the local file.
+        A downloaded track is a canonical track with a kind='file' track_sources
+        row tied to *sale_item_id* — by the source's provider_item_id, or via the
+        album/track sale_item_id provenance (KAMP-528). (KAMP-541.)
+        """
+        return self._conn.execute(
+            "SELECT DISTINCT t.id AS track_id, fs.id AS src_id, fs.uri AS uri,"
+            " t.album_id AS album_id"
+            " FROM tracks t"
+            " JOIN track_sources fs ON fs.track_id = t.id AND fs.kind = 'file'"
+            " LEFT JOIN albums a ON a.id = t.album_id"
+            " WHERE fs.provider_item_id = ? OR a.sale_item_id = ? OR t.sale_item_id = ?"
+            " ORDER BY t.disc_number, t.track_number",
+            (sale_item_id, sale_item_id, sale_item_id),
+        ).fetchall()
+
+    def all_downloads_streamable(self, sale_item_id: str) -> bool:
+        """True if every downloaded track for *sale_item_id* has a stream source.
+
+        The KAMP-541 replacement for the has_remote_album_tracks gate in the
+        delete-download flow: when False, the server materializes the missing
+        stream sources before removing the download.
         """
         row = self._conn.execute(
-            """
-            SELECT s.* FROM tracks s
-            JOIN tracks l ON l.album_id = s.album_id
-                          AND l.track_number = s.track_number
-                          AND l.disc_number = s.disc_number
-            WHERE l.id = ?
-              AND (s.file_path LIKE 'bandcamp://%' OR s.file_path LIKE 'bandcamp:\\%')
-            LIMIT 1
-            """,
-            (local_track_id,),
+            "SELECT 1 FROM tracks t"
+            " JOIN track_sources fs ON fs.track_id = t.id AND fs.kind = 'file'"
+            " LEFT JOIN albums a ON a.id = t.album_id"
+            " WHERE (fs.provider_item_id = ? OR a.sale_item_id = ? OR t.sale_item_id = ?)"
+            "   AND NOT EXISTS (SELECT 1 FROM track_sources s"
+            "     WHERE s.track_id = t.id AND s.kind = 'stream')"
+            " LIMIT 1",
+            (sale_item_id, sale_item_id, sale_item_id),
         ).fetchone()
-        return _row_to_track(row) if row is not None else None
+        return row is None
+
+    def _refresh_album_source(self, album_id: int) -> None:
+        """Recompute albums.source for one album from its tracks' legacy columns."""
+        self._conn.execute(
+            "UPDATE albums SET source = ("
+            "  SELECT CASE"
+            "    WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0"
+            "         AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0"
+            "    THEN 'local'"
+            "    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'"
+            "    ELSE MIN(t.source) END"
+            "  FROM tracks t WHERE t.album_id = albums.id)"
+            " WHERE id = ?",
+            (album_id,),
+        )
 
     def remove_download(self, sale_item_id: str) -> "list[Path]":
         """Revert a downloaded collection item back to streaming state.
@@ -2721,111 +3232,41 @@ class LibraryIndex:
         mutations run under rollback discipline so a mid-flight failure never
         leaks a partial delete into a later commit on this pooled connection.
         """
-        row = self._conn.execute(
-            "SELECT id FROM albums WHERE sale_item_id = ?", (sale_item_id,)
-        ).fetchone()
-        if row is None:
+        rows = self._file_sources_for_item(sale_item_id)
+        if not rows:
             return []
-        album_id: int = row["id"]
 
-        # Fetch local tracks before deletion so we can migrate play counts and favorites.
-        local_rows = self._conn.execute(
-            """
-            SELECT file_path, play_count, favorite, track_number, disc_number
-            FROM tracks
-            WHERE album_id = ?
-              AND file_path NOT LIKE 'bandcamp://%'
-              AND file_path NOT LIKE 'bandcamp:\\%'
-            """,
-            (album_id,),
-        ).fetchall()
-
-        # KAMP-527 fail-safe: refuse to delete unless EVERY local track has a
-        # bandcamp:// counterpart (matched on track_number + disc_number) to fall
-        # back to. Checked before any mutation so an abort touches nothing. This
-        # covers the download-mode case (no stream rows at all), a partial
-        # materialization, and multi-disc downloads whose disc>1 tracks have no
-        # stream row. Without it the album would be deleted with no way back.
-        uncovered = self._conn.execute(
-            """
-            SELECT COUNT(*) AS n FROM tracks l
-            WHERE l.album_id = ?
-              AND l.file_path NOT LIKE 'bandcamp://%'
-              AND l.file_path NOT LIKE 'bandcamp:\\%'
-              AND NOT EXISTS (
-                  SELECT 1 FROM tracks s
-                  WHERE s.album_id = l.album_id
-                    AND s.track_number = l.track_number
-                    AND s.disc_number = l.disc_number
-                    AND (s.file_path LIKE 'bandcamp://%'
-                         OR s.file_path LIKE 'bandcamp:\\%')
-              )
-            """,
-            (album_id,),
-        ).fetchone()["n"]
-        if uncovered > 0:
-            raise NoStreamableVersionError(
-                f"{uncovered} track(s) for sale_item_id={sale_item_id} have no "
-                "streamable counterpart; refusing to delete the download."
-            )
-
-        file_paths = [Path(r["file_path"]) for r in local_rows]
-
-        # All mutations run under a single transaction guarded by rollback: a
-        # mid-flight failure must NOT leave a partial delete uncommitted on this
-        # thread-local connection, or the next unrelated commit() would flush it
-        # and silently destroy the local tracks (KAMP-527 deferred-commit bug).
-        try:
-            # Migrate play counts (MAX wins) and favorites (OR wins) to streaming rows.
-            for r in local_rows:
+        # KAMP-527 fail-safe: refuse unless EVERY downloaded track retains a stream
+        # source after we drop its file source. Checked before any mutation so an
+        # abort touches nothing (the daemon materializes missing streams first).
+        for r in rows:
+            if (
                 self._conn.execute(
-                    """
-                    UPDATE tracks
-                    SET play_count = MAX(play_count, ?),
-                        favorite   = MAX(favorite, ?)
-                    WHERE album_id = ?
-                      AND track_number = ?
-                      AND disc_number = ?
-                      AND (file_path LIKE 'bandcamp://%' OR file_path LIKE 'bandcamp:\\%')
-                    """,
-                    (
-                        r["play_count"],
-                        r["favorite"],
-                        album_id,
-                        r["track_number"],
-                        r["disc_number"],
-                    ),
+                    "SELECT 1 FROM track_sources WHERE track_id = ? AND kind = 'stream'"
+                    " LIMIT 1",
+                    (r["track_id"],),
+                ).fetchone()
+                is None
+            ):
+                raise NoStreamableVersionError(
+                    f"track {r['track_id']} for sale_item_id={sale_item_id} has no "
+                    "stream source; refusing to remove the download."
                 )
 
-            # Remove local track rows.
-            self._conn.execute(
-                """
-                DELETE FROM tracks
-                WHERE album_id = ?
-                  AND file_path NOT LIKE 'bandcamp://%'
-                  AND file_path NOT LIKE 'bandcamp:\\%'
-                """,
-                (album_id,),
-            )
+        file_paths = [Path(r["uri"]) for r in rows]
+        album_ids = {r["album_id"] for r in rows if r["album_id"] is not None}
 
-            # Refresh albums.source — same subquery pattern as set_track_source_for_item.
-            self._conn.execute(
-                """
-                UPDATE albums SET source = (
-                    SELECT CASE
-                        WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
-                             AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                        THEN 'local'
-                        WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                        ELSE MIN(t.source)
-                    END
-                    FROM tracks t WHERE t.album_id = albums.id
+        # All mutations under a single rollback-guarded transaction (KAMP-527
+        # deferred-commit discipline).
+        try:
+            # Drop each file source and revert the track to its stream source.
+            for r in rows:
+                self._conn.execute(
+                    "DELETE FROM track_sources WHERE id = ?", (r["src_id"],)
                 )
-                WHERE id = ?
-                """,
-                (album_id,),
-            )
-
+                self._sync_tracks_row_to_preferred_source(r["track_id"])
+            for aid in album_ids:
+                self._refresh_album_source(aid)
             self._conn.execute(
                 "UPDATE bandcamp_collection SET mode = 'remote', synced_at = NULL"
                 " WHERE sale_item_id = ?",
@@ -2851,22 +3292,58 @@ class LibraryIndex:
     def materialize_stream_tracks(
         self, sale_item_id: str, tracks: "list[Track]"
     ) -> int:
-        """Upsert on-demand bandcamp:// stream rows for a downloaded album.
+        """Attach an on-demand stream source to each downloaded track (KAMP-541/527).
 
-        Used by the DELETE-download endpoint (KAMP-527) to create the streamable
-        representation a download-mode album never had, so remove_download has
-        something to fall back to. Stamps *sale_item_id* on each Track so
-        upsert_many links them by identity to the EXISTING album row rather than
-        forking a new name-keyed album (KAMP-523 identity path). upsert_many
-        already carries rollback discipline, so a mid-flight failure leaves no
-        partial writes on this connection. Returns the number of tracks upserted.
+        Used by the DELETE-download endpoint to give a download-mode album (bought
+        + downloaded, never streamed) the streamable fallback remove_download
+        needs. *tracks* are streaming Track objects (bandcamp:// file_path); each
+        is matched to its existing canonical track by (this item + track_number +
+        disc_number) and a kind='stream' track_sources row is inserted when the
+        track has none yet. Rollback-guarded. Returns the number attached.
         """
         if not tracks:
             return 0
-        for t in tracks:
-            t.sale_item_id = str(sale_item_id)
-        self.upsert_many(tracks)
-        return len(tracks)
+        attached = 0
+        try:
+            for t in tracks:
+                uri = _canonical_track_key(t.file_path)
+                row = self._conn.execute(
+                    "SELECT t.id FROM tracks t"
+                    " LEFT JOIN albums a ON a.id = t.album_id"
+                    " WHERE (a.sale_item_id = ? OR t.sale_item_id = ?)"
+                    "   AND t.track_number = ? AND t.disc_number = ?"
+                    "   AND NOT EXISTS (SELECT 1 FROM track_sources s"
+                    "     WHERE s.track_id = t.id AND s.kind = 'stream')"
+                    " LIMIT 1",
+                    (sale_item_id, sale_item_id, t.track_number, t.disc_number),
+                ).fetchone()
+                if row is None:
+                    continue
+                if self._conn.execute(
+                    "SELECT 1 FROM track_sources WHERE uri = ?", (uri,)
+                ).fetchone():
+                    continue  # uri already present
+                self._conn.execute(
+                    "INSERT INTO track_sources (track_id, kind, provider,"
+                    " provider_item_id, uri, ext, duration, stream_url,"
+                    " stream_url_expires_at) VALUES (?, 'stream', 'bandcamp', ?, ?,"
+                    " ?, ?, ?, ?)",
+                    (
+                        row["id"],
+                        str(sale_item_id),
+                        uri,
+                        t.ext,
+                        t.duration,
+                        t.stream_url,
+                        t.stream_url_expires_at,
+                    ),
+                )
+                attached += 1
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return attached
 
     def reset_collection_sync_state(self) -> None:
         """Set synced_at = NULL for all rows so the next sync re-downloads everything."""
@@ -2937,6 +3414,68 @@ class LibraryIndex:
             (stream_url, expires_at, file_path_uri),
         )
         self._conn.commit()
+
+    def preferred_source(self, track_id: int) -> "sqlite3.Row | None":
+        """Return the preferred track_sources row for playback (KAMP-541, design §3).
+
+        Prefers an available source, then a local file over a stream, then the
+        lowest source id. None if the track has no source rows (shouldn't happen
+        after KAMP-540; callers fall back to the legacy Track columns). Once a
+        collapsed track has both a file and a stream source, this selects the
+        local file when it is available and falls through to the stream when the
+        file is not (e.g. an unmounted drive) — availability is the primary key so
+        the fallback actually happens (design §3; note the §3 draft listed
+        kind before is_available, which would never fall through).
+        """
+        row = self._conn.execute(
+            "SELECT id, kind, provider, provider_item_id, uri, ext, duration,"
+            " embedded_art, file_mtime, is_available, stream_url, stream_url_expires_at"
+            " FROM track_sources WHERE track_id = ?"
+            " ORDER BY is_available DESC, (kind = 'file') DESC, id"
+            " LIMIT 1",
+            (track_id,),
+        ).fetchone()
+        return row  # type: ignore[no-any-return]
+
+    def update_stream_url_for_source(
+        self, source_id: int, stream_url: str, expires_at: float
+    ) -> None:
+        """Persist a refreshed CDN stream URL onto a track_sources row (KAMP-541)."""
+        self._conn.execute(
+            "UPDATE track_sources SET stream_url = ?, stream_url_expires_at = ?"
+            " WHERE id = ?",
+            (stream_url, expires_at, source_id),
+        )
+        self._conn.commit()
+
+    def _sync_tracks_row_to_preferred_source(self, track_id: int) -> None:
+        """Realign a track's legacy columns to its preferred source (KAMP-541).
+
+        Keeps `tracks.file_path`/`source`/per-source columns coherent with
+        `track_sources` while both coexist (the columns are dropped in KAMP-539),
+        e.g. after a local file is removed and the track reverts to its stream
+        source. Caller commits. No-op if the track has no sources.
+        """
+        src = self.preferred_source(track_id)
+        if src is None:
+            return
+        self._conn.execute(
+            "UPDATE tracks SET file_path = ?, source = ?, ext = ?, duration = ?,"
+            " embedded_art = ?, file_mtime = ?, is_available = ?, stream_url = ?,"
+            " stream_url_expires_at = ? WHERE id = ?",
+            (
+                src["uri"],
+                "local" if src["kind"] == "file" else "bandcamp",
+                src["ext"],
+                src["duration"],
+                src["embedded_art"],
+                src["file_mtime"],
+                src["is_available"],
+                src["stream_url"],
+                src["stream_url_expires_at"],
+                track_id,
+            ),
+        )
 
     def update_track_display_title(
         self, track_id: int, display_title: str | None
@@ -3391,6 +3930,10 @@ class LibraryIndex:
                 " FROM tracks WHERE file_path = ?",
                 [(p[3],) for p in src_params],
             )
+            # Step 6 (KAMP-541): attach a newly-scanned file to its existing
+            # canonical track (merging the fork) instead of leaving a duplicate
+            # streaming+local pair. No-op when there is no stream-only sibling.
+            self._reconcile_scanned_tracks([p[3] for p in src_params])
 
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()
@@ -3594,6 +4137,23 @@ class LibraryIndex:
             )
         return touched
 
+    def _rename_file_source(
+        self, old_path: "Path | str", new_path: "Path | str"
+    ) -> None:
+        """Repoint a track's file track_sources.uri after its file moves on disk.
+
+        The scanner reads indexed file paths from track_sources (kind='file',
+        KAMP-541), so a tag-edit / album rename that physically moved a file must
+        update its file source uri in lock-step with tracks.file_path. Otherwise
+        the next scan sees the old uri as a vanished file (remove_track drops the
+        source — deleting a local-only track and its stats) and the new path as
+        unindexed (re-fork). Caller owns the commit.
+        """
+        self._conn.execute(
+            "UPDATE track_sources SET uri = ? WHERE kind = 'file' AND uri = ?",
+            (str(new_path), str(old_path)),
+        )
+
     def move_track(
         self,
         old_path: Path,
@@ -3605,12 +4165,14 @@ class LibraryIndex:
 
         Called by the tag-edit endpoint after a file is physically moved on
         disk.  The row's primary stats (date_added, play_count, last_played,
-        favorite, mb IDs) are intentionally unchanged.
+        favorite, mb IDs) are intentionally unchanged. The track's file source
+        uri is repointed alongside file_path (see _rename_file_source).
         """
         self._conn.execute(
             "UPDATE tracks SET file_path = ?, title = ?, file_mtime = ? WHERE file_path = ?",
             (str(new_path), new_title, new_mtime, str(old_path)),
         )
+        self._rename_file_source(old_path, new_path)
         self._rebuild_fts()
         self._conn.commit()
 
@@ -3634,6 +4196,7 @@ class LibraryIndex:
                WHERE file_path = ?""",
             (str(new_path), new_album, new_album_artist, new_mtime, str(old_path)),
         )
+        self._rename_file_source(old_path, new_path)
         self._rebuild_fts()
         self._conn.commit()
 
@@ -3688,6 +4251,7 @@ class LibraryIndex:
                         str(old_path),
                     ),
                 )
+                self._rename_file_source(old_path, new_path)
             # Update the albums row. The UNIQUE (album_artist, album) COLLATE NOCASE
             # constraint raises IntegrityError if the new name already exists.
             if album_id is not None:
@@ -3916,8 +4480,37 @@ class LibraryIndex:
         self._conn.commit()
 
     def remove_track(self, file_path: Path) -> None:
-        """Remove the track with the given file path from the index."""
-        self._conn.execute("DELETE FROM tracks WHERE file_path = ?", (str(file_path),))
+        """Remove a local file from the index (KAMP-541).
+
+        Drops the file's `track_sources` row. The canonical `tracks` row is
+        deleted only when no source remains — a track that still has a stream
+        source survives (reverting to stream-only) instead of being cascade-
+        deleted along with its stream source and stats (the KAMP-527 data-loss
+        class). Legacy fallback: a pre-collapse row with no source is deleted by
+        `file_path` as before.
+        """
+        uri = str(file_path)
+        src = self._conn.execute(
+            "SELECT track_id FROM track_sources WHERE uri = ? AND kind = 'file'",
+            (uri,),
+        ).fetchone()
+        if src is not None:
+            track_id = src["track_id"]
+            self._conn.execute(
+                "DELETE FROM track_sources WHERE uri = ? AND kind = 'file'", (uri,)
+            )
+            remaining = self._conn.execute(
+                "SELECT COUNT(*) FROM track_sources WHERE track_id = ?", (track_id,)
+            ).fetchone()[0]
+            if remaining == 0:
+                self._conn.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+            else:
+                # Keep the track; realign its legacy columns to a surviving source
+                # so file_path/source reads stay coherent and the freed local path
+                # can be re-added later without a UNIQUE collision.
+                self._sync_tracks_row_to_preferred_source(track_id)
+        else:
+            self._conn.execute("DELETE FROM tracks WHERE file_path = ?", (uri,))
         # Sync FTS — rebuilding is simpler than per-row deletes with FTS5 content tables.
         self._rebuild_fts()
         self._conn.commit()
@@ -3968,6 +4561,31 @@ class LibraryIndex:
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
+    def _canonical_key_for(self, uri: "Path | str") -> str:
+        """Translate *uri* to the tracks.file_path of the row it addresses.
+
+        A track is addressable by its own file_path OR by any of its
+        track_sources uris. After the KAMP-541 collapse a live client can still
+        hold a delivery uri — e.g. a queued bandcamp:// stream uri — for a track
+        that has since collapsed onto its downloaded local file, so that uri is
+        now the track's *stream source* while file_path has realigned to the
+        local path. Direct-match first (the common case); only when the uri is
+        not itself a file_path do we redirect through track_sources. Falls back
+        to the normalized uri when nothing matches, leaving the caller's write a
+        harmless no-op exactly as before.
+        """
+        key = _canonical_track_key(uri)
+        if self._conn.execute(
+            "SELECT 1 FROM tracks WHERE file_path = ? LIMIT 1", (key,)
+        ).fetchone():
+            return key
+        row = self._conn.execute(
+            "SELECT t.file_path FROM track_sources s JOIN tracks t"
+            " ON t.id = s.track_id WHERE s.uri = ? AND s.kind = 'stream' LIMIT 1",
+            (key,),
+        ).fetchone()
+        return str(row["file_path"]) if row is not None else key
+
     def _mirror_track_stats(self, key: str, cols: "tuple[str, ...]") -> None:
         """Mirror stat column(s) from the tracks row at *key* into track_stats.
 
@@ -4001,7 +4619,7 @@ class LibraryIndex:
         import time
 
         now = time.time()
-        key = _canonical_track_key(file_path)
+        key = self._canonical_key_for(file_path)
         self._conn.execute(
             "UPDATE tracks SET last_played = ? WHERE file_path = ?",
             (now, key),
@@ -4027,7 +4645,7 @@ class LibraryIndex:
         updated here; last_played is managed exclusively by record_track_started().
         Also refreshes the parent album's play_count_avg.
         """
-        key = _canonical_track_key(file_path)
+        key = self._canonical_key_for(file_path)
         self._conn.execute(
             "UPDATE tracks SET play_count = play_count + 1 WHERE file_path = ?",
             (key,),
@@ -4145,10 +4763,12 @@ class LibraryIndex:
     def set_favorite(self, file_path: "Path | str", favorite: bool) -> None:
         """Set or clear the favorite flag for the track at *file_path*.
 
-        Accepts str so remote track URIs (bandcamp://) are not corrupted
-        by Path normalization on POSIX (// → /).
+        *file_path* may be a track's own file_path or any of its delivery uris
+        (a queued bandcamp:// stream uri whose track has since collapsed onto its
+        local file); _canonical_key_for redirects the latter to the surviving
+        row so the favorite lands on the canonical track (KAMP-541).
         """
-        key = file_path if isinstance(file_path, str) else str(file_path)
+        key = self._canonical_key_for(file_path)
         self._conn.execute(
             "UPDATE tracks SET favorite = ? WHERE file_path = ?",
             (int(favorite), key),
@@ -4523,29 +5143,16 @@ class LibraryIndex:
     def tracks_for_album(self, album_artist: str, album: str) -> list[Track]:
         """Return tracks for a given album sorted by disc then track number.
 
-        When local (non-bandcamp://) tracks exist alongside remote bandcamp://
-        tracks for the same album, only the local tracks are returned. This
-        prevents duplicate-track display after a Bandcamp album is downloaded
-        and the local files have been scanned in alongside the old remote rows.
+        KAMP-541: after the collapse there is one canonical row per track (its
+        local file and stream both live in track_sources), so the old local-wins
+        de-dup filter is gone — every album row is returned.
         """
         album_id = self._album_id(album_artist, album)
         if album_id is None:
             return []
         rows = self._conn.execute(
-            """
-            SELECT * FROM tracks
-            WHERE album_id = ?
-              AND (
-                file_path NOT LIKE 'bandcamp://%'
-                OR NOT EXISTS (
-                    SELECT 1 FROM tracks t2
-                    WHERE t2.album_id = ?
-                      AND t2.file_path NOT LIKE 'bandcamp://%'
-                )
-              )
-            ORDER BY disc_number, track_number
-            """,
-            (album_id, album_id),
+            "SELECT * FROM tracks WHERE album_id = ? ORDER BY disc_number, track_number",
+            (album_id,),
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
@@ -4566,24 +5173,29 @@ class LibraryIndex:
     def indexed_paths(self) -> set[Path]:
         """Return the set of local file paths currently in the index.
 
-        Remote tracks (source != 'local') are excluded so the scanner never
-        tries to stat a bandcamp:// URI or treats it as a missing file.
+        KAMP-541: reads the `kind='file'` sources from track_sources, not
+        `tracks WHERE source='local'`. After a track is collapsed its local file
+        lives as a source of a canonical row whose `tracks.file_path` may be the
+        streaming uri — enumerating file sources keeps that path "indexed" so the
+        scanner does not re-fork a duplicate row for it. Stream sources are
+        excluded (their uri is not a real filesystem path).
         """
         rows = self._conn.execute(
-            "SELECT file_path FROM tracks WHERE source = 'local'"
+            "SELECT uri FROM track_sources WHERE kind = 'file'"
         ).fetchall()
-        return {Path(r["file_path"]) for r in rows}
+        return {Path(r["uri"]) for r in rows}
 
     def indexed_paths_with_mtime(self) -> dict[Path, float | None]:
         """Return a mapping of local indexed file paths to their stored file_mtime.
 
-        Remote tracks (source != 'local') are excluded for the same reason as
-        indexed_paths() — their URI is not a real filesystem path.
+        KAMP-541: reads `kind='file'` sources from track_sources (see
+        indexed_paths). Stream sources are excluded — their URI is not a real
+        filesystem path.
         """
         rows = self._conn.execute(
-            "SELECT file_path, file_mtime FROM tracks WHERE source = 'local'"
+            "SELECT uri, file_mtime FROM track_sources WHERE kind = 'file'"
         ).fetchall()
-        return {Path(r["file_path"]): r["file_mtime"] for r in rows}
+        return {Path(r["uri"]): r["file_mtime"] for r in rows}
 
     def get_track_by_path(self, path: "str | Path") -> "Track | None":
         """Return the track for *path*, or None if not indexed.
@@ -4596,7 +5208,20 @@ class LibraryIndex:
         row = self._conn.execute(
             "SELECT * FROM tracks WHERE file_path = ?", (key,)
         ).fetchone()
-        return _row_to_track(row) if row else None
+        if row is not None:
+            return _row_to_track(row)
+        # Fall back to a stream delivery uri: after the KAMP-541 collapse a client
+        # may hold a track's bandcamp:// stream uri while file_path has realigned
+        # to its downloaded local file. Resolve through track_sources so the stale
+        # uri still finds the surviving canonical row. Restricted to stream
+        # sources: a moved/renamed local file's *old* path is a stale file source
+        # and must still resolve to nothing (the file is genuinely gone).
+        src = self._conn.execute(
+            "SELECT t.* FROM track_sources s JOIN tracks t ON t.id = s.track_id"
+            " WHERE s.uri = ? AND s.kind = 'stream' LIMIT 1",
+            (_canonical_track_key(key),),
+        ).fetchone()
+        return _row_to_track(src) if src else None
 
     def get_track_by_id(self, track_id: int) -> "Track | None":
         """Return the track with *track_id*, or None if not indexed."""
@@ -4692,19 +5317,8 @@ class LibraryIndex:
             JOIN tracks t ON f.rowid = t.id
             LEFT JOIN albums al ON al.id = t.album_id
             WHERE tracks_fts MATCH ?
-              -- KAMP-529: local-wins collapse. Hide a streaming (bandcamp) row
-              -- when its album also holds a local track, so a downloaded track
-              -- surfaces once in search instead of doubling. Same album-level
-              -- rule as tracks_for_album; keyed on album_id (NULL-safe) and
-              -- source (Windows path-form safe), not on track_number.
-              AND NOT (
-                    t.source = 'bandcamp'
-                    AND t.album_id IS NOT NULL
-                    AND EXISTS (
-                        SELECT 1 FROM tracks x
-                        WHERE x.album_id = t.album_id AND x.source = 'local'
-                    )
-                  )
+              -- KAMP-541: the collapse leaves one canonical row per track, so the
+              -- KAMP-529 local-wins de-dup filter is no longer needed.
             ORDER BY (t.favorite OR COALESCE(al.favorite, 0)) DESC, f.rank
             """,
             (fts_expr,),

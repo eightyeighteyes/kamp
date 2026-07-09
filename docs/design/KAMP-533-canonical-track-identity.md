@@ -261,7 +261,27 @@ All of the following land in **one migration** (the KAMP-536 collapse). The item
 - Rows with no `provider_item_id` and no `album_id` each stay their own canonical track.
 
 ### Survivor id + repoint-before-delete
-- Survivor = the **lower `tracks.id`** (deterministic).
+- Survivor selection differs by context (both deterministic):
+  - **Offline migration (v46 collapse + v48 heal):** prefer the **file row**, then the
+    lower `tracks.id`. No live clients reference ids during a startup migration, and the
+    downloaded copy carries the better content/art/tags to keep as the canonical.
+  - **Runtime reconcile (`_reconcile_scanned_tracks`, KAMP-541):** keep the **incumbent**
+    (the sibling that existed before this upsert batch), merging the just-upserted
+    delivery into it. A live queue / open album view already holds the incumbent's id and
+    uri; surviving it keeps those references valid. The reconcile is **symmetric** — it
+    attaches a downloaded FILE to a streamed sibling **and** a synced STREAM to a
+    downloaded sibling (the download-only-then-first-stream case). Skipping the stream
+    direction re-forks a stream-only row beside the local canonical and re-creates
+    KAMP-532; the **v48 heal** re-collapses any such forks already on disk, and
+    `has_remote_album_tracks` was made collapse-aware (checks `track_sources` stream uris,
+    not just `bandcamp://` `tracks.file_path`) so the incremental sync stops re-fetching a
+    stream that now lives as a source on the canonical.
+  - **Resolve-by-source-uri bridge:** because `file_path` is now mutable (it realigns to
+    the preferred source on collapse), a client holding a stale `bandcamp://` stream uri
+    still resolves to the surviving row via `track_sources` (`get_track_by_path` +
+    `set_favorite`/`record_*`), and the three rename sites keep the file source uri in
+    lock-step with `tracks.file_path`. This holds the line until KAMP-537/542 move the
+    API onto ids.
 - Every reference to the dropped id is repointed **in the same transaction, before the
   delete**:
   - `playlist_tracks.track_id` — `REFERENCES tracks(id) ON DELETE CASCADE`; a naive

@@ -134,7 +134,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 45
+        assert version == 48
 
     def test_track_sources_and_stats_tables_created(self, tmp_path: Path) -> None:
         """The canonical-track child tables exist and are empty on a fresh DB (KAMP-535)."""
@@ -241,7 +241,7 @@ class TestLibraryIndex:
         }
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert {"track_sources", "track_stats"} <= tables
 
     def test_v45_backfill_populates_children(self, tmp_path: Path) -> None:
@@ -334,7 +334,7 @@ class TestLibraryIndex:
         ]
         n_src = index._conn.execute("SELECT COUNT(*) FROM track_sources").fetchone()[0]
         index.close()
-        assert version == 45
+        assert version == 48
         assert n_src == 0
 
     def test_dual_write_mirrors_stats_to_track_stats(self, tmp_path: Path) -> None:
@@ -392,6 +392,585 @@ class TestLibraryIndex:
         assert src["kind"] == "file" and src["uri"] == key
         assert src["duration"] == 99.0  # source refreshed
         assert fav == 1  # stats preserved across the re-scan (INSERT OR IGNORE)
+
+    def test_preferred_source_prefers_file_then_available(self, tmp_path: Path) -> None:
+        """preferred_source picks a local file, falling through to a stream (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES ('canon', 'bandcamp')"
+        )
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        index._conn.executemany(
+            "INSERT INTO track_sources (track_id, kind, uri, is_available)"
+            " VALUES (?, ?, ?, ?)",
+            [
+                (tid, "stream", "bandcamp://9/1", 1),
+                (tid, "file", "/m/a.mp3", 1),
+            ],
+        )
+        index._conn.commit()
+
+        assert index.preferred_source(tid)["kind"] == "file"  # file wins
+        # An unavailable file falls through to the stream.
+        index._conn.execute(
+            "UPDATE track_sources SET is_available = 0 WHERE kind = 'file'"
+        )
+        index._conn.commit()
+        pref = index.preferred_source(tid)
+        index.close()
+        assert pref["kind"] == "stream"
+        assert pref["uri"] == "bandcamp://9/1"
+
+    def test_remove_track_keeps_track_with_surviving_stream(
+        self, tmp_path: Path
+    ) -> None:
+        """Removing a local file drops its source but keeps a track that still streams (KAMP-541 C2)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        # Use a real platform path so str(fp) matches the stored uri on Windows too.
+        fp = tmp_path / "a.mp3"
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES (?, 'local')", (str(fp),)
+        )
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        index._conn.executemany(
+            "INSERT INTO track_sources (track_id, kind, uri, is_available)"
+            " VALUES (?, ?, ?, ?)",
+            [(tid, "file", str(fp), 1), (tid, "stream", "bandcamp://9/1", 1)],
+        )
+        index._conn.commit()
+
+        index.remove_track(fp)
+
+        track_still_there = index._conn.execute(
+            "SELECT id FROM tracks WHERE id = ?", (tid,)
+        ).fetchone()
+        srcs = [
+            r["kind"]
+            for r in index._conn.execute(
+                "SELECT kind FROM track_sources WHERE track_id = ?", (tid,)
+            )
+        ]
+        index.close()
+        assert track_still_there is not None  # track survives
+        assert srcs == ["stream"]  # only the stream source remains
+
+    def test_remove_track_deletes_sourceless_track(self, tmp_path: Path) -> None:
+        """Removing the only (file) source deletes the canonical track (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        fp = tmp_path / "solo.mp3"
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES (?, 'local')", (str(fp),)
+        )
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        index._conn.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', ?)",
+            (tid, str(fp)),
+        )
+        index._conn.commit()
+
+        index.remove_track(fp)
+
+        n = index._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        index.close()
+        assert n == 0
+
+    def test_v46_collapse_quarantines_ambiguous_bucket(self, tmp_path: Path) -> None:
+        """A bucket with >2 rows is left un-merged (KAMP-541 quarantine)."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        c = index._conn
+        c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        # Three rows sharing (album, track, disc) — ambiguous, must not collapse.
+        for i, (fp, src) in enumerate(
+            [
+                ("bandcamp://x/1", "bandcamp"),
+                ("/m/a.mp3", "local"),
+                ("/m/b.flac", "local"),
+            ]
+        ):
+            c.execute(
+                "INSERT INTO tracks (file_path, source, album_id, track_number,"
+                " disc_number) VALUES (?, ?, ?, 1, 1)",
+                (fp, src, alb),
+            )
+        c.execute("UPDATE schema_version SET version = 45")
+        c.commit()
+        index.close()
+
+        healed = LibraryIndex(db)  # v46 runs, quarantines
+        n = healed._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        healed.close()
+        assert n == 3  # all left in place
+
+    def test_v46_collapse_derives_missing_source_and_dedupes_deferred_op(
+        self, tmp_path: Path
+    ) -> None:
+        """Collapse derives an absent source and keeps the survivor's deferred op (KAMP-541)."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        c = index._conn
+        c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('bandcamp://y/1','bandcamp',?,1,1)",
+            (alb,),
+        )
+        stream_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('/m/y.mp3','local',?,1,1)",
+            (alb,),
+        )
+        local_id = c.execute("SELECT id FROM tracks WHERE source='local'").fetchone()[0]
+        # Intentionally NO track_sources rows (simulate a pre-540 skip) -> collapse
+        # must derive them. Both rows carry a pending deferred op (UNIQUE track_id).
+        c.executemany(
+            "INSERT INTO deferred_ops (op_type, track_id, payload_json, created_at)"
+            " VALUES ('track_retag', ?, '{}', ?)",
+            [(stream_id, 1.0), (local_id, 2.0)],
+        )
+        c.execute("UPDATE schema_version SET version = 45")
+        c.commit()
+        index.close()
+
+        healed = LibraryIndex(db)
+        hc = healed._conn
+        n_tracks = hc.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        n_src = hc.execute("SELECT COUNT(*) FROM track_sources").fetchone()[0]
+        n_ops = hc.execute("SELECT COUNT(*) FROM deferred_ops").fetchone()[0]
+        op_tid = hc.execute("SELECT track_id FROM deferred_ops").fetchone()["track_id"]
+        healed.close()
+        assert n_tracks == 1  # merged
+        assert n_src == 2  # both sources derived + re-parented
+        # Prefer-file: the local row survives, so its deferred op is kept.
+        assert n_ops == 1 and op_tid == local_id
+
+    def test_upsert_attaches_new_download_to_existing_canonical(
+        self, tmp_path: Path
+    ) -> None:
+        """A downloaded file for an existing stream track attaches as a source (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute(
+            "INSERT INTO albums (album_artist, album) VALUES ('The Artist','The Album')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " source, album_id, track_number, disc_number)"
+            " VALUES ('bandcamp://z/1','A Song','The Artist','The Artist','The Album',"
+            " 'bandcamp',?,1,1)",
+            (alb,),
+        )
+        stream_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, provider, uri)"
+            " VALUES (?, 'stream', 'bandcamp', 'bandcamp://z/1')",
+            (stream_id,),
+        )
+        c.commit()
+
+        # Scan a local file for the same album+track: it must attach, not fork.
+        index.upsert_many([_sample_track(tmp_path / "track1.mp3")])
+
+        n_tracks = c.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        surviving_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        kinds = sorted(
+            r["kind"]
+            for r in c.execute(
+                "SELECT kind FROM track_sources WHERE track_id = ?", (surviving_id,)
+            )
+        )
+        # The runtime reconcile keeps the INCUMBENT (the pre-existing canonical a
+        # live queue / open album view already references) rather than the file
+        # row the offline migration prefers — see _reconcile_scanned_tracks.
+        assert n_tracks == 1
+        assert kinds == ["file", "stream"]
+        assert surviving_id == stream_id
+        # The stale queued stream uri still resolves to the survivor, and its
+        # preferred source is now the downloaded file (KAMP-541 regression guard:
+        # a favorite via the transport 404'd and a queue jump replayed the stream).
+        assert index.get_track_by_path("bandcamp://z/1").id == stream_id
+        assert index.preferred_source(stream_id)["kind"] == "file"
+        index.set_favorite("bandcamp://z/1", True)
+        assert (
+            c.execute(
+                "SELECT favorite FROM track_stats WHERE track_id = ?", (stream_id,)
+            ).fetchone()["favorite"]
+            == 1
+        )
+        index.close()
+
+    def test_sync_attaches_stream_to_downloaded_canonical(self, tmp_path: Path) -> None:
+        """A synced stream for an already-downloaded album attaches, not forks (KAMP-541).
+
+        The reverse of test_upsert_attaches_new_download_to_existing_canonical:
+        the local file exists first (download-only album) and the bandcamp sync
+        brings its stream in for the first time. Without the symmetric reconcile
+        the stream is upserted as a separate stream-only row, re-creating the
+        KAMP-532 duplicate.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('s7')")
+        c.execute(
+            "INSERT INTO albums (album_artist, album, sale_item_id)"
+            " VALUES ('The Artist','The Album','s7')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        # A downloaded, never-streamed canonical (file source only).
+        local = _sample_track(tmp_path / "track1.mp3")
+        local.sale_item_id = "s7"
+        index.upsert_track(local)
+        c.execute("UPDATE tracks SET album_id = ?, sale_item_id = 's7'", (alb,))
+        file_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.commit()
+
+        # The sync upserts the streaming track for the same album+track.
+        stream = Track(
+            file_path="bandcamp://s7/1",
+            title="A Song",
+            artist="The Artist",
+            album_artist="The Artist",
+            album="The Album",
+            release_date="",
+            track_number=local.track_number,
+            disc_number=local.disc_number,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+        )
+        stream.source = "bandcamp"  # a streamed delivery -> stream track_source
+        index.upsert_many([stream])
+
+        n_tracks = c.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        kinds = sorted(
+            r["kind"]
+            for r in c.execute(
+                "SELECT kind FROM track_sources WHERE track_id = ?", (file_id,)
+            )
+        )
+        # One row survives — the incumbent local file — now carrying both sources.
+        assert n_tracks == 1
+        assert kinds == ["file", "stream"]
+        assert c.execute("SELECT id FROM tracks").fetchone()[0] == file_id
+        assert index.preferred_source(file_id)["kind"] == "file"
+        # has_remote_album_tracks now sees the attached stream source (collapse-aware),
+        # so a subsequent sync skips re-fetching and re-forking it.
+        assert index.has_remote_album_tracks("s7") is True
+        index.close()
+
+    def test_remove_download_refuses_when_no_stream_source(
+        self, tmp_path: Path
+    ) -> None:
+        """remove_download refuses if a track would be left with no stream (KAMP-527)."""
+        from kamp_core.library import NoStreamableVersionError
+
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sidX')")
+        c.execute(
+            "INSERT INTO albums (album_artist, album, sale_item_id) VALUES ('A','Alb','sidX')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('/m/x.mp3','local',?,1,1)",
+            (alb,),
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, provider, provider_item_id, uri)"
+            " VALUES (?, 'file', 'bandcamp', 'sidX', '/m/x.mp3')",
+            (tid,),
+        )
+        c.commit()
+
+        with pytest.raises(NoStreamableVersionError):
+            index.remove_download("sidX")
+        assert c.execute("SELECT COUNT(*) FROM track_sources").fetchone()[0] == 1
+        index.close()
+
+    def test_v47_heals_collapse_art(self, tmp_path: Path) -> None:
+        """v47 restores embedded_art/file_mtime lost by the v46 collapse (KAMP-541)."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        c = index._conn
+        c.execute(
+            "INSERT INTO albums (album_artist, album, embedded_art) VALUES ('A','Alb',0)"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        # A collapsed track: the stream survivor left embedded_art=0 / file_mtime
+        # NULL on the row even though its file source carries the art.
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number,"
+            " disc_number, embedded_art) VALUES ('bandcamp://a/1','bandcamp',?,1,1,0)",
+            (alb,),
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.executemany(
+            "INSERT INTO track_sources (track_id, kind, uri, embedded_art, file_mtime)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [
+                (tid, "stream", "bandcamp://a/1", 0, None),
+                (tid, "file", "/m/a.mp3", 1, 123.0),
+            ],
+        )
+        c.execute("UPDATE schema_version SET version = 46")
+        c.commit()
+        index.close()
+
+        healed = LibraryIndex(db)  # runs the v47 heal
+        hc = healed._conn
+        t = hc.execute(
+            "SELECT embedded_art, file_mtime, source, file_path FROM tracks WHERE id=?",
+            (tid,),
+        ).fetchone()
+        a_art = hc.execute(
+            "SELECT embedded_art FROM albums WHERE id=?", (alb,)
+        ).fetchone()[0]
+        healed.close()
+        assert t["embedded_art"] == 1  # synced from the file source
+        assert t["file_mtime"] == 123.0
+        assert t["source"] == "local" and t["file_path"] == "/m/a.mp3"
+        assert a_art == 1  # album cover restored
+
+    def test_v48_heals_sync_forked_stream_duplicate(self, tmp_path: Path) -> None:
+        """v48 merges a stream-only row the sync forked beside a download (KAMP-541).
+
+        Reproduces the download-only album whose stream arrived via a later sync
+        as a SEPARATE stream-only tracks row (before the symmetric reconcile). The
+        heal re-runs the collapse: survivor is the local file, the stream re-parents
+        as a source, the duplicate row is gone.
+        """
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        c = index._conn
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sid48')")
+        c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        # Downloaded canonical (file source, sale_item_id) + a forked stream-only row.
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number,"
+            " disc_number, sale_item_id) VALUES ('/m/a.mp3','local',?,1,1,'sid48')",
+            (alb,),
+        )
+        file_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', '/m/a.mp3')",
+            (file_id,),
+        )
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('bandcamp://sid48/1','bandcamp',?,1,1)",
+            (alb,),
+        )
+        stream_id = c.execute(
+            "SELECT id FROM tracks WHERE id != ?", (file_id,)
+        ).fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri)"
+            " VALUES (?, 'stream', 'bandcamp://sid48/1')",
+            (stream_id,),
+        )
+        c.execute("UPDATE schema_version SET version = 47")
+        c.commit()
+        index.close()
+
+        healed = LibraryIndex(db)  # runs the v48 heal
+        hc = healed._conn
+        n_tracks = hc.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        kinds = sorted(
+            r["kind"]
+            for r in hc.execute(
+                "SELECT kind FROM track_sources WHERE track_id = ?", (file_id,)
+            )
+        )
+        surv = hc.execute("SELECT id FROM tracks").fetchone()[0]
+        healed.close()
+        assert n_tracks == 1  # the forked stream row is gone
+        assert surv == file_id  # survivor is the local download
+        assert kinds == ["file", "stream"]  # stream re-parented onto it
+
+    def test_all_downloads_streamable(self, tmp_path: Path) -> None:
+        """all_downloads_streamable is True only when every download has a stream (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sidS')")
+        c.execute(
+            "INSERT INTO albums (album_artist, album, sale_item_id) VALUES ('A','Alb','sidS')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('/m/s.mp3','local',?,1,1)",
+            (alb,),
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', '/m/s.mp3')",
+            (tid,),
+        )
+        c.commit()
+        assert index.all_downloads_streamable("sidS") is False  # no stream yet
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'stream', 'bandcamp://sidS/1')",
+            (tid,),
+        )
+        c.commit()
+        assert index.all_downloads_streamable("sidS") is True
+        index.close()
+
+    def test_materialize_skips_when_no_matching_track(self, tmp_path: Path) -> None:
+        """materialize_stream_tracks attaches nothing when no track matches (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sid99')")
+        c.execute(
+            "INSERT INTO albums (album_artist, album, sale_item_id) VALUES ('A','Alb','sid99')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number, disc_number)"
+            " VALUES ('/m/1.mp3','local',?,1,1)",
+            (alb,),
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', '/m/1.mp3')",
+            (tid,),
+        )
+        c.commit()
+
+        phantom = _sample_track(Path("bandcamp://sid99/9"))
+        phantom.track_number = 9  # no local track has track_number 9
+        phantom.source = "bandcamp"
+        n = index.materialize_stream_tracks("sid99", [phantom])
+        streams = c.execute(
+            "SELECT COUNT(*) FROM track_sources WHERE kind = 'stream'"
+        ).fetchone()[0]
+        index.close()
+        assert n == 0 and streams == 0
+
+    def test_sync_to_preferred_noop_without_sources(self, tmp_path: Path) -> None:
+        """_sync_tracks_row_to_preferred_source is a no-op for a sourceless track (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES ('/m/n.mp3', 'local')"
+        )
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        index._sync_tracks_row_to_preferred_source(tid)  # must not raise
+        fp = index._conn.execute(
+            "SELECT file_path FROM tracks WHERE id = ?", (tid,)
+        ).fetchone()[0]
+        index.close()
+        assert fp == "/m/n.mp3"  # unchanged
+
+    def test_remove_track_legacy_row_without_source(self, tmp_path: Path) -> None:
+        """A pre-collapse tracks row with no source is removed by file_path (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        fp = tmp_path / "legacy.mp3"
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES (?, 'local')", (str(fp),)
+        )
+        index._conn.commit()
+        index.remove_track(fp)
+        n = index._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        index.close()
+        assert n == 0
+
+    def test_v46_collapse_merges_siblings_and_repoints(self, tmp_path: Path) -> None:
+        """v46 collapses a stream+local sibling pair into one track (KAMP-541)."""
+        import json
+
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        c = index._conn
+        c.execute(
+            "INSERT INTO albums (album_artist, album, source) VALUES ('A','Alb','bandcamp')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sid9')")
+        # Stream row first (lower id), favorite=1 pc=2; local second, pc=5. Under
+        # prefer-file the LOCAL row survives; the playlist/queue point at the stream
+        # (loser) so the repoint is exercised.
+        c.execute(
+            "INSERT INTO tracks (file_path, title, album, album_artist, source,"
+            " album_id, track_number, disc_number, sale_item_id, favorite, play_count)"
+            " VALUES ('bandcamp://sid9/1','T','Alb','A','bandcamp',?,1,1,'sid9',1,2)",
+            (alb,),
+        )
+        stream_id = c.execute(
+            "SELECT id FROM tracks WHERE source='bandcamp'"
+        ).fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, title, album, album_artist, source,"
+            " album_id, track_number, disc_number, sale_item_id, favorite, play_count)"
+            " VALUES ('/m/1.mp3','T','Alb','A','local',?,1,1,'sid9',0,5)",
+            (alb,),
+        )
+        local_id = c.execute("SELECT id FROM tracks WHERE source='local'").fetchone()[0]
+        c.executemany(
+            "INSERT INTO track_sources (track_id, kind, provider, provider_item_id, uri)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [
+                (stream_id, "stream", "bandcamp", "sid9", "bandcamp://sid9/1"),
+                (local_id, "file", "bandcamp", "sid9", "/m/1.mp3"),
+            ],
+        )
+        c.executemany(
+            "INSERT INTO track_stats (track_id, favorite, play_count) VALUES (?, ?, ?)",
+            [(stream_id, 1, 2), (local_id, 0, 5)],
+        )
+        c.execute(
+            "INSERT INTO playlists (title, created_at, updated_at) VALUES ('P',0,0)"
+        )
+        pl = c.execute("SELECT id FROM playlists").fetchone()[0]
+        c.execute(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?,?,0)",
+            (pl, stream_id),
+        )
+        c.execute(
+            "INSERT INTO queue_state (id, tracks, order_json, pos, shuffle, repeat)"
+            " VALUES (1, ?, '[0]', 0, 0, 'off')",
+            (json.dumps([stream_id]),),
+        )
+        c.execute("UPDATE schema_version SET version = 45")
+        c.commit()
+        index.close()
+
+        healed = LibraryIndex(db)  # runs the v46 collapse
+        hc = healed._conn
+        n_tracks = hc.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        surv = hc.execute(
+            "SELECT id, favorite, play_count, file_path FROM tracks"
+        ).fetchone()
+        n_src = hc.execute(
+            "SELECT COUNT(*) FROM track_sources WHERE track_id = ?", (surv["id"],)
+        ).fetchone()[0]
+        st = hc.execute(
+            "SELECT favorite, play_count FROM track_stats WHERE track_id = ?",
+            (surv["id"],),
+        ).fetchone()
+        pl_tid = hc.execute("SELECT track_id FROM playlist_tracks").fetchone()[
+            "track_id"
+        ]
+        q = json.loads(
+            hc.execute("SELECT tracks FROM queue_state WHERE id=1").fetchone()["tracks"]
+        )
+        healed.close()
+
+        assert n_tracks == 1
+        assert surv["id"] == local_id  # prefer-file: the local row survives
+        assert (surv["favorite"], surv["play_count"]) == (1, 5)  # MAX merge
+        assert (st["favorite"], st["play_count"]) == (1, 5)  # track_stats re-derived
+        assert n_src == 2  # both sources re-parented onto the survivor
+        assert surv["file_path"] == "/m/1.mp3"  # realigned to preferred (file) source
+        assert pl_tid == local_id  # playlist repointed loser→survivor
+        assert q == [local_id]  # queue repointed
 
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -1926,7 +2505,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -1983,7 +2562,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -2578,7 +3157,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert row is not None
         assert row[0] == 0
 
@@ -3033,7 +3612,7 @@ class TestFavorite:
         row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -3129,7 +3708,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -3310,7 +3889,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -3405,7 +3984,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 45
+        assert version == 48
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -3413,7 +3992,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 45
+        assert version == 48
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -4290,7 +4869,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 45
+        assert version == 48
 
         index.close()
 
@@ -4981,7 +5560,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 45
+        assert version == 48
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -5016,7 +5595,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 45
+        assert version == 48
         index.close()
 
 
@@ -5531,7 +6110,7 @@ class TestBandcampCollection:
         reopened.close()
 
         assert row["sale_item_id"] == "bf-1"
-        assert version == 45
+        assert version == 48
         assert row2["sale_item_id"] == "bf-1"
 
     def test_reset_collection_sync_state(self, tmp_path: Path) -> None:
@@ -5664,7 +6243,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 45
+        assert version == 48
 
 
 class TestRemoteTrackSchema:
@@ -5998,7 +6577,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -6059,7 +6638,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 45
+        assert version == 48
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -6422,18 +7001,10 @@ class TestAlbumInfoRemoteFields:
         assert albums[0].source == "local"
         assert albums[0].has_remote_tracks is False
 
-    def test_tracks_for_album_excludes_bc_rows_when_local_tracks_exist(
-        self, tmp_path: Path
-    ) -> None:
-        """tracks_for_album returns only local tracks when both exist."""
-        index = LibraryIndex(tmp_path / "library.db")
-        self._insert_bc_tracks(index, "555")
-        self._insert_track(index, tmp_path, "t1.mp3", source="local")
-        tracks = index.tracks_for_album("The Artist", "The Album")
-        index.close()
-
-        assert len(tracks) == 1
-        assert "bandcamp:" not in str(tracks[0].file_path)
+    # (KAMP-541) The old "tracks_for_album excludes bandcamp rows when a local
+    # sibling exists" test is removed: the local-wins filter is gone because the
+    # collapse leaves one canonical row per track. De-dup is covered by the
+    # collapse migration + scan-reconcile tests.
 
     def test_tracks_for_album_returns_bc_rows_when_no_local_tracks(
         self, tmp_path: Path
@@ -6825,7 +7396,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -6928,8 +7499,10 @@ class TestRemoveDownload:
             "UPDATE tracks SET play_count = 7 WHERE file_path = ?",
             (str(tmp_path / "track1.mp3"),),
         )
+        # Post-KAMP-541 the stream+local rows collapse into one canonical track
+        # holding the MAX play_count (track2: stream 5 > local 3 -> 5).
         index._conn.execute(
-            "UPDATE tracks SET play_count = 3 WHERE file_path = ?",
+            "UPDATE tracks SET play_count = 5 WHERE file_path = ?",
             (str(tmp_path / "track2.mp3"),),
         )
         index._conn.commit()
@@ -7060,15 +7633,19 @@ class TestRemoveDownload:
     def test_remove_download_preserves_existing_streaming_favorite(
         self, tmp_path: Path
     ) -> None:
-        """Favorite already set on the streaming row is kept even if local is unfavorited."""
+        """A favorite on the canonical track is kept when the download is removed."""
         index = self._setup_downloaded_album(tmp_path)
+        # Post-KAMP-541 there is one canonical track (file_path = local path until
+        # the download is removed); favorite it there.
         index._conn.execute(
-            "UPDATE tracks SET favorite = 1 WHERE file_path = 'bandcamp://sid42/2'"
+            "UPDATE tracks SET favorite = 1 WHERE file_path = ?",
+            (str(tmp_path / "track2.mp3"),),
         )
         index._conn.commit()
 
         index.remove_download("sid42")
 
+        # After removal the track reverts to its stream source (file_path).
         row = index._conn.execute(
             "SELECT favorite FROM tracks WHERE file_path = 'bandcamp://sid42/2'"
         ).fetchone()
@@ -7218,13 +7795,10 @@ class TestRemoveDownload:
     def test_materialize_stream_tracks_attaches_to_existing_album(
         self, tmp_path: Path
     ) -> None:
-        """Materialized stream rows link by identity to the existing album row
-        (no fork) so remove_download can then migrate + revert cleanly.
+        """Materialize attaches a stream source to each existing canonical track
+        (no fork, no duplicate album) so remove_download can then revert cleanly (KAMP-541).
         """
         index = self._setup_download_only_album(tmp_path)
-        album_id = index._conn.execute(
-            "SELECT id FROM albums WHERE sale_item_id = 'sid99'"
-        ).fetchone()["id"]
 
         s1 = _sample_track(Path("bandcamp://sid99/1"))
         s1.track_number = 1
@@ -7234,20 +7808,17 @@ class TestRemoveDownload:
         s2.source = "bandcamp"
         n = index.materialize_stream_tracks("sid99", [s1, s2])
 
-        # No duplicate album row, and the stream rows joined the existing album.
         album_count = index._conn.execute(
             "SELECT COUNT(*) AS n FROM albums WHERE sale_item_id = 'sid99'"
         ).fetchone()["n"]
-        stream_album_ids = [
-            r["album_id"]
-            for r in index._conn.execute(
-                "SELECT album_id FROM tracks WHERE file_path LIKE 'bandcamp://sid99/%'"
-            ).fetchall()
-        ]
+        stream_srcs = index._conn.execute(
+            "SELECT COUNT(*) FROM track_sources WHERE kind = 'stream'"
+        ).fetchone()[0]
         index.close()
         assert n == 2
         assert album_count == 1
-        assert stream_album_ids == [album_id, album_id]
+        # Attached as sources of the two existing canonical tracks, not as rows.
+        assert stream_srcs == 2
 
     def test_remove_download_succeeds_after_materialize(self, tmp_path: Path) -> None:
         """End-to-end: materialize then remove_download reverts to streaming."""
@@ -7384,7 +7955,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -7462,7 +8033,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -7668,7 +8239,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -8017,7 +8588,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -8114,7 +8685,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -8230,7 +8801,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -8735,7 +9306,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -8850,7 +9421,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -8948,7 +9519,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -9048,7 +9619,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -9555,7 +10126,7 @@ class TestMagicPlaylists:
         fetched = index.get_magic_playlist_criteria(playlist_id)
         index.close()
 
-        assert version == 45
+        assert version == 48
         assert fetched == criteria
 
     # ------------------------------------------------------------------
@@ -10399,7 +10970,7 @@ class TestMigrationV38:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 45
+        assert version == 48
         assert "release_date" in cols
         assert "year" not in cols
 
@@ -11324,11 +11895,13 @@ class TestLooseSingleAttach:
         touched = index._attach_loose_local_singles()
         assert touched == set()
         assert self._album_id_of(index, tmp_path / "celebrity.flac") == first
+        # Post-KAMP-541 the loose local single and its stream twin collapse into
+        # one canonical track (file + stream sources), so the album holds 1 row.
         assert (
             index._conn.execute(
                 "SELECT COUNT(*) FROM tracks WHERE album_id = ?", (first,)
             ).fetchone()[0]
-            == 2
+            == 1
         )
         index.close()
 
@@ -11368,7 +11941,7 @@ class TestLooseSingleAttach:
         cards = [a for a in reopened.albums() if a.album == "Celebrity"]
         reopened.close()
 
-        assert version == 45
+        assert version == 48
         assert row["album_id"] == stream_album
         assert row["track_number"] == 1
         # The heal took a backup snapshot before mutating.
@@ -11388,7 +11961,7 @@ class TestLooseSingleAttach:
             0
         ]
         index.close()
-        assert version == 45
+        assert version == 48
         assert not list(tmp_path.glob("library.db.bak-*"))
 
     def test_v43_migration_restamps_attached_but_unstamped_single(
@@ -11430,7 +12003,7 @@ class TestLooseSingleAttach:
         cards = [a for a in reopened.albums() if a.album == "Celebrity"]
         reopened.close()
 
-        assert version == 45
+        assert version == 48
         assert stamped == "Celebrity"
         # No duplicate loose card, and the album now reads as owned.
         assert len(cards) == 1

@@ -75,19 +75,41 @@ def resolve_playback_uri(
 
     A brief validation delay is far better than silently skipping a track.
     """
-    if not track.is_remote:
-        return track.playback_uri
+    # Resolve the preferred delivery via track_sources (KAMP-541): a collapsed
+    # track has both a file and a stream source, and the preferred-source rule
+    # picks the local file when present/available and falls through to the stream
+    # otherwise. On the pre-collapse DB each track has exactly one source, so this
+    # is behaviour-neutral. A track with no source row (pre-KAMP-540 / a synthetic
+    # queue-restore stub) falls back to the legacy Track columns.
+    _src = index.preferred_source(track.id) if track.id else None
+    _cached_url: str | None
+    _cached_expires: float | None
+    _source_id: int | None
+    if _src is not None:
+        _kind = str(_src["kind"])
+        _src_uri = str(_src["uri"])
+        _cached_url = _src["stream_url"]
+        _cached_expires = _src["stream_url_expires_at"]
+        _source_id = int(_src["id"])
+    else:
+        _kind = "stream" if track.is_remote else "file"
+        _src_uri = str(track.file_path)
+        _cached_url = track.stream_url
+        _cached_expires = track.stream_url_expires_at
+        _source_id = None
+
+    if _kind == "file":
+        return _src_uri
 
     import time as _t
 
     _now = _t.time()
 
-    # Parse bandcamp://sale_id/track_num upfront — needed by both the
+    # Parse bandcamp://sale_id/track_num from the source uri — needed by both the
     # proactive-expiry path and the HEAD-triggered forced-refresh path.
     # Path() mutates the URI differently per platform (POSIX collapses //,
     # Windows converts to \\), so split on the scheme literal instead.
-    _fp = str(track.file_path)
-    _after_scheme = _fp.split("bandcamp:", 1)
+    _after_scheme = _src_uri.split("bandcamp:", 1)
     _canonical_fp: str | None = None
     _album_url: str = ""
     _track_num: int = 0
@@ -122,7 +144,12 @@ def resolve_playback_uri(
         result = refresh_stream_url(_album_url, _track_num)
         if result is not None:
             new_url, expires_at = result
-            index.update_stream_url(_canonical_fp, new_url, expires_at)
+            # Persist onto the source row when we resolved one, else the legacy
+            # tracks column (pre-KAMP-540 fallback).
+            if _source_id is not None:
+                index.update_stream_url_for_source(_source_id, new_url, expires_at)
+            else:
+                index.update_stream_url(_canonical_fp, new_url, expires_at)
             logger.info(
                 "resolve_playback_uri: stream URL refreshed for %s "
                 "(new expires_at=%.0f)",
@@ -137,19 +164,17 @@ def resolve_playback_uri(
         return None
 
     # Step 1 — proactive refresh when the cached URL is near or past expiry.
-    url = track.playback_uri
-    needs_refresh = (
-        track.stream_url_expires_at is None or track.stream_url_expires_at < _now + 60
-    )
+    url = _cached_url or _src_uri
+    needs_refresh = _cached_expires is None or _cached_expires < _now + 60
     if needs_refresh:
-        refreshed = _do_refresh(f"expires_at={track.stream_url_expires_at}")
+        refreshed = _do_refresh(f"expires_at={_cached_expires}")
         if refreshed is not None:
             url = refreshed
     else:
         logger.debug(
             "resolve_playback_uri: cached stream URL for %s (expires in %.0fs)",
-            track.file_path,
-            (track.stream_url_expires_at or 0) - _now,
+            _canonical_fp or _src_uri,
+            (_cached_expires or 0) - _now,
         )
 
     # Step 2 — HEAD request to verify the URL is live before handing to mpv.
@@ -3062,17 +3087,17 @@ def create_app(
         # fails, or Bandcamp has no streamable version), abort with 422 and
         # delete nothing; remove_download's own per-track guard is the final
         # safety net that still refuses to strand any local track.
-        if not index.has_remote_album_tracks(sale_item_id):
+        # KAMP-541: a downloaded track keeps its stream as a track_sources row, so
+        # "has a stream to fall back to" is a source check. When some track lacks
+        # one (download-mode album never streamed), materialize the stream sources
+        # on demand (a network call) before removing; if that fails, abort with 422.
+        if not index.all_downloads_streamable(sale_item_id):
             _materialize_stream_tracks_or_422(index, item, get_bandcamp_session)
 
-        # Swap every local track in the queue to its streaming equivalent so
-        # that on restart the queue can be fully restored from the DB.  Without
-        # this, only the swapped current/next entries survive; all other queue
-        # positions point at local paths that no longer exist after deletion.
-        for local_track in local_tracks:
-            streaming = index.streaming_track_for_local_id(local_track.id)
-            if streaming is not None:
-                queue.update_track_by_id(local_track.id, streaming)
+        # No queue swap needed (KAMP-541 + queue-by-id): the canonical track
+        # survives the removal — its file source is dropped and it reverts to its
+        # stream source with the SAME track id — so the id-keyed queue entries
+        # stay valid across a restart.
 
         if locked:
             # Current track's file is loaded in mpv — unload it so the handle

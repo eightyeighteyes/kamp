@@ -2938,6 +2938,39 @@ class LibraryIndex:
         )
         self._conn.commit()
 
+    def preferred_source(self, track_id: int) -> "sqlite3.Row | None":
+        """Return the preferred track_sources row for playback (KAMP-541, design §3).
+
+        Prefers an available source, then a local file over a stream, then the
+        lowest source id. None if the track has no source rows (shouldn't happen
+        after KAMP-540; callers fall back to the legacy Track columns). Once a
+        collapsed track has both a file and a stream source, this selects the
+        local file when it is available and falls through to the stream when the
+        file is not (e.g. an unmounted drive) — availability is the primary key so
+        the fallback actually happens (design §3; note the §3 draft listed
+        kind before is_available, which would never fall through).
+        """
+        row = self._conn.execute(
+            "SELECT id, kind, provider, provider_item_id, uri, ext, duration,"
+            " is_available, stream_url, stream_url_expires_at"
+            " FROM track_sources WHERE track_id = ?"
+            " ORDER BY is_available DESC, (kind = 'file') DESC, id"
+            " LIMIT 1",
+            (track_id,),
+        ).fetchone()
+        return row  # type: ignore[no-any-return]
+
+    def update_stream_url_for_source(
+        self, source_id: int, stream_url: str, expires_at: float
+    ) -> None:
+        """Persist a refreshed CDN stream URL onto a track_sources row (KAMP-541)."""
+        self._conn.execute(
+            "UPDATE track_sources SET stream_url = ?, stream_url_expires_at = ?"
+            " WHERE id = ?",
+            (stream_url, expires_at, source_id),
+        )
+        self._conn.commit()
+
     def update_track_display_title(
         self, track_id: int, display_title: str | None
     ) -> "Track | None":

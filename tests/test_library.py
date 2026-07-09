@@ -393,6 +393,34 @@ class TestLibraryIndex:
         assert src["duration"] == 99.0  # source refreshed
         assert fav == 1  # stats preserved across the re-scan (INSERT OR IGNORE)
 
+    def test_preferred_source_prefers_file_then_available(self, tmp_path: Path) -> None:
+        """preferred_source picks a local file, falling through to a stream (KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index._conn.execute(
+            "INSERT INTO tracks (file_path, source) VALUES ('canon', 'bandcamp')"
+        )
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        index._conn.executemany(
+            "INSERT INTO track_sources (track_id, kind, uri, is_available)"
+            " VALUES (?, ?, ?, ?)",
+            [
+                (tid, "stream", "bandcamp://9/1", 1),
+                (tid, "file", "/m/a.mp3", 1),
+            ],
+        )
+        index._conn.commit()
+
+        assert index.preferred_source(tid)["kind"] == "file"  # file wins
+        # An unavailable file falls through to the stream.
+        index._conn.execute(
+            "UPDATE track_sources SET is_available = 0 WHERE kind = 'file'"
+        )
+        index._conn.commit()
+        pref = index.preferred_source(tid)
+        index.close()
+        assert pref["kind"] == "stream"
+        assert pref["uri"] == "bandcamp://9/1"
+
     def test_upsert_adds_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         index.upsert_track(_sample_track(tmp_path / "01.mp3"))

@@ -16,7 +16,8 @@ const QUEUE_WIDTH_KEY = 'kamp:queue-width'
 const QUEUE_WIDTH_DEFAULT = 280
 
 const QUEUE_DROP_TYPES = new Set([
-  'text/kamp-track-path',
+  'text/kamp-track-id',
+  'text/kamp-track-ids',
   'text/kamp-file-paths',
   'text/kamp-album',
   'text/kamp-artist',
@@ -437,7 +438,7 @@ export function QueuePanel(): React.JSX.Element {
     listRef.current?.classList.remove('queue-tail-drop')
     const multiJson = e.dataTransfer.getData('text/kamp-queue-multi')
     const queueIdx = e.dataTransfer.getData('text/kamp-queue-idx')
-    const trackPath = e.dataTransfer.getData('text/kamp-track-path')
+    const trackId = e.dataTransfer.getData('text/kamp-track-id')
     const albumJson = e.dataTransfer.getData('text/kamp-album')
     if (multiJson !== '') {
       const sorted: number[] = JSON.parse(multiJson)
@@ -449,13 +450,25 @@ export function QueuePanel(): React.JSX.Element {
       // already-corrected permutation and sidesteps that off-by-one.
       const from = Number(queueIdx)
       void reorderQueue(computeNewOrder(tracks.length, [from], dropIdx))
-    } else if (trackPath) {
-      void insertIntoQueue(trackPath, dropIdx)
+    } else if (trackId !== '') {
+      void insertIntoQueue({ id: Number(trackId) }, dropIdx)
+    } else if (e.dataTransfer.getData('text/kamp-track-ids')) {
+      try {
+        const ids: number[] = JSON.parse(e.dataTransfer.getData('text/kamp-track-ids'))
+        void (async () => {
+          for (let i = 0; i < ids.length; i++) await insertIntoQueue({ id: ids[i] }, dropIdx + i)
+        })()
+      } catch {
+        // malformed — ignore
+      }
     } else if (e.dataTransfer.getData('text/kamp-file-paths')) {
+      // Album-granularity drag (AlbumCard) still carries file paths — no per-track
+      // ids are loaded on the card. Path fallback until KAMP-539 (album migration).
       try {
         const paths: string[] = JSON.parse(e.dataTransfer.getData('text/kamp-file-paths'))
         void (async () => {
-          for (let i = 0; i < paths.length; i++) await insertIntoQueue(paths[i], dropIdx + i)
+          for (let i = 0; i < paths.length; i++)
+            await insertIntoQueue({ filePath: paths[i] }, dropIdx + i)
         })()
       } catch {
         // malformed — ignore
@@ -487,8 +500,8 @@ export function QueuePanel(): React.JSX.Element {
       if (playlistIdStr) {
         void (async () => {
           await loadPlaylistTracks(Number(playlistIdStr))
-          const paths = useStore.getState().library.playlistTracks.map((t) => t.file_path)
-          for (let i = 0; i < paths.length; i++) await insertIntoQueue(paths[i], dropIdx + i)
+          const ids = useStore.getState().library.playlistTracks.map((t) => t.id)
+          for (let i = 0; i < ids.length; i++) await insertIntoQueue({ id: ids[i] }, dropIdx + i)
         })()
       }
     }
@@ -500,7 +513,7 @@ export function QueuePanel(): React.JSX.Element {
     e.currentTarget.classList.remove('queue-tail-drop')
     const multiJson = e.dataTransfer.getData('text/kamp-queue-multi')
     const queueIdx = e.dataTransfer.getData('text/kamp-queue-idx')
-    const trackPath = e.dataTransfer.getData('text/kamp-track-path')
+    const trackId = e.dataTransfer.getData('text/kamp-track-id')
     const albumJson = e.dataTransfer.getData('text/kamp-album')
     if (multiJson !== '') {
       const sorted: number[] = JSON.parse(multiJson)
@@ -510,13 +523,23 @@ export function QueuePanel(): React.JSX.Element {
       const from = Number(queueIdx)
       const last = tracks.length - 1
       if (from !== last) void moveQueueTrack(from, last)
-    } else if (trackPath) {
-      void addToQueue(trackPath)
+    } else if (trackId !== '') {
+      void addToQueue({ id: Number(trackId) })
+    } else if (e.dataTransfer.getData('text/kamp-track-ids')) {
+      try {
+        const ids: number[] = JSON.parse(e.dataTransfer.getData('text/kamp-track-ids'))
+        void (async () => {
+          for (const id of ids) await addToQueue({ id })
+        })()
+      } catch {
+        // malformed — ignore
+      }
     } else if (e.dataTransfer.getData('text/kamp-file-paths')) {
+      // Album-granularity drag (AlbumCard) — path fallback until KAMP-539.
       try {
         const paths: string[] = JSON.parse(e.dataTransfer.getData('text/kamp-file-paths'))
         void (async () => {
-          for (const p of paths) await addToQueue(p)
+          for (const p of paths) await addToQueue({ filePath: p })
         })()
       } catch {
         // malformed — ignore
@@ -548,8 +571,8 @@ export function QueuePanel(): React.JSX.Element {
       if (playlistIdStr) {
         void (async () => {
           await loadPlaylistTracks(Number(playlistIdStr))
-          const paths = useStore.getState().library.playlistTracks.map((t) => t.file_path)
-          for (const p of paths) await addToQueue(p)
+          const ids = useStore.getState().library.playlistTracks.map((t) => t.id)
+          for (const id of ids) await addToQueue({ id })
         })()
       }
     }
@@ -777,10 +800,10 @@ export function QueuePanel(): React.JSX.Element {
             e.preventDefault()
           }}
           onDrop={(e) => {
-            const trackPath = e.dataTransfer.getData('text/kamp-track-path')
+            const trackId = e.dataTransfer.getData('text/kamp-track-id')
             const albumJson = e.dataTransfer.getData('text/kamp-album')
-            if (trackPath) {
-              void addToQueue(trackPath)
+            if (trackId !== '') {
+              void addToQueue({ id: Number(trackId) })
             } else if (albumJson) {
               try {
                 const {

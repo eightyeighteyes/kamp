@@ -33,8 +33,8 @@ export function PlaylistContextMenu({ x, y, playlist, onClose }: Props): React.J
           onClose()
           void (async () => {
             await loadPlaylistTracks(playlist.id)
-            const paths = useStore.getState().library.playlistTracks.map((t) => t.file_path)
-            for (let i = paths.length - 1; i >= 0; i--) await playNext(paths[i])
+            const ids = useStore.getState().library.playlistTracks.map((t) => t.id)
+            for (let i = ids.length - 1; i >= 0; i--) await playNext({ id: ids[i] })
           })()
         }}
       >
@@ -49,8 +49,8 @@ export function PlaylistContextMenu({ x, y, playlist, onClose }: Props): React.J
           onClose()
           void (async () => {
             await loadPlaylistTracks(playlist.id)
-            const paths = useStore.getState().library.playlistTracks.map((t) => t.file_path)
-            for (const p of paths) await addToQueue(p)
+            const ids = useStore.getState().library.playlistTracks.map((t) => t.id)
+            for (const id of ids) await addToQueue({ id })
           })()
         }}
       >

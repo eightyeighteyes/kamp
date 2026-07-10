@@ -440,13 +440,13 @@ export function PlaylistView(): React.JSX.Element | null {
     if (playlistTracks.length === 0) return
     void (async () => {
       for (let i = playlistTracks.length - 1; i >= 0; i--) {
-        await playNext(playlistTracks[i].file_path)
+        await playNext({ id: playlistTracks[i].id })
       }
     })()
   }
 
   const isCurrentPlaylist =
-    currentTrack !== null && playlistTracks.some((t) => t.file_path === currentTrack.file_path)
+    currentTrack !== null && playlistTracks.some((t) => t.id === currentTrack.id)
 
   // If a playlist track is already in the queue: couple to transport (pause/resume).
   // Otherwise: replace the queue with this playlist's tracks and start playing.
@@ -462,7 +462,7 @@ export function PlaylistView(): React.JSX.Element | null {
   const handleAddToQueue = (): void => {
     void (async () => {
       for (const t of playlistTracks) {
-        await addToQueue(t.file_path)
+        await addToQueue({ id: t.id })
       }
     })()
   }
@@ -506,8 +506,8 @@ export function PlaylistView(): React.JSX.Element | null {
     const isMulti = selectedIndices.has(idx) && selectedIndices.size > 1
     if (isMulti) {
       const sorted = [...selectedIndices].sort((a, b) => a - b)
-      const paths = sorted.map((i) => displayTracks[i].file_path)
-      e.dataTransfer.setData('text/kamp-file-paths', JSON.stringify(paths))
+      const ids = sorted.map((i) => displayTracks[i].id)
+      e.dataTransfer.setData('text/kamp-track-ids', JSON.stringify(ids))
       if (isDragEnabled) {
         e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
         e.dataTransfer.setData('text/kamp-playlist-multi', JSON.stringify(sorted))
@@ -522,7 +522,7 @@ export function PlaylistView(): React.JSX.Element | null {
     } else {
       setSelectedIndices(new Set())
       setAnchorIdx(null)
-      e.dataTransfer.setData('text/kamp-track-path', displayTracks[idx].file_path)
+      e.dataTransfer.setData('text/kamp-track-id', String(displayTracks[idx].id))
       if (isDragEnabled) {
         e.dataTransfer.setData('text/kamp-playlist-track-idx', String(idx))
       }
@@ -767,7 +767,7 @@ export function PlaylistView(): React.JSX.Element | null {
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const i = virtualRow.index
               const track = displayTracks[i]
-              const isCurrent = currentTrack?.file_path === track.file_path
+              const isCurrent = currentTrack?.id === track.id
               const isRemote = track.source !== 'local'
               const isOffline = isRemote && !connected
               const isSelected = selectedIndices.has(i)

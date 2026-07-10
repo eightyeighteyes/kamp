@@ -128,7 +128,7 @@ export function TrackContextMenu({
             onClick={() => {
               onClose()
               void (async () => {
-                for (let i = targets.length - 1; i >= 0; i--) await playNext(targets[i].file_path)
+                for (let i = targets.length - 1; i >= 0; i--) await playNext({ id: targets[i].id })
               })()
             }}
           >
@@ -149,7 +149,7 @@ export function TrackContextMenu({
             onClick={() => {
               onClose()
               void (async () => {
-                for (const t of targets) await addToQueue(t.file_path)
+                for (const t of targets) await addToQueue({ id: t.id })
               })()
             }}
           >

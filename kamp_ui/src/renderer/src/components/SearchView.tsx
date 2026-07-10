@@ -43,7 +43,7 @@ function SearchTrackRow({
       onKeyDown={(e) => e.key === 'Enter' && handleClick()}
       onContextMenu={(e) => onContextMenu(e, track)}
       onDragStart={(e) => {
-        e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+        e.dataTransfer.setData('text/kamp-track-id', String(track.id))
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >

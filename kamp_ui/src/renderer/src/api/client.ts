@@ -473,12 +473,19 @@ export const insertAlbumAt = (
     index,
     file_path: filePath
   })
-export const addToQueue = (filePath: string): Promise<unknown> =>
-  post('/api/v1/player/queue/add', { file_path: filePath })
-export const insertIntoQueue = (filePath: string, index: number): Promise<unknown> =>
-  post('/api/v1/player/queue/insert', { file_path: filePath, index })
-export const playNext = (filePath: string): Promise<unknown> =>
-  post('/api/v1/player/queue/play-next', { file_path: filePath })
+// KAMP-538: a track is addressed by its canonical id. A file_path fallback
+// remains only for album-granularity drags whose per-track ids are not loaded
+// (removed with the rest of file_path in KAMP-539). id wins server-side.
+export type TrackRef = { id: number } | { filePath: string }
+const trackRefBody = (ref: TrackRef): Record<string, unknown> =>
+  'id' in ref ? { id: ref.id } : { file_path: ref.filePath }
+
+export const addToQueue = (ref: TrackRef): Promise<unknown> =>
+  post('/api/v1/player/queue/add', trackRefBody(ref))
+export const insertIntoQueue = (ref: TrackRef, index: number): Promise<unknown> =>
+  post('/api/v1/player/queue/insert', { ...trackRefBody(ref), index })
+export const playNext = (ref: TrackRef): Promise<unknown> =>
+  post('/api/v1/player/queue/play-next', trackRefBody(ref))
 export const moveQueueTrack = (fromIndex: number, toIndex: number): Promise<unknown> =>
   post('/api/v1/player/queue/move', { from_index: fromIndex, to_index: toIndex })
 export const reorderQueue = (order: number[]): Promise<unknown> =>

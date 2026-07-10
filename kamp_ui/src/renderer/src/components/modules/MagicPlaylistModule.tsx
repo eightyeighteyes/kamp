@@ -269,7 +269,7 @@ function MagicTrackCard({ track }: { track: PlaylistTrack }): React.JSX.Element 
         setMenu({ x: e.clientX, y: e.clientY, track })
       }}
       onDragStart={(e) => {
-        e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+        e.dataTransfer.setData('text/kamp-track-id', String(track.id))
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >
@@ -320,7 +320,7 @@ function MagicTrackListRow({ track }: { track: PlaylistTrack }): React.JSX.Eleme
         setMenu({ x: e.clientX, y: e.clientY, track })
       }}
       onDragStart={(e) => {
-        e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+        e.dataTransfer.setData('text/kamp-track-id', String(track.id))
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >

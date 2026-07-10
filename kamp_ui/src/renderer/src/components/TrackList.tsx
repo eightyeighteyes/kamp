@@ -390,8 +390,8 @@ export function TrackList(): React.JSX.Element | null {
     const isMulti = selectedIndices.has(idx) && selectedIndices.size > 1
     if (isMulti) {
       const sorted = [...selectedIndices].sort((a, b) => a - b)
-      const paths = sorted.map((i) => tracks[i].file_path)
-      e.dataTransfer.setData('text/kamp-file-paths', JSON.stringify(paths))
+      const ids = sorted.map((i) => tracks[i].id)
+      e.dataTransfer.setData('text/kamp-track-ids', JSON.stringify(ids))
       const ghost = document.createElement('div')
       ghost.textContent = `${sorted.length} tracks`
       ghost.style.cssText =
@@ -400,7 +400,7 @@ export function TrackList(): React.JSX.Element | null {
       e.dataTransfer.setDragImage(ghost, 0, 0)
       requestAnimationFrame(() => document.body.removeChild(ghost))
     } else {
-      e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+      e.dataTransfer.setData('text/kamp-track-id', String(track.id))
     }
     e.dataTransfer.effectAllowed = 'copy'
   }

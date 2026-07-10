@@ -225,9 +225,9 @@ type PlayerStore = {
     index: number,
     filePath?: string
   ) => Promise<void>
-  addToQueue: (filePath: string) => Promise<void>
-  insertIntoQueue: (filePath: string, index: number) => Promise<void>
-  playNext: (filePath: string) => Promise<void>
+  addToQueue: (ref: api.TrackRef) => Promise<void>
+  insertIntoQueue: (ref: api.TrackRef, index: number) => Promise<void>
+  playNext: (ref: api.TrackRef) => Promise<void>
   moveQueueTrack: (fromIndex: number, toIndex: number) => Promise<void>
   reorderQueue: (order: number[]) => Promise<void>
   skipToQueueTrack: (position: number) => Promise<void>
@@ -1073,18 +1073,18 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void get().loadQueue()
   },
 
-  addToQueue: async (filePath) => {
-    await api.addToQueue(filePath)
+  addToQueue: async (ref) => {
+    await api.addToQueue(ref)
     void get().loadQueue()
   },
 
-  insertIntoQueue: async (filePath, index) => {
-    await api.insertIntoQueue(filePath, index)
+  insertIntoQueue: async (ref, index) => {
+    await api.insertIntoQueue(ref, index)
     void get().loadQueue()
   },
 
-  playNext: async (filePath) => {
-    await api.playNext(filePath)
+  playNext: async (ref) => {
+    await api.playNext(ref)
     void get().loadQueue()
   },
 

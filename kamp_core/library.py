@@ -622,6 +622,10 @@ class AlbumInfo:
     album_url: str = ""
     # Stable integer PK of the albums row; 0 for missing-album virtual entries.
     album_id: int = field(default=0, compare=False)
+    # For a missing-album virtual entry (missing_album=True), the canonical id of
+    # its single track — the stable key the API/UI should use instead of file_path
+    # (KAMP-537). None for real albums.
+    missing_track_id: int | None = field(default=None, compare=False)
     # User-set display overrides for streaming albums (KAMP-467). None means
     # no override; the canonical album/album_artist is the authoritative value.
     display_album: str | None = None
@@ -5106,6 +5110,7 @@ class LibraryIndex:
         rows = self._conn.execute(f"""
             SELECT
                 a.id                AS album_id,
+                NULL                AS missing_track_id,
                 a.album_artist,
                 a.album,
                 a.release_date,
@@ -5150,6 +5155,7 @@ class LibraryIndex:
             -- virtual entry; file_path is the unique identifier for these entries.
             SELECT
                 0                   AS album_id,
+                t.id                AS missing_track_id,
                 t.album_artist,
                 t.title             AS album,
                 t.release_date,
@@ -5180,6 +5186,7 @@ class LibraryIndex:
         return [
             AlbumInfo(
                 album_id=r["album_id"],
+                missing_track_id=r["missing_track_id"],
                 album_artist=r["album_artist"],
                 album=r["album"],
                 release_date=r["release_date"],

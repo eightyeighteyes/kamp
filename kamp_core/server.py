@@ -324,6 +324,9 @@ class AlbumOut(BaseModel):
     # Non-empty only when missing_album=True; used as the unique lookup key
     # instead of (album_artist, album) for tracks without an album tag.
     file_path: str = ""
+    # KAMP-537: for a missing-album card, the canonical id of its single track —
+    # the stable key to use instead of file_path. None for real albums.
+    track_id: int | None = None
     # MAX(file_mtime) across the album's tracks — appended to art URLs as ?v=
     # so the browser caches images by URL and only re-fetches when files change.
     art_version: float | None = None
@@ -370,6 +373,7 @@ class PlayRequest(BaseModel):
     album: str
     track_index: int = 0
     file_path: str = ""  # non-empty for missing-album tracks
+    id: int | None = None  # KAMP-537: missing-album track id, preferred over file_path
 
 
 class PlayPlaylistRequest(BaseModel):
@@ -499,6 +503,7 @@ class AlbumQueueRequest(BaseModel):
     album_artist: str
     album: str
     file_path: str = ""  # non-empty for missing-album tracks
+    id: int | None = None  # KAMP-537: missing-album track id, preferred over file_path
 
 
 class InsertAlbumQueueRequest(BaseModel):
@@ -506,6 +511,7 @@ class InsertAlbumQueueRequest(BaseModel):
     album: str
     index: int
     file_path: str = ""  # non-empty for missing-album tracks
+    id: int | None = None  # KAMP-537: missing-album track id, preferred over file_path
 
 
 class RemoveFromQueueRequest(BaseModel):
@@ -1313,6 +1319,7 @@ def create_app(
                 has_art=a.has_art,
                 missing_album=a.missing_album,
                 file_path=a.file_path,
+                track_id=a.missing_track_id,
                 art_version=a.art_version,
                 added_at=a.added_at,
                 last_played_at=a.last_played_at,
@@ -2409,6 +2416,7 @@ def create_app(
                     has_art=a.has_art,
                     missing_album=a.missing_album,
                     file_path=a.file_path,
+                    track_id=a.missing_track_id,
                     art_version=a.art_version,
                     added_at=a.added_at,
                     last_played_at=a.last_played_at,
@@ -2539,6 +2547,7 @@ def create_app(
                     has_art=a.has_art,
                     missing_album=a.missing_album,
                     file_path=a.file_path,
+                    track_id=a.missing_track_id,
                     art_version=a.art_version,
                     added_at=a.added_at,
                     last_played_at=a.last_played_at,
@@ -2699,6 +2708,7 @@ def create_app(
                 has_art=a.has_art,
                 missing_album=a.missing_album,
                 file_path=a.file_path,
+                track_id=a.missing_track_id,
                 art_version=a.art_version,
                 added_at=a.added_at,
                 last_played_at=a.last_played_at,
@@ -3264,7 +3274,10 @@ def create_app(
     def play(req: PlayRequest) -> dict[str, Any]:
         old_current = queue.current()
         old_lookahead = queue.peek_next()
-        if req.file_path and _is_remote_uri(req.file_path):
+        if req.id is not None:  # KAMP-537: missing-album track id, preferred
+            track = index.get_track_by_id(req.id)
+            tracks = [track] if track else []
+        elif req.file_path and _is_remote_uri(req.file_path):
             track = index.get_track_by_path(req.file_path)
             tracks = [track] if track else []
         elif req.file_path:
@@ -3499,7 +3512,10 @@ def create_app(
 
     @app.post("/api/v1/player/queue/add-album")
     def queue_add_album(req: AlbumQueueRequest) -> dict[str, Any]:
-        if req.file_path:
+        if req.id is not None:  # KAMP-537: missing-album track id, preferred
+            track = index.get_track_by_id(req.id)
+            tracks = [track] if track else []
+        elif req.file_path:
             p = _validate_library_path(req.file_path, _state["library_path"])
             track = index.get_track_by_path(p)
             tracks = [track] if track else []
@@ -3549,7 +3565,10 @@ def create_app(
 
     @app.post("/api/v1/player/queue/insert-album")
     def queue_insert_album(req: InsertAlbumQueueRequest) -> dict[str, Any]:
-        if req.file_path:
+        if req.id is not None:  # KAMP-537: missing-album track id, preferred
+            track = index.get_track_by_id(req.id)
+            tracks = [track] if track else []
+        elif req.file_path:
             track = index.get_track_by_path(Path(req.file_path))
             tracks = [track] if track else []
         else:

@@ -1256,6 +1256,8 @@ class TestLibraryIndex:
         assert albums[0].missing_album is True
         assert albums[0].album == "Standalone Track"  # title used as display name
         assert albums[0].file_path == str(tmp_path / "standalone.mp3")
+        # KAMP-537: the entry carries its single track's canonical id.
+        assert albums[0].missing_track_id is not None and albums[0].missing_track_id > 0
 
     def test_two_missing_album_tracks_each_get_own_entry(self, tmp_path: Path) -> None:
         """Each track without an album tag should be its own entry, not grouped."""

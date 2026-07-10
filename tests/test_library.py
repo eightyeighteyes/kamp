@@ -354,8 +354,9 @@ class TestLibraryIndex:
         assert version == 48
         assert n_src == 0
 
-    def test_dual_write_mirrors_stats_to_track_stats(self, tmp_path: Path) -> None:
-        """set_favorite/record_played/record_track_started mirror into track_stats (KAMP-540)."""
+    def test_stats_write_to_track_stats_only(self, tmp_path: Path) -> None:
+        """set_favorite/record_played/record_track_started write track_stats, now the
+        sole store — the legacy tracks stat columns are no longer written (KAMP-539)."""
         index = LibraryIndex(tmp_path / "library.db")
         fp = tmp_path / "s.mp3"
         index.upsert_many([_sample_track(fp)])
@@ -370,15 +371,11 @@ class TestLibraryIndex:
             " JOIN tracks t ON t.id = st.track_id WHERE t.file_path = ?",
             (key,),
         ).fetchone()
-        tr = index._conn.execute(
-            "SELECT favorite, play_count, last_played FROM tracks WHERE file_path = ?",
-            (key,),
-        ).fetchone()
         index.close()
 
-        assert st["favorite"] == 1 == tr["favorite"]
-        assert st["play_count"] == 2 == tr["play_count"]
-        assert st["last_played"] == tr["last_played"] and st["last_played"] is not None
+        assert st["favorite"] == 1
+        assert st["play_count"] == 2
+        assert st["last_played"] is not None
 
     def test_upsert_maintains_children_without_resetting_stats(
         self, tmp_path: Path
@@ -774,7 +771,8 @@ class TestLibraryIndex:
         healed = LibraryIndex(db)  # runs the v47 heal
         hc = healed._conn
         t = hc.execute(
-            "SELECT embedded_art, file_mtime, source, file_path FROM tracks WHERE id=?",
+            "SELECT embedded_art, file_mtime, source, file_path"
+            " FROM tracks_with_stats WHERE id=?",
             (tid,),
         ).fetchone()
         a_art = hc.execute(
@@ -1056,9 +1054,7 @@ class TestLibraryIndex:
         healed = LibraryIndex(db)  # runs the v46 collapse
         hc = healed._conn
         n_tracks = hc.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
-        surv = hc.execute(
-            "SELECT id, favorite, play_count, file_path FROM tracks"
-        ).fetchone()
+        surv = hc.execute("SELECT id, file_path FROM tracks").fetchone()
         n_src = hc.execute(
             "SELECT COUNT(*) FROM track_sources WHERE track_id = ?", (surv["id"],)
         ).fetchone()[0]
@@ -1076,8 +1072,7 @@ class TestLibraryIndex:
 
         assert n_tracks == 1
         assert surv["id"] == local_id  # prefer-file: the local row survives
-        assert (surv["favorite"], surv["play_count"]) == (1, 5)  # MAX merge
-        assert (st["favorite"], st["play_count"]) == (1, 5)  # track_stats re-derived
+        assert (st["favorite"], st["play_count"]) == (1, 5)  # MAX merge in track_stats
         assert n_src == 2  # both sources re-parented onto the survivor
         assert surv["file_path"] == "/m/1.mp3"  # realigned to preferred (file) source
         assert pl_tid == local_id  # playlist repointed loser→survivor
@@ -3519,7 +3514,7 @@ class TestRecordTrackStarted:
         after = time.time()
 
         row = index._conn.execute(
-            "SELECT last_played FROM tracks WHERE file_path = ?", (str(p),)
+            "SELECT last_played FROM tracks_with_stats WHERE file_path = ?", (str(p),)
         ).fetchone()
         index.close()
 
@@ -8591,49 +8586,69 @@ class TestInheritRemotePlayCounts:
         t.play_count = play_count
         return t
 
+    def _seed_isolated_pair(
+        self, index: "LibraryIndex", remote_pc: int, local_pc: int, tmp_path: Path
+    ) -> Track:
+        """Insert a streamed track and its local sibling as two SEPARATE rows for the
+        same (album, track, disc), with play_count in track_stats, bypassing the
+        reconcile merge (which supersedes inherit in the normal scan by collapsing
+        the pair). Returns the local Track for the inherit call.
+        """
+        c = index._conn
+        c.execute(
+            "INSERT INTO albums (album_artist, album) VALUES ('The Artist','The Album')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        local = self._local_track(tmp_path, 1)
+        for fp, pc in [
+            ("bandcamp://42/1", remote_pc),
+            (str(local.file_path), local_pc),
+        ]:
+            c.execute(
+                "INSERT INTO tracks (file_path, title, album, album_artist, album_id,"
+                " track_number, disc_number) VALUES (?, 'Track 1', 'The Album',"
+                " 'The Artist', ?, 1, 1)",
+                (fp, alb),
+            )
+            tid = c.execute(
+                "SELECT id FROM tracks WHERE file_path = ?", (fp,)
+            ).fetchone()[0]
+            c.execute(
+                "INSERT INTO track_stats (track_id, play_count) VALUES (?, ?)",
+                (tid, pc),
+            )
+        c.commit()
+        return local
+
+    def _local_play_count(self, index: "LibraryIndex", local: Track) -> int:
+        return int(
+            index._conn.execute(
+                "SELECT st.play_count FROM track_stats st JOIN tracks t"
+                " ON t.id = st.track_id WHERE t.file_path = ?",
+                (str(local.file_path),),
+            ).fetchone()[0]
+        )
+
     def test_copies_play_count_from_remote_to_local(self, tmp_path: Path) -> None:
         index = self._setup(tmp_path)
-        remote = self._remote_track("42", 1)
-        index.upsert_many([remote])
-        # play_count is managed by record_played, not upsert_many — set directly
-        index._conn.execute(
-            "UPDATE tracks SET play_count = 7 WHERE file_path LIKE 'bandcamp://%'"
+        local = self._seed_isolated_pair(
+            index, remote_pc=7, local_pc=0, tmp_path=tmp_path
         )
-        index._conn.commit()
-
-        local = self._local_track(tmp_path, 1)
-        index.upsert_many([local])
         index.inherit_remote_play_counts([local])
-
-        result = index.tracks_for_album("The Artist", "The Album")
-        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        pc = self._local_play_count(index, local)
         index.close()
-
-        assert len(local_result) == 1
-        assert local_result[0].play_count == 7
+        assert pc == 7  # inherited from the streamed sibling
 
     def test_keeps_higher_local_play_count(self, tmp_path: Path) -> None:
         """If local play_count > remote, keep the local value."""
         index = self._setup(tmp_path)
-        remote = self._remote_track("42", 1)
-        index.upsert_many([remote])
-        index._conn.execute(
-            "UPDATE tracks SET play_count = 3 WHERE file_path LIKE 'bandcamp://%'"
+        local = self._seed_isolated_pair(
+            index, remote_pc=3, local_pc=10, tmp_path=tmp_path
         )
-        index._conn.commit()
-
-        local = self._local_track(tmp_path, 1)
-        index.upsert_many([local])
-        index._conn.execute("UPDATE tracks SET play_count = 10 WHERE source = 'local'")
-        index._conn.commit()
-        _mirror_stats(index)
         index.inherit_remote_play_counts([local])
-
-        result = index.tracks_for_album("The Artist", "The Album")
-        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
+        pc = self._local_play_count(index, local)
         index.close()
-
-        assert local_result[0].play_count == 10
+        assert pc == 10  # local's higher count preserved
 
     def test_no_change_when_remote_play_count_is_zero(self, tmp_path: Path) -> None:
         index = self._setup(tmp_path)

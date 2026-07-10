@@ -2030,13 +2030,11 @@ class TestFavoriteEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        mock_index.set_favorite.assert_called_once_with(
-            Path("/music/01.mp3").resolve(), True
-        )
+        # KAMP-537: favorite resolves the track first, then keys on its canonical
+        # uri (the stored preferred-source path), not the raw request path.
+        mock_index.set_favorite.assert_called_once_with("/music/01.mp3", True)
         # Queue must also be updated so the next player-state snapshot is correct.
-        mock_queue.update_favorite.assert_called_once_with(
-            Path("/music/01.mp3").resolve(), True
-        )
+        mock_queue.update_favorite.assert_called_once_with("/music/01.mp3", True)
 
     def test_set_favorite_returns_404_for_unknown_track(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -2096,8 +2094,9 @@ class TestFavoriteEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        mock_index.set_favorite.assert_called_once_with(remote_uri, True)
-        mock_queue.update_favorite.assert_called_once_with(remote_uri, True)
+        # KAMP-537: keys on the resolved track's canonical uri, not the request uri.
+        mock_index.set_favorite.assert_called_once_with("/music/01.mp3", True)
+        mock_queue.update_favorite.assert_called_once_with("/music/01.mp3", True)
 
     def test_set_favorite_remote_track_returns_404_when_not_found(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -2109,6 +2108,61 @@ class TestFavoriteEndpoint:
             json={"file_path": "bandcamp://999/3", "favorite": True},
         )
         assert resp.status_code == 404
+
+
+class TestDualAcceptId:
+    """Track-keyed endpoints resolve the canonical id, preferred over file_path (KAMP-537)."""
+
+    def test_favorite_by_id(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1)
+        track.id = 5
+        mock_index.get_track_by_id.return_value = track
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post(
+            "/api/v1/tracks/favorite", json={"id": 5, "favorite": True}
+        )
+        assert resp.status_code == 200
+        mock_index.get_track_by_id.assert_called_once_with(5)
+        mock_index.get_track_by_path.assert_not_called()
+        mock_index.set_favorite.assert_called_once_with("/music/01.mp3", True)
+
+    def test_favorite_id_wins_when_both_sent(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1)
+        track.id = 5
+        mock_index.get_track_by_id.return_value = track
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post(
+            "/api/v1/tracks/favorite",
+            json={"id": 5, "file_path": "/music/other.mp3", "favorite": True},
+        )
+        assert resp.status_code == 200
+        # id wins — no 400, file_path ignored.
+        mock_index.get_track_by_id.assert_called_once_with(5)
+        mock_index.get_track_by_path.assert_not_called()
+
+    def test_favorite_neither_id_nor_file_path_is_404(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post("/api/v1/tracks/favorite", json={"favorite": True})
+        assert resp.status_code == 404
+
+    def test_queue_add_by_id(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1)
+        track.id = 7
+        mock_index.get_track_by_id.return_value = track
+        mock_queue.current.return_value = None
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post("/api/v1/player/queue/add", json={"id": 7})
+        assert resp.status_code == 200
+        mock_index.get_track_by_id.assert_called_once_with(7)
+        mock_queue.add_to_queue.assert_called_once_with(track)
 
 
 # ---------------------------------------------------------------------------

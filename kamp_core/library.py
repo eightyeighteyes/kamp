@@ -1967,34 +1967,70 @@ class LibraryIndex:
             version = 48  # noqa: F841
 
     def _create_tracks_with_stats_view(self) -> None:
-        """(Re)create the read-only ``tracks_with_stats`` view (KAMP-542).
+        """(Re)create the read-only ``tracks_with_stats`` view (KAMP-542/539).
 
-        Projects every ``tracks`` column but shadows ``favorite``/``play_count``/
-        ``last_played`` from ``track_stats`` — the authoritative store since the
-        KAMP-540 dual-write — so read paths resolve stats from the child table and
-        KAMP-539 can drop the legacy columns. While both coexist the shadow
-        COALESCEs back to the legacy column, so a track that somehow lacks a
-        ``track_stats`` row still reads its real value rather than a spurious 0;
-        once 539 drops the legacy columns the fallback becomes the type default.
+        Projects the identity/catalog ``tracks`` columns straight through, and
+        DERIVES the mutable per-track state from the child tables so the legacy
+        ``tracks`` columns can be dropped (KAMP-539):
 
-        Built from ``PRAGMA table_info`` and recreated on every open so it always
-        matches the current ``tracks`` schema (survives 539's column drop with no
-        edit here). Read-only by construction: every writer (UPDATE/INSERT/upsert,
-        the ``tracks_fts`` rowid join, the stat mirrors) stays on the base table,
-        whose ``id`` the view preserves so FTS rowid joins still resolve.
+        - ``favorite``/``play_count``/``last_played`` shadow ``track_stats``.
+        - ``ext``/``duration``/``embedded_art``/``file_mtime``/``is_available``/
+          ``stream_url``/``stream_url_expires_at``/``source`` derive from the
+          track's *preferred* ``track_sources`` row (``ps``), chosen by the same
+          ordering as ``preferred_source``/``_eff_source`` (available first, then
+          local file over stream, then lowest id). ``source`` maps the preferred
+          source's ``kind`` file->'local'/stream->'bandcamp'.
+
+        While a legacy column still exists each derived value COALESCEs back to it,
+        so a track that lacks a child row (a pre-540 row or a bare test fixture)
+        still reads its real value rather than a default; once 539 drops the
+        column the fallback becomes the type default. Column names are identical
+        pre- and post-drop, so ``_row_to_track`` and every ``SELECT *`` consumer
+        are untouched by the drop.
+
+        Read-only by construction: every writer (UPDATE/INSERT/upsert, the
+        ``tracks_fts`` rowid join, the stat/source mirrors) stays on the base
+        tables, whose ``id`` the view preserves so FTS rowid joins still resolve.
         """
+        colset = {r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")}
+        # Derived name -> (SQL expression over ps/ts, SQL default once the legacy
+        # tracks column is dropped in KAMP-539).
+        per_source = {
+            "ext": ("ps.ext", "''"),
+            "duration": ("ps.duration", "0"),
+            "embedded_art": ("ps.embedded_art", "0"),
+            "file_mtime": ("ps.file_mtime", "NULL"),
+            "is_available": ("ps.is_available", "1"),
+            "stream_url": ("ps.stream_url", "NULL"),
+            "stream_url_expires_at": ("ps.stream_url_expires_at", "NULL"),
+            "source": (
+                "CASE WHEN ps.kind = 'file' THEN 'local'"
+                " WHEN ps.kind IS NOT NULL THEN 'bandcamp' END",
+                "'local'",
+            ),
+        }
+        stats = {
+            "favorite": ("ts.favorite", "0"),
+            "play_count": ("ts.play_count", "0"),
+            "last_played": ("ts.last_played", "NULL"),
+        }
+        derived = {**per_source, **stats}
+        # Identity/catalog passthrough columns keep their base-table order.
         cols = [r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")]
-        # column -> SQL default used once the legacy column is dropped (KAMP-539).
-        stats_default = {"favorite": "0", "play_count": "0", "last_played": "NULL"}
-        projected = [f"t.{c}" for c in cols if c not in stats_default]
-        for name, default in stats_default.items():
-            fallback = f"t.{name}" if name in cols else default
-            projected.append(f"COALESCE(ts.{name}, {fallback}) AS {name}")
+        projected = [f"t.{c}" for c in cols if c not in derived]
+        for name, (expr, default) in derived.items():
+            fallback = f"t.{name}" if name in colset else default
+            projected.append(f"COALESCE({expr}, {fallback}) AS {name}")
         self._conn.executescript(
             "DROP VIEW IF EXISTS tracks_with_stats;\n"
             "CREATE VIEW tracks_with_stats AS SELECT "
             + ", ".join(projected)
-            + " FROM tracks t LEFT JOIN track_stats ts ON ts.track_id = t.id;"
+            + " FROM tracks t"
+            " LEFT JOIN track_stats ts ON ts.track_id = t.id"
+            " LEFT JOIN track_sources ps ON ps.id = ("
+            "   SELECT s.id FROM track_sources s WHERE s.track_id = t.id"
+            "   ORDER BY s.is_available DESC, (s.kind = 'file') DESC, s.id LIMIT 1"
+            ");"
         )
         self._conn.commit()
 

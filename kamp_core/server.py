@@ -202,6 +202,30 @@ def resolve_playback_uri(
 # ---------------------------------------------------------------------------
 
 
+class SourceOut(BaseModel):
+    """One delivery of a track (KAMP-537), for display only — local/stream badge,
+    offline state, remove-download affordance. Ordered preferred-first. NOT the
+    client's playability signal: playback is server-resolved and a legacy row can
+    be playable with an empty sources list, so TrackOut.is_available/duration
+    (the preferred source) remain authoritative."""
+
+    kind: str  # 'file' | 'stream'
+    provider: str
+    uri: str
+    is_available: bool
+    duration: float
+
+    @classmethod
+    def from_row(cls, row: Any) -> "SourceOut":
+        return cls(
+            kind=row["kind"],
+            provider=row["provider"] or "",
+            uri=row["uri"],
+            is_available=bool(row["is_available"]),
+            duration=float(row["duration"] or 0.0),
+        )
+
+
 class TrackOut(BaseModel):
     id: int
     title: str
@@ -224,9 +248,10 @@ class TrackOut(BaseModel):
     reachable: bool = True
     is_available: bool = True
     duration: float = 0.0
+    sources: list[SourceOut] = []
 
     @classmethod
-    def from_track(cls, t: Track) -> "TrackOut":
+    def from_track(cls, t: Track, sources: "list[Any] | None" = None) -> "TrackOut":
         return cls(
             id=t.id,
             title=t.title,
@@ -249,6 +274,7 @@ class TrackOut(BaseModel):
             reachable=t.reachable,
             is_available=t.is_available,
             duration=t.duration,
+            sources=[SourceOut.from_row(r) for r in (sources or [])],
         )
 
 
@@ -274,7 +300,7 @@ class StatsOut(BaseModel):
     top_tracks: list[TrackOut]
 
     @classmethod
-    def from_stats(cls, s: LibraryStats) -> "StatsOut":
+    def from_stats(cls, s: LibraryStats, top_tracks_out: list[TrackOut]) -> "StatsOut":
         return cls(
             track_count=s.track_count,
             album_count=s.album_count,
@@ -284,7 +310,7 @@ class StatsOut(BaseModel):
             albums_played=s.albums_played,
             top_artist_name=s.top_artist_name,
             top_artist_seconds=s.top_artist_seconds,
-            top_tracks=[TrackOut.from_track(t) for t in s.top_tracks],
+            top_tracks=top_tracks_out,
         )
 
 
@@ -666,6 +692,7 @@ class PlaylistTrackOut(BaseModel):
     source: str
     is_available: bool
     duration: float
+    sources: list[SourceOut] = []
 
 
 class CreatePlaylistRequest(BaseModel):
@@ -805,6 +832,24 @@ def _is_remote_uri(s: str) -> bool:
     """True for scheme-prefixed remote URIs (bandcamp://, etc.) that must bypass
     library-path validation."""
     return "://" in s or s.startswith("bandcamp:")
+
+
+def _tracks_out(index: LibraryIndex, tracks: "list[Track]") -> list[TrackOut]:
+    """Serialize a list of tracks to TrackOut with sources batch-fetched (KAMP-537).
+
+    One sources_for_track_ids call for the whole list (no N+1). Synthetic queue
+    restore stubs (id=0) are excluded from the batch and get an empty sources
+    list. Use this instead of a bare `[TrackOut.from_track(t) for t in ...]`.
+    """
+    src_map = index.sources_for_track_ids([t.id for t in tracks if t.id])
+    return [TrackOut.from_track(t, src_map.get(t.id, [])) for t in tracks]
+
+
+def _track_out(index: LibraryIndex, track: Track) -> TrackOut:
+    """Serialize a single track to TrackOut with its sources (KAMP-537)."""
+    return TrackOut.from_track(
+        track, index.sources_for_track_ids([track.id]).get(track.id, [])
+    )
 
 
 def _validate_proxy_url(url: str) -> str:
@@ -1219,8 +1264,8 @@ def create_app(
             position=pos,
             duration=engine.state.duration,
             volume=engine.state.volume,
-            current_track=TrackOut.from_track(current) if current else None,
-            next_track=TrackOut.from_track(nxt) if nxt else None,
+            current_track=_track_out(index, current) if current else None,
+            next_track=_track_out(index, nxt) if nxt else None,
             buffering=_state["buffering"],
         )
 
@@ -1261,7 +1306,8 @@ def create_app(
 
     @app.get("/api/v1/stats", response_model=StatsOut)
     def get_stats(top_tracks: int = 3) -> StatsOut:
-        return StatsOut.from_stats(index.get_stats(top_tracks_limit=top_tracks))
+        s = index.get_stats(top_tracks_limit=top_tracks)
+        return StatsOut.from_stats(s, _tracks_out(index, s.top_tracks))
 
     @app.get("/api/v1/artists/top", response_model=list[ArtistOut])
     def get_top_artists(limit: int = 10) -> list[ArtistOut]:
@@ -1273,7 +1319,7 @@ def create_app(
 
     @app.get("/api/v1/tracks/top", response_model=list[TrackOut])
     def get_top_tracks(limit: int = 10) -> list[TrackOut]:
-        return [TrackOut.from_track(t) for t in index.top_tracks(limit)]
+        return _tracks_out(index, index.top_tracks(limit))
 
     @app.get("/api/v1/tracks", response_model=list[TrackOut])
     def get_tracks(
@@ -1286,10 +1332,8 @@ def create_app(
         if file_path:
             p = _validate_library_path(file_path, _state["library_path"])
             track = index.get_track_by_path(p)
-            return [TrackOut.from_track(track)] if track else []
-        return [
-            TrackOut.from_track(t) for t in index.tracks_for_album(album_artist, album)
-        ]
+            return [_track_out(index, track)] if track else []
+        return _tracks_out(index, index.tracks_for_album(album_artist, album))
 
     @app.patch("/api/v1/tracks/{track_id}/tags")
     def patch_track_tags(track_id: int, req: "TrackTagsRequest") -> Any:
@@ -1373,7 +1417,7 @@ def create_app(
             queue.update_track_path(old_path, old_path, req.title)
             _notify_library_changed()
             updated = index.get_track_by_id(track_id)
-            return TrackOut.from_track(updated)  # type: ignore[arg-type]
+            return _track_out(index, updated)  # type: ignore[arg-type]
 
         # is_case_only was computed before the lock check so it is available
         # for both the deferred-op payload and the immediate rename path.
@@ -1422,7 +1466,7 @@ def create_app(
 
         _notify_library_changed()
         updated = index.get_track_by_id(track_id)
-        return TrackOut.from_track(updated)  # type: ignore[arg-type]
+        return _track_out(index, updated)  # type: ignore[arg-type]
 
     @app.patch("/api/v1/tracks/{track_id}/meta")
     def patch_track_meta(track_id: int, req: "TrackMetaRequest") -> "TrackOut":
@@ -1452,7 +1496,7 @@ def create_app(
 
         updated = index.update_track_mb_recording_id(track_id, req.mb_recording_id)
         _notify_library_changed()
-        return TrackOut.from_track(updated)  # type: ignore[arg-type]
+        return _track_out(index, updated)  # type: ignore[arg-type]
 
     @app.get("/api/v1/deferred-ops")
     def get_deferred_ops() -> list[dict[str, Any]]:
@@ -1645,7 +1689,7 @@ def create_app(
                     )
                     updated = index.get_track_by_id(track.id)
                     if updated is not None:
-                        moved.append(TrackOut.from_track(updated))
+                        moved.append(_track_out(index, updated))
                 except Exception as exc:
                     logger.exception("tag write failed for %s", old_path)
                     failed.append(
@@ -1746,7 +1790,7 @@ def create_app(
                         )
                         updated = index.get_track_by_id(track.id)
                         if updated is not None:
-                            moved.append(TrackOut.from_track(updated))
+                            moved.append(_track_out(index, updated))
                     except Exception as exc:
                         logger.exception("album per-file move failed for %s", old_path)
                         failed.append(
@@ -1858,7 +1902,7 @@ def create_app(
                     if tag_write_ok:
                         updated = index.get_track_by_id(track.id)
                         if updated is not None:
-                            moved.append(TrackOut.from_track(updated))
+                            moved.append(_track_out(index, updated))
 
                 try:
                     index.rename_album_tracks_bulk(
@@ -1958,7 +2002,7 @@ def create_app(
                     )
                     updated = index.get_track_by_id(track.id)
                     if updated is not None:
-                        moved.append(TrackOut.from_track(updated))
+                        moved.append(_track_out(index, updated))
                 except Exception as exc:
                     logger.exception(
                         "album merge failed for track %d (%s)", track.id, old_path
@@ -2023,7 +2067,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Track not found")
         updated = index.update_track_display_title(track_id, req.display_title)
         _notify_library_changed()
-        return TrackOut.from_track(updated)  # type: ignore[arg-type]
+        return _track_out(index, updated)  # type: ignore[arg-type]
 
     @app.patch("/api/v1/albums/display", response_model=AlbumOut)
     def patch_album_display(req: "AlbumDisplayRequest") -> AlbumOut:
@@ -2118,7 +2162,7 @@ def create_app(
             mb_release_id=req.mb_release_id,
         )
         _notify_library_changed()
-        return AlbumMetaOut(tracks=[TrackOut.from_track(t) for t in updated])
+        return AlbumMetaOut(tracks=_tracks_out(index, updated))
 
     @app.get("/api/v1/albums/musicbrainz", response_model=MusicBrainzLookupOut)
     async def get_album_musicbrainz(
@@ -2662,7 +2706,7 @@ def create_app(
 
         return SearchOut(
             albums=albums,
-            tracks=[TrackOut.from_track(t) for t in fts_tracks],
+            tracks=_tracks_out(index, fts_tracks),
             playlists=playlists,
         )
 
@@ -3171,7 +3215,7 @@ def create_app(
     def get_queue() -> QueueOut:
         tracks, pos = queue.queue_tracks()
         return QueueOut(
-            tracks=[TrackOut.from_track(t) for t in tracks],
+            tracks=_tracks_out(index, tracks),
             position=pos,
             shuffle=queue.shuffle,
             repeat=queue.repeat,
@@ -3708,8 +3752,17 @@ def create_app(
         if index.get_playlist(playlist_id) is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
         if index.get_magic_playlist_criteria(playlist_id) is not None:
-            return index.get_magic_playlist_tracks(playlist_id)
-        return index.get_playlist_tracks(playlist_id)
+            rows = index.get_magic_playlist_tracks(playlist_id)
+        else:
+            rows = index.get_playlist_tracks(playlist_id)
+        # These rows are hand-rolled dicts (not via TrackOut.from_track), so attach
+        # sources here in the response layer (KAMP-537).
+        src_map = index.sources_for_track_ids([r["id"] for r in rows if r.get("id")])
+        for r in rows:
+            r["sources"] = [
+                SourceOut.from_row(s).model_dump() for s in src_map.get(r["id"], [])
+            ]
+        return rows
 
     @app.put("/api/v1/playlists/{playlist_id}/criteria", response_model=PlaylistOut)
     def update_playlist_criteria(

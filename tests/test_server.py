@@ -306,6 +306,75 @@ class TestAlbumsEndpoint:
         mock_index.albums.assert_called_with(sort="album_artist", sort_dir=None)
 
 
+class TestTrackSources:
+    """TrackOut/PlaylistTrackOut carry a sources[] list wired from the index (KAMP-537)."""
+
+    _SRCS = {
+        1: [
+            {
+                "kind": "file",
+                "provider": "local",
+                "uri": "/m/a.mp3",
+                "is_available": 1,
+                "duration": 101.0,
+            },
+            {
+                "kind": "stream",
+                "provider": "bandcamp",
+                "uri": "bandcamp://9/1",
+                "is_available": 1,
+                "duration": 100.0,
+            },
+        ]
+    }
+
+    def test_get_tracks_includes_sources(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1)
+        track.id = 1
+        mock_index.tracks_for_album.return_value = [track]
+        mock_index.sources_for_track_ids.return_value = self._SRCS
+        c = TestClient(
+            create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        )
+        res = c.get("/api/v1/tracks?album_artist=Artist&album=Album")
+        assert res.status_code == 200
+        srcs = res.json()[0]["sources"]
+        assert [s["kind"] for s in srcs] == ["file", "stream"]
+        assert srcs[1]["uri"] == "bandcamp://9/1"
+
+    def test_queue_includes_sources(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        # The queue path bypasses TrackOut.from_track's usual list builders — assert
+        # it still gets sources (Reality-Checker risk #1).
+        track = _track(1)
+        track.id = 1
+        mock_queue.queue_tracks.return_value = ([track], 0)
+        mock_index.sources_for_track_ids.return_value = self._SRCS
+        c = TestClient(
+            create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        )
+        res = c.get("/api/v1/player/queue")
+        assert res.status_code == 200
+        assert [s["kind"] for s in res.json()["tracks"][0]["sources"]] == [
+            "file",
+            "stream",
+        ]
+
+    def test_sourceless_track_has_empty_sources(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = [_track(1)]
+        mock_index.sources_for_track_ids.return_value = {}  # legacy row, no sources
+        c = TestClient(
+            create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        )
+        res = c.get("/api/v1/tracks?album_artist=Artist&album=Album")
+        assert res.json()[0]["sources"] == []
+
+
 class TestAlbumArtEndpoint:
     def test_returns_art_bytes_when_embedded(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

@@ -3502,6 +3502,31 @@ class LibraryIndex:
         ).fetchone()
         return row  # type: ignore[no-any-return]
 
+    def sources_for_track_ids(
+        self, track_ids: "list[int]"
+    ) -> "dict[int, list[sqlite3.Row]]":
+        """Return every track_sources row for each id, keyed by track_id (KAMP-537).
+
+        One query for a batch of tracks so serializing a list of TrackOut does not
+        do an N+1. Rows are ordered preferred-first within each track (same order
+        as preferred_source). Ids with no sources are absent — callers default to
+        []. Empty input returns {}. Exposes only the display fields the API needs
+        (kind/provider/uri/is_available/duration).
+        """
+        if not track_ids:
+            return {}
+        placeholders = ",".join("?" * len(track_ids))
+        rows = self._conn.execute(
+            "SELECT track_id, kind, provider, uri, is_available, duration"
+            f" FROM track_sources WHERE track_id IN ({placeholders})"
+            " ORDER BY track_id, is_available DESC, (kind = 'file') DESC, id",
+            track_ids,
+        ).fetchall()
+        result: "dict[int, list[sqlite3.Row]]" = {}
+        for r in rows:
+            result.setdefault(r["track_id"], []).append(r)
+        return result
+
     def update_stream_url_for_source(
         self, source_id: int, stream_url: str, expires_at: float
     ) -> None:

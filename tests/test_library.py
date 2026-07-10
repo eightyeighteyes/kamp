@@ -438,6 +438,37 @@ class TestLibraryIndex:
         assert pref["kind"] == "stream"
         assert pref["uri"] == "bandcamp://9/1"
 
+    def test_sources_for_track_ids_batches_preferred_first(
+        self, tmp_path: Path
+    ) -> None:
+        """sources_for_track_ids returns all sources per track, preferred-first (KAMP-537)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO tracks (file_path, source) VALUES ('a', 'local')")
+        c.execute("INSERT INTO tracks (file_path, source) VALUES ('b', 'bandcamp')")
+        t1, t2 = [r[0] for r in c.execute("SELECT id FROM tracks ORDER BY id")]
+        c.executemany(
+            "INSERT INTO track_sources (track_id, kind, provider, uri, is_available,"
+            " duration) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (t1, "stream", "bandcamp", "bandcamp://9/1", 1, 100.0),
+                (t1, "file", "local", "/m/a.mp3", 1, 101.0),
+                (t2, "stream", "bandcamp", "bandcamp://9/2", 1, 200.0),
+            ],
+        )
+        c.commit()
+        out = index.sources_for_track_ids([t1, t2, 999])
+        index.close()
+        # t1: file preferred-first over stream; t2: its one stream; 999: absent.
+        assert [r["kind"] for r in out[t1]] == ["file", "stream"]
+        assert [r["kind"] for r in out[t2]] == ["stream"]
+        assert 999 not in out
+
+    def test_sources_for_track_ids_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.sources_for_track_ids([]) == {}
+        index.close()
+
     def test_remove_track_keeps_track_with_surviving_stream(
         self, tmp_path: Path
     ) -> None:

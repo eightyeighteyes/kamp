@@ -2110,6 +2110,53 @@ class TestFavoriteEndpoint:
         assert resp.status_code == 404
 
 
+class TestApiIdContract:
+    """Freezes the KAMP-537 track-shape contract handed to KAMP-538, and the exact
+    set of response shapes still carrying file_path — the KAMP-539 removal checklist.
+    A drift (a shape gains/loses id, sources, or file_path) fails here."""
+
+    def test_source_out_fields(self) -> None:
+        from kamp_core.server import SourceOut
+
+        assert set(SourceOut.model_fields) == {
+            "kind",
+            "provider",
+            "uri",
+            "is_available",
+            "duration",
+        }
+
+    def test_track_shapes_carry_id_and_sources(self) -> None:
+        from kamp_core.server import PlaylistTrackOut, TrackOut
+
+        assert {"id", "sources", "file_path"} <= set(TrackOut.model_fields)
+        assert {"id", "sources", "file_path"} <= set(PlaylistTrackOut.model_fields)
+
+    def test_album_out_exposes_missing_track_id(self) -> None:
+        from kamp_core.server import AlbumOut
+
+        assert {"track_id", "file_path", "missing_album"} <= set(AlbumOut.model_fields)
+
+    def test_file_path_carrying_out_shapes_are_the_539_checklist(self) -> None:
+        import inspect
+
+        from pydantic import BaseModel
+
+        from kamp_core import server
+
+        carriers = {
+            name
+            for name, obj in inspect.getmembers(server, inspect.isclass)
+            if issubclass(obj, BaseModel)
+            and obj.__module__ == server.__name__
+            and name.endswith("Out")
+            and "file_path" in obj.model_fields
+        }
+        # KAMP-539 deletes file_path from exactly these response shapes (plus the
+        # request bodies). Update this set — and 539 — together if it changes.
+        assert carriers == {"TrackOut", "PlaylistTrackOut", "AlbumOut"}
+
+
 class TestDualAcceptId:
     """Track-keyed endpoints resolve the canonical id, preferred over file_path (KAMP-537)."""
 

@@ -622,6 +622,10 @@ class AlbumInfo:
     album_url: str = ""
     # Stable integer PK of the albums row; 0 for missing-album virtual entries.
     album_id: int = field(default=0, compare=False)
+    # For a missing-album virtual entry (missing_album=True), the canonical id of
+    # its single track — the stable key the API/UI should use instead of file_path
+    # (KAMP-537). None for real albums.
+    missing_track_id: int | None = field(default=None, compare=False)
     # User-set display overrides for streaming albums (KAMP-467). None means
     # no override; the canonical album/album_artist is the authoritative value.
     display_album: str | None = None
@@ -824,6 +828,14 @@ class LibraryIndex:
     def _migrate(self) -> None:
         """Create schema and run any pending version migrations."""
         self._conn.executescript(_DDL)
+        # The collapse heals (v46/v48) call _refresh_album_aggregates,
+        # which reads the tracks_with_stats view — so the view MUST exist before
+        # any heal runs, not only after _migrate returns. Omitting this made every
+        # collapse heal on a pre-KAMP-542 upgrade throw "no such table:
+        # tracks_with_stats", roll back, and leave the two-row fork model intact
+        # (the version still bumped). track_stats + tracks exist by now (_DDL), so
+        # the view builds; it is rebuilt with final columns after _migrate.
+        self._create_tracks_with_stats_view()
         row = self._conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             # Brand-new database — stamp current version and populate FTS.
@@ -3502,6 +3514,31 @@ class LibraryIndex:
         ).fetchone()
         return row  # type: ignore[no-any-return]
 
+    def sources_for_track_ids(
+        self, track_ids: "list[int]"
+    ) -> "dict[int, list[sqlite3.Row]]":
+        """Return every track_sources row for each id, keyed by track_id (KAMP-537).
+
+        One query for a batch of tracks so serializing a list of TrackOut does not
+        do an N+1. Rows are ordered preferred-first within each track (same order
+        as preferred_source). Ids with no sources are absent — callers default to
+        []. Empty input returns {}. Exposes only the display fields the API needs
+        (kind/provider/uri/is_available/duration).
+        """
+        if not track_ids:
+            return {}
+        placeholders = ",".join("?" * len(track_ids))
+        rows = self._conn.execute(
+            "SELECT track_id, kind, provider, uri, is_available, duration"
+            f" FROM track_sources WHERE track_id IN ({placeholders})"
+            " ORDER BY track_id, is_available DESC, (kind = 'file') DESC, id",
+            track_ids,
+        ).fetchall()
+        result: "dict[int, list[sqlite3.Row]]" = {}
+        for r in rows:
+            result.setdefault(r["track_id"], []).append(r)
+        return result
+
     def update_stream_url_for_source(
         self, source_id: int, stream_url: str, expires_at: float
     ) -> None:
@@ -5081,6 +5118,7 @@ class LibraryIndex:
         rows = self._conn.execute(f"""
             SELECT
                 a.id                AS album_id,
+                NULL                AS missing_track_id,
                 a.album_artist,
                 a.album,
                 a.release_date,
@@ -5125,6 +5163,7 @@ class LibraryIndex:
             -- virtual entry; file_path is the unique identifier for these entries.
             SELECT
                 0                   AS album_id,
+                t.id                AS missing_track_id,
                 t.album_artist,
                 t.title             AS album,
                 t.release_date,
@@ -5155,6 +5194,7 @@ class LibraryIndex:
         return [
             AlbumInfo(
                 album_id=r["album_id"],
+                missing_track_id=r["missing_track_id"],
                 album_artist=r["album_artist"],
                 album=r["album"],
                 release_date=r["release_date"],

@@ -438,6 +438,37 @@ class TestLibraryIndex:
         assert pref["kind"] == "stream"
         assert pref["uri"] == "bandcamp://9/1"
 
+    def test_sources_for_track_ids_batches_preferred_first(
+        self, tmp_path: Path
+    ) -> None:
+        """sources_for_track_ids returns all sources per track, preferred-first (KAMP-537)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO tracks (file_path, source) VALUES ('a', 'local')")
+        c.execute("INSERT INTO tracks (file_path, source) VALUES ('b', 'bandcamp')")
+        t1, t2 = [r[0] for r in c.execute("SELECT id FROM tracks ORDER BY id")]
+        c.executemany(
+            "INSERT INTO track_sources (track_id, kind, provider, uri, is_available,"
+            " duration) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (t1, "stream", "bandcamp", "bandcamp://9/1", 1, 100.0),
+                (t1, "file", "local", "/m/a.mp3", 1, 101.0),
+                (t2, "stream", "bandcamp", "bandcamp://9/2", 1, 200.0),
+            ],
+        )
+        c.commit()
+        out = index.sources_for_track_ids([t1, t2, 999])
+        index.close()
+        # t1: file preferred-first over stream; t2: its one stream; 999: absent.
+        assert [r["kind"] for r in out[t1]] == ["file", "stream"]
+        assert [r["kind"] for r in out[t2]] == ["stream"]
+        assert 999 not in out
+
+    def test_sources_for_track_ids_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.sources_for_track_ids([]) == {}
+        index.close()
+
     def test_remove_track_keeps_track_with_surviving_stream(
         self, tmp_path: Path
     ) -> None:
@@ -809,6 +840,69 @@ class TestLibraryIndex:
         surv = hc.execute("SELECT id FROM tracks").fetchone()[0]
         healed.close()
         assert n_tracks == 1  # the forked stream row is gone
+        assert surv == file_id  # survivor is the local download
+        assert kinds == ["file", "stream"]  # stream re-parented onto it
+
+    def test_collapse_heal_works_without_preexisting_view(self, tmp_path: Path) -> None:
+        """A collapse heal must build the tracks_with_stats view before running.
+
+        Regression for the KAMP-542 view-timing bug (root cause of the persistent
+        Snail Mail - Lush dupes): the v46 collapse calls _refresh_album_aggregates,
+        which reads tracks_with_stats. On a pre-542 upgrade the view did not exist
+        yet, so the collapse threw 'no such table: tracks_with_stats', the whole
+        one-transaction heal rolled back, and the two-row fork model survived while
+        the version still bumped. This drops the view and rewinds to v45 so the v46
+        collapse runs, and asserts the fork collapses (the view is now created at
+        the top of _migrate, before any heal).
+        """
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        c = index._conn
+        c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sidv')")
+        c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number,"
+            " disc_number, sale_item_id) VALUES ('/m/a.mp3','local',?,1,1,'sidv')",
+            (alb,),
+        )
+        file_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'file', '/m/a.mp3')",
+            (file_id,),
+        )
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number,"
+            " disc_number, sale_item_id)"
+            " VALUES ('bandcamp://sidv/1','bandcamp',?,1,1,'sidv')",
+            (alb,),
+        )
+        stream_id = c.execute(
+            "SELECT id FROM tracks WHERE id != ?", (file_id,)
+        ).fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri)"
+            " VALUES (?, 'stream', 'bandcamp://sidv/1')",
+            (stream_id,),
+        )
+        # Simulate a pre-KAMP-542 DB: no view, rewound to before the v46 collapse.
+        c.execute("DROP VIEW IF EXISTS tracks_with_stats")
+        c.execute("UPDATE schema_version SET version = 45")
+        c.commit()
+        index.close()
+
+        healed = LibraryIndex(db)  # v46 collapse must build the view, then collapse
+        hc = healed._conn
+        n_tracks = hc.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        kinds = sorted(
+            r["kind"]
+            for r in hc.execute(
+                "SELECT kind FROM track_sources WHERE track_id = ?", (file_id,)
+            )
+        )
+        surv = hc.execute("SELECT id FROM tracks").fetchone()[0]
+        healed.close()
+        assert n_tracks == 1  # collapse ran (would be 2 if the heal had thrown)
         assert surv == file_id  # survivor is the local download
         assert kinds == ["file", "stream"]  # stream re-parented onto it
 
@@ -1225,6 +1319,8 @@ class TestLibraryIndex:
         assert albums[0].missing_album is True
         assert albums[0].album == "Standalone Track"  # title used as display name
         assert albums[0].file_path == str(tmp_path / "standalone.mp3")
+        # KAMP-537: the entry carries its single track's canonical id.
+        assert albums[0].missing_track_id is not None and albums[0].missing_track_id > 0
 
     def test_two_missing_album_tracks_each_get_own_entry(self, tmp_path: Path) -> None:
         """Each track without an album tag should be its own entry, not grouped."""

@@ -306,6 +306,75 @@ class TestAlbumsEndpoint:
         mock_index.albums.assert_called_with(sort="album_artist", sort_dir=None)
 
 
+class TestTrackSources:
+    """TrackOut/PlaylistTrackOut carry a sources[] list wired from the index (KAMP-537)."""
+
+    _SRCS = {
+        1: [
+            {
+                "kind": "file",
+                "provider": "local",
+                "uri": "/m/a.mp3",
+                "is_available": 1,
+                "duration": 101.0,
+            },
+            {
+                "kind": "stream",
+                "provider": "bandcamp",
+                "uri": "bandcamp://9/1",
+                "is_available": 1,
+                "duration": 100.0,
+            },
+        ]
+    }
+
+    def test_get_tracks_includes_sources(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1)
+        track.id = 1
+        mock_index.tracks_for_album.return_value = [track]
+        mock_index.sources_for_track_ids.return_value = self._SRCS
+        c = TestClient(
+            create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        )
+        res = c.get("/api/v1/tracks?album_artist=Artist&album=Album")
+        assert res.status_code == 200
+        srcs = res.json()[0]["sources"]
+        assert [s["kind"] for s in srcs] == ["file", "stream"]
+        assert srcs[1]["uri"] == "bandcamp://9/1"
+
+    def test_queue_includes_sources(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        # The queue path bypasses TrackOut.from_track's usual list builders — assert
+        # it still gets sources (Reality-Checker risk #1).
+        track = _track(1)
+        track.id = 1
+        mock_queue.queue_tracks.return_value = ([track], 0)
+        mock_index.sources_for_track_ids.return_value = self._SRCS
+        c = TestClient(
+            create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        )
+        res = c.get("/api/v1/player/queue")
+        assert res.status_code == 200
+        assert [s["kind"] for s in res.json()["tracks"][0]["sources"]] == [
+            "file",
+            "stream",
+        ]
+
+    def test_sourceless_track_has_empty_sources(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = [_track(1)]
+        mock_index.sources_for_track_ids.return_value = {}  # legacy row, no sources
+        c = TestClient(
+            create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        )
+        res = c.get("/api/v1/tracks?album_artist=Artist&album=Album")
+        assert res.json()[0]["sources"] == []
+
+
 class TestAlbumArtEndpoint:
     def test_returns_art_bytes_when_embedded(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -1961,12 +2030,14 @@ class TestFavoriteEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
+        # KAMP-537: favorite resolves the track first, then keys on its canonical
+        # uri (the stored preferred-source path), not the raw request path.
         mock_index.set_favorite.assert_called_once_with(
-            Path("/music/01.mp3").resolve(), True
+            str(Path("/music/01.mp3")), True
         )
         # Queue must also be updated so the next player-state snapshot is correct.
         mock_queue.update_favorite.assert_called_once_with(
-            Path("/music/01.mp3").resolve(), True
+            str(Path("/music/01.mp3")), True
         )
 
     def test_set_favorite_returns_404_for_unknown_track(
@@ -2027,8 +2098,13 @@ class TestFavoriteEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        mock_index.set_favorite.assert_called_once_with(remote_uri, True)
-        mock_queue.update_favorite.assert_called_once_with(remote_uri, True)
+        # KAMP-537: keys on the resolved track's canonical uri, not the request uri.
+        mock_index.set_favorite.assert_called_once_with(
+            str(Path("/music/01.mp3")), True
+        )
+        mock_queue.update_favorite.assert_called_once_with(
+            str(Path("/music/01.mp3")), True
+        )
 
     def test_set_favorite_remote_track_returns_404_when_not_found(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -2040,6 +2116,110 @@ class TestFavoriteEndpoint:
             json={"file_path": "bandcamp://999/3", "favorite": True},
         )
         assert resp.status_code == 404
+
+
+class TestApiIdContract:
+    """Freezes the KAMP-537 track-shape contract handed to KAMP-538, and the exact
+    set of response shapes still carrying file_path — the KAMP-539 removal checklist.
+    A drift (a shape gains/loses id, sources, or file_path) fails here."""
+
+    def test_source_out_fields(self) -> None:
+        from kamp_core.server import SourceOut
+
+        assert set(SourceOut.model_fields) == {
+            "kind",
+            "provider",
+            "uri",
+            "is_available",
+            "duration",
+        }
+
+    def test_track_shapes_carry_id_and_sources(self) -> None:
+        from kamp_core.server import PlaylistTrackOut, TrackOut
+
+        assert {"id", "sources", "file_path"} <= set(TrackOut.model_fields)
+        assert {"id", "sources", "file_path"} <= set(PlaylistTrackOut.model_fields)
+
+    def test_album_out_exposes_missing_track_id(self) -> None:
+        from kamp_core.server import AlbumOut
+
+        assert {"track_id", "file_path", "missing_album"} <= set(AlbumOut.model_fields)
+
+    def test_file_path_carrying_out_shapes_are_the_539_checklist(self) -> None:
+        import inspect
+
+        from pydantic import BaseModel
+
+        from kamp_core import server
+
+        carriers = {
+            name
+            for name, obj in inspect.getmembers(server, inspect.isclass)
+            if issubclass(obj, BaseModel)
+            and obj.__module__ == server.__name__
+            and name.endswith("Out")
+            and "file_path" in obj.model_fields
+        }
+        # KAMP-539 deletes file_path from exactly these response shapes (plus the
+        # request bodies). Update this set — and 539 — together if it changes.
+        assert carriers == {"TrackOut", "PlaylistTrackOut", "AlbumOut"}
+
+
+class TestDualAcceptId:
+    """Track-keyed endpoints resolve the canonical id, preferred over file_path (KAMP-537)."""
+
+    def test_favorite_by_id(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1)
+        track.id = 5
+        mock_index.get_track_by_id.return_value = track
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post(
+            "/api/v1/tracks/favorite", json={"id": 5, "favorite": True}
+        )
+        assert resp.status_code == 200
+        mock_index.get_track_by_id.assert_called_once_with(5)
+        mock_index.get_track_by_path.assert_not_called()
+        mock_index.set_favorite.assert_called_once_with(
+            str(Path("/music/01.mp3")), True
+        )
+
+    def test_favorite_id_wins_when_both_sent(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1)
+        track.id = 5
+        mock_index.get_track_by_id.return_value = track
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post(
+            "/api/v1/tracks/favorite",
+            json={"id": 5, "file_path": "/music/other.mp3", "favorite": True},
+        )
+        assert resp.status_code == 200
+        # id wins — no 400, file_path ignored.
+        mock_index.get_track_by_id.assert_called_once_with(5)
+        mock_index.get_track_by_path.assert_not_called()
+
+    def test_favorite_neither_id_nor_file_path_is_404(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post("/api/v1/tracks/favorite", json={"favorite": True})
+        assert resp.status_code == 404
+
+    def test_queue_add_by_id(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        track = _track(1)
+        track.id = 7
+        mock_index.get_track_by_id.return_value = track
+        mock_queue.current.return_value = None
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post("/api/v1/player/queue/add", json={"id": 7})
+        assert resp.status_code == 200
+        mock_index.get_track_by_id.assert_called_once_with(7)
+        mock_queue.add_to_queue.assert_called_once_with(track)
 
 
 # ---------------------------------------------------------------------------

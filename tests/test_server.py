@@ -2032,9 +2032,13 @@ class TestFavoriteEndpoint:
         assert resp.json() == {"ok": True}
         # KAMP-537: favorite resolves the track first, then keys on its canonical
         # uri (the stored preferred-source path), not the raw request path.
-        mock_index.set_favorite.assert_called_once_with("/music/01.mp3", True)
+        mock_index.set_favorite.assert_called_once_with(
+            str(Path("/music/01.mp3")), True
+        )
         # Queue must also be updated so the next player-state snapshot is correct.
-        mock_queue.update_favorite.assert_called_once_with("/music/01.mp3", True)
+        mock_queue.update_favorite.assert_called_once_with(
+            str(Path("/music/01.mp3")), True
+        )
 
     def test_set_favorite_returns_404_for_unknown_track(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -2095,8 +2099,12 @@ class TestFavoriteEndpoint:
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
         # KAMP-537: keys on the resolved track's canonical uri, not the request uri.
-        mock_index.set_favorite.assert_called_once_with("/music/01.mp3", True)
-        mock_queue.update_favorite.assert_called_once_with("/music/01.mp3", True)
+        mock_index.set_favorite.assert_called_once_with(
+            str(Path("/music/01.mp3")), True
+        )
+        mock_queue.update_favorite.assert_called_once_with(
+            str(Path("/music/01.mp3")), True
+        )
 
     def test_set_favorite_remote_track_returns_404_when_not_found(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -2173,7 +2181,9 @@ class TestDualAcceptId:
         assert resp.status_code == 200
         mock_index.get_track_by_id.assert_called_once_with(5)
         mock_index.get_track_by_path.assert_not_called()
-        mock_index.set_favorite.assert_called_once_with("/music/01.mp3", True)
+        mock_index.set_favorite.assert_called_once_with(
+            str(Path("/music/01.mp3")), True
+        )
 
     def test_favorite_id_wins_when_both_sent(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

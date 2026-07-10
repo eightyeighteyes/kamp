@@ -180,7 +180,7 @@ type PlayerStore = {
   loadTracks: (albumArtist: string, album: string, filePath?: string) => Promise<void>
   setCollectionType: (type: 'albums' | 'playlists') => void
   playPlaylist: (playlistId: number, startIndex?: number) => Promise<void>
-  playFiles: (filePaths: string[], startIndex?: number) => Promise<void>
+  playFiles: (trackIds: number[], startIndex?: number) => Promise<void>
   recordPlaylistPlayed: (playlistId: number) => Promise<void>
   loadPlaylists: () => Promise<void>
   createPlaylist: (title: string) => Promise<Playlist>
@@ -836,8 +836,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void get().loadPlaylists()
   },
 
-  playFiles: async (filePaths, startIndex = 0) => {
-    await api.playFiles(filePaths, startIndex)
+  playFiles: async (trackIds, startIndex = 0) => {
+    await api.playFiles(trackIds, startIndex)
     void get().loadQueue()
   },
 
@@ -1171,11 +1171,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setFavorites: async (tracks, favorite) => {
     // allSettled so a partial 404 doesn't silently mis-patch state for succeeded tracks
     const results = await Promise.allSettled(tracks.map((t) => api.setTrackFavorite(t, favorite)))
-    const succeededPaths = new Set(
-      tracks.filter((_, i) => results[i].status === 'fulfilled').map((t) => t.file_path)
-    )
-    if (succeededPaths.size === 0) return
-    const ids = new Set(tracks.filter((t) => succeededPaths.has(t.file_path)).map((t) => t.id))
+    // KAMP-538: key the patch set directly on the canonical id of each succeeded track.
+    const ids = new Set(tracks.filter((_, i) => results[i].status === 'fulfilled').map((t) => t.id))
+    if (ids.size === 0) return
     if (get().player.current_track && ids.has(get().player.current_track!.id)) {
       set((s) => ({
         player: {

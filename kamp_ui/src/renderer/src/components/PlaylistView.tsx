@@ -809,7 +809,7 @@ export function PlaylistView(): React.JSX.Element | null {
                     } else {
                       // Sorted view — queue in display order so the right track plays
                       void playFiles(
-                        displayTracks.map((t) => t.file_path),
+                        displayTracks.map((t) => t.id),
                         i
                       )
                       void recordPlaylistPlayed(playlist.id)
@@ -824,7 +824,7 @@ export function PlaylistView(): React.JSX.Element | null {
                       void playPlaylist(playlist.id, i)
                     } else {
                       void playFiles(
-                        displayTracks.map((t) => t.file_path),
+                        displayTracks.map((t) => t.id),
                         i
                       )
                       void recordPlaylistPlayed(playlist.id)

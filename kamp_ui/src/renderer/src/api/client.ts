@@ -491,7 +491,8 @@ export const clearRemainingQueue = (position: number): Promise<unknown> =>
 export const removeFromQueue = (indices: number[]): Promise<unknown> =>
   post('/api/v1/player/queue/remove', { indices })
 export const setTrackFavorite = (track: Track, favorite: boolean): Promise<unknown> =>
-  post('/api/v1/tracks/favorite', { file_path: track.file_path, favorite })
+  // KAMP-538: identify the track by its canonical id (server is id-preferred).
+  post('/api/v1/tracks/favorite', { id: track.id, favorite })
 
 export type TrackTagsCollision = {
   collision: true
@@ -889,8 +890,9 @@ export async function applyPlaylistArtLocal(playlistId: number, file: File): Pro
 export const playPlaylist = (playlistId: number, startIndex = 0): Promise<void> =>
   post('/api/v1/player/play-playlist', { playlist_id: playlistId, start_index: startIndex })
 
-export const playFiles = (filePaths: string[], startIndex = 0): Promise<void> =>
-  post('/api/v1/player/play-files', { file_paths: filePaths, start_index: startIndex })
+export const playFiles = (trackIds: number[], startIndex = 0): Promise<void> =>
+  // KAMP-538: play-files by canonical track ids (server accepts `ids`, id-preferred).
+  post('/api/v1/player/play-files', { ids: trackIds, start_index: startIndex })
 
 export const getPlaylists = (): Promise<Playlist[]> => get('/api/v1/playlists')
 

@@ -29,8 +29,8 @@ interface Props {
 type DuplicateModalState = {
   playlistId: number
   playlistName: string
-  allPaths: string[]
-  uniquePaths: string[]
+  allIds: number[]
+  uniqueIds: number[]
 }
 
 export function TrackContextMenu({
@@ -64,21 +64,21 @@ export function TrackContextMenu({
 
   const handleAddToPlaylist = (playlistId: number): void => {
     const pl = playlists.find((p) => p.id === playlistId)
-    const allPaths = targets.map((t) => t.file_path)
+    const allIds = targets.map((t) => t.id)
     void (async () => {
       const existing = await getPlaylistTracks(playlistId)
-      const existingSet = new Set(existing.map((t) => t.file_path))
-      const uniquePaths = allPaths.filter((p) => !existingSet.has(p))
-      if (uniquePaths.length === allPaths.length) {
-        allPaths.forEach((fp) => void addTrackToPlaylist(playlistId, fp))
+      const existingSet = new Set(existing.map((t) => t.id))
+      const uniqueIds = allIds.filter((id) => !existingSet.has(id))
+      if (uniqueIds.length === allIds.length) {
+        allIds.forEach((id) => void addTrackToPlaylist(playlistId, id))
         if (pl) showFlashToast(`Added to ${truncateTitle(pl.title, 35)}`)
         onClose()
       } else {
         setDuplicateModal({
           playlistId,
           playlistName: pl?.title ?? '',
-          allPaths,
-          uniquePaths
+          allIds,
+          uniqueIds
         })
       }
     })()
@@ -86,8 +86,8 @@ export function TrackContextMenu({
 
   const handleDuplicateConfirmAll = (): void => {
     if (!duplicateModal) return
-    const { playlistId, allPaths, playlistName } = duplicateModal
-    allPaths.forEach((fp) => void addTrackToPlaylist(playlistId, fp))
+    const { playlistId, allIds, playlistName } = duplicateModal
+    allIds.forEach((id) => void addTrackToPlaylist(playlistId, id))
     showFlashToast(`Added to ${truncateTitle(playlistName, 35)}`)
     setDuplicateModal(null)
     onClose()
@@ -95,8 +95,8 @@ export function TrackContextMenu({
 
   const handleDuplicateConfirmUnique = (): void => {
     if (!duplicateModal) return
-    const { playlistId, uniquePaths, playlistName } = duplicateModal
-    uniquePaths.forEach((fp) => void addTrackToPlaylist(playlistId, fp))
+    const { playlistId, uniqueIds, playlistName } = duplicateModal
+    uniqueIds.forEach((id) => void addTrackToPlaylist(playlistId, id))
     showFlashToast(`Added to ${truncateTitle(playlistName, 35)}`)
     setDuplicateModal(null)
     onClose()
@@ -114,7 +114,7 @@ export function TrackContextMenu({
       setCollectionType('playlists')
       await selectPlaylist(pl)
       for (const t of targets) {
-        await addTrackToPlaylist(pl.id, t.file_path)
+        await addTrackToPlaylist(pl.id, t.id)
       }
     })()
   }
@@ -299,7 +299,7 @@ export function TrackContextMenu({
       {duplicateModal && (
         <DuplicatePlaylistTrackModal
           playlistName={duplicateModal.playlistName}
-          hasMixed={duplicateModal.uniquePaths.length > 0}
+          hasMixed={duplicateModal.uniqueIds.length > 0}
           onAddAll={handleDuplicateConfirmAll}
           onAddUnique={handleDuplicateConfirmUnique}
           onCancel={handleDuplicateCancel}

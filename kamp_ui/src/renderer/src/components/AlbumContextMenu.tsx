@@ -26,8 +26,8 @@ interface Props {
 type DuplicateModalState = {
   playlistId: number
   playlistName: string
-  allPaths: string[]
-  uniquePaths: string[]
+  allIds: number[]
+  uniqueIds: number[]
 }
 
 export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Element {
@@ -46,27 +46,27 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
 
   const [duplicateModal, setDuplicateModal] = useState<DuplicateModalState | null>(null)
 
-  // Fetch tracks client-side so the full file_path list is available.
-  // This handles missing-album tracks (keyed by file_path, not album_artist+album)
-  // and avoids the server-side tracks_for_album path which has no file_path fallback.
+  // Fetch tracks client-side so the album's per-track ids are available (the
+  // album card itself carries no track ids). This also handles missing-album
+  // tracks, which are looked up by album.file_path (a separate album-identity key).
   const handleAddToPlaylist = (playlistId: number): void => {
     const pl = playlists.find((p) => p.id === playlistId)
     void (async () => {
       const albumTracks = await getTracksForAlbum(album.album_artist, album.album, album.file_path)
-      const allPaths = albumTracks.map((t) => t.file_path)
+      const allIds = albumTracks.map((t) => t.id)
       const existing = await getPlaylistTracks(playlistId)
-      const existingSet = new Set(existing.map((t) => t.file_path))
-      const uniquePaths = allPaths.filter((p) => !existingSet.has(p))
-      if (uniquePaths.length === allPaths.length) {
-        for (const fp of allPaths) await addTrackToPlaylist(playlistId, fp)
+      const existingSet = new Set(existing.map((t) => t.id))
+      const uniqueIds = allIds.filter((id) => !existingSet.has(id))
+      if (uniqueIds.length === allIds.length) {
+        for (const id of allIds) await addTrackToPlaylist(playlistId, id)
         if (pl) showFlashToast(`Added to ${truncateTitle(pl.title, 35)}`)
         onClose()
       } else {
         setDuplicateModal({
           playlistId,
           playlistName: pl?.title ?? '',
-          allPaths,
-          uniquePaths
+          allIds,
+          uniqueIds
         })
       }
     })()
@@ -74,9 +74,9 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
 
   const handleDuplicateConfirmAll = (): void => {
     if (!duplicateModal) return
-    const { playlistId, allPaths, playlistName } = duplicateModal
+    const { playlistId, allIds, playlistName } = duplicateModal
     void (async () => {
-      for (const fp of allPaths) await addTrackToPlaylist(playlistId, fp)
+      for (const id of allIds) await addTrackToPlaylist(playlistId, id)
       showFlashToast(`Added to ${truncateTitle(playlistName, 35)}`)
     })()
     setDuplicateModal(null)
@@ -85,9 +85,9 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
 
   const handleDuplicateConfirmUnique = (): void => {
     if (!duplicateModal) return
-    const { playlistId, uniquePaths, playlistName } = duplicateModal
+    const { playlistId, uniqueIds, playlistName } = duplicateModal
     void (async () => {
-      for (const fp of uniquePaths) await addTrackToPlaylist(playlistId, fp)
+      for (const id of uniqueIds) await addTrackToPlaylist(playlistId, id)
       showFlashToast(`Added to ${truncateTitle(playlistName, 35)}`)
     })()
     setDuplicateModal(null)
@@ -108,7 +108,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
       await selectPlaylist(pl)
       const albumTracks = await getTracksForAlbum(album.album_artist, album.album, album.file_path)
       for (const t of albumTracks) {
-        await addTrackToPlaylist(pl.id, t.file_path)
+        await addTrackToPlaylist(pl.id, t.id)
       }
     })()
   }
@@ -283,7 +283,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
       {duplicateModal && (
         <DuplicatePlaylistTrackModal
           playlistName={duplicateModal.playlistName}
-          hasMixed={duplicateModal.uniquePaths.length > 0}
+          hasMixed={duplicateModal.uniqueIds.length > 0}
           onAddAll={handleDuplicateConfirmAll}
           onAddUnique={handleDuplicateConfirmUnique}
           onCancel={handleDuplicateCancel}

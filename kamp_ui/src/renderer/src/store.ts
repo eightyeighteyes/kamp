@@ -188,7 +188,7 @@ type PlayerStore = {
   updateMagicPlaylistCriteria: (id: number, criteria: CriteriaDoc) => Promise<Playlist>
   selectPlaylist: (playlist: Playlist | null) => Promise<void>
   loadPlaylistTracks: (playlistId: number) => Promise<void>
-  addTrackToPlaylist: (playlistId: number, filePath: string) => Promise<void>
+  addTrackToPlaylist: (playlistId: number, trackId: number) => Promise<void>
   addAlbumToPlaylist: (playlistId: number, albumArtist: string, album: string) => Promise<void>
   removeTrackFromPlaylist: (playlistId: number, playlistTrackId: number) => Promise<void>
   reorderPlaylistTracks: (playlistId: number, trackIds: number[]) => Promise<void>
@@ -909,8 +909,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     }))
   },
 
-  addTrackToPlaylist: async (playlistId, filePath) => {
-    await api.addTrackToPlaylist(playlistId, filePath)
+  addTrackToPlaylist: async (playlistId, trackId) => {
+    await api.addTrackToPlaylist(playlistId, trackId)
     if (get().library.selectedPlaylist?.id === playlistId) {
       await get().loadPlaylistTracks(playlistId)
     }
@@ -1155,17 +1155,21 @@ export const useStore = create<PlayerStore>((set, get) => ({
           }
         : s.searchResults
     }))
-    // Patch playlist track list so the heart updates without a reload.
+    // Patch the open album track list and the playlist track list in place, keyed
+    // on the canonical id — which never diverges between the streaming and
+    // downloaded views (KAMP-538 fixes KAMP-532). A favorite never adds or removes
+    // a row, so the old refreshOpenAlbum() refetch was both unnecessary and racy:
+    // for a freshly-downloaded track it could read back a not-yet-committed value
+    // and clobber this optimistic patch (the very reload race KAMP-532 describes).
     set((s) => ({
       library: {
         ...s.library,
+        tracks: s.library.tracks.map((t) => (t.id === track.id ? { ...t, favorite } : t)),
         playlistTracks: s.library.playlistTracks.map((t) =>
           t.id === track.id ? { ...t, favorite } : t
         )
       }
     }))
-    // Reload the open album track list so the heart in track rows updates.
-    await get().refreshOpenAlbum()
   },
 
   setFavorites: async (tracks, favorite) => {
@@ -1201,12 +1205,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set((s) => ({
       library: {
         ...s.library,
+        tracks: s.library.tracks.map((t) => (ids.has(t.id) ? { ...t, favorite } : t)),
         playlistTracks: s.library.playlistTracks.map((t) =>
           ids.has(t.id) ? { ...t, favorite } : t
         )
       }
     }))
-    await get().refreshOpenAlbum()
   },
 
   patchTrackTitle: async (trackId, title, overwrite = false) => {

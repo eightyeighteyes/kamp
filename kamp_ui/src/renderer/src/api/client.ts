@@ -918,8 +918,9 @@ export const deletePlaylist = (id: number): Promise<void> => del(`/api/v1/playli
 export const getPlaylistTracks = (id: number): Promise<PlaylistTrack[]> =>
   get(`/api/v1/playlists/${id}/tracks`)
 
-export const addTrackToPlaylist = (id: number, filePath: string): Promise<void> =>
-  post(`/api/v1/playlists/${id}/tracks`, { file_path: filePath })
+export const addTrackToPlaylist = (playlistId: number, trackId: number): Promise<void> =>
+  // KAMP-538: add by canonical track id (server is id-preferred).
+  post(`/api/v1/playlists/${playlistId}/tracks`, { id: trackId })
 
 export const addAlbumToPlaylist = (id: number, albumArtist: string, album: string): Promise<void> =>
   post(`/api/v1/playlists/${id}/tracks`, { album_artist: albumArtist, album })

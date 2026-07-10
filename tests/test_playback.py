@@ -363,7 +363,7 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        q.update_favorite(tracks[1].file_path, True)
+        q.update_favorite(tracks[1].id, True)
         assert q._tracks[0].favorite is False
         assert q._tracks[1].favorite is True
         assert q._tracks[2].favorite is False
@@ -372,7 +372,7 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(2)]
         q.load(tracks)
-        q.update_favorite(Path("/nonexistent.mp3"), True)  # should not raise
+        q.update_favorite(999999, True)  # unknown id — should not raise
         assert all(not t.favorite for t in q._tracks)
 
     def test_update_track_path_patches_matching_track(self) -> None:
@@ -536,12 +536,21 @@ class TestPlaybackQueue:
         ids, _, _, _, _ = q.get_state()
         assert ids == [remote.id]
 
-    def test_update_favorite_str_path_matches_remote_track(self) -> None:
-        """update_favorite accepts a str URI so remote tracks can be matched."""
+    def test_update_favorite_matches_by_id_not_uri(self) -> None:
+        """KAMP-538/532: a queued track is favorited by its canonical id, so the
+        match holds even when the queued track's delivery uri differs from the
+        favorited row's preferred source (e.g. a stream queued before its album was
+        downloaded, whose preferred source has since flipped to the local file).
+
+        Regression: matching by uri (`_canonical_track_uri(id)` vs the queued
+        `bandcamp://` uri) missed this, so the 4 Hz player-state poll reverted the
+        UI's optimistic favorite to False — self-healing only on a queue reload.
+        """
         q = PlaybackQueue()
-        remote = _remote_track()
-        q.load([remote])
-        q.update_favorite("bandcamp:/123456/1", True)
+        # Queued as the stream (bandcamp:// uri); the favorite arrives by id only.
+        streamed = _remote_track()  # id=901, file_path=bandcamp://123456/1
+        q.load([streamed])
+        q.update_favorite(streamed.id, True)
         assert q._tracks[0].favorite is True
 
     def test_restore_sets_all_fields(self) -> None:

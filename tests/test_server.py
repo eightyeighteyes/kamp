@@ -2022,7 +2022,9 @@ class TestFavoriteEndpoint:
     def test_set_favorite_endpoint(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
-        mock_index.get_track_by_path.return_value = _track(1)
+        track = _track(1)
+        track.id = 42
+        mock_index.get_track_by_path.return_value = track
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         resp = TestClient(app).post(
             "/api/v1/tracks/favorite",
@@ -2030,15 +2032,14 @@ class TestFavoriteEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        # KAMP-537: favorite resolves the track first, then keys on its canonical
-        # uri (the stored preferred-source path), not the raw request path.
+        # KAMP-537: favorite resolves the track first, then keys the DB write on its
+        # canonical uri (the stored preferred-source path), not the raw request path.
         mock_index.set_favorite.assert_called_once_with(
             str(Path("/music/01.mp3")), True
         )
-        # Queue must also be updated so the next player-state snapshot is correct.
-        mock_queue.update_favorite.assert_called_once_with(
-            str(Path("/music/01.mp3")), True
-        )
+        # KAMP-538/532: the in-memory queue is patched by canonical id so the next
+        # player-state snapshot is correct even if the queued uri has diverged.
+        mock_queue.update_favorite.assert_called_once_with(42, True)
 
     def test_set_favorite_returns_404_for_unknown_track(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -2090,7 +2091,9 @@ class TestFavoriteEndpoint:
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
         remote_uri = "bandcamp://999/3"
-        mock_index.get_track_by_path.return_value = _track(1)
+        track = _track(1)
+        track.id = 42
+        mock_index.get_track_by_path.return_value = track
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         resp = TestClient(app).post(
             "/api/v1/tracks/favorite",
@@ -2098,13 +2101,12 @@ class TestFavoriteEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        # KAMP-537: keys on the resolved track's canonical uri, not the request uri.
+        # KAMP-537: DB write keys on the resolved track's canonical uri, not the
+        # request uri. KAMP-538/532: the queue is patched by canonical id.
         mock_index.set_favorite.assert_called_once_with(
             str(Path("/music/01.mp3")), True
         )
-        mock_queue.update_favorite.assert_called_once_with(
-            str(Path("/music/01.mp3")), True
-        )
+        mock_queue.update_favorite.assert_called_once_with(42, True)
 
     def test_set_favorite_remote_track_returns_404_when_not_found(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

@@ -49,7 +49,7 @@ from kamp_core.library import (
     MagicCriteria,
     NoStreamableVersionError,
     Track,
-    _canonical_track_key,
+    _canonical_track_uri,
     extract_art,
 )
 from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
@@ -236,7 +236,7 @@ class TrackOut(BaseModel):
             release_date=t.release_date,
             track_number=t.track_number,
             disc_number=t.disc_number,
-            file_path=_canonical_track_key(t.file_path),
+            file_path=_canonical_track_uri(t.file_path),
             ext=t.ext,
             embedded_art=t.embedded_art,
             mb_release_id=t.mb_release_id,

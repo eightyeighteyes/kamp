@@ -57,7 +57,7 @@ class PlaybackState:
 # ---------------------------------------------------------------------------
 
 
-def _canonical_track_key(path: "Path | str") -> str:
+def _canonical_track_uri(path: "Path | str") -> str:
     """Canonical string key for remote track URI comparison and persistence.
 
     Normalises POSIX single-slash (bandcamp:/) and Windows backslash
@@ -104,9 +104,9 @@ class PlaybackQueue:
         snapshot reflects the new value without requiring a queue reload.
         Accepts str so remote track URIs (bandcamp://) can be matched.
         """
-        fp_key = _canonical_track_key(file_path)
+        fp_key = _canonical_track_uri(file_path)
         for t in self._tracks:
-            if _canonical_track_key(t.file_path) == fp_key:
+            if _canonical_track_uri(t.file_path) == fp_key:
                 t.favorite = favorite
 
     def update_track_path(self, old_path: Path, new_path: Path, new_title: str) -> None:

@@ -11,6 +11,21 @@ if TYPE_CHECKING:
 # Field registry
 # ---------------------------------------------------------------------------
 
+# A track's effective (preferred) source, reconstructed from track_sources
+# (KAMP-542). Reproduces post-collapse tracks.source (preferred delivery, mapped
+# file->'local' / stream->'bandcamp'), with a COALESCE fallback to the legacy
+# column for a sourceless row (dropped with the column in KAMP-539). Correlated
+# on `tracks.id` — the magic-playlist evaluation queries alias the row source as
+# `tracks`. Lets `track.source` criteria read track_sources with no value rewrite
+# in stored criteria_json (the compared values stay 'local'/'bandcamp'), so the
+# existing is/is_not/contains operator handling works unchanged.
+_EFFECTIVE_SOURCE_SQL = (
+    "COALESCE((SELECT CASE WHEN s.kind = 'file' THEN 'local' ELSE 'bandcamp' END"
+    " FROM track_sources s WHERE s.track_id = tracks.id"
+    " ORDER BY s.is_available DESC, (s.kind = 'file') DESC, s.id LIMIT 1),"
+    " tracks.source)"
+)
+
 # Maps field name → (sql_column_expr, value_type).
 # value_type controls coercion and, for "year", special CAST wrapping on
 # numeric operators.
@@ -28,7 +43,7 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     "track.artist": ("tracks.artist", "text"),
     "track.album_artist": ("tracks.album_artist", "text"),
     "track.album": ("tracks.album", "text"),
-    "track.source": ("tracks.source", "text"),
+    "track.source": (_EFFECTIVE_SOURCE_SQL, "text"),
 }
 
 # Fields whose SQL expression references the albums table.

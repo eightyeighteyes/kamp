@@ -76,6 +76,23 @@ def _sample_track(file_path: Path) -> Track:
     )
 
 
+def _mirror_stats(index: "LibraryIndex") -> None:
+    """Propagate every track's legacy stat columns into track_stats (KAMP-542).
+
+    Reads now resolve favorite/play_count/last_played through the
+    tracks_with_stats view (i.e. from track_stats), so a test that seeds those
+    values with a direct ``UPDATE tracks`` must mirror them, exactly as the
+    production stat writers do.
+    """
+    index._conn.execute(
+        "INSERT INTO track_stats (track_id, favorite, play_count, last_played)"
+        " SELECT id, favorite, play_count, last_played FROM tracks WHERE true"
+        " ON CONFLICT(track_id) DO UPDATE SET favorite=excluded.favorite,"
+        " play_count=excluded.play_count, last_played=excluded.last_played"
+    )
+    index._conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # LibraryIndex
 # ---------------------------------------------------------------------------
@@ -6498,18 +6515,27 @@ class TestRemoteTrackSchema:
         assert row_before is not None
         assert row_before["source"] == "bandcamp"
 
-        # set_track_source_for_item is called (e.g. during sync cleanup).
+        # set_track_source_for_item writes tracks.source directly without touching
+        # track_sources. It is dead code post-collapse — server.py:3030 documents
+        # that it is never called — so it leaves tracks.source and track_sources
+        # inconsistent.
         index.set_track_source_for_item("sale-3", "local")
+        index._refresh_album_source(
+            index._conn.execute(
+                "SELECT id FROM albums WHERE sale_item_id = 'sale-3'"
+            ).fetchone()[0]
+        )
 
         row_after = index._conn.execute(
             "SELECT source FROM albums WHERE sale_item_id = 'sale-3'"
         ).fetchone()
         index.close()
 
-        # Remote tracks now have source='local' but file_path still starts with
-        # bandcamp://, so the dedup logic produces 'local' (local wins).
+        # The badge now derives from track_sources (KAMP-542), which this obsolete
+        # method does not update, so it stays 'bandcamp' (the track still has only
+        # a stream source). Pre-542 it flipped to 'local' by reading tracks.source.
         assert row_after is not None
-        assert row_after["source"] == "local"
+        assert row_after["source"] == "bandcamp"
 
     def test_migration_v20_adds_stream_columns(self, tmp_path: Path) -> None:
         """A v19 DB gains the three new columns on open."""
@@ -6709,6 +6735,35 @@ class TestReleaseDateBackfill:
 
         assert needs is True
 
+    def test_downloaded_track_with_stream_source_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """A downloaded (file-preferred) track carrying a stream source for the
+        album is NOT flagged/patched, even with a year-only release_date — the
+        backfill targets stream-preferred tracks only (KAMP-542). Guards the
+        effective-source restriction: a naive EXISTS(stream source) would wrongly
+        match it and overwrite its file-tag release_date."""
+        index = self._make_index(tmp_path)
+        c = index._conn
+        c.execute(
+            "INSERT INTO tracks (file_path, source, album_id, track_number,"
+            " disc_number, release_date) VALUES ('/m/a.mp3','local',NULL,1,1,'2020')"
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.executemany(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, ?, ?)",
+            [(tid, "file", "/m/a.mp3"), (tid, "stream", "bandcamp://sale9/1")],
+        )
+        c.commit()
+
+        assert index.has_remote_tracks_needing_date_backfill("sale9") is False
+        index.patch_release_date_for_remote_album("sale9", "2020-05-01")
+        after = c.execute(
+            "SELECT release_date FROM tracks WHERE id = ?", (tid,)
+        ).fetchone()[0]
+        index.close()
+        assert after == "2020"  # untouched — it is downloaded, not stream-preferred
+
     def test_backfill_needed_when_release_date_is_empty(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
         track = Track(
@@ -6799,8 +6854,19 @@ class TestAlbumInfoRemoteFields:
         index.close()
 
         assert len(albums) == 1
-        assert albums[0].source == "mixed"
-        assert albums[0].has_remote_tracks is True
+        # Post-collapse the badge is reconstructed from track_sources (KAMP-542).
+        # A genuinely mixed album (one local-preferred + one stream-preferred
+        # track) reads 'local', not 'mixed' — the pre-existing quirk tracked in
+        # KAMP-546. The old formula returned 'mixed' here only because this
+        # fixture's "bandcamp" track has a mangled, non-bandcamp:// file_path
+        # (tmp_path / "bandcamp://999/2"), a state that cannot occur in production
+        # where a stream track's file_path IS its bandcamp:// uri.
+        assert albums[0].source == "local"
+        # has_remote_tracks is derived from the badge (album_source != 'local'), so
+        # it follows the same KAMP-546 quirk: a realistic mixed album reads
+        # 'local' -> has_remote_tracks False. This already matches production on
+        # main (where a realistic mixed album's badge is 'local').
+        assert albums[0].has_remote_tracks is False
 
     def test_in_bandcamp_collection_true(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -6917,7 +6983,7 @@ class TestAlbumInfoRemoteFields:
     def test_sale_item_id_populated_for_bandcamp_album(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         # Use upsert_many via the helper so the albums row (and its sale_item_id FK)
-        # is created. upsert_many's _canonical_track_key preserves bandcamp:// paths.
+        # is created. upsert_many's _canonical_track_uri preserves bandcamp:// paths.
         self._insert_bc_tracks(index, "abc123")
         index.upsert_collection_item(
             "abc123",
@@ -6945,7 +7011,7 @@ class TestAlbumInfoRemoteFields:
         """Insert two bandcamp:// tracks via upsert_many so the albums row is created.
 
         Uses the same album_artist / album defaults as _insert_track so tests can
-        mix the two helpers in the same album group.  _canonical_track_key inside
+        mix the two helpers in the same album group.  _canonical_track_uri inside
         upsert_many preserves the bandcamp:// double-slash form even though Path()
         collapses it to a single slash on POSIX.
         """
@@ -8464,6 +8530,7 @@ class TestInheritRemotePlayCounts:
         index.upsert_many([local])
         index._conn.execute("UPDATE tracks SET play_count = 10 WHERE source = 'local'")
         index._conn.commit()
+        _mirror_stats(index)
         index.inherit_remote_play_counts([local])
 
         result = index.tracks_for_album("The Artist", "The Album")
@@ -10182,6 +10249,7 @@ class TestMagicPlaylists:
             (str(tmp_path / "a.mp3"),),
         )
         index._conn.commit()
+        _mirror_stats(index)
         row_a = index._conn.execute(
             "SELECT id FROM tracks WHERE file_path = ?", (str(tmp_path / "a.mp3"),)
         ).fetchone()
@@ -10240,6 +10308,35 @@ class TestMagicPlaylists:
         result = index.evaluate_magic_playlist(pid)
         index.close()
         assert result == [id_a]
+
+    def test_evaluate_filters_by_source_via_track_sources(self, tmp_path: Path) -> None:
+        """track.source criteria resolves via track_sources, not tracks.source (KAMP-542)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([_sample_track(tmp_path / "a.mp3")])
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        # Desync: the track has a file (local) source, but its legacy source column
+        # is set to 'bandcamp'. The criterion must follow the source (local).
+        index._conn.execute(
+            "UPDATE tracks SET source = 'bandcamp' WHERE id = ?", (tid,)
+        )
+        index._conn.commit()
+        criteria = MagicCriteria(
+            groups=[
+                Group(
+                    conditions=[
+                        Condition(field="track.source", op="is", value="local")
+                    ],
+                    match="all",
+                )
+            ],
+            match="all",
+        )
+        pid = index.create_magic_playlist("Local", criteria)
+        result = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert result == [
+            tid
+        ]  # matched by the file source, not tracks.source='bandcamp'
 
     def test_evaluate_filters_by_genre_contains(self, tmp_path: Path) -> None:
         index, id_a, id_b = self._seeded_index(tmp_path)
@@ -11204,6 +11301,151 @@ class TestUpsertSyncProtection:
         result = index.all_tracks()[0]
         index.close()
         assert result.genre == "Electronic"
+
+
+# ---------------------------------------------------------------------------
+# Stats read-switch — reads resolve from track_stats (KAMP-542)
+# ---------------------------------------------------------------------------
+
+
+class TestStatsReadFromTrackStats:
+    """Every stats read resolves via track_stats, not the legacy tracks columns.
+
+    Proven differentially: deliberately desync track_stats from the tracks
+    columns (favorite/play_count/last_played) — which cannot happen in
+    production, where every writer mirrors — and assert the read paths report
+    the track_stats values. Guards KAMP-542's core promise so KAMP-539 can drop
+    the legacy columns.
+    """
+
+    def _desynced(self, tmp_path: Path) -> tuple["LibraryIndex", int]:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([_sample_track(tmp_path / "a.mp3")])
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
+        # Legacy columns say 0/NULL; track_stats (authoritative) says otherwise.
+        index._conn.execute(
+            "UPDATE tracks SET favorite = 0, play_count = 0, last_played = NULL"
+        )
+        index._conn.execute(
+            "INSERT INTO track_stats (track_id, favorite, play_count, last_played)"
+            " VALUES (?, 1, 9, 555.0) ON CONFLICT(track_id) DO UPDATE SET"
+            " favorite = 1, play_count = 9, last_played = 555.0",
+            (tid,),
+        )
+        index._conn.commit()
+        return index, tid
+
+    def test_get_track_by_id_and_path_read_track_stats(self, tmp_path: Path) -> None:
+        index, tid = self._desynced(tmp_path)
+        by_id = index.get_track_by_id(tid)
+        by_path = index.get_track_by_path(str(tmp_path / "a.mp3"))
+        index.close()
+        for t in (by_id, by_path):
+            assert t is not None
+            assert t.favorite is True
+            assert t.play_count == 9
+            assert t.last_played == 555.0
+
+    def test_top_tracks_and_album_read_track_stats(self, tmp_path: Path) -> None:
+        index, _ = self._desynced(tmp_path)
+        top = index.top_tracks(5)  # WHERE play_count > 0 — legacy col is 0
+        album = index.tracks_for_album("The Artist", "The Album")
+        index.close()
+        assert [t.play_count for t in top] == [
+            9
+        ]  # would be [] if reading tracks.play_count
+        assert album[0].favorite is True
+
+    def test_view_falls_back_to_legacy_when_no_stats_row(self, tmp_path: Path) -> None:
+        """A track with no track_stats row still reads its legacy value (transition safety)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([_sample_track(tmp_path / "a.mp3")])
+        index._conn.execute("UPDATE tracks SET favorite = 1, play_count = 4")
+        index._conn.execute("DELETE FROM track_stats")
+        index._conn.commit()
+        t = index.get_track_by_path(str(tmp_path / "a.mp3"))
+        index.close()
+        assert t is not None and t.favorite is True and t.play_count == 4
+
+
+# ---------------------------------------------------------------------------
+# Album source classifier reconstruction (KAMP-542)
+# ---------------------------------------------------------------------------
+
+
+class TestAlbumSourceClassifier:
+    """The album `source` badge reads track_sources (not tracks.source) but is
+    byte-for-byte behavior-preserving vs the legacy formula, including the
+    post-collapse quirk where a mixed album reads 'local' and 'mixed' is
+    unreachable (tracked separately; preserved here per KAMP-542)."""
+
+    def _album(self, index: "LibraryIndex", name: str, tracks: list) -> int:
+        c = index._conn
+        c.execute(
+            "INSERT INTO albums (album_artist, album) VALUES (?, ?)", (name, name)
+        )
+        alb = c.execute("SELECT id FROM albums WHERE album = ?", (name,)).fetchone()[0]
+        for i, (src, fp, kinds) in enumerate(tracks, 1):
+            c.execute(
+                "INSERT INTO tracks (file_path, source, album_id, track_number,"
+                " disc_number) VALUES (?, ?, ?, ?, 1)",
+                (fp, src, alb, i),
+            )
+            tid = c.execute(
+                "SELECT id FROM tracks WHERE file_path = ?", (fp,)
+            ).fetchone()[0]
+            for k in kinds:
+                uri = fp if k == "file" else f"bandcamp://{name}/{i}"
+                c.execute(
+                    "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, ?, ?)",
+                    (tid, k, uri),
+                )
+        index._conn.commit()
+        return alb
+
+    def test_badge_matches_legacy_output(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        cases = {
+            "downloaded": (
+                [("local", "/m/a1.mp3", ["file"]), ("local", "/m/a2.mp3", ["file"])],
+                "local",
+            ),
+            "stream_only": (
+                [
+                    ("bandcamp", "bandcamp://S/1", ["stream"]),
+                    ("bandcamp", "bandcamp://S/2", ["stream"]),
+                ],
+                "bandcamp",
+            ),
+            # Post-collapse quirk: a mixed album reads 'local' (preserved, not 'mixed').
+            "mixed": (
+                [
+                    ("local", "/m/c1.mp3", ["file"]),
+                    ("bandcamp", "bandcamp://C/2", ["stream"]),
+                ],
+                "local",
+            ),
+            "downloaded_and_streamable": (
+                [
+                    ("local", "/m/d1.mp3", ["file", "stream"]),
+                    ("local", "/m/d2.mp3", ["file", "stream"]),
+                ],
+                "local",
+            ),
+        }
+        ids = {
+            name: self._album(index, name, tracks)
+            for name, (tracks, _) in cases.items()
+        }
+        index._refresh_album_aggregates(list(ids.values()))
+        got = {
+            name: index._conn.execute(
+                "SELECT source FROM albums WHERE id = ?", (ids[name],)
+            ).fetchone()[0]
+            for name in cases
+        }
+        index.close()
+        assert got == {name: expected for name, (_, expected) in cases.items()}
 
 
 # ---------------------------------------------------------------------------

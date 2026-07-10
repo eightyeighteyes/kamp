@@ -711,6 +711,56 @@ class PendingIngest:
     created_at: float
 
 
+# A track's effective (preferred) delivery, reconstructed from track_sources
+# (KAMP-542). Reproduces post-collapse tracks.source exactly: the preferred
+# source is chosen by the same ordering as preferred_source(), and its kind is
+# mapped file->'local' / stream->'bandcamp' — the identical mapping
+# _sync_tracks_row_to_preferred_source writes to tracks.source. Correlated on the
+# outer tracks alias `t`; lets the source classifiers read track_sources so
+# KAMP-539 can drop tracks.source. `t.file_path LIKE 'bandcamp://%'` (which the
+# album formula used) equals "this effective source is a stream", i.e.
+# `<eff> <> 'local'`.
+def _eff_source(alias: str = "t") -> str:
+    """SQL for a track's effective (preferred) source, 'local' or 'bandcamp'.
+
+    Reconstructed from track_sources — the preferred delivery chosen by the same
+    ordering as preferred_source(), kind mapped file->'local'/stream->'bandcamp',
+    the identical value _sync_tracks_row_to_preferred_source writes to
+    tracks.source. Correlated on ``<alias>.id`` so it can replace a ``source``
+    read on any tracks alias, letting KAMP-539 drop tracks.source. COALESCEs to
+    ``<alias>.source`` for a sourceless row (a pre-540 row or bare test fixture;
+    tracks.source is NOT NULL) — that fallback is dropped with the column in 539.
+    Note ``<eff> <> 'local'`` reproduces the legacy ``file_path LIKE 'bandcamp://%'``
+    test (file_path is bandcamp:// exactly when the effective source is a stream).
+    """
+    return (
+        "COALESCE("
+        "(SELECT CASE WHEN s.kind = 'file' THEN 'local' ELSE 'bandcamp' END"
+        f" FROM track_sources s WHERE s.track_id = {alias}.id"
+        " ORDER BY s.is_available DESC, (s.kind = 'file') DESC, s.id LIMIT 1)"
+        f", {alias}.source)"
+    )
+
+
+_EFFECTIVE_SOURCE_EXPR = _eff_source("t")
+
+# Album `source` badge ('local' / 'bandcamp' / 'mixed'), correlated on the outer
+# `albums.id`. Behavior-preserving reconstruction of the legacy formula (which
+# read tracks.source and file_path LIKE 'bandcamp://%'): computes each track's
+# effective source once in a derived table, then applies the identical CASE. The
+# 'mixed' arm is unreachable post-collapse — preserved verbatim so the badge is
+# byte-for-byte unchanged (see KAMP-542; the quirk is tracked separately).
+_ALBUM_SOURCE_SUBQUERY = (
+    "(SELECT CASE"
+    "   WHEN COUNT(CASE WHEN es.eff = 'local' THEN 1 END) > 0"
+    "    AND COUNT(CASE WHEN es.eff <> 'local' THEN 1 END) > 0 THEN 'local'"
+    "   WHEN COUNT(DISTINCT es.eff) > 1 THEN 'mixed'"
+    "   ELSE MIN(es.eff) END"
+    "  FROM (SELECT " + _EFFECTIVE_SOURCE_EXPR + " AS eff"
+    "        FROM tracks t WHERE t.album_id = albums.id) es)"
+)
+
+
 class LibraryIndex:
     """Persistent SQLite index of all tracks in the music library."""
 
@@ -731,6 +781,7 @@ class LibraryIndex:
         if db_path.exists():
             db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         self._migrate()
+        self._create_tracks_with_stats_view()
 
     def _make_conn(self) -> sqlite3.Connection:
         """Open a new SQLite connection configured for use in this index."""
@@ -1903,6 +1954,38 @@ class LibraryIndex:
             self._conn.commit()
             version = 48  # noqa: F841
 
+    def _create_tracks_with_stats_view(self) -> None:
+        """(Re)create the read-only ``tracks_with_stats`` view (KAMP-542).
+
+        Projects every ``tracks`` column but shadows ``favorite``/``play_count``/
+        ``last_played`` from ``track_stats`` — the authoritative store since the
+        KAMP-540 dual-write — so read paths resolve stats from the child table and
+        KAMP-539 can drop the legacy columns. While both coexist the shadow
+        COALESCEs back to the legacy column, so a track that somehow lacks a
+        ``track_stats`` row still reads its real value rather than a spurious 0;
+        once 539 drops the legacy columns the fallback becomes the type default.
+
+        Built from ``PRAGMA table_info`` and recreated on every open so it always
+        matches the current ``tracks`` schema (survives 539's column drop with no
+        edit here). Read-only by construction: every writer (UPDATE/INSERT/upsert,
+        the ``tracks_fts`` rowid join, the stat mirrors) stays on the base table,
+        whose ``id`` the view preserves so FTS rowid joins still resolve.
+        """
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")]
+        # column -> SQL default used once the legacy column is dropped (KAMP-539).
+        stats_default = {"favorite": "0", "play_count": "0", "last_played": "NULL"}
+        projected = [f"t.{c}" for c in cols if c not in stats_default]
+        for name, default in stats_default.items():
+            fallback = f"t.{name}" if name in cols else default
+            projected.append(f"COALESCE(ts.{name}, {fallback}) AS {name}")
+        self._conn.executescript(
+            "DROP VIEW IF EXISTS tracks_with_stats;\n"
+            "CREATE VIEW tracks_with_stats AS SELECT "
+            + ", ".join(projected)
+            + " FROM tracks t LEFT JOIN track_stats ts ON ts.track_id = t.id;"
+        )
+        self._conn.commit()
+
     def _backup_db(self, label: str) -> bool:
         """Snapshot the live DB (incl. WAL) before a mutating heal; return success.
 
@@ -2568,17 +2651,7 @@ class LibraryIndex:
             )
         # 6. Recompute albums.source from the surviving tracks.
         self._conn.execute(
-            """
-            UPDATE albums SET source = (
-                SELECT CASE
-                    WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
-                     AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                        THEN 'local'
-                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                    ELSE MIN(t.source) END
-                FROM tracks t WHERE t.album_id = albums.id
-            ) WHERE id=?
-            """,
+            f"UPDATE albums SET source = {_ALBUM_SOURCE_SUBQUERY} WHERE id=?",
             (keep,),
         )
 
@@ -3015,19 +3088,8 @@ class LibraryIndex:
         # Refresh albums.source via the sale_item_id FK. Remote tracks may not have
         # album_id populated yet, so join through albums.sale_item_id instead.
         self._conn.execute(
-            """
-            UPDATE albums SET source = (
-                SELECT CASE
-                    WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
-                         AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                    THEN 'local'
-                    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                    ELSE MIN(t.source)
-                END
-                FROM tracks t WHERE t.album_id = albums.id
-            )
-            WHERE sale_item_id = ?
-            """,
+            f"UPDATE albums SET source = {_ALBUM_SOURCE_SUBQUERY}"
+            " WHERE sale_item_id = ?",
             (sale_item_id,),
         )
         self._conn.commit()
@@ -3083,10 +3145,16 @@ class LibraryIndex:
         Used by sync_collection_stream to trigger a re-fetch of the album page so
         full ISO dates ("2020-01-01") replace year-only strings written before KAMP-513.
         """
+        # A remote track is stream-preferred (effective source 'bandcamp', so a
+        # downloaded copy is excluded exactly as the old file_path check did) and
+        # carries a stream source for this album (KAMP-542; was file_path LIKE
+        # bandcamp://sid AND source='bandcamp').
         row = self._conn.execute(
-            "SELECT 1 FROM tracks"
-            " WHERE (file_path LIKE ? OR file_path LIKE ?)"
-            "   AND source = 'bandcamp'"
+            f"SELECT 1 FROM tracks"
+            f" WHERE {_eff_source('tracks')} = 'bandcamp'"
+            "   AND EXISTS (SELECT 1 FROM track_sources s"
+            "     WHERE s.track_id = tracks.id AND s.kind = 'stream'"
+            "       AND (s.uri LIKE ? OR s.uri LIKE ?))"
             "   AND (release_date = '' OR length(release_date) <= 4)"
             " LIMIT 1",
             (f"bandcamp://{sale_item_id}/%", f"bandcamp:\\{sale_item_id}\\%"),
@@ -3101,10 +3169,15 @@ class LibraryIndex:
         Called after a backfill fetch to replace year-only strings with the full
         ISO date. Does not touch play_count, favorite, or any other field.
         """
+        # Stream-preferred tracks carrying a stream source for this album — leaves
+        # a downloaded copy's release_date (from its file tags) untouched, exactly
+        # as the old file_path check did (KAMP-542).
         self._conn.execute(
-            "UPDATE tracks SET release_date = ?"
-            " WHERE (file_path LIKE ? OR file_path LIKE ?)"
-            "   AND source = 'bandcamp'",
+            f"UPDATE tracks SET release_date = ?"
+            f" WHERE {_eff_source('tracks')} = 'bandcamp'"
+            "   AND EXISTS (SELECT 1 FROM track_sources s"
+            "     WHERE s.track_id = tracks.id AND s.kind = 'stream'"
+            "       AND (s.uri LIKE ? OR s.uri LIKE ?))",
             (
                 release_date,
                 f"bandcamp://{sale_item_id}/%",
@@ -3127,7 +3200,7 @@ class LibraryIndex:
         """
         rows = self._conn.execute(
             """
-            SELECT DISTINCT t.* FROM tracks t
+            SELECT DISTINCT t.* FROM tracks_with_stats t
             LEFT JOIN albums a ON a.id = t.album_id
             WHERE (a.sale_item_id = ? OR t.sale_item_id = ?)
               AND t.file_path NOT LIKE 'bandcamp://%'
@@ -3201,15 +3274,7 @@ class LibraryIndex:
     def _refresh_album_source(self, album_id: int) -> None:
         """Recompute albums.source for one album from its tracks' legacy columns."""
         self._conn.execute(
-            "UPDATE albums SET source = ("
-            "  SELECT CASE"
-            "    WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0"
-            "         AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0"
-            "    THEN 'local'"
-            "    WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'"
-            "    ELSE MIN(t.source) END"
-            "  FROM tracks t WHERE t.album_id = albums.id)"
-            " WHERE id = ?",
+            f"UPDATE albums SET source = {_ALBUM_SOURCE_SUBQUERY} WHERE id = ?",
             (album_id,),
         )
 
@@ -3306,7 +3371,7 @@ class LibraryIndex:
         attached = 0
         try:
             for t in tracks:
-                uri = _canonical_track_key(t.file_path)
+                uri = _canonical_track_uri(t.file_path)
                 row = self._conn.execute(
                     "SELECT t.id FROM tracks t"
                     " LEFT JOIN albums a ON a.id = t.album_id"
@@ -3767,7 +3832,7 @@ class LibraryIndex:
         )
 
         # Step 3: assign album_id on the track rows we just inserted/updated.
-        file_paths = [_canonical_track_key(t.file_path) for t in named]
+        file_paths = [_canonical_track_uri(t.file_path) for t in named]
 
         # Step 3a (KAMP-523): link provenanced tracks by identity. Resolve each
         # trusted sale_item_id to its album — adopting the existing streaming
@@ -3808,7 +3873,7 @@ class LibraryIndex:
             for t in tracks:
                 if not (_provenanced(t) and t.sale_item_id in prov_targets):
                     continue
-                fp = _canonical_track_key(t.file_path)
+                fp = _canonical_track_uri(t.file_path)
                 prov_paths.add(fp)
                 prov_album_ids.add(prov_targets[t.sale_item_id])
                 self._conn.execute(
@@ -3830,7 +3895,7 @@ class LibraryIndex:
                     continue
                 self._conn.execute(
                     "UPDATE tracks SET sale_item_id = ? WHERE file_path = ?",
-                    (t.sale_item_id, _canonical_track_key(t.file_path)),
+                    (t.sale_item_id, _canonical_track_uri(t.file_path)),
                 )
 
         # Step 3b: link the remaining (un-provenanced) tracks by name. TRIM on
@@ -3859,7 +3924,7 @@ class LibraryIndex:
         # streaming single-album by identity (local.title == the single-album's
         # album field). Shared with the v42 migration via one helper.
         single_paths = [
-            _canonical_track_key(t.file_path)
+            _canonical_track_uri(t.file_path)
             for t in tracks
             if t.source == "local"
             and not t.album.strip()
@@ -3897,7 +3962,7 @@ class LibraryIndex:
         # this only populates the children for KAMP-541/542.
         src_params: list[tuple[Any, ...]] = []
         for t in tracks:
-            key = _canonical_track_key(t.file_path)
+            key = _canonical_track_uri(t.file_path)
             _uri, kind, provider, provider_item_id = _derive_source_fields(
                 t.file_path, t.source, t.sale_item_id
             )
@@ -3966,18 +4031,12 @@ class LibraryIndex:
             UPDATE albums SET
                 embedded_art   = (SELECT MAX(t.embedded_art)  FROM tracks t WHERE t.album_id = albums.id),
                 date_added     = (SELECT MIN(t.date_added)    FROM tracks t WHERE t.album_id = albums.id),
-                last_played_at = (SELECT MAX(t.last_played)   FROM tracks t WHERE t.album_id = albums.id),
-                art_version    = (SELECT MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
+                last_played_at = (SELECT MAX(t.last_played)   FROM tracks_with_stats t WHERE t.album_id = albums.id),
+                art_version    = (SELECT MAX(CASE WHEN {_eff_source("t")} = 'local' THEN t.file_mtime END)
                                   FROM tracks t WHERE t.album_id = albums.id),
                 play_count_avg = (SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
-                                  FROM tracks t WHERE t.album_id = albums.id),
-                source         = (SELECT
-                                      CASE WHEN COUNT(CASE WHEN t.source='local' THEN 1 END) > 0
-                                                AND COUNT(CASE WHEN t.file_path LIKE 'bandcamp://%' THEN 1 END) > 0
-                                           THEN 'local'
-                                           WHEN COUNT(DISTINCT t.source) > 1 THEN 'mixed'
-                                           ELSE MIN(t.source) END
-                                  FROM tracks t WHERE t.album_id = albums.id),
+                                  FROM tracks_with_stats t WHERE t.album_id = albums.id),
+                source         = {_ALBUM_SOURCE_SUBQUERY},
                 release_date   = (SELECT MAX(t.release_date)   FROM tracks t WHERE t.album_id = albums.id),
                 genre          = (SELECT MAX(t.genre)          FROM tracks t WHERE t.album_id = albums.id),
                 label          = (SELECT MAX(t.label)          FROM tracks t WHERE t.album_id = albums.id),
@@ -4042,7 +4101,7 @@ class LibraryIndex:
             f"""
             SELECT t.id, t.file_path, t.album_artist, t.title
             FROM tracks t
-            WHERE t.source = 'local'
+            WHERE {_eff_source("t")} = 'local'
               AND t.album_id IS NULL
               AND TRIM(t.album) = ''
               AND TRIM(t.album_artist) != ''
@@ -4058,9 +4117,10 @@ class LibraryIndex:
             # local single sharing this (album_artist, title) is not safe to
             # auto-attach — leave all of them untouched.
             local_dupes = self._conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM tracks
-                WHERE source = 'local' AND album_id IS NULL AND TRIM(album) = ''
+                WHERE {_eff_source("tracks")} = 'local' AND album_id IS NULL
+                  AND TRIM(album) = ''
                   AND TRIM(album_artist) = TRIM(?) COLLATE NOCASE
                   AND TRIM(title)        = TRIM(?) COLLATE NOCASE
                 """,
@@ -4078,14 +4138,14 @@ class LibraryIndex:
             # Streaming single-album: exactly one track, a bandcamp row, whose
             # album equals this single's title under the same artist.
             matches = self._conn.execute(
-                """
+                f"""
                 SELECT a.id FROM albums a
                 WHERE TRIM(a.album_artist) = TRIM(?) COLLATE NOCASE
                   AND TRIM(a.album)        = TRIM(?) COLLATE NOCASE
                   AND (SELECT COUNT(*) FROM tracks x WHERE x.album_id = a.id) = 1
                   AND EXISTS (
                         SELECT 1 FROM tracks x
-                        WHERE x.album_id = a.id AND x.source = 'bandcamp'
+                        WHERE x.album_id = a.id AND {_eff_source("x")} = 'bandcamp'
                       )
                 """,
                 (c["album_artist"], c["title"]),
@@ -4108,7 +4168,7 @@ class LibraryIndex:
             # album_id alone leaves album='' and the loose card persists (KAMP-529).
             stream = self._conn.execute(
                 "SELECT track_number, disc_number FROM tracks"
-                " WHERE album_id = ? AND source = 'bandcamp' LIMIT 1",
+                f" WHERE album_id = ? AND {_eff_source('tracks')} = 'bandcamp' LIMIT 1",
                 (album_id,),
             ).fetchone()
             alb = self._conn.execute(
@@ -4550,13 +4610,14 @@ class LibraryIndex:
 
     def all_tracks(self) -> list[Track]:
         """Return all indexed tracks in insertion order."""
-        rows = self._conn.execute("SELECT * FROM tracks").fetchall()
+        rows = self._conn.execute("SELECT * FROM tracks_with_stats").fetchall()
         return [_row_to_track(r) for r in rows]
 
     def top_tracks(self, limit: int) -> list[Track]:
         """Return the top *limit* tracks by play_count descending, excluding unplayed."""
         rows = self._conn.execute(
-            "SELECT * FROM tracks WHERE play_count > 0 ORDER BY play_count DESC LIMIT ?",
+            "SELECT * FROM tracks_with_stats WHERE play_count > 0"
+            " ORDER BY play_count DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [_row_to_track(r) for r in rows]
@@ -4574,7 +4635,7 @@ class LibraryIndex:
         to the normalized uri when nothing matches, leaving the caller's write a
         harmless no-op exactly as before.
         """
-        key = _canonical_track_key(uri)
+        key = _canonical_track_uri(uri)
         if self._conn.execute(
             "SELECT 1 FROM tracks WHERE file_path = ? LIMIT 1", (key,)
         ).fetchone():
@@ -4650,18 +4711,21 @@ class LibraryIndex:
             "UPDATE tracks SET play_count = play_count + 1 WHERE file_path = ?",
             (key,),
         )
+        # Mirror the post-increment absolute value (not a +1) into track_stats
+        # BEFORE recomputing the album average — that recompute now reads
+        # play_count through the tracks_with_stats view (i.e. from track_stats),
+        # so the mirror must land first or the average sees the stale value.
+        self._mirror_track_stats(key, ("play_count",))
         self._conn.execute(
             """
             UPDATE albums SET play_count_avg = (
                 SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
-                FROM tracks t WHERE t.album_id = albums.id
+                FROM tracks_with_stats t WHERE t.album_id = albums.id
             )
             WHERE id = (SELECT album_id FROM tracks WHERE file_path = ?)
             """,
             (key,),
         )
-        # Mirror the post-increment absolute value (not a +1) into track_stats.
-        self._mirror_track_stats(key, ("play_count",))
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.play_count"})
@@ -4673,7 +4737,7 @@ class LibraryIndex:
         Orthogonal to record_played: that updates tracks.play_count; this updates artists.play_time.
         For Various Artists albums, credits the track-level artist instead of the album artist.
         """
-        key = _canonical_track_key(file_path)
+        key = _canonical_track_uri(file_path)
         row = self._conn.execute(
             "SELECT artist, album_artist FROM tracks WHERE file_path = ?", (key,)
         ).fetchone()
@@ -4737,7 +4801,7 @@ class LibraryIndex:
             "SELECT COALESCE(SUM(play_time), 0) FROM artists"
         ).fetchone()[0]
         total_plays = c.execute(
-            "SELECT COALESCE(SUM(play_count), 0) FROM tracks"
+            "SELECT COALESCE(SUM(play_count), 0) FROM tracks_with_stats"
         ).fetchone()[0]
         albums_played = c.execute(
             "SELECT COUNT(*) FROM albums WHERE play_count_avg > 0"
@@ -4973,7 +5037,7 @@ class LibraryIndex:
         )
         self._conn.commit()
         row = self._conn.execute(
-            "SELECT * FROM tracks WHERE id = ?", (track_id,)
+            "SELECT * FROM tracks_with_stats WHERE id = ?", (track_id,)
         ).fetchone()
         return _row_to_track(row) if row else None
 
@@ -5035,7 +5099,7 @@ class LibraryIndex:
                 -- track_count: for mixed or local albums count only local tracks
                 -- so the dedup state (local+remote rows coexisting) shows real files.
                 CASE WHEN a.source IN ('mixed', 'local')
-                     THEN COUNT(CASE WHEN t.source = 'local' THEN 1 END)
+                     THEN COUNT(CASE WHEN {_eff_source("t")} = 'local' THEN 1 END)
                      ELSE COUNT(t.id)
                 END                 AS track_count,
                 MAX(t.favorite)     AS has_favorite_track,
@@ -5053,7 +5117,7 @@ class LibraryIndex:
                 -- effective album title used for sort-by-album ordering.
                 COALESCE(a.display_album, a.album) AS sort_album
             FROM albums a
-            LEFT JOIN tracks t ON t.album_id = a.id
+            LEFT JOIN tracks_with_stats t ON t.album_id = a.id
             LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id
             GROUP BY a.id
             UNION ALL
@@ -5064,7 +5128,7 @@ class LibraryIndex:
                 t.album_artist,
                 t.title             AS album,
                 t.release_date,
-                t.source            AS album_source,
+                {_EFFECTIVE_SOURCE_EXPR} AS album_source,
                 NULL                AS sale_item_id,
                 0                   AS is_favorite,
                 t.date_added        AS sort_date_added,
@@ -5084,7 +5148,7 @@ class LibraryIndex:
                 NULL                AS display_album,
                 NULL                AS display_album_artist,
                 t.title             AS sort_album
-            FROM tracks t
+            FROM tracks_with_stats t
             WHERE t.album = ''
             ORDER BY {order_by}
             """).fetchall()  # noqa: S608 — order_by is from a whitelist, not user input
@@ -5151,7 +5215,8 @@ class LibraryIndex:
         if album_id is None:
             return []
         rows = self._conn.execute(
-            "SELECT * FROM tracks WHERE album_id = ? ORDER BY disc_number, track_number",
+            "SELECT * FROM tracks_with_stats WHERE album_id = ?"
+            " ORDER BY disc_number, track_number",
             (album_id,),
         ).fetchall()
         return [_row_to_track(r) for r in rows]
@@ -5162,7 +5227,7 @@ class LibraryIndex:
             """
             SELECT t.*
             FROM playlist_tracks pt
-            JOIN tracks t ON t.id = pt.track_id
+            JOIN tracks_with_stats t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?
             ORDER BY pt.position ASC
             """,
@@ -5206,7 +5271,7 @@ class LibraryIndex:
         """
         key = path if isinstance(path, str) else str(path)
         row = self._conn.execute(
-            "SELECT * FROM tracks WHERE file_path = ?", (key,)
+            "SELECT * FROM tracks_with_stats WHERE file_path = ?", (key,)
         ).fetchone()
         if row is not None:
             return _row_to_track(row)
@@ -5217,16 +5282,17 @@ class LibraryIndex:
         # sources: a moved/renamed local file's *old* path is a stale file source
         # and must still resolve to nothing (the file is genuinely gone).
         src = self._conn.execute(
-            "SELECT t.* FROM track_sources s JOIN tracks t ON t.id = s.track_id"
+            "SELECT t.* FROM track_sources s"
+            " JOIN tracks_with_stats t ON t.id = s.track_id"
             " WHERE s.uri = ? AND s.kind = 'stream' LIMIT 1",
-            (_canonical_track_key(key),),
+            (_canonical_track_uri(key),),
         ).fetchone()
         return _row_to_track(src) if src else None
 
     def get_track_by_id(self, track_id: int) -> "Track | None":
         """Return the track with *track_id*, or None if not indexed."""
         row = self._conn.execute(
-            "SELECT * FROM tracks WHERE id = ?", (track_id,)
+            "SELECT * FROM tracks_with_stats WHERE id = ?", (track_id,)
         ).fetchone()
         return _row_to_track(row) if row else None
 
@@ -5235,7 +5301,8 @@ class LibraryIndex:
         if not mb_recording_id:
             return None
         row = self._conn.execute(
-            "SELECT * FROM tracks WHERE mb_recording_id = ?", (mb_recording_id,)
+            "SELECT * FROM tracks_with_stats WHERE mb_recording_id = ?",
+            (mb_recording_id,),
         ).fetchone()
         return _row_to_track(row) if row else None
 
@@ -5269,8 +5336,8 @@ class LibraryIndex:
         if album is not None:
             ambiguous: set[int] = set()
             for r in self._conn.execute(
-                "SELECT track_number, display_title FROM tracks"
-                " WHERE album_id = ? AND file_path LIKE 'bandcamp://%'"
+                f"SELECT track_number, display_title FROM tracks"
+                f" WHERE album_id = ? AND {_eff_source('tracks')} = 'bandcamp'"
                 "   AND display_title IS NOT NULL AND display_title != ''",
                 (album["id"],),
             ).fetchall():
@@ -5314,7 +5381,7 @@ class LibraryIndex:
             """
             SELECT t.*
             FROM tracks_fts f
-            JOIN tracks t ON f.rowid = t.id
+            JOIN tracks_with_stats t ON f.rowid = t.id
             LEFT JOIN albums al ON al.id = t.album_id
             WHERE tracks_fts MATCH ?
               -- KAMP-541: the collapse leaves one canonical row per track, so the
@@ -5328,15 +5395,18 @@ class LibraryIndex:
     # Source expression reused by both playlist search methods.  Matches the
     # album source computation: 'mixed' when both local and non-local tracks are
     # present; otherwise the sole source value, defaulting to 'local' if empty.
-    _PLAYLIST_SOURCE_EXPR = """
+    # Reads track_sources via _EFFECTIVE_SOURCE_EXPR instead of tracks.source
+    # (KAMP-542) — behavior-identical, since post-collapse tracks.source equals a
+    # track's effective source. Correlated on the outer `t` (LEFT JOIN tracks t).
+    _PLAYLIST_SOURCE_EXPR = f"""
         CASE
-            WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
-             AND COUNT(CASE WHEN t.source != 'local' THEN 1 END) > 0
+            WHEN COUNT(CASE WHEN {_EFFECTIVE_SOURCE_EXPR} = 'local' THEN 1 END) > 0
+             AND COUNT(CASE WHEN {_EFFECTIVE_SOURCE_EXPR} != 'local' THEN 1 END) > 0
             THEN 'mixed'
-            WHEN COUNT(CASE WHEN t.source = 'local' THEN 1 END) > 0
+            WHEN COUNT(CASE WHEN {_EFFECTIVE_SOURCE_EXPR} = 'local' THEN 1 END) > 0
             THEN 'local'
             WHEN COUNT(t.id) = 0 THEN 'local'
-            ELSE MIN(t.source)
+            ELSE MIN({_EFFECTIVE_SOURCE_EXPR})
         END
     """
 
@@ -5821,7 +5891,7 @@ class LibraryIndex:
                    t.favorite, t.play_count, t.last_played, t.date_added,
                    t.source, t.is_available, t.duration
             FROM playlist_tracks pt
-            JOIN tracks t ON t.id = pt.track_id
+            JOIN tracks_with_stats t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?
             ORDER BY pt.position ASC
             """,
@@ -6072,7 +6142,10 @@ class LibraryIndex:
             if needs_album_join
             else ""
         )
-        sql = f"SELECT tracks.id FROM tracks {album_join} WHERE {where_fragment} ORDER BY tracks.id"
+        sql = (
+            f"SELECT tracks.id FROM tracks_with_stats AS tracks {album_join}"
+            f" WHERE {where_fragment} ORDER BY tracks.id"
+        )
         rows = self._conn.execute(sql, params).fetchall()
         return [r[0] for r in rows]
 
@@ -6104,7 +6177,7 @@ class LibraryIndex:
                    tracks.genre, tracks.label, tracks.favorite, tracks.play_count,
                    tracks.last_played, tracks.date_added,
                    tracks.source, tracks.is_available, tracks.duration
-            FROM tracks {album_join}
+            FROM tracks_with_stats AS tracks {album_join}
             WHERE {where_fragment} AND tracks.is_available = 1
             ORDER BY tracks.id
         """
@@ -6267,7 +6340,7 @@ class LibraryIndex:
                      ORDER BY play_count_avg DESC LIMIT 1) AS top_album
                 FROM artists ar
                 JOIN albums a ON a.artist_id = ar.id
-                JOIN tracks t ON t.album_id = a.id
+                JOIN tracks_with_stats t ON t.album_id = a.id
                 WHERE t.id IN ({placeholders}) AND a.artist_id IS NOT NULL
                 GROUP BY ar.id
                 {order}
@@ -6293,7 +6366,7 @@ class LibraryIndex:
                 t.release_date, t.track_number, t.disc_number, t.ext, t.embedded_art,
                 t.mb_release_id, t.mb_recording_id, t.genre, t.label,
                 t.favorite, t.play_count, t.last_played, t.source, t.is_available, t.duration
-            FROM tracks t
+            FROM tracks_with_stats t
             WHERE t.id IN ({placeholders})
             {order}
             LIMIT ?
@@ -6339,7 +6412,7 @@ class LibraryIndex:
             if needs_album_join
             else ""
         )
-        sql = f"SELECT COUNT(*) FROM tracks {album_join} WHERE {where_fragment}"
+        sql = f"SELECT COUNT(*) FROM tracks_with_stats AS tracks {album_join} WHERE {where_fragment}"
         row = self._conn.execute(sql, params).fetchone()
         return int(row[0])
 
@@ -6374,7 +6447,7 @@ _WRITABLE_TRACK_FIELDS: frozenset[str] = frozenset(
 )
 
 
-def _canonical_track_key(path: "Path | str") -> str:
+def _canonical_track_uri(path: "Path | str") -> str:
     """Return the canonical file_path key for *path*.
 
     For bandcamp:// URIs, normalises the single-slash POSIX form (bandcamp:/)
@@ -6414,7 +6487,7 @@ def _derive_source_fields(
     Shared by the v45 backfill and upsert_many so the scan and the migration
     derive identical rows.
     """
-    uri = _canonical_track_key(file_path)
+    uri = _canonical_track_uri(file_path)
     kind = "file" if source == "local" else "stream"
     provider = "bandcamp" if (source == "bandcamp" or sale_item_id) else ""
     provider_item_id = sale_item_id or None
@@ -6453,7 +6526,7 @@ def _track_to_params(
     float,
 ]:
     return (
-        _canonical_track_key(t.file_path),
+        _canonical_track_uri(t.file_path),
         t.title,
         t.artist,
         t.album_artist,
@@ -6502,7 +6575,7 @@ def _row_to_pending_ingest(row: sqlite3.Row) -> PendingIngest:
 def _row_to_track(row: sqlite3.Row) -> Track:
     # DB rows store canonical bandcamp:// form (ensured by _track_to_params and
     # migration v22). Path() on POSIX still collapses the double-slash to single,
-    # but all callers that need a stable string key use _canonical_track_key() or
+    # but all callers that need a stable string key use _canonical_track_uri() or
     # get_track_by_path(str) rather than str(track.file_path), so this is safe.
     return Track(
         id=row["id"],

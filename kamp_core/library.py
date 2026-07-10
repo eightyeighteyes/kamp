@@ -3523,10 +3523,16 @@ class LibraryIndex:
     def update_stream_url(
         self, file_path_uri: str, stream_url: str, expires_at: float
     ) -> None:
-        """Persist a refreshed CDN stream URL and its expiry timestamp for a remote track."""
+        """Persist a refreshed CDN stream URL and its expiry for a remote track.
+
+        Writes the track_sources row addressed by the uri (KAMP-539) — the uri is
+        the stream source's own uri; the legacy tracks.stream_url column this used
+        to write is derived from track_sources by the view now.
+        """
         self._conn.execute(
-            "UPDATE tracks SET stream_url = ?, stream_url_expires_at = ? WHERE file_path = ?",
-            (stream_url, expires_at, file_path_uri),
+            "UPDATE track_sources SET stream_url = ?, stream_url_expires_at = ?"
+            " WHERE uri = ?",
+            (stream_url, expires_at, _canonical_track_uri(file_path_uri)),
         )
         self._conn.commit()
 
@@ -4019,27 +4025,41 @@ class LibraryIndex:
         if touched_album_ids:
             self._refresh_album_aggregates(list(touched_album_ids))
 
-        # Step 5 (KAMP-540): keep the canonical child tables in sync. Every
-        # upserted track gets a refreshed track_sources row (per-source cols read
-        # back from the now-current tracks row) and, if it has none yet, a
-        # track_stats row mirroring its stats (INSERT OR IGNORE so a re-scan never
-        # resets favorite/play_count). Reads still use the old tracks columns —
-        # this only populates the children for KAMP-541/542.
+        # Step 5 (KAMP-540/539): keep the canonical child tables in sync. Every
+        # upserted track gets a refreshed track_sources row whose per-source
+        # columns come from the incoming Track (NOT read back from the tracks row,
+        # so the tracks per-source columns can be dropped in 539) and, if it has
+        # none yet, a default track_stats row (INSERT OR IGNORE so a re-scan never
+        # resets favorite/play_count; a brand-new track starts at 0/0/NULL). The
+        # uri is still taken from the retained tracks.file_path.
         src_params: list[tuple[Any, ...]] = []
         for t in tracks:
             key = _canonical_track_uri(t.file_path)
             _uri, kind, provider, provider_item_id = _derive_source_fields(
                 t.file_path, t.source, t.sale_item_id
             )
-            src_params.append((kind, provider, provider_item_id, key))
+            src_params.append(
+                (
+                    kind,
+                    provider,
+                    provider_item_id,
+                    t.ext,
+                    t.duration,
+                    int(t.embedded_art),
+                    t.file_mtime,
+                    int(t.is_available),
+                    t.stream_url,
+                    t.stream_url_expires_at,
+                    key,
+                )
+            )
         if src_params:
             self._conn.executemany(
                 "INSERT INTO track_sources"
                 " (track_id, kind, provider, provider_item_id, uri, ext, duration,"
                 "  embedded_art, file_mtime, is_available, stream_url,"
                 "  stream_url_expires_at)"
-                " SELECT id, ?, ?, ?, file_path, ext, duration, embedded_art,"
-                "        file_mtime, is_available, stream_url, stream_url_expires_at"
+                " SELECT id, ?, ?, ?, file_path, ?, ?, ?, ?, ?, ?, ?"
                 " FROM tracks WHERE file_path = ?"
                 " ON CONFLICT(uri) DO UPDATE SET"
                 "   track_id = excluded.track_id, kind = excluded.kind,"
@@ -4056,14 +4076,13 @@ class LibraryIndex:
             self._conn.executemany(
                 "INSERT OR IGNORE INTO track_stats"
                 " (track_id, favorite, play_count, last_played)"
-                " SELECT id, favorite, play_count, last_played"
-                " FROM tracks WHERE file_path = ?",
-                [(p[3],) for p in src_params],
+                " SELECT id, 0, 0, NULL FROM tracks WHERE file_path = ?",
+                [(p[-1],) for p in src_params],
             )
             # Step 6 (KAMP-541): attach a newly-scanned file to its existing
             # canonical track (merging the fork) instead of leaving a duplicate
             # streaming+local pair. No-op when there is no stream-only sibling.
-            self._reconcile_scanned_tracks([p[3] for p in src_params])
+            self._reconcile_scanned_tracks([p[-1] for p in src_params])
 
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()
@@ -5070,11 +5089,14 @@ class LibraryIndex:
             return
         str_paths = [str(p) for p in file_paths]
         placeholders = ",".join("?" * len(str_paths))
+        # Write the file source's art fields in track_sources (KAMP-539) — the uri
+        # of a file source is the on-disk path, so the given paths address them
+        # directly; the legacy tracks.embedded_art/file_mtime the view derives.
         self._conn.execute(
-            f"UPDATE tracks SET embedded_art = 1, file_mtime = ?"
-            f" WHERE album_id = ?"
-            f" AND file_path IN ({placeholders})",
-            [now, album_id, *str_paths],
+            f"UPDATE track_sources SET embedded_art = 1, file_mtime = ?"
+            f" WHERE kind = 'file' AND uri IN ({placeholders})"
+            f" AND track_id IN (SELECT id FROM tracks WHERE album_id = ?)",
+            [now, *str_paths, album_id],
         )
         # Update the album row's aggregate art fields.
         self._conn.execute(

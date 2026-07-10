@@ -5742,7 +5742,7 @@ class TestMarkAlbumArtEmbedded:
         index.mark_album_art_embedded("Artist", "Record", [t1.file_path, t2.file_path])
 
         rows = index._conn.execute(
-            "SELECT embedded_art FROM tracks WHERE album = 'Record'"
+            "SELECT embedded_art FROM tracks_with_stats WHERE album = 'Record'"
         ).fetchall()
         assert all(r["embedded_art"] == 1 for r in rows)
         index.close()
@@ -5759,7 +5759,7 @@ class TestMarkAlbumArtEmbedded:
         after = time.time()
 
         row = index._conn.execute(
-            "SELECT file_mtime FROM tracks WHERE file_path = ?",
+            "SELECT file_mtime FROM tracks_with_stats WHERE file_path = ?",
             (str(t1.file_path),),
         ).fetchone()
         assert row["file_mtime"] is not None
@@ -6427,7 +6427,8 @@ class TestRemoteTrackSchema:
         )
 
         row = index._conn.execute(
-            "SELECT stream_url, stream_url_expires_at FROM tracks WHERE file_path = ?",
+            "SELECT stream_url, stream_url_expires_at FROM tracks_with_stats"
+            " WHERE file_path = ?",
             (fp_str,),
         ).fetchone()
         index.close()

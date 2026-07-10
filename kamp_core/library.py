@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 50
+_SCHEMA_VERSION = 48
 
 
 class NoStreamableVersionError(Exception):
@@ -828,7 +828,7 @@ class LibraryIndex:
     def _migrate(self) -> None:
         """Create schema and run any pending version migrations."""
         self._conn.executescript(_DDL)
-        # The collapse heals (v46/v48/v49/v50) call _refresh_album_aggregates,
+        # The collapse heals (v46/v48) call _refresh_album_aggregates,
         # which reads the tracks_with_stats view — so the view MUST exist before
         # any heal runs, not only after _migrate returns. Omitting this made every
         # collapse heal on a pre-KAMP-542 upgrade throw "no such table:
@@ -1964,85 +1964,7 @@ class LibraryIndex:
                     )
             self._conn.execute("UPDATE schema_version SET version = 48")
             self._conn.commit()
-            version = 48
-
-        if version < 49:
-            # v48 → v49: re-collapse downloaded+streamed forks the epic left
-            # un-merged (KAMP-541/542). The current reconcile merges both fork
-            # directions (verified: a fresh download-after-stream and a sync into a
-            # downloaded album both collapse), so no new forks form — but the v48
-            # heal was one-time and did not reprocess pairs that were not yet in
-            # their final mergeable shape when it ran (e.g. a pair momentarily
-            # accompanied by a duplicate stream row was quarantined as >2 rows;
-            # once the dup was cleaned up a plain file+stream fork remained that no
-            # heal revisited). Re-running the collapse merges each pair (survivor =
-            # the local file row). Idempotent, backup-first, version-last; a no-op
-            # on a library with no sibling buckets.
-            track_cols = {
-                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
-            }
-            needed = {
-                "id",
-                "album_id",
-                "track_number",
-                "disc_number",
-                "sale_item_id",
-                "source",
-            }
-            if (
-                needed <= track_cols
-                and self._has_collapsible_siblings()
-                and self._backup_db("KAMP-541 v49 fork heal")
-            ):
-                try:
-                    self._collapse_canonical_tracks()
-                except Exception:
-                    self._conn.rollback()
-                    logger.exception(
-                        "KAMP-541 v49 fork heal failed — rolled back; the duplicate"
-                        " rows remain. Restore from the pre-v49 backup if needed."
-                    )
-            self._conn.execute("UPDATE schema_version SET version = 49")
-            self._conn.commit()
-            version = 49
-
-        if version < 50:
-            # v49 → v50: actually run the collapse. The v46/v48/v49 heals had been
-            # SILENTLY FAILING on every pre-KAMP-542 upgrade — _collapse_canonical_
-            # tracks -> _refresh_album_aggregates reads the tracks_with_stats view,
-            # which was only created AFTER _migrate, so each heal threw "no such
-            # table: tracks_with_stats", rolled back, and left the two-row fork
-            # model (KAMP-532 dupes) while the version still bumped. The view is now
-            # created before the heals (top of _migrate), so this re-run finally
-            # collapses the forks stranded at v49. Same backup-first / one-txn /
-            # version-last discipline; a no-op on a library with no sibling buckets.
-            track_cols = {
-                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
-            }
-            needed = {
-                "id",
-                "album_id",
-                "track_number",
-                "disc_number",
-                "sale_item_id",
-                "source",
-            }
-            if (
-                needed <= track_cols
-                and self._has_collapsible_siblings()
-                and self._backup_db("KAMP-541 v50 fork heal")
-            ):
-                try:
-                    self._collapse_canonical_tracks()
-                except Exception:
-                    self._conn.rollback()
-                    logger.exception(
-                        "KAMP-541 v50 fork heal failed — rolled back; the duplicate"
-                        " rows remain. Restore from the pre-v50 backup if needed."
-                    )
-            self._conn.execute("UPDATE schema_version SET version = 50")
-            self._conn.commit()
-            version = 50  # noqa: F841
+            version = 48  # noqa: F841
 
     def _create_tracks_with_stats_view(self) -> None:
         """(Re)create the read-only ``tracks_with_stats`` view (KAMP-542).

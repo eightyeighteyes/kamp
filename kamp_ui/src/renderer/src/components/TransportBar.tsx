@@ -107,10 +107,10 @@ export function TransportBar(): React.JSX.Element {
   // value in state and compare during render. Avoids the useEffect cascade
   // warning and runs synchronously so the very first render after a track
   // change already shows the server position.
-  const currentPath = current_track?.file_path ?? null
-  const [prevPath, setPrevPath] = useState<string | null>(currentPath)
-  if (prevPath !== currentPath) {
-    setPrevPath(currentPath)
+  const currentTrackId = current_track?.id ?? null
+  const [prevTrackId, setPrevTrackId] = useState<number | null>(currentTrackId)
+  if (prevTrackId !== currentTrackId) {
+    setPrevTrackId(currentTrackId)
     setScrubPos(null)
     // pointerDown.current is intentionally not touched here — a fresh
     // onPointerDown will set it true again, and pointerUp/pointerCancel
@@ -209,7 +209,7 @@ export function TransportBar(): React.JSX.Element {
               // Pin pointer events to the slider so pointerup is guaranteed to
               // fire here even if the user releases the pointer outside the
               // slider bounds. Without this, scrubPos can wedge — the
-              // track-change reset above (currentPath comparison) is the
+              // track-change reset above (currentTrackId comparison) is the
               // escape hatch for any wedge that still slips through.
               try {
                 e.currentTarget.setPointerCapture(e.pointerId)

@@ -52,27 +52,6 @@ class PlaybackState:
 
 
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _canonical_track_uri(path: "Path | str") -> str:
-    """Canonical string key for remote track URI comparison and persistence.
-
-    Normalises POSIX single-slash (bandcamp:/) and Windows backslash
-    (bandcamp:\\) forms to the canonical double-slash form (bandcamp://)
-    so DB lookups and in-queue comparisons are consistent across platforms.
-    Local paths are returned as-is via str().
-    """
-    s = str(path)
-    if s.startswith("bandcamp:"):
-        rest = s.split("bandcamp:", 1)[1].lstrip("/\\").replace("\\", "/")
-        return "bandcamp://" + rest
-    return s
-
-
-# ---------------------------------------------------------------------------
 # PlaybackQueue
 # ---------------------------------------------------------------------------
 
@@ -97,16 +76,21 @@ class PlaybackQueue:
         else:
             self._pos = start_index if tracks else -1
 
-    def update_favorite(self, file_path: Path | str, favorite: bool) -> None:
-        """Update the favorite flag on any queued tracks matching *file_path*.
+    def update_favorite(self, track_id: int, favorite: bool) -> None:
+        """Update the favorite flag on any queued track with the canonical *track_id*.
 
-        Called after a favorite is toggled so that the next player-state
-        snapshot reflects the new value without requiring a queue reload.
-        Accepts str so remote track URIs (bandcamp://) can be matched.
+        Called after a favorite is toggled so that the next player-state snapshot
+        reflects the new value without requiring a queue reload. Matched by
+        canonical id (KAMP-538/532), not file_path: a queued track's delivery uri
+        can diverge from the favorited row's preferred source — e.g. a stream
+        queued before its album was downloaded, whose preferred source has since
+        flipped to the local file — while the canonical id stays stable. Matching
+        by uri missed that case, so the 4 Hz player-state poll kept overwriting the
+        UI's optimistic patch with a stale favorite=False (self-healing only on
+        restart, when the queue reloads from the DB).
         """
-        fp_key = _canonical_track_uri(file_path)
         for t in self._tracks:
-            if _canonical_track_uri(t.file_path) == fp_key:
+            if t.id == track_id:
                 t.favorite = favorite
 
     def update_track_path(self, old_path: Path, new_path: Path, new_title: str) -> None:

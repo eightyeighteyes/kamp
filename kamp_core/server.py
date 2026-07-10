@@ -1552,8 +1552,11 @@ def create_app(
         key = _canonical_track_uri(track.file_path)
         index.set_favorite(key, req.favorite)
         # Keep the in-memory queue in sync so the next player-state snapshot
-        # reflects the new favorite value without requiring a queue reload.
-        queue.update_favorite(key, req.favorite)
+        # reflects the new favorite value without requiring a queue reload. Keyed
+        # on the canonical id (KAMP-538/532): the queued track's delivery uri may
+        # have diverged from `key` (post-download preferred-source flip), which a
+        # uri match would miss, reverting the UI on the next 4 Hz state poll.
+        queue.update_favorite(track.id, req.favorite)
         return {"ok": True}
 
     @app.post("/api/v1/albums/favorite")

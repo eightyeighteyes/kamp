@@ -473,12 +473,19 @@ export const insertAlbumAt = (
     index,
     file_path: filePath
   })
-export const addToQueue = (filePath: string): Promise<unknown> =>
-  post('/api/v1/player/queue/add', { file_path: filePath })
-export const insertIntoQueue = (filePath: string, index: number): Promise<unknown> =>
-  post('/api/v1/player/queue/insert', { file_path: filePath, index })
-export const playNext = (filePath: string): Promise<unknown> =>
-  post('/api/v1/player/queue/play-next', { file_path: filePath })
+// KAMP-538: a track is addressed by its canonical id. A file_path fallback
+// remains only for album-granularity drags whose per-track ids are not loaded
+// (removed with the rest of file_path in KAMP-539). id wins server-side.
+export type TrackRef = { id: number } | { filePath: string }
+const trackRefBody = (ref: TrackRef): Record<string, unknown> =>
+  'id' in ref ? { id: ref.id } : { file_path: ref.filePath }
+
+export const addToQueue = (ref: TrackRef): Promise<unknown> =>
+  post('/api/v1/player/queue/add', trackRefBody(ref))
+export const insertIntoQueue = (ref: TrackRef, index: number): Promise<unknown> =>
+  post('/api/v1/player/queue/insert', { ...trackRefBody(ref), index })
+export const playNext = (ref: TrackRef): Promise<unknown> =>
+  post('/api/v1/player/queue/play-next', trackRefBody(ref))
 export const moveQueueTrack = (fromIndex: number, toIndex: number): Promise<unknown> =>
   post('/api/v1/player/queue/move', { from_index: fromIndex, to_index: toIndex })
 export const reorderQueue = (order: number[]): Promise<unknown> =>
@@ -491,7 +498,8 @@ export const clearRemainingQueue = (position: number): Promise<unknown> =>
 export const removeFromQueue = (indices: number[]): Promise<unknown> =>
   post('/api/v1/player/queue/remove', { indices })
 export const setTrackFavorite = (track: Track, favorite: boolean): Promise<unknown> =>
-  post('/api/v1/tracks/favorite', { file_path: track.file_path, favorite })
+  // KAMP-538: identify the track by its canonical id (server is id-preferred).
+  post('/api/v1/tracks/favorite', { id: track.id, favorite })
 
 export type TrackTagsCollision = {
   collision: true
@@ -889,8 +897,9 @@ export async function applyPlaylistArtLocal(playlistId: number, file: File): Pro
 export const playPlaylist = (playlistId: number, startIndex = 0): Promise<void> =>
   post('/api/v1/player/play-playlist', { playlist_id: playlistId, start_index: startIndex })
 
-export const playFiles = (filePaths: string[], startIndex = 0): Promise<void> =>
-  post('/api/v1/player/play-files', { file_paths: filePaths, start_index: startIndex })
+export const playFiles = (trackIds: number[], startIndex = 0): Promise<void> =>
+  // KAMP-538: play-files by canonical track ids (server accepts `ids`, id-preferred).
+  post('/api/v1/player/play-files', { ids: trackIds, start_index: startIndex })
 
 export const getPlaylists = (): Promise<Playlist[]> => get('/api/v1/playlists')
 
@@ -909,8 +918,9 @@ export const deletePlaylist = (id: number): Promise<void> => del(`/api/v1/playli
 export const getPlaylistTracks = (id: number): Promise<PlaylistTrack[]> =>
   get(`/api/v1/playlists/${id}/tracks`)
 
-export const addTrackToPlaylist = (id: number, filePath: string): Promise<void> =>
-  post(`/api/v1/playlists/${id}/tracks`, { file_path: filePath })
+export const addTrackToPlaylist = (playlistId: number, trackId: number): Promise<void> =>
+  // KAMP-538: add by canonical track id (server is id-preferred).
+  post(`/api/v1/playlists/${playlistId}/tracks`, { id: trackId })
 
 export const addAlbumToPlaylist = (id: number, albumArtist: string, album: string): Promise<void> =>
   post(`/api/v1/playlists/${id}/tracks`, { album_artist: albumArtist, album })

@@ -49,7 +49,7 @@ function TrackCard({ track }: { track: Track }): React.JSX.Element {
         setMenu({ x: e.clientX, y: e.clientY, track })
       }}
       onDragStart={(e) => {
-        e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+        e.dataTransfer.setData('text/kamp-track-id', String(track.id))
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >
@@ -104,7 +104,7 @@ function TrackListRow({ track }: { track: Track }): React.JSX.Element {
         setMenu({ x: e.clientX, y: e.clientY, track })
       }}
       onDragStart={(e) => {
-        e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+        e.dataTransfer.setData('text/kamp-track-id', String(track.id))
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >
@@ -210,7 +210,7 @@ export function TopTracksConfig(): React.JSX.Element {
 
 export function TopTracksModule({ displayStyle }: ModuleProps): React.JSX.Element {
   const count = useStore((s) => s.topTracksCount)
-  const currentFilePath = useStore((s) => s.player?.current_track?.file_path ?? null)
+  const currentTrackId = useStore((s) => s.player?.current_track?.id ?? null)
   const serverStatus = useStore((s) => s.serverStatus)
   const [tracks, setTracks] = useState<Track[]>([])
   const [loading, setLoading] = useState(true)
@@ -221,7 +221,7 @@ export function TopTracksModule({ displayStyle }: ModuleProps): React.JSX.Elemen
       .then(setTracks)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [count, currentFilePath, serverStatus])
+  }, [count, currentTrackId, serverStatus])
 
   if (loading) {
     return (

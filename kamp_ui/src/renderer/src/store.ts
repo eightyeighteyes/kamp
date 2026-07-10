@@ -180,7 +180,7 @@ type PlayerStore = {
   loadTracks: (albumArtist: string, album: string, filePath?: string) => Promise<void>
   setCollectionType: (type: 'albums' | 'playlists') => void
   playPlaylist: (playlistId: number, startIndex?: number) => Promise<void>
-  playFiles: (filePaths: string[], startIndex?: number) => Promise<void>
+  playFiles: (trackIds: number[], startIndex?: number) => Promise<void>
   recordPlaylistPlayed: (playlistId: number) => Promise<void>
   loadPlaylists: () => Promise<void>
   createPlaylist: (title: string) => Promise<Playlist>
@@ -188,7 +188,7 @@ type PlayerStore = {
   updateMagicPlaylistCriteria: (id: number, criteria: CriteriaDoc) => Promise<Playlist>
   selectPlaylist: (playlist: Playlist | null) => Promise<void>
   loadPlaylistTracks: (playlistId: number) => Promise<void>
-  addTrackToPlaylist: (playlistId: number, filePath: string) => Promise<void>
+  addTrackToPlaylist: (playlistId: number, trackId: number) => Promise<void>
   addAlbumToPlaylist: (playlistId: number, albumArtist: string, album: string) => Promise<void>
   removeTrackFromPlaylist: (playlistId: number, playlistTrackId: number) => Promise<void>
   reorderPlaylistTracks: (playlistId: number, trackIds: number[]) => Promise<void>
@@ -225,9 +225,9 @@ type PlayerStore = {
     index: number,
     filePath?: string
   ) => Promise<void>
-  addToQueue: (filePath: string) => Promise<void>
-  insertIntoQueue: (filePath: string, index: number) => Promise<void>
-  playNext: (filePath: string) => Promise<void>
+  addToQueue: (ref: api.TrackRef) => Promise<void>
+  insertIntoQueue: (ref: api.TrackRef, index: number) => Promise<void>
+  playNext: (ref: api.TrackRef) => Promise<void>
   moveQueueTrack: (fromIndex: number, toIndex: number) => Promise<void>
   reorderQueue: (order: number[]) => Promise<void>
   skipToQueueTrack: (position: number) => Promise<void>
@@ -836,8 +836,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void get().loadPlaylists()
   },
 
-  playFiles: async (filePaths, startIndex = 0) => {
-    await api.playFiles(filePaths, startIndex)
+  playFiles: async (trackIds, startIndex = 0) => {
+    await api.playFiles(trackIds, startIndex)
     void get().loadQueue()
   },
 
@@ -909,8 +909,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     }))
   },
 
-  addTrackToPlaylist: async (playlistId, filePath) => {
-    await api.addTrackToPlaylist(playlistId, filePath)
+  addTrackToPlaylist: async (playlistId, trackId) => {
+    await api.addTrackToPlaylist(playlistId, trackId)
     if (get().library.selectedPlaylist?.id === playlistId) {
       await get().loadPlaylistTracks(playlistId)
     }
@@ -1073,18 +1073,18 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void get().loadQueue()
   },
 
-  addToQueue: async (filePath) => {
-    await api.addToQueue(filePath)
+  addToQueue: async (ref) => {
+    await api.addToQueue(ref)
     void get().loadQueue()
   },
 
-  insertIntoQueue: async (filePath, index) => {
-    await api.insertIntoQueue(filePath, index)
+  insertIntoQueue: async (ref, index) => {
+    await api.insertIntoQueue(ref, index)
     void get().loadQueue()
   },
 
-  playNext: async (filePath) => {
-    await api.playNext(filePath)
+  playNext: async (ref) => {
+    await api.playNext(ref)
     void get().loadQueue()
   },
 
@@ -1155,27 +1155,29 @@ export const useStore = create<PlayerStore>((set, get) => ({
           }
         : s.searchResults
     }))
-    // Patch playlist track list so the heart updates without a reload.
+    // Patch the open album track list and the playlist track list in place, keyed
+    // on the canonical id — which never diverges between the streaming and
+    // downloaded views (KAMP-538 fixes KAMP-532). A favorite never adds or removes
+    // a row, so the old refreshOpenAlbum() refetch was both unnecessary and racy:
+    // for a freshly-downloaded track it could read back a not-yet-committed value
+    // and clobber this optimistic patch (the very reload race KAMP-532 describes).
     set((s) => ({
       library: {
         ...s.library,
+        tracks: s.library.tracks.map((t) => (t.id === track.id ? { ...t, favorite } : t)),
         playlistTracks: s.library.playlistTracks.map((t) =>
           t.id === track.id ? { ...t, favorite } : t
         )
       }
     }))
-    // Reload the open album track list so the heart in track rows updates.
-    await get().refreshOpenAlbum()
   },
 
   setFavorites: async (tracks, favorite) => {
     // allSettled so a partial 404 doesn't silently mis-patch state for succeeded tracks
     const results = await Promise.allSettled(tracks.map((t) => api.setTrackFavorite(t, favorite)))
-    const succeededPaths = new Set(
-      tracks.filter((_, i) => results[i].status === 'fulfilled').map((t) => t.file_path)
-    )
-    if (succeededPaths.size === 0) return
-    const ids = new Set(tracks.filter((t) => succeededPaths.has(t.file_path)).map((t) => t.id))
+    // KAMP-538: key the patch set directly on the canonical id of each succeeded track.
+    const ids = new Set(tracks.filter((_, i) => results[i].status === 'fulfilled').map((t) => t.id))
+    if (ids.size === 0) return
     if (get().player.current_track && ids.has(get().player.current_track!.id)) {
       set((s) => ({
         player: {
@@ -1203,12 +1205,12 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set((s) => ({
       library: {
         ...s.library,
+        tracks: s.library.tracks.map((t) => (ids.has(t.id) ? { ...t, favorite } : t)),
         playlistTracks: s.library.playlistTracks.map((t) =>
           ids.has(t.id) ? { ...t, favorite } : t
         )
       }
     }))
-    await get().refreshOpenAlbum()
   },
 
   patchTrackTitle: async (trackId, title, overwrite = false) => {

@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 49
+_SCHEMA_VERSION = 50
 
 
 class NoStreamableVersionError(Exception):
@@ -258,15 +258,12 @@ CREATE TABLE IF NOT EXISTS artists (
     name      TEXT NOT NULL UNIQUE,
     play_time REAL NOT NULL DEFAULT 0
 );
-
--- Case-insensitive uniqueness on artist name (KAMP-545). albums.album_artist is
--- COLLATE NOCASE, so without this a case-variant ("SUNN O)))" vs "Sunn O)))")
--- spawns a second artists row and splits an artist's albums across two ids. The
--- plain BINARY UNIQUE above is left in place (redundant but harmless). Enforced as
--- an index rather than a table rebuild because artists.id is FK-referenced by
--- albums.artist_id and PRAGMA foreign_keys is a no-op inside the migration txn.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_name_nocase
-    ON artists(name COLLATE NOCASE);
+-- NOTE (KAMP-545): the case-insensitive uniqueness index on artists.name is NOT
+-- created here. _DDL runs at the top of every _migrate() — including on an
+-- existing forked DB before the v50 heal — where a UNIQUE(name COLLATE NOCASE)
+-- would fail on the duplicate rows and abort startup. It is created instead by
+-- _create_artist_name_nocase_index(): immediately for brand-new DBs and after the
+-- heal for upgrades (mirrors _create_sale_item_id_unique_index / KAMP-523).
 
 CREATE TABLE IF NOT EXISTS albums (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -848,6 +845,7 @@ class LibraryIndex:
             # heal, do not run for a brand-new DB).
             self._create_sale_item_id_unique_index()
             self._create_tracks_sale_item_id_index()
+            self._create_artist_name_nocase_index()
             self._conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,)
             )
@@ -2017,6 +2015,213 @@ class LibraryIndex:
                     )
                 finally:
                     self._create_tracks_with_stats_view()
+
+        if version == 49:
+            # v49 -> v50 (KAMP-545): collapse artists rows that differ only in
+            # case, then enforce case-insensitive uniqueness on artists.name.
+            # Gated on == 49 (not < 50) so a v49 that rolled back — which leaves
+            # the version at 48 to retry — is not skipped past by v50.
+            # album_artist is COLLATE NOCASE but artists.name was BINARY-unique, so
+            # a case-variant name (bandcamp uppercases many) spawned a second
+            # artists row and split an artist's albums across two ids — the
+            # orphaned album vanished from the artist filter (which keys on
+            # artists.id). _heal_case_variant_artists backs up first and returns
+            # False only when work was needed but the backup failed, so we leave
+            # the version at 49 and retry on the next open. The NOCASE unique index
+            # is created only after a clean heal (it would throw on any surviving
+            # dupe); creating it is idempotent, so a clean library just adds it.
+            if self._heal_case_variant_artists():
+                self._create_artist_name_nocase_index()
+                self._conn.execute("UPDATE schema_version SET version = 50")
+                self._conn.commit()
+                version = 50  # noqa: F841
+
+    def _create_artist_name_nocase_index(self) -> None:
+        """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
+
+        Created here rather than in _DDL because _DDL runs before the v50 heal on
+        an existing forked DB, where the index would fail on the duplicate rows.
+        Defensive on IntegrityError (mirrors _create_sale_item_id_unique_index):
+        an aborted migration would make the DB unopenable, which is far worse than
+        a missing guard index — the NOCASE joins added in KAMP-545 still resolve
+        linking deterministically without it.
+        """
+        if not self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='artists'"
+        ).fetchone():  # pragma: no cover - artists always exists post-_DDL
+            return
+        try:
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_name_nocase"
+                " ON artists(name COLLATE NOCASE)"
+            )
+        except sqlite3.IntegrityError:  # pragma: no cover - defensive
+            logger.warning(
+                "Could not create UNIQUE index on artists.name — case-variant"
+                " artist rows remain; linking falls back to the NOCASE joins."
+            )
+
+    def _heal_case_variant_artists(self) -> bool:
+        """Collapse artists rows differing only in case into one canonical row.
+
+        For each ``LOWER(name)`` group with more than one row (KAMP-545):
+
+        * pick a survivor — the casing of a linked ``bandcamp_collection.band_name``
+          when any album in the group is Bandcamp-sourced (authoritative, and the
+          casing a future sync would otherwise re-fork on), else the row owning the
+          most albums (tie-break lowest id);
+        * repoint every loser album onto the survivor, fold ``play_time``, delete
+          the loser row;
+        * best-effort, collision-guarded, normalize the survivor's album /
+          track / ``band_name`` strings to the canonical casing.
+
+        Backs up first. Returns True when it is safe to proceed to the version
+        bump (nothing to do, or healed cleanly); False only when work was needed
+        but the backup failed, so the migration retries on the next open.
+
+        artists/albums/albums.artist_id are guaranteed present here — _migrate runs
+        _DDL and the v36 migration before this block — so only band_name is checked
+        (bandcamp_collection predates it until v19, and choosing the survivor casing
+        from it requires the column).
+        """
+        bcc_cols = {
+            r[1]
+            for r in self._conn.execute(
+                "PRAGMA table_info(bandcamp_collection)"
+            ).fetchall()
+        }
+        has_band_name = "band_name" in bcc_cols
+
+        groups = [
+            [int(x) for x in r[0].split(",")]
+            for r in self._conn.execute(
+                "SELECT GROUP_CONCAT(id) FROM artists"
+                " GROUP BY name COLLATE NOCASE HAVING COUNT(*) > 1"
+            ).fetchall()
+        ]
+        if not groups:
+            return True
+        if not self._backup_db("KAMP-545 v50 case-variant artist heal"):
+            return False
+        try:
+            for ids in groups:
+                self._heal_artist_group(ids, has_band_name)
+            self._rebuild_fts()  # album_artist changed on the normalized rows
+            self._conn.commit()
+            logger.info(
+                "KAMP-545 heal: collapsed %d case-variant artist group(s)",
+                len(groups),
+            )
+            return True
+        except Exception:
+            self._conn.rollback()
+            logger.exception(
+                "KAMP-545 heal failed — rolled back; retrying on next open."
+                " Restore from the backup if needed."
+            )
+            return False
+
+    def _heal_artist_group(self, ids: list[int], has_band_name: bool) -> None:
+        """Merge one case-variant ``artists`` group (see _heal_case_variant_artists)."""
+        placeholders = ",".join("?" * len(ids))
+        counts = {aid: 0 for aid in ids}
+        for r in self._conn.execute(
+            f"SELECT artist_id, COUNT(*) AS n FROM albums"
+            f" WHERE artist_id IN ({placeholders}) GROUP BY artist_id",
+            ids,
+        ).fetchall():
+            counts[r["artist_id"]] = r["n"]
+
+        # Canonical casing: prefer a linked Bandcamp band_name (the casing a future
+        # sync would re-insert, so matching it prevents a re-fork); else the
+        # survivor row's own name.
+        canon: str | None = None
+        if has_band_name:
+            row = self._conn.execute(
+                f"SELECT bc.band_name FROM albums a"
+                f" JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id"
+                f" WHERE a.artist_id IN ({placeholders})"
+                f"   AND a.sale_item_id IS NOT NULL AND TRIM(bc.band_name) != ''"
+                f" ORDER BY a.id LIMIT 1",
+                ids,
+            ).fetchone()
+            if row is not None:
+                canon = row["band_name"].strip()
+
+        # Survivor: the group row matching the canonical casing when we have one,
+        # else the row owning the most albums (tie-break lowest id).
+        survivor = min(ids, key=lambda aid: (-counts[aid], aid))
+        if canon is not None:
+            match = self._conn.execute(
+                f"SELECT id FROM artists WHERE id IN ({placeholders})"
+                f"   AND name = ? COLLATE NOCASE ORDER BY id LIMIT 1",
+                ids + [canon],
+            ).fetchone()
+            if match is not None:
+                survivor = match["id"]
+        else:
+            canon = self._conn.execute(
+                "SELECT name FROM artists WHERE id = ?", (survivor,)
+            ).fetchone()["name"]
+
+        # 1. Fold each loser into the survivor: carry play_time, repoint albums,
+        #    delete the loser row.
+        for loser in (aid for aid in ids if aid != survivor):
+            self._conn.execute(
+                "UPDATE artists SET play_time = play_time"
+                " + (SELECT IFNULL(play_time, 0) FROM artists WHERE id=?)"
+                " WHERE id=?",
+                (loser, survivor),
+            )
+            self._conn.execute(
+                "UPDATE albums SET artist_id=? WHERE artist_id=?", (survivor, loser)
+            )
+            self._conn.execute("DELETE FROM artists WHERE id=?", (loser,))
+
+        # 2. Rename the survivor row to the canonical casing. No collision is
+        #    possible: every other row sharing this NOCASE name was just deleted.
+        self._conn.execute("UPDATE artists SET name=? WHERE id=?", (canon, survivor))
+
+        # 3. Normalize the survivor's album strings to the canonical casing.
+        #    tracks.artist is deliberately left untouched so per-track artists on
+        #    Various Artists albums survive. The collision check is defensive:
+        #    UNIQUE(album_artist, album) is itself NOCASE, so a case-only rename
+        #    never changes the key and cannot collide (unlike the whitespace-trim
+        #    in KAMP-523's _merge_album_pair) — but we guard rather than risk
+        #    aborting the whole migration on a malformed row.
+        for a in self._conn.execute(
+            "SELECT id, album, album_artist FROM albums WHERE artist_id=?",
+            (survivor,),
+        ).fetchall():
+            if a["album_artist"] == canon:
+                continue
+            collision = self._conn.execute(
+                "SELECT 1 FROM albums WHERE album_artist=? COLLATE NOCASE"
+                "   AND album=? COLLATE NOCASE AND id!=?",
+                (canon, a["album"], a["id"]),
+            ).fetchone()
+            if collision is not None:  # pragma: no cover - defensive (see above)
+                logger.warning(
+                    "KAMP-545 heal: album %d kept casing %r (canonical %r collides"
+                    " with a distinct release)",
+                    a["id"],
+                    a["album_artist"],
+                    canon,
+                )
+                continue
+            self._conn.execute(
+                "UPDATE albums SET album_artist=? WHERE id=?", (canon, a["id"])
+            )
+            self._conn.execute(
+                "UPDATE tracks SET album_artist=? WHERE album_id=?", (canon, a["id"])
+            )
+            if has_band_name:
+                self._conn.execute(
+                    "UPDATE bandcamp_collection SET band_name=?"
+                    " WHERE sale_item_id = (SELECT sale_item_id FROM albums WHERE id=?)"
+                    "   AND sale_item_id IS NOT NULL",
+                    (canon, a["id"]),
+                )
 
     def _create_tracks_with_stats_view(self) -> None:
         """(Re)create the read-only ``tracks_with_stats`` view (KAMP-542/539).

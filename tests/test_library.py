@@ -13307,3 +13307,129 @@ class TestHealForkedAlbums:
             == 1
         )
         healed.close()
+
+
+class TestKamp552DropColumns:
+    """KAMP-552: dropping tracks.file_path/sale_item_id and the id-native re-key."""
+
+    def test_v51_rebuild_preserves_fk_children(self, tmp_path: Path) -> None:
+        """The v50->v51 rebuild drops the columns WITHOUT cascade-deleting the FK
+        children (track_sources/track_stats/playlist_tracks) — the P0 guard — and
+        leaves referential integrity intact."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        p = tmp_path / "a.mp3"
+        index.upsert_many([_sample_track(p)])
+        pid = index.create_playlist("P")["id"]
+        index.add_track_to_playlist(pid, str(p))
+        counts_before = {
+            tbl: index._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            for tbl in ("track_sources", "track_stats", "playlist_tracks")
+        }
+        assert all(c > 0 for c in counts_before.values())
+        # Re-add the dropped columns and roll back to v50 so the reopen runs v51.
+        _readd_legacy_track_columns(index)
+        index._conn.execute("UPDATE schema_version SET version = 50")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)  # runs the v51 FK-aware rebuild
+        cols = {r[1] for r in reopened._conn.execute("PRAGMA table_info(tracks)")}
+        idx = {r[1] for r in reopened._conn.execute("PRAGMA index_list(tracks)")}
+        counts_after = {
+            tbl: reopened._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            for tbl in ("track_sources", "track_stats", "playlist_tracks")
+        }
+        fk_violations = reopened._conn.execute("PRAGMA foreign_key_check").fetchall()
+        still_resolves = reopened.get_track_by_path(str(p))
+        reopened.close()
+
+        assert not ({"file_path", "sale_item_id"} & cols)
+        assert "tracks_sale_item_id_idx" not in idx
+        assert counts_after == counts_before  # children NOT cascade-deleted
+        assert fk_violations == []
+        assert still_resolves is not None
+
+    def test_streaming_resync_preserves_user_edited_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        """A streaming re-sync that sends empty release_date/genre/label must not
+        clobber the stored values (the KAMP-552 two-batch stream-preserve UPDATE)."""
+
+        def _stream(title: str, rd: str, genre: str, label: str) -> Track:
+            return Track(
+                file_path=Path("bandcamp://s/1"),
+                title=title,
+                artist="A",
+                album_artist="A",
+                album="Al",
+                release_date=rd,
+                track_number=1,
+                disc_number=1,
+                ext="",
+                embedded_art=False,
+                mb_release_id="",
+                mb_recording_id="",
+                source="bandcamp",
+                genre=genre,
+                label=label,
+            )
+
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([_stream("Original", "2020-01-01", "Jazz", "Blue Note")])
+        # Re-sync: Bandcamp never sends release_date/genre/label, so they arrive empty.
+        index.upsert_many([_stream("Renamed", "", "", "")])
+        got = index.get_track_by_path("bandcamp://s/1")
+        index.close()
+        assert got is not None
+        assert got.title == "Renamed"  # title always overwrites
+        assert got.release_date == "2020-01-01"  # preserved on empty incoming
+        assert got.genre == "Jazz"
+        assert got.label == "Blue Note"
+
+    def test_local_rescan_overwrites_metadata(self, tmp_path: Path) -> None:
+        """A local re-scan overwrites release_date/genre/label (no stream-preserve)."""
+        p = tmp_path / "a.mp3"
+        index = LibraryIndex(tmp_path / "library.db")
+        first = _sample_track(p)
+        first.genre = "Rock"
+        first.release_date = "2019"
+        index.upsert_many([first])
+        second = _sample_track(p)
+        second.genre = ""
+        second.release_date = ""
+        index.upsert_many([second])
+        got = index.get_track_by_path(str(p))
+        index.close()
+        assert got is not None
+        assert got.genre == ""
+        assert got.release_date == ""
+
+    def test_get_track_by_path_resolves_local_when_file_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        """A track whose file source is unavailable (drive unmounted) but which has
+        an available stream still resolves by its local path — lookups match ANY
+        source uri, not the availability-ordered derived file_path (P0 regression)."""
+        p = tmp_path / "a.mp3"
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([_sample_track(p)])
+        tid = index.get_track_by_path(str(p)).id  # type: ignore[union-attr]
+        index._conn.execute(
+            "INSERT INTO track_sources (track_id, kind, uri, is_available)"
+            " VALUES (?, 'stream', 'bandcamp://x/1', 1)",
+            (tid,),
+        )
+        index._conn.execute(
+            "UPDATE track_sources SET is_available = 0"
+            " WHERE track_id = ? AND kind = 'file'",
+            (tid,),
+        )
+        index._conn.commit()
+        # The preferred (available) source is now the stream, so the view's derived
+        # file_path is the bandcamp uri — but the local path must still resolve.
+        by_local = index.get_track_by_path(str(p))
+        by_stream = index.get_track_by_path("bandcamp://x/1")
+        index.close()
+        assert by_local is not None and by_local.id == tid
+        assert by_stream is not None and by_stream.id == tid

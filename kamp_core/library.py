@@ -4993,41 +4993,39 @@ class LibraryIndex:
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 
-    def _canonical_key_for(self, uri: "Path | str") -> str:
-        """Translate *uri* to the tracks.file_path of the row it addresses.
+    def _resolve_track_id(self, uri: "Path | str") -> "int | None":
+        """Resolve *uri* to the id of the track any of its sources delivers (KAMP-552).
 
-        A track is addressable by its own file_path OR by any of its
-        track_sources uris. After the KAMP-541 collapse a live client can still
-        hold a delivery uri — e.g. a queued bandcamp:// stream uri — for a track
-        that has since collapsed onto its downloaded local file, so that uri is
-        now the track's *stream source* while file_path has realigned to the
-        local path. Direct-match first (the common case); only when the uri is
-        not itself a file_path do we redirect through track_sources. Falls back
-        to the normalized uri when nothing matches, leaving the caller's write a
-        harmless no-op exactly as before.
+        A track is addressable by any of its track_sources uris — a queued
+        bandcamp:// stream uri, or a local file path — regardless of which
+        delivery the caller holds (this is why it matches ANY source kind, not
+        the availability-ordered preferred-source pick used for display). After
+        the KAMP-541 collapse a live client can still hold a delivery uri for a
+        track that has since collapsed onto another source; both uris resolve to
+        the one surviving row. A moved file's *old* path was repointed on the
+        source so it matches nothing → None, leaving the caller's write a
+        harmless no-op exactly as before. Returns None when no source matches.
         """
         key = _canonical_track_uri(uri)
-        if self._conn.execute(
-            "SELECT 1 FROM tracks WHERE file_path = ? LIMIT 1", (key,)
-        ).fetchone():
-            return key
         row = self._conn.execute(
-            "SELECT t.file_path FROM track_sources s JOIN tracks t"
-            " ON t.id = s.track_id WHERE s.uri = ? AND s.kind = 'stream' LIMIT 1",
-            (key,),
+            "SELECT track_id FROM track_sources WHERE uri = ? LIMIT 1", (key,)
         ).fetchone()
-        return str(row["file_path"]) if row is not None else key
+        return row["track_id"] if row is not None else None
 
-    def _write_track_stats(self, key: str, **values: "float | int | None") -> None:
-        """Upsert absolute stat value(s) into track_stats for the track at *key*.
+    def _write_track_stats(
+        self, track_id: "int | None", **values: "float | int | None"
+    ) -> None:
+        """Upsert absolute stat value(s) into track_stats for *track_id* (KAMP-552).
 
-        Resolves track_id from tracks.file_path and writes track_stats directly —
-        the sole source of truth since KAMP-539 dropped the legacy tracks stat
-        columns. Absolute values (never a relative delta), so it survives the
-        KAMP-541 collapse. No-op when *key* matches no track; creates the
-        track_stats row if a scan/backfill has not yet. *values* keys are internal
+        Writes track_stats directly by id — the sole source of truth since
+        KAMP-539 dropped the legacy tracks stat columns. Absolute values (never a
+        relative delta), so it survives the KAMP-541 collapse. No-op when
+        *track_id* is None (the uri matched no source); creates the track_stats
+        row if a scan/backfill has not yet. *values* keys are internal
         column-name literals (favorite/last_played), never user input.
         """
+        if track_id is None:
+            return
         import time
 
         cols = list(values)
@@ -5036,26 +5034,28 @@ class LibraryIndex:
         assigns = ", ".join(f"{c} = excluded.{c}" for c in cols)
         self._conn.execute(
             f"INSERT INTO track_stats (track_id, {col_list}, updated_at)"
-            f" SELECT id, {value_slots}, ? FROM tracks WHERE file_path = ?"
+            f" VALUES (?, {value_slots}, ?)"
             f" ON CONFLICT(track_id) DO UPDATE SET {assigns},"
             f" updated_at = excluded.updated_at",
-            (*values.values(), time.time(), key),
+            (track_id, *values.values(), time.time()),
         )
 
-    def _increment_play_count(self, key: str) -> None:
-        """Increment track_stats.play_count for the track at *key* (KAMP-539).
+    def _increment_play_count(self, track_id: "int | None") -> None:
+        """Increment track_stats.play_count for *track_id* (KAMP-539/552).
 
         In-table increment (seeds play_count=1 when the track_stats row is absent)
-        so it never reads a stale value. No-op when *key* matches no track.
+        so it never reads a stale value. No-op when *track_id* is None.
         """
+        if track_id is None:
+            return
         import time
 
         self._conn.execute(
             "INSERT INTO track_stats (track_id, play_count, updated_at)"
-            " SELECT id, 1, ? FROM tracks WHERE file_path = ?"
+            " VALUES (?, 1, ?)"
             " ON CONFLICT(track_id) DO UPDATE SET play_count = play_count + 1,"
             " updated_at = excluded.updated_at",
-            (time.time(), key),
+            (track_id, time.time()),
         )
 
     def record_track_started(self, file_path: Path) -> None:
@@ -5069,16 +5069,16 @@ class LibraryIndex:
         import time
 
         now = time.time()
-        key = self._canonical_key_for(file_path)
-        self._write_track_stats(key, last_played=now)
+        tid = self._resolve_track_id(file_path)
+        self._write_track_stats(tid, last_played=now)
         # Keep album aggregate in sync.
         self._conn.execute(
             """
             UPDATE albums SET last_played_at = ?
-            WHERE id = (SELECT album_id FROM tracks WHERE file_path = ?)
+            WHERE id = (SELECT album_id FROM tracks WHERE id = ?)
               AND (last_played_at IS NULL OR last_played_at < ?)
             """,
-            (now, key, now),
+            (now, tid, now),
         )
         self._conn.commit()
         if self.on_fields_changed:
@@ -5091,21 +5091,21 @@ class LibraryIndex:
         updated here; last_played is managed exclusively by record_track_started().
         Also refreshes the parent album's play_count_avg.
         """
-        key = self._canonical_key_for(file_path)
+        tid = self._resolve_track_id(file_path)
         # Increment play_count in track_stats BEFORE recomputing the album average
         # — that recompute reads play_count through the tracks_with_stats view
         # (i.e. from track_stats), so the write must land first or the average
         # sees the stale value.
-        self._increment_play_count(key)
+        self._increment_play_count(tid)
         self._conn.execute(
             """
             UPDATE albums SET play_count_avg = (
                 SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
                 FROM tracks_with_stats t WHERE t.album_id = albums.id
             )
-            WHERE id = (SELECT album_id FROM tracks WHERE file_path = ?)
+            WHERE id = (SELECT album_id FROM tracks WHERE id = ?)
             """,
-            (key,),
+            (tid,),
         )
         self._conn.commit()
         if self.on_fields_changed:
@@ -5120,7 +5120,9 @@ class LibraryIndex:
         """
         key = _canonical_track_uri(file_path)
         row = self._conn.execute(
-            "SELECT artist, album_artist FROM tracks WHERE file_path = ?", (key,)
+            "SELECT t.artist, t.album_artist FROM track_sources s"
+            " JOIN tracks t ON t.id = s.track_id WHERE s.uri = ? LIMIT 1",
+            (key,),
         ).fetchone()
         if row is None:
             return
@@ -5214,11 +5216,11 @@ class LibraryIndex:
 
         *file_path* may be a track's own file_path or any of its delivery uris
         (a queued bandcamp:// stream uri whose track has since collapsed onto its
-        local file); _canonical_key_for redirects the latter to the surviving
+        local file); _resolve_track_id redirects the latter to the surviving
         row so the favorite lands on the canonical track (KAMP-541).
         """
-        key = self._canonical_key_for(file_path)
-        self._write_track_stats(key, favorite=int(favorite))
+        tid = self._resolve_track_id(file_path)
+        self._write_track_stats(tid, favorite=int(favorite))
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.favorite"})

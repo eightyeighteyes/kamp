@@ -23,7 +23,7 @@ _EFFECTIVE_SOURCE_SQL = (
     "COALESCE((SELECT CASE WHEN s.kind = 'file' THEN 'local' ELSE 'bandcamp' END"
     " FROM track_sources s WHERE s.track_id = tracks.id"
     " ORDER BY s.is_available DESC, (s.kind = 'file') DESC, s.id LIMIT 1),"
-    " tracks.source)"
+    " 'local')"  # KAMP-539: tracks.source dropped; default matches its old DEFAULT
 )
 
 # Maps field name → (sql_column_expr, value_type).

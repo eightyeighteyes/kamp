@@ -1331,6 +1331,60 @@ class TestLibraryIndex:
 
         assert artists == ["Aesop Rock", "Zeppelin"]
 
+    def test_case_variant_album_artist_does_not_split_artist_row(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-545: two albums by one artist with divergent casing must share a
+        single artists row and artist_id, not fork onto two."""
+        index = LibraryIndex(tmp_path / "library.db")
+        local = _sample_track(tmp_path / "0.mp3")
+        local.album_artist = "Sunn O)))"
+        local.album = "Monoliths & Dimensions"
+        bandcamp = _sample_track(tmp_path / "1.mp3")
+        bandcamp.album_artist = "SUNN O)))"  # bandcamp uppercased the name
+        bandcamp.album = "Life Metal"
+        index.upsert_many([local, bandcamp])
+
+        artist_rows = index._conn.execute(
+            "SELECT COUNT(*) FROM artists WHERE name = 'sunn o)))' COLLATE NOCASE"
+        ).fetchone()[0]
+        artist_ids = {
+            r[0]
+            for r in index._conn.execute(
+                "SELECT artist_id FROM albums"
+                " WHERE album_artist = 'sunn o)))' COLLATE NOCASE"
+            )
+        }
+        index.close()
+
+        assert artist_rows == 1
+        assert len(artist_ids) == 1 and None not in artist_ids
+
+    def test_record_play_time_credits_single_case_variant_artist(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-545: play_time for a case-variant artist accrues to the one
+        canonical row rather than being lost to a BINARY name mismatch."""
+        index = LibraryIndex(tmp_path / "library.db")
+        first = _sample_track(tmp_path / "0.mp3")
+        first.album_artist = "Kylesa"
+        second = _sample_track(tmp_path / "1.mp3")
+        second.album_artist = "KYLESA"
+        second.album = "Spiral Shadow"
+        index.upsert_many([first, second])
+
+        index.record_play_time(tmp_path / "0.mp3", 30.0)
+        index.record_play_time(tmp_path / "1.mp3", 12.0)
+
+        rows = index._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(play_time), 0) FROM artists"
+            " WHERE name = 'kylesa' COLLATE NOCASE"
+        ).fetchone()
+        index.close()
+
+        assert rows[0] == 1
+        assert rows[1] == 42.0
+
     def test_tracks_for_album_sorted_by_disc_then_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         for disc, track_num, title in [(1, 2, "B"), (2, 1, "C"), (1, 1, "A")]:

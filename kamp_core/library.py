@@ -259,6 +259,15 @@ CREATE TABLE IF NOT EXISTS artists (
     play_time REAL NOT NULL DEFAULT 0
 );
 
+-- Case-insensitive uniqueness on artist name (KAMP-545). albums.album_artist is
+-- COLLATE NOCASE, so without this a case-variant ("SUNN O)))" vs "Sunn O)))")
+-- spawns a second artists row and splits an artist's albums across two ids. The
+-- plain BINARY UNIQUE above is left in place (redundant but harmless). Enforced as
+-- an index rather than a table rebuild because artists.id is FK-referenced by
+-- albums.artist_id and PRAGMA foreign_keys is a no-op inside the migration txn.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_name_nocase
+    ON artists(name COLLATE NOCASE);
+
 CREATE TABLE IF NOT EXISTS albums (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     album_artist   TEXT    NOT NULL DEFAULT '' COLLATE NOCASE,
@@ -3896,10 +3905,14 @@ class LibraryIndex:
                 """,
                 album_params,
             )
-            # Wire artist_id on any albums rows that are missing it.
+            # Wire artist_id on any albums rows that are missing it. The name match
+            # is COLLATE NOCASE (KAMP-545): with the case-insensitive artists index,
+            # a differently-cased album_artist resolves to the single canonical
+            # artist row instead of failing the BINARY compare and leaving
+            # artist_id NULL (which would orphan the album from every artist filter).
             self._conn.execute("""
                 UPDATE albums SET artist_id = (
-                    SELECT id FROM artists WHERE name = album_artist
+                    SELECT id FROM artists WHERE name = album_artist COLLATE NOCASE
                 )
                 WHERE artist_id IS NULL
                 """)
@@ -4904,8 +4917,12 @@ class LibraryIndex:
         self._conn.execute(
             "INSERT OR IGNORE INTO artists (name) VALUES (?)", (artist_name,)
         )
+        # COLLATE NOCASE (KAMP-545): the INSERT OR IGNORE above is a no-op when a
+        # case-variant row already exists, so a BINARY match here would update zero
+        # rows and silently drop the play_time. Match the canonical row regardless
+        # of casing.
         self._conn.execute(
-            "UPDATE artists SET play_time = play_time + ? WHERE name = ?",
+            "UPDATE artists SET play_time = play_time + ? WHERE name = ? COLLATE NOCASE",
             (elapsed_seconds, artist_name),
         )
         self._conn.commit()

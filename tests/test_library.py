@@ -1417,8 +1417,14 @@ class TestLibraryIndex:
         index.close()
         assert fp == "/m/n.mp3"  # unchanged
 
-    def test_remove_track_legacy_row_without_source(self, tmp_path: Path) -> None:
-        """A pre-collapse tracks row with no source is removed by file_path (KAMP-541)."""
+    def test_remove_track_sourceless_row_is_noop(self, tmp_path: Path) -> None:
+        """A sourceless tracks row is unaddressable by remove_track (KAMP-552).
+
+        The pre-collapse "delete by file_path" fallback is gone now that file_path
+        is dropped — a row with no track_sources cannot be resolved by any uri, so
+        remove_track is a no-op. (Such a row cannot occur in practice: every track
+        carries a source since KAMP-540.)
+        """
         index = LibraryIndex(tmp_path / "library.db")
         _readd_legacy_track_columns(index)
         fp = tmp_path / "legacy.mp3"
@@ -1429,7 +1435,7 @@ class TestLibraryIndex:
         index.remove_track(fp)
         n = index._conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
         index.close()
-        assert n == 0
+        assert n == 1  # no source to resolve → nothing removed
 
     def test_v46_collapse_merges_siblings_and_repoints(self, tmp_path: Path) -> None:
         """v46 collapses a stream+local sibling pair into one track (KAMP-541)."""
@@ -7204,6 +7210,20 @@ class TestRemoteTrackSchema:
                 ("/local/file.mp3", "Local", "Artist", "Artist", "Other", 1, 1, ""),
             ],
         )
+        # KAMP-552: the count is over track_sources.uri now, so each row needs its
+        # source row (stream for the bandcamp:// tracks, file for the local one).
+        for uri, kind in [
+            ("bandcamp://42/1", "stream"),
+            ("bandcamp://42/2", "stream"),
+            ("/local/file.mp3", "file"),
+        ]:
+            tid = index._conn.execute(
+                "SELECT id FROM tracks WHERE file_path = ?", (uri,)
+            ).fetchone()[0]
+            index._conn.execute(
+                "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, ?, ?)",
+                (tid, kind, uri),
+            )
         index._conn.commit()
 
         updated = index.set_track_source_for_item("42", "local")
@@ -8036,6 +8056,14 @@ class TestQueuePlayerStateStr:
             "track_number, disc_number, ext, embedded_art, mb_release_id, mb_recording_id, "
             "source) VALUES (?, 'Remote', 'A', 'A', 'B', '2024', 1, 1, 'mp3', 0, '', '', 'bandcamp')",
             (canonical,),
+        )
+        # KAMP-552: get_track_by_path resolves through track_sources.uri now.
+        tid = index._conn.execute(
+            "SELECT id FROM tracks WHERE file_path = ?", (canonical,)
+        ).fetchone()[0]
+        index._conn.execute(
+            "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, 'stream', ?)",
+            (tid, canonical),
         )
         index._conn.commit()
         track = index.get_track_by_path(canonical)
@@ -9249,9 +9277,9 @@ class TestInheritRemotePlayCounts:
         )
         alb = c.execute("SELECT id FROM albums").fetchone()[0]
         local = self._local_track(tmp_path, 1)
-        for fp, pc in [
-            ("bandcamp://42/1", remote_pc),
-            (str(local.file_path), local_pc),
+        for fp, pc, kind in [
+            ("bandcamp://42/1", remote_pc, "stream"),
+            (str(local.file_path), local_pc, "file"),
         ]:
             c.execute(
                 "INSERT INTO tracks (file_path, title, album, album_artist, album_id,"
@@ -9262,6 +9290,13 @@ class TestInheritRemotePlayCounts:
             tid = c.execute(
                 "SELECT id FROM tracks WHERE file_path = ?", (fp,)
             ).fetchone()[0]
+            # KAMP-552: identity/effective-source is derived from track_sources now,
+            # so each row needs its source row (a bare tracks row reads as sourceless
+            # / 'local' and would not match the streaming-sibling inherit).
+            c.execute(
+                "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, ?, ?)",
+                (tid, kind, fp),
+            )
             c.execute(
                 "INSERT INTO track_stats (track_id, play_count) VALUES (?, ?)",
                 (tid, pc),
@@ -9272,8 +9307,9 @@ class TestInheritRemotePlayCounts:
     def _local_play_count(self, index: "LibraryIndex", local: Track) -> int:
         return int(
             index._conn.execute(
-                "SELECT st.play_count FROM track_stats st JOIN tracks t"
-                " ON t.id = st.track_id WHERE t.file_path = ?",
+                "SELECT st.play_count FROM track_stats st"
+                " JOIN track_sources s ON s.track_id = st.track_id"
+                " WHERE s.uri = ?",
                 (str(local.file_path),),
             ).fetchone()[0]
         )

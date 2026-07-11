@@ -4045,12 +4045,15 @@ class LibraryIndex:
         ]
         touched_from_singles = self._attach_loose_local_singles(single_paths)
 
-        # Step 4: refresh denormalized aggregate columns on the touched album rows.
-        # Run once per batch (not per track) using a correlated subquery. Include
-        # albums reached only through provenance linking (prov_album_ids) and
-        # single re-linking (touched_from_singles) — a nameless single's target
-        # album is not in file_paths (built from named), yet its source/aggregates
-        # must be recomputed now that a local track attached to it.
+        # Step 4: collect the touched album ids (refresh is deferred to after Step 5,
+        # below). Include albums reached only through provenance linking
+        # (prov_album_ids) and single re-linking (touched_from_singles) — a nameless
+        # single's target album is not in file_paths (built from named), yet its
+        # source/aggregates must be recomputed now that a local track attached to it.
+        # The aggregate refresh must run AFTER track_sources is populated (Step 5):
+        # _refresh_album_aggregates derives the album's art/source from the
+        # tracks_with_stats view, which reads track_sources (KAMP-539) — refreshing
+        # first would resolve every new track to source-less type defaults.
         touched_album_ids: set[int] = set(prov_album_ids) | touched_from_singles
         if file_paths:
             all_placeholders = ",".join("?" * len(file_paths))
@@ -4062,8 +4065,6 @@ class LibraryIndex:
                     file_paths,
                 ).fetchall()
             )
-        if touched_album_ids:
-            self._refresh_album_aggregates(list(touched_album_ids))
 
         # Step 5 (KAMP-540/539): keep the canonical child tables in sync. Every
         # upserted track gets a refreshed track_sources row whose per-source
@@ -4109,8 +4110,12 @@ class LibraryIndex:
                 "   embedded_art = excluded.embedded_art,"
                 "   file_mtime = excluded.file_mtime,"
                 "   is_available = excluded.is_available,"
-                "   stream_url = excluded.stream_url,"
-                "   stream_url_expires_at = excluded.stream_url_expires_at",
+                # Preserve a cached CDN URL when the incoming row has none — a
+                # metadata re-index (fetch_album_tracks never populates stream_url)
+                # must not wipe it (mirrors the pre-539 tracks upsert COALESCE).
+                "   stream_url = COALESCE(excluded.stream_url, stream_url),"
+                "   stream_url_expires_at ="
+                "     COALESCE(excluded.stream_url_expires_at, stream_url_expires_at)",
                 src_params,
             )
             self._conn.executemany(
@@ -4123,6 +4128,12 @@ class LibraryIndex:
             # canonical track (merging the fork) instead of leaving a duplicate
             # streaming+local pair. No-op when there is no stream-only sibling.
             self._reconcile_scanned_tracks([p[-1] for p in src_params])
+
+        # Step 4 (deferred from above): now that track_sources is populated,
+        # recompute the touched albums' denormalized aggregates (art/source/counts),
+        # which _refresh_album_aggregates derives from the tracks_with_stats view.
+        if touched_album_ids:
+            self._refresh_album_aggregates(list(touched_album_ids))
 
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()

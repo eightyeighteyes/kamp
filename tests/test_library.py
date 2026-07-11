@@ -93,6 +93,40 @@ def _mirror_stats(index: "LibraryIndex") -> None:
     index._conn.commit()
 
 
+# Columns dropped from tracks in KAMP-539 (v49), with their pre-drop definitions.
+_LEGACY_TRACK_COLUMNS: list[tuple[str, str]] = [
+    ("ext", "TEXT NOT NULL DEFAULT ''"),
+    ("embedded_art", "INTEGER NOT NULL DEFAULT 0"),
+    ("file_mtime", "REAL"),
+    ("source", "TEXT NOT NULL DEFAULT 'local'"),
+    ("stream_url", "TEXT"),
+    ("stream_url_expires_at", "REAL"),
+    ("is_available", "INTEGER NOT NULL DEFAULT 1"),
+    ("duration", "REAL NOT NULL DEFAULT 0"),
+    ("last_played", "REAL"),
+    ("favorite", "INTEGER NOT NULL DEFAULT 0"),
+    ("play_count", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+def _readd_legacy_track_columns(index: "LibraryIndex") -> None:
+    """Re-add the per-source/stat columns KAMP-539 dropped and rebuild the view.
+
+    Two uses: a migration test simulates a pre-v49 DB (seed the old row shape, set
+    schema_version back, reopen — the v49 migration drops the columns again), and a
+    feature test seeds favorite/source/etc via a direct ``INSERT INTO tracks``. With
+    the columns present the rebuilt view falls back to them, so pre-539 fixtures keep
+    working; the production drop + derived-view path is validated separately (a real
+    13k-track DB migration and the public-API test suite).
+    """
+    cols = {r[1] for r in index._conn.execute("PRAGMA table_info(tracks)")}
+    for name, decl in _LEGACY_TRACK_COLUMNS:
+        if name not in cols:
+            index._conn.execute(f"ALTER TABLE tracks ADD COLUMN {name} {decl}")
+    index._conn.commit()
+    index._create_tracks_with_stats_view()
+
+
 # ---------------------------------------------------------------------------
 # LibraryIndex
 # ---------------------------------------------------------------------------
@@ -264,7 +298,9 @@ class TestLibraryIndex:
     def test_v45_backfill_populates_children(self, tmp_path: Path) -> None:
         """v45 backfills track_sources/track_stats from tracks per design §3 (KAMP-540)."""
         db_path = tmp_path / "library.db"
-        LibraryIndex(db_path).close()  # full current schema
+        _idx = LibraryIndex(db_path)
+        _readd_legacy_track_columns(_idx)  # seed the pre-v49 row shape
+        _idx.close()
         conn = sqlite3.connect(str(db_path))
         # Rewind to the pre-backfill state: empty children, version 44, raw rows.
         conn.execute("DELETE FROM track_sources")
@@ -317,6 +353,7 @@ class TestLibraryIndex:
     def test_v45_backfill_is_idempotent(self, tmp_path: Path) -> None:
         """Re-running the backfill inserts no duplicate child rows (KAMP-540)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         index._conn.execute(
             "INSERT INTO tracks (file_path, source) VALUES ('/m/a.mp3', 'local')"
         )
@@ -410,6 +447,7 @@ class TestLibraryIndex:
     def test_preferred_source_prefers_file_then_available(self, tmp_path: Path) -> None:
         """preferred_source picks a local file, falling through to a stream (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         index._conn.execute(
             "INSERT INTO tracks (file_path, source) VALUES ('canon', 'bandcamp')"
         )
@@ -440,6 +478,7 @@ class TestLibraryIndex:
     ) -> None:
         """sources_for_track_ids returns all sources per track, preferred-first (KAMP-537)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute("INSERT INTO tracks (file_path, source) VALUES ('a', 'local')")
         c.execute("INSERT INTO tracks (file_path, source) VALUES ('b', 'bandcamp')")
@@ -471,6 +510,7 @@ class TestLibraryIndex:
     ) -> None:
         """Removing a local file drops its source but keeps a track that still streams (KAMP-541 C2)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         # Use a real platform path so str(fp) matches the stored uri on Windows too.
         fp = tmp_path / "a.mp3"
         index._conn.execute(
@@ -502,6 +542,7 @@ class TestLibraryIndex:
     def test_remove_track_deletes_sourceless_track(self, tmp_path: Path) -> None:
         """Removing the only (file) source deletes the canonical track (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         fp = tmp_path / "solo.mp3"
         index._conn.execute(
             "INSERT INTO tracks (file_path, source) VALUES (?, 'local')", (str(fp),)
@@ -523,6 +564,7 @@ class TestLibraryIndex:
         """A bucket with >2 rows is left un-merged (KAMP-541 quarantine)."""
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
         alb = c.execute("SELECT id FROM albums").fetchone()[0]
@@ -554,6 +596,7 @@ class TestLibraryIndex:
         """Collapse derives an absent source and keeps the survivor's deferred op (KAMP-541)."""
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
         alb = c.execute("SELECT id FROM albums").fetchone()[0]
@@ -597,6 +640,7 @@ class TestLibraryIndex:
     ) -> None:
         """A downloaded file for an existing stream track attaches as a source (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute(
             "INSERT INTO albums (album_artist, album) VALUES ('The Artist','The Album')"
@@ -715,6 +759,7 @@ class TestLibraryIndex:
         from kamp_core.library import NoStreamableVersionError
 
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sidX')")
         c.execute(
@@ -743,6 +788,7 @@ class TestLibraryIndex:
         """v47 restores embedded_art/file_mtime lost by the v46 collapse (KAMP-541)."""
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute(
             "INSERT INTO albums (album_artist, album, embedded_art) VALUES ('A','Alb',0)"
@@ -794,6 +840,7 @@ class TestLibraryIndex:
         """
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sid48')")
         c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
@@ -841,6 +888,123 @@ class TestLibraryIndex:
         assert surv == file_id  # survivor is the local download
         assert kinds == ["file", "stream"]  # stream re-parented onto it
 
+    def test_v49_drops_legacy_columns_and_derives_from_children(
+        self, tmp_path: Path
+    ) -> None:
+        """v49 drops the 11 duplicated tracks columns; reads then derive them from
+        track_sources/track_stats via the view, values preserved (KAMP-539)."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
+        c = index._conn
+        c.execute(
+            "INSERT INTO tracks (file_path, title, album, album_artist, track_number,"
+            " disc_number, source, ext, duration) VALUES"
+            " ('/m/a.mp3','T','Alb','A',1,1,'local','flac',321.0)"
+        )
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri, ext, duration,"
+            " embedded_art, is_available) VALUES (?, 'file', '/m/a.mp3','flac',321.0,1,1)",
+            (tid,),
+        )
+        c.execute(
+            "INSERT INTO track_stats (track_id, favorite, play_count) VALUES (?, 1, 4)",
+            (tid,),
+        )
+        c.execute("UPDATE schema_version SET version = 48")
+        c.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)  # runs the v49 drop
+        rc = reopened._conn
+        cols = {r[1] for r in rc.execute("PRAGMA table_info(tracks)")}
+        dropped = {
+            "ext",
+            "embedded_art",
+            "file_mtime",
+            "source",
+            "stream_url",
+            "stream_url_expires_at",
+            "is_available",
+            "duration",
+            "favorite",
+            "play_count",
+            "last_played",
+        }
+        t = reopened.get_track_by_id(tid)
+        ver = rc.execute("SELECT version FROM schema_version").fetchone()[0]
+        reopened.close()
+        assert ver == 49
+        assert not (dropped & cols)  # all 11 columns gone from tracks
+        assert {"file_path", "sale_item_id"} <= cols  # retained
+        assert t is not None
+        # Per-source values derive from track_sources; stats from track_stats.
+        assert t.source == "local" and t.ext == "flac" and t.duration == 321.0
+        assert t.favorite is True and t.play_count == 4
+
+    def test_v49_noop_when_columns_already_dropped(self, tmp_path: Path) -> None:
+        """Re-running v49 on a DB that already lacks the columns just bumps the
+        version — idempotent presence check (KAMP-539)."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)  # fresh v49 schema — no legacy columns
+        index._conn.execute("UPDATE schema_version SET version = 48")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)  # v49 finds nothing to drop
+        ver = reopened._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        cols = {r[1] for r in reopened._conn.execute("PRAGMA table_info(tracks)")}
+        reopened.close()
+        assert ver == 49
+        assert "favorite" not in cols
+
+    def test_v49_rolls_back_and_keeps_version_when_a_drop_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """If a column drop raises (an index on a target column blocks DROP COLUMN),
+        v49 rolls back, leaves the version unbumped so it retries, and rebuilds a
+        usable view (KAMP-539)."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
+        # An index on a drop-target column makes ALTER TABLE DROP COLUMN fail.
+        index._conn.execute("CREATE INDEX _t_fav ON tracks(favorite)")
+        index._conn.execute("UPDATE schema_version SET version = 48")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)  # the drop of the indexed column raises
+        rc = reopened._conn
+        ver = rc.execute("SELECT version FROM schema_version").fetchone()[0]
+        cols = {r[1] for r in rc.execute("PRAGMA table_info(tracks)")}
+        n = rc.execute("SELECT COUNT(*) FROM tracks_with_stats").fetchone()[0]
+        reopened.close()
+        assert ver == 48  # not bumped — the next open retries
+        assert "favorite" in cols  # the failed column is not dropped
+        assert n == 0  # the view was rebuilt and is queryable
+
+    def test_v49_skips_drop_when_backup_fails(
+        self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+    ) -> None:
+        """If the pre-drop backup fails, v49 skips the (irreversible) drop and does
+        not bump the version, so it retries on the next open (KAMP-539)."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
+        index._conn.execute("UPDATE schema_version SET version = 48")
+        index._conn.commit()
+        index.close()
+
+        monkeypatch.setattr(LibraryIndex, "_backup_db", lambda self, label: False)
+        reopened = LibraryIndex(db)  # backup fails → drop skipped
+        rc = reopened._conn
+        ver = rc.execute("SELECT version FROM schema_version").fetchone()[0]
+        cols = {r[1] for r in rc.execute("PRAGMA table_info(tracks)")}
+        reopened.close()
+        assert ver == 48  # not bumped
+        assert "favorite" in cols  # columns retained
+
     def test_collapse_heal_works_without_preexisting_view(self, tmp_path: Path) -> None:
         """A collapse heal must build the tracks_with_stats view before running.
 
@@ -855,6 +1019,7 @@ class TestLibraryIndex:
         """
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sidv')")
         c.execute("INSERT INTO albums (album_artist, album) VALUES ('A','Alb')")
@@ -907,6 +1072,7 @@ class TestLibraryIndex:
     def test_all_downloads_streamable(self, tmp_path: Path) -> None:
         """all_downloads_streamable is True only when every download has a stream (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sidS')")
         c.execute(
@@ -936,6 +1102,7 @@ class TestLibraryIndex:
     def test_materialize_skips_when_no_matching_track(self, tmp_path: Path) -> None:
         """materialize_stream_tracks attaches nothing when no track matches (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute("INSERT INTO bandcamp_collection (sale_item_id) VALUES ('sid99')")
         c.execute(
@@ -967,6 +1134,7 @@ class TestLibraryIndex:
     def test_sync_to_preferred_noop_without_sources(self, tmp_path: Path) -> None:
         """_sync_tracks_row_to_preferred_source is a no-op for a sourceless track (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         index._conn.execute(
             "INSERT INTO tracks (file_path, source) VALUES ('/m/n.mp3', 'local')"
         )
@@ -981,6 +1149,7 @@ class TestLibraryIndex:
     def test_remove_track_legacy_row_without_source(self, tmp_path: Path) -> None:
         """A pre-collapse tracks row with no source is removed by file_path (KAMP-541)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         fp = tmp_path / "legacy.mp3"
         index._conn.execute(
             "INSERT INTO tracks (file_path, source) VALUES (?, 'local')", (str(fp),)
@@ -997,6 +1166,7 @@ class TestLibraryIndex:
 
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute(
             "INSERT INTO albums (album_artist, album, source) VALUES ('A','Alb','bandcamp')"
@@ -1849,6 +2019,7 @@ class TestLibraryScanner:
         _make_mp3(lib / "01.mp3", title="One", album="Fork", album_artist="Artist")
 
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         scanner = LibraryScanner(index)
         scanner.scan(lib)
         conn = index._conn
@@ -2666,7 +2837,7 @@ class TestSearch:
         ]
         # date_added and last_played columns must exist (no exception on select).
         row = index._conn.execute(
-            "SELECT date_added, last_played FROM tracks WHERE id = 1"
+            "SELECT date_added, last_played FROM tracks_with_stats WHERE id = 1"
         ).fetchone()
         index.close()
 
@@ -3024,7 +3195,7 @@ class TestRecordPlayed:
         index.record_played(p)
 
         row = index._conn.execute(
-            "SELECT last_played FROM tracks WHERE file_path = ?", (str(p),)
+            "SELECT last_played FROM tracks_with_stats WHERE file_path = ?", (str(p),)
         ).fetchone()
         index.close()
 
@@ -3261,7 +3432,7 @@ class TestRecordPlayed:
             0
         ]
         row = index._conn.execute(
-            "SELECT play_count FROM tracks WHERE id = 1"
+            "SELECT play_count FROM tracks_with_stats WHERE id = 1"
         ).fetchone()
         index.close()
 
@@ -3410,11 +3581,18 @@ class TestTopArtists:
         _make_indexed_track(
             seed, tmp_path, "t2.mp3", album_artist="Bach", duration=120.0
         )
+        _readd_legacy_track_columns(seed)
         seed.close()
         # Manually set play counts and downgrade version so migration re-runs.
         conn = _sqlite3.connect(str(db_path))
         conn.execute("UPDATE tracks SET play_count = 2 WHERE title = 't1.mp3'")
         conn.execute("UPDATE tracks SET play_count = 3 WHERE title = 't2.mp3'")
+        # duration now lives on track_sources; mirror it back onto the legacy
+        # tracks.duration the v36 backfill (play_count * duration) still reads.
+        conn.execute(
+            "UPDATE tracks SET duration = ("
+            " SELECT s.duration FROM track_sources s WHERE s.track_id = tracks.id LIMIT 1)"
+        )
         conn.execute("UPDATE artists SET play_time = 0")
         conn.execute("UPDATE schema_version SET version = 35")
         conn.commit()
@@ -3717,7 +3895,9 @@ class TestFavorite:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        row = index._conn.execute("SELECT favorite FROM tracks WHERE id = 1").fetchone()
+        row = index._conn.execute(
+            "SELECT favorite FROM tracks_with_stats WHERE id = 1"
+        ).fetchone()
         index.close()
 
         assert version == 49
@@ -3801,6 +3981,23 @@ class TestAlbumFavorite:
         conn = _sqlite3.connect(str(db_path))
         conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
         conn.execute("INSERT INTO schema_version VALUES (13)")
+        # A v13-era tracks table (columns through file_mtime) so the replayed
+        # v14→v49 migrations find the pre-KAMP-539 columns they reference (e.g.
+        # v17's "UPDATE tracks SET file_mtime = NULL").
+        conn.execute(
+            "CREATE TABLE tracks ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0,"
+            " disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '',"
+            " mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL)"
+        )
         conn.commit()
         conn.close()
 
@@ -3923,12 +4120,15 @@ class TestMtimeReindex:
         _make_mp3(p, title="Original")
 
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         scanner = LibraryScanner(index)
         scanner.scan(lib)
 
         # Simulate the state right after a v5→v6 migration: file_mtime is NULL.
+        # The scanner's re-read decision reads the preferred source's mtime, so
+        # null it on track_sources (the legacy tracks column is dropped in v49).
         index._conn.execute(
-            "UPDATE tracks SET file_mtime = NULL WHERE file_path = ?", (str(p),)
+            "UPDATE track_sources SET file_mtime = NULL WHERE uri = ?", (str(p),)
         )
         index._conn.commit()
 
@@ -3993,7 +4193,7 @@ class TestMtimeReindex:
             0
         ]
         row = index._conn.execute(
-            "SELECT file_mtime FROM tracks WHERE id = 1"
+            "SELECT file_mtime FROM tracks_with_stats WHERE id = 1"
         ).fetchone()
         index.close()
 
@@ -4158,7 +4358,7 @@ class TestSessionManagement:
 
         index = LibraryIndex(db_path)
         rows = index._conn.execute(
-            "SELECT ext, file_mtime FROM tracks ORDER BY file_path"
+            "SELECT ext, file_mtime FROM tracks_with_stats ORDER BY file_path"
         ).fetchall()
         index.close()
 
@@ -4228,7 +4428,7 @@ class TestSessionManagement:
 
         index = LibraryIndex(db_path)
         rows = index._conn.execute(
-            "SELECT file_path, file_mtime FROM tracks ORDER BY file_path"
+            "SELECT file_path, file_mtime FROM tracks_with_stats ORDER BY file_path"
         ).fetchall()
         index.close()
 
@@ -4826,6 +5026,23 @@ class TestMigrationV12ToV13:
                 value TEXT NOT NULL
             )
         """)
+        # A v12-era tracks table (columns through file_mtime). The KAMP-539 drop
+        # removed these from the modern _DDL, so without them the replayed v13→v49
+        # migrations (e.g. v17's "UPDATE tracks SET file_mtime = NULL") fail.
+        conn.execute(
+            "CREATE TABLE tracks ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0,"
+            " disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '',"
+            " mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL)"
+        )
         conn.execute(
             "INSERT INTO sessions (service, session_json, updated_at) VALUES (?, ?, ?)",
             ("bandcamp", _json.dumps({"cookies": [{"name": "x"}]}), 1.0),
@@ -4875,6 +5092,22 @@ class TestMigrationV12ToV13:
                 value TEXT NOT NULL
             )
         """)
+        # A v12-era tracks table (columns through file_mtime) so the replayed
+        # v13→v49 migrations find the pre-KAMP-539 columns they reference.
+        conn.execute(
+            "CREATE TABLE tracks ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0,"
+            " disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '',"
+            " mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL)"
+        )
         already_wrapped = _FakeDPAPI().protect_str(_json.dumps({"cookies": []}))
         conn.execute(
             "INSERT INTO sessions (service, session_json, updated_at) VALUES (?, ?, ?)",
@@ -4928,6 +5161,23 @@ class TestMigrationV11ToV12:
                 value TEXT NOT NULL
             )
         """)
+        # A v11-era tracks table (columns through file_mtime). The KAMP-539 drop
+        # removed these from the modern _DDL, so without them the replayed v12→v49
+        # migrations (e.g. v17's "UPDATE tracks SET file_mtime = NULL") fail.
+        conn.execute(
+            "CREATE TABLE tracks ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " file_path TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',"
+            " artist TEXT NOT NULL DEFAULT '', album_artist TEXT NOT NULL DEFAULT '',"
+            " album TEXT NOT NULL DEFAULT '', year TEXT NOT NULL DEFAULT '',"
+            " track_number INTEGER NOT NULL DEFAULT 0,"
+            " disc_number INTEGER NOT NULL DEFAULT 1,"
+            " ext TEXT NOT NULL DEFAULT '', embedded_art INTEGER NOT NULL DEFAULT 0,"
+            " mb_release_id TEXT NOT NULL DEFAULT '',"
+            " mb_recording_id TEXT NOT NULL DEFAULT '',"
+            " date_added REAL, last_played REAL, favorite INTEGER NOT NULL DEFAULT 0,"
+            " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL)"
+        )
         conn.execute(
             "INSERT INTO sessions (service, session_json, updated_at) VALUES (?, ?, ?)",
             (
@@ -5692,7 +5942,7 @@ class TestMigrationV16ToV17:
         index = LibraryIndex(db_path)
 
         row = index._conn.execute(
-            "SELECT file_mtime FROM tracks WHERE file_path = '/music/01.mp3'"
+            "SELECT file_mtime FROM tracks_with_stats WHERE file_path = '/music/01.mp3'"
         ).fetchone()
         assert row["file_mtime"] is None, "file_mtime should be nulled to force rescan"
         index.close()
@@ -5775,7 +6025,7 @@ class TestMarkAlbumArtEmbedded:
         index.mark_album_art_embedded("Artist", "Record", [t1.file_path])
 
         row = index._conn.execute(
-            "SELECT embedded_art FROM tracks WHERE file_path = ?",
+            "SELECT embedded_art FROM tracks_with_stats WHERE file_path = ?",
             (str(t2.file_path),),
         ).fetchone()
         assert row["embedded_art"] == 0  # t2 not in the list
@@ -5790,7 +6040,7 @@ class TestMarkAlbumArtEmbedded:
         index.mark_album_art_embedded("Artist", "Record", [t1.file_path])
 
         row = index._conn.execute(
-            "SELECT embedded_art FROM tracks WHERE album = 'OtherRecord'"
+            "SELECT embedded_art FROM tracks_with_stats WHERE album = 'OtherRecord'"
         ).fetchone()
         assert row["embedded_art"] == 0
         index.close()
@@ -6393,7 +6643,8 @@ class TestRemoteTrackSchema:
         index.upsert_track(track)
 
         row = index._conn.execute(
-            "SELECT source, stream_url, stream_url_expires_at FROM tracks WHERE file_path = ?",
+            "SELECT source, stream_url, stream_url_expires_at FROM tracks_with_stats"
+            " WHERE file_path = ?",
             (str(track.file_path),),
         ).fetchone()
         index.close()
@@ -6409,7 +6660,7 @@ class TestRemoteTrackSchema:
         index.upsert_track(track)
 
         row = index._conn.execute(
-            "SELECT source FROM tracks WHERE file_path = ?", (str(fp),)
+            "SELECT source FROM tracks_with_stats WHERE file_path = ?", (str(fp),)
         ).fetchone()
         index.close()
 
@@ -6436,6 +6687,98 @@ class TestRemoteTrackSchema:
         assert row["stream_url"] == "https://new-cdn.example.com/track.mp3"
         assert row["stream_url_expires_at"] == 12345.0
 
+    def test_update_stream_url_for_source(self, tmp_path: Path) -> None:
+        """update_stream_url_for_source persists a refreshed CDN url on a specific
+        track_sources row (the _source_id-known refresh path, KAMP-541)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        c = index._conn
+        c.execute("INSERT INTO tracks (file_path) VALUES ('bandcamp://9/1')")
+        tid = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.execute(
+            "INSERT INTO track_sources (track_id, kind, uri, stream_url,"
+            " stream_url_expires_at) VALUES (?, 'stream', 'bandcamp://9/1', 'old', 1.0)",
+            (tid,),
+        )
+        sid = c.execute("SELECT id FROM track_sources").fetchone()[0]
+        c.commit()
+
+        index.update_stream_url_for_source(sid, "https://cdn/new.mp3", 999.0)
+
+        row = c.execute(
+            "SELECT stream_url, stream_url_expires_at FROM track_sources WHERE id = ?",
+            (sid,),
+        ).fetchone()
+        index.close()
+        assert row["stream_url"] == "https://cdn/new.mp3"
+        assert row["stream_url_expires_at"] == 999.0
+
+    def test_update_track_after_album_drain(self, tmp_path: Path) -> None:
+        """Repaths a track, updates album/artist tags, routes the new file_mtime to
+        the file source (KAMP-539), and rebuilds FTS after a deferred album_retag."""
+        index = LibraryIndex(tmp_path / "library.db")
+        old = tmp_path / "old.mp3"
+        new = tmp_path / "new.mp3"
+        index.upsert_track(_sample_track(old))
+        tid = index.get_track_by_path(old).id  # type: ignore[union-attr]
+
+        index.update_track_after_album_drain(
+            tid, new, "New Album", "New Artist", "New Artist", 4242.0
+        )
+
+        t = index.get_track_by_id(tid)
+        src_mtime = index._conn.execute(
+            "SELECT file_mtime FROM track_sources WHERE track_id=? AND kind='file'",
+            (tid,),
+        ).fetchone()[0]
+        index.close()
+        assert t is not None
+        assert str(t.file_path) == str(new)
+        assert t.album == "New Album" and t.album_artist == "New Artist"
+        assert t.artist == "New Artist"
+        assert src_mtime == 4242.0  # file_mtime routed to track_sources
+
+    def test_tracks_for_playlist_returns_tracks_in_position_order(
+        self, tmp_path: Path
+    ) -> None:
+        """tracks_for_playlist reads playlist rows through the tracks_with_stats view
+        (per-source columns derived, KAMP-539) in stored position order."""
+        index = LibraryIndex(tmp_path / "library.db")
+        a = _sample_track(tmp_path / "a.mp3")
+        a.title = "A"
+        b = _sample_track(tmp_path / "b.mp3")
+        b.title = "B"
+        index.upsert_many([a, b])
+        pl = index.create_playlist("P")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "b.mp3"))  # position 0
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "a.mp3"))  # position 1
+
+        tracks = index.tracks_for_playlist(pl["id"])
+        index.close()
+        assert [t.title for t in tracks] == ["B", "A"]
+
+    def test_settings_round_trip(self, tmp_path: Path) -> None:
+        """get_setting/set_setting/get_all_settings persist and upsert config values."""
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.get_setting("k") is None
+        index.set_setting("k", "v1")
+        assert index.get_setting("k") == "v1"
+        index.set_setting("k", "v2")  # ON CONFLICT DO UPDATE
+        index.set_setting("other", "x")
+        assert index.get_setting("k") == "v2"
+        assert index.get_all_settings() == {"k": "v2", "other": "x"}
+        index.close()
+
+    def test_update_track_mb_recording_id(self, tmp_path: Path) -> None:
+        """Writes mb_recording_id and returns the reloaded Track via the view."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_track(_sample_track(tmp_path / "a.mp3"))
+        tid = index.get_track_by_path(tmp_path / "a.mp3").id  # type: ignore[union-attr]
+        t = index.update_track_mb_recording_id(tid, "mbid-xyz")
+        missing = index.update_track_mb_recording_id(999999, "x")
+        index.close()
+        assert t is not None and t.mb_recording_id == "mbid-xyz"
+        assert missing is None  # unknown id
+
     def test_upsert_many_preserves_stream_url_when_incoming_is_null(
         self, tmp_path: Path
     ) -> None:
@@ -6459,7 +6802,8 @@ class TestRemoteTrackSchema:
         index.upsert_many([re_indexed])
 
         row = index._conn.execute(
-            "SELECT stream_url, stream_url_expires_at FROM tracks WHERE file_path = ?",
+            "SELECT stream_url, stream_url_expires_at FROM tracks_with_stats"
+            " WHERE file_path = ?",
             (str(track.file_path),),
         ).fetchone()
         index.close()
@@ -6515,65 +6859,32 @@ class TestRemoteTrackSchema:
 
         assert found is False
 
-    def test_set_track_source_for_item_updates_matching_tracks(
+    def test_set_track_source_for_item_counts_matching_tracks(
         self, tmp_path: Path
     ) -> None:
-        from pathlib import PurePosixPath
+        """Returns the number of tracks whose file_path belongs to the sale item.
 
+        The track-level source is derived from track_sources now (KAMP-539), so the
+        method no longer writes tracks.source — it only counts matches and refreshes
+        the album badge (see ..._propagates_to_albums).
+        """
         index = LibraryIndex(tmp_path / "library.db")
-        # Insert two remote tracks for the same sale_item_id and one unrelated track.
+        # Two remote tracks for sale_item_id 42 and one unrelated local track.
         index._conn.executemany(
-            "INSERT INTO tracks (file_path, title, artist, album_artist, album, "
-            "track_number, disc_number, release_date, source) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO tracks (file_path, title, artist, album_artist, album,"
+            " track_number, disc_number, release_date) VALUES (?,?,?,?,?,?,?,?)",
             [
-                (
-                    "bandcamp://42/1",
-                    "Track 1",
-                    "Artist",
-                    "Artist",
-                    "Album",
-                    1,
-                    1,
-                    "",
-                    "bandcamp",
-                ),
-                (
-                    "bandcamp://42/2",
-                    "Track 2",
-                    "Artist",
-                    "Artist",
-                    "Album",
-                    2,
-                    1,
-                    "",
-                    "bandcamp",
-                ),
-                (
-                    "/local/file.mp3",
-                    "Local",
-                    "Artist",
-                    "Artist",
-                    "Other",
-                    1,
-                    1,
-                    "",
-                    "local",
-                ),
+                ("bandcamp://42/1", "Track 1", "Artist", "Artist", "Album", 1, 1, ""),
+                ("bandcamp://42/2", "Track 2", "Artist", "Artist", "Album", 2, 1, ""),
+                ("/local/file.mp3", "Local", "Artist", "Artist", "Other", 1, 1, ""),
             ],
         )
         index._conn.commit()
 
         updated = index.set_track_source_for_item("42", "local")
-        rows = index._conn.execute(
-            "SELECT file_path, source FROM tracks ORDER BY file_path"
-        ).fetchall()
         index.close()
 
-        assert updated == 2
-        sources = {r["file_path"]: r["source"] for r in rows}
-        assert sources["bandcamp://42/1"] == "local"
-        assert sources["bandcamp://42/2"] == "local"
-        assert sources["/local/file.mp3"] == "local"  # unchanged
+        assert updated == 2  # the two bandcamp://42/* tracks match
 
     def test_set_track_source_for_item_returns_zero_when_no_match(
         self, tmp_path: Path
@@ -6686,6 +6997,9 @@ class TestRemoteTrackSchema:
         conn.close()
 
         index = LibraryIndex(db_path)
+        # v20 adds source/stream_url; v49 drops them again. Re-add so this test of
+        # the historical v20 migration can assert the columns landed.
+        _readd_legacy_track_columns(index)
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
@@ -6749,7 +7063,7 @@ class TestRemoteTrackSchema:
 
         index = LibraryIndex(db_path)
         rows = index._conn.execute(
-            "SELECT file_path, source FROM tracks ORDER BY file_path"
+            "SELECT file_path, source FROM tracks_with_stats ORDER BY file_path"
         ).fetchall()
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
@@ -6836,6 +7150,7 @@ class TestReleaseDateBackfill:
         effective-source restriction: a naive EXISTS(stream source) would wrongly
         match it and overwrite its file-tag release_date."""
         index = self._make_index(tmp_path)
+        _readd_legacy_track_columns(index)
         c = index._conn
         c.execute(
             "INSERT INTO tracks (file_path, source, album_id, track_number,"
@@ -7388,6 +7703,7 @@ class TestQueuePlayerStateStr:
         self, tmp_path: Path
     ) -> None:
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         # Insert with the canonical URI directly via SQL to bypass Path normalization.
         canonical = "bandcamp://999/3"
         index._conn.execute(
@@ -7624,6 +7940,7 @@ class TestRemoveDownload:
         (play counts are managed exclusively by record_played() in production).
         """
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         index.upsert_collection_item("sid42", mode="local", synced_at=1.0)
 
         # Streaming tracks (bandcamp://) inserted first, as they would be pre-download.
@@ -7830,6 +8147,7 @@ class TestRemoveDownload:
         because the user bought+downloaded rather than streamed.
         """
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         index.upsert_collection_item(
             "sid99",
             mode="local",
@@ -8389,6 +8707,9 @@ class TestMigrationV25:
         db_path = tmp_path / "library.db"
         self._build_v24_db(db_path)
         index = LibraryIndex(db_path)
+        # v25 adds is_available; v49 drops it again. Re-add so this test of the
+        # historical v25 migration can assert the column landed.
+        _readd_legacy_track_columns(index)
         cols = {
             r[1] for r in index._conn.execute("PRAGMA table_info(tracks)").fetchall()
         }
@@ -8406,7 +8727,9 @@ class TestMigrationV25:
         db_path = tmp_path / "library.db"
         self._build_v24_db(db_path)
         index = LibraryIndex(db_path)
-        row = index._conn.execute("SELECT is_available FROM tracks LIMIT 1").fetchone()
+        row = index._conn.execute(
+            "SELECT is_available FROM tracks_with_stats LIMIT 1"
+        ).fetchone()
         index.close()
 
         assert row is not None
@@ -8856,6 +9179,9 @@ class TestMigrationV27:
         db_path = tmp_path / "library.db"
         self._build_v26_db(db_path)
         index = LibraryIndex(db_path)
+        # v27 adds duration; v49 drops it again. Re-add so this test of the
+        # historical v27 migration can assert the column landed.
+        _readd_legacy_track_columns(index)
         cols = {
             r[1] for r in index._conn.execute("PRAGMA table_info(tracks)").fetchall()
         }
@@ -8872,7 +9198,7 @@ class TestMigrationV27:
         self._build_v26_db(db_path)
         index = LibraryIndex(db_path)
         row = index._conn.execute(
-            "SELECT duration FROM tracks WHERE file_path = 'local/song.mp3'"
+            "SELECT duration FROM tracks_with_stats WHERE file_path = 'local/song.mp3'"
         ).fetchone()
         index.close()
 
@@ -8972,7 +9298,7 @@ class TestMigrationV28:
         rows = {
             r[0]: r[1]
             for r in index._conn.execute(
-                "SELECT file_path, file_mtime FROM tracks"
+                "SELECT file_path, file_mtime FROM tracks_with_stats"
             ).fetchall()
         }
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
@@ -10317,6 +10643,7 @@ class TestMagicPlaylists:
         from kamp_core.library import Track
 
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         track_a = Track(
             file_path=tmp_path / "a.mp3",
             title="Song A",
@@ -10424,6 +10751,7 @@ class TestMagicPlaylists:
     def test_evaluate_filters_by_source_via_track_sources(self, tmp_path: Path) -> None:
         """track.source criteria resolves via track_sources, not tracks.source (KAMP-542)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         index.upsert_many([_sample_track(tmp_path / "a.mp3")])
         tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
         # Desync: the track has a file (local) source, but its legacy source column
@@ -11146,7 +11474,13 @@ class TestMigrationV38:
             " play_count INTEGER NOT NULL DEFAULT 0, file_mtime REAL,"
             " genre TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',"
             " source TEXT NOT NULL DEFAULT 'local', stream_url TEXT,"
-            " stream_url_expires_at REAL)"
+            " stream_url_expires_at REAL,"
+            # album_id (v13), is_available (v25) and duration (v27) all predate v37,
+            # so their migrations do not replay here — a real v37 tracks table has
+            # them, and the v45 backfill guard reads is_available/duration, so they
+            # must be present or track_sources stays empty and the view derives NULL.
+            " album_id INTEGER, is_available INTEGER NOT NULL DEFAULT 1,"
+            " duration REAL NOT NULL DEFAULT 0)"
         )
         conn.execute(
             "CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -11217,7 +11551,9 @@ class TestMigrationV38:
         conn = _sqlite3.connect(str(db_path))
         rows = {
             r[0]: r[1]
-            for r in conn.execute("SELECT file_path, file_mtime FROM tracks").fetchall()
+            for r in conn.execute(
+                "SELECT file_path, file_mtime FROM tracks_with_stats"
+            ).fetchall()
         }
         conn.close()
 
@@ -11432,6 +11768,7 @@ class TestStatsReadFromTrackStats:
 
     def _desynced(self, tmp_path: Path) -> tuple["LibraryIndex", int]:
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         index.upsert_many([_sample_track(tmp_path / "a.mp3")])
         tid = index._conn.execute("SELECT id FROM tracks").fetchone()[0]
         # Legacy columns say 0/NULL; track_stats (authoritative) says otherwise.
@@ -11471,6 +11808,7 @@ class TestStatsReadFromTrackStats:
     def test_view_falls_back_to_legacy_when_no_stats_row(self, tmp_path: Path) -> None:
         """A track with no track_stats row still reads its legacy value (transition safety)."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         index.upsert_many([_sample_track(tmp_path / "a.mp3")])
         index._conn.execute("UPDATE tracks SET favorite = 1, play_count = 4")
         index._conn.execute("DELETE FROM track_stats")
@@ -11517,6 +11855,7 @@ class TestAlbumSourceClassifier:
 
     def test_badge_matches_legacy_output(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         cases = {
             "downloaded": (
                 [("local", "/m/a1.mp3", ["file"]), ("local", "/m/a2.mp3", ["file"])],
@@ -11910,11 +12249,15 @@ class TestProvenanceLinking:
         # track 1 (as the pipeline now does), inherit_remote_favorites carries the
         # favorite across. Regression for the Ohm Foam "Gush" favorite loss.
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         self._seed_streaming_album(index, "S1", "Ohm Foam", "Gush")
         stream = index.get_track_by_path("bandcamp://S1/1")
         assert stream is not None
         index._conn.execute("UPDATE tracks SET favorite = 1 WHERE id = ?", (stream.id,))
         index._conn.commit()
+        # inherit_remote_favorites reads the authoritative track_stats store, so
+        # mirror the legacy favorite there (as production writers do).
+        _mirror_stats(index)
 
         dl = _download_track(tmp_path / "gush.mp3", "Ohm Foam", "Gush", "S1", n=1)
         dl.title = "Gush"
@@ -11922,7 +12265,7 @@ class TestProvenanceLinking:
         index.inherit_remote_favorites([dl])
 
         fav = index._conn.execute(
-            "SELECT favorite FROM tracks WHERE file_path = ?",
+            "SELECT favorite FROM tracks_with_stats WHERE file_path = ?",
             (str(tmp_path / "gush.mp3"),),
         ).fetchone()[0]
         assert fav == 1
@@ -12219,6 +12562,7 @@ class TestLooseSingleAttach:
         only by trailing whitespace, which the albums UNIQUE index permits): the
         match is ambiguous, so the loose single is left untouched."""
         index = LibraryIndex(tmp_path / "library.db")
+        _readd_legacy_track_columns(index)
         for sid, album_name in (("200", "Celebrity"), ("201", "Celebrity ")):
             index._conn.execute(
                 "INSERT INTO albums (album_artist, album, source) VALUES ('Megahit', ?, 'bandcamp')",
@@ -12267,6 +12611,7 @@ class TestLooseSingleAttach:
         snapshots the DB first."""
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
         index.upsert_many([self._stream_single("300", "Megahit", "Celebrity")])
         stream_album = index._conn.execute(
             "SELECT album_id FROM tracks WHERE file_path = 'bandcamp://300/1'"
@@ -12327,6 +12672,7 @@ class TestLooseSingleAttach:
         the tester upgrades without reverting."""
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
         index.upsert_many([self._stream_single("400", "Megahit", "Celebrity")])
         album_id = index._conn.execute(
             "SELECT album_id FROM tracks WHERE file_path = 'bandcamp://400/1'"
@@ -12377,6 +12723,7 @@ class TestHealForkedAlbums:
     def test_whitespace_fork_with_sale_item_id_collapses(self, tmp_path: Path) -> None:
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
+        _readd_legacy_track_columns(index)
         # Origin streaming album (spaced name + sale_item_id).
         index.upsert_collection_item(
             "S1", mode="local", band_name="Artist X ", item_title="Album Y"
@@ -12467,14 +12814,18 @@ class TestHealForkedAlbums:
             "INSERT INTO albums (album_artist, album, source) VALUES ('S T ', 'EP', 'local')"
         )
         a2 = cur.lastrowid
+        # source lives on track_sources now (KAMP-539) and isn't asserted here;
+        # only album_id (retained) matters. Omitting the dropped source column keeps
+        # the tracks table at its post-v49 shape so the reopen's v49 migration finds
+        # nothing to drop and takes no backup — what this test checks for.
         index._conn.execute(
-            "INSERT INTO tracks (file_path, title, album, album_artist, source, album_id)"
-            " VALUES ('/m/1.mp3', 'x', 'EP', 'S T', 'local', ?)",
+            "INSERT INTO tracks (file_path, title, album, album_artist, album_id)"
+            " VALUES ('/m/1.mp3', 'x', 'EP', 'S T', ?)",
             (a1,),
         )
         index._conn.execute(
-            "INSERT INTO tracks (file_path, title, album, album_artist, source, album_id)"
-            " VALUES ('/m/2.mp3', 'y', 'EP', 'S T ', 'local', ?)",
+            "INSERT INTO tracks (file_path, title, album, album_artist, album_id)"
+            " VALUES ('/m/2.mp3', 'y', 'EP', 'S T ', ?)",
             (a2,),
         )
         index._conn.commit()

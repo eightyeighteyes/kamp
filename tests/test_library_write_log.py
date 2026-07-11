@@ -155,7 +155,8 @@ class TestMutationLogging:
         lib.apply_set_artwork("ext-b", "rec-2", "image/jpeg")
 
         row = lib._conn.execute(
-            "SELECT embedded_art FROM tracks WHERE mb_recording_id = ?", ("rec-2",)
+            "SELECT embedded_art FROM tracks_with_stats WHERE mb_recording_id = ?",
+            ("rec-2",),
         ).fetchone()
         lib.close()
         assert bool(row["embedded_art"]) is True
@@ -274,7 +275,8 @@ class TestRollbackExtension:
         lib.rollback_extension("ext-bad")
 
         row = lib._conn.execute(
-            "SELECT embedded_art FROM tracks WHERE mb_recording_id = ?", ("rec-2",)
+            "SELECT embedded_art FROM tracks_with_stats WHERE mb_recording_id = ?",
+            ("rec-2",),
         ).fetchone()
         lib.close()
         assert bool(row["embedded_art"]) is False

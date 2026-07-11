@@ -2265,6 +2265,15 @@ class LibraryIndex:
                 " WHEN ps.kind IS NOT NULL THEN 'bandcamp' END",
                 "'local'",
             ),
+            # KAMP-552: file_path/sale_item_id are dropped from tracks; the view
+            # re-derives them from the preferred track_sources row so _row_to_track
+            # and the in-memory Track keep a playback path + provenance id. These are
+            # for DISPLAY/PLAYBACK only — every identity LOOKUP keys on
+            # track_sources.uri/provider_item_id directly (the preferred-source pick
+            # is availability-ordered and so read-time-unstable; never join on it).
+            # COALESCE to '' so a source-less row yields '' not NULL (Path('') is safe).
+            "file_path": ("ps.uri", "''"),
+            "sale_item_id": ("ps.provider_item_id", "NULL"),
         }
         stats = {
             "favorite": ("ts.favorite", "0"),
@@ -4874,9 +4883,13 @@ class LibraryIndex:
             (str(new_path), album, album_artist, track_id),
         )
         # file_mtime lives in track_sources now (KAMP-539); update the file source.
+        # KAMP-552: file_path is derived from track_sources.uri, so repoint the file
+        # source's uri to the drained location too — otherwise the view keeps
+        # surfacing the old path. (The tracks.file_path write above is kept in sync
+        # until the v51 column drop; the source uri is the authoritative key.)
         self._conn.execute(
-            "UPDATE track_sources SET file_mtime=? WHERE kind='file' AND track_id=?",
-            (mtime, track_id),
+            "UPDATE track_sources SET uri=?, file_mtime=? WHERE kind='file' AND track_id=?",
+            (_canonical_track_uri(str(new_path)), mtime, track_id),
         )
         if new_artist is not None:
             self._conn.execute(

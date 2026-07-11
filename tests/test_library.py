@@ -6639,8 +6639,12 @@ class TestBandcampCollection:
         single.sale_item_id = "single-1"
         index.upsert_many([single])
 
+        # KAMP-552: track-level provenance lives on track_sources.provider_item_id
+        # now (the view re-derives sale_item_id from it).
         row = index._conn.execute(
-            "SELECT sale_item_id, album_id FROM tracks WHERE file_path = ?",
+            "SELECT s.provider_item_id AS sale_item_id, t.album_id AS album_id"
+            " FROM track_sources s JOIN tracks t ON t.id = s.track_id"
+            " WHERE s.uri = ?",
             (str(tmp_path / "single.mp3"),),
         ).fetchone()
         found = index.local_tracks_for_sale_item_id("single-1")

@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 48
+_SCHEMA_VERSION = 49
 
 
 class NoStreamableVersionError(Exception):
@@ -176,23 +176,17 @@ CREATE TABLE IF NOT EXISTS tracks (
     release_date     TEXT    NOT NULL DEFAULT '',
     track_number     INTEGER NOT NULL DEFAULT 0,
     disc_number      INTEGER NOT NULL DEFAULT 1,
-    ext              TEXT    NOT NULL DEFAULT '',
-    embedded_art     INTEGER NOT NULL DEFAULT 0,
     mb_release_id    TEXT    NOT NULL DEFAULT '',
     mb_recording_id  TEXT    NOT NULL DEFAULT '',
     date_added       REAL,    -- file birthtime/ctime at first scan (Unix timestamp)
-    last_played      REAL,    -- Unix timestamp of last natural EOF; NULL until played
-    favorite         INTEGER NOT NULL DEFAULT 0,
-    play_count       INTEGER NOT NULL DEFAULT 0,
-    file_mtime       REAL,    -- st_mtime at last scan; NULL until v6 migration backfill
     genre                TEXT    NOT NULL DEFAULT '',
     label                TEXT    NOT NULL DEFAULT '',
-    source               TEXT    NOT NULL DEFAULT 'local',
-    stream_url           TEXT,
-    stream_url_expires_at REAL,
     album_id             INTEGER REFERENCES albums(id),
-    is_available         INTEGER NOT NULL DEFAULT 1,
-    duration             REAL    NOT NULL DEFAULT 0,
+    -- KAMP-539: per-source columns (ext/embedded_art/file_mtime/source/stream_url/
+    -- stream_url_expires_at/is_available/duration) live in track_sources, and the
+    -- mutable stats (favorite/play_count/last_played) live in track_stats. Reads go
+    -- through the tracks_with_stats view, which derives them. file_path and
+    -- sale_item_id are retained (their removal is a separate follow-up).
     -- User-set display overrides for streaming tracks (KAMP-467).
     -- NULL means "use the canonical value from Bandcamp".
     display_title        TEXT,
@@ -731,9 +725,9 @@ def _eff_source(alias: str = "t") -> str:
     ordering as preferred_source(), kind mapped file->'local'/stream->'bandcamp',
     the identical value _sync_tracks_row_to_preferred_source writes to
     tracks.source. Correlated on ``<alias>.id`` so it can replace a ``source``
-    read on any tracks alias, letting KAMP-539 drop tracks.source. COALESCEs to
-    ``<alias>.source`` for a sourceless row (a pre-540 row or bare test fixture;
-    tracks.source is NOT NULL) — that fallback is dropped with the column in 539.
+    read on any tracks alias (tracks.source was dropped in KAMP-539). COALESCEs to
+    the ``'local'`` default for a sourceless row (a pre-540 row or bare test
+    fixture), matching the old tracks.source NOT NULL DEFAULT 'local'.
     Note ``<eff> <> 'local'`` reproduces the legacy ``file_path LIKE 'bandcamp://%'``
     test (file_path is bandcamp:// exactly when the effective source is a stream).
     """
@@ -742,7 +736,7 @@ def _eff_source(alias: str = "t") -> str:
         "(SELECT CASE WHEN s.kind = 'file' THEN 'local' ELSE 'bandcamp' END"
         f" FROM track_sources s WHERE s.track_id = {alias}.id"
         " ORDER BY s.is_available DESC, (s.kind = 'file') DESC, s.id LIMIT 1)"
-        f", {alias}.source)"
+        ", 'local')"
     )
 
 
@@ -1964,37 +1958,122 @@ class LibraryIndex:
                     )
             self._conn.execute("UPDATE schema_version SET version = 48")
             self._conn.commit()
-            version = 48  # noqa: F841
+            version = 48
+
+        if version < 49:
+            # v48 -> v49 (KAMP-539 contract): drop the now-duplicated columns from
+            # tracks. Reads derive them from track_sources/track_stats through the
+            # tracks_with_stats view, and every writer targets the child tables, so
+            # they are dead weight. Per-column ALTER TABLE DROP COLUMN — all 11 are
+            # unconstrained (file_path/sale_item_id are UNIQUE/indexed and deferred).
+            # The view names every column, so drop it first and rebuild it after (the
+            # `finally` rebuilds it to match the schema whether the drop succeeds or
+            # rolls back). Irreversible, so backup-first (v46/v47/v48 template);
+            # version-last; idempotent via the presence check so a partial run
+            # completes on the next open.
+            drop_cols = [
+                "ext",
+                "embedded_art",
+                "file_mtime",
+                "source",
+                "stream_url",
+                "stream_url_expires_at",
+                "is_available",
+                "duration",
+                "favorite",
+                "play_count",
+                "last_played",
+            ]
+            track_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            present = [c for c in drop_cols if c in track_cols]
+            if not present:
+                self._conn.execute("UPDATE schema_version SET version = 49")
+                self._conn.commit()
+                version = 49  # noqa: F841
+            elif self._backup_db("KAMP-539 v49 drop legacy columns"):
+                try:
+                    self._conn.execute("DROP VIEW IF EXISTS tracks_with_stats")
+                    for col in present:
+                        self._conn.execute(f"ALTER TABLE tracks DROP COLUMN {col}")
+                    self._conn.execute("UPDATE schema_version SET version = 49")
+                    self._conn.commit()
+                    version = 49  # noqa: F841
+                except Exception:
+                    self._conn.rollback()
+                    logger.exception(
+                        "KAMP-539 v49 column drop failed — rolled back; the legacy"
+                        " columns remain. Restore from the pre-v49 backup if needed."
+                    )
+                finally:
+                    self._create_tracks_with_stats_view()
 
     def _create_tracks_with_stats_view(self) -> None:
-        """(Re)create the read-only ``tracks_with_stats`` view (KAMP-542).
+        """(Re)create the read-only ``tracks_with_stats`` view (KAMP-542/539).
 
-        Projects every ``tracks`` column but shadows ``favorite``/``play_count``/
-        ``last_played`` from ``track_stats`` — the authoritative store since the
-        KAMP-540 dual-write — so read paths resolve stats from the child table and
-        KAMP-539 can drop the legacy columns. While both coexist the shadow
-        COALESCEs back to the legacy column, so a track that somehow lacks a
-        ``track_stats`` row still reads its real value rather than a spurious 0;
-        once 539 drops the legacy columns the fallback becomes the type default.
+        Projects the identity/catalog ``tracks`` columns straight through, and
+        DERIVES the mutable per-track state from the child tables so the legacy
+        ``tracks`` columns can be dropped (KAMP-539):
 
-        Built from ``PRAGMA table_info`` and recreated on every open so it always
-        matches the current ``tracks`` schema (survives 539's column drop with no
-        edit here). Read-only by construction: every writer (UPDATE/INSERT/upsert,
-        the ``tracks_fts`` rowid join, the stat mirrors) stays on the base table,
-        whose ``id`` the view preserves so FTS rowid joins still resolve.
+        - ``favorite``/``play_count``/``last_played`` shadow ``track_stats``.
+        - ``ext``/``duration``/``embedded_art``/``file_mtime``/``is_available``/
+          ``stream_url``/``stream_url_expires_at``/``source`` derive from the
+          track's *preferred* ``track_sources`` row (``ps``), chosen by the same
+          ordering as ``preferred_source``/``_eff_source`` (available first, then
+          local file over stream, then lowest id). ``source`` maps the preferred
+          source's ``kind`` file->'local'/stream->'bandcamp'.
+
+        While a legacy column still exists each derived value COALESCEs back to it,
+        so a track that lacks a child row (a pre-540 row or a bare test fixture)
+        still reads its real value rather than a default; once 539 drops the
+        column the fallback becomes the type default. Column names are identical
+        pre- and post-drop, so ``_row_to_track`` and every ``SELECT *`` consumer
+        are untouched by the drop.
+
+        Read-only by construction: every writer (UPDATE/INSERT/upsert, the
+        ``tracks_fts`` rowid join, the stat/source mirrors) stays on the base
+        tables, whose ``id`` the view preserves so FTS rowid joins still resolve.
         """
+        colset = {r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")}
+        # Derived name -> (SQL expression over ps/ts, SQL default once the legacy
+        # tracks column is dropped in KAMP-539).
+        per_source = {
+            "ext": ("ps.ext", "''"),
+            "duration": ("ps.duration", "0"),
+            "embedded_art": ("ps.embedded_art", "0"),
+            "file_mtime": ("ps.file_mtime", "NULL"),
+            "is_available": ("ps.is_available", "1"),
+            "stream_url": ("ps.stream_url", "NULL"),
+            "stream_url_expires_at": ("ps.stream_url_expires_at", "NULL"),
+            "source": (
+                "CASE WHEN ps.kind = 'file' THEN 'local'"
+                " WHEN ps.kind IS NOT NULL THEN 'bandcamp' END",
+                "'local'",
+            ),
+        }
+        stats = {
+            "favorite": ("ts.favorite", "0"),
+            "play_count": ("ts.play_count", "0"),
+            "last_played": ("ts.last_played", "NULL"),
+        }
+        derived = {**per_source, **stats}
+        # Identity/catalog passthrough columns keep their base-table order.
         cols = [r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")]
-        # column -> SQL default used once the legacy column is dropped (KAMP-539).
-        stats_default = {"favorite": "0", "play_count": "0", "last_played": "NULL"}
-        projected = [f"t.{c}" for c in cols if c not in stats_default]
-        for name, default in stats_default.items():
-            fallback = f"t.{name}" if name in cols else default
-            projected.append(f"COALESCE(ts.{name}, {fallback}) AS {name}")
+        projected = [f"t.{c}" for c in cols if c not in derived]
+        for name, (expr, default) in derived.items():
+            fallback = f"t.{name}" if name in colset else default
+            projected.append(f"COALESCE({expr}, {fallback}) AS {name}")
         self._conn.executescript(
             "DROP VIEW IF EXISTS tracks_with_stats;\n"
             "CREATE VIEW tracks_with_stats AS SELECT "
             + ", ".join(projected)
-            + " FROM tracks t LEFT JOIN track_stats ts ON ts.track_id = t.id;"
+            + " FROM tracks t"
+            " LEFT JOIN track_stats ts ON ts.track_id = t.id"
+            " LEFT JOIN track_sources ps ON ps.id = ("
+            "   SELECT s.id FROM track_sources s WHERE s.track_id = t.id"
+            "   ORDER BY s.is_available DESC, (s.kind = 'file') DESC, s.id LIMIT 1"
+            ");"
         )
         self._conn.commit()
 
@@ -2195,18 +2274,25 @@ class LibraryIndex:
         realigns the survivor's legacy columns to its preferred source. Caller
         owns the transaction/commit.
         """
+        import time
+
         c = self._conn
         self._ensure_track_source(survivor_id)
         self._ensure_track_source(loser_id)
-        # Stats onto the survivor's tracks columns.
+        # Merge the loser's stats into the survivor's track_stats — the sole stat
+        # store (KAMP-539): MAX favorite/play_count, latest last_played, read from
+        # both track_stats rows now, before the loser (and its cascading stats row)
+        # is deleted below. Fixes KAMP-532 without touching the legacy tracks columns.
         c.execute(
-            "UPDATE tracks SET"
-            " favorite = MAX(favorite, COALESCE((SELECT favorite FROM tracks WHERE id=?),0)),"
-            " play_count = MAX(play_count, COALESCE((SELECT play_count FROM tracks WHERE id=?),0)),"
-            " last_played = NULLIF(MAX(COALESCE(last_played,0),"
-            "     COALESCE((SELECT last_played FROM tracks WHERE id=?),0)), 0)"
-            " WHERE id=?",
-            (loser_id, loser_id, loser_id, survivor_id),
+            "INSERT INTO track_stats"
+            " (track_id, favorite, play_count, last_played, updated_at)"
+            " SELECT ?, COALESCE(MAX(favorite), 0), COALESCE(MAX(play_count), 0),"
+            "   NULLIF(COALESCE(MAX(last_played), 0), 0), ?"
+            " FROM track_stats WHERE track_id IN (?, ?)"
+            " ON CONFLICT(track_id) DO UPDATE SET favorite = excluded.favorite,"
+            "   play_count = excluded.play_count, last_played = excluded.last_played,"
+            "   updated_at = excluded.updated_at",
+            (survivor_id, time.time(), survivor_id, loser_id),
         )
         # Identity: streaming display_* win if the survivor's is NULL; non-empty
         # mb/genre/label fill a blank survivor field from the loser.
@@ -2242,16 +2328,11 @@ class LibraryIndex:
             (survivor_id, loser_id),
         )
         self._repoint_track_refs(loser_id, survivor_id)
-        # Delete the loser (its sources are re-parented; its stats cascade away).
+        # Delete the loser (its sources are re-parented; its stats cascade away;
+        # the survivor's merged stats were written to track_stats above).
         c.execute("DELETE FROM tracks WHERE id = ?", (loser_id,))
-        # Re-derive the survivor's track_stats from the merged tracks columns.
-        c.execute(
-            "INSERT INTO track_stats (track_id, favorite, play_count, last_played)"
-            " SELECT id, favorite, play_count, last_played FROM tracks WHERE id=?"
-            " ON CONFLICT(track_id) DO UPDATE SET favorite=excluded.favorite,"
-            " play_count=excluded.play_count, last_played=excluded.last_played",
-            (survivor_id,),
-        )
+        # Realign the survivor's identity file_path to its (now combined) preferred
+        # source so it is found by the local path once a file joins a stream.
         self._sync_tracks_row_to_preferred_source(survivor_id)
 
     def _reconcile_scanned_tracks(self, canonical_keys: "list[str]") -> None:
@@ -3087,15 +3168,21 @@ class LibraryIndex:
         self._conn.commit()
 
     def set_track_source_for_item(self, sale_item_id: str, source: str) -> int:
-        """Set source on every track whose file_path belongs to *sale_item_id*.
+        """Refresh albums.source for a sale item's tracks; return the match count.
 
-        Matches canonical bandcamp:// (POSIX) and Windows bandcamp:\\ path forms.
-        Returns the number of rows updated. Also refreshes albums.source so the
-        album entity stays consistent without waiting for the next full rescan.
+        The track-level ``source`` is derived from track_sources now (KAMP-539), so
+        this no longer writes ``tracks.source`` — it recomputes the album entity's
+        source badge and returns the number of matching tracks. Matches canonical
+        bandcamp:// (POSIX) and Windows bandcamp:\\ path forms. No production
+        callers (a download add/remove changes the track's sources, which the view
+        derives from directly); retained for coverage of the album-badge refresh.
         """
-        cur = self._conn.execute(
-            "UPDATE tracks SET source = ? WHERE file_path LIKE ? OR file_path LIKE ?",
-            (source, f"bandcamp://{sale_item_id}/%", f"bandcamp:\\{sale_item_id}\\%"),
+        count = int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM tracks"
+                " WHERE file_path LIKE ? OR file_path LIKE ?",
+                (f"bandcamp://{sale_item_id}/%", f"bandcamp:\\{sale_item_id}\\%"),
+            ).fetchone()[0]
         )
         # Refresh albums.source via the sale_item_id FK. Remote tracks may not have
         # album_id populated yet, so join through albums.sale_item_id instead.
@@ -3105,7 +3192,7 @@ class LibraryIndex:
             (sale_item_id,),
         )
         self._conn.commit()
-        return cur.rowcount
+        return count
 
     def set_collection_item_mode(self, sale_item_id: str, mode: str) -> bool:
         """Update mode for a collection item and clear synced_at so the next sync picks it up.
@@ -3485,10 +3572,16 @@ class LibraryIndex:
     def update_stream_url(
         self, file_path_uri: str, stream_url: str, expires_at: float
     ) -> None:
-        """Persist a refreshed CDN stream URL and its expiry timestamp for a remote track."""
+        """Persist a refreshed CDN stream URL and its expiry for a remote track.
+
+        Writes the track_sources row addressed by the uri (KAMP-539) — the uri is
+        the stream source's own uri; the legacy tracks.stream_url column this used
+        to write is derived from track_sources by the view now.
+        """
         self._conn.execute(
-            "UPDATE tracks SET stream_url = ?, stream_url_expires_at = ? WHERE file_path = ?",
-            (stream_url, expires_at, file_path_uri),
+            "UPDATE track_sources SET stream_url = ?, stream_url_expires_at = ?"
+            " WHERE uri = ?",
+            (stream_url, expires_at, _canonical_track_uri(file_path_uri)),
         )
         self._conn.commit()
 
@@ -3551,32 +3644,22 @@ class LibraryIndex:
         self._conn.commit()
 
     def _sync_tracks_row_to_preferred_source(self, track_id: int) -> None:
-        """Realign a track's legacy columns to its preferred source (KAMP-541).
+        """Realign a track's identity file_path to its preferred source (KAMP-541).
 
-        Keeps `tracks.file_path`/`source`/per-source columns coherent with
-        `track_sources` while both coexist (the columns are dropped in KAMP-539),
-        e.g. after a local file is removed and the track reverts to its stream
-        source. Caller commits. No-op if the track has no sources.
+        `tracks.file_path` is the retained identity/lookup key; keep it coherent
+        with `track_sources` so the track is found by its preferred delivery uri
+        (e.g. after a local file is removed and the track reverts to its stream
+        source, or a download is added and the local file becomes preferred). The
+        per-source/`source` columns that this used to also realign are now derived
+        from `track_sources` by the view and dropped in KAMP-539, so only file_path
+        remains to sync. Caller commits. No-op if the track has no sources.
         """
         src = self.preferred_source(track_id)
         if src is None:
             return
         self._conn.execute(
-            "UPDATE tracks SET file_path = ?, source = ?, ext = ?, duration = ?,"
-            " embedded_art = ?, file_mtime = ?, is_available = ?, stream_url = ?,"
-            " stream_url_expires_at = ? WHERE id = ?",
-            (
-                src["uri"],
-                "local" if src["kind"] == "file" else "bandcamp",
-                src["ext"],
-                src["duration"],
-                src["embedded_art"],
-                src["file_mtime"],
-                src["is_available"],
-                src["stream_url"],
-                src["stream_url_expires_at"],
-                track_id,
-            ),
+            "UPDATE tracks SET file_path = ? WHERE id = ?",
+            (src["uri"], track_id),
         )
 
     def update_track_display_title(
@@ -3826,42 +3909,33 @@ class LibraryIndex:
             """
             INSERT INTO tracks
                 (file_path, title, artist, album_artist, album, release_date,
-                 track_number, disc_number, ext, embedded_art,
-                 mb_release_id, mb_recording_id, date_added, file_mtime,
-                 genre, label, source, stream_url, stream_url_expires_at,
-                 is_available, duration)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 track_number, disc_number, mb_release_id, mb_recording_id,
+                 date_added, genre, label)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path) DO UPDATE SET
                 title                 = excluded.title,
                 artist                = excluded.artist,
                 album_artist          = excluded.album_artist,
                 album                 = excluded.album,
-                -- For streaming tracks, preserve user-edited release_date/genre/label if the
-                -- incoming sync value is empty (Bandcamp never sends these fields).
-                release_date          = CASE WHEN excluded.source = 'bandcamp'
+                -- For streaming tracks (file_path is a bandcamp:// uri), preserve
+                -- user-edited release_date/genre/label if the incoming sync value is
+                -- empty (Bandcamp never sends these fields). KAMP-539: keyed on
+                -- file_path since the source column is gone.
+                release_date          = CASE WHEN excluded.file_path LIKE 'bandcamp://%'
                                              THEN COALESCE(NULLIF(excluded.release_date, ''), release_date)
                                              ELSE excluded.release_date END,
                 track_number          = excluded.track_number,
                 disc_number           = excluded.disc_number,
-                ext                   = excluded.ext,
-                embedded_art          = excluded.embedded_art,
                 mb_release_id         = excluded.mb_release_id,
                 mb_recording_id       = excluded.mb_recording_id,
-                file_mtime            = excluded.file_mtime,
-                genre                 = CASE WHEN excluded.source = 'bandcamp'
+                genre                 = CASE WHEN excluded.file_path LIKE 'bandcamp://%'
                                              THEN COALESCE(NULLIF(excluded.genre, ''), genre)
                                              ELSE excluded.genre END,
-                label                 = CASE WHEN excluded.source = 'bandcamp'
+                label                 = CASE WHEN excluded.file_path LIKE 'bandcamp://%'
                                              THEN COALESCE(NULLIF(excluded.label, ''), label)
-                                             ELSE excluded.label END,
-                source                = excluded.source,
-                -- Preserve the cached CDN URL if the incoming row has none.
-                -- fetch_album_tracks never populates stream_url; without this
-                -- COALESCE a sync run would wipe every cached stream URL.
-                stream_url            = COALESCE(excluded.stream_url, stream_url),
-                stream_url_expires_at = COALESCE(excluded.stream_url_expires_at, stream_url_expires_at),
-                is_available          = excluded.is_available,
-                duration              = excluded.duration
+                                             ELSE excluded.label END
+                -- Per-source columns (ext/embedded_art/file_mtime/source/stream_url*/
+                -- is_available/duration) now live in track_sources (KAMP-539).
                 -- date_added intentionally omitted: preserve original scan date on re-scan
                 -- last_played intentionally omitted: managed exclusively by record_played()
             """,
@@ -3971,12 +4045,15 @@ class LibraryIndex:
         ]
         touched_from_singles = self._attach_loose_local_singles(single_paths)
 
-        # Step 4: refresh denormalized aggregate columns on the touched album rows.
-        # Run once per batch (not per track) using a correlated subquery. Include
-        # albums reached only through provenance linking (prov_album_ids) and
-        # single re-linking (touched_from_singles) — a nameless single's target
-        # album is not in file_paths (built from named), yet its source/aggregates
-        # must be recomputed now that a local track attached to it.
+        # Step 4: collect the touched album ids (refresh is deferred to after Step 5,
+        # below). Include albums reached only through provenance linking
+        # (prov_album_ids) and single re-linking (touched_from_singles) — a nameless
+        # single's target album is not in file_paths (built from named), yet its
+        # source/aggregates must be recomputed now that a local track attached to it.
+        # The aggregate refresh must run AFTER track_sources is populated (Step 5):
+        # _refresh_album_aggregates derives the album's art/source from the
+        # tracks_with_stats view, which reads track_sources (KAMP-539) — refreshing
+        # first would resolve every new track to source-less type defaults.
         touched_album_ids: set[int] = set(prov_album_ids) | touched_from_singles
         if file_paths:
             all_placeholders = ",".join("?" * len(file_paths))
@@ -3988,30 +4065,42 @@ class LibraryIndex:
                     file_paths,
                 ).fetchall()
             )
-        if touched_album_ids:
-            self._refresh_album_aggregates(list(touched_album_ids))
 
-        # Step 5 (KAMP-540): keep the canonical child tables in sync. Every
-        # upserted track gets a refreshed track_sources row (per-source cols read
-        # back from the now-current tracks row) and, if it has none yet, a
-        # track_stats row mirroring its stats (INSERT OR IGNORE so a re-scan never
-        # resets favorite/play_count). Reads still use the old tracks columns —
-        # this only populates the children for KAMP-541/542.
+        # Step 5 (KAMP-540/539): keep the canonical child tables in sync. Every
+        # upserted track gets a refreshed track_sources row whose per-source
+        # columns come from the incoming Track (NOT read back from the tracks row,
+        # so the tracks per-source columns can be dropped in 539) and, if it has
+        # none yet, a default track_stats row (INSERT OR IGNORE so a re-scan never
+        # resets favorite/play_count; a brand-new track starts at 0/0/NULL). The
+        # uri is still taken from the retained tracks.file_path.
         src_params: list[tuple[Any, ...]] = []
         for t in tracks:
             key = _canonical_track_uri(t.file_path)
             _uri, kind, provider, provider_item_id = _derive_source_fields(
                 t.file_path, t.source, t.sale_item_id
             )
-            src_params.append((kind, provider, provider_item_id, key))
+            src_params.append(
+                (
+                    kind,
+                    provider,
+                    provider_item_id,
+                    t.ext,
+                    t.duration,
+                    int(t.embedded_art),
+                    t.file_mtime,
+                    int(t.is_available),
+                    t.stream_url,
+                    t.stream_url_expires_at,
+                    key,
+                )
+            )
         if src_params:
             self._conn.executemany(
                 "INSERT INTO track_sources"
                 " (track_id, kind, provider, provider_item_id, uri, ext, duration,"
                 "  embedded_art, file_mtime, is_available, stream_url,"
                 "  stream_url_expires_at)"
-                " SELECT id, ?, ?, ?, file_path, ext, duration, embedded_art,"
-                "        file_mtime, is_available, stream_url, stream_url_expires_at"
+                " SELECT id, ?, ?, ?, file_path, ?, ?, ?, ?, ?, ?, ?"
                 " FROM tracks WHERE file_path = ?"
                 " ON CONFLICT(uri) DO UPDATE SET"
                 "   track_id = excluded.track_id, kind = excluded.kind,"
@@ -4021,21 +4110,30 @@ class LibraryIndex:
                 "   embedded_art = excluded.embedded_art,"
                 "   file_mtime = excluded.file_mtime,"
                 "   is_available = excluded.is_available,"
-                "   stream_url = excluded.stream_url,"
-                "   stream_url_expires_at = excluded.stream_url_expires_at",
+                # Preserve a cached CDN URL when the incoming row has none — a
+                # metadata re-index (fetch_album_tracks never populates stream_url)
+                # must not wipe it (mirrors the pre-539 tracks upsert COALESCE).
+                "   stream_url = COALESCE(excluded.stream_url, stream_url),"
+                "   stream_url_expires_at ="
+                "     COALESCE(excluded.stream_url_expires_at, stream_url_expires_at)",
                 src_params,
             )
             self._conn.executemany(
                 "INSERT OR IGNORE INTO track_stats"
                 " (track_id, favorite, play_count, last_played)"
-                " SELECT id, favorite, play_count, last_played"
-                " FROM tracks WHERE file_path = ?",
-                [(p[3],) for p in src_params],
+                " SELECT id, 0, 0, NULL FROM tracks WHERE file_path = ?",
+                [(p[-1],) for p in src_params],
             )
             # Step 6 (KAMP-541): attach a newly-scanned file to its existing
             # canonical track (merging the fork) instead of leaving a duplicate
             # streaming+local pair. No-op when there is no stream-only sibling.
-            self._reconcile_scanned_tracks([p[3] for p in src_params])
+            self._reconcile_scanned_tracks([p[-1] for p in src_params])
+
+        # Step 4 (deferred from above): now that track_sources is populated,
+        # recompute the touched albums' denormalized aggregates (art/source/counts),
+        # which _refresh_album_aggregates derives from the tracks_with_stats view.
+        if touched_album_ids:
+            self._refresh_album_aggregates(list(touched_album_ids))
 
         # Rebuild the FTS index so new/updated tracks are immediately searchable.
         self._rebuild_fts()
@@ -4066,11 +4164,11 @@ class LibraryIndex:
         self._conn.execute(
             f"""
             UPDATE albums SET
-                embedded_art   = (SELECT MAX(t.embedded_art)  FROM tracks t WHERE t.album_id = albums.id),
+                embedded_art   = (SELECT MAX(t.embedded_art)  FROM tracks_with_stats t WHERE t.album_id = albums.id),
                 date_added     = (SELECT MIN(t.date_added)    FROM tracks t WHERE t.album_id = albums.id),
                 last_played_at = (SELECT MAX(t.last_played)   FROM tracks_with_stats t WHERE t.album_id = albums.id),
-                art_version    = (SELECT MAX(CASE WHEN {_eff_source("t")} = 'local' THEN t.file_mtime END)
-                                  FROM tracks t WHERE t.album_id = albums.id),
+                art_version    = (SELECT MAX(CASE WHEN t.source = 'local' THEN t.file_mtime END)
+                                  FROM tracks_with_stats t WHERE t.album_id = albums.id),
                 play_count_avg = (SELECT CAST(SUM(t.play_count) AS REAL) / COUNT(*)
                                   FROM tracks_with_stats t WHERE t.album_id = albums.id),
                 source         = {_ALBUM_SOURCE_SUBQUERY},
@@ -4235,20 +4333,23 @@ class LibraryIndex:
         return touched
 
     def _rename_file_source(
-        self, old_path: "Path | str", new_path: "Path | str"
+        self, old_path: "Path | str", new_path: "Path | str", new_mtime: float
     ) -> None:
-        """Repoint a track's file track_sources.uri after its file moves on disk.
+        """Repoint a track's file track_sources.uri (and mtime) after it moves on disk.
 
         The scanner reads indexed file paths from track_sources (kind='file',
         KAMP-541), so a tag-edit / album rename that physically moved a file must
         update its file source uri in lock-step with tracks.file_path. Otherwise
         the next scan sees the old uri as a vanished file (remove_track drops the
         source — deleting a local-only track and its stats) and the new path as
-        unindexed (re-fork). Caller owns the commit.
+        unindexed (re-fork). Also carries the post-move file_mtime, which the
+        callers used to write to tracks.file_mtime (dropped in KAMP-539). Caller
+        owns the commit.
         """
         self._conn.execute(
-            "UPDATE track_sources SET uri = ? WHERE kind = 'file' AND uri = ?",
-            (str(new_path), str(old_path)),
+            "UPDATE track_sources SET uri = ?, file_mtime = ?"
+            " WHERE kind = 'file' AND uri = ?",
+            (str(new_path), new_mtime, str(old_path)),
         )
 
     def move_track(
@@ -4266,10 +4367,10 @@ class LibraryIndex:
         uri is repointed alongside file_path (see _rename_file_source).
         """
         self._conn.execute(
-            "UPDATE tracks SET file_path = ?, title = ?, file_mtime = ? WHERE file_path = ?",
-            (str(new_path), new_title, new_mtime, str(old_path)),
+            "UPDATE tracks SET file_path = ?, title = ? WHERE file_path = ?",
+            (str(new_path), new_title, str(old_path)),
         )
-        self._rename_file_source(old_path, new_path)
+        self._rename_file_source(old_path, new_path, new_mtime)
         self._rebuild_fts()
         self._conn.commit()
 
@@ -4289,11 +4390,11 @@ class LibraryIndex:
         """
         self._conn.execute(
             """UPDATE tracks
-               SET file_path = ?, album = ?, album_artist = ?, file_mtime = ?
+               SET file_path = ?, album = ?, album_artist = ?
                WHERE file_path = ?""",
-            (str(new_path), new_album, new_album_artist, new_mtime, str(old_path)),
+            (str(new_path), new_album, new_album_artist, str(old_path)),
         )
-        self._rename_file_source(old_path, new_path)
+        self._rename_file_source(old_path, new_path, new_mtime)
         self._rebuild_fts()
         self._conn.commit()
 
@@ -4334,8 +4435,7 @@ class LibraryIndex:
                        SET file_path = ?,
                            album = ?,
                            album_artist = ?,
-                           artist = CASE WHEN ? IS NOT NULL AND artist = ? THEN ? ELSE artist END,
-                           file_mtime = ?
+                           artist = CASE WHEN ? IS NOT NULL AND artist = ? THEN ? ELSE artist END
                        WHERE file_path = ?""",
                     (
                         str(new_path),
@@ -4344,11 +4444,10 @@ class LibraryIndex:
                         old_album_artist,
                         old_album_artist,
                         new_album_artist,
-                        new_mtime,
                         str(old_path),
                     ),
                 )
-                self._rename_file_source(old_path, new_path)
+                self._rename_file_source(old_path, new_path, new_mtime)
             # Update the albums row. The UNIQUE (album_artist, album) COLLATE NOCASE
             # constraint raises IntegrityError if the new name already exists.
             if album_id is not None:
@@ -4553,9 +4652,13 @@ class LibraryIndex:
     ) -> None:
         """Update a single track's path + album tags after a deferred album_retag drains."""
         self._conn.execute(
-            "UPDATE tracks SET file_path=?, album=?, album_artist=?, file_mtime=?"
-            " WHERE id=?",
-            (str(new_path), album, album_artist, mtime, track_id),
+            "UPDATE tracks SET file_path=?, album=?, album_artist=? WHERE id=?",
+            (str(new_path), album, album_artist, track_id),
+        )
+        # file_mtime lives in track_sources now (KAMP-539); update the file source.
+        self._conn.execute(
+            "UPDATE track_sources SET file_mtime=? WHERE kind='file' AND track_id=?",
+            (mtime, track_id),
         )
         if new_artist is not None:
             self._conn.execute(
@@ -4684,25 +4787,43 @@ class LibraryIndex:
         ).fetchone()
         return str(row["file_path"]) if row is not None else key
 
-    def _mirror_track_stats(self, key: str, cols: "tuple[str, ...]") -> None:
-        """Mirror stat column(s) from the tracks row at *key* into track_stats.
+    def _write_track_stats(self, key: str, **values: "float | int | None") -> None:
+        """Upsert absolute stat value(s) into track_stats for the track at *key*.
 
-        Absolute-value dual-write (KAMP-540): reads the *post-update* value(s)
-        from tracks and upserts them into track_stats keyed by track_id — never a
-        relative delta, so it survives the KAMP-541 collapse. No-op when *key*
-        matches no track. Creates the track_stats row (mirroring current tracks
-        values) if the v45 backfill / a scan hasn't yet. *cols* are internal
-        column-name literals, never user input.
+        Resolves track_id from tracks.file_path and writes track_stats directly —
+        the sole source of truth since KAMP-539 dropped the legacy tracks stat
+        columns. Absolute values (never a relative delta), so it survives the
+        KAMP-541 collapse. No-op when *key* matches no track; creates the
+        track_stats row if a scan/backfill has not yet. *values* keys are internal
+        column-name literals (favorite/last_played), never user input.
         """
         import time
 
+        cols = list(values)
         col_list = ", ".join(cols)
+        value_slots = ", ".join("?" for _ in cols)
         assigns = ", ".join(f"{c} = excluded.{c}" for c in cols)
         self._conn.execute(
             f"INSERT INTO track_stats (track_id, {col_list}, updated_at)"
-            f" SELECT id, {col_list}, ? FROM tracks WHERE file_path = ?"
+            f" SELECT id, {value_slots}, ? FROM tracks WHERE file_path = ?"
             f" ON CONFLICT(track_id) DO UPDATE SET {assigns},"
             f" updated_at = excluded.updated_at",
+            (*values.values(), time.time(), key),
+        )
+
+    def _increment_play_count(self, key: str) -> None:
+        """Increment track_stats.play_count for the track at *key* (KAMP-539).
+
+        In-table increment (seeds play_count=1 when the track_stats row is absent)
+        so it never reads a stale value. No-op when *key* matches no track.
+        """
+        import time
+
+        self._conn.execute(
+            "INSERT INTO track_stats (track_id, play_count, updated_at)"
+            " SELECT id, 1, ? FROM tracks WHERE file_path = ?"
+            " ON CONFLICT(track_id) DO UPDATE SET play_count = play_count + 1,"
+            " updated_at = excluded.updated_at",
             (time.time(), key),
         )
 
@@ -4718,10 +4839,7 @@ class LibraryIndex:
 
         now = time.time()
         key = self._canonical_key_for(file_path)
-        self._conn.execute(
-            "UPDATE tracks SET last_played = ? WHERE file_path = ?",
-            (now, key),
-        )
+        self._write_track_stats(key, last_played=now)
         # Keep album aggregate in sync.
         self._conn.execute(
             """
@@ -4731,7 +4849,6 @@ class LibraryIndex:
             """,
             (now, key, now),
         )
-        self._mirror_track_stats(key, ("last_played",))
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.last_played"})
@@ -4744,15 +4861,11 @@ class LibraryIndex:
         Also refreshes the parent album's play_count_avg.
         """
         key = self._canonical_key_for(file_path)
-        self._conn.execute(
-            "UPDATE tracks SET play_count = play_count + 1 WHERE file_path = ?",
-            (key,),
-        )
-        # Mirror the post-increment absolute value (not a +1) into track_stats
-        # BEFORE recomputing the album average — that recompute now reads
-        # play_count through the tracks_with_stats view (i.e. from track_stats),
-        # so the mirror must land first or the average sees the stale value.
-        self._mirror_track_stats(key, ("play_count",))
+        # Increment play_count in track_stats BEFORE recomputing the album average
+        # — that recompute reads play_count through the tracks_with_stats view
+        # (i.e. from track_stats), so the write must land first or the average
+        # sees the stale value.
+        self._increment_play_count(key)
         self._conn.execute(
             """
             UPDATE albums SET play_count_avg = (
@@ -4870,11 +4983,7 @@ class LibraryIndex:
         row so the favorite lands on the canonical track (KAMP-541).
         """
         key = self._canonical_key_for(file_path)
-        self._conn.execute(
-            "UPDATE tracks SET favorite = ? WHERE file_path = ?",
-            (int(favorite), key),
-        )
-        self._mirror_track_stats(key, ("favorite",))
+        self._write_track_stats(key, favorite=int(favorite))
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.favorite"})
@@ -4888,33 +4997,34 @@ class LibraryIndex:
         downloaded.  Matches by (album_id, track_number, disc_number) — the
         album_id FK eliminates the binary-collation string matching that caused
         silent data loss when MusicBrainz normalised album_artist capitalisation.
-        Only updates rows where the local track has favorite=0 to avoid clearing
-        a flag the user explicitly set on the local file.
+        Reads/writes favorite through track_stats — the sole stat store since
+        KAMP-539 dropped tracks.favorite. Only sets track_stats.favorite when it is
+        currently 0, so a flag the user explicitly set on the local file is not
+        re-stamped.
         """
+        import time
+
         for t in new_tracks:
             self._conn.execute(
                 """
-                UPDATE tracks SET favorite = 1
-                WHERE file_path = ?
-                  AND favorite = 0
+                INSERT INTO track_stats (track_id, favorite, updated_at)
+                SELECT loc.id, 1, ?
+                FROM tracks loc
+                WHERE loc.file_path = ?
                   AND EXISTS (
                       SELECT 1 FROM tracks r
-                      WHERE r.album_id = (
-                                SELECT album_id FROM tracks
-                                WHERE file_path = ?
-                            )
+                      JOIN track_stats rs ON rs.track_id = r.id
+                      WHERE r.album_id = loc.album_id
                         AND r.track_number = ?
                         AND r.disc_number = ?
                         AND r.file_path LIKE 'bandcamp://%'
-                        AND r.favorite = 1
+                        AND rs.favorite = 1
                   )
+                ON CONFLICT(track_id) DO UPDATE SET
+                    favorite = 1, updated_at = excluded.updated_at
+                    WHERE track_stats.favorite = 0
                 """,
-                (
-                    str(t.file_path),
-                    str(t.file_path),
-                    t.track_number,
-                    t.disc_number,
-                ),
+                (time.time(), str(t.file_path), t.track_number, t.disc_number),
             )
         if new_tracks:
             self._conn.commit()
@@ -4926,46 +5036,33 @@ class LibraryIndex:
         Called by LibraryScanner after a pre-order album is downloaded so play
         counts accumulated during the streaming period are not lost.  Uses the
         same (album_id, track_number, disc_number) match as inherit_remote_favorites.
-        Only updates when the remote play_count > the local play_count.
+        Reads/writes play_count through track_stats (KAMP-539). Only updates when the
+        remote play_count exceeds the local one.
         """
+        import time
+
+        sibling_max = (
+            "(SELECT MAX(rs.play_count)"
+            " FROM tracks r JOIN track_stats rs ON rs.track_id = r.id"
+            " WHERE r.album_id = loc.album_id"
+            "   AND r.track_number = loc.track_number"
+            "   AND r.disc_number = loc.disc_number"
+            "   AND r.file_path LIKE 'bandcamp://%')"
+        )
         for t in new_tracks:
             self._conn.execute(
-                """
-                UPDATE tracks SET play_count = (
-                    SELECT MAX(r.play_count, tracks.play_count)
-                    FROM tracks r
-                    WHERE r.album_id = (
-                              SELECT album_id FROM tracks
-                              WHERE file_path = ?
-                          )
-                      AND r.track_number = ?
-                      AND r.disc_number = ?
-                      AND r.file_path LIKE 'bandcamp://%'
-                      AND r.play_count > 0
-                    LIMIT 1
-                )
-                WHERE file_path = ?
-                  AND EXISTS (
-                      SELECT 1 FROM tracks r
-                      WHERE r.album_id = (
-                                SELECT album_id FROM tracks
-                                WHERE file_path = ?
-                            )
-                        AND r.track_number = ?
-                        AND r.disc_number = ?
-                        AND r.file_path LIKE 'bandcamp://%'
-                        AND r.play_count > tracks.play_count
-                  )
+                f"""
+                INSERT INTO track_stats (track_id, play_count, updated_at)
+                SELECT loc.id, {sibling_max}, ?
+                FROM tracks loc
+                WHERE loc.file_path = ?
+                  AND {sibling_max} > COALESCE(
+                      (SELECT play_count FROM track_stats WHERE track_id = loc.id), 0)
+                ON CONFLICT(track_id) DO UPDATE SET
+                    play_count = excluded.play_count, updated_at = excluded.updated_at
+                    WHERE excluded.play_count > track_stats.play_count
                 """,
-                (
-                    str(t.file_path),
-                    t.track_number,
-                    t.disc_number,
-                    str(t.file_path),
-                    str(t.file_path),
-                    t.track_number,
-                    t.disc_number,
-                ),
+                (time.time(), str(t.file_path)),
             )
         if new_tracks:
             self._conn.commit()
@@ -5048,11 +5145,14 @@ class LibraryIndex:
             return
         str_paths = [str(p) for p in file_paths]
         placeholders = ",".join("?" * len(str_paths))
+        # Write the file source's art fields in track_sources (KAMP-539) — the uri
+        # of a file source is the on-disk path, so the given paths address them
+        # directly; the legacy tracks.embedded_art/file_mtime the view derives.
         self._conn.execute(
-            f"UPDATE tracks SET embedded_art = 1, file_mtime = ?"
-            f" WHERE album_id = ?"
-            f" AND file_path IN ({placeholders})",
-            [now, album_id, *str_paths],
+            f"UPDATE track_sources SET embedded_art = 1, file_mtime = ?"
+            f" WHERE kind = 'file' AND uri IN ({placeholders})"
+            f" AND track_id IN (SELECT id FROM tracks WHERE album_id = ?)",
+            [now, *str_paths, album_id],
         )
         # Update the album row's aggregate art fields.
         self._conn.execute(
@@ -5694,7 +5794,8 @@ class LibraryIndex:
         (AC #2).
         """
         row = self._conn.execute(
-            "SELECT embedded_art FROM tracks WHERE mb_recording_id = ?", (mbid,)
+            "SELECT embedded_art FROM tracks_with_stats WHERE mb_recording_id = ?",
+            (mbid,),
         ).fetchone()
         old_embedded_art: bool | None = bool(row["embedded_art"]) if row else None
 
@@ -5714,7 +5815,9 @@ class LibraryIndex:
         )
         if row:
             self._conn.execute(
-                "UPDATE tracks SET embedded_art = 1 WHERE mb_recording_id = ?",
+                "UPDATE track_sources SET embedded_art = 1"
+                " WHERE kind = 'file' AND track_id IN"
+                " (SELECT id FROM tracks WHERE mb_recording_id = ?)",
                 (mbid,),
             )
         self._conn.commit()
@@ -5763,7 +5866,9 @@ class LibraryIndex:
                 embedded_art = old.get("embedded_art")
                 if embedded_art is not None:
                     self._conn.execute(
-                        "UPDATE tracks SET embedded_art = ? WHERE mb_recording_id = ?",
+                        "UPDATE track_sources SET embedded_art = ?"
+                        " WHERE kind = 'file' AND track_id IN"
+                        " (SELECT id FROM tracks WHERE mb_recording_id = ?)",
                         (int(embedded_art), mbid),
                     )
             reverted += 1
@@ -6552,19 +6657,14 @@ def _track_to_params(
     int,
     int,
     str,
-    int,
-    str,
     str,
     float | None,
-    float | None,
     str,
     str,
-    str,
-    str | None,
-    float | None,
-    int,
-    float,
 ]:
+    # Identity/catalog columns only — the per-source columns (ext/embedded_art/
+    # file_mtime/source/stream_url*/is_available/duration) live in track_sources
+    # and were dropped from tracks in KAMP-539; the upsert populates them there.
     return (
         _canonical_track_uri(t.file_path),
         t.title,
@@ -6574,19 +6674,11 @@ def _track_to_params(
         t.release_date,
         t.track_number,
         t.disc_number,
-        t.ext,
-        int(t.embedded_art),
         t.mb_release_id,
         t.mb_recording_id,
         t.date_added,
-        t.file_mtime,
         t.genre,
         t.label,
-        t.source,
-        t.stream_url,
-        t.stream_url_expires_at,
-        int(t.is_available),
-        t.duration,
     )
 
 

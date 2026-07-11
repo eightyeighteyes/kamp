@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 50
+_SCHEMA_VERSION = 51
 
 
 class NoStreamableVersionError(Exception):
@@ -168,7 +168,6 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 CREATE TABLE IF NOT EXISTS tracks (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_path        TEXT    NOT NULL UNIQUE,
     title            TEXT    NOT NULL DEFAULT '',
     artist           TEXT    NOT NULL DEFAULT '',
     album_artist     TEXT    NOT NULL DEFAULT '',
@@ -185,22 +184,17 @@ CREATE TABLE IF NOT EXISTS tracks (
     -- KAMP-539: per-source columns (ext/embedded_art/file_mtime/source/stream_url/
     -- stream_url_expires_at/is_available/duration) live in track_sources, and the
     -- mutable stats (favorite/play_count/last_played) live in track_stats. Reads go
-    -- through the tracks_with_stats view, which derives them. file_path and
-    -- sale_item_id are retained (their removal is a separate follow-up).
+    -- through the tracks_with_stats view, which derives them.
+    -- KAMP-552: file_path and sale_item_id are dropped. Identity is track_sources.uri
+    -- (the file path / bandcamp:// uri) and provenance is track_sources.provider_item_id;
+    -- the tracks_with_stats view re-derives file_path/sale_item_id from the preferred
+    -- source so _row_to_track and SELECT * consumers are unchanged. The v50->v51
+    -- migration rebuilds this table FK-aware to drop the two columns + their index.
     -- User-set display overrides for streaming tracks (KAMP-467).
     -- NULL means "use the canonical value from Bandcamp".
     display_title        TEXT,
     display_album        TEXT,
-    display_album_artist TEXT,
-    -- Track-level Bandcamp provenance (KAMP-528). Mirrors albums.sale_item_id but
-    -- resolves standalone singles: a purchased single has no album row, so the
-    -- only place to record "this file came from sale_item_id X" is here. Written
-    -- from the KAMP_SALE_ITEM_ID file tag on upsert (valid_sids only, FK-safe).
-    -- The supporting index (tracks_sale_item_id_idx) is created by
-    -- _create_tracks_sale_item_id_index(), NOT here: on an upgrade, executescript
-    -- runs the whole _DDL before the v41 migration adds this column, so a
-    -- CREATE INDEX in _DDL would reference a not-yet-existing column and fail.
-    sale_item_id         TEXT    REFERENCES bandcamp_collection(sale_item_id)
+    display_album_artist TEXT
 );
 
 -- Canonical-track model, expand phase (KAMP-535, epic KAMP-533). A track's
@@ -844,7 +838,8 @@ class LibraryIndex:
             # to create immediately (migrations, which also create it after the
             # heal, do not run for a brand-new DB).
             self._create_sale_item_id_unique_index()
-            self._create_tracks_sale_item_id_index()
+            # KAMP-552: tracks_sale_item_id_idx is gone (the column it indexed is
+            # dropped), so a fresh DB never creates it.
             self._create_artist_name_nocase_index()
             self._conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,)
@@ -2035,6 +2030,149 @@ class LibraryIndex:
                 self._conn.execute("UPDATE schema_version SET version = 50")
                 self._conn.commit()
                 version = 50  # noqa: F841
+
+        if version == 50:
+            # v50 -> v51 (KAMP-552): drop tracks.file_path and tracks.sale_item_id
+            # (and tracks_sale_item_id_idx). Both are indexed/UNIQUE/FK columns, so
+            # ALTER TABLE DROP COLUMN refuses them (unlike the v49 unconstrained
+            # drop) — a full FK-aware table rebuild is required. Gated on == 50 so a
+            # rolled-back run (which leaves version 50) retries rather than being
+            # skipped. Idempotent: if file_path is already gone (a prior run
+            # committed the rebuild but not the version bump — impossible here since
+            # the bump is INSIDE the rebuild txn, but belt-and-suspenders), just bump.
+            track_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")}
+            if "file_path" not in track_cols:
+                self._conn.execute("UPDATE schema_version SET version = 51")
+                self._conn.commit()
+                version = 51  # noqa: F841
+            elif self._backup_db("KAMP-552 v51 drop file_path/sale_item_id"):
+                # Child-row counts BEFORE the rebuild — the DROP TABLE below must not
+                # cascade-delete these (see the foreign_keys handling).
+                pre = {
+                    tbl: self._conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                    for tbl in ("track_sources", "track_stats", "playlist_tracks")
+                }
+                # P0: DROP TABLE tracks with foreign_keys=ON implicitly DELETEs its
+                # rows first, firing ON DELETE CASCADE on track_sources/track_stats/
+                # playlist_tracks — wiping every child row. foreign_keys MUST be OFF
+                # for the drop. The pragma is a no-op inside a transaction, so commit
+                # to autocommit first, toggle it, then read it back to PROVE it took.
+                self._conn.commit()
+                self._conn.execute("PRAGMA foreign_keys=OFF")
+                fk_off = self._conn.execute("PRAGMA foreign_keys").fetchone()[0]
+                if fk_off != 0:
+                    # Could not disable FK enforcement (open txn somewhere) — abort
+                    # rather than risk the cascade. Retries on next open.
+                    self._conn.execute("PRAGMA foreign_keys=ON")
+                    logger.error(
+                        "KAMP-552 v51: could not disable foreign_keys; skipping the"
+                        " rebuild this open (will retry). Restore is unnecessary — no"
+                        " changes were made."
+                    )
+                else:
+                    try:
+                        self._conn.execute("BEGIN")
+                        self._conn.execute("DROP VIEW IF EXISTS tracks_with_stats")
+                        self._conn.execute(
+                            "CREATE TABLE tracks_new ("
+                            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                            " title TEXT NOT NULL DEFAULT '',"
+                            " artist TEXT NOT NULL DEFAULT '',"
+                            " album_artist TEXT NOT NULL DEFAULT '',"
+                            " album TEXT NOT NULL DEFAULT '',"
+                            " release_date TEXT NOT NULL DEFAULT '',"
+                            " track_number INTEGER NOT NULL DEFAULT 0,"
+                            " disc_number INTEGER NOT NULL DEFAULT 1,"
+                            " mb_release_id TEXT NOT NULL DEFAULT '',"
+                            " mb_recording_id TEXT NOT NULL DEFAULT '',"
+                            " date_added REAL,"
+                            " genre TEXT NOT NULL DEFAULT '',"
+                            " label TEXT NOT NULL DEFAULT '',"
+                            " album_id INTEGER REFERENCES albums(id),"
+                            " display_title TEXT,"
+                            " display_album TEXT,"
+                            " display_album_artist TEXT)"
+                        )
+                        # id copied VERBATIM so the inbound child FKs (track_id ->
+                        # tracks.id) stay valid and FTS rowids (= tracks.id) resolve.
+                        # Copy only the columns the old table actually has (a partial
+                        # or synthetic schema may be missing some); the rest take
+                        # tracks_new's DEFAULTs.
+                        new_cols = [
+                            "id",
+                            "title",
+                            "artist",
+                            "album_artist",
+                            "album",
+                            "release_date",
+                            "track_number",
+                            "disc_number",
+                            "mb_release_id",
+                            "mb_recording_id",
+                            "date_added",
+                            "genre",
+                            "label",
+                            "album_id",
+                            "display_title",
+                            "display_album",
+                            "display_album_artist",
+                        ]
+                        copy = ", ".join(c for c in new_cols if c in track_cols)
+                        self._conn.execute(
+                            f"INSERT INTO tracks_new ({copy}) SELECT {copy} FROM tracks"
+                        )
+                        self._conn.execute("DROP TABLE tracks")  # FK OFF -> no cascade
+                        self._conn.execute("ALTER TABLE tracks_new RENAME TO tracks")
+                        # Recreate the surviving index (tracks_sale_item_id_idx is
+                        # intentionally NOT recreated — its column is gone).
+                        self._conn.execute(
+                            "CREATE INDEX IF NOT EXISTS tracks_album_idx"
+                            " ON tracks(album_artist, album)"
+                        )
+                        # P0: child rows must be intact and referentially valid.
+                        post = {
+                            tbl: self._conn.execute(
+                                f"SELECT COUNT(*) FROM {tbl}"
+                            ).fetchone()[0]
+                            for tbl in (
+                                "track_sources",
+                                "track_stats",
+                                "playlist_tracks",
+                            )
+                        }
+                        if post != pre:
+                            raise RuntimeError(
+                                f"child rows changed during rebuild: {pre} -> {post}"
+                            )
+                        bad = self._conn.execute("PRAGMA foreign_key_check").fetchall()
+                        if bad:
+                            # The only outbound FK is tracks.album_id -> albums(id);
+                            # a dangling one (shouldn't occur under FK=ON writes) is
+                            # repaired rather than bricking the upgrade.
+                            self._conn.execute(
+                                "UPDATE tracks SET album_id = NULL"
+                                " WHERE album_id IS NOT NULL AND album_id NOT IN"
+                                " (SELECT id FROM albums)"
+                            )
+                            if self._conn.execute(
+                                "PRAGMA foreign_key_check"
+                            ).fetchall():
+                                raise RuntimeError("foreign_key_check still failing")
+                        # Bump the version INSIDE the rebuild txn: a crash anywhere
+                        # before COMMIT rolls back atomically to v50 (file_path
+                        # intact) and retries; after COMMIT the gate no longer fires.
+                        self._conn.execute("UPDATE schema_version SET version = 51")
+                        self._conn.execute("COMMIT")
+                        version = 51  # noqa: F841
+                    except Exception:
+                        self._conn.execute("ROLLBACK")
+                        logger.exception(
+                            "KAMP-552 v51 rebuild failed — rolled back; file_path"
+                            " remains. Restore from the pre-v51 backup if needed."
+                        )
+                    finally:
+                        self._conn.execute("PRAGMA foreign_keys=ON")
+                        self._create_tracks_with_stats_view()
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -3765,7 +3903,9 @@ class LibraryIndex:
         IntegrityError — which is exactly what used to make logout crash.
         """
         self._conn.execute("UPDATE albums SET sale_item_id = NULL")
-        self._conn.execute("UPDATE tracks SET sale_item_id = NULL")
+        # KAMP-552: tracks.sale_item_id is gone; track_sources.provider_item_id has
+        # no FK to bandcamp_collection (adapter-validated), so it needs no nulling to
+        # delete the ledger rows safely.
         self._conn.execute("DELETE FROM bandcamp_collection")
         self._conn.commit()
 
@@ -3884,23 +4024,14 @@ class LibraryIndex:
         self._conn.commit()
 
     def _sync_tracks_row_to_preferred_source(self, track_id: int) -> None:
-        """Realign a track's identity file_path to its preferred source (KAMP-541).
+        """No-op since KAMP-552 (retained for its callers' readability).
 
-        `tracks.file_path` is the retained identity/lookup key; keep it coherent
-        with `track_sources` so the track is found by its preferred delivery uri
-        (e.g. after a local file is removed and the track reverts to its stream
-        source, or a download is added and the local file becomes preferred). The
-        per-source/`source` columns that this used to also realign are now derived
-        from `track_sources` by the view and dropped in KAMP-539, so only file_path
-        remains to sync. Caller commits. No-op if the track has no sources.
+        This used to realign the identity `tracks.file_path` to the track's
+        preferred `track_sources` row. file_path is dropped now, and the
+        `tracks_with_stats` view derives it from the preferred source at read time,
+        so the realignment happens automatically — there is nothing to write.
         """
-        src = self.preferred_source(track_id)
-        if src is None:
-            return
-        self._conn.execute(
-            "UPDATE tracks SET file_path = ? WHERE id = ?",
-            (src["uri"], track_id),
-        )
+        return
 
     def update_track_display_title(
         self, track_id: int, display_title: str | None
@@ -4181,10 +4312,10 @@ class LibraryIndex:
             else:
                 cur = self._conn.execute(
                     "INSERT INTO tracks"
-                    " (file_path, title, artist, album_artist, album, release_date,"
+                    " (title, artist, album_artist, album, release_date,"
                     "  track_number, disc_number, mb_release_id, mb_recording_id,"
                     "  date_added, genre, label)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     _track_to_params(t),
                 )
                 id_map[uri] = cur.lastrowid  # type: ignore[assignment]
@@ -4648,8 +4779,8 @@ class LibraryIndex:
         tid = self._resolve_track_id(old_path)
         if tid is not None:
             self._conn.execute(
-                "UPDATE tracks SET file_path = ?, title = ? WHERE id = ?",
-                (str(new_path), new_title, tid),
+                "UPDATE tracks SET title = ? WHERE id = ?",
+                (new_title, tid),
             )
         self._rename_file_source(old_path, new_path, new_mtime)
         self._rebuild_fts()
@@ -4673,9 +4804,9 @@ class LibraryIndex:
         if tid is not None:
             self._conn.execute(
                 """UPDATE tracks
-                   SET file_path = ?, album = ?, album_artist = ?
+                   SET album = ?, album_artist = ?
                    WHERE id = ?""",
-                (str(new_path), new_album, new_album_artist, tid),
+                (new_album, new_album_artist, tid),
             )
         self._rename_file_source(old_path, new_path, new_mtime)
         self._rebuild_fts()
@@ -4719,13 +4850,11 @@ class LibraryIndex:
                 if tid is not None:
                     self._conn.execute(
                         """UPDATE tracks
-                           SET file_path = ?,
-                               album = ?,
+                           SET album = ?,
                                album_artist = ?,
                                artist = CASE WHEN ? IS NOT NULL AND artist = ? THEN ? ELSE artist END
                            WHERE id = ?""",
                         (
-                            str(new_path),
                             new_album,
                             new_album_artist,
                             old_album_artist,
@@ -4939,14 +5068,12 @@ class LibraryIndex:
     ) -> None:
         """Update a single track's path + album tags after a deferred album_retag drains."""
         self._conn.execute(
-            "UPDATE tracks SET file_path=?, album=?, album_artist=? WHERE id=?",
-            (str(new_path), album, album_artist, track_id),
+            "UPDATE tracks SET album=?, album_artist=? WHERE id=?",
+            (album, album_artist, track_id),
         )
-        # file_mtime lives in track_sources now (KAMP-539); update the file source.
-        # KAMP-552: file_path is derived from track_sources.uri, so repoint the file
-        # source's uri to the drained location too — otherwise the view keeps
-        # surfacing the old path. (The tracks.file_path write above is kept in sync
-        # until the v51 column drop; the source uri is the authoritative key.)
+        # KAMP-552: identity/path is track_sources.uri now — repoint the file
+        # source's uri (and mtime) to the drained location so the derived view path
+        # follows the move. file_mtime moved to track_sources in KAMP-539.
         self._conn.execute(
             "UPDATE track_sources SET uri=?, file_mtime=? WHERE kind='file' AND track_id=?",
             (_canonical_track_uri(str(new_path)), mtime, track_id),
@@ -6958,7 +7085,6 @@ def _track_to_params(
     str,
     str,
     str,
-    str,
     int,
     int,
     str,
@@ -6970,8 +7096,9 @@ def _track_to_params(
     # Identity/catalog columns only — the per-source columns (ext/embedded_art/
     # file_mtime/source/stream_url*/is_available/duration) live in track_sources
     # and were dropped from tracks in KAMP-539; the upsert populates them there.
+    # KAMP-552: file_path is dropped too — identity is track_sources.uri, written
+    # separately in the upsert's source-populate step.
     return (
-        _canonical_track_uri(t.file_path),
         t.title,
         t.artist,
         t.album_artist,

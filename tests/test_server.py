@@ -5096,7 +5096,7 @@ class TestResolvePlaybackUri:
             "INSERT INTO bandcamp_collection (sale_item_id, album_url)"
             " VALUES ('sid', 'https://a.bandcamp.com/album/x')"
         )
-        c.execute("INSERT INTO tracks (file_path) VALUES ('bandcamp://sid/2')")
+        c.execute("INSERT INTO tracks DEFAULT VALUES")  # KAMP-552: no file_path
         tid = c.execute("SELECT id FROM tracks").fetchone()[0]
         c.execute(
             "INSERT INTO track_sources (track_id, kind, provider, provider_item_id, uri,"

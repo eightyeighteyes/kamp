@@ -5801,7 +5801,10 @@ class TestPlaylistEndpoints:
         mock_index.get_track_by_id.return_value = track
         resp = client.post("/api/v1/playlists/1/tracks", json={"id": 1})
         assert resp.status_code == 200
-        mock_index.add_track_to_playlist.assert_called_once_with(1, "/lib/a.mp3")
+        # str(Path) so the expected separator matches the platform (Windows: \\).
+        mock_index.add_track_to_playlist.assert_called_once_with(
+            1, str(track.file_path)
+        )
 
     def test_add_album_tracks(self, client: TestClient, mock_index: MagicMock) -> None:
         from kamp_core.library import Track

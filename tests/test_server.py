@@ -1744,6 +1744,21 @@ class TestSearchEndpoint:
         assert len(data["albums"]) == 1
         assert data["albums"][0]["album"] == "Kid A"
 
+    def test_album_card_matches_track_case_insensitively(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """KAMP-545: an album row whose album_artist casing diverges from its
+        tracks' casing ("SUNN O)))" vs "Sunn O)))") still surfaces as an album
+        card — the album↔track match honours the NOCASE collation."""
+        t = _track(1, album="sunn O)))", artist="Sunn O)))")
+        mock_index.search.return_value = [t]
+        mock_index.albums.return_value = [_album("SUNN O)))", "sunn O)))")]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        res = TestClient(app).get("/api/v1/search?q=sunn")
+        data = res.json()
+        assert len(data["albums"]) == 1
+        assert data["albums"][0]["album_artist"] == "SUNN O)))"
+
     def test_albums_deduplicated_when_multiple_tracks_match(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:

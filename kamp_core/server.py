@@ -2700,7 +2700,11 @@ def create_app(
         # then filter the pre-sorted album list so the response respects sort order.
         # Missing-album tracks have album="" in the DB, so also match them by
         # file_path since their AlbumInfo.album is the display title, not "".
-        fts_keys = {(t.album_artist, t.album) for t in fts_tracks}
+        # Keys are lower-cased so the match honours the NOCASE collation on
+        # albums.album_artist/album (KAMP-545): an album row whose casing diverges
+        # from its tracks' casing (e.g. row "SUNN O)))" vs tracks "Sunn O)))") would
+        # otherwise be dropped from the album cards even though its tracks matched.
+        fts_keys = {(t.album_artist.lower(), t.album.lower()) for t in fts_tracks}
         fts_paths = {str(t.file_path) for t in fts_tracks if not t.album}
         albums = [
             AlbumOut(
@@ -2728,7 +2732,7 @@ def create_app(
                 display_album_artist=a.display_album_artist,
             )
             for a in index.albums(sort=sort)
-            if (a.album_artist, a.album) in fts_keys
+            if (a.album_artist.lower(), a.album.lower()) in fts_keys
             or (a.missing_album and a.file_path in fts_paths)
         ]
         albums.sort(key=lambda a: not a.favorite)

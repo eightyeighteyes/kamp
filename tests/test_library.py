@@ -127,6 +127,46 @@ def _readd_legacy_track_columns(index: "LibraryIndex") -> None:
     index._create_tracks_with_stats_view()
 
 
+def _open_forkable_v49(db: Path) -> "LibraryIndex":
+    """Open a fresh index, drop the NOCASE artist index, and stamp version 49 so
+    a reopen exercises the KAMP-545 v50 heal. The dropped index lets the caller
+    seed case-variant artist rows that the BINARY UNIQUE alone still permits."""
+    index = LibraryIndex(db)
+    index._conn.execute("DROP INDEX IF EXISTS idx_artists_name_nocase")
+    index._conn.execute("UPDATE schema_version SET version = 49")
+    index._conn.commit()
+    return index
+
+
+def _add_artist(index: "LibraryIndex", name: str, play_time: float = 0.0) -> int:
+    cur = index._conn.execute(
+        "INSERT INTO artists (name, play_time) VALUES (?, ?)", (name, play_time)
+    )
+    return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def _add_album_with_track(
+    index: "LibraryIndex",
+    album_artist: str,
+    album: str,
+    artist_id: int,
+    file_path: str,
+    sale_item_id: str | None = None,
+) -> int:
+    cur = index._conn.execute(
+        "INSERT INTO albums (album_artist, album, artist_id, sale_item_id)"
+        " VALUES (?, ?, ?, ?)",
+        (album_artist, album, artist_id, sale_item_id),
+    )
+    album_id = int(cur.lastrowid)  # type: ignore[arg-type]
+    index._conn.execute(
+        "INSERT INTO tracks (file_path, title, artist, album_artist, album, album_id,"
+        " track_number, disc_number) VALUES (?, 'T', ?, ?, ?, ?, 1, 1)",
+        (file_path, album_artist, album_artist, album, album_id),
+    )
+    return album_id
+
+
 # ---------------------------------------------------------------------------
 # LibraryIndex
 # ---------------------------------------------------------------------------
@@ -185,7 +225,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 49
+        assert version == 50
 
     def test_track_sources_and_stats_tables_created(self, tmp_path: Path) -> None:
         """The canonical-track child tables exist and are empty on a fresh DB (KAMP-535)."""
@@ -292,7 +332,7 @@ class TestLibraryIndex:
         }
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert {"track_sources", "track_stats"} <= tables
 
     def test_v45_backfill_populates_children(self, tmp_path: Path) -> None:
@@ -388,7 +428,7 @@ class TestLibraryIndex:
         ]
         n_src = index._conn.execute("SELECT COUNT(*) FROM track_sources").fetchone()[0]
         index.close()
-        assert version == 49
+        assert version == 50
         assert n_src == 0
 
     def test_stats_write_to_track_stats_only(self, tmp_path: Path) -> None:
@@ -935,7 +975,7 @@ class TestLibraryIndex:
         t = reopened.get_track_by_id(tid)
         ver = rc.execute("SELECT version FROM schema_version").fetchone()[0]
         reopened.close()
-        assert ver == 49
+        assert ver == 50
         assert not (dropped & cols)  # all 11 columns gone from tracks
         assert {"file_path", "sale_item_id"} <= cols  # retained
         assert t is not None
@@ -956,7 +996,7 @@ class TestLibraryIndex:
         ver = reopened._conn.execute("SELECT version FROM schema_version").fetchone()[0]
         cols = {r[1] for r in reopened._conn.execute("PRAGMA table_info(tracks)")}
         reopened.close()
-        assert ver == 49
+        assert ver == 50
         assert "favorite" not in cols
 
     def test_v49_rolls_back_and_keeps_version_when_a_drop_fails(
@@ -1004,6 +1044,237 @@ class TestLibraryIndex:
         reopened.close()
         assert ver == 48  # not bumped
         assert "favorite" in cols  # columns retained
+
+    def test_v50_reunites_case_variant_artist_split(self, tmp_path: Path) -> None:
+        """v50 folds two case-variant artists rows into one, repoints both albums
+        onto the survivor, and normalizes album/track casing (KAMP-545)."""
+        db = tmp_path / "library.db"
+        index = _open_forkable_v49(db)
+        a_lower = _add_artist(index, "Sunn O)))")  # inserted first -> lower id
+        a_upper = _add_artist(index, "SUNN O)))")
+        _add_album_with_track(
+            index, "Sunn O)))", "Monoliths & Dimensions", a_lower, "/m/a.mp3"
+        )
+        _add_album_with_track(index, "SUNN O)))", "Life Metal", a_upper, "/m/b.mp3")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)  # runs the v50 heal
+        rc = reopened._conn
+        names = [
+            r[0]
+            for r in rc.execute(
+                "SELECT name FROM artists WHERE name = 'sunn o)))' COLLATE NOCASE"
+            )
+        ]
+        album_artist_ids = {
+            r[0]
+            for r in rc.execute(
+                "SELECT artist_id FROM albums"
+                " WHERE album IN ('Monoliths & Dimensions', 'Life Metal')"
+            )
+        }
+        album_casings = {
+            r[0]
+            for r in rc.execute(
+                "SELECT album_artist FROM albums"
+                " WHERE album IN ('Monoliths & Dimensions', 'Life Metal')"
+            )
+        }
+        track_casings = {r[0] for r in rc.execute("SELECT album_artist FROM tracks")}
+        ver = rc.execute("SELECT version FROM schema_version").fetchone()[0]
+        has_index = rc.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index'"
+            " AND name='idx_artists_name_nocase'"
+        ).fetchone()
+        reopened.close()
+
+        assert names == ["Sunn O)))"]  # one row, canonical = lowest-id casing
+        assert len(album_artist_ids) == 1 and None not in album_artist_ids
+        assert album_casings == {"Sunn O)))"}  # both albums normalized
+        assert track_casings == {"Sunn O)))"}  # tracks normalized too
+        assert ver == 50
+        assert has_index is not None  # NOCASE uniqueness now enforced
+
+    def test_v50_folds_play_time_and_removes_orphan_variant(
+        self, tmp_path: Path
+    ) -> None:
+        """A case-variant row owning zero albums is deleted and its play_time
+        folded into the survivor (KAMP-545)."""
+        db = tmp_path / "library.db"
+        index = _open_forkable_v49(db)
+        keep = _add_artist(index, "The Mountain Goats", play_time=100.0)
+        orphan = _add_artist(index, "the Mountain Goats", play_time=25.0)
+        _add_album_with_track(
+            index, "The Mountain Goats", "Tallahassee", keep, "/m/tmg.mp3"
+        )
+        # orphan owns no albums
+        assert orphan  # referenced for clarity
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        rc = reopened._conn
+        rows = rc.execute(
+            "SELECT name, play_time FROM artists"
+            " WHERE name = 'the mountain goats' COLLATE NOCASE"
+        ).fetchall()
+        reopened.close()
+
+        assert len(rows) == 1
+        assert rows[0]["name"] == "The Mountain Goats"
+        assert rows[0]["play_time"] == 125.0  # folded
+
+    def test_v50_survivor_casing_follows_bandcamp_band_name(
+        self, tmp_path: Path
+    ) -> None:
+        """When an album in the group is Bandcamp-linked, the canonical casing is
+        taken from band_name — even against the most-albums heuristic (KAMP-545)."""
+        db = tmp_path / "library.db"
+        index = _open_forkable_v49(db)
+        index._conn.execute(
+            "INSERT INTO bandcamp_collection (sale_item_id, band_name)"
+            " VALUES ('k1', 'Kylesa')"
+        )
+        # "KYLESA" owns two albums (incl. the bandcamp one) and was inserted first,
+        # so most-albums AND lowest-id would both pick it — band_name must override.
+        upper = _add_artist(index, "KYLESA")
+        lower = _add_artist(index, "Kylesa")
+        _add_album_with_track(
+            index, "KYLESA", "Spiral Shadow", upper, "/m/k1.mp3", sale_item_id="k1"
+        )
+        _add_album_with_track(index, "KYLESA", "Ultraviolet", upper, "/m/k2.mp3")
+        _add_album_with_track(index, "Kylesa", "Static Tensions", lower, "/m/k3.mp3")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        rc = reopened._conn
+        names = [
+            r[0]
+            for r in rc.execute(
+                "SELECT name FROM artists WHERE name = 'kylesa' COLLATE NOCASE"
+            )
+        ]
+        casings = {r[0] for r in rc.execute("SELECT album_artist FROM albums")}
+        band_name = rc.execute(
+            "SELECT band_name FROM bandcamp_collection WHERE sale_item_id = 'k1'"
+        ).fetchone()[0]
+        reopened.close()
+
+        assert names == ["Kylesa"]  # band_name casing won over most-albums
+        assert casings == {"Kylesa"}
+        assert band_name == "Kylesa"
+
+    def test_v50_uses_most_albums_when_no_band_name_column(
+        self, tmp_path: Path
+    ) -> None:
+        """On an old schema whose bandcamp_collection predates band_name, the heal
+        falls back to the most-albums / lowest-id survivor (KAMP-545)."""
+        db = tmp_path / "library.db"
+        index = _open_forkable_v49(db)
+        # Simulate a pre-band_name bandcamp_collection so has_band_name is False.
+        index._conn.execute("DROP TABLE bandcamp_collection")
+        index._conn.execute(
+            "CREATE TABLE bandcamp_collection (sale_item_id TEXT PRIMARY KEY)"
+        )
+        few = _add_artist(index, "Kylesa")  # lower id, but fewer albums
+        many = _add_artist(index, "KYLESA")
+        _add_album_with_track(index, "Kylesa", "Static Tensions", few, "/m/k1.mp3")
+        _add_album_with_track(index, "KYLESA", "Spiral Shadow", many, "/m/k2.mp3")
+        _add_album_with_track(index, "KYLESA", "Ultraviolet", many, "/m/k3.mp3")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        rc = reopened._conn
+        names = [
+            r[0]
+            for r in rc.execute(
+                "SELECT name FROM artists WHERE name = 'kylesa' COLLATE NOCASE"
+            )
+        ]
+        reopened.close()
+
+        assert names == ["KYLESA"]  # most albums wins with no band_name to consult
+
+    def test_v50_noop_on_clean_library(self, tmp_path: Path) -> None:
+        """A v49 DB with no case-variant artists bumps to 50 and adds the index
+        without taking a backup (KAMP-545)."""
+        db = tmp_path / "library.db"
+        index = _open_forkable_v49(db)
+        _add_artist(index, "Boris")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        rc = reopened._conn
+        ver = rc.execute("SELECT version FROM schema_version").fetchone()[0]
+        has_index = rc.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index'"
+            " AND name='idx_artists_name_nocase'"
+        ).fetchone()
+        reopened.close()
+        backups = list(tmp_path.glob("library.db.bak-*"))
+
+        assert ver == 50
+        assert has_index is not None
+        assert backups == []  # no work -> no backup
+
+    def test_v50_retries_when_backup_fails(
+        self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+    ) -> None:
+        """If the pre-heal backup fails while case variants exist, v50 leaves the
+        version at 49 and the duplicate rows intact so it retries (KAMP-545)."""
+        db = tmp_path / "library.db"
+        index = _open_forkable_v49(db)
+        a1 = _add_artist(index, "Kylesa")
+        a2 = _add_artist(index, "KYLESA")
+        _add_album_with_track(index, "Kylesa", "Static Tensions", a1, "/m/k1.mp3")
+        _add_album_with_track(index, "KYLESA", "Spiral Shadow", a2, "/m/k2.mp3")
+        index._conn.commit()
+        index.close()
+
+        monkeypatch.setattr(LibraryIndex, "_backup_db", lambda self, label: False)
+        reopened = LibraryIndex(db)
+        rc = reopened._conn
+        ver = rc.execute("SELECT version FROM schema_version").fetchone()[0]
+        n_artists = rc.execute(
+            "SELECT COUNT(*) FROM artists WHERE name = 'kylesa' COLLATE NOCASE"
+        ).fetchone()[0]
+        reopened.close()
+
+        assert ver == 49  # not bumped — retries on next open
+        assert n_artists == 2  # duplicate rows untouched
+
+    def test_v50_rolls_back_and_retries_when_heal_raises(
+        self, tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+    ) -> None:
+        """If a group merge raises mid-heal, the whole migration rolls back, the
+        version stays 49, and the duplicate rows survive intact (KAMP-545)."""
+        db = tmp_path / "library.db"
+        index = _open_forkable_v49(db)
+        a1 = _add_artist(index, "Kylesa")
+        a2 = _add_artist(index, "KYLESA")
+        _add_album_with_track(index, "Kylesa", "Static Tensions", a1, "/m/k1.mp3")
+        _add_album_with_track(index, "KYLESA", "Spiral Shadow", a2, "/m/k2.mp3")
+        index._conn.commit()
+        index.close()
+
+        def _boom(self: "LibraryIndex", ids: list[int], has_band_name: bool) -> None:
+            raise RuntimeError("simulated heal failure")
+
+        monkeypatch.setattr(LibraryIndex, "_heal_artist_group", _boom)
+        reopened = LibraryIndex(db)
+        rc = reopened._conn
+        ver = rc.execute("SELECT version FROM schema_version").fetchone()[0]
+        n_artists = rc.execute(
+            "SELECT COUNT(*) FROM artists WHERE name = 'kylesa' COLLATE NOCASE"
+        ).fetchone()[0]
+        reopened.close()
+
+        assert ver == 49  # rolled back, not bumped
+        assert n_artists == 2  # both rows intact after rollback
 
     def test_collapse_heal_works_without_preexisting_view(self, tmp_path: Path) -> None:
         """A collapse heal must build the tracks_with_stats view before running.
@@ -1330,6 +1601,60 @@ class TestLibraryIndex:
         index.close()
 
         assert artists == ["Aesop Rock", "Zeppelin"]
+
+    def test_case_variant_album_artist_does_not_split_artist_row(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-545: two albums by one artist with divergent casing must share a
+        single artists row and artist_id, not fork onto two."""
+        index = LibraryIndex(tmp_path / "library.db")
+        local = _sample_track(tmp_path / "0.mp3")
+        local.album_artist = "Sunn O)))"
+        local.album = "Monoliths & Dimensions"
+        bandcamp = _sample_track(tmp_path / "1.mp3")
+        bandcamp.album_artist = "SUNN O)))"  # bandcamp uppercased the name
+        bandcamp.album = "Life Metal"
+        index.upsert_many([local, bandcamp])
+
+        artist_rows = index._conn.execute(
+            "SELECT COUNT(*) FROM artists WHERE name = 'sunn o)))' COLLATE NOCASE"
+        ).fetchone()[0]
+        artist_ids = {
+            r[0]
+            for r in index._conn.execute(
+                "SELECT artist_id FROM albums"
+                " WHERE album_artist = 'sunn o)))' COLLATE NOCASE"
+            )
+        }
+        index.close()
+
+        assert artist_rows == 1
+        assert len(artist_ids) == 1 and None not in artist_ids
+
+    def test_record_play_time_credits_single_case_variant_artist(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-545: play_time for a case-variant artist accrues to the one
+        canonical row rather than being lost to a BINARY name mismatch."""
+        index = LibraryIndex(tmp_path / "library.db")
+        first = _sample_track(tmp_path / "0.mp3")
+        first.album_artist = "Kylesa"
+        second = _sample_track(tmp_path / "1.mp3")
+        second.album_artist = "KYLESA"
+        second.album = "Spiral Shadow"
+        index.upsert_many([first, second])
+
+        index.record_play_time(tmp_path / "0.mp3", 30.0)
+        index.record_play_time(tmp_path / "1.mp3", 12.0)
+
+        rows = index._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(play_time), 0) FROM artists"
+            " WHERE name = 'kylesa' COLLATE NOCASE"
+        ).fetchone()
+        index.close()
+
+        assert rows[0] == 1
+        assert rows[1] == 42.0
 
     def test_tracks_for_album_sorted_by_disc_then_track(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -2784,7 +3109,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -2841,7 +3166,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -3436,7 +3761,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert row is not None
         assert row[0] == 0
 
@@ -3900,7 +4225,7 @@ class TestFavorite:
         ).fetchone()
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -4013,7 +4338,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -4197,7 +4522,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -4292,7 +4617,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 49
+        assert version == 50
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -4300,7 +4625,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 49
+        assert version == 50
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -5227,7 +5552,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 49
+        assert version == 50
 
         index.close()
 
@@ -5918,7 +6243,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 49
+        assert version == 50
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -5953,7 +6278,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 49
+        assert version == 50
         index.close()
 
 
@@ -6468,7 +6793,7 @@ class TestBandcampCollection:
         reopened.close()
 
         assert row["sale_item_id"] == "bf-1"
-        assert version == 49
+        assert version == 50
         assert row2["sale_item_id"] == "bf-1"
 
     def test_reset_collection_sync_state(self, tmp_path: Path) -> None:
@@ -6601,7 +6926,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 49
+        assert version == 50
 
 
 class TestRemoteTrackSchema:
@@ -7009,7 +7334,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -7070,7 +7395,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 49
+        assert version == 50
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -7870,7 +8195,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -8431,7 +8756,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -8509,7 +8834,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -8718,7 +9043,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -9090,7 +9415,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -9190,7 +9515,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -9306,7 +9631,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -9811,7 +10136,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -9926,7 +10251,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -10024,7 +10349,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -10124,7 +10449,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -10631,7 +10956,7 @@ class TestMagicPlaylists:
         fetched = index.get_magic_playlist_criteria(playlist_id)
         index.close()
 
-        assert version == 49
+        assert version == 50
         assert fetched == criteria
 
     # ------------------------------------------------------------------
@@ -11513,7 +11838,7 @@ class TestMigrationV38:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 49
+        assert version == 50
         assert "release_date" in cols
         assert "year" not in cols
 
@@ -12640,7 +12965,7 @@ class TestLooseSingleAttach:
         cards = [a for a in reopened.albums() if a.album == "Celebrity"]
         reopened.close()
 
-        assert version == 49
+        assert version == 50
         assert row["album_id"] == stream_album
         assert row["track_number"] == 1
         # The heal took a backup snapshot before mutating.
@@ -12660,7 +12985,7 @@ class TestLooseSingleAttach:
             0
         ]
         index.close()
-        assert version == 49
+        assert version == 50
         assert not list(tmp_path.glob("library.db.bak-*"))
 
     def test_v43_migration_restamps_attached_but_unstamped_single(
@@ -12703,7 +13028,7 @@ class TestLooseSingleAttach:
         cards = [a for a in reopened.albums() if a.album == "Celebrity"]
         reopened.close()
 
-        assert version == 49
+        assert version == 50
         assert stamped == "Celebrity"
         # No duplicate loose card, and the album now reads as owned.
         assert len(cards) == 1

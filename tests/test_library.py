@@ -13350,6 +13350,42 @@ class TestKamp552DropColumns:
         assert fk_violations == []
         assert still_resolves is not None
 
+    def test_v51_rebuild_repairs_dangling_album_id(self, tmp_path: Path) -> None:
+        """The rebuild's foreign_key_check finds a dangling tracks.album_id and nulls
+        it (repairs) rather than bricking the upgrade — the P0 fk-check arm."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        p = tmp_path / "a.mp3"
+        t = _sample_track(p)
+        t.album = "Al"
+        t.album_artist = "Ar"
+        index.upsert_many([t])
+        tid = index.get_track_by_path(str(p)).id  # type: ignore[union-attr]
+        _readd_legacy_track_columns(index)
+        index._conn.execute("UPDATE schema_version SET version = 50")
+        index._conn.commit()
+        index.close()
+        # Corrupt: point album_id at a nonexistent album (foreign_keys OFF so the
+        # write is not rejected), simulating the dangling-FK state the rebuild guards.
+        raw = sqlite3.connect(str(db))
+        raw.execute("PRAGMA foreign_keys=OFF")
+        raw.execute("UPDATE tracks SET album_id = 999999 WHERE id = ?", (tid,))
+        raw.commit()
+        raw.close()
+
+        reopened = LibraryIndex(db)  # v51 rebuild repairs the dangler
+        album_id = reopened._conn.execute(
+            "SELECT album_id FROM tracks WHERE id = ?", (tid,)
+        ).fetchone()[0]
+        fk = reopened._conn.execute("PRAGMA foreign_key_check").fetchall()
+        ver = reopened._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        cols = {r[1] for r in reopened._conn.execute("PRAGMA table_info(tracks)")}
+        reopened.close()
+        assert ver == 51
+        assert "file_path" not in cols
+        assert album_id is None  # dangling FK nulled
+        assert fk == []
+
     def test_streaming_resync_preserves_user_edited_metadata(
         self, tmp_path: Path
     ) -> None:

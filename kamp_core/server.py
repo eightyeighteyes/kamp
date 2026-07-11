@@ -1510,7 +1510,7 @@ def create_app(
 
     @app.post("/api/v1/tracks/favorite")
     def set_track_favorite(req: FavoriteRequest) -> dict[str, Any]:
-        track = index.get_track_by_id(req.id) if req.id is not None else None
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         # Feed the resolved track's canonical uri to the (still file_path-keyed)
@@ -3421,7 +3421,7 @@ def create_app(
 
     @app.post("/api/v1/player/queue/add")
     def queue_add(req: AddToQueueRequest) -> dict[str, Any]:
-        track = index.get_track_by_id(req.id) if req.id is not None else None
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         was_stopped = queue.current() is None
@@ -3437,7 +3437,7 @@ def create_app(
 
     @app.post("/api/v1/player/queue/play-next")
     def queue_play_next(req: AddToQueueRequest) -> dict[str, Any]:
-        track = index.get_track_by_id(req.id) if req.id is not None else None
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         was_stopped = queue.current() is None
@@ -3453,7 +3453,7 @@ def create_app(
 
     @app.post("/api/v1/player/queue/insert")
     def queue_insert(req: InsertQueueRequest) -> dict[str, Any]:
-        track = index.get_track_by_id(req.id) if req.id is not None else None
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.insert_at(track, req.index)

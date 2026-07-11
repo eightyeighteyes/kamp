@@ -1116,6 +1116,40 @@ class TestQueueEndpoint:
         assert data["repeat"] == "off"
 
 
+class TestPlayFilesEndpoint:
+    """play-files replaces the queue with an explicit ordered list of track ids
+    (KAMP-552: id-native)."""
+
+    def test_play_files_loads_ids_in_order(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t1, t2 = _track(1), _track(2)
+        mock_index.get_track_by_id.side_effect = lambda i: {1: t1, 2: t2}.get(i)
+        mock_queue.current.return_value = None
+        resp = client.post(
+            "/api/v1/player/play-files", json={"ids": [2, 1], "start_index": 0}
+        )
+        assert resp.status_code == 200
+        mock_queue.load.assert_called_once_with([t2, t1], start_index=0)
+
+    def test_play_files_empty_ids_is_noop(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        resp = client.post("/api/v1/player/play-files", json={"ids": []})
+        assert resp.status_code == 200
+        mock_queue.load.assert_not_called()
+
+    def test_play_files_skips_unknown_ids(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t1 = _track(1)
+        mock_index.get_track_by_id.side_effect = lambda i: t1 if i == 1 else None
+        mock_queue.current.return_value = None
+        resp = client.post("/api/v1/player/play-files", json={"ids": [1, 999]})
+        assert resp.status_code == 200
+        mock_queue.load.assert_called_once_with([t1], start_index=0)
+
+
 class TestQueueMutationEndpoints:
     def test_add_to_queue_calls_queue_method(
         self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock

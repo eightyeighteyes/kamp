@@ -7683,15 +7683,22 @@ class TestAlbumInfoRemoteFields:
         album: str = "The Album",
         album_artist: str = "The Artist",
         source: str = "local",
+        file_path: "Path | None" = None,
+        track_number: int = 1,
     ) -> None:
+        # file_path defaults to tmp_path/name (a local file); pass a raw
+        # bandcamp:// path to seed a genuine stream track (its track_sources row
+        # is a 'stream', so its effective source is 'bandcamp'). track_number
+        # distinguishes tracks so a file + stream pair at the same number is not
+        # merged into one downloaded-and-streamable canonical (KAMP-532).
         track = Track(
-            file_path=tmp_path / name,
+            file_path=file_path if file_path is not None else tmp_path / name,
             title=name,
             artist=album_artist,
             album_artist=album_artist,
             album=album,
             release_date="2024",
-            track_number=1,
+            track_number=track_number,
             disc_number=1,
             ext="mp3",
             embedded_art=False,
@@ -7725,25 +7732,30 @@ class TestAlbumInfoRemoteFields:
 
     def test_mixed_album_has_mixed_source(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
-        self._insert_track(index, tmp_path, "t1.mp3", source="local")
-        self._insert_track(index, tmp_path, "bandcamp://999/2", source="bandcamp")
+        self._insert_track(index, tmp_path, "t1.mp3", source="local", track_number=1)
+        # Track 2 is a genuine stream-only track (raw bandcamp:// path -> a
+        # 'stream' source row); a different track_number keeps it distinct from
+        # track 1 rather than merging into one downloaded+streamable canonical.
+        self._insert_track(
+            index,
+            tmp_path,
+            "T2",
+            source="bandcamp",
+            file_path=Path("bandcamp://999/2"),
+            track_number=2,
+        )
         albums = index.albums()
         index.close()
 
         assert len(albums) == 1
-        # Post-collapse the badge is reconstructed from track_sources (KAMP-542).
         # A genuinely mixed album (one local-preferred + one stream-preferred
-        # track) reads 'local', not 'mixed' — the pre-existing quirk tracked in
-        # KAMP-546. The old formula returned 'mixed' here only because this
-        # fixture's "bandcamp" track has a mangled, non-bandcamp:// file_path
-        # (tmp_path / "bandcamp://999/2"), a state that cannot occur in production
-        # where a stream track's file_path IS its bandcamp:// uri.
-        assert albums[0].source == "local"
-        # has_remote_tracks is derived from the badge (album_source != 'local'), so
-        # it follows the same KAMP-546 quirk: a realistic mixed album reads
-        # 'local' -> has_remote_tracks False. This already matches production on
-        # main (where a realistic mixed album's badge is 'local').
-        assert albums[0].has_remote_tracks is False
+        # track) reads 'mixed' (KAMP-546): the album classifier now matches the
+        # playlist one — 'mixed' whenever the tracks disagree on preferred
+        # delivery kind. Reconstructed from track_sources (KAMP-542).
+        assert albums[0].source == "mixed"
+        # has_remote_tracks is derived from the badge (album_source != 'local'):
+        # a mixed album does have streamable tracks, so it is True.
+        assert albums[0].has_remote_tracks is True
 
     def test_in_bandcamp_collection_true(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -7941,8 +7953,10 @@ class TestAlbumInfoRemoteFields:
 
         assert len(albums) == 1
         assert albums[0].track_count == 2  # only local tracks, not 4
-        assert albums[0].source == "local"
-        assert albums[0].has_remote_tracks is False
+        # The album holds file-only and stream-only tracks, so it reads 'mixed'
+        # (KAMP-546); track_count still counts only the downloaded files.
+        assert albums[0].source == "mixed"
+        assert albums[0].has_remote_tracks is True
 
     # (KAMP-541) The old "tracks_for_album excludes bandcamp rows when a local
     # sibling exists" test is removed: the local-wins filter is gone because the
@@ -12172,10 +12186,10 @@ class TestStatsReadFromTrackStats:
 
 
 class TestAlbumSourceClassifier:
-    """The album `source` badge reads track_sources (not tracks.source) but is
-    byte-for-byte behavior-preserving vs the legacy formula, including the
-    post-collapse quirk where a mixed album reads 'local' and 'mixed' is
-    unreachable (tracked separately; preserved here per KAMP-542)."""
+    """The album `source` badge reads track_sources (not tracks.source) and
+    classifies a mixed album (tracks disagreeing on preferred delivery kind) as
+    'mixed', matching the playlist classifier (KAMP-546). All-downloaded reads
+    'local', all-stream reads 'bandcamp'."""
 
     def _album(self, index: "LibraryIndex", name: str, tracks: list) -> int:
         c = index._conn
@@ -12216,13 +12230,14 @@ class TestAlbumSourceClassifier:
                 ],
                 "bandcamp",
             ),
-            # Post-collapse quirk: a mixed album reads 'local' (preserved, not 'mixed').
+            # A mixed album (one file-only, one stream-only track) reads 'mixed'
+            # (KAMP-546): the tracks disagree on preferred delivery kind.
             "mixed": (
                 [
                     ("local", "/m/c1.mp3", ["file"]),
                     ("bandcamp", "bandcamp://C/2", ["stream"]),
                 ],
-                "local",
+                "mixed",
             ),
             "downloaded_and_streamable": (
                 [

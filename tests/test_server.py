@@ -568,7 +568,8 @@ class TestTopArtistsEndpoint:
 
 
 class TestMissingAlbumEndpoints:
-    """Endpoints that support file_path-based lookup for tracks without an album tag."""
+    """Endpoints that address a missing-album track (album tag empty) by its
+    canonical id — the id replaces the album-granularity file_path (KAMP-554)."""
 
     def test_albums_includes_missing_album_fields(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -581,151 +582,54 @@ class TestMissingAlbumEndpoints:
                 track_count=1,
                 has_art=False,
                 missing_album=True,
-                file_path="/music/lone.mp3",
+                missing_track_id=77,
             )
         ]
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
         album = c.get("/api/v1/albums").json()[0]
         assert album["missing_album"] is True
-        assert album["file_path"] == "/music/lone.mp3"
+        assert album["track_id"] == 77
+        assert "file_path" not in album
 
-    def test_tracks_endpoint_uses_file_path_when_provided(
+    def test_tracks_endpoint_uses_track_id_when_provided(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
         track = _track(1, album="")
-        mock_index.get_track_by_path.return_value = track
+        mock_index.get_track_by_id.return_value = track
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
-        data = c.get(
-            "/api/v1/tracks?album_artist=&album=&file_path=%2Fmusic%2F01.mp3"
-        ).json()
+        data = c.get("/api/v1/tracks?album_artist=&album=&track_id=42").json()
         assert len(data) == 1
-        # Server resolves the path before lookup; on Windows that prepends the
-        # current drive letter, so assert against the same resolved form.
-        mock_index.get_track_by_path.assert_called_once_with(
-            Path("/music/01.mp3").resolve()
-        )
+        mock_index.get_track_by_id.assert_called_once_with(42)
         mock_index.tracks_for_album.assert_not_called()
 
-    def test_album_art_endpoint_uses_file_path_when_provided(
+    def test_tracks_endpoint_unknown_track_id_returns_empty(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.get_track_by_id.return_value = None
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        resp = c.get("/api/v1/tracks?album_artist=&album=&track_id=999")
+        assert resp.status_code == 200
+        assert resp.json() == []
+        mock_index.tracks_for_album.assert_not_called()
+
+    def test_album_art_endpoint_uses_track_id_when_provided(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
         track = _track(1, album="")
         track.embedded_art = True
-        mock_index.get_track_by_path.return_value = track
+        mock_index.get_track_by_id.return_value = track
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
         with patch(
             "kamp_core.server.extract_art", return_value=(b"IMGDATA", "image/jpeg")
         ):
-            res = c.get(
-                "/api/v1/album-art?album_artist=&album=&file_path=%2Fmusic%2F01.mp3"
-            )
+            res = c.get("/api/v1/album-art?album_artist=&album=&track_id=42")
         assert res.status_code == 200
-        mock_index.get_track_by_path.assert_called_once_with(
-            Path("/music/01.mp3").resolve()
-        )
+        mock_index.get_track_by_id.assert_called_once_with(42)
         mock_index.tracks_for_album.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Path containment validation
-# ---------------------------------------------------------------------------
-
-
-class TestPathContainmentValidation:
-    """file_path parameters must resolve within the configured library directory."""
-
-    def _client(
-        self,
-        mock_index: MagicMock,
-        mock_engine: MagicMock,
-        mock_queue: MagicMock,
-        library_path: Path = Path("/music"),
-    ) -> TestClient:
-        app = create_app(
-            index=mock_index,
-            engine=mock_engine,
-            queue=mock_queue,
-            library_path=library_path,
-        )
-        return TestClient(app)
-
-    def test_tracks_rejects_path_outside_library(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.get("/api/v1/tracks?album_artist=&album=&file_path=/etc/passwd")
-        assert resp.status_code == 400
-        mock_index.get_track_by_path.assert_not_called()
-
-    def test_tracks_rejects_traversal_path(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.get(
-            "/api/v1/tracks?album_artist=&album=&file_path=/music/../etc/passwd"
-        )
-        assert resp.status_code == 400
-
-    def test_tracks_accepts_valid_library_path(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        mock_index.get_track_by_path.return_value = _track(1)
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.get(
-            "/api/v1/tracks?album_artist=&album=&file_path=/music/artist/01.mp3"
-        )
-        assert resp.status_code == 200
-
-    def test_album_art_rejects_path_outside_library(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.get("/api/v1/album-art?album_artist=&album=&file_path=/etc/passwd")
-        assert resp.status_code == 400
-        mock_index.get_track_by_path.assert_not_called()
-
-    def test_play_rejects_path_outside_library(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.post(
-            "/api/v1/player/play",
-            json={"file_path": "/etc/passwd", "album_artist": "", "album": ""},
-        )
-        assert resp.status_code == 400
-        mock_index.get_track_by_path.assert_not_called()
-
-    def test_queue_add_album_rejects_path_outside_library(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.post(
-            "/api/v1/player/queue/add-album",
-            json={"file_path": "/etc/passwd", "album_artist": "", "album": ""},
-        )
-        assert resp.status_code == 400
-
-    def test_queue_play_album_next_rejects_path_outside_library(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.post(
-            "/api/v1/player/queue/play-album-next",
-            json={"file_path": "/etc/passwd", "album_artist": "", "album": ""},
-        )
-        assert resp.status_code == 400
-
-    def test_no_validation_when_library_path_not_configured(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        mock_index.get_track_by_path.return_value = _track(1)
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        c = TestClient(app)
-        resp = c.get("/api/v1/tracks?album_artist=&album=&file_path=/music/01.mp3")
-        assert resp.status_code == 200
 
 
 class TestTracksForAlbumEndpoint:
@@ -1317,6 +1221,60 @@ class TestAlbumQueueEndpoints:
             json={"album_artist": "X", "album": "Y"},
         )
         assert resp.status_code == 404
+
+    def test_add_album_resolves_missing_album_by_id(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        # KAMP-554: a missing-album card queues its single track by canonical id.
+        t = _track(1, album="")
+        mock_index.get_track_by_id.return_value = t
+        resp = client.post(
+            "/api/v1/player/queue/add-album",
+            json={"album_artist": "Artist", "album": "", "id": 8},
+        )
+        assert resp.status_code == 200
+        mock_index.get_track_by_id.assert_called_once_with(8)
+        mock_index.tracks_for_album.assert_not_called()
+        mock_queue.add_album_to_queue.assert_called_once_with([t])
+
+    def test_play_album_next_resolves_missing_album_by_id(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        # KAMP-554: adds the id branch play-album-next previously lacked (KAMP-537).
+        t = _track(1, album="")
+        mock_index.get_track_by_id.return_value = t
+        resp = client.post(
+            "/api/v1/player/queue/play-album-next",
+            json={"album_artist": "Artist", "album": "", "id": 9},
+        )
+        assert resp.status_code == 200
+        mock_index.get_track_by_id.assert_called_once_with(9)
+        mock_index.tracks_for_album.assert_not_called()
+        mock_queue.play_album_next.assert_called_once_with([t])
+
+    def test_play_album_next_404_for_unknown_id(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.get_track_by_id.return_value = None
+        resp = client.post(
+            "/api/v1/player/queue/play-album-next",
+            json={"album_artist": "Artist", "album": "", "id": 999},
+        )
+        assert resp.status_code == 404
+
+    def test_insert_album_resolves_missing_album_by_id(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t = _track(1, album="")
+        mock_index.get_track_by_id.return_value = t
+        resp = client.post(
+            "/api/v1/player/queue/insert-album",
+            json={"album_artist": "Artist", "album": "", "index": 1, "id": 10},
+        )
+        assert resp.status_code == 200
+        mock_index.get_track_by_id.assert_called_once_with(10)
+        mock_index.tracks_for_album.assert_not_called()
+        mock_queue.insert_album_at.assert_called_once_with([t], 1)
 
     def test_insert_album_calls_queue_method(
         self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
@@ -2121,12 +2079,14 @@ class TestApiIdContract:
         assert {"id", "sources"} <= set(PlaylistTrackOut.model_fields)
         assert "file_path" not in PlaylistTrackOut.model_fields
 
-    def test_album_out_exposes_missing_track_id(self) -> None:
+    def test_album_out_addresses_missing_album_by_track_id(self) -> None:
         from kamp_core.server import AlbumOut
 
-        assert {"track_id", "file_path", "missing_album"} <= set(AlbumOut.model_fields)
+        # KAMP-554: a missing-album card is addressed by track_id; file_path is gone.
+        assert {"track_id", "missing_album"} <= set(AlbumOut.model_fields)
+        assert "file_path" not in AlbumOut.model_fields
 
-    def test_file_path_carrying_out_shapes_are_the_539_checklist(self) -> None:
+    def test_no_out_shape_carries_file_path(self) -> None:
         import inspect
 
         from pydantic import BaseModel
@@ -2141,10 +2101,9 @@ class TestApiIdContract:
             and name.endswith("Out")
             and "file_path" in obj.model_fields
         }
-        # KAMP-552 deletes file_path from the track shapes (TrackOut/PlaylistTrackOut)
-        # and the track-keyed request bodies. Only AlbumOut retains it — the
-        # album-granularity/missing-album key owned by KAMP-554.
-        assert carriers == {"AlbumOut"}
+        # KAMP-552 deleted file_path from the track shapes; KAMP-554 removed the
+        # last carrier (AlbumOut's missing-album key). No Out shape carries it now.
+        assert carriers == set()
 
 
 class TestDualAcceptId:
@@ -4603,12 +4562,9 @@ class TestApplyLocalAlbumArt:
         mock_index.mark_album_art_embedded.assert_called_once()
 
 
-class TestRemoteUriEndpointBypass:
-    """Remote track URIs bypass _validate_library_path in the album-play endpoint
-    (KAMP-554's file_path surface; the track-granularity queue/favorite endpoints
-    are id-only since KAMP-552)."""
-
-    _REMOTE_URI = "bandcamp://123456/1"
+class TestRemoteMissingAlbumById:
+    """A remote (bandcamp) missing-album track is played by its canonical id — no
+    path/uri is sent by the client any more (KAMP-554)."""
 
     def _remote_track(self) -> Track:
         return Track(
@@ -4616,7 +4572,7 @@ class TestRemoteUriEndpointBypass:
             title="Remote Track 1",
             artist="Artist",
             album_artist="Artist",
-            album="Album",
+            album="",
             release_date="2025",
             track_number=1,
             disc_number=1,
@@ -4627,27 +4583,24 @@ class TestRemoteUriEndpointBypass:
             source="bandcamp",
             stream_url="https://cdn.bcbits.com/stream/t.mp3",
             stream_url_expires_at=9999999999.0,
+            id=55,
         )
 
-    def test_play_with_remote_uri_does_not_raise_400(
+    def test_play_remote_missing_album_via_id(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
         remote = self._remote_track()
-        mock_index.get_track_by_path.return_value = remote
+        mock_index.get_track_by_id.return_value = remote
+        mock_index.preferred_source.return_value = None  # use the track's stream fields
         mock_queue.current.return_value = remote
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
         res = c.post(
             "/api/v1/player/play",
-            json={
-                "album_artist": "Artist",
-                "album": "Album",
-                "file_path": self._REMOTE_URI,
-                "track_index": 0,
-            },
+            json={"album_artist": "Artist", "album": "", "id": 55, "track_index": 0},
         )
         assert res.status_code == 200
-        mock_index.get_track_by_path.assert_called_with(self._REMOTE_URI)
+        mock_index.get_track_by_id.assert_called_with(55)
 
 
 class TestResolvePlaybackRemote:
@@ -5218,16 +5171,34 @@ class TestArtEndpointRemoteGuards:
 class TestArtEndpointRemoteAlbums:
     """GET /api/v1/album-art proxies and caches art for remote (bandcamp:) albums.
 
-    Tests use the single-slash URI form ('bandcamp:/sale_id/track') because
-    that is what the UI sends: str(track.file_path) where file_path is a Path,
-    and Path('bandcamp://...') on POSIX normalises the double-slash to single.
+    KAMP-554: the client addresses a missing-album card by track_id; the endpoint
+    resolves the track and, for a remote track, falls through to the remote-proxy
+    tail which parses the sale_item_id from the resolved track's derived uri.
     """
 
     _SALE_ID = "123456"
     _TRALBUM_ID = "987654321"
-    # Single-slash: what the UI actually sends after Path normalisation on POSIX.
-    _FILE_PATH = f"bandcamp:/{_SALE_ID}/1"
     _JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 20
+
+    def _remote_track(self, uri: str = f"bandcamp://{_SALE_ID}/1") -> Track:
+        # embedded_art=False so local-art lookup yields nothing and the endpoint
+        # falls through to the remote-proxy tail. album="" -> a missing-album card.
+        return Track(
+            file_path=Path(uri),
+            title="Track One",
+            artist="Artist",
+            album_artist="Artist",
+            album="",
+            release_date="2024",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            id=1,
+        )
 
     def _collection_item(self) -> dict[str, Any]:
         return {
@@ -5266,12 +5237,13 @@ class TestArtEndpointRemoteAlbums:
         cache_dir = tmp_path / "art_cache"
         cache_dir.mkdir()
         (cache_dir / f"{self._TRALBUM_ID}.jpg").write_bytes(self._JPEG)
+        mock_index.get_track_by_id.return_value = self._remote_track()
         mock_index.get_collection_item.return_value = self._collection_item()
 
         c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
         res = c.get(
             "/api/v1/album-art",
-            params={"album_artist": "A", "album": "B", "file_path": self._FILE_PATH},
+            params={"album_artist": "A", "album": "B", "track_id": 1},
         )
 
         assert res.status_code == 200
@@ -5287,29 +5259,18 @@ class TestArtEndpointRemoteAlbums:
     ) -> None:
         """On cache miss, art is fetched via fetch_album_art_bytes and cached to disk."""
         cache_dir = tmp_path / "art_cache"
+        mock_index.get_track_by_id.return_value = self._remote_track()
         mock_index.get_collection_item.return_value = self._collection_item()
 
         c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
 
         with patch(
-            (
-                "kamp_core.server.get_album_art.__wrapped__"
-                if hasattr(create_app, "__wrapped__")
-                else "kamp_daemon.bandcamp.fetch_album_art_bytes"
-            ),
-            return_value=self._JPEG,
+            "kamp_daemon.bandcamp.fetch_album_art_bytes", return_value=self._JPEG
         ):
-            with patch(
-                "kamp_daemon.bandcamp.fetch_album_art_bytes", return_value=self._JPEG
-            ):
-                res = c.get(
-                    "/api/v1/album-art",
-                    params={
-                        "album_artist": "A",
-                        "album": "B",
-                        "file_path": self._FILE_PATH,
-                    },
-                )
+            res = c.get(
+                "/api/v1/album-art",
+                params={"album_artist": "A", "album": "B", "track_id": 1},
+            )
 
         assert res.status_code == 200
         assert res.content == self._JPEG
@@ -5325,13 +5286,14 @@ class TestArtEndpointRemoteAlbums:
         tmp_path: Path,
     ) -> None:
         """If the sale_item_id is not in bandcamp_collection, return 404."""
+        mock_index.get_track_by_id.return_value = self._remote_track()
         mock_index.get_collection_item.return_value = None
         c = self._make_app(
             mock_index, mock_engine, mock_queue, art_cache_dir=tmp_path / "art_cache"
         )
         res = c.get(
             "/api/v1/album-art",
-            params={"album_artist": "A", "album": "B", "file_path": self._FILE_PATH},
+            params={"album_artist": "A", "album": "B", "track_id": 1},
         )
         assert res.status_code == 404
 
@@ -5343,6 +5305,7 @@ class TestArtEndpointRemoteAlbums:
         tmp_path: Path,
     ) -> None:
         """If get_bandcamp_session returns None, return 404."""
+        mock_index.get_track_by_id.return_value = self._remote_track()
         mock_index.get_collection_item.return_value = self._collection_item()
         app = create_app(
             index=mock_index,
@@ -5354,7 +5317,7 @@ class TestArtEndpointRemoteAlbums:
         c = TestClient(app)
         res = c.get(
             "/api/v1/album-art",
-            params={"album_artist": "A", "album": "B", "file_path": self._FILE_PATH},
+            params={"album_artist": "A", "album": "B", "track_id": 1},
         )
         assert res.status_code == 404
 
@@ -5366,6 +5329,7 @@ class TestArtEndpointRemoteAlbums:
         tmp_path: Path,
     ) -> None:
         """If fetch_album_art_bytes returns None, return 404."""
+        mock_index.get_track_by_id.return_value = self._remote_track()
         mock_index.get_collection_item.return_value = self._collection_item()
         c = self._make_app(
             mock_index, mock_engine, mock_queue, art_cache_dir=tmp_path / "art_cache"
@@ -5373,11 +5337,7 @@ class TestArtEndpointRemoteAlbums:
         with patch("kamp_daemon.bandcamp.fetch_album_art_bytes", return_value=None):
             res = c.get(
                 "/api/v1/album-art",
-                params={
-                    "album_artist": "A",
-                    "album": "B",
-                    "file_path": self._FILE_PATH,
-                },
+                params={"album_artist": "A", "album": "B", "track_id": 1},
             )
         assert res.status_code == 404
 
@@ -5388,6 +5348,7 @@ class TestArtEndpointRemoteAlbums:
         mock_queue: MagicMock,
     ) -> None:
         """If art_cache_dir is None in make_app, remote art returns 404."""
+        mock_index.get_track_by_id.return_value = self._remote_track()
         mock_index.get_collection_item.return_value = self._collection_item()
         app = create_app(
             index=mock_index,
@@ -5399,7 +5360,7 @@ class TestArtEndpointRemoteAlbums:
         c = TestClient(app)
         res = c.get(
             "/api/v1/album-art",
-            params={"album_artist": "A", "album": "B", "file_path": self._FILE_PATH},
+            params={"album_artist": "A", "album": "B", "track_id": 1},
         )
         assert res.status_code == 404
 
@@ -5410,10 +5371,10 @@ class TestArtEndpointRemoteAlbums:
         mock_queue: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Art request via album_artist+album (no file_path) works for remote albums.
+        """Art request via album_artist+album (no track_id) works for remote albums.
 
-        The UI sends album_artist and album without file_path for normal albums
-        (file_path is only populated for missing-album tracks). The endpoint must
+        The UI sends album_artist and album without track_id for normal albums
+        (track_id is only populated for missing-album cards). The endpoint must
         fall through to the remote-art branch after local art lookup returns nothing.
         """
         cache_dir = tmp_path / "art_cache"
@@ -5439,7 +5400,7 @@ class TestArtEndpointRemoteAlbums:
         mock_index.get_collection_item.return_value = self._collection_item()
 
         c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
-        # No file_path — this is the real request the UI sends for normal albums.
+        # No track_id — this is the real request the UI sends for normal albums.
         res = c.get(
             "/api/v1/album-art",
             params={"album_artist": "Artist", "album": "Album"},
@@ -5448,14 +5409,14 @@ class TestArtEndpointRemoteAlbums:
         assert res.status_code == 200
         assert res.content == self._JPEG
 
-    def test_windows_backslash_path_serves_art(
+    def test_windows_backslash_uri_serves_art(
         self,
         mock_index: MagicMock,
         mock_engine: MagicMock,
         mock_queue: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Windows: Path('bandcamp://sale_id/1') normalises to bandcamp:\\sale_id\\1.
+        """Windows: a resolved track's derived uri is bandcamp:\\sale_id\\1.
 
         _remote_art_response must strip backslashes as well as forward slashes
         so the sale_item_id is parsed correctly and art is served.
@@ -5463,14 +5424,16 @@ class TestArtEndpointRemoteAlbums:
         cache_dir = tmp_path / "art_cache"
         cache_dir.mkdir()
         (cache_dir / f"{self._TRALBUM_ID}.jpg").write_bytes(self._JPEG)
+        # Windows-normalised uri: double backslash becomes the separator.
+        mock_index.get_track_by_id.return_value = self._remote_track(
+            uri=f"bandcamp:\\\\{self._SALE_ID}\\1"
+        )
         mock_index.get_collection_item.return_value = self._collection_item()
 
         c = self._make_app(mock_index, mock_engine, mock_queue, art_cache_dir=cache_dir)
-        # Windows-normalised path: double backslash becomes the URI separator.
-        windows_path = f"bandcamp:\\\\{self._SALE_ID}\\1"
         res = c.get(
             "/api/v1/album-art",
-            params={"album_artist": "A", "album": "B", "file_path": windows_path},
+            params={"album_artist": "A", "album": "B", "track_id": 1},
         )
 
         assert res.status_code == 200

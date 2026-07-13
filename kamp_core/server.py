@@ -319,11 +319,9 @@ class AlbumOut(BaseModel):
     track_count: int
     has_art: bool
     missing_album: bool = False
-    # Non-empty only when missing_album=True; used as the unique lookup key
-    # instead of (album_artist, album) for tracks without an album tag.
-    file_path: str = ""
-    # KAMP-537: for a missing-album card, the canonical id of its single track —
-    # the stable key to use instead of file_path. None for real albums.
+    # KAMP-554: a missing-album card is always exactly one track (album tag empty);
+    # its canonical id is the stable lookup key instead of (album_artist, album).
+    # None for real albums.
     track_id: int | None = None
     # MAX(file_mtime) across the album's tracks — appended to art URLs as ?v=
     # so the browser caches images by URL and only re-fetches when files change.
@@ -370,8 +368,9 @@ class PlayRequest(BaseModel):
     album_artist: str
     album: str
     track_index: int = 0
-    file_path: str = ""  # non-empty for missing-album tracks
-    id: int | None = None  # KAMP-537: missing-album track id, preferred over file_path
+    # KAMP-554: a missing-album track is addressed by its canonical id; real albums
+    # leave id=None and resolve by (album_artist, album).
+    id: int | None = None
 
 
 class PlayPlaylistRequest(BaseModel):
@@ -496,16 +495,16 @@ class InsertQueueRequest(BaseModel):
 class AlbumQueueRequest(BaseModel):
     album_artist: str
     album: str
-    file_path: str = ""  # non-empty for missing-album tracks
-    id: int | None = None  # KAMP-537: missing-album track id, preferred over file_path
+    # KAMP-554: missing-album track id; real albums leave id=None.
+    id: int | None = None
 
 
 class InsertAlbumQueueRequest(BaseModel):
     album_artist: str
     album: str
     index: int
-    file_path: str = ""  # non-empty for missing-album tracks
-    id: int | None = None  # KAMP-537: missing-album track id, preferred over file_path
+    # KAMP-554: missing-album track id; real albums leave id=None.
+    id: int | None = None
 
 
 class RemoveFromQueueRequest(BaseModel):
@@ -810,32 +809,6 @@ def _scrub_cover_art(directory: Path) -> None:
                     pass
     except OSError:
         pass
-
-
-def _validate_library_path(file_path: str, library_path: Path | None) -> Path:
-    """Resolve *file_path* and verify it lies within *library_path*.
-
-    Raises HTTP 400 when a library_path is configured and the resolved path
-    falls outside it — preventing path-traversal attacks from reaching any
-    future code that uses the caller-supplied path directly.
-
-    Remote track URIs (bandcamp://) are rejected here; remote tracks are only
-    reachable through the queue/album flow, not by direct file_path reference.
-    """
-    if file_path.startswith("bandcamp:"):
-        raise HTTPException(
-            status_code=400, detail="Remote tracks cannot be addressed by path"
-        )
-    p = Path(file_path).resolve()
-    if library_path is not None and not p.is_relative_to(library_path.resolve()):
-        raise HTTPException(status_code=400, detail="Path outside library directory")
-    return p
-
-
-def _is_remote_uri(s: str) -> bool:
-    """True for scheme-prefixed remote URIs (bandcamp://, etc.) that must bypass
-    library-path validation."""
-    return "://" in s or s.startswith("bandcamp:")
 
 
 def _tracks_out(index: LibraryIndex, tracks: "list[Track]") -> list[TrackOut]:
@@ -1289,7 +1262,6 @@ def create_app(
                 track_count=a.track_count,
                 has_art=a.has_art,
                 missing_album=a.missing_album,
-                file_path=a.file_path,
                 track_id=a.missing_track_id,
                 art_version=a.art_version,
                 added_at=a.added_at,
@@ -1328,15 +1300,14 @@ def create_app(
 
     @app.get("/api/v1/tracks", response_model=list[TrackOut])
     def get_tracks(
-        album_artist: str, album: str, file_path: str = ""
+        album_artist: str, album: str, track_id: int | None = None
     ) -> list[TrackOut]:
         # Query parameters instead of path segments — artist/album names may
         # contain slashes (e.g. "AC/DC") which would break URL path routing.
-        # file_path is used for missing-album tracks where (album_artist, album)
-        # is not a unique key; when present it takes precedence.
-        if file_path:
-            p = _validate_library_path(file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
+        # track_id addresses a missing-album track (album tag empty) where
+        # (album_artist, album) is not a unique key; when present it takes precedence.
+        if track_id is not None:
+            track = index.get_track_by_id(track_id)
             return [_track_out(index, track)] if track else []
         return _tracks_out(index, index.tracks_for_album(album_artist, album))
 
@@ -2096,7 +2067,7 @@ def create_app(
             track_count=result.track_count,
             has_art=result.has_art,
             missing_album=result.missing_album,
-            file_path=result.file_path,
+            track_id=result.missing_track_id,
             art_version=result.art_version,
             added_at=result.added_at,
             last_played_at=result.last_played_at,
@@ -2384,7 +2355,6 @@ def create_app(
                     track_count=a.track_count,
                     has_art=a.has_art,
                     missing_album=a.missing_album,
-                    file_path=a.file_path,
                     track_id=a.missing_track_id,
                     art_version=a.art_version,
                     added_at=a.added_at,
@@ -2515,7 +2485,6 @@ def create_app(
                     track_count=a.track_count,
                     has_art=a.has_art,
                     missing_album=a.missing_album,
-                    file_path=a.file_path,
                     track_id=a.missing_track_id,
                     art_version=a.art_version,
                     added_at=a.added_at,
@@ -2536,7 +2505,7 @@ def create_app(
 
     @app.get("/api/v1/album-art")
     def get_album_art(
-        album_artist: str, album: str, file_path: str = "", v: str = ""
+        album_artist: str, album: str, track_id: int | None = None, v: str = ""
     ) -> Response:
         from kamp_daemon.artwork import read_cover_file  # noqa: PLC0415
 
@@ -2589,16 +2558,11 @@ def create_app(
                 headers={"Cache-Control": remote_cache_ctrl},
             )
 
-        # Remote albums (bandcamp: URIs) are served via the art proxy cache.
-        # Path() on POSIX collapses bandcamp:// → bandcamp:/ so match on the
-        # scheme prefix without assuming a specific number of slashes.
-        if file_path.startswith("bandcamp:"):
-            return _remote_art_response(file_path, cache_control)
-
-        # file_path overrides (album_artist, album) for missing-album tracks.
-        if file_path:
-            p = _validate_library_path(file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
+        # track_id addresses a single missing-album track (album tag empty), where
+        # (album_artist, album) is not unique. Remote (bandcamp:) tracks resolved
+        # this way fall through to the remote-proxy tail below via their derived uri.
+        if track_id is not None:
+            track = index.get_track_by_id(track_id)
             tracks = [track] if track else []
         else:
             tracks = index.tracks_for_album(album_artist, album)
@@ -2640,9 +2604,10 @@ def create_app(
         if resp is not None:
             return resp
 
-        # Local art not found — if any track is remote, try the proxy cache.
-        # album.file_path is empty for regular albums, so the bandcamp: check
-        # above never fires; use the first remote track's file_path instead.
+        # Local art not found — if any resolved track is remote, try the proxy
+        # cache, parsing the sale_item_id from that track's derived bandcamp: uri.
+        # This covers both a remote missing-album card (resolved by track_id above)
+        # and a normal remote album (resolved by album key).
         remote_tracks = [t for t in tracks if t.is_remote]
         if remote_tracks:
             return _remote_art_response(str(remote_tracks[0].file_path), cache_control)
@@ -2665,13 +2630,13 @@ def create_app(
         # Collect the set of (album_artist, album) keys that appear in FTS results,
         # then filter the pre-sorted album list so the response respects sort order.
         # Missing-album tracks have album="" in the DB, so also match them by
-        # file_path since their AlbumInfo.album is the display title, not "".
+        # canonical id since their AlbumInfo.album is the display title, not "".
         # Keys are lower-cased so the match honours the NOCASE collation on
         # albums.album_artist/album (KAMP-545): an album row whose casing diverges
         # from its tracks' casing (e.g. row "SUNN O)))" vs tracks "Sunn O)))") would
         # otherwise be dropped from the album cards even though its tracks matched.
         fts_keys = {(t.album_artist.lower(), t.album.lower()) for t in fts_tracks}
-        fts_paths = {str(t.file_path) for t in fts_tracks if not t.album}
+        fts_ids = {t.id for t in fts_tracks if not t.album}
         albums = [
             AlbumOut(
                 album_artist=a.album_artist,
@@ -2680,7 +2645,6 @@ def create_app(
                 track_count=a.track_count,
                 has_art=a.has_art,
                 missing_album=a.missing_album,
-                file_path=a.file_path,
                 track_id=a.missing_track_id,
                 art_version=a.art_version,
                 added_at=a.added_at,
@@ -2699,7 +2663,7 @@ def create_app(
             )
             for a in index.albums(sort=sort)
             if (a.album_artist.lower(), a.album.lower()) in fts_keys
-            or (a.missing_album and a.file_path in fts_paths)
+            or (a.missing_album and a.missing_track_id in fts_ids)
         ]
         albums.sort(key=lambda a: not a.favorite)
 
@@ -3247,15 +3211,8 @@ def create_app(
     def play(req: PlayRequest) -> dict[str, Any]:
         old_current = queue.current()
         old_lookahead = queue.peek_next()
-        if req.id is not None:  # KAMP-537: missing-album track id, preferred
+        if req.id is not None:  # KAMP-554: missing-album track addressed by id
             track = index.get_track_by_id(req.id)
-            tracks = [track] if track else []
-        elif req.file_path and _is_remote_uri(req.file_path):
-            track = index.get_track_by_path(req.file_path)
-            tracks = [track] if track else []
-        elif req.file_path:
-            p = _validate_library_path(req.file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
             tracks = [track] if track else []
         else:
             all_tracks = index.tracks_for_album(req.album_artist, req.album)
@@ -3271,21 +3228,15 @@ def create_app(
                     album_artist=req.album_artist,
                     album=req.album,
                     track_index=next(
-                        (
-                            i
-                            for i, t in enumerate(tracks)
-                            if t.file_path == requested.file_path
-                        ),
+                        (i for i, t in enumerate(tracks) if t.id == requested.id),
                         0,
                     ),
-                    file_path=req.file_path,
                 )
             else:
                 req = PlayRequest(
                     album_artist=req.album_artist,
                     album=req.album,
                     track_index=0,
-                    file_path=req.file_path,
                 )
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
@@ -3462,12 +3413,8 @@ def create_app(
 
     @app.post("/api/v1/player/queue/add-album")
     def queue_add_album(req: AlbumQueueRequest) -> dict[str, Any]:
-        if req.id is not None:  # KAMP-537: missing-album track id, preferred
+        if req.id is not None:  # KAMP-554: missing-album track addressed by id
             track = index.get_track_by_id(req.id)
-            tracks = [track] if track else []
-        elif req.file_path:
-            p = _validate_library_path(req.file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
             tracks = [track] if track else []
         else:
             tracks = [
@@ -3490,9 +3437,8 @@ def create_app(
 
     @app.post("/api/v1/player/queue/play-album-next")
     def queue_play_album_next(req: AlbumQueueRequest) -> dict[str, Any]:
-        if req.file_path:
-            p = _validate_library_path(req.file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
+        if req.id is not None:  # KAMP-554: missing-album track addressed by id
+            track = index.get_track_by_id(req.id)
             tracks = [track] if track else []
         else:
             tracks = [
@@ -3515,11 +3461,8 @@ def create_app(
 
     @app.post("/api/v1/player/queue/insert-album")
     def queue_insert_album(req: InsertAlbumQueueRequest) -> dict[str, Any]:
-        if req.id is not None:  # KAMP-537: missing-album track id, preferred
+        if req.id is not None:  # KAMP-554: missing-album track addressed by id
             track = index.get_track_by_id(req.id)
-            tracks = [track] if track else []
-        elif req.file_path:
-            track = index.get_track_by_path(Path(req.file_path))
             tracks = [track] if track else []
         else:
             tracks = [

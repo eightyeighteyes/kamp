@@ -51,7 +51,7 @@ export function TopAlbumsConfig(): React.JSX.Element {
 export function TopAlbumsModule({ displayStyle }: ModuleProps): React.JSX.Element {
   const count = useStore((s) => s.topAlbumsCount)
   // Re-fetch when the current track changes — play_count updates at EOF.
-  const currentFilePath = useStore((s) => s.player?.current_track?.file_path ?? null)
+  const currentTrackId = useStore((s) => s.player?.current_track?.id ?? null)
   const serverStatus = useStore((s) => s.serverStatus)
   const [albums, setAlbums] = useState<Album[]>([])
   const [loading, setLoading] = useState(true)
@@ -67,7 +67,7 @@ export function TopAlbumsModule({ displayStyle }: ModuleProps): React.JSX.Elemen
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [count, currentFilePath, serverStatus])
+  }, [count, currentTrackId, serverStatus])
 
   if (loading) {
     return (

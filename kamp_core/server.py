@@ -235,7 +235,6 @@ class TrackOut(BaseModel):
     release_date: str
     track_number: int
     disc_number: int
-    file_path: str
     ext: str
     embedded_art: bool
     mb_release_id: str
@@ -261,7 +260,6 @@ class TrackOut(BaseModel):
             release_date=t.release_date,
             track_number=t.track_number,
             disc_number=t.disc_number,
-            file_path=_canonical_track_uri(t.file_path),
             ext=t.ext,
             embedded_art=t.embedded_art,
             mb_release_id=t.mb_release_id,
@@ -382,10 +380,9 @@ class PlayPlaylistRequest(BaseModel):
 
 
 class PlayFilesRequest(BaseModel):
-    file_paths: list[str] = []
     start_index: int = 0
-    # KAMP-537: canonical ids, preferred over file_paths when non-empty.
-    ids: list[int] | None = None
+    # KAMP-552: canonical ids only.
+    ids: list[int] = []
 
 
 class SeekRequest(BaseModel):
@@ -455,9 +452,8 @@ _FORBIDDEN_LIBRARY_ROOTS: frozenset[Path] = frozenset(
 
 
 class FavoriteRequest(BaseModel):
-    file_path: str = ""
     favorite: bool
-    id: int | None = None  # KAMP-537: preferred over file_path when present
+    id: int  # KAMP-552: tracks are addressed by canonical id only
 
 
 class AlbumFavoriteRequest(BaseModel):
@@ -480,8 +476,7 @@ class QueueOut(BaseModel):
 
 
 class AddToQueueRequest(BaseModel):
-    file_path: str = ""
-    id: int | None = None  # KAMP-537: preferred over file_path when present
+    id: int  # KAMP-552: tracks are addressed by canonical id only
 
 
 class MoveQueueRequest(BaseModel):
@@ -494,9 +489,8 @@ class ReorderQueueRequest(BaseModel):
 
 
 class InsertQueueRequest(BaseModel):
-    file_path: str = ""
     index: int
-    id: int | None = None  # KAMP-537: preferred over file_path when present
+    id: int  # KAMP-552: tracks are addressed by canonical id only
 
 
 class AlbumQueueRequest(BaseModel):
@@ -682,7 +676,6 @@ class PlaylistTrackOut(BaseModel):
     playlist_track_id: int | None
     position: int
     id: int
-    file_path: str
     title: str
     artist: str
     album_artist: str
@@ -725,10 +718,9 @@ class CriteriaPreviewRequest(BaseModel):
 
 
 class AddTrackToPlaylistRequest(BaseModel):
-    file_path: str | None = None
     album_artist: str | None = None
     album: str | None = None
-    id: int | None = None  # KAMP-537: preferred over file_path when present
+    id: int | None = None  # KAMP-552: single track by canonical id
 
 
 class ReorderPlaylistRequest(BaseModel):
@@ -862,27 +854,6 @@ def _track_out(index: LibraryIndex, track: Track) -> TrackOut:
     return TrackOut.from_track(
         track, index.sources_for_track_ids([track.id]).get(track.id, [])
     )
-
-
-def _resolve_track(
-    index: LibraryIndex,
-    *,
-    track_id: int | None,
-    file_path: str,
-    library_path: Path | None,
-) -> Track | None:
-    """Dual-accept track resolution (KAMP-537): the canonical `id` wins when
-    present (even if file_path is also sent); otherwise fall back to the
-    file_path via the KAMP-541 source-uri bridge. Returns None (caller 404s) when
-    neither resolves. Both the file_path request fields and this fallback are
-    removed in KAMP-539."""
-    if track_id is not None:
-        return index.get_track_by_id(track_id)
-    if not file_path:
-        return None
-    if _is_remote_uri(file_path):
-        return index.get_track_by_path(file_path)
-    return index.get_track_by_path(_validate_library_path(file_path, library_path))
 
 
 def _validate_proxy_url(url: str) -> str:
@@ -1539,12 +1510,7 @@ def create_app(
 
     @app.post("/api/v1/tracks/favorite")
     def set_track_favorite(req: FavoriteRequest) -> dict[str, Any]:
-        track = _resolve_track(
-            index,
-            track_id=req.id,
-            file_path=req.file_path,
-            library_path=_state["library_path"],
-        )
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         # Feed the resolved track's canonical uri to the (still file_path-keyed)
@@ -3354,20 +3320,12 @@ def create_app(
 
     @app.post("/api/v1/player/play-files")
     def play_files(req: PlayFilesRequest) -> dict[str, Any]:
-        """Replace the queue with an explicit ordered list of file paths.
+        """Replace the queue with an explicit ordered list of track ids.
 
         Used when the client holds an ordered list (e.g. a sorted playlist
-        view) that differs from the stored playlist order.
+        view) that differs from the stored playlist order. KAMP-552: id-native.
         """
-        # KAMP-537: ids preferred over file_paths when provided.
-        if req.ids is not None:
-            tracks = [t for i in req.ids if (t := index.get_track_by_id(i)) is not None]
-        else:
-            tracks = [
-                t
-                for p in req.file_paths
-                if (t := index.get_track_by_path(p)) is not None
-            ]
+        tracks = [t for i in req.ids if (t := index.get_track_by_id(i)) is not None]
         if not tracks:
             return {"ok": True}
         old_current = queue.current()
@@ -3463,12 +3421,7 @@ def create_app(
 
     @app.post("/api/v1/player/queue/add")
     def queue_add(req: AddToQueueRequest) -> dict[str, Any]:
-        track = _resolve_track(
-            index,
-            track_id=req.id,
-            file_path=req.file_path,
-            library_path=_state["library_path"],
-        )
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         was_stopped = queue.current() is None
@@ -3484,12 +3437,7 @@ def create_app(
 
     @app.post("/api/v1/player/queue/play-next")
     def queue_play_next(req: AddToQueueRequest) -> dict[str, Any]:
-        track = _resolve_track(
-            index,
-            track_id=req.id,
-            file_path=req.file_path,
-            library_path=_state["library_path"],
-        )
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         was_stopped = queue.current() is None
@@ -3505,12 +3453,7 @@ def create_app(
 
     @app.post("/api/v1/player/queue/insert")
     def queue_insert(req: InsertQueueRequest) -> dict[str, Any]:
-        track = _resolve_track(
-            index,
-            track_id=req.id,
-            file_path=req.file_path,
-            library_path=_state["library_path"],
-        )
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.insert_at(track, req.index)
@@ -3867,22 +3810,20 @@ def create_app(
     ) -> dict[str, Any]:
         if index.get_playlist(playlist_id) is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
-        if req.id is not None:  # KAMP-537: id preferred over file_path
+        if req.id is not None:  # KAMP-552: single track by canonical id
             track = index.get_track_by_id(req.id)
             if track is None:
                 raise HTTPException(status_code=404, detail="Track not found")
             index.add_track_to_playlist(
                 playlist_id, _canonical_track_uri(track.file_path)
             )
-        elif req.file_path:
-            index.add_track_to_playlist(playlist_id, req.file_path)
         elif req.album_artist is not None and req.album is not None:
             tracks = index.tracks_for_album(req.album_artist, req.album)
             for t in tracks:
                 index.add_track_to_playlist(playlist_id, str(t.file_path))
         else:
             raise HTTPException(
-                status_code=400, detail="Provide file_path or album_artist+album"
+                status_code=400, detail="Provide id or album_artist+album"
             )
         return {"ok": True}
 

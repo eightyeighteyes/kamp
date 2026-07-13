@@ -679,17 +679,6 @@ class TestPathContainmentValidation:
         )
         assert resp.status_code == 200
 
-    def test_favorite_rejects_path_outside_library(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.post(
-            "/api/v1/tracks/favorite",
-            json={"file_path": "/etc/passwd", "favorite": True},
-        )
-        assert resp.status_code == 400
-        mock_index.get_track_by_path.assert_not_called()
-
     def test_album_art_rejects_path_outside_library(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
@@ -708,33 +697,6 @@ class TestPathContainmentValidation:
         )
         assert resp.status_code == 400
         mock_index.get_track_by_path.assert_not_called()
-
-    def test_queue_add_rejects_path_outside_library(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.post("/api/v1/player/queue/add", json={"file_path": "/etc/passwd"})
-        assert resp.status_code == 400
-        mock_index.get_track_by_path.assert_not_called()
-
-    def test_queue_play_next_rejects_path_outside_library(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.post(
-            "/api/v1/player/queue/play-next", json={"file_path": "/etc/passwd"}
-        )
-        assert resp.status_code == 400
-
-    def test_queue_insert_rejects_path_outside_library(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        c = self._client(mock_index, mock_engine, mock_queue)
-        resp = c.post(
-            "/api/v1/player/queue/insert",
-            json={"file_path": "/etc/passwd", "index": 0},
-        )
-        assert resp.status_code == 400
 
     def test_queue_add_album_rejects_path_outside_library(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -794,7 +756,6 @@ class TestTracksForAlbumEndpoint:
             "album",
             "track_number",
             "disc_number",
-            "file_path",
             "ext",
         }
 
@@ -1140,7 +1101,6 @@ class TestQueueEndpoint:
             "artist",
             "album_artist",
             "album",
-            "file_path",
             "ext",
         }
 
@@ -1156,45 +1116,71 @@ class TestQueueEndpoint:
         assert data["repeat"] == "off"
 
 
+class TestPlayFilesEndpoint:
+    """play-files replaces the queue with an explicit ordered list of track ids
+    (KAMP-552: id-native)."""
+
+    def test_play_files_loads_ids_in_order(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t1, t2 = _track(1), _track(2)
+        mock_index.get_track_by_id.side_effect = lambda i: {1: t1, 2: t2}.get(i)
+        mock_queue.current.return_value = None
+        resp = client.post(
+            "/api/v1/player/play-files", json={"ids": [2, 1], "start_index": 0}
+        )
+        assert resp.status_code == 200
+        mock_queue.load.assert_called_once_with([t2, t1], start_index=0)
+
+    def test_play_files_empty_ids_is_noop(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        resp = client.post("/api/v1/player/play-files", json={"ids": []})
+        assert resp.status_code == 200
+        mock_queue.load.assert_not_called()
+
+    def test_play_files_skips_unknown_ids(
+        self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        t1 = _track(1)
+        mock_index.get_track_by_id.side_effect = lambda i: t1 if i == 1 else None
+        mock_queue.current.return_value = None
+        resp = client.post("/api/v1/player/play-files", json={"ids": [1, 999]})
+        assert resp.status_code == 200
+        mock_queue.load.assert_called_once_with([t1], start_index=0)
+
+
 class TestQueueMutationEndpoints:
     def test_add_to_queue_calls_queue_method(
         self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
     ) -> None:
         t = _track(1)
-        mock_index.get_track_by_path.return_value = t
-        resp = client.post(
-            "/api/v1/player/queue/add", json={"file_path": str(t.file_path)}
-        )
+        mock_index.get_track_by_id.return_value = t
+        resp = client.post("/api/v1/player/queue/add", json={"id": 1})
         assert resp.status_code == 200
         mock_queue.add_to_queue.assert_called_once_with(t)
 
-    def test_add_to_queue_404_for_unknown_path(
+    def test_add_to_queue_404_for_unknown_id(
         self, client: TestClient, mock_index: MagicMock
     ) -> None:
-        mock_index.get_track_by_path.return_value = None
-        resp = client.post(
-            "/api/v1/player/queue/add", json={"file_path": "/no/such/file.mp3"}
-        )
+        mock_index.get_track_by_id.return_value = None
+        resp = client.post("/api/v1/player/queue/add", json={"id": 999})
         assert resp.status_code == 404
 
     def test_play_next_calls_queue_method(
         self, client: TestClient, mock_index: MagicMock, mock_queue: MagicMock
     ) -> None:
         t = _track(2)
-        mock_index.get_track_by_path.return_value = t
-        resp = client.post(
-            "/api/v1/player/queue/play-next", json={"file_path": str(t.file_path)}
-        )
+        mock_index.get_track_by_id.return_value = t
+        resp = client.post("/api/v1/player/queue/play-next", json={"id": 2})
         assert resp.status_code == 200
         mock_queue.play_next.assert_called_once_with(t)
 
-    def test_play_next_404_for_unknown_path(
+    def test_play_next_404_for_unknown_id(
         self, client: TestClient, mock_index: MagicMock
     ) -> None:
-        mock_index.get_track_by_path.return_value = None
-        resp = client.post(
-            "/api/v1/player/queue/play-next", json={"file_path": "/no/such/file.mp3"}
-        )
+        mock_index.get_track_by_id.return_value = None
+        resp = client.post("/api/v1/player/queue/play-next", json={"id": 999})
         assert resp.status_code == 404
 
     def test_move_queue_calls_queue_method(
@@ -1262,12 +1248,10 @@ class TestQueueMutationEndpoints:
         mock_engine: MagicMock,
     ) -> None:
         t = _track(1)
-        mock_index.get_track_by_path.return_value = t
+        mock_index.get_track_by_id.return_value = t
         # Three calls: was_stopped check, current after mutation, _state_snapshot in notify
         mock_queue.current.side_effect = [None, t, t]
-        resp = client.post(
-            "/api/v1/player/queue/add", json={"file_path": str(t.file_path)}
-        )
+        resp = client.post("/api/v1/player/queue/add", json={"id": 1})
         assert resp.status_code == 200
         mock_engine.play.assert_called_once_with(str(t.file_path))
         mock_engine.preload_next.assert_not_called()
@@ -1280,12 +1264,10 @@ class TestQueueMutationEndpoints:
         mock_engine: MagicMock,
     ) -> None:
         t = _track(2)
-        mock_index.get_track_by_path.return_value = t
+        mock_index.get_track_by_id.return_value = t
         # Three calls: was_stopped check, current after mutation, _state_snapshot in notify
         mock_queue.current.side_effect = [None, t, t]
-        resp = client.post(
-            "/api/v1/player/queue/play-next", json={"file_path": str(t.file_path)}
-        )
+        resp = client.post("/api/v1/player/queue/play-next", json={"id": 2})
         assert resp.status_code == 200
         mock_engine.play.assert_called_once_with(str(t.file_path))
         mock_engine.preload_next.assert_not_called()
@@ -2039,11 +2021,11 @@ class TestFavoriteEndpoint:
     ) -> None:
         track = _track(1)
         track.id = 42
-        mock_index.get_track_by_path.return_value = track
+        mock_index.get_track_by_id.return_value = track
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         resp = TestClient(app).post(
             "/api/v1/tracks/favorite",
-            json={"file_path": "/music/01.mp3", "favorite": True},
+            json={"id": 42, "favorite": True},
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
@@ -2059,11 +2041,11 @@ class TestFavoriteEndpoint:
     def test_set_favorite_returns_404_for_unknown_track(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
-        mock_index.get_track_by_path.return_value = None
+        mock_index.get_track_by_id.return_value = None
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         resp = TestClient(app).post(
             "/api/v1/tracks/favorite",
-            json={"file_path": "/music/ghost.mp3", "favorite": True},
+            json={"id": 999, "favorite": True},
         )
         assert resp.status_code == 404
 
@@ -2093,46 +2075,24 @@ class TestFavoriteEndpoint:
         assert "play_count" in track
         assert track["play_count"] == 0
 
-    def test_track_out_preserves_remote_uri_double_slash(self) -> None:
-        # Path("bandcamp://999/3") on POSIX collapses // to /.  TrackOut must
-        # reconstruct the canonical double-slash form so clients can round-trip
-        # the URI back to the server correctly.
-        t = _track(1)
-        t.file_path = Path("bandcamp://999/3")
-        out = TrackOut.from_track(t)
-        assert out.file_path == "bandcamp://999/3"
-
     def test_set_favorite_remote_track(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
-        remote_uri = "bandcamp://999/3"
         track = _track(1)
         track.id = 42
-        mock_index.get_track_by_path.return_value = track
+        track.file_path = Path("bandcamp://999/3")
+        mock_index.get_track_by_id.return_value = track
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         resp = TestClient(app).post(
             "/api/v1/tracks/favorite",
-            json={"file_path": remote_uri, "favorite": True},
+            json={"id": 42, "favorite": True},
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        # KAMP-537: DB write keys on the resolved track's canonical uri, not the
-        # request uri. KAMP-538/532: the queue is patched by canonical id.
-        mock_index.set_favorite.assert_called_once_with(
-            str(Path("/music/01.mp3")), True
-        )
+        # KAMP-552: DB write keys on the resolved track's canonical uri. KAMP-538/532:
+        # the queue is patched by canonical id.
+        mock_index.set_favorite.assert_called_once_with("bandcamp://999/3", True)
         mock_queue.update_favorite.assert_called_once_with(42, True)
-
-    def test_set_favorite_remote_track_returns_404_when_not_found(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        mock_index.get_track_by_path.return_value = None
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        resp = TestClient(app).post(
-            "/api/v1/tracks/favorite",
-            json={"file_path": "bandcamp://999/3", "favorite": True},
-        )
-        assert resp.status_code == 404
 
 
 class TestApiIdContract:
@@ -2154,8 +2114,12 @@ class TestApiIdContract:
     def test_track_shapes_carry_id_and_sources(self) -> None:
         from kamp_core.server import PlaylistTrackOut, TrackOut
 
-        assert {"id", "sources", "file_path"} <= set(TrackOut.model_fields)
-        assert {"id", "sources", "file_path"} <= set(PlaylistTrackOut.model_fields)
+        # KAMP-552: track shapes are id-native; file_path is gone (sources[].uri
+        # carries the delivery paths).
+        assert {"id", "sources"} <= set(TrackOut.model_fields)
+        assert "file_path" not in TrackOut.model_fields
+        assert {"id", "sources"} <= set(PlaylistTrackOut.model_fields)
+        assert "file_path" not in PlaylistTrackOut.model_fields
 
     def test_album_out_exposes_missing_track_id(self) -> None:
         from kamp_core.server import AlbumOut
@@ -2177,9 +2141,10 @@ class TestApiIdContract:
             and name.endswith("Out")
             and "file_path" in obj.model_fields
         }
-        # KAMP-539 deletes file_path from exactly these response shapes (plus the
-        # request bodies). Update this set — and 539 — together if it changes.
-        assert carriers == {"TrackOut", "PlaylistTrackOut", "AlbumOut"}
+        # KAMP-552 deletes file_path from the track shapes (TrackOut/PlaylistTrackOut)
+        # and the track-keyed request bodies. Only AlbumOut retains it — the
+        # album-granularity/missing-album key owned by KAMP-554.
+        assert carriers == {"AlbumOut"}
 
 
 class TestDualAcceptId:
@@ -2218,12 +2183,14 @@ class TestDualAcceptId:
         mock_index.get_track_by_id.assert_called_once_with(5)
         mock_index.get_track_by_path.assert_not_called()
 
-    def test_favorite_neither_id_nor_file_path_is_404(
+    def test_favorite_without_id_is_422(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
+        # KAMP-552: id is required now (no file_path fallback), so omitting it is a
+        # request-validation error, not a 404.
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         resp = TestClient(app).post("/api/v1/tracks/favorite", json={"favorite": True})
-        assert resp.status_code == 404
+        assert resp.status_code == 422
 
     def test_queue_add_by_id(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -4636,39 +4603,10 @@ class TestApplyLocalAlbumArt:
         mock_index.mark_album_art_embedded.assert_called_once()
 
 
-class TestValidateLibraryPathRemoteURI:
-    """Remote URIs bypass _validate_library_path in single-track queue endpoints."""
-
-    def test_bandcamp_double_slash_uri_bypasses_path_validation(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        """bandcamp:// URIs no longer get HTTP 400 from path validation — they
-        bypass it and return 404 when not found in the index."""
-        mock_index.get_track_by_path.return_value = None
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        c = TestClient(app)
-        response = c.post(
-            "/api/v1/player/queue/add",
-            json={"file_path": "bandcamp://380008227/3"},
-        )
-        assert response.status_code == 404
-
-    def test_bandcamp_single_slash_uri_bypasses_path_validation(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        """POSIX-normalised bandcamp:/ URIs also bypass validation."""
-        mock_index.get_track_by_path.return_value = None
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        c = TestClient(app)
-        response = c.post(
-            "/api/v1/player/queue/add",
-            json={"file_path": "bandcamp:/380008227/3"},
-        )
-        assert response.status_code == 404
-
-
 class TestRemoteUriEndpointBypass:
-    """Remote track URIs bypass _validate_library_path in single-track endpoints."""
+    """Remote track URIs bypass _validate_library_path in the album-play endpoint
+    (KAMP-554's file_path surface; the track-granularity queue/favorite endpoints
+    are id-only since KAMP-552)."""
 
     _REMOTE_URI = "bandcamp://123456/1"
 
@@ -4710,60 +4648,6 @@ class TestRemoteUriEndpointBypass:
         )
         assert res.status_code == 200
         mock_index.get_track_by_path.assert_called_with(self._REMOTE_URI)
-
-    def test_queue_add_remote_uri_adds_track(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        remote = self._remote_track()
-        mock_index.get_track_by_path.return_value = remote
-        mock_queue.current.return_value = None
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        c = TestClient(app)
-        res = c.post("/api/v1/player/queue/add", json={"file_path": self._REMOTE_URI})
-        assert res.status_code == 200
-        mock_index.get_track_by_path.assert_called_with(self._REMOTE_URI)
-
-    def test_queue_play_next_remote_uri(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        remote = self._remote_track()
-        mock_index.get_track_by_path.return_value = remote
-        mock_queue.current.return_value = remote
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        c = TestClient(app)
-        res = c.post(
-            "/api/v1/player/queue/play-next", json={"file_path": self._REMOTE_URI}
-        )
-        assert res.status_code == 200
-        mock_index.get_track_by_path.assert_called_with(self._REMOTE_URI)
-
-    def test_queue_insert_remote_uri(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        remote = self._remote_track()
-        mock_index.get_track_by_path.return_value = remote
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        c = TestClient(app)
-        res = c.post(
-            "/api/v1/player/queue/insert",
-            json={"file_path": self._REMOTE_URI, "index": 0},
-        )
-        assert res.status_code == 200
-        mock_index.get_track_by_path.assert_called_with(self._REMOTE_URI)
-
-    def test_favorite_remote_uri_does_not_raise_400(
-        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
-    ) -> None:
-        remote = self._remote_track()
-        mock_index.get_track_by_path.return_value = remote
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        c = TestClient(app)
-        res = c.post(
-            "/api/v1/tracks/favorite",
-            json={"file_path": self._REMOTE_URI, "favorite": True},
-        )
-        assert res.status_code == 200
-        mock_index.set_favorite.assert_called_once_with(self._REMOTE_URI, True)
 
 
 class TestResolvePlaybackRemote:
@@ -5096,7 +4980,7 @@ class TestResolvePlaybackUri:
             "INSERT INTO bandcamp_collection (sale_item_id, album_url)"
             " VALUES ('sid', 'https://a.bandcamp.com/album/x')"
         )
-        c.execute("INSERT INTO tracks (file_path) VALUES ('bandcamp://sid/2')")
+        c.execute("INSERT INTO tracks DEFAULT VALUES")  # KAMP-552: no file_path
         tid = c.execute("SELECT id FROM tracks").fetchone()[0]
         c.execute(
             "INSERT INTO track_sources (track_id, kind, provider, provider_item_id, uri,"
@@ -5908,15 +5792,19 @@ class TestPlaylistEndpoints:
         mock_index.get_playlist.return_value = None
         assert client.get("/api/v1/playlists/999/tracks").status_code == 404
 
-    def test_add_track_by_file_path(
-        self, client: TestClient, mock_index: MagicMock
-    ) -> None:
+    def test_add_track_by_id(self, client: TestClient, mock_index: MagicMock) -> None:
+        # KAMP-552: single tracks are added by canonical id; the endpoint resolves
+        # the track and keys the playlist write on its canonical uri.
+        track = _track(1)
+        track.file_path = Path("/lib/a.mp3")
         mock_index.get_playlist.return_value = _playlist(id=1)
-        resp = client.post(
-            "/api/v1/playlists/1/tracks", json={"file_path": "/lib/a.mp3"}
-        )
+        mock_index.get_track_by_id.return_value = track
+        resp = client.post("/api/v1/playlists/1/tracks", json={"id": 1})
         assert resp.status_code == 200
-        mock_index.add_track_to_playlist.assert_called_once_with(1, "/lib/a.mp3")
+        # str(Path) so the expected separator matches the platform (Windows: \\).
+        mock_index.add_track_to_playlist.assert_called_once_with(
+            1, str(track.file_path)
+        )
 
     def test_add_album_tracks(self, client: TestClient, mock_index: MagicMock) -> None:
         from kamp_core.library import Track

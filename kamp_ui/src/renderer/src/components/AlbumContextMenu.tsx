@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
-import { getTracksForAlbum, downloadAlbum, getPlaylistTracks } from '../api/client'
+import { getTracksForAlbum, downloadAlbum, getPlaylistTracks, trackUri } from '../api/client'
 import { RemoveFromQueueIcon } from './TransportIcons'
 import type { Album } from '../api/client'
 import { ContextMenu } from './ContextMenu'
@@ -199,11 +199,9 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           {album.source !== 'local' && (
             <button
               className="track-context-menu-item track-context-menu-item--action"
-              onClick={async () => {
-                const tracks = await getTracksForAlbum(album.album_artist, album.album)
-                const saleItemId =
-                  tracks[0]?.file_path.split('bandcamp:')[1]?.replace(/^\/+/, '').split('/')[0] ??
-                  null
+              onClick={() => {
+                // KAMP-552: sale_item_id is on the album (parsed server-side).
+                const saleItemId = album.sale_item_id ?? null
                 if (saleItemId) {
                   markAlbumDownloading(saleItemId)
                   void downloadAlbum(saleItemId)
@@ -254,7 +252,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
                 let filePath = album.file_path
                 if (!filePath) {
                   const tracks = await getTracksForAlbum(album.album_artist, album.album)
-                  filePath = tracks[0]?.file_path ?? ''
+                  filePath = tracks[0] ? trackUri(tracks[0]) : ''
                 }
                 if (filePath) window.api.showItemInFolder(filePath)
                 onClose()

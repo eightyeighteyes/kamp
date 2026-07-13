@@ -411,10 +411,9 @@ export function TrackList(): React.JSX.Element | null {
   if (!album) return null
 
   const isRemoteAlbum = album.source !== 'local'
-  const saleItemId =
-    isRemoteAlbum && tracks.length > 0
-      ? (tracks[0].file_path.split('bandcamp:')[1]?.replace(/^\/+/, '').split('/')[0] ?? null)
-      : null
+  // KAMP-552: the sale_item_id is exposed on the album (parsed server-side from
+  // the tracks' bandcamp sources) — no longer parsed from a track file_path.
+  const saleItemId = isRemoteAlbum ? (album.sale_item_id ?? null) : null
   const isDownloading = saleItemId !== null && downloadingAlbumIds.has(saleItemId)
 
   const isCurrentAlbum =

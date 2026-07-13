@@ -196,7 +196,7 @@ export function TopArtistsConfig(): React.JSX.Element {
 
 export function TopArtistsModule({ displayStyle }: ModuleProps): React.JSX.Element {
   const count = useStore((s) => s.topArtistsCount)
-  const currentFilePath = useStore((s) => s.player?.current_track?.file_path ?? null)
+  const currentTrackId = useStore((s) => s.player?.current_track?.id ?? null)
   const serverStatus = useStore((s) => s.serverStatus)
   const [artists, setArtists] = useState<Artist[]>([])
   const [loading, setLoading] = useState(true)
@@ -207,7 +207,7 @@ export function TopArtistsModule({ displayStyle }: ModuleProps): React.JSX.Eleme
       .then(setArtists)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [count, currentFilePath, serverStatus])
+  }, [count, currentTrackId, serverStatus])
 
   if (loading) {
     return (

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import type { Album } from '../../api/client'
-import { artUrl } from '../../api/client'
+import { artUrl, trackUri } from '../../api/client'
 import { useStore } from '../../store'
 import { AlbumContextMenu } from '../AlbumContextMenu'
 import { PlayIcon } from '../TransportIcons'
@@ -28,7 +28,7 @@ function ListRow({
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
   const isActive = album.missing_album
-    ? currentTrack?.file_path === album.file_path
+    ? !!currentTrack && trackUri(currentTrack) === album.file_path
     : currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
   const {

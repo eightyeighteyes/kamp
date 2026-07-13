@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import type { Album } from '../../api/client'
+import { trackUri } from '../../api/client'
 import { AlbumCard } from '../AlbumCard'
 import { useStore } from '../../store'
 
@@ -111,7 +112,7 @@ export function ShelfView({
       if (!s || !currentTrack) return
       const idx = albumsRef.current.findIndex((a) =>
         a.missing_album
-          ? a.file_path === currentTrack.file_path
+          ? a.file_path === trackUri(currentTrack)
           : a.album === currentTrack.album && a.album_artist === currentTrack.album_artist
       )
       if (idx === -1) return
@@ -139,7 +140,7 @@ export function ShelfView({
       doScroll('smooth')
     }, SCROLL_DEBOUNCE_MS)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrack?.album_artist, currentTrack?.album, currentTrack?.file_path, scrollToPlaying])
+  }, [currentTrack?.album_artist, currentTrack?.album, currentTrack?.id, scrollToPlaying])
 
   return (
     <div className="module-shelf-wrapper">

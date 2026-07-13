@@ -11,7 +11,7 @@ import {
   QueueAddIcon
 } from './TransportIcons'
 import type { Track } from '../api/client'
-import { getPlaylistTracks } from '../api/client'
+import { getPlaylistTracks, trackUri } from '../api/client'
 import { truncateTitle } from '../utils/truncateTitle'
 import { DuplicatePlaylistTrackModal } from './DuplicatePlaylistTrackModal'
 
@@ -256,7 +256,7 @@ export function TrackContextMenu({
             <button
               className="track-context-menu-item"
               onClick={() => {
-                window.api.showItemInFolder(track.file_path)
+                window.api.showItemInFolder(trackUri(track))
                 onClose()
               }}
             >

@@ -18,7 +18,6 @@ const QUEUE_WIDTH_DEFAULT = 280
 const QUEUE_DROP_TYPES = new Set([
   'text/kamp-track-id',
   'text/kamp-track-ids',
-  'text/kamp-file-paths',
   'text/kamp-album',
   'text/kamp-artist',
   'text/kamp-queue-idx',
@@ -461,18 +460,6 @@ export function QueuePanel(): React.JSX.Element {
       } catch {
         // malformed — ignore
       }
-    } else if (e.dataTransfer.getData('text/kamp-file-paths')) {
-      // Album-granularity drag (AlbumCard) still carries file paths — no per-track
-      // ids are loaded on the card. Path fallback until KAMP-539 (album migration).
-      try {
-        const paths: string[] = JSON.parse(e.dataTransfer.getData('text/kamp-file-paths'))
-        void (async () => {
-          for (let i = 0; i < paths.length; i++)
-            await insertIntoQueue({ filePath: paths[i] }, dropIdx + i)
-        })()
-      } catch {
-        // malformed — ignore
-      }
     } else if (albumJson) {
       try {
         const {
@@ -530,16 +517,6 @@ export function QueuePanel(): React.JSX.Element {
         const ids: number[] = JSON.parse(e.dataTransfer.getData('text/kamp-track-ids'))
         void (async () => {
           for (const id of ids) await addToQueue({ id })
-        })()
-      } catch {
-        // malformed — ignore
-      }
-    } else if (e.dataTransfer.getData('text/kamp-file-paths')) {
-      // Album-granularity drag (AlbumCard) — path fallback until KAMP-539.
-      try {
-        const paths: string[] = JSON.parse(e.dataTransfer.getData('text/kamp-file-paths'))
-        void (async () => {
-          for (const p of paths) await addToQueue({ filePath: p })
         })()
       } catch {
         // malformed — ignore

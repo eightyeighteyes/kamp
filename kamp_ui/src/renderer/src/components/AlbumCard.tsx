@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useStore } from '../store'
-import { artUrl } from '../api/client'
+import { artUrl, trackUri } from '../api/client'
 import type { Album } from '../api/client'
 import { AlbumContextMenu } from './AlbumContextMenu'
 import { BandcampIcon, CloudIcon, FavoriteIcon, PlayIcon, WarnIcon } from './TransportIcons'
@@ -17,12 +17,13 @@ export function AlbumCard({
   album,
   onAfterSelect,
   showPlayCount = false,
-  dragTracks
+  dragTrackIds
 }: {
   album: Album
   onAfterSelect?: () => void
   showPlayCount?: boolean
-  dragTracks?: string[]
+  // KAMP-552: album-group drags (e.g. from a playlist) carry canonical track ids.
+  dragTrackIds?: number[]
 }): React.JSX.Element {
   const selectAlbum = useStore((s) => s.selectAlbum)
   const setActiveView = useStore((s) => s.setActiveView)
@@ -42,7 +43,7 @@ export function AlbumCard({
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
   const isActive = album.missing_album
-    ? currentTrack?.file_path === album.file_path
+    ? !!currentTrack && trackUri(currentTrack) === album.file_path
     : currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
   const {
@@ -117,9 +118,9 @@ export function AlbumCard({
         setMenu({ x: e.clientX, y: e.clientY })
       }}
       onDragStart={(e) => {
-        if (dragTracks && dragTracks.length > 0) {
-          e.dataTransfer.setData('text/kamp-file-paths', JSON.stringify(dragTracks))
-          const count = dragTracks.length
+        if (dragTrackIds && dragTrackIds.length > 0) {
+          e.dataTransfer.setData('text/kamp-track-ids', JSON.stringify(dragTrackIds))
+          const count = dragTrackIds.length
           const ghost = document.createElement('div')
           ghost.textContent = `${count} track${count === 1 ? '' : 's'}`
           ghost.style.cssText =

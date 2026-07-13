@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
 import type { Album, PlaylistSearchResult, Track } from '../api/client'
+import { trackUri } from '../api/client'
 import { SortControl } from './SortControl'
 import { SourceControl } from './SourceControl'
 import { FilterControl } from './FilterControl'
@@ -23,13 +24,13 @@ function SearchTrackRow({
   const setFavorite = useStore((s) => s.setFavorite)
 
   const handleClick = (): void => {
-    // Pass file_path for tracks with no album so the server can look them up
-    // by path rather than by the empty album key.
+    // Pass the track's uri for tracks with no album so the server can look them
+    // up by uri rather than by the empty album key (KAMP-552).
     void playTrack(
       track.album_artist,
       track.album,
       track.track_number - 1,
-      track.album ? '' : track.file_path
+      track.album ? '' : trackUri(track)
     )
     void setSearchQuery('')
   }

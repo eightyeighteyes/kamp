@@ -6,6 +6,16 @@
  * wire format changes.
  */
 
+// One way to obtain a track's bytes (KAMP-537). A track has one row per
+// delivery — a local file and/or a bandcamp stream.
+export type TrackSource = {
+  kind: 'file' | 'stream'
+  provider: string
+  uri: string
+  is_available: boolean
+  duration: number
+}
+
 export type Track = {
   id: number
   title: string
@@ -15,7 +25,6 @@ export type Track = {
   release_date: string
   track_number: number
   disc_number: number
-  file_path: string
   ext: string
   embedded_art: boolean
   mb_release_id: string
@@ -28,6 +37,23 @@ export type Track = {
   reachable: boolean
   is_available: boolean
   duration: number
+  // KAMP-552: identity is the canonical `id`; the delivery paths/uris live here
+  // (there is no more track-level file_path).
+  sources: TrackSource[]
+}
+
+// The uri a track is reached by: prefer a local file source, else the first
+// source (e.g. a bandcamp:// stream), else '' (a synthetic queue-restore stub).
+export function trackUri(t: Pick<Track, 'sources'>): string {
+  const srcs = t.sources ?? []
+  return (srcs.find((s) => s.kind === 'file') ?? srcs[0])?.uri ?? ''
+}
+
+// The bandcamp sale_item_id encoded in a track's stream uri (bandcamp://<sid>/<n>),
+// or null when the track has no bandcamp source.
+export function trackSaleItemId(t: Pick<Track, 'sources'>): string | null {
+  const uri = (t.sources ?? []).find((s) => s.uri.startsWith('bandcamp:'))?.uri
+  return uri ? (uri.split('bandcamp:')[1]?.replace(/^\/+/, '').split('/')[0] ?? null) : null
 }
 
 export type Album = {
@@ -473,19 +499,16 @@ export const insertAlbumAt = (
     index,
     file_path: filePath
   })
-// KAMP-538: a track is addressed by its canonical id. A file_path fallback
-// remains only for album-granularity drags whose per-track ids are not loaded
-// (removed with the rest of file_path in KAMP-539). id wins server-side.
-export type TrackRef = { id: number } | { filePath: string }
-const trackRefBody = (ref: TrackRef): Record<string, unknown> =>
-  'id' in ref ? { id: ref.id } : { file_path: ref.filePath }
+// KAMP-552: a track is addressed by its canonical id only (the file_path fallback
+// is gone). id wins server-side.
+export type TrackRef = { id: number }
 
 export const addToQueue = (ref: TrackRef): Promise<unknown> =>
-  post('/api/v1/player/queue/add', trackRefBody(ref))
+  post('/api/v1/player/queue/add', { id: ref.id })
 export const insertIntoQueue = (ref: TrackRef, index: number): Promise<unknown> =>
-  post('/api/v1/player/queue/insert', { ...trackRefBody(ref), index })
+  post('/api/v1/player/queue/insert', { id: ref.id, index })
 export const playNext = (ref: TrackRef): Promise<unknown> =>
-  post('/api/v1/player/queue/play-next', trackRefBody(ref))
+  post('/api/v1/player/queue/play-next', { id: ref.id })
 export const moveQueueTrack = (fromIndex: number, toIndex: number): Promise<unknown> =>
   post('/api/v1/player/queue/move', { from_index: fromIndex, to_index: toIndex })
 export const reorderQueue = (order: number[]): Promise<unknown> =>

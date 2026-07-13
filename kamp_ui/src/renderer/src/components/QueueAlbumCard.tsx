@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { artUrl } from '../api/client'
+import { artUrl, trackUri } from '../api/client'
 import type { Track } from '../api/client'
 
 interface QueueAlbumCardProps {
@@ -34,7 +34,7 @@ export function QueueAlbumCard({
   const [artLoaded, setArtLoaded] = useState(false)
   const [artError, setArtError] = useState(false)
   const firstTrack = tracks[0]
-  const src = artUrl(albumArtist, album, firstTrack?.file_path ?? '')
+  const src = artUrl(albumArtist, album, firstTrack ? trackUri(firstTrack) : '')
 
   return (
     <li

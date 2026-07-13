@@ -743,15 +743,15 @@ def _eff_source(alias: str = "t") -> str:
 _EFFECTIVE_SOURCE_EXPR = _eff_source("t")
 
 # Album `source` badge ('local' / 'bandcamp' / 'mixed'), correlated on the outer
-# `albums.id`. Behavior-preserving reconstruction of the legacy formula (which
-# read tracks.source and file_path LIKE 'bandcamp://%'): computes each track's
-# effective source once in a derived table, then applies the identical CASE. The
-# 'mixed' arm is unreachable post-collapse — preserved verbatim so the badge is
-# byte-for-byte unchanged (see KAMP-542; the quirk is tracked separately).
+# `albums.id`. Computes each track's effective source once in a derived table,
+# then classifies the album by whether its tracks agree on preferred delivery
+# kind: 'mixed' when they disagree, else the single kind. This matches
+# _PLAYLIST_SOURCE_EXPR (KAMP-546) — the legacy pre-collapse first branch that
+# short-circuited a mixed album to 'local' was dropped, since post-collapse
+# file_path is the *preferred* uri and that branch fired for exactly the mixed
+# case, leaving the 'mixed' arm dead.
 _ALBUM_SOURCE_SUBQUERY = (
     "(SELECT CASE"
-    "   WHEN COUNT(CASE WHEN es.eff = 'local' THEN 1 END) > 0"
-    "    AND COUNT(CASE WHEN es.eff <> 'local' THEN 1 END) > 0 THEN 'local'"
     "   WHEN COUNT(DISTINCT es.eff) > 1 THEN 'mixed'"
     "   ELSE MIN(es.eff) END"
     "  FROM (SELECT " + _EFFECTIVE_SOURCE_EXPR + " AS eff"

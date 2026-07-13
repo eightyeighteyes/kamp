@@ -439,7 +439,10 @@ export function TrackList(): React.JSX.Element | null {
       >
         {album.has_art && (
           <HeroImage
-            src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)}
+            src={artUrl(album.album_artist, album.album, {
+              trackId: album.track_id,
+              version: album.art_version
+            })}
             objectPositionY={artOffsetPct}
           />
         )}
@@ -722,7 +725,7 @@ export function TrackList(): React.JSX.Element | null {
               className="album-secondary-btn"
               {...tooltip(TOOLTIPS.LIBRARY_ADD_TO_QUEUE)}
               aria-label="Add album to queue"
-              onClick={() => void addAlbumToQueue(album.album_artist, album.album, album.file_path)}
+              onClick={() => void addAlbumToQueue(album.album_artist, album.album, album.track_id)}
             >
               <QueueAddIcon size={16} />
             </button>
@@ -730,7 +733,7 @@ export function TrackList(): React.JSX.Element | null {
               className="album-secondary-btn"
               {...tooltip(TOOLTIPS.LIBRARY_PLAY_NEXT)}
               aria-label="Play album next"
-              onClick={() => void playAlbumNext(album.album_artist, album.album, album.file_path)}
+              onClick={() => void playAlbumNext(album.album_artist, album.album, album.track_id)}
             >
               <PlayNextIcon size={16} />
             </button>
@@ -740,7 +743,7 @@ export function TrackList(): React.JSX.Element | null {
               onClick={() =>
                 isCurrentAlbum
                   ? togglePlayPause()
-                  : playTrack(album.album_artist, album.album, 0, album.file_path)
+                  : playTrack(album.album_artist, album.album, 0, album.track_id)
               }
             >
               {isCurrentAlbum && playing ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
@@ -791,14 +794,14 @@ export function TrackList(): React.JSX.Element | null {
                   if (isCurrent) {
                     togglePlayPause()
                   } else {
-                    playTrack(album.album_artist, album.album, i, album.file_path)
+                    playTrack(album.album_artist, album.album, i, album.track_id)
                   }
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter') return
                   if (isTrackOffline || isPreorderUnavailable) return
                   if (isCurrent) togglePlayPause()
-                  else playTrack(album.album_artist, album.album, i, album.file_path)
+                  else playTrack(album.album_artist, album.album, i, album.track_id)
                 }}
                 {...(!isTrackOffline && !isPreorderUnavailable
                   ? {

@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { useStore } from '../store'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
-import { artUrl, trackUri } from '../api/client'
+import { artUrl } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { ShareIcon } from './TransportIcons'
 
@@ -49,7 +49,9 @@ export function NowPlayingView(): React.JSX.Element {
           src={artUrl(
             currentAlbum?.album_artist ?? current_track.album_artist,
             currentAlbum?.album ?? current_track.album,
-            current_track.album ? '' : trackUri(current_track)
+            {
+              trackId: current_track.album ? null : current_track.id
+            }
           )}
           onLoad={() => setArtLoaded(true)}
           onError={() => setArtLoaded(false)}

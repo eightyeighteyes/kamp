@@ -146,7 +146,9 @@
   padding: 2px 0;
   text-align: center;
   border-radius: 4px;
-  transition: color 0.1s, background 0.1s;
+  transition:
+    color 0.1s,
+    background 0.1s;
   flex-shrink: 0;
 }
 
@@ -269,7 +271,9 @@
   color: var(--text-dim);
   cursor: pointer;
   border: none;
-  transition: background 0.1s, color 0.1s;
+  transition:
+    background 0.1s,
+    color 0.1s;
   white-space: nowrap;
   text-align: center;
 }
@@ -312,7 +316,9 @@
   padding: 6px 16px;
   border-radius: 16px;
   cursor: pointer;
-  transition: filter 0.1s, opacity 0.1s;
+  transition:
+    filter 0.1s,
+    opacity 0.1s;
 }
 
 .mb-modal__btn--ghost {

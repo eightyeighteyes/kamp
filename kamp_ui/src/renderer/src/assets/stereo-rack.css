@@ -69,14 +69,14 @@
 .vu-segment {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
-.vu-segment:nth-last-child(-n+9):nth-last-child(n+5) {
-  background: rgba(245, 166, 35, 0.10);
+.vu-segment:nth-last-child(-n + 9):nth-last-child(n + 5) {
+  background: rgba(245, 166, 35, 0.1);
 }
-.vu-segment:nth-last-child(-n+4):nth-last-child(n+3) {
-  background: rgba(232, 96, 44, 0.10);
+.vu-segment:nth-last-child(-n + 4):nth-last-child(n + 3) {
+  background: rgba(232, 96, 44, 0.1);
 }
 .vu-segment:nth-last-child(2) {
-  background: rgba(232, 64, 64, 0.10);
+  background: rgba(232, 64, 64, 0.1);
 }
 
 /* ------------------------------------------------------------------
@@ -85,10 +85,10 @@
 .vu-segment.active {
   background: color-mix(in srgb, var(--accent) 70%, transparent);
 }
-.vu-segment.active:nth-last-child(-n+9):nth-last-child(n+5) {
+.vu-segment.active:nth-last-child(-n + 9):nth-last-child(n + 5) {
   background: #f5a623;
 }
-.vu-segment.active:nth-last-child(-n+4):nth-last-child(n+3) {
+.vu-segment.active:nth-last-child(-n + 4):nth-last-child(n + 3) {
   background: #e8602c;
 }
 .vu-segment.active:nth-last-child(2) {
@@ -107,7 +107,7 @@
   bottom: 0;
   width: 6px;
   border-radius: 1px;
-  background: rgba(255, 255, 255, 0.90);
+  background: rgba(255, 255, 255, 0.9);
   opacity: 0;
 }
 .vu-peak-hold.fading {
@@ -142,7 +142,7 @@
    Idle / paused state — applied when nothing is playing
    ------------------------------------------------------------------ */
 .vu-meter.is-idle .vu-label {
-  opacity: 0.20;
+  opacity: 0.2;
 }
 .vu-meter.is-idle .vu-segment {
   opacity: 0.4;
@@ -202,7 +202,6 @@
   flex-shrink: 0;
 }
 
-
 .track-artist {
   color: rgba(255, 255, 255, 0.85);
   flex-shrink: 0;
@@ -215,7 +214,7 @@
 }
 
 .track-sep {
-  color: rgba(255, 255, 255, 0.40);
+  color: rgba(255, 255, 255, 0.4);
   flex-shrink: 0;
   font-weight: bold;
 }
@@ -229,7 +228,7 @@
   display: none; /* toggled imperatively */
   align-items: center;
   white-space: nowrap;
-  color: rgba(255, 255, 255, 0.50);
+  color: rgba(255, 255, 255, 0.5);
 }
 
 /* First-track-of-day date line — shown for 8s on new calendar day (KAMP-332) */
@@ -257,15 +256,15 @@
 }
 
 .track-time {
-  color: rgba(255, 255, 255, 0.40);
+  color: rgba(255, 255, 255, 0.4);
 }
 
 .track-timesep {
-  color: rgba(255, 255, 255, 0.20);
+  color: rgba(255, 255, 255, 0.2);
 }
 
 .track-year {
-  color: rgba(255, 255, 255, 0.40);
+  color: rgba(255, 255, 255, 0.4);
 }
 
 .track-format {
@@ -304,22 +303,22 @@
    ============================================================ */
 
 /* never: hide oscilloscope regardless of container width */
-[data-plasma="never"] .oscilloscope {
+[data-plasma='never'] .oscilloscope {
   display: none;
 }
 
 /* always: keep oscilloscope even in compact mode — override column layout */
 @container (max-width: 800px) {
-  [data-plasma="always"] .oscilloscope {
+  [data-plasma='always'] .oscilloscope {
     display: block;
   }
 
-  [data-plasma="always"] {
+  [data-plasma='always'] {
     flex-direction: row;
     gap: 8px;
   }
 
-  [data-plasma="always"] .vu-meter {
+  [data-plasma='always'] .vu-meter {
     flex: 1;
     width: auto;
   }
@@ -339,11 +338,11 @@
    (oscilloscope 240px + 2×8px gap + 2×100px meters = 456px), hide meters
    and let the plasma fill the full width. */
 @container (max-width: 456px) {
-  [data-plasma="always"] .vu-meter {
+  [data-plasma='always'] .vu-meter {
     display: none;
   }
 
-  [data-plasma="always"] .oscilloscope {
+  [data-plasma='always'] .oscilloscope {
     flex: 1;
     width: 0;
   }

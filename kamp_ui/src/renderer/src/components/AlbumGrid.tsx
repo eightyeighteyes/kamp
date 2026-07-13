@@ -107,7 +107,11 @@ export function AlbumGrid(): React.JSX.Element {
         <div className="album-grid">
           {visible.map((album) => (
             <AlbumCard
-              key={album.missing_album ? album.file_path : `${album.album_artist}\0${album.album}`}
+              key={
+                album.missing_album
+                  ? `id:${album.track_id}`
+                  : `${album.album_artist}\0${album.album}`
+              }
               album={album}
             />
           ))}

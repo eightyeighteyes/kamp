@@ -58,8 +58,13 @@
 /* Download-in-progress and queued states ------------------------------------ */
 
 @keyframes albumCardQueuedPulse {
-  0%, 100% { opacity: 0.55; }
-  50%       { opacity: 0.7;  }
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 
 /* Queued albums dim while waiting their turn. */
@@ -69,8 +74,13 @@
 
 /* Downloading: blur on the art image pulses in and out — no card-level motion. */
 @keyframes albumArtBlurPulse {
-  0%, 100% { filter: blur(3px); }
-  50%       { filter: blur(8px); }
+  0%,
+  100% {
+    filter: blur(3px);
+  }
+  50% {
+    filter: blur(8px);
+  }
 }
 
 .album-art--blurred .album-art-img {
@@ -249,7 +259,12 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.25) 50%, transparent 100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.25) 50%,
+    transparent 100%
+  );
   transform: translateX(-100%);
 }
 

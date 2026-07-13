@@ -295,10 +295,9 @@ export function PlaylistView(): React.JSX.Element | null {
           // Non-local tracks have server-side art even without embedded art.
           has_art: t.embedded_art || t.source !== 'local',
           missing_album: false,
-          // file_path is the unique key only for missing_album=true albums.
-          // Passing a track's file_path here causes /api/v1/tracks to receive
-          // a bandcamp:// URI as a query param, which the server rejects (400).
-          file_path: '',
+          // track_id is the unique key only for missing_album=true cards; this is
+          // a real album synthesised from a playlist track, so leave it null.
+          track_id: null,
           art_version: null,
           added_at: null,
           last_played_at: null,

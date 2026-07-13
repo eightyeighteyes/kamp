@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import type { Album } from '../../api/client'
-import { artUrl, trackUri } from '../../api/client'
+import { artUrl } from '../../api/client'
 import { useStore } from '../../store'
 import { AlbumContextMenu } from '../AlbumContextMenu'
 import { PlayIcon } from '../TransportIcons'
@@ -28,7 +28,7 @@ function ListRow({
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
   const isActive = album.missing_album
-    ? !!currentTrack && trackUri(currentTrack) === album.file_path
+    ? album.track_id != null && currentTrack?.id === album.track_id
     : currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
   const {
@@ -88,7 +88,7 @@ function ListRow({
           JSON.stringify({
             album_artist: album.album_artist,
             album: album.album,
-            file_path: album.file_path
+            track_id: album.track_id
           })
         )
         e.dataTransfer.effectAllowed = 'copy'
@@ -97,7 +97,10 @@ function ListRow({
       <div className="module-list-thumb">
         {album.has_art && (
           <img
-            src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)}
+            src={artUrl(album.album_artist, album.album, {
+              trackId: album.track_id,
+              version: album.art_version
+            })}
             alt=""
           />
         )}
@@ -207,7 +210,9 @@ export function ListView({ albums, showPlayCount = false }: ListViewProps): Reac
     <div className="module-list">
       {albums.map((album) => (
         <ListRow
-          key={album.missing_album ? album.file_path : `${album.album_artist}\0${album.album}`}
+          key={
+            album.missing_album ? `id:${album.track_id}` : `${album.album_artist}\0${album.album}`
+          }
           album={album}
           showPlayCount={showPlayCount}
         />

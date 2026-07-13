@@ -150,7 +150,7 @@ export function QueueContextMenu({
                     track_count: 0,
                     has_art: false,
                     missing_album: false,
-                    file_path: '',
+                    track_id: null,
                     art_version: null,
                     added_at: null,
                     last_played_at: null,

@@ -63,8 +63,9 @@ export type Album = {
   track_count: number
   has_art: boolean
   missing_album: boolean
-  // Non-empty when missing_album=true; used as the unique lookup key.
-  file_path: string
+  // Non-null when missing_album=true: the canonical id of the card's single track,
+  // used as the unique lookup key instead of (album_artist, album) (KAMP-554).
+  track_id: number | null
   // MAX(file_mtime) across the album's tracks; appended to art URLs as ?v=
   // so the browser caches by URL and only re-fetches when files change on disk.
   art_version: number | null
@@ -256,18 +257,18 @@ export const getAlbums = (sort = 'album_artist', dir = ''): Promise<Album[]> =>
 
 // Returns the URL for an album's cover art; load it in an <img> src.
 // The server returns 404 when no art is embedded — handle with onError.
-// Pass filePath for missing-album tracks to look up by file instead of album key.
-// artVersion (MAX file_mtime across the album's tracks) is appended as ?v=
+// Pass trackId for a missing-album card (album tag empty) to resolve the single
+// track by its canonical id instead of the (album_artist, album) key (KAMP-554).
+// version (MAX file_mtime across the album's tracks) is appended as ?v=
 // so the browser caches by URL and only re-fetches when files change on disk.
 export const artUrl = (
   albumArtist: string,
   album: string,
-  filePath = '',
-  artVersion: number | null = null
+  opts: { trackId?: number | null; version?: number | null } = {}
 ): string => {
   const base = `${BASE_URL}/api/v1/album-art?album_artist=${encodeURIComponent(albumArtist)}&album=${encodeURIComponent(album)}`
-  const withPath = filePath ? `${base}&file_path=${encodeURIComponent(filePath)}` : base
-  return artVersion != null ? `${withPath}&v=${artVersion}` : withPath
+  const withId = opts.trackId != null ? `${base}&track_id=${opts.trackId}` : base
+  return opts.version != null ? `${withId}&v=${opts.version}` : withId
 }
 
 export const playlistArtUrl = (playlistId: number, version?: number): string => {
@@ -320,10 +321,10 @@ export const getMagicPlaylistModuleContent = (
 export const getTracksForAlbum = (
   albumArtist: string,
   album: string,
-  filePath = ''
+  trackId: number | null = null
 ): Promise<Track[]> => {
   const base = `/api/v1/tracks?album_artist=${encodeURIComponent(albumArtist)}&album=${encodeURIComponent(album)}`
-  return get(filePath ? `${base}&file_path=${encodeURIComponent(filePath)}` : base)
+  return get(trackId != null ? `${base}&track_id=${trackId}` : base)
 }
 
 export type PlaylistSearchResult = Playlist & { source: string }
@@ -449,13 +450,13 @@ export const playAlbum = (
   albumArtist: string,
   album: string,
   trackIndex = 0,
-  filePath = ''
+  trackId: number | null = null
 ): Promise<unknown> =>
   post('/api/v1/player/play', {
     album_artist: albumArtist,
     album,
     track_index: trackIndex,
-    file_path: filePath
+    id: trackId
   })
 
 export const pause = (): Promise<unknown> => post('/api/v1/player/pause')
@@ -474,30 +475,30 @@ export const setRepeat = (mode: RepeatMode): Promise<unknown> =>
 export const addAlbumToQueue = (
   albumArtist: string,
   album: string,
-  filePath = ''
+  trackId: number | null = null
 ): Promise<unknown> =>
-  post('/api/v1/player/queue/add-album', { album_artist: albumArtist, album, file_path: filePath })
+  post('/api/v1/player/queue/add-album', { album_artist: albumArtist, album, id: trackId })
 export const playAlbumNext = (
   albumArtist: string,
   album: string,
-  filePath = ''
+  trackId: number | null = null
 ): Promise<unknown> =>
   post('/api/v1/player/queue/play-album-next', {
     album_artist: albumArtist,
     album,
-    file_path: filePath
+    id: trackId
   })
 export const insertAlbumAt = (
   albumArtist: string,
   album: string,
   index: number,
-  filePath = ''
+  trackId: number | null = null
 ): Promise<unknown> =>
   post('/api/v1/player/queue/insert-album', {
     album_artist: albumArtist,
     album,
     index,
-    file_path: filePath
+    id: trackId
   })
 // KAMP-552: a track is addressed by its canonical id only (the file_path fallback
 // is gone). id wins server-side.

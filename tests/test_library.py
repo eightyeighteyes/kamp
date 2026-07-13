@@ -2696,9 +2696,13 @@ class TestLibraryScanner:
         assert tracks[0].embedded_art is False
 
     def test_scan_inherits_favorite_from_remote_track(self, tmp_path: Path) -> None:
-        """A newly-scanned local file inherits the favorite flag from a matching
-        bandcamp:// row (same album_artist, album, track_number, disc_number).
-        This preserves favorites set on streaming tracks after an album download.
+        """A newly-scanned local file keeps the favorite flag set on its matching
+        bandcamp:// sibling (same album_artist, album, track_number, disc_number).
+
+        The reconcile merge inside upsert_many (KAMP-541) collapses the stream+local
+        pair into one canonical row and MAX-carries the favorite — no separate
+        inherit pass is involved (KAMP-553 proved inherit was a no-op here and
+        deleted it). Preserves favorites set on streaming tracks after a download.
         """
         lib = tmp_path / "music"
         lib.mkdir()
@@ -2745,6 +2749,89 @@ class TestLibraryScanner:
 
         assert local_track is not None
         assert local_track.favorite is True
+
+    def test_scan_collapses_stream_and_local_carrying_both_stats(
+        self, tmp_path: Path
+    ) -> None:
+        """The gating invariant behind KAMP-553's inherit deletion.
+
+        Scanning a no-provenance local file for the same (album, track, disc) as an
+        existing favorited + played bandcamp:// stream must collapse the pair into a
+        SINGLE canonical row (one file source + one stream source) that carries both
+        stats forward. This is exactly the state that made inherit_remote_favorites/
+        _play_counts a no-op: the reconcile merge always fires first, so there is
+        never a second row for inherit to write to. If a future reconcile regression
+        re-strands the pair, this test fails loudly rather than silently relying on
+        the (now deleted) inherit fallback.
+        """
+        lib = tmp_path / "music"
+        lib.mkdir()
+
+        index = LibraryIndex(tmp_path / "library.db")
+        remote_uri = "bandcamp://777/2"
+        index.upsert_many(
+            [
+                Track(
+                    file_path=Path(remote_uri),
+                    title="Streamed",
+                    artist="The Band",
+                    album_artist="The Band",
+                    album="Split Album",
+                    release_date="2021",
+                    track_number=2,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    source="bandcamp",
+                )
+            ]
+        )
+        index.set_favorite(remote_uri, True)
+        # Seed a streaming play_count on the authoritative store (track_stats).
+        index._conn.execute(
+            "UPDATE track_stats SET play_count = 5 WHERE track_id ="
+            " (SELECT track_id FROM track_sources WHERE uri = ?)",
+            (remote_uri,),
+        )
+        index._conn.commit()
+
+        _make_mp3(
+            lib / "02.mp3",
+            artist="The Band",
+            album_artist="The Band",
+            album="Split Album",
+            release_date="2021",
+            title="Streamed",
+            track="2",
+            disc="1",
+        )
+        LibraryScanner(index).scan(lib)
+
+        # Exactly one tracks row for this (album, track, disc) — the pair collapsed.
+        row_count = index._conn.execute(
+            "SELECT COUNT(*) FROM tracks_with_stats"
+            " WHERE album = 'Split Album' AND track_number = 2 AND disc_number = 1"
+        ).fetchone()[0]
+        assert row_count == 1
+
+        local_track = index.get_track_by_path(lib / "02.mp3")
+        assert local_track is not None
+        # The one survivor owns both a file and a stream source.
+        kinds = {
+            r[0]
+            for r in index._conn.execute(
+                "SELECT kind FROM track_sources WHERE track_id = ?",
+                (local_track.id,),
+            ).fetchall()
+        }
+        assert kinds == {"file", "stream"}
+        # Both stats carried onto the survivor via the merge (favorite OR-to-1,
+        # play_count MAX) — the behaviour inherit used to backstop.
+        assert local_track.favorite is True
+        assert local_track.play_count == 5
+        index.close()
 
 
 # ---------------------------------------------------------------------------
@@ -9266,144 +9353,6 @@ class TestIsPreorder:
         assert albums[0].is_preorder is False
 
 
-class TestInheritRemotePlayCounts:
-    """inherit_remote_play_counts copies play_count from bandcamp:// rows to matched local tracks."""
-
-    def _setup(self, tmp_path: Path) -> "LibraryIndex":
-        return LibraryIndex(tmp_path / "library.db")
-
-    def _remote_track(
-        self, sale_item_id: str, track_num: int, play_count: int = 0
-    ) -> Track:
-        t = Track(
-            file_path=Path(f"bandcamp://{sale_item_id}/{track_num}"),
-            title=f"Track {track_num}",
-            artist="The Artist",
-            album_artist="The Artist",
-            album="The Album",
-            release_date="2024",
-            track_number=track_num,
-            disc_number=1,
-            ext="mp3",
-            embedded_art=False,
-            mb_release_id="",
-            mb_recording_id="",
-            source="bandcamp",
-        )
-        t.play_count = play_count
-        return t
-
-    def _local_track(
-        self, tmp_path: Path, track_num: int, play_count: int = 0
-    ) -> Track:
-        t = _sample_track(tmp_path / f"{track_num:02d}.mp3")
-        t.track_number = track_num
-        t.play_count = play_count
-        return t
-
-    def _seed_isolated_pair(
-        self, index: "LibraryIndex", remote_pc: int, local_pc: int, tmp_path: Path
-    ) -> Track:
-        """Insert a streamed track and its local sibling as two SEPARATE rows for the
-        same (album, track, disc), with play_count in track_stats, bypassing the
-        reconcile merge (which supersedes inherit in the normal scan by collapsing
-        the pair). Returns the local Track for the inherit call.
-        """
-        c = index._conn
-        c.execute(
-            "INSERT INTO albums (album_artist, album) VALUES ('The Artist','The Album')"
-        )
-        alb = c.execute("SELECT id FROM albums").fetchone()[0]
-        local = self._local_track(tmp_path, 1)
-        for fp, pc, kind in [
-            ("bandcamp://42/1", remote_pc, "stream"),
-            (str(local.file_path), local_pc, "file"),
-        ]:
-            cur = c.execute(
-                "INSERT INTO tracks (title, album, album_artist, album_id,"
-                " track_number, disc_number) VALUES ('Track 1', 'The Album',"
-                " 'The Artist', ?, 1, 1)",
-                (alb,),
-            )
-            tid = cur.lastrowid
-            # KAMP-552: identity/effective-source is derived from track_sources now,
-            # so each row needs its source row (a bare tracks row reads as sourceless
-            # / 'local' and would not match the streaming-sibling inherit).
-            c.execute(
-                "INSERT INTO track_sources (track_id, kind, uri) VALUES (?, ?, ?)",
-                (tid, kind, fp),
-            )
-            c.execute(
-                "INSERT INTO track_stats (track_id, play_count) VALUES (?, ?)",
-                (tid, pc),
-            )
-        c.commit()
-        return local
-
-    def _local_play_count(self, index: "LibraryIndex", local: Track) -> int:
-        return int(
-            index._conn.execute(
-                "SELECT st.play_count FROM track_stats st"
-                " JOIN track_sources s ON s.track_id = st.track_id"
-                " WHERE s.uri = ?",
-                (str(local.file_path),),
-            ).fetchone()[0]
-        )
-
-    def test_copies_play_count_from_remote_to_local(self, tmp_path: Path) -> None:
-        index = self._setup(tmp_path)
-        local = self._seed_isolated_pair(
-            index, remote_pc=7, local_pc=0, tmp_path=tmp_path
-        )
-        index.inherit_remote_play_counts([local])
-        pc = self._local_play_count(index, local)
-        index.close()
-        assert pc == 7  # inherited from the streamed sibling
-
-    def test_keeps_higher_local_play_count(self, tmp_path: Path) -> None:
-        """If local play_count > remote, keep the local value."""
-        index = self._setup(tmp_path)
-        local = self._seed_isolated_pair(
-            index, remote_pc=3, local_pc=10, tmp_path=tmp_path
-        )
-        index.inherit_remote_play_counts([local])
-        pc = self._local_play_count(index, local)
-        index.close()
-        assert pc == 10  # local's higher count preserved
-
-    def test_no_change_when_remote_play_count_is_zero(self, tmp_path: Path) -> None:
-        index = self._setup(tmp_path)
-        remote = self._remote_track("42", 1, play_count=0)
-        index.upsert_many([remote])
-
-        local = self._local_track(tmp_path, 1, play_count=0)
-        index.upsert_many([local])
-        index.inherit_remote_play_counts([local])
-
-        result = index.tracks_for_album("The Artist", "The Album")
-        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
-        index.close()
-
-        assert local_result[0].play_count == 0
-
-    def test_no_change_when_no_matching_remote_track(self, tmp_path: Path) -> None:
-        index = self._setup(tmp_path)
-        local = self._local_track(tmp_path, 1, play_count=0)
-        index.upsert_many([local])
-        index.inherit_remote_play_counts([local])
-
-        result = index.tracks_for_album("The Artist", "The Album")
-        local_result = [t for t in result if "bandcamp" not in str(t.file_path)]
-        index.close()
-
-        assert local_result[0].play_count == 0
-
-    def test_empty_list_is_noop(self, tmp_path: Path) -> None:
-        index = self._setup(tmp_path)
-        index.inherit_remote_play_counts([])  # must not raise
-        index.close()
-
-
 class TestMigrationV26:
     """v25 → v26: num_streamable_tracks column on bandcamp_collection (KAMP-424)."""
 
@@ -12641,12 +12590,14 @@ class TestProvenanceLinking:
         assert albums[0]["source"] == "local"
         index.close()
 
-    def test_single_favorite_inherits_once_track_number_aligned(
+    def test_single_favorite_survives_download_via_reconcile(
         self, tmp_path: Path
     ) -> None:
         # With the streaming single favorited and the downloaded single aligned to
-        # track 1 (as the pipeline now does), inherit_remote_favorites carries the
-        # favorite across. Regression for the Ohm Foam "Gush" favorite loss.
+        # track 1, the reconcile merge inside upsert_many (KAMP-541) collapses the
+        # stream+local pair and MAX-carries the favorite onto the survivor — no
+        # separate inherit pass required (KAMP-553). Regression for the Ohm Foam
+        # "Gush" favorite loss.
         index = LibraryIndex(tmp_path / "library.db")
         _readd_legacy_track_columns(index)
         self._seed_streaming_album(index, "S1", "Ohm Foam", "Gush")
@@ -12654,14 +12605,13 @@ class TestProvenanceLinking:
         assert stream is not None
         index._conn.execute("UPDATE tracks SET favorite = 1 WHERE id = ?", (stream.id,))
         index._conn.commit()
-        # inherit_remote_favorites reads the authoritative track_stats store, so
-        # mirror the legacy favorite there (as production writers do).
+        # The reconcile merge reads the authoritative track_stats store, so mirror
+        # the legacy favorite there (as production writers do).
         _mirror_stats(index)
 
         dl = _download_track(tmp_path / "gush.mp3", "Ohm Foam", "Gush", "S1", n=1)
         dl.title = "Gush"
         index.upsert_many([dl])
-        index.inherit_remote_favorites([dl])
 
         fav = index._conn.execute(
             "SELECT favorite FROM tracks_with_stats WHERE id = (SELECT track_id FROM track_sources WHERE uri = ?)",

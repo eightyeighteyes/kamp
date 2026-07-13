@@ -5414,96 +5414,6 @@ class LibraryIndex:
         if self.on_fields_changed:
             self.on_fields_changed({"track.favorite"})
 
-    def inherit_remote_favorites(self, new_tracks: "list[Track]") -> None:
-        """Copy the favorite flag from a matching remote bandcamp:// row to each
-        newly-added local track, if the remote version was favorited.
-
-        Called by LibraryScanner after upserting newly-scanned local files so
-        that favorites set on streaming tracks are not lost when an album is
-        downloaded.  Matches by (album_id, track_number, disc_number) — the
-        album_id FK eliminates the binary-collation string matching that caused
-        silent data loss when MusicBrainz normalised album_artist capitalisation.
-        Reads/writes favorite through track_stats — the sole stat store since
-        KAMP-539 dropped tracks.favorite. Only sets track_stats.favorite when it is
-        currently 0, so a flag the user explicitly set on the local file is not
-        re-stamped.
-        """
-        import time
-
-        for t in new_tracks:
-            # KAMP-552: resolve the just-scanned local track by its source uri; the
-            # streaming sibling is identified by effective source (was file_path
-            # LIKE 'bandcamp://%').
-            tid = self._resolve_track_id(t.file_path)
-            if tid is None:
-                continue
-            self._conn.execute(
-                f"""
-                INSERT INTO track_stats (track_id, favorite, updated_at)
-                SELECT loc.id, 1, ?
-                FROM tracks loc
-                WHERE loc.id = ?
-                  AND EXISTS (
-                      SELECT 1 FROM tracks r
-                      JOIN track_stats rs ON rs.track_id = r.id
-                      WHERE r.album_id = loc.album_id
-                        AND r.track_number = ?
-                        AND r.disc_number = ?
-                        AND {_eff_source('r')} = 'bandcamp'
-                        AND rs.favorite = 1
-                  )
-                ON CONFLICT(track_id) DO UPDATE SET
-                    favorite = 1, updated_at = excluded.updated_at
-                    WHERE track_stats.favorite = 0
-                """,
-                (time.time(), tid, t.track_number, t.disc_number),
-            )
-        if new_tracks:
-            self._conn.commit()
-
-    def inherit_remote_play_counts(self, new_tracks: "list[Track]") -> None:
-        """Copy play_count from a matching remote bandcamp:// row to each newly-added
-        local track, taking the higher of the two values.
-
-        Called by LibraryScanner after a pre-order album is downloaded so play
-        counts accumulated during the streaming period are not lost.  Uses the
-        same (album_id, track_number, disc_number) match as inherit_remote_favorites.
-        Reads/writes play_count through track_stats (KAMP-539). Only updates when the
-        remote play_count exceeds the local one.
-        """
-        import time
-
-        # KAMP-552: streaming sibling identified by effective source (was file_path
-        # LIKE 'bandcamp://%'); the local track is resolved by id below.
-        sibling_max = (
-            "(SELECT MAX(rs.play_count)"
-            " FROM tracks r JOIN track_stats rs ON rs.track_id = r.id"
-            " WHERE r.album_id = loc.album_id"
-            "   AND r.track_number = loc.track_number"
-            "   AND r.disc_number = loc.disc_number"
-            f"   AND {_eff_source('r')} = 'bandcamp')"
-        )
-        for t in new_tracks:
-            tid = self._resolve_track_id(t.file_path)
-            if tid is None:
-                continue
-            self._conn.execute(
-                f"""
-                INSERT INTO track_stats (track_id, play_count, updated_at)
-                SELECT loc.id, {sibling_max}, ?
-                FROM tracks loc
-                WHERE loc.id = ?
-                  AND {sibling_max} > COALESCE(
-                      (SELECT play_count FROM track_stats WHERE track_id = loc.id), 0)
-                ON CONFLICT(track_id) DO UPDATE SET
-                    play_count = excluded.play_count, updated_at = excluded.updated_at
-                    WHERE excluded.play_count > track_stats.play_count
-                """,
-                (time.time(), tid),
-            )
-        if new_tracks:
-            self._conn.commit()
-
     def update_album_meta(
         self,
         album_artist: str,
@@ -7717,10 +7627,12 @@ class LibraryScanner:
         ]
         self._index.upsert_many(upsert_subset)
 
+        # KAMP-553: the old inherit_remote_favorites/_play_counts pass on
+        # newly_added was proven dead — the reconcile merge inside upsert_many
+        # (KAMP-541) always collapses a scanned local file onto its bandcamp://
+        # sibling first, MAX-carrying favorite/play_count, so there was never a
+        # second row left for inherit to write to. Both functions were deleted.
         newly_added = [t for t in upsert_subset if t.file_path in to_add]
-        if newly_added:
-            self._index.inherit_remote_favorites(newly_added)
-            self._index.inherit_remote_play_counts(newly_added)
         added = len(newly_added) + len(reconciled_new_paths)
         updated = len([t for t in upsert_subset if t.file_path in to_update])
 

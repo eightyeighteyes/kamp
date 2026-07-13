@@ -1,6 +1,12 @@
 # Language
+
+## Backend
 - Python 3
 - Poetry for dependency management & packaging
+
+## Frontend
+- React
+- Typescript
 
 # Code Style
 - Follow PEP8 and use black for formatting

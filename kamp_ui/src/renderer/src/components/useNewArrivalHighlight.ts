@@ -61,7 +61,7 @@ export function useNewArrivalHighlight(album: Album): NewArrivalHighlight {
   const dismissHighlight = useStore((s) => s.dismissHighlight)
 
   const albumHighlightKey = album.missing_album
-    ? (album.file_path ?? '')
+    ? String(album.track_id ?? '')
     : `${album.album_artist}::${album.album}`
   const isNew =
     highlightEnabled &&

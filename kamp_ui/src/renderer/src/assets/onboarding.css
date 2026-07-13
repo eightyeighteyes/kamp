@@ -294,7 +294,10 @@
   padding: 7px 20px;
   border-radius: 6px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
 }
 
 .onboarding-mode-btn:hover {

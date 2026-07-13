@@ -48,11 +48,11 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
 
   // Fetch tracks client-side so the album's per-track ids are available (the
   // album card itself carries no track ids). This also handles missing-album
-  // tracks, which are looked up by album.file_path (a separate album-identity key).
+  // cards, which are looked up by album.track_id (a separate album-identity key).
   const handleAddToPlaylist = (playlistId: number): void => {
     const pl = playlists.find((p) => p.id === playlistId)
     void (async () => {
-      const albumTracks = await getTracksForAlbum(album.album_artist, album.album, album.file_path)
+      const albumTracks = await getTracksForAlbum(album.album_artist, album.album, album.track_id)
       const allIds = albumTracks.map((t) => t.id)
       const existing = await getPlaylistTracks(playlistId)
       const existingSet = new Set(existing.map((t) => t.id))
@@ -106,7 +106,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
       void setActiveView('library')
       setCollectionType('playlists')
       await selectPlaylist(pl)
-      const albumTracks = await getTracksForAlbum(album.album_artist, album.album, album.file_path)
+      const albumTracks = await getTracksForAlbum(album.album_artist, album.album, album.track_id)
       for (const t of albumTracks) {
         await addTrackToPlaylist(pl.id, t.id)
       }
@@ -120,7 +120,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           <button
             className="track-context-menu-item"
             onClick={() => {
-              void playAlbumNext(album.album_artist, album.album, album.file_path)
+              void playAlbumNext(album.album_artist, album.album, album.track_id)
               onClose()
             }}
           >
@@ -139,7 +139,7 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
           <button
             className="track-context-menu-item"
             onClick={() => {
-              void addAlbumToQueue(album.album_artist, album.album, album.file_path)
+              void addAlbumToQueue(album.album_artist, album.album, album.track_id)
               onClose()
             }}
           >
@@ -249,11 +249,14 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
             <button
               className="track-context-menu-item"
               onClick={async () => {
-                let filePath = album.file_path
-                if (!filePath) {
-                  const tracks = await getTracksForAlbum(album.album_artist, album.album)
-                  filePath = tracks[0] ? trackUri(tracks[0]) : ''
-                }
+                // Resolve the on-disk path from the album's first track (missing-album
+                // cards resolve their single track by track_id).
+                const tracks = await getTracksForAlbum(
+                  album.album_artist,
+                  album.album,
+                  album.track_id
+                )
+                const filePath = tracks[0] ? trackUri(tracks[0]) : ''
                 if (filePath) window.api.showItemInFolder(filePath)
                 onClose()
               }}

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useStore } from '../store'
-import { artUrl, trackUri } from '../api/client'
+import { artUrl } from '../api/client'
 import type { Album } from '../api/client'
 import { AlbumContextMenu } from './AlbumContextMenu'
 import { BandcampIcon, CloudIcon, FavoriteIcon, PlayIcon, WarnIcon } from './TransportIcons'
@@ -43,7 +43,7 @@ export function AlbumCard({
   const [menu, setMenu] = useState<MenuPos | null>(null)
 
   const isActive = album.missing_album
-    ? !!currentTrack && trackUri(currentTrack) === album.file_path
+    ? album.track_id != null && currentTrack?.id === album.track_id
     : currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
   const {
@@ -134,7 +134,7 @@ export function AlbumCard({
             JSON.stringify({
               album_artist: album.album_artist,
               album: album.album,
-              file_path: album.file_path
+              track_id: album.track_id
             })
           )
         }
@@ -147,7 +147,10 @@ export function AlbumCard({
         {album.has_art && !artError && (
           <img
             className="album-art-img"
-            src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)}
+            src={artUrl(album.album_artist, album.album, {
+              trackId: album.track_id,
+              version: album.art_version
+            })}
             alt=""
             onLoad={() => setArtLoaded(true)}
             onError={() => {

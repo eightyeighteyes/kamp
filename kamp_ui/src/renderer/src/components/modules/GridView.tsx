@@ -12,7 +12,9 @@ export function GridView({ albums, showPlayCount = false }: GridViewProps): Reac
     <div className="album-grid module-grid">
       {albums.map((album) => (
         <AlbumCard
-          key={album.missing_album ? album.file_path : `${album.album_artist}\0${album.album}`}
+          key={
+            album.missing_album ? `id:${album.track_id}` : `${album.album_artist}\0${album.album}`
+          }
           album={album}
           showPlayCount={showPlayCount}
         />

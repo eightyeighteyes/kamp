@@ -465,13 +465,13 @@ export function QueuePanel(): React.JSX.Element {
         const {
           album_artist,
           album,
-          file_path = ''
+          track_id = null
         } = JSON.parse(albumJson) as {
           album_artist: string
           album: string
-          file_path?: string
+          track_id?: number | null
         }
-        void insertAlbumAt(album_artist, album, dropIdx, file_path)
+        void insertAlbumAt(album_artist, album, dropIdx, track_id)
       } catch {
         // malformed drag data — ignore
       }
@@ -526,13 +526,13 @@ export function QueuePanel(): React.JSX.Element {
         const {
           album_artist,
           album,
-          file_path = ''
+          track_id = null
         } = JSON.parse(albumJson) as {
           album_artist: string
           album: string
-          file_path?: string
+          track_id?: number | null
         }
-        void addAlbumToQueue(album_artist, album, file_path)
+        void addAlbumToQueue(album_artist, album, track_id)
       } catch {
         // malformed drag data — ignore
       }
@@ -786,13 +786,13 @@ export function QueuePanel(): React.JSX.Element {
                 const {
                   album_artist,
                   album,
-                  file_path = ''
+                  track_id = null
                 } = JSON.parse(albumJson) as {
                   album_artist: string
                   album: string
-                  file_path?: string
+                  track_id?: number | null
                 }
-                void addAlbumToQueue(album_artist, album, file_path)
+                void addAlbumToQueue(album_artist, album, track_id)
               } catch {
                 // malformed drag data — ignore
               }

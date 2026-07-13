@@ -272,12 +272,7 @@
   border-radius: 2px;
   pointer-events: none;
   background-color: var(--border);
-  background-image: linear-gradient(
-    90deg,
-    transparent 30%,
-    var(--accent) 50%,
-    transparent 70%
-  );
+  background-image: linear-gradient(90deg, transparent 30%, var(--accent) 50%, transparent 70%);
   background-size: 300% 100%;
   animation: shimmer-scan 1.5s ease-in-out infinite;
 }

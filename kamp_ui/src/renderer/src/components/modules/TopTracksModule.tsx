@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { getTopTracks, artUrl, trackUri } from '../../api/client'
+import { getTopTracks, artUrl } from '../../api/client'
 import type { Track } from '../../api/client'
 import { useStore } from '../../store'
 import { TrackContextMenu } from '../TrackContextMenu'
@@ -18,7 +18,7 @@ function useTrackNav(): (track: Track) => void {
   return (track: Track): void => {
     const album = albums.find((a) =>
       a.missing_album
-        ? a.file_path === trackUri(track)
+        ? a.track_id != null && a.track_id === track.id
         : a.album_artist === track.album_artist && a.album === track.album
     )
     if (!album) return

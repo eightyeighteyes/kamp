@@ -13,12 +13,12 @@
 }
 
 /* Default (above): centered horizontally, floated above the target */
-.kamp-tooltip[data-direction="above"] {
+.kamp-tooltip[data-direction='above'] {
   transform: translateX(-50%) translateY(calc(-100% - 8px));
 }
 
 /* Below: used when target is near the top of the window */
-.kamp-tooltip[data-direction="below"] {
+.kamp-tooltip[data-direction='below'] {
   transform: translateX(-50%) translateY(8px);
 }
 
@@ -45,19 +45,23 @@
 }
 
 @keyframes tooltip-out {
-  from { opacity: 1; }
-  to   { opacity: 0; }
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 
-.kamp-tooltip[data-phase="visible"][data-direction="above"] {
+.kamp-tooltip[data-phase='visible'][data-direction='above'] {
   animation: tooltip-in-above 150ms ease-out;
 }
 
-.kamp-tooltip[data-phase="visible"][data-direction="below"] {
+.kamp-tooltip[data-phase='visible'][data-direction='below'] {
   animation: tooltip-in-below 150ms ease-out;
 }
 
 /* forwards: holds at opacity 0 until the portal node is removed from DOM */
-.kamp-tooltip[data-phase="fading"] {
+.kamp-tooltip[data-phase='fading'] {
   animation: tooltip-out 300ms ease-in forwards;
 }

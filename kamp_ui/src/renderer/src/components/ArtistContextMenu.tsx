@@ -26,13 +26,13 @@ export function ArtistContextMenu({ x, y, artist, onClose }: Props): React.JSX.E
     if (artistAlbums.length === 0) return
     void (async () => {
       const [first, ...rest] = artistAlbums
-      await playAlbum(first.album_artist, first.album, 0, first.file_path ?? '')
+      await playAlbum(first.album_artist, first.album, 0, first.track_id)
       // Append remaining albums in order after the first; addAlbumToQueue is
       // safe here because playAlbum just replaced the queue with only the first
       // album's tracks. insertAlbumAt with a track-level index is wrong when
       // the first album has more than one track.
       for (const a of rest) {
-        await addAlbumToQueue(a.album_artist, a.album, a.file_path ?? '')
+        await addAlbumToQueue(a.album_artist, a.album, a.track_id)
       }
     })()
     onClose()
@@ -45,7 +45,7 @@ export function ArtistContextMenu({ x, y, artist, onClose }: Props): React.JSX.E
         await playAlbumNext(
           artistAlbums[i].album_artist,
           artistAlbums[i].album,
-          artistAlbums[i].file_path ?? ''
+          artistAlbums[i].track_id
         )
       }
     })()
@@ -55,7 +55,7 @@ export function ArtistContextMenu({ x, y, artist, onClose }: Props): React.JSX.E
   const handleAddToQueue = (): void => {
     void (async () => {
       for (const a of artistAlbums) {
-        await addAlbumToQueue(a.album_artist, a.album, a.file_path ?? '')
+        await addAlbumToQueue(a.album_artist, a.album, a.track_id)
       }
     })()
     onClose()

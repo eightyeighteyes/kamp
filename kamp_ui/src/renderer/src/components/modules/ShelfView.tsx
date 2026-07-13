@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
 import type { Album } from '../../api/client'
-import { trackUri } from '../../api/client'
 import { AlbumCard } from '../AlbumCard'
 import { useStore } from '../../store'
 
@@ -112,7 +111,7 @@ export function ShelfView({
       if (!s || !currentTrack) return
       const idx = albumsRef.current.findIndex((a) =>
         a.missing_album
-          ? a.file_path === trackUri(currentTrack)
+          ? a.track_id != null && a.track_id === currentTrack.id
           : a.album === currentTrack.album && a.album_artist === currentTrack.album_artist
       )
       if (idx === -1) return
@@ -157,7 +156,9 @@ export function ShelfView({
       <div className="module-shelf" ref={scrollRef} role="region" aria-label="Album shelf">
         {albums.map((album) => (
           <AlbumCard
-            key={album.missing_album ? album.file_path : `${album.album_artist}\0${album.album}`}
+            key={
+              album.missing_album ? `id:${album.track_id}` : `${album.album_artist}\0${album.album}`
+            }
             album={album}
             showPlayCount={showPlayCount}
           />

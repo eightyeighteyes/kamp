@@ -177,7 +177,7 @@ type PlayerStore = {
   loadUiState: () => Promise<void>
   selectArtist: (artist: string | null) => void
   selectAlbum: (album: Album | null) => Promise<void>
-  loadTracks: (albumArtist: string, album: string, filePath?: string) => Promise<void>
+  loadTracks: (albumArtist: string, album: string, trackId?: number | null) => Promise<void>
   setCollectionType: (type: 'albums' | 'playlists') => void
   playPlaylist: (playlistId: number, startIndex?: number) => Promise<void>
   playFiles: (trackIds: number[], startIndex?: number) => Promise<void>
@@ -200,13 +200,13 @@ type PlayerStore = {
     albumArtist: string,
     album: string,
     trackIndex?: number,
-    filePath?: string
+    trackId?: number | null
   ) => Promise<void>
   playTrack: (
     albumArtist: string,
     album: string,
     trackIndex: number,
-    filePath?: string
+    trackId?: number | null
   ) => Promise<void>
   togglePlayPause: () => Promise<void>
   stop: () => Promise<void>
@@ -217,13 +217,13 @@ type PlayerStore = {
   setAlbumGroupingActive: (active: boolean) => void
   setShuffle: (shuffle: boolean) => Promise<void>
   setRepeat: () => Promise<void>
-  addAlbumToQueue: (albumArtist: string, album: string, filePath?: string) => Promise<void>
-  playAlbumNext: (albumArtist: string, album: string, filePath?: string) => Promise<void>
+  addAlbumToQueue: (albumArtist: string, album: string, trackId?: number | null) => Promise<void>
+  playAlbumNext: (albumArtist: string, album: string, trackId?: number | null) => Promise<void>
   insertAlbumAt: (
     albumArtist: string,
     album: string,
     index: number,
-    filePath?: string
+    trackId?: number | null
   ) => Promise<void>
   addToQueue: (ref: api.TrackRef) => Promise<void>
   insertIntoQueue: (ref: api.TrackRef, index: number) => Promise<void>
@@ -287,6 +287,12 @@ const initialPlayer: PlayerState = {
   next_track: null,
   buffering: false
 }
+
+// Cache key for an album's track list. A missing-album card (track_id set) keys
+// on its unique track id so two no-album tracks with the same title don't collide;
+// a real album keys on (album_artist, album). (KAMP-554)
+const _albumTracksKey = (albumArtist: string, album: string, trackId: number | null): string =>
+  trackId != null ? `id:${trackId}` : `${albumArtist}\0${album}`
 
 export const useStore = create<PlayerStore>((set, get) => ({
   player: initialPlayer,
@@ -610,7 +616,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   dismissHighlight: (album) => {
     const key = album.missing_album
-      ? (album.file_path ?? '')
+      ? String(album.track_id ?? '')
       : `${album.album_artist}::${album.album}`
     const next = new Set(get().dismissedHighlightKeys)
     if (next.has(key)) return
@@ -664,7 +670,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
       .sort((a, b) => (b.play_count_avg ?? 0) - (a.play_count_avg ?? 0))
     let offset = 0
     for (const album of albums) {
-      await api.insertAlbumAt(album.album_artist, album.album, idx + offset, album.file_path ?? '')
+      await api.insertAlbumAt(album.album_artist, album.album, idx + offset, album.track_id)
       offset += album.track_count
     }
     void get().loadQueue()
@@ -763,7 +769,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
               (a) =>
                 a.album_artist === selectedAlbum.album_artist &&
                 a.album === selectedAlbum.album &&
-                a.file_path === selectedAlbum.file_path
+                a.track_id === selectedAlbum.track_id
             ) ?? selectedAlbum)
           : null
         return {
@@ -797,9 +803,13 @@ export const useStore = create<PlayerStore>((set, get) => ({
       const tracks = await api.getTracksForAlbum(
         selectedAlbum.album_artist,
         selectedAlbum.album,
-        selectedAlbum.file_path
+        selectedAlbum.track_id
       )
-      const key = selectedAlbum.file_path || `${selectedAlbum.album_artist}\0${selectedAlbum.album}`
+      const key = _albumTracksKey(
+        selectedAlbum.album_artist,
+        selectedAlbum.album,
+        selectedAlbum.track_id
+      )
       set((s) => ({ library: { ...s.library, tracks, tracksAlbumKey: key } }))
     } catch {
       // Best-effort — stale track list is better than a broken UI.
@@ -816,15 +826,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
       library: { ...s.library, selectedAlbum: album, collectionType: 'albums' },
       albumEditMode: false
     }))
-    if (album) await get().loadTracks(album.album_artist, album.album, album.file_path)
+    if (album) await get().loadTracks(album.album_artist, album.album, album.track_id)
   },
 
-  loadTracks: async (albumArtist, album, filePath = '') => {
-    // For missing-album tracks, file_path is the unique key; use it so that
-    // two no-album tracks with the same title don't share a cache entry.
-    const key = filePath || `${albumArtist}\0${album}`
+  loadTracks: async (albumArtist, album, trackId = null) => {
+    // For a missing-album card, track_id is the unique key so that two no-album
+    // tracks with the same title don't share a cache entry.
+    const key = _albumTracksKey(albumArtist, album, trackId)
     if (get().library.tracksAlbumKey === key) return
-    const tracks = await api.getTracksForAlbum(albumArtist, album, filePath)
+    const tracks = await api.getTracksForAlbum(albumArtist, album, trackId)
     set((s) => ({ library: { ...s.library, tracks, tracksAlbumKey: key } }))
   },
 
@@ -994,13 +1004,13 @@ export const useStore = create<PlayerStore>((set, get) => ({
       }
     })),
 
-  playAlbum: async (albumArtist, album, trackIndex = 0, filePath = '') => {
-    await api.playAlbum(albumArtist, album, trackIndex, filePath)
+  playAlbum: async (albumArtist, album, trackIndex = 0, trackId = null) => {
+    await api.playAlbum(albumArtist, album, trackIndex, trackId)
     void get().loadQueue()
   },
 
-  playTrack: async (albumArtist, album, trackIndex, filePath = '') => {
-    await api.playAlbum(albumArtist, album, trackIndex, filePath)
+  playTrack: async (albumArtist, album, trackIndex, trackId = null) => {
+    await api.playAlbum(albumArtist, album, trackIndex, trackId)
     void get().loadQueue()
   },
 
@@ -1058,18 +1068,18 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void get().loadQueue()
   },
 
-  addAlbumToQueue: async (albumArtist, album, filePath = '') => {
-    await api.addAlbumToQueue(albumArtist, album, filePath)
+  addAlbumToQueue: async (albumArtist, album, trackId = null) => {
+    await api.addAlbumToQueue(albumArtist, album, trackId)
     void get().loadQueue()
   },
 
-  playAlbumNext: async (albumArtist, album, filePath = '') => {
-    await api.playAlbumNext(albumArtist, album, filePath)
+  playAlbumNext: async (albumArtist, album, trackId = null) => {
+    await api.playAlbumNext(albumArtist, album, trackId)
     void get().loadQueue()
   },
 
-  insertAlbumAt: async (albumArtist, album, index, filePath = '') => {
-    await api.insertAlbumAt(albumArtist, album, index, filePath)
+  insertAlbumAt: async (albumArtist, album, index, trackId = null) => {
+    await api.insertAlbumAt(albumArtist, album, index, trackId)
     void get().loadQueue()
   },
 

@@ -57,7 +57,9 @@
   cursor: pointer;
   color: var(--text-dim);
   font-size: 11px;
-  transition: border-color 80ms, color 80ms;
+  transition:
+    border-color 80ms,
+    color 80ms;
 }
 
 .theme-swatch:hover {
@@ -73,7 +75,10 @@
 
 .theme-swatch:active {
   transform: scale(0.94);
-  transition: transform 80ms, border-color 80ms, color 80ms;
+  transition:
+    transform 80ms,
+    border-color 80ms,
+    color 80ms;
 }
 
 .theme-swatch-colors {

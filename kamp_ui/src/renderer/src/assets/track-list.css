@@ -64,11 +64,11 @@
   background: linear-gradient(
     to bottom,
     transparent 0%,
-    transparent                              calc(var(--hero-height-pct, 45) / 45 * 15%),
+    transparent calc(var(--hero-height-pct, 45) / 45 * 15%),
     color-mix(in srgb, var(--bg) 45%, transparent) calc(var(--hero-height-pct, 45) / 45 * 45%),
     color-mix(in srgb, var(--bg) 80%, transparent) calc(var(--hero-height-pct, 45) / 45 * 63%),
     color-mix(in srgb, var(--bg) 95%, transparent) calc(var(--hero-height-pct, 45) / 45 * 75%),
-    var(--bg)                                calc(var(--hero-height-pct, 45) / 45 * 85%)
+    var(--bg) calc(var(--hero-height-pct, 45) / 45 * 85%)
   );
 }
 
@@ -92,7 +92,9 @@
   border-radius: 4px;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
+  transition:
+    opacity 0.15s,
+    color 0.15s;
 }
 
 .track-list-hero:hover .hero-art-btn {
@@ -194,7 +196,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(10, 10, 10, 0.70);
+  background: rgba(10, 10, 10, 0.7);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -273,13 +275,25 @@
   opacity: 0;
 }
 
-.mb-pill__dots span:nth-child(1) { animation-delay: 0s; }
-.mb-pill__dots span:nth-child(2) { animation-delay: 0.2s; }
-.mb-pill__dots span:nth-child(3) { animation-delay: 0.4s; }
+.mb-pill__dots span:nth-child(1) {
+  animation-delay: 0s;
+}
+.mb-pill__dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.mb-pill__dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
 
 @keyframes mb-dot-blink {
-  0%, 80%, 100% { opacity: 0; }
-  40%            { opacity: 1; }
+  0%,
+  80%,
+  100% {
+    opacity: 0;
+  }
+  40% {
+    opacity: 1;
+  }
 }
 
 /* Progress bar — fills from left to ~90% over the estimated lookup duration */
@@ -294,15 +308,24 @@
 }
 
 @keyframes mb-progress-fill {
-  from { width: 0; }
-  to   { width: 90%; }
+  from {
+    width: 0;
+  }
+  to {
+    width: 90%;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mb-pill__dots span { animation: none; opacity: 1; }
-  .mb-pill__progress  { animation: none; width: 30%; }
+  .mb-pill__dots span {
+    animation: none;
+    opacity: 1;
+  }
+  .mb-pill__progress {
+    animation: none;
+    width: 30%;
+  }
 }
-
 
 /* Visually hidden, readable by screen readers */
 .sr-only {
@@ -471,10 +494,19 @@
 }
 
 @keyframes album-field-shake {
-  0%, 100% { transform: translateX(0); }
-  20%       { transform: translateX(-5px); }
-  60%       { transform: translateX(5px); }
-  80%       { transform: translateX(-3px); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-5px);
+  }
+  60% {
+    transform: translateX(5px);
+  }
+  80% {
+    transform: translateX(-3px);
+  }
 }
 
 .editable-album-field.shake {
@@ -548,7 +580,9 @@
   padding: 3px 8px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.1s, border-color 0.1s;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
 }
 
 .album-rename-toast-undo:hover {
@@ -569,8 +603,12 @@
 }
 
 @keyframes toast-bar-shrink {
-  from { width: 100%; }
-  to   { width: 0%; }
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
 }
 
 .play-all-btn {
@@ -610,7 +648,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.1s, background 0.1s;
+  transition:
+    color 0.1s,
+    background 0.1s;
 }
 
 .album-secondary-btn:hover {
@@ -649,7 +689,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.1s, background 0.1s;
+  transition:
+    color 0.1s,
+    background 0.1s;
 }
 
 .album-download-btn:hover {
@@ -664,8 +706,13 @@
 }
 
 @keyframes album-download-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .track-list-divider {
@@ -1154,7 +1201,9 @@
   padding: 1px 0;
   width: 100%;
   min-width: 0;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 .meta-field-input:hover {
@@ -1178,7 +1227,9 @@
   padding: 2px 4px;
   border-radius: 3px;
   opacity: 0;
-  transition: opacity 0.1s, color 0.1s;
+  transition:
+    opacity 0.1s,
+    color 0.1s;
   flex-shrink: 0;
 }
 
@@ -1198,9 +1249,15 @@
 }
 
 @keyframes row-flash {
-  0%   { background: var(--accent-dim); }
-  25%  { background: var(--accent-dim); }
-  100% { background: transparent; }
+  0% {
+    background: var(--accent-dim);
+  }
+  25% {
+    background: var(--accent-dim);
+  }
+  100% {
+    background: transparent;
+  }
 }
 
 .track-row--new-flash {
@@ -1208,8 +1265,12 @@
 }
 
 @keyframes count-tick {
-  from { color: var(--accent); }
-  to { color: inherit; }
+  from {
+    color: var(--accent);
+  }
+  to {
+    color: inherit;
+  }
 }
 
 .track-count-tick {

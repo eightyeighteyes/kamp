@@ -4,7 +4,8 @@
 /* ── shiny ─────────────────────────────────────────────────────────────── */
 
 @keyframes shiny-aura {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow:
       0 0 6px 2px rgba(255, 215, 0, 0.28),
       0 0 18px 5px rgba(255, 184, 48, 0.13);
@@ -33,24 +34,44 @@
 
 /* Sweeps across in 22.5% of the 4s cycle (≈ 0.9s), holds off-screen the rest */
 @keyframes shiny-sweep-slow {
-  0%     { transform: translateX(-130%); }
-  22.5%  { transform: translateX(130%); }
-  22.51% { transform: translateX(-130%); }
-  100%   { transform: translateX(-130%); }
+  0% {
+    transform: translateX(-130%);
+  }
+  22.5% {
+    transform: translateX(130%);
+  }
+  22.51% {
+    transform: translateX(-130%);
+  }
+  100% {
+    transform: translateX(-130%);
+  }
 }
 
 /* Sweeps across in 50% of the 1.8s cycle (0.9s), holds off-screen the rest */
 @keyframes shiny-sweep-fast {
-  0%    { transform: translateX(-130%); }
-  50%   { transform: translateX(130%); }
-  50.01%{ transform: translateX(-130%); }
-  100%  { transform: translateX(-130%); }
+  0% {
+    transform: translateX(-130%);
+  }
+  50% {
+    transform: translateX(130%);
+  }
+  50.01% {
+    transform: translateX(-130%);
+  }
+  100% {
+    transform: translateX(-130%);
+  }
 }
 
 /* Single full-width sweep for the mount burst */
 @keyframes shiny-sweep-once {
-  from { transform: translateX(-130%); }
-  to   { transform: translateX(130%); }
+  from {
+    transform: translateX(-130%);
+  }
+  to {
+    transform: translateX(130%);
+  }
 }
 
 .shiny-sweep {
@@ -82,9 +103,17 @@
 /* ── Star particles (shiny) ────────────────────────────────────────────── */
 
 @keyframes shiny-star-drift {
-  0%   { opacity: 0; transform: translateY(0) rotate(0deg) scale(0.5); }
-  15%  { opacity: 0.85; }
-  100% { opacity: 0; transform: translateY(-58px) rotate(360deg) scale(0.15); }
+  0% {
+    opacity: 0;
+    transform: translateY(0) rotate(0deg) scale(0.5);
+  }
+  15% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-58px) rotate(360deg) scale(0.15);
+  }
 }
 
 .shiny-star {
@@ -105,14 +134,27 @@
 
 /* Idle: slow bob + tilt, 5s loop */
 @keyframes newmoji-idle {
-  0%, 100% { translate: 0 0; rotate: 0deg; scale: 1; }
-  30%       { translate: 0 -3px; rotate: 1deg; scale: 1.05; }
+  0%,
+  100% {
+    translate: 0 0;
+    rotate: 0deg;
+    scale: 1;
+  }
+  30% {
+    translate: 0 -3px;
+    rotate: 1deg;
+    scale: 1.05;
+  }
 }
 
 /* Hover pop: scale out to 1.35 with overshoot easing, runs once */
 @keyframes newmoji-hover-scale {
-  0%   { scale: 1; }
-  100% { scale: 1.35; }
+  0% {
+    scale: 1;
+  }
+  100% {
+    scale: 1.35;
+  }
 }
 
 /* album-info needs position:relative so the badge can use absolute positioning */
@@ -154,7 +196,7 @@
   width: 120px;
   padding: 5px 0;
   line-height: 1;
-  background: #3B6FD4;
+  background: #3b6fd4;
   color: #fff;
   font-family: inherit;
   font-size: 9px;
@@ -189,25 +231,25 @@
 @keyframes vaporwave-halo {
   0% {
     box-shadow:
-      0 0 0 2px #A855F7,
+      0 0 0 2px #a855f7,
       0 0 12px 4px rgba(168, 85, 247, 0.55),
       0 0 28px 10px rgba(168, 85, 247, 0.25);
   }
   33% {
     box-shadow:
-      0 0 0 2px #FF6EC7,
+      0 0 0 2px #ff6ec7,
       0 0 12px 4px rgba(255, 110, 199, 0.55),
       0 0 28px 10px rgba(255, 110, 199, 0.25);
   }
   66% {
     box-shadow:
-      0 0 0 2px #38BDF8,
+      0 0 0 2px #38bdf8,
       0 0 12px 4px rgba(56, 189, 248, 0.55),
       0 0 28px 10px rgba(56, 189, 248, 0.25);
   }
   100% {
     box-shadow:
-      0 0 0 2px #A855F7,
+      0 0 0 2px #a855f7,
       0 0 12px 4px rgba(168, 85, 247, 0.55),
       0 0 28px 10px rgba(168, 85, 247, 0.25);
   }
@@ -262,8 +304,16 @@
    Rounded to 170px — error is ~0.2px per stripe, invisible. Using 120px produces
    a visible seam every tile and an apparent random reset as it sweeps the border. */
 @keyframes proud-barber {
-  from { background-position: 0 0, 0 0; }
-  to   { background-position: 0 0, 170px 170px; }
+  from {
+    background-position:
+      0 0,
+      0 0;
+  }
+  to {
+    background-position:
+      0 0,
+      170px 170px;
+  }
 }
 
 .album-card--highlight-proud {
@@ -273,20 +323,32 @@
     linear-gradient(var(--surface), var(--surface)),
     repeating-linear-gradient(
       135deg,
-      #FFFFFF   0px,  #FFFFFF  12px,
-      #F7A8B8  12px,  #F7A8B8  24px,
-      #55CDFC  24px,  #55CDFC  36px,
-      #C47A2B  36px,  #C47A2B  48px,
-      #E40303  48px,  #E40303  60px,
-      #FF8C00  60px,  #FF8C00  72px,
-      #FFED00  72px,  #FFED00  84px,
-      #008026  84px,  #008026  96px,
-      #004DFF  96px,  #004DFF 108px,
-      #750787 108px,  #750787 120px
+      #ffffff 0px,
+      #ffffff 12px,
+      #f7a8b8 12px,
+      #f7a8b8 24px,
+      #55cdfc 24px,
+      #55cdfc 36px,
+      #c47a2b 36px,
+      #c47a2b 48px,
+      #e40303 48px,
+      #e40303 60px,
+      #ff8c00 60px,
+      #ff8c00 72px,
+      #ffed00 72px,
+      #ffed00 84px,
+      #008026 84px,
+      #008026 96px,
+      #004dff 96px,
+      #004dff 108px,
+      #750787 108px,
+      #750787 120px
     );
   background-origin: padding-box, border-box;
   background-clip: padding-box, border-box;
-  background-size: auto, 170px 170px;
+  background-size:
+    auto,
+    170px 170px;
   box-shadow: inset 0 0 8px 1px rgba(85, 205, 252, 0.15);
   animation: proud-barber 6s linear infinite;
 }
@@ -299,20 +361,32 @@
     linear-gradient(var(--surface-hover), var(--surface-hover)),
     repeating-linear-gradient(
       135deg,
-      #FFFFFF   0px,  #FFFFFF  12px,
-      #F7A8B8  12px,  #F7A8B8  24px,
-      #55CDFC  24px,  #55CDFC  36px,
-      #C47A2B  36px,  #C47A2B  48px,
-      #E40303  48px,  #E40303  60px,
-      #FF8C00  60px,  #FF8C00  72px,
-      #FFED00  72px,  #FFED00  84px,
-      #008026  84px,  #008026  96px,
-      #004DFF  96px,  #004DFF 108px,
-      #750787 108px,  #750787 120px
+      #ffffff 0px,
+      #ffffff 12px,
+      #f7a8b8 12px,
+      #f7a8b8 24px,
+      #55cdfc 24px,
+      #55cdfc 36px,
+      #c47a2b 36px,
+      #c47a2b 48px,
+      #e40303 48px,
+      #e40303 60px,
+      #ff8c00 60px,
+      #ff8c00 72px,
+      #ffed00 72px,
+      #ffed00 84px,
+      #008026 84px,
+      #008026 96px,
+      #004dff 96px,
+      #004dff 108px,
+      #750787 108px,
+      #750787 120px
     );
   background-origin: padding-box, border-box;
   background-clip: padding-box, border-box;
-  background-size: auto, 170px 170px;
+  background-size:
+    auto,
+    170px 170px;
   animation-duration: 1.6s;
 }
 
@@ -322,7 +396,8 @@
    One-pixel tight ring + diffuse outer bloom — thin and premium.
    Use box-shadow, not outline — .playing already owns outline. */
 @keyframes pressed-breath {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow:
       0 0 0 1px rgba(255, 255, 255, 0.25),
       0 0 8px 4px rgba(255, 255, 255, 0.07);
@@ -341,16 +416,28 @@
 /* Glint sweep: narrow (10%) silver-white diagonal band at 45°.
    5s cycle, 0.9s active sweep (18% of cycle), holds off-screen the rest. */
 @keyframes pressed-glint-loop {
-  0%     { transform: translateX(-150%); }
-  18%    { transform: translateX(150%); }
-  18.01% { transform: translateX(-150%); }
-  100%   { transform: translateX(-150%); }
+  0% {
+    transform: translateX(-150%);
+  }
+  18% {
+    transform: translateX(150%);
+  }
+  18.01% {
+    transform: translateX(-150%);
+  }
+  100% {
+    transform: translateX(-150%);
+  }
 }
 
 /* Single sweep for the hover double-flash */
 @keyframes pressed-glint-once {
-  from { transform: translateX(-150%); }
-  to   { transform: translateX(150%); }
+  from {
+    transform: translateX(-150%);
+  }
+  to {
+    transform: translateX(150%);
+  }
 }
 
 .pressed-glint,
@@ -414,8 +501,13 @@
 
 /* Snap on/off — step-end is non-negotiable; it's what makes sparks electrical */
 @keyframes static-blink {
-  0%, 100% { opacity: var(--spark-opacity); }
-  50%      { opacity: 0; }
+  0%,
+  100% {
+    opacity: var(--spark-opacity);
+  }
+  50% {
+    opacity: 0;
+  }
 }
 
 .static-sparks {
@@ -444,8 +536,8 @@
   pointer-events: none;
   /* --spark-speed-mult is set on .static-sparks; updating it mid-cycle avoids
      animation restart (no jarring all-sparks-reset-to-frame-0 flicker) */
-  animation: static-blink calc(var(--blink-dur) * var(--spark-speed-mult, 1))
-             var(--blink-delay) step-end infinite;
+  animation: static-blink calc(var(--blink-dur) * var(--spark-speed-mult, 1)) var(--blink-delay)
+    step-end infinite;
 }
 
 /* TV-static voltage surge: the art zone briefly over-exposes */
@@ -483,7 +575,7 @@
 
   .album-card--highlight-vaporwave {
     animation: none;
-    box-shadow: 0 0 0 2px #A855F7;
+    box-shadow: 0 0 0 2px #a855f7;
   }
 
   .vaporwave-scanlines {
@@ -497,7 +589,7 @@
 
   .album-card--highlight-pressed {
     animation: none;
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.50);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5);
   }
 
   .pressed-glint,
@@ -579,7 +671,7 @@
   width: 80px;
   padding: 4px 0;
   line-height: 1;
-  background: #3B6FD4;
+  background: #3b6fd4;
   color: #fff;
   font-family: inherit;
   font-size: 7px;
@@ -634,20 +726,32 @@
     linear-gradient(var(--surface), var(--surface)),
     repeating-linear-gradient(
       135deg,
-      #FFFFFF   0px,  #FFFFFF  12px,
-      #F7A8B8  12px,  #F7A8B8  24px,
-      #55CDFC  24px,  #55CDFC  36px,
-      #C47A2B  36px,  #C47A2B  48px,
-      #E40303  48px,  #E40303  60px,
-      #FF8C00  60px,  #FF8C00  72px,
-      #FFED00  72px,  #FFED00  84px,
-      #008026  84px,  #008026  96px,
-      #004DFF  96px,  #004DFF 108px,
-      #750787 108px,  #750787 120px
+      #ffffff 0px,
+      #ffffff 12px,
+      #f7a8b8 12px,
+      #f7a8b8 24px,
+      #55cdfc 24px,
+      #55cdfc 36px,
+      #c47a2b 36px,
+      #c47a2b 48px,
+      #e40303 48px,
+      #e40303 60px,
+      #ff8c00 60px,
+      #ff8c00 72px,
+      #ffed00 72px,
+      #ffed00 84px,
+      #008026 84px,
+      #008026 96px,
+      #004dff 96px,
+      #004dff 108px,
+      #750787 108px,
+      #750787 120px
     );
   background-origin: padding-box, border-box;
   background-clip: padding-box, border-box;
-  background-size: auto, 170px 170px;
+  background-size:
+    auto,
+    170px 170px;
   box-shadow: inset 0 0 8px 1px rgba(85, 205, 252, 0.15);
   animation: proud-barber 6s linear infinite;
 }
@@ -658,20 +762,32 @@
     linear-gradient(var(--surface-hover), var(--surface-hover)),
     repeating-linear-gradient(
       135deg,
-      #FFFFFF   0px,  #FFFFFF  12px,
-      #F7A8B8  12px,  #F7A8B8  24px,
-      #55CDFC  24px,  #55CDFC  36px,
-      #C47A2B  36px,  #C47A2B  48px,
-      #E40303  48px,  #E40303  60px,
-      #FF8C00  60px,  #FF8C00  72px,
-      #FFED00  72px,  #FFED00  84px,
-      #008026  84px,  #008026  96px,
-      #004DFF  96px,  #004DFF 108px,
-      #750787 108px,  #750787 120px
+      #ffffff 0px,
+      #ffffff 12px,
+      #f7a8b8 12px,
+      #f7a8b8 24px,
+      #55cdfc 24px,
+      #55cdfc 36px,
+      #c47a2b 36px,
+      #c47a2b 48px,
+      #e40303 48px,
+      #e40303 60px,
+      #ff8c00 60px,
+      #ff8c00 72px,
+      #ffed00 72px,
+      #ffed00 84px,
+      #008026 84px,
+      #008026 96px,
+      #004dff 96px,
+      #004dff 108px,
+      #750787 108px,
+      #750787 120px
     );
   background-origin: padding-box, border-box;
   background-clip: padding-box, border-box;
-  background-size: auto, 170px 170px;
+  background-size:
+    auto,
+    170px 170px;
   animation-duration: 1.6s;
 }
 
@@ -732,7 +848,7 @@
 
   .module-list-row--highlight-vaporwave {
     animation: none;
-    box-shadow: 0 0 0 2px #A855F7;
+    box-shadow: 0 0 0 2px #a855f7;
   }
 
   .module-list-row--highlight-vaporwave .vaporwave-scanlines {
@@ -745,7 +861,7 @@
 
   .module-list-row--highlight-pressed {
     animation: none;
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.50);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5);
   }
 
   .module-list-row--highlight-pressed .pressed-glint,

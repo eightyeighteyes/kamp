@@ -19,6 +19,7 @@ from kamp_daemon.bandcamp import (
     _ProxyResponse,
     _download_file,
     _download_item,
+    _parse_content_length,
     _ensure_session,
     _extract_pagedata,
     _fetch_collection,
@@ -1537,7 +1538,7 @@ class TestDownloadItem:
             with patch("kamp_daemon.bandcamp._resolve_cdn_redirect") as mock_resolve:
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess, fmt: (
+                    side_effect=lambda url, dest, sess, fmt, on_progress=None: (
                         calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
                     ),
                 ):
@@ -1566,7 +1567,7 @@ class TestDownloadItem:
             ) as mock_resolve:
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess, fmt: (
+                    side_effect=lambda url, dest, sess, fmt, on_progress=None: (
                         calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
                     ),
                 ):
@@ -1614,7 +1615,7 @@ class TestDownloadItem:
             ):
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess, fmt: dest.with_name(
+                    side_effect=lambda url, dest, sess, fmt, on_progress=None: dest.with_name(
                         dest.name + ".zip"
                     ),
                 ):
@@ -1627,6 +1628,25 @@ class TestDownloadItem:
 
 _ZIP_MAGIC = b"PK\x03\x04"
 _FAKE_ZIP = _ZIP_MAGIC + b"\x00" * 20
+
+
+class TestParseContentLength:
+    """KAMP-436: only a positive, parseable Content-Length yields a total."""
+
+    def test_valid_positive(self) -> None:
+        assert _parse_content_length("1024") == 1024
+
+    def test_none(self) -> None:
+        assert _parse_content_length(None) is None
+
+    def test_empty_string(self) -> None:
+        assert _parse_content_length("") is None
+
+    def test_unparseable(self) -> None:
+        assert _parse_content_length("not-a-number") is None
+
+    def test_zero_is_none(self) -> None:
+        assert _parse_content_length("0") is None
 
 
 class TestDownloadFile:
@@ -1741,6 +1761,85 @@ class TestDownloadFile:
 
         assert not (tmp_path / "album.zip").exists()
         assert not (tmp_path / "album.part").exists()
+
+    # -- byte-progress reporting (KAMP-436) ---------------------------------
+
+    def _make_resp_with_length(
+        self, chunks: list[bytes], total: int, content_type: str = "application/zip"
+    ) -> MagicMock:
+        resp = self._make_resp(chunks, content_type=content_type)
+        resp.headers = {"Content-Type": content_type, "Content-Length": str(total)}
+        return resp
+
+    def test_reports_progress_when_content_length_present(self, tmp_path: Path) -> None:
+        """With a Content-Length header, on_progress fires with a non-decreasing
+        percentage that terminates at 100 (KAMP-436)."""
+        from itertools import count
+
+        dest_base = tmp_path / "album"
+        chunks = [_ZIP_MAGIC + b"\x00" * 21] + [b"\x00" * 25] * 3  # 4 x 25 = 100 bytes
+        total = sum(len(c) for c in chunks)
+        session = MagicMock()
+        session.get.return_value = self._make_resp_with_length(chunks, total)
+
+        progress: list[int] = []
+        # Advance monotonic time past the throttle interval on every chunk so
+        # each step is emitted, letting us assert the full progression.
+        with patch(
+            "kamp_daemon.bandcamp.time.monotonic", side_effect=count(1000.0, 1.0)
+        ):
+            _download_file(
+                "https://cdn.example.com/f.zip",
+                dest_base,
+                session,
+                "mp3-v0",
+                on_progress=progress.append,
+            )
+
+        assert progress, "expected at least one progress callback"
+        assert progress[-1] == 100
+        assert all(0 <= p <= 100 for p in progress)
+        assert progress == sorted(progress)  # non-decreasing
+
+    def test_no_progress_when_content_length_absent(self, tmp_path: Path) -> None:
+        """Without Content-Length the percentage is unknowable, so on_progress is
+        never called and the UI keeps its indeterminate pulse (KAMP-436)."""
+        dest_base = tmp_path / "album"
+        session = MagicMock()
+        session.get.return_value = self._make_resp([_FAKE_ZIP])  # no Content-Length
+
+        progress: list[int] = []
+        _download_file(
+            "https://cdn.example.com/f.zip",
+            dest_base,
+            session,
+            "mp3-v0",
+            on_progress=progress.append,
+        )
+
+        assert progress == []
+
+    def test_progress_throttled_but_final_always_emitted(self, tmp_path: Path) -> None:
+        """Rapid chunks within the throttle window are coalesced, but a terminal
+        100 is always delivered (KAMP-436)."""
+        dest_base = tmp_path / "album"
+        chunks = [_ZIP_MAGIC + b"\x00" * 21] + [b"\x00" * 25] * 3
+        total = sum(len(c) for c in chunks)
+        session = MagicMock()
+        session.get.return_value = self._make_resp_with_length(chunks, total)
+
+        progress: list[int] = []
+        # Time never advances → every intermediate emit is throttled away.
+        with patch("kamp_daemon.bandcamp.time.monotonic", side_effect=lambda: 1000.0):
+            _download_file(
+                "https://cdn.example.com/f.zip",
+                dest_base,
+                session,
+                "mp3-v0",
+                on_progress=progress.append,
+            )
+
+        assert progress == [100]
 
 
 # ---------------------------------------------------------------------------
@@ -3236,7 +3335,11 @@ class TestDownloadSingleAlbum:
         index = MagicMock()
 
         def fake_download_item(
-            item: dict, bc_config: object, watch_dir: Path, session: object
+            item: dict,
+            bc_config: object,
+            watch_dir: Path,
+            session: object,
+            on_progress: object = None,
         ) -> Path:
             watch_dir.mkdir(parents=True, exist_ok=True)
             dest = watch_dir / f"{item['sale_item_id']}.zip"

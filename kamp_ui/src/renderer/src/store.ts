@@ -115,6 +115,9 @@ type PlayerStore = {
   albumGroupingActive: boolean
   downloadingAlbumIds: Set<string>
   queuedAlbumIds: Set<string>
+  // KAMP-436: byte-progress percent (0–100) per downloading album, keyed by
+  // sale_item_id. Absent entry → progress unknown → card shows the pulse.
+  downloadProgress: Map<string, number>
   flashToast: string | null
   styleRailVisible: boolean
   selectedTheme: ThemeName
@@ -143,6 +146,7 @@ type PlayerStore = {
   clearAlbumDownloading: (saleItemId: string) => void
   markAlbumQueued: (saleItemId: string) => void
   clearAlbumQueued: (saleItemId: string) => void
+  setAlbumProgress: (saleItemId: string, progress: number) => void
   removeDownload: (saleItemId: string) => Promise<void>
   showFlashToast: (msg: string) => void
   setRecentlyAddedCount: (n: number) => void
@@ -417,6 +421,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   albumGroupingActive: localStorage.getItem('kamp:album-view') === 'true',
   downloadingAlbumIds: new Set<string>(),
   queuedAlbumIds: new Set<string>(),
+  downloadProgress: new Map<string, number>(),
   flashToast: null,
   styleRailVisible: false,
   selectedTheme: (localStorage.getItem('kamp:selected-theme') as ThemeName | null) ?? 'kamp',
@@ -571,7 +576,17 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set((s) => {
       const next = new Set(s.downloadingAlbumIds)
       next.delete(saleItemId)
-      return { downloadingAlbumIds: next }
+      // Drop any progress entry too, so a finished/removed download doesn't
+      // leave a stale reveal percentage behind (KAMP-436).
+      const progress = new Map(s.downloadProgress)
+      progress.delete(saleItemId)
+      return { downloadingAlbumIds: next, downloadProgress: progress }
+    }),
+  setAlbumProgress: (saleItemId, progress) =>
+    set((s) => {
+      const next = new Map(s.downloadProgress)
+      next.set(saleItemId, progress)
+      return { downloadProgress: next }
     }),
   markAlbumQueued: (saleItemId) =>
     set((s) => ({ queuedAlbumIds: new Set([...s.queuedAlbumIds, saleItemId]) })),

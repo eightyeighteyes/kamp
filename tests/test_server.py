@@ -2902,6 +2902,36 @@ class TestBandcampCollectionDownload:
         assert dl_q.get_nowait() == "11"
         assert dl_q.get_nowait() == "22"
 
+    def test_notify_album_download_progress_broadcasts_percent(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """KAMP-436: per-album byte-progress rides bandcamp.album-download with a
+        numeric progress field and state='downloading'."""
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # consume initial player.state
+            app.state.notify_album_download_progress("12345", 42)
+            msg = ws.receive_json()
+        assert msg == {
+            "type": "bandcamp.album-download",
+            "sale_item_id": "12345",
+            "state": "downloading",
+            "progress": 42,
+        }
+
+    def test_notify_album_download_progress_exposed_on_app_state(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        assert callable(getattr(app.state, "notify_album_download_progress", None))
+
     def test_notify_album_download_status_exposed_on_app_state(
         self,
         mock_index: MagicMock,

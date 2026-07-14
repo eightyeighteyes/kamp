@@ -756,6 +756,9 @@ export type AlbumDownloadMessage = {
   type: 'bandcamp.album-download'
   sale_item_id: string
   state: 'queued' | 'downloading' | 'done' | 'error' | 'removed'
+  // KAMP-436: byte-progress percent (0–100). Present only on 'downloading'
+  // updates when the server knows the total size; absent → keep the pulse.
+  progress?: number
 }
 export type MagicPlaylistUpdatedMessage = {
   type: 'magic_playlist.updated'
@@ -790,7 +793,8 @@ export function connectStateStream(
   onTrackChanged?: () => void,
   onAlbumDownload?: (
     saleItemId: string,
-    state: 'queued' | 'downloading' | 'done' | 'error' | 'removed'
+    state: 'queued' | 'downloading' | 'done' | 'error' | 'removed',
+    progress?: number
   ) => void,
   onMagicPlaylistUpdated?: (id: number) => void
 ): () => void {
@@ -810,7 +814,7 @@ export function connectStateStream(
       else if (msg.type === 'audio.level')
         onAudioLevel?.(msg.left_db, msg.right_db, msg.crest_db, msg.peak_db)
       else if (msg.type === 'bandcamp.album-download')
-        onAlbumDownload?.(msg.sale_item_id, msg.state)
+        onAlbumDownload?.(msg.sale_item_id, msg.state, msg.progress)
       else if (msg.type === 'magic_playlist.updated') onMagicPlaylistUpdated?.(msg.id)
     } catch {
       // malformed message — ignore

@@ -1015,6 +1015,25 @@ def create_app(
 
     app.state.notify_album_download_status = _notify_album_download_status
 
+    def _notify_album_download_progress(sale_item_id: str, progress: int) -> None:
+        """Broadcast byte-level download progress for a single album (KAMP-436).
+
+        Rides the same ``bandcamp.album-download`` event as the coarse state
+        transitions, adding a ``progress`` percentage (0–100) so the album card
+        can reveal its art bottom-up. Called from the syncer's download thread —
+        ``_broadcast`` is thread-safe.
+        """
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": sale_item_id,
+                "state": "downloading",
+                "progress": progress,
+            }
+        )
+
+    app.state.notify_album_download_progress = _notify_album_download_progress
+
     def _notify_bandcamp_sync_status(status_msg: str) -> None:
         """Broadcast sync state derived from the syncer's status_callback string.
 

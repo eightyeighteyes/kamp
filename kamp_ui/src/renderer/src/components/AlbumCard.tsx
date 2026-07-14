@@ -33,11 +33,16 @@ export function AlbumCard({
   const configValues = useStore((s) => s.configValues)
   const downloadingAlbumIds = useStore((s) => s.downloadingAlbumIds)
   const queuedAlbumIds = useStore((s) => s.queuedAlbumIds)
+  const downloadProgress = useStore((s) => s.downloadProgress)
   const connected = configValues?.['bandcamp.connected'] ?? false
   const isRemote = album.source !== 'local'
   const isOffline = isRemote && !connected
   const isDownloading = album.sale_item_id != null && downloadingAlbumIds.has(album.sale_item_id)
   const isQueued = album.sale_item_id != null && queuedAlbumIds.has(album.sale_item_id)
+  // KAMP-436: a known byte-progress percent drives the bottom-up art reveal;
+  // when it's absent the card keeps the indeterminate download pulse.
+  const progress = album.sale_item_id != null ? downloadProgress.get(album.sale_item_id) : undefined
+  const isRevealing = isDownloading && typeof progress === 'number'
   const [artLoaded, setArtLoaded] = useState(false)
   const [artError, setArtError] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
@@ -142,7 +147,8 @@ export function AlbumCard({
       }}
     >
       <div
-        className={`album-art${artLoaded ? ' has-art' : ''}${artBlurred ? ' album-art--blurred' : ''}`}
+        className={`album-art${artLoaded ? ' has-art' : ''}${artBlurred ? ' album-art--blurred' : ''}${isRevealing ? ' album-art--revealing' : ''}`}
+        style={isRevealing ? ({ '--reveal': progress } as React.CSSProperties) : undefined}
       >
         {album.has_art && !artError && (
           <img
@@ -157,6 +163,19 @@ export function AlbumCard({
               setArtLoaded(false)
               setArtError(true)
             }}
+          />
+        )}
+        {isRevealing && album.has_art && !artError && (
+          // Sharp copy of the art, masked to reveal from the bottom up as the
+          // download progresses. Same src → served from cache, no extra fetch.
+          <img
+            className="album-art-reveal"
+            src={artUrl(album.album_artist, album.album, {
+              trackId: album.track_id,
+              version: album.art_version
+            })}
+            alt=""
+            aria-hidden="true"
           />
         )}
         {playing && isActive && (

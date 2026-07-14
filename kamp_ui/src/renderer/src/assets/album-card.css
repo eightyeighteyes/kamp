@@ -113,15 +113,16 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  /* Visible (black) from the bottom up to --reveal%, transparent above, with a
-     ~12% feather so the boundary reads as a soft wipe rather than a hard line. */
+  /* Clear from the top down: sharp (black) from the top to --reveal%, then
+     transparent below so the blurred base shows through. ~12% feather so the
+     boundary reads as a soft wipe rather than a hard line. */
   -webkit-mask-image: linear-gradient(
-    to top,
+    to bottom,
     #000 calc(var(--reveal, 0) * 1% - 6%),
     transparent calc(var(--reveal, 0) * 1% + 6%)
   );
   mask-image: linear-gradient(
-    to top,
+    to bottom,
     #000 calc(var(--reveal, 0) * 1% - 6%),
     transparent calc(var(--reveal, 0) * 1% + 6%)
   );

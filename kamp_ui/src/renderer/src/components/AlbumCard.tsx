@@ -39,10 +39,12 @@ export function AlbumCard({
   const isOffline = isRemote && !connected
   const isDownloading = album.sale_item_id != null && downloadingAlbumIds.has(album.sale_item_id)
   const isQueued = album.sale_item_id != null && queuedAlbumIds.has(album.sale_item_id)
-  // KAMP-436: a known byte-progress percent drives the bottom-up art reveal;
-  // when it's absent the card keeps the indeterminate download pulse.
-  const progress = album.sale_item_id != null ? downloadProgress.get(album.sale_item_id) : undefined
-  const isRevealing = isDownloading && typeof progress === 'number'
+  // KAMP-436: a known byte-progress percent drives the top-down art reveal;
+  // when it's absent the card keeps the indeterminate download pulse. The
+  // reveal itself is derived below (after artBlurred) so it can be held through
+  // the post-download rescan window.
+  const storeProgress =
+    album.sale_item_id != null ? downloadProgress.get(album.sale_item_id) : undefined
   const [artLoaded, setArtLoaded] = useState(false)
   const [artError, setArtError] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
@@ -84,6 +86,27 @@ export function AlbumCard({
     const t = setTimeout(() => setArtBlurred(false), 0)
     return () => clearTimeout(t)
   }, [album.has_art, isDownloading])
+
+  // KAMP-436: hold the last reveal percent so the fully-clear art doesn't snap
+  // back to full blur during the post-download tag/rescan window. When the
+  // download ends, downloadProgress is cleared from the store but artBlurred
+  // stays true until has_art lands — so we keep painting the held reveal
+  // (100%) until then, then drop it so the freshly-loaded local art shows.
+  // setState is deferred via setTimeout (same pattern as artBlurred above) so
+  // it's a callback rather than a synchronous set inside the effect.
+  const [heldProgress, setHeldProgress] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    if (typeof storeProgress !== 'number') return
+    const t = setTimeout(() => setHeldProgress(storeProgress), 0)
+    return () => clearTimeout(t)
+  }, [storeProgress])
+  useEffect(() => {
+    if (artBlurred) return
+    const t = setTimeout(() => setHeldProgress(undefined), 0)
+    return () => clearTimeout(t)
+  }, [artBlurred])
+  const progress = typeof storeProgress === 'number' ? storeProgress : heldProgress
+  const isRevealing = artBlurred && typeof progress === 'number'
 
   const handleSelect = (): void => {
     if (activeView !== 'library') void setActiveView('library')

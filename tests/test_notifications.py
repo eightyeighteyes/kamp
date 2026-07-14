@@ -124,7 +124,7 @@ class TestNotifySentinel:
         stage_received: list[str] = []
         _handle_stage_msg(
             self._make_notify_msg(),
-            stage_callback=stage_received.append,
+            stage_callback=lambda s, _sid, _c: stage_received.append(s),
             on_directory=None,
             notification_callback=lambda *a: None,
         )

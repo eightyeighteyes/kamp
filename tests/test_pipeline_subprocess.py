@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import queue as _queue_module
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,12 @@ from kamp_daemon.config import (
     MusicBrainzConfig,
     PathsConfig,
 )
-from kamp_daemon.pipeline import _DIR_SENTINEL, _handle_stage_msg, run_in_subprocess
+from kamp_daemon.pipeline import (
+    _DIR_SENTINEL,
+    _STAGE_SENTINEL,
+    _handle_stage_msg,
+    run_in_subprocess,
+)
 
 
 def _make_config(tmp_path: Path) -> Config:
@@ -184,7 +190,7 @@ class TestRunInSubprocess:
             run_in_subprocess(
                 tmp_path / "album",
                 _make_config(tmp_path),
-                stage_callback=received.append,
+                stage_callback=lambda s, _sid, _c: received.append(s),
             )
 
         assert received == ["Extracting", "Tagging"]
@@ -288,7 +294,7 @@ class TestOnDirectorySentinel:
             run_in_subprocess(
                 tmp_path / "album.zip",
                 _make_config(tmp_path),
-                stage_callback=stage_received.append,
+                stage_callback=lambda s, _sid, _c: stage_received.append(s),
             )
 
         assert stage_received == ["Tagging"]
@@ -333,10 +339,36 @@ class TestOnDirectorySentinel:
 
 
 class TestHandleStageMsg:
-    def test_stage_label_calls_stage_callback(self) -> None:
-        received: list[str] = []
-        _handle_stage_msg("Tagging", received.append, None)
-        assert received == ["Tagging"]
+    def test_stage_sentinel_decodes_to_stage_callback(self) -> None:
+        """A __stage__: sentinel decodes to (stage, sale_item_id, committed) — the
+        KAMP-562 per-album payload."""
+        received: list[tuple[str, str | None, bool]] = []
+        msg = f'{_STAGE_SENTINEL}{json.dumps({"stage": "Tagging", "sale_item_id": "S1", "committed": False})}'
+        _handle_stage_msg(msg, lambda s, sid, c: received.append((s, sid, c)), None)
+        assert received == [("Tagging", "S1", False)]
+
+    def test_stage_sentinel_terminal_committed_true(self) -> None:
+        received: list[tuple[str, str | None, bool]] = []
+        msg = f'{_STAGE_SENTINEL}{json.dumps({"stage": "", "sale_item_id": "S1", "committed": True})}'
+        _handle_stage_msg(msg, lambda s, sid, c: received.append((s, sid, c)), None)
+        assert received == [("", "S1", True)]
+
+    def test_malformed_stage_sentinel_is_ignored(self) -> None:
+        received: list[tuple[str, str | None, bool]] = []
+        _handle_stage_msg(
+            f"{_STAGE_SENTINEL}not-json",
+            lambda s, sid, c: received.append((s, sid, c)),
+            None,
+        )
+        assert received == []
+
+    def test_bare_stage_label_falls_through_with_null_id(self) -> None:
+        """A legacy bare stage string is accepted defensively as (stage, None, False)."""
+        received: list[tuple[str, str | None, bool]] = []
+        _handle_stage_msg(
+            "Tagging", lambda s, sid, c: received.append((s, sid, c)), None
+        )
+        assert received == [("Tagging", None, False)]
 
     def test_dir_sentinel_calls_on_directory(self, tmp_path: Path) -> None:
         called: list[Path] = []
@@ -345,9 +377,12 @@ class TestHandleStageMsg:
 
     def test_dir_sentinel_not_forwarded_to_stage_callback(self, tmp_path: Path) -> None:
         received: list[str] = []
-        _handle_stage_msg(f"{_DIR_SENTINEL}{tmp_path}", received.append, None)
+        _handle_stage_msg(
+            f"{_DIR_SENTINEL}{tmp_path}", lambda s, _sid, _c: received.append(s), None
+        )
         assert received == []
 
     def test_no_callbacks_set_is_safe(self, tmp_path: Path) -> None:
         _handle_stage_msg("Extracting", None, None)
         _handle_stage_msg(f"{_DIR_SENTINEL}{tmp_path}", None, None)
+        _handle_stage_msg(f"{_STAGE_SENTINEL}{{}}", None, None)

@@ -202,6 +202,35 @@
   pointer-events: none;
 }
 
+/* Tagging: the album is in the post-download pipeline (KAMP-562). The badge
+   swaps its source glyph for a tag icon and pulses (accent-tinted) to signal
+   "still processing" until the rescan flips the album to local. Uses
+   opacity/transform only (not height) per the Electron CSS-animation landmine. */
+@keyframes albumSourceBadgeTagPulse {
+  0%,
+  100% {
+    opacity: 0.6;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+.album-source-badge--tagging {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+/* Gate the motion like the rest of the card's animations — a lone unguarded
+   pulse would be an accessibility regression. */
+@media (prefers-reduced-motion: no-preference) {
+  .album-source-badge--tagging {
+    animation: albumSourceBadgeTagPulse 1.4s ease-in-out infinite;
+  }
+}
+
 /* Reserve right-side space so title doesn't run under the badge */
 .album-card--remote .album-title {
   padding-right: 24px;

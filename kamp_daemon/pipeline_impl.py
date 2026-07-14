@@ -75,16 +75,21 @@ def run(
     path: Path,
     config: Config,
     _on_directory: Callable[[Path], None] | None = None,
-    stage_callback: Callable[[str], None] | None = None,
+    stage_callback: Callable[[str, str | None, bool], None] | None = None,
     notify_callback: Callable[[str], None] | None = None,
     index_path: Path | None = None,
 ) -> None:
     """Process a single watch folder item (ZIP or directory) end-to-end.
 
     On per-step failure the item is moved to <watch-folder>/errors/ so the watcher
-    does not trigger on it again.  *stage_callback* (if provided) is called
-    with the current stage name ("Extracting", "Tagging", etc.) and with an
-    empty string in a finally block so the caller can always reset its display.
+    does not trigger on it again.  *stage_callback* (if provided) is called with
+    ``(stage, sale_item_id, committed)`` — the current stage name ("Extracting",
+    "Tagging", etc.), the Bandcamp ``sale_item_id`` for this artifact (KAMP-562;
+    ``None`` for non-download drops), and whether the item has been committed to
+    the library. It is also called with an empty stage string in a finally block
+    so the caller can reset its display; that terminal call carries the final
+    *committed* value so a per-album UI can tell success (rescan coming → hold)
+    from quarantine (no rescan → clear now).
     *notify_callback* (if provided) receives __notify__: sentinel strings that
     the parent process routes to rumps.notification().
     """
@@ -120,10 +125,22 @@ def run(
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Provenance lookup failed (non-fatal): %s", exc)
 
+    # KAMP-562: carry the album identity (and, on the terminal reset, whether the
+    # item reached the library) alongside every stage so a per-album UI can show
+    # a "processing" badge on the right card. `emit` reads `committed` at call
+    # time (Python closure), so the finally-block reset reflects the real outcome.
+    sale_item_id: str | None = (
+        provenance.sale_item_id if provenance is not None else None
+    )
+    committed = False
+
+    def emit(stage: str) -> None:
+        if stage_callback:
+            stage_callback(stage, sale_item_id, committed)
+
     try:
         # --- 1. Extract -------------------------------------------------------
-        if stage_callback:
-            stage_callback("Extracting")
+        emit("Extracting")
         try:
             if _TEST_INJECT["extraction"] in path.name:
                 raise ExtractionError("Injected by test-notify --type extraction")
@@ -159,8 +176,7 @@ def run(
         # Skip the MusicBrainz lookup (and tag writes) when every file already has
         # an MBID — the most expensive operation in the pipeline.  If even one file
         # is untagged, run the full pass for the whole directory to stay consistent.
-        if stage_callback:
-            stage_callback("Tagging")
+        emit("Tagging")
         if provenance is not None:
             # KAMP-523: we already own this release's identity and metadata.
             # Keep the file's Bandcamp tags, overlay the user's display edits,
@@ -223,8 +239,7 @@ def run(
         # Always run: even if art is already embedded, a higher-quality image may
         # be available (e.g. a bundled cover.jpg in the ZIP that beats the art the
         # original files shipped with).
-        if stage_callback:
-            stage_callback("Updating artwork")
+        emit("Updating artwork")
         cover_art_result: tuple[bytes, str] | None = None
         try:
             if _TEST_INJECT["artwork"] in directory.name:
@@ -253,8 +268,7 @@ def run(
             _notify(notify_callback, "Artwork warning", str(exc)[:120])
 
         # --- 4. Move ----------------------------------------------------------
-        if stage_callback:
-            stage_callback("Moving")
+        emit("Moving")
         try:
             if _TEST_INJECT["move"] in directory.name:
                 raise MoveError("Injected by test-notify --type move")
@@ -264,6 +278,10 @@ def run(
                 library_root=library,
                 path_template=config.library.path_template,
             )
+            # KAMP-562: the item is now in the library. A rescan will flip its
+            # card to local; the terminal reset emits committed=True so the UI
+            # holds the badge until then instead of clearing (and flickering).
+            committed = True
         except MoveError as exc:
             logger.error("Move failed: %s", exc)
             _notify(notify_callback, "Move failed", path.name)
@@ -286,9 +304,11 @@ def run(
 
     finally:
         # Always clear the stage so the caller's display resets on success,
-        # quarantine, or unexpected error.
-        if stage_callback:
-            stage_callback("")
+        # quarantine, or unexpected error. The terminal reset carries the final
+        # `committed` value (KAMP-562) so the UI distinguishes success from
+        # quarantine. `provenance` is an in-memory local, unaffected by the
+        # clear_pending_ingest below, so `sale_item_id` is still valid here.
+        emit("")
         # KAMP-523: drop the provenance handoff whether we succeeded or
         # quarantined — it has served its purpose and must never be replayed
         # against a later, unrelated file at the same path.

@@ -491,7 +491,7 @@ class TestStageCallback:
             patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
             patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[]),
         ):
-            run(album_dir, config, stage_callback=calls.append)
+            run(album_dir, config, stage_callback=lambda s, _sid, _c: calls.append(s))
 
         assert calls == ["Extracting", "Tagging", "Updating artwork", "Moving", ""]
 
@@ -504,7 +504,7 @@ class TestStageCallback:
         bad_zip.write_bytes(b"not a zip")
         calls: list[str] = []
 
-        run(bad_zip, config, stage_callback=calls.append)
+        run(bad_zip, config, stage_callback=lambda s, _sid, _c: calls.append(s))
 
         assert calls[-1] == ""
 
@@ -516,9 +516,109 @@ class TestStageCallback:
         calls: list[str] = []
 
         with patch("musicbrainzngs.search_releases", return_value={"release-list": []}):
-            run(album_dir, config, stage_callback=calls.append)
+            run(album_dir, config, stage_callback=lambda s, _sid, _c: calls.append(s))
 
         assert calls[-1] == ""
+
+    # -- KAMP-562: stage payload carries sale_item_id + committed ------------
+
+    def _seed_pending(self, db_path: Path, artifact: Path, sid: str) -> None:
+        """Seed a collection item + pending_ingest row so run() resolves
+        provenance and emits the album's sale_item_id."""
+        from kamp_core.library import LibraryIndex
+
+        idx = LibraryIndex(db_path)
+        idx.upsert_collection_item(sid, mode="local")
+        idx.add_pending_ingest(str(artifact), sid, "T1")
+        idx.close()
+
+    def test_stage_payload_carries_sale_item_id_and_committed_on_success(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """Every stage carries the album's sale_item_id; the terminal reset
+        reports committed=True once the item reached the library (KAMP-562)."""
+        album_dir = self._setup_dir(config)
+        db = tmp_path / "lib.db"
+        self._seed_pending(db, album_dir, "S1")
+        stages: list[tuple[str, str | None, bool]] = []
+
+        with (
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MOCK_TRACKS
+            ),
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
+            patch(
+                "kamp_daemon.pipeline_impl.move_to_library",
+                return_value=[config.paths.library / "x.mp3"],
+            ),
+        ):
+            run(
+                album_dir,
+                config,
+                stage_callback=lambda s, sid, c: stages.append((s, sid, c)),
+                index_path=db,
+            )
+
+        # sale_item_id is present on every emission and equals the album row's id.
+        assert {sid for _s, sid, _c in stages} == {"S1"}
+        # committed flips True only after the successful move, so the terminal
+        # reset is the one that reports it.
+        assert stages[-1] == ("", "S1", True)
+        # In-flight stages are not yet committed.
+        assert all(not c for s, _sid, c in stages if s != "")
+
+    def test_stage_payload_committed_false_on_quarantine(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """A pipeline that quarantines never commits, so the terminal reset
+        reports committed=False — the UI clears the badge with no rescan to wait
+        for (KAMP-562)."""
+        album_dir = self._setup_dir(config)
+        db = tmp_path / "lib.db"
+        self._seed_pending(db, album_dir, "S1")
+        stages: list[tuple[str, str | None, bool]] = []
+
+        with (
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MOCK_TRACKS
+            ),
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
+            patch(
+                "kamp_daemon.pipeline_impl.move_to_library",
+                side_effect=MoveError("disk full"),
+            ),
+        ):
+            run(
+                album_dir,
+                config,
+                stage_callback=lambda s, sid, c: stages.append((s, sid, c)),
+                index_path=db,
+            )
+
+        assert stages[-1] == ("", "S1", False)
+
+    def test_stage_payload_sid_none_without_provenance(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """A manual (non-download) drop has no pending_ingest, so sale_item_id is
+        None and the card shows no tag badge (KAMP-562)."""
+        album_dir = self._setup_dir(config)
+        stages: list[tuple[str, str | None, bool]] = []
+
+        with (
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MOCK_TRACKS
+            ),
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
+            patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[]),
+        ):
+            run(
+                album_dir,
+                config,
+                stage_callback=lambda s, sid, c: stages.append((s, sid, c)),
+            )  # no index_path → no provenance
+
+        assert {sid for _s, sid, _c in stages} == {None}
 
 
 # ---------------------------------------------------------------------------

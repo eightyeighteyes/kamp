@@ -1043,14 +1043,29 @@ def create_app(
         state = "idle" if not status_msg else "syncing"
         _broadcast({"type": "bandcamp.sync-status", "state": state})
 
-    def _notify_pipeline_stage(stage: str) -> None:
+    def _notify_pipeline_stage(
+        stage: str, sale_item_id: str | None = None, committed: bool = False
+    ) -> None:
         """Broadcast the current pipeline stage to all connected WebSocket clients.
 
         stage is "" when idle, or a human-readable label ("Extracting", "Tagging",
         "Updating artwork", "Moving") while work is in progress.
+
+        KAMP-562: *sale_item_id* identifies the album being processed (None for
+        non-download drops) so a per-album card can show a tagging badge; the
+        global pipeline indicator ignores it and reads only ``stage``.
+        *committed* is True on the terminal "" reset only when the item reached
+        the library, letting the UI tell success (rescan coming) from quarantine.
         Called from the watcher thread — _broadcast is thread-safe.
         """
-        _broadcast({"type": "pipeline.stage", "stage": stage})
+        _broadcast(
+            {
+                "type": "pipeline.stage",
+                "stage": stage,
+                "sale_item_id": sale_item_id,
+                "committed": committed,
+            }
+        )
 
     def _notify_audio_level(
         left_db: float, right_db: float, crest_db: float, peak_db: float

@@ -32,6 +32,12 @@ _DIR_SENTINEL = "__dir__:"
 # ambiguity.
 _NOTIFY_SENTINEL = "__notify__:"
 
+# Prefix written to stage_q for a pipeline stage update (KAMP-562). Payload is a
+# compact JSON object with "stage", "sale_item_id" (str | null), and "committed"
+# (bool) so the parent can route the stage to the right album card. The old bare
+# stage string is still accepted by _handle_stage_msg for defensiveness.
+_STAGE_SENTINEL = "__stage__:"
+
 
 def _pipeline_worker(
     path: Path,
@@ -75,7 +81,10 @@ def _pipeline_worker(
             path,
             config,
             _on_directory=lambda d: stage_q.put(f"{_DIR_SENTINEL}{d}"),
-            stage_callback=lambda s: stage_q.put(s),
+            stage_callback=lambda s, sid, c: stage_q.put(
+                f"{_STAGE_SENTINEL}"
+                f"{json.dumps({'stage': s, 'sale_item_id': sid, 'committed': c})}"
+            ),
             notify_callback=lambda s: stage_q.put(s),
             # KAMP-523: the live DB path so the pipeline can consume the
             # download → ingest provenance handoff (see pipeline_impl.run).
@@ -112,7 +121,7 @@ def _spawn_worker(  # pragma: no cover
 
 def _handle_stage_msg(
     msg: str,
-    stage_callback: Callable[[str], None] | None,
+    stage_callback: Callable[[str, str | None, bool], None] | None,
     on_directory: Callable[[Path], None] | None,
     notification_callback: Callable[[str, str, str], None] | None = None,
 ) -> None:
@@ -129,8 +138,20 @@ def _handle_stage_msg(
                 )
             except Exception:
                 logger.warning("Malformed notification sentinel: %r", msg)
+    elif msg.startswith(_STAGE_SENTINEL):
+        if stage_callback is not None:
+            try:
+                payload = json.loads(msg[len(_STAGE_SENTINEL) :])
+                stage_callback(
+                    payload["stage"],
+                    payload.get("sale_item_id"),
+                    bool(payload.get("committed", False)),
+                )
+            except Exception:
+                logger.warning("Malformed stage sentinel: %r", msg)
     elif stage_callback is not None:
-        stage_callback(msg)
+        # Defensive: a bare (legacy) stage string carries no album identity.
+        stage_callback(msg, None, False)
 
 
 def _replay_log_queue(log_q: Any) -> None:
@@ -147,7 +168,7 @@ def run_in_subprocess(
     path: Path,
     config: Config,
     _on_directory: Callable[[Path], None] | None = None,
-    stage_callback: Callable[[str], None] | None = None,
+    stage_callback: Callable[[str, str | None, bool], None] | None = None,
     notification_callback: Callable[[str, str, str], None] | None = None,
 ) -> None:
     """Process a single staging item in an isolated subprocess.

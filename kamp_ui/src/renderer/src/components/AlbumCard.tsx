@@ -3,7 +3,14 @@ import { useStore } from '../store'
 import { artUrl } from '../api/client'
 import type { Album } from '../api/client'
 import { AlbumContextMenu } from './AlbumContextMenu'
-import { BandcampIcon, CloudIcon, FavoriteIcon, PlayIcon, WarnIcon } from './TransportIcons'
+import {
+  BandcampIcon,
+  CloudIcon,
+  FavoriteIcon,
+  PlayIcon,
+  TagIcon,
+  WarnIcon
+} from './TransportIcons'
 import { useNewArrivalHighlight } from './useNewArrivalHighlight'
 
 type MenuPos = { x: number; y: number }
@@ -35,11 +42,18 @@ export function AlbumCard({
   const queuedAlbumIds = useStore((s) => s.queuedAlbumIds)
   const downloadProgress = useStore((s) => s.downloadProgress)
   const clearAlbumProgress = useStore((s) => s.clearAlbumProgress)
+  const taggingAlbumIds = useStore((s) => s.taggingAlbumIds)
+  const clearAlbumTagging = useStore((s) => s.clearAlbumTagging)
   const connected = configValues?.['bandcamp.connected'] ?? false
   const isRemote = album.source !== 'local'
   const isOffline = isRemote && !connected
   const isDownloading = album.sale_item_id != null && downloadingAlbumIds.has(album.sale_item_id)
   const isQueued = album.sale_item_id != null && queuedAlbumIds.has(album.sale_item_id)
+  // KAMP-562: the album is in the post-download pipeline → show a pulsing tag
+  // badge in place of the source icon. isRemote-gated, so on success it unmounts
+  // when the rescan flips the album to local (no explicit clear needed).
+  const isTagging =
+    isRemote && album.sale_item_id != null && taggingAlbumIds.has(album.sale_item_id)
   // KAMP-436: a known byte-progress percent drives the top-down art reveal;
   // when it's absent the card keeps the indeterminate download pulse. The
   // reveal itself is derived below (after artBlurred) so it can be held through
@@ -100,6 +114,13 @@ export function AlbumCard({
     if (artBlurred || album.sale_item_id == null) return
     clearAlbumProgress(album.sale_item_id)
   }, [artBlurred, album.sale_item_id, clearAlbumProgress])
+
+  // KAMP-562: reap the tagging entry once the album is local (isRemote gates the
+  // visual, so this is store hygiene only). No-op when absent → no re-render churn.
+  useEffect(() => {
+    if (isRemote || album.sale_item_id == null) return
+    clearAlbumTagging(album.sale_item_id)
+  }, [isRemote, album.sale_item_id, clearAlbumTagging])
 
   const handleSelect = (): void => {
     if (activeView !== 'library') void setActiveView('library')
@@ -296,8 +317,13 @@ export function AlbumCard({
           </span>
         )}
         {isRemote && (
-          <div className="album-source-badge" aria-label={`Remote source: ${album.source}`}>
-            {sourceIcon(album.source, 10)}
+          <div
+            className={`album-source-badge${isTagging ? ' album-source-badge--tagging' : ''}`}
+            aria-label={
+              isTagging ? 'Processing downloaded album' : `Remote source: ${album.source}`
+            }
+          >
+            {isTagging ? <TagIcon size={10} /> : sourceIcon(album.source, 10)}
           </div>
         )}
         {album.missing_album ? (

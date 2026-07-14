@@ -278,6 +278,20 @@ export default function App(): React.JSX.Element {
             void useStore.getState().loadPlaylistTracks(id)
           }
           bumpMagicPlaylistVersion()
+        },
+        (saleItemId, stage, committed) => {
+          // KAMP-562: per-album pipeline stage → tagging badge. Non-download
+          // drops carry no sale_item_id, so there's no card to decorate.
+          if (saleItemId == null) return
+          if (stage !== '') {
+            useStore.getState().markAlbumTagging(saleItemId)
+          } else if (!committed) {
+            // Quarantine/error: no rescan will flip the album to local, so clear
+            // the badge now (reverting to the normal remote badge, no flicker).
+            // On success (committed) we hold — the badge unmounts on its own when
+            // the rescan flips isRemote, avoiding a flash to the plain badge.
+            useStore.getState().clearAlbumTagging(saleItemId)
+          }
         }
       )
     }

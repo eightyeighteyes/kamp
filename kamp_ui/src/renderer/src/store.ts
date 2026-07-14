@@ -147,6 +147,7 @@ type PlayerStore = {
   markAlbumQueued: (saleItemId: string) => void
   clearAlbumQueued: (saleItemId: string) => void
   setAlbumProgress: (saleItemId: string, progress: number) => void
+  clearAlbumProgress: (saleItemId: string) => void
   removeDownload: (saleItemId: string) => Promise<void>
   showFlashToast: (msg: string) => void
   setRecentlyAddedCount: (n: number) => void
@@ -576,16 +577,25 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set((s) => {
       const next = new Set(s.downloadingAlbumIds)
       next.delete(saleItemId)
-      // Drop any progress entry too, so a finished/removed download doesn't
-      // leave a stale reveal percentage behind (KAMP-436).
-      const progress = new Map(s.downloadProgress)
-      progress.delete(saleItemId)
-      return { downloadingAlbumIds: next, downloadProgress: progress }
+      // KAMP-436: intentionally do NOT drop downloadProgress here. The reveal
+      // must stay at 100% through the post-download tag/rescan window (while the
+      // card is still blurred) so it doesn't flash back to full blur. The card
+      // clears the entry itself via clearAlbumProgress once its blur resolves.
+      return { downloadingAlbumIds: next }
     }),
   setAlbumProgress: (saleItemId, progress) =>
     set((s) => {
       const next = new Map(s.downloadProgress)
       next.set(saleItemId, progress)
+      return { downloadProgress: next }
+    }),
+  clearAlbumProgress: (saleItemId) =>
+    set((s) => {
+      // No-op (return the same state ref) when absent, so repeated calls from a
+      // card effect don't churn a new Map / re-render.
+      if (!s.downloadProgress.has(saleItemId)) return s
+      const next = new Map(s.downloadProgress)
+      next.delete(saleItemId)
       return { downloadProgress: next }
     }),
   markAlbumQueued: (saleItemId) =>

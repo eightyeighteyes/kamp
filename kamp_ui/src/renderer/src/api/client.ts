@@ -764,6 +764,15 @@ export type MagicPlaylistUpdatedMessage = {
   type: 'magic_playlist.updated'
   id: number
 }
+export type PipelineStageMessage = {
+  type: 'pipeline.stage'
+  stage: string
+  // KAMP-562: the album being processed (null for non-download drops). `committed`
+  // is true on the terminal empty-stage reset only when the item reached the
+  // library, so the UI can tell success (rescan coming) from quarantine.
+  sale_item_id?: string | null
+  committed?: boolean
+}
 export type ServerMessage =
   | StateMessage
   | TrackChangedMessage
@@ -773,6 +782,7 @@ export type ServerMessage =
   | AudioLevelMessage
   | AlbumDownloadMessage
   | MagicPlaylistUpdatedMessage
+  | PipelineStageMessage
 
 export async function getDeferredOps(): Promise<{ op_id: number; track_id: number }[]> {
   const res = await fetch(`${BASE_URL}/api/v1/deferred-ops`, {
@@ -796,7 +806,10 @@ export function connectStateStream(
     state: 'queued' | 'downloading' | 'done' | 'error' | 'removed',
     progress?: number
   ) => void,
-  onMagicPlaylistUpdated?: (id: number) => void
+  onMagicPlaylistUpdated?: (id: number) => void,
+  // KAMP-562: per-album pipeline stage. Named distinctly from the preload's
+  // global `onPipelineStage` (which drives the nav-bar indicator).
+  onAlbumPipelineStage?: (saleItemId: string | null, stage: string, committed: boolean) => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 
@@ -816,6 +829,8 @@ export function connectStateStream(
       else if (msg.type === 'bandcamp.album-download')
         onAlbumDownload?.(msg.sale_item_id, msg.state, msg.progress)
       else if (msg.type === 'magic_playlist.updated') onMagicPlaylistUpdated?.(msg.id)
+      else if (msg.type === 'pipeline.stage')
+        onAlbumPipelineStage?.(msg.sale_item_id ?? null, msg.stage, msg.committed ?? false)
     } catch {
       // malformed message — ignore
     }

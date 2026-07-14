@@ -2744,6 +2744,57 @@ class TestBandcampSync:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         assert callable(getattr(app.state, "notify_pipeline_stage", None))
 
+    def test_notify_pipeline_stage_broadcasts_sale_item_id_and_committed(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """KAMP-562: the pipeline.stage event carries sale_item_id + committed so a
+        per-album card can show a tagging badge; the global indicator ignores them."""
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # consume initial player.state
+            app.state.notify_pipeline_stage("Tagging", "392692056", False)
+            during = ws.receive_json()
+            app.state.notify_pipeline_stage("", "392692056", True)
+            terminal = ws.receive_json()
+        assert during == {
+            "type": "pipeline.stage",
+            "stage": "Tagging",
+            "sale_item_id": "392692056",
+            "committed": False,
+        }
+        assert terminal == {
+            "type": "pipeline.stage",
+            "stage": "",
+            "sale_item_id": "392692056",
+            "committed": True,
+        }
+
+    def test_notify_pipeline_stage_defaults_are_backward_compatible(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Called with just a stage (the global indicator's usage), sale_item_id is
+        None and committed False — the payload the preload consumer already tolerates.
+        """
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()
+            app.state.notify_pipeline_stage("Extracting")
+            msg = ws.receive_json()
+        assert msg == {
+            "type": "pipeline.stage",
+            "stage": "Extracting",
+            "sale_item_id": None,
+            "committed": False,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Bandcamp sync-all endpoint

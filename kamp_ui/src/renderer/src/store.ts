@@ -118,6 +118,10 @@ type PlayerStore = {
   // KAMP-436: byte-progress percent (0–100) per downloading album, keyed by
   // sale_item_id. Absent entry → progress unknown → card shows the pulse.
   downloadProgress: Map<string, number>
+  // KAMP-562: albums currently in the post-download pipeline (Extracting→Moving),
+  // keyed by sale_item_id. Drives the pulsing tag badge until the rescan flips
+  // the album to local.
+  taggingAlbumIds: Set<string>
   flashToast: string | null
   styleRailVisible: boolean
   selectedTheme: ThemeName
@@ -148,6 +152,8 @@ type PlayerStore = {
   clearAlbumQueued: (saleItemId: string) => void
   setAlbumProgress: (saleItemId: string, progress: number) => void
   clearAlbumProgress: (saleItemId: string) => void
+  markAlbumTagging: (saleItemId: string) => void
+  clearAlbumTagging: (saleItemId: string) => void
   removeDownload: (saleItemId: string) => Promise<void>
   showFlashToast: (msg: string) => void
   setRecentlyAddedCount: (n: number) => void
@@ -423,6 +429,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   downloadingAlbumIds: new Set<string>(),
   queuedAlbumIds: new Set<string>(),
   downloadProgress: new Map<string, number>(),
+  taggingAlbumIds: new Set<string>(),
   flashToast: null,
   styleRailVisible: false,
   selectedTheme: (localStorage.getItem('kamp:selected-theme') as ThemeName | null) ?? 'kamp',
@@ -605,6 +612,17 @@ export const useStore = create<PlayerStore>((set, get) => ({
       const next = new Set(s.queuedAlbumIds)
       next.delete(saleItemId)
       return { queuedAlbumIds: next }
+    }),
+  markAlbumTagging: (saleItemId) =>
+    set((s) => ({ taggingAlbumIds: new Set([...s.taggingAlbumIds, saleItemId]) })),
+  clearAlbumTagging: (saleItemId) =>
+    set((s) => {
+      // No-op (same state ref) when absent so the card's !isRemote cleanup effect
+      // doesn't churn a new Set / re-render (KAMP-562).
+      if (!s.taggingAlbumIds.has(saleItemId)) return s
+      const next = new Set(s.taggingAlbumIds)
+      next.delete(saleItemId)
+      return { taggingAlbumIds: next }
     }),
   removeDownload: async (saleItemId) => {
     try {

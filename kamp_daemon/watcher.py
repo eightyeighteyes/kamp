@@ -62,7 +62,7 @@ class _WatchHandler(FileSystemEventHandler):
             thread_name_prefix="pipeline",
         )
         # Set by Watcher to surface current pipeline stage in the menu bar.
-        self.stage_callback: Callable[[str], None] | None = None
+        self.stage_callback: Callable[[str, str | None, bool], None] | None = None
         # Set by Watcher to deliver error notifications to the menu bar.
         self.notification_callback: Callable[[str, str, str], None] | None = None
         # Called after each successful pipeline run so the library watcher can
@@ -229,16 +229,18 @@ class Watcher:
         self._handler = _WatchHandler(config)
         self._paused = False
         self._started = False  # False until start() succeeds with a real path
-        self._stage_callback: Callable[[str], None] | None = None
+        self._stage_callback: Callable[[str, str | None, bool], None] | None = None
         self._notification_callback: Callable[[str, str, str], None] | None = None
         self._on_pipeline_complete: Callable[[], None] | None = None
 
     @property
-    def stage_callback(self) -> Callable[[str], None] | None:
+    def stage_callback(self) -> Callable[[str, str | None, bool], None] | None:
         return self._stage_callback
 
     @stage_callback.setter
-    def stage_callback(self, cb: Callable[[str], None] | None) -> None:
+    def stage_callback(
+        self, cb: Callable[[str, str | None, bool], None] | None
+    ) -> None:
         self._stage_callback = cb
         self._handler.stage_callback = cb
 

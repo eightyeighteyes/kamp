@@ -75,7 +75,7 @@ def run(
     path: Path,
     config: Config,
     _on_directory: Callable[[Path], None] | None = None,
-    stage_callback: Callable[[str, str | None, bool], None] | None = None,
+    stage_callback: Callable[[str, str | None, bool, str], None] | None = None,
     notify_callback: Callable[[str], None] | None = None,
     index_path: Path | None = None,
 ) -> None:
@@ -83,13 +83,15 @@ def run(
 
     On per-step failure the item is moved to <watch-folder>/errors/ so the watcher
     does not trigger on it again.  *stage_callback* (if provided) is called with
-    ``(stage, sale_item_id, committed)`` — the current stage name ("Extracting",
-    "Tagging", etc.), the Bandcamp ``sale_item_id`` for this artifact (KAMP-562;
-    ``None`` for non-download drops), and whether the item has been committed to
-    the library. It is also called with an empty stage string in a finally block
-    so the caller can reset its display; that terminal call carries the final
-    *committed* value so a per-album UI can tell success (rescan coming → hold)
-    from quarantine (no rescan → clear now).
+    ``(stage, sale_item_id, committed, album)`` — the current stage name
+    ("Extracting", "Tagging", etc.), the Bandcamp ``sale_item_id`` for this
+    artifact (KAMP-562; ``None`` for non-download drops), whether the item has
+    been committed to the library, and a human-readable album label (KAMP-558;
+    the extracted directory name, ``""`` before extraction). It is also called
+    with an empty stage string in a finally block so the caller can reset its
+    display; that terminal call carries the final *committed* value so a
+    per-album UI can tell success (rescan coming → hold) from quarantine (no
+    rescan → clear now).
     *notify_callback* (if provided) receives __notify__: sentinel strings that
     the parent process routes to rumps.notification().
     """
@@ -133,10 +135,16 @@ def run(
         provenance.sale_item_id if provenance is not None else None
     )
     committed = False
+    # KAMP-558: a human-readable album label for the pipeline indicator's
+    # tooltip ("Copying {album}…" / "Tagging {album}…"). Empty until extraction
+    # gives us the on-disk album folder name; cosmetic only — never a key. `emit`
+    # reads it at call time (Python closure) so later stages carry the resolved
+    # name while the pre-extraction "Extracting" tooltip stays generic.
+    album = ""
 
     def emit(stage: str) -> None:
         if stage_callback:
-            stage_callback(stage, sale_item_id, committed)
+            stage_callback(stage, sale_item_id, committed, album)
 
     try:
         # --- 1. Extract -------------------------------------------------------
@@ -150,6 +158,11 @@ def run(
             _notify(notify_callback, "Extraction failed", path.name)
             _quarantine(path, watch_folder)
             return
+
+        # KAMP-558: now that extraction succeeded, the on-disk album folder name
+        # is the best display label for the indicator tooltip. Subsequent emits
+        # (Tagging/Updating artwork/Moving) carry it via the `album` closure var.
+        album = directory.name
 
         # Notify the watcher of the watch folder directory as early as possible so it
         # can cancel any pending debounce timer for this directory.  Without this,

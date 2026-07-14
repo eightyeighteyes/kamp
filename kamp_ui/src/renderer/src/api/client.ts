@@ -772,6 +772,9 @@ export type PipelineStageMessage = {
   // library, so the UI can tell success (rescan coming) from quarantine.
   sale_item_id?: string | null
   committed?: boolean
+  // KAMP-558: human-readable album label for the pipeline indicator tooltip
+  // ("" before extraction, and for pre-558 daemons).
+  album?: string
 }
 export type ServerMessage =
   | StateMessage

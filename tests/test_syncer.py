@@ -300,6 +300,49 @@ class TestStatusCallback:
         ]
 
 
+class TestDispatchDownloadMsg:
+    """KAMP-436: byte-progress from the download subprocess is demuxed away from
+    the global status_callback and onto the per-album progress_callback."""
+
+    def test_progress_message_routes_to_progress_callback(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        progress: list[tuple[str, int]] = []
+        status: list[str] = []
+        syncer.progress_callback = lambda sid, pct: progress.append((sid, pct))
+        syncer.status_callback = status.append
+
+        syncer._dispatch_download_msg("progress:42", "12345")
+
+        assert progress == [("12345", 42)]
+        assert status == []  # must NOT leak to the global sync indicator
+
+    def test_status_message_routes_to_status_callback(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        progress: list[tuple[str, int]] = []
+        status: list[str] = []
+        syncer.progress_callback = lambda sid, pct: progress.append((sid, pct))
+        syncer.status_callback = status.append
+
+        syncer._dispatch_download_msg("Downloading album 12345…", "12345")
+
+        assert status == ["Downloading album 12345…"]
+        assert progress == []
+
+    def test_malformed_progress_is_ignored(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        progress: list[tuple[str, int]] = []
+        syncer.progress_callback = lambda sid, pct: progress.append((sid, pct))
+
+        syncer._dispatch_download_msg("progress:notanint", "12345")
+
+        assert progress == []
+
+    def test_progress_without_callback_is_safe(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        # progress_callback unset (None) — must not raise.
+        syncer._dispatch_download_msg("progress:50", "12345")
+
+
 class TestLazyImport:
     def test_bandcamp_not_imported_at_construction(self, tmp_path: Path) -> None:
         """Constructing a Syncer must not load bandcamp (and by extension playwright)."""
@@ -884,6 +927,7 @@ class TestDownloadAlbum:
             index: object,
             sale_item_id: str,
             status_callback: object,
+            on_progress: object = None,
         ) -> str:
             return expected
 

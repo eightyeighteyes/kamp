@@ -96,6 +96,38 @@
   animation: none;
 }
 
+/* Progress-driven bottom-up reveal (KAMP-436) --------------------------------
+   When the daemon reports byte-progress, the base .album-art-img stays a steady
+   blur (no pulse) and a sharp copy is masked in from the bottom up. --reveal is
+   the download percentage (0–100), set inline from the WebSocket. A soft mask
+   band (not a hard clip edge) hides the seam against the blur's bleed. Uses
+   mask-image, not any height/scaleY animation, per the Electron CSS landmine. */
+.album-art--revealing .album-art-img {
+  animation: none;
+  filter: blur(6px);
+}
+
+.album-art-reveal {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Clear from the top down: sharp (black) from the top to --reveal%, then
+     transparent below so the blurred base shows through. ~12% feather so the
+     boundary reads as a soft wipe rather than a hard line. */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(var(--reveal, 0) * 1% - 6%),
+    transparent calc(var(--reveal, 0) * 1% + 6%)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(var(--reveal, 0) * 1% - 6%),
+    transparent calc(var(--reveal, 0) * 1% + 6%)
+  );
+}
+
 .now-playing-badge {
   position: absolute;
   bottom: 6px;

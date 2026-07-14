@@ -33,11 +33,19 @@ export function AlbumCard({
   const configValues = useStore((s) => s.configValues)
   const downloadingAlbumIds = useStore((s) => s.downloadingAlbumIds)
   const queuedAlbumIds = useStore((s) => s.queuedAlbumIds)
+  const downloadProgress = useStore((s) => s.downloadProgress)
+  const clearAlbumProgress = useStore((s) => s.clearAlbumProgress)
   const connected = configValues?.['bandcamp.connected'] ?? false
   const isRemote = album.source !== 'local'
   const isOffline = isRemote && !connected
   const isDownloading = album.sale_item_id != null && downloadingAlbumIds.has(album.sale_item_id)
   const isQueued = album.sale_item_id != null && queuedAlbumIds.has(album.sale_item_id)
+  // KAMP-436: a known byte-progress percent drives the top-down art reveal;
+  // when it's absent the card keeps the indeterminate download pulse. The
+  // reveal itself is derived below (after artBlurred) so it can be held through
+  // the post-download rescan window.
+  const storeProgress =
+    album.sale_item_id != null ? downloadProgress.get(album.sale_item_id) : undefined
   const [artLoaded, setArtLoaded] = useState(false)
   const [artError, setArtError] = useState(false)
   const [menu, setMenu] = useState<MenuPos | null>(null)
@@ -79,6 +87,19 @@ export function AlbumCard({
     const t = setTimeout(() => setArtBlurred(false), 0)
     return () => clearTimeout(t)
   }, [album.has_art, isDownloading])
+
+  // KAMP-436: the reveal is gated on artBlurred (not isDownloading) so the
+  // fully-clear art holds through the post-download tag/rescan window instead of
+  // flashing back to full blur. downloadProgress is kept in the store across the
+  // 'done' transition (see clearAlbumDownloading) precisely so `progress` stays
+  // numeric for as long as artBlurred is true — overlay and base-blur then
+  // appear/disappear in the same commit. Once the blur resolves (local art
+  // loaded), clear the store entry.
+  const isRevealing = artBlurred && typeof storeProgress === 'number'
+  useEffect(() => {
+    if (artBlurred || album.sale_item_id == null) return
+    clearAlbumProgress(album.sale_item_id)
+  }, [artBlurred, album.sale_item_id, clearAlbumProgress])
 
   const handleSelect = (): void => {
     if (activeView !== 'library') void setActiveView('library')
@@ -142,7 +163,8 @@ export function AlbumCard({
       }}
     >
       <div
-        className={`album-art${artLoaded ? ' has-art' : ''}${artBlurred ? ' album-art--blurred' : ''}`}
+        className={`album-art${artLoaded ? ' has-art' : ''}${artBlurred ? ' album-art--blurred' : ''}${isRevealing ? ' album-art--revealing' : ''}`}
+        style={isRevealing ? ({ '--reveal': storeProgress } as React.CSSProperties) : undefined}
       >
         {album.has_art && !artError && (
           <img
@@ -157,6 +179,19 @@ export function AlbumCard({
               setArtLoaded(false)
               setArtError(true)
             }}
+          />
+        )}
+        {isRevealing && album.has_art && !artError && (
+          // Sharp copy of the art, masked to reveal from the bottom up as the
+          // download progresses. Same src → served from cache, no extra fetch.
+          <img
+            className="album-art-reveal"
+            src={artUrl(album.album_artist, album.album, {
+              trackId: album.track_id,
+              version: album.art_version
+            })}
+            alt=""
+            aria-hidden="true"
           />
         )}
         {playing && isActive && (

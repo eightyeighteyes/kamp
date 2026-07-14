@@ -607,6 +607,7 @@ def download_single_album(
     index: "LibraryIndex",
     sale_item_id: str,
     status_callback: Callable[[str], None] | None = None,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Path:
     """Download one Bandcamp purchase to *watch_dir* by its *sale_item_id*.
 
@@ -646,7 +647,7 @@ def download_single_album(
         status_callback(f"Downloading album {sale_item_id}…")
 
     watch_dir.mkdir(parents=True, exist_ok=True)
-    dest = _download_item(item, bc_config, watch_dir, session)
+    dest = _download_item(item, bc_config, watch_dir, session, on_progress=on_progress)
 
     # Mark the collection item as locally downloaded. The remote track rows
     # (bandcamp:// file_path) are left in place — a library rescan triggered
@@ -1314,6 +1315,7 @@ def _download_item(
     bc_config: BandcampConfig,
     watch_dir: Path,
     session: _AnySession,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Path:
     band_name: str = item.get("band_name", "Unknown Artist")
     item_title: str = item.get("item_title", "Unknown Album")
@@ -1339,14 +1341,18 @@ def _download_item(
         # Dev mode: the requests.Session carries Bandcamp cookies.
         # popplers5 requires cookies to serve the ZIP; pass the authenticated
         # session directly so requests follows any redirect automatically.
-        return _download_file(cdn_url, dest_base, session, bc_config.format)
+        return _download_file(
+            cdn_url, dest_base, session, bc_config.format, on_progress=on_progress
+        )
     # Frozen mode: Electron's net.fetch carries cookies and follows the
     # popplers5 → bcbits.com redirect via the proxy HEAD call.
     # Download from bcbits.com directly — its pre-signed URLs need no cookies.
     final_url = _resolve_cdn_redirect(cdn_url, session)
     dl_session = _requests.Session()
     dl_session.headers["User-Agent"] = _UA
-    return _download_file(final_url, dest_base, dl_session, bc_config.format)
+    return _download_file(
+        final_url, dest_base, dl_session, bc_config.format, on_progress=on_progress
+    )
 
 
 # Content-Type → file extension for bare audio downloads (single tracks).
@@ -1384,11 +1390,32 @@ def _audio_extension(content_type: str, fmt: str) -> str:
     return _AUDIO_CONTENT_TYPE_EXT.get(ct) or _FORMAT_EXT.get(fmt) or ".mp3"
 
 
+# Minimum wall-clock gap between byte-progress callbacks, so a fast download
+# doesn't flood the WebSocket with a callback per 1 MB chunk (KAMP-436).
+_PROGRESS_MIN_INTERVAL = 0.5
+
+
+def _parse_content_length(value: str | None) -> int | None:
+    """Return a positive int Content-Length, or None when absent/unparseable.
+
+    The CDN/bcbits streaming leg may omit Content-Length; without a known
+    total the download percentage is unknowable and progress is suppressed.
+    """
+    if not value:
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 def _download_file(
     cdn_url: str,
     dest_base: Path,
     session: _requests.Session,
     fmt: str,
+    on_progress: Callable[[int], None] | None = None,
 ) -> Path:
     """Stream *cdn_url* to a file under *dest_base*, following redirects.
 
@@ -1416,9 +1443,30 @@ def _download_file(
                 content_type,
                 cdn_url,
             )
+            # KAMP-436: report byte-progress so the album card can reveal its
+            # art bottom-up. Only possible when the server declares a total;
+            # throttled by wall-clock time so we emit ~2/s, not per chunk.
+            total = _parse_content_length(resp.headers.get("Content-Length"))
+            written = 0
+            last_emit = time.monotonic()
+            last_pct = -1
             with open(tmp, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=1024 * 1024):
                     fh.write(chunk)
+                    if on_progress is None or not total:
+                        continue
+                    written += len(chunk)
+                    now = time.monotonic()
+                    if now - last_emit >= _PROGRESS_MIN_INTERVAL:
+                        pct = min(100, written * 100 // total)
+                        if pct != last_pct:
+                            on_progress(pct)
+                            last_pct = pct
+                        last_emit = now
+            # Always land on a definitive 100 once the bytes are all written,
+            # even if the last in-loop emit was throttled or short of 100.
+            if on_progress is not None and total and last_pct != 100:
+                on_progress(100)
 
         with open(tmp, "rb") as fh:
             magic = fh.read(4)

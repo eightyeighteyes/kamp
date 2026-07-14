@@ -188,6 +188,30 @@ class TestKampBandcampSyncer:
         syncer.error_callback = cb
         assert syncer._inner.error_callback is cb
 
+    def test_progress_callback_getter_delegates(self) -> None:
+        """progress_callback getter returns the inner syncer's value (KAMP-436)."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer._inner.progress_callback = cb
+        assert syncer.progress_callback is cb
+
+    def test_progress_callback_setter_delegates(self) -> None:
+        """progress_callback setter writes THROUGH to the inner syncer (KAMP-436).
+
+        Regression: without the setter the assignment landed on the wrapper and
+        the inner Syncer (which runs download_album) never forwarded progress, so
+        the album card showed no reveal.
+        """
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer.progress_callback = cb
+        assert syncer._inner.progress_callback is cb
+
+    def test_progress_callback_none_before_configure(self) -> None:
+        """progress_callback returns None when _inner has not been configured."""
+        syncer = KampBandcampSyncer(_ctx())
+        assert syncer.progress_callback is None
+
     def test_status_callback_none_before_configure(self) -> None:
         """status_callback returns None when _inner has not been configured."""
         syncer = KampBandcampSyncer(_ctx())

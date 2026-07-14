@@ -251,13 +251,18 @@ export default function App(): React.JSX.Element {
         },
         setAudioLevel,
         bumpLastPlayedVersion,
-        (saleItemId, state) => {
+        (saleItemId, state, progress) => {
           if (state === 'queued') {
             useStore.getState().clearAlbumDownloading(saleItemId)
             useStore.getState().markAlbumQueued(saleItemId)
           } else if (state === 'downloading') {
             useStore.getState().clearAlbumQueued(saleItemId)
             useStore.getState().markAlbumDownloading(saleItemId)
+            // KAMP-436: numeric percent drives the bottom-up art reveal; its
+            // absence leaves the card on the indeterminate pulse.
+            if (typeof progress === 'number') {
+              useStore.getState().setAlbumProgress(saleItemId, progress)
+            }
           } else {
             useStore.getState().clearAlbumQueued(saleItemId)
             useStore.getState().clearAlbumDownloading(saleItemId)

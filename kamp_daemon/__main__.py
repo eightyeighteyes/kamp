@@ -1265,6 +1265,8 @@ def _cmd_daemon(
     _album_download_trigger_ref[0] = core.syncer.download_album
 
     core.syncer.status_callback = app.state.notify_bandcamp_sync_status
+    # KAMP-436: per-album byte-progress, distinct from the global status_callback.
+    core.syncer.progress_callback = app.state.notify_album_download_progress
     core.syncer.on_tracks_indexed = app.state.notify_library_changed
     core.watcher.stage_callback = app.state.notify_pipeline_stage
 

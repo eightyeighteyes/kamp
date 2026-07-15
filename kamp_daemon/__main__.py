@@ -1040,6 +1040,9 @@ def _cmd_daemon(
 
         def _on_state(provider_item_id: str, state: str) -> None:
             app.state.notify_album_download_status(provider_item_id, state)
+            # Structured queue snapshot for the Downloads view on every transition
+            # (KAMP-566) — carries failed items' error_text back to the UI.
+            app.state.notify_download_queue()
             if state == "done":
                 app.state.notify_library_changed()
 
@@ -1251,8 +1254,19 @@ def _cmd_daemon(
     _album_download_trigger_ref[0] = core.syncer.download_album
 
     core.syncer.status_callback = app.state.notify_bandcamp_sync_status
-    # KAMP-436: per-album byte-progress, distinct from the global status_callback.
-    core.syncer.progress_callback = app.state.notify_album_download_progress
+    # KAMP-436/566: per-album byte-progress, distinct from the global
+    # status_callback. Persist the exact Content-Length to the queue row once per
+    # item (size_is_estimate=0, overriding any pre-download estimate) and broadcast
+    # the progress, then let the syncer forward each (downloaded, total) tick.
+    _download_sizes_seen: dict[str, int] = {}
+
+    def _on_download_progress(pid: str, downloaded: int, total: int) -> None:
+        if total and _download_sizes_seen.get(pid) != total:
+            index.set_download_size(pid, total, is_estimate=False)
+            _download_sizes_seen[pid] = total
+        app.state.notify_album_download_progress(pid, downloaded, total)
+
+    core.syncer.progress_callback = _on_download_progress
     core.syncer.on_tracks_indexed = app.state.notify_library_changed
     core.watcher.stage_callback = app.state.notify_pipeline_stage
 

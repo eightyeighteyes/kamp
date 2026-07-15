@@ -8906,6 +8906,25 @@ class TestDownloadQueueStateMachine:
         assert self._states(index) == [("a", "queued")]
         index.close()
 
+    def test_queued_downloads_missing_size(self, tmp_path: Path) -> None:
+        """Only 'queued' rows with a NULL size, front-of-queue first (KAMP-574)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c", "d"):
+            index.enqueue_download(sid)
+        index.set_download_size("b", 1000, is_estimate=True)  # already sized → excluded
+        index.mark_downloading("a")  # downloading → excluded (only 'queued')
+        # Remaining queued-without-size are c, d in position order.
+        assert index.queued_downloads_missing_size() == ["c", "d"]
+        index.close()
+
+    def test_queued_downloads_missing_size_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.queued_downloads_missing_size() == []
+        index.enqueue_download("a")
+        index.set_download_size("a", 500, is_estimate=False)
+        assert index.queued_downloads_missing_size() == []  # sized
+        index.close()
+
 
 class TestRemoveDownload:
     """Tests for local_tracks_for_sale_item_id and remove_download."""

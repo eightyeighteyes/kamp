@@ -1323,6 +1323,112 @@ def _get_cdn_url(redownload_url: str, fmt: str, session: _AnySession) -> str:
     return cdn_url
 
 
+# Decimal-unit multipliers for Bandcamp's `size_mb` strings (KAMP-563: Bandcamp
+# reports decimal MB, e.g. "81.2MB"). Matches the UI's formatBytes (also decimal).
+_SIZE_UNIT_BYTES = {
+    "KB": 1_000,
+    "MB": 1_000_000,
+    "GB": 1_000_000_000,
+    "TB": 1_000_000_000_000,
+}
+
+
+def _parse_size_mb(value: str | None) -> int | None:
+    """Parse a Bandcamp download-page size string ("81.2MB", "259MB", "1.2GB")
+    into a byte count, or None when absent/unparseable. A bare number is treated
+    as MB (the field's default unit)."""
+    if not value:
+        return None
+    m = re.match(r"\s*([\d.]+)\s*(KB|MB|GB|TB)?\s*$", str(value), re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        num = float(m.group(1))
+    except ValueError:
+        return None
+    unit = (m.group(2) or "MB").upper()
+    return int(num * _SIZE_UNIT_BYTES[unit])
+
+
+def get_download_size_bytes(
+    redownload_url: str, fmt: str, session: _AnySession
+) -> int | None:
+    """Return the download size in bytes for *fmt* from the item's download page.
+
+    Reads ``download_items[0].downloads[<fmt>].size_mb`` from the same pagedata
+    blob :func:`_get_cdn_url` uses (KAMP-563/574). Best-effort: returns None on
+    any failure (item not ready, format absent, network/parse error) rather than
+    raising, so a background backfill can just skip it and move on.
+    """
+    try:
+        resp = session.get(redownload_url, timeout=30)
+        resp.raise_for_status()
+        blob = _extract_pagedata(resp.text, redownload_url)
+        items: list[dict[str, Any]] = (
+            blob.get("download_items") or blob.get("digital_items") or []
+        )
+        if not items:
+            return None
+        downloads: dict[str, Any] = items[0].get("downloads") or {}
+        fmt_data = downloads.get(fmt)
+        if not isinstance(fmt_data, dict):
+            return None
+        return _parse_size_mb(fmt_data.get("size_mb"))
+    except Exception:
+        return None
+
+
+def backfill_download_sizes(
+    index: "LibraryIndex",
+    fmt: str,
+    session: _AnySession,
+    *,
+    on_updated: Callable[[str], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    throttle: float = 1.0,
+) -> int:
+    """Fill an estimated File Size on queued download-queue items (KAMP-574).
+
+    For each 'queued' item lacking a size, fetch the download page's ``size_mb``
+    for *fmt* and store it as an estimate (``is_estimate=True``). The exact
+    Content-Length written when the item starts downloading later overrides it.
+
+    Fetches the collection once to resolve each item's ``redownload_url``, then
+    hits one download page per item, throttled (``throttle`` seconds between
+    items) to avoid Bandcamp 429s. *on_updated* fires with the provider_item_id
+    after each successful size write (used to re-broadcast the queue snapshot).
+    Returns the number of items sized. Items whose size can't be resolved are
+    skipped (they keep a NULL size and retry on the next cycle).
+    """
+    pids = index.queued_downloads_missing_size()
+    if not pids:
+        return 0
+
+    fan_id, _username = _get_fan_info(session)
+    collection = _fetch_collection(fan_id, session, index)
+    url_by_sid: dict[str, str] = {
+        str(item["sale_item_id"]): item["redownload_url"]
+        for item in collection
+        if item.get("sale_item_id") is not None and item.get("redownload_url")
+    }
+
+    sized = 0
+    for i, pid in enumerate(pids):
+        redownload_url = url_by_sid.get(pid)
+        if not redownload_url:
+            continue
+        if i > 0:
+            sleep(throttle)  # rate-limit download-page requests
+        size = get_download_size_bytes(redownload_url, fmt, session)
+        if size is None:
+            continue
+        index.set_download_size(pid, size, is_estimate=True)
+        sized += 1
+        if on_updated is not None:
+            on_updated(pid)
+    return sized
+
+
 def _resolve_cdn_redirect(cdn_url: str, session: _AnySession) -> str:
     """Authenticate the popplers5 CDN URL so that a subsequent cookieless download works.
 

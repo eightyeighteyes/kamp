@@ -134,7 +134,16 @@ type PlayerStore = {
   // `download.queue` WS event. Distinct from the per-album KAMP-436 sets above,
   // which decorate the library grid.
   downloadQueue: DownloadItem[]
+  // KAMP-571: batch-anchored aggregate for the global download bar. Tracks the
+  // ids seen active in the current download batch, the running total, how many
+  // have completed (left the queue, not failed), and `floor` — the monotonic
+  // displayed percent (0–99), ratcheted on every snapshot and byte-progress tick.
+  // Null when the queue is idle (bar hidden). Maintained in setDownloadQueue (done/
+  // total) and setAlbumProgress (live floor); the bar just renders `floor`.
+  downloadBatch: { seenIds: string[]; total: number; done: number; floor: number } | null
   flashToast: string | null
+  // KAMP-571: tone for the current flashToast; 'error' renders the red variant.
+  flashToastTone: 'error' | null
   styleRailVisible: boolean
   selectedTheme: ThemeName
 
@@ -175,7 +184,7 @@ type PlayerStore = {
   reorderDownloadQueue: (orderedQueuedIds: string[]) => Promise<void>
   retryDownload: (providerItemId: string) => Promise<void>
   cancelDownload: (providerItemId: string) => Promise<void>
-  showFlashToast: (msg: string) => void
+  showFlashToast: (msg: string, tone?: 'error') => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
   setHighlightEnabled: (enabled: boolean) => void
@@ -325,6 +334,31 @@ const initialPlayer: PlayerState = {
 const _albumTracksKey = (albumArtist: string, album: string, trackId: number | null): string =>
   trackId != null ? `id:${trackId}` : `${albumArtist}\0${album}`
 
+// KAMP-571: raw aggregate percent for the global download bar — completed items
+// plus the currently-downloading item's byte-fraction, over the batch total.
+// downloadProgress is keyed by sale_item_id (== provider_item_id for bandcamp);
+// `?? 0` guards a downloading item with no progress entry yet (avoids NaN).
+const _downloadBarRaw = (
+  items: DownloadItem[],
+  done: number,
+  total: number,
+  progress: Map<string, number>
+): number => {
+  if (total <= 0) return 0
+  let inFlight = 0
+  for (const i of items) {
+    if (i.status === 'downloading') inFlight += (progress.get(i.provider_item_id) ?? 0) / 100
+  }
+  return ((done + inFlight) / total) * 100
+}
+
+// Ratchet the displayed floor up toward `raw`, capped at 99 so the bar never sits
+// at a full-width "stall" during the last item's post-download tag/rescan tail (it
+// hides when the batch drains instead). The floor keeps the fill monotonic — a
+// mid-batch append grows `total` and would otherwise rewind it.
+const _ratchetFloor = (prevFloor: number, raw: number): number =>
+  Math.min(99, Math.max(prevFloor, raw))
+
 export const useStore = create<PlayerStore>((set, get) => ({
   player: initialPlayer,
   library: {
@@ -444,7 +478,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
   downloadProgress: new Map<string, number>(),
   taggingAlbumIds: new Set<string>(),
   downloadQueue: [],
+  downloadBatch: null,
   flashToast: null,
+  flashToastTone: null,
   styleRailVisible: false,
   selectedTheme: (localStorage.getItem('kamp:selected-theme') as ThemeName | null) ?? 'kamp',
   configValues: null,
@@ -608,7 +644,14 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set((s) => {
       const next = new Map(s.downloadProgress)
       next.set(saleItemId, progress)
-      return { downloadProgress: next }
+      // KAMP-571: ratchet the global download bar's floor with the new byte tick.
+      const b = s.downloadBatch
+      if (b == null) return { downloadProgress: next }
+      const floor = _ratchetFloor(b.floor, _downloadBarRaw(s.downloadQueue, b.done, b.total, next))
+      return {
+        downloadProgress: next,
+        downloadBatch: floor === b.floor ? b : { ...b, floor }
+      }
     }),
   clearAlbumProgress: (saleItemId) =>
     set((s) => {
@@ -651,12 +694,56 @@ export const useStore = create<PlayerStore>((set, get) => ({
   loadDownloads: async () => {
     try {
       const { items } = await api.getDownloads()
-      set({ downloadQueue: items })
+      get().setDownloadQueue(items) // route through the batch-tracking setter
     } catch {
       // best-effort; the WS snapshot will populate on the next transition
     }
   },
-  setDownloadQueue: (items) => set({ downloadQueue: items }),
+  setDownloadQueue: (items) =>
+    set((s) => {
+      // KAMP-571: fold the snapshot into the batch-anchored aggregate. A batch is
+      // "everything in flight until the queue drains". When nothing is active the
+      // batch resets (bar hides). Otherwise every newly-seen active id extends the
+      // total; `done` = seen ids that have left the queue without failing.
+      const active = items.filter((i) => i.status === 'downloading' || i.status === 'queued')
+      if (active.length === 0) return { downloadQueue: items, downloadBatch: null }
+
+      const prev = s.downloadBatch
+      const seenIds = prev ? prev.seenIds.slice() : []
+      const seen = new Set(seenIds)
+      for (const i of active) {
+        if (!seen.has(i.provider_item_id)) {
+          seen.add(i.provider_item_id)
+          seenIds.push(i.provider_item_id)
+        }
+      }
+      const activeSet = new Set(active.map((i) => i.provider_item_id))
+      const failedSet = new Set(
+        items.filter((i) => i.status === 'failed').map((i) => i.provider_item_id)
+      )
+      // A completed item has left the queue: seen, but no longer active and not
+      // failed. (Snapshot-only counting can't tell a user-cancelled item from a
+      // completed one, so a mid-batch cancel nudges `done` forward by one — never
+      // backward, and cancelling the last active item empties the batch entirely.)
+      let done = 0
+      for (const id of seenIds) if (!activeSet.has(id) && !failedSet.has(id)) done++
+      const total = seenIds.length
+
+      const raw = _downloadBarRaw(items, done, total, s.downloadProgress)
+      const floor = _ratchetFloor(prev?.floor ?? 0, raw)
+
+      // Reuse the prior object when nothing changed to avoid a re-render per
+      // snapshot (seenIds only grows, so a length match means an id match).
+      const batch =
+        prev &&
+        prev.total === total &&
+        prev.done === done &&
+        prev.floor === floor &&
+        prev.seenIds.length === seenIds.length
+          ? prev
+          : { seenIds, total, done, floor }
+      return { downloadQueue: items, downloadBatch: batch }
+    }),
   // KAMP-570: reorder the queued items. Optimistically rebuild the queue as
   // [downloading, ...reordered queued, failed] (the snapshot's section order),
   // then persist. The download.queue WS snapshot reconciles on success; a failed
@@ -712,9 +799,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
       void get().loadDownloads()
     }
   },
-  showFlashToast: (msg) => {
-    set({ flashToast: msg })
-    setTimeout(() => set({ flashToast: null }), 5000)
+  showFlashToast: (msg, tone) => {
+    // KAMP-571: clear both message and tone on expiry, or the next neutral toast
+    // would inherit a stale 'error' tone until its own re-render.
+    set({ flashToast: msg, flashToastTone: tone ?? null })
+    setTimeout(() => set({ flashToast: null, flashToastTone: null }), 5000)
   },
 
   setRecentlyAddedCount: (n) => {

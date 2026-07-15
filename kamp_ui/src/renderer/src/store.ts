@@ -170,6 +170,11 @@ type PlayerStore = {
   // KAMP-568: download-queue snapshot (Downloads view)
   loadDownloads: () => Promise<void>
   setDownloadQueue: (items: DownloadItem[]) => void
+  // KAMP-570: Downloads-view interactions (optimistic; the download.queue WS
+  // snapshot reconciles, or loadDownloads() reverts on API failure).
+  reorderDownloadQueue: (orderedQueuedIds: string[]) => Promise<void>
+  retryDownload: (providerItemId: string) => Promise<void>
+  cancelDownload: (providerItemId: string) => Promise<void>
   showFlashToast: (msg: string) => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
@@ -652,6 +657,61 @@ export const useStore = create<PlayerStore>((set, get) => ({
     }
   },
   setDownloadQueue: (items) => set({ downloadQueue: items }),
+  // KAMP-570: reorder the queued items. Optimistically rebuild the queue as
+  // [downloading, ...reordered queued, failed] (the snapshot's section order),
+  // then persist. The download.queue WS snapshot reconciles on success; a failed
+  // call reverts via loadDownloads(). Only 'queued' items are reorderable.
+  reorderDownloadQueue: async (orderedQueuedIds) => {
+    set((s) => {
+      const byId = new Map(s.downloadQueue.map((i) => [i.provider_item_id, i]))
+      const downloading = s.downloadQueue.filter((i) => i.status === 'downloading')
+      const failed = s.downloadQueue.filter((i) => i.status === 'failed')
+      const queued = orderedQueuedIds
+        .map((id) => byId.get(id))
+        .filter((i): i is DownloadItem => i != null)
+      return { downloadQueue: [...downloading, ...queued, ...failed] }
+    })
+    try {
+      await api.reorderDownloads(orderedQueuedIds)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not reorder downloads'
+      get().showFlashToast(msg)
+      void get().loadDownloads() // revert to authoritative state
+    }
+  },
+  // KAMP-570: retry a failed download — re-queue at the end. Optimistically flip
+  // the item to 'queued' in place (it sits after the other queued items in the
+  // array, so it renders at the end of the Queued section).
+  retryDownload: async (providerItemId) => {
+    set((s) => ({
+      downloadQueue: s.downloadQueue.map((i) =>
+        i.provider_item_id === providerItemId
+          ? { ...i, status: 'queued' as const, error_text: null }
+          : i
+      )
+    }))
+    try {
+      await api.retryDownload(providerItemId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not retry download'
+      get().showFlashToast(msg)
+      void get().loadDownloads()
+    }
+  },
+  // KAMP-570: cancel a queued/failed item — remove it from the queue. Distinct
+  // from removeDownload (which reverts a completed download to streaming).
+  cancelDownload: async (providerItemId) => {
+    set((s) => ({
+      downloadQueue: s.downloadQueue.filter((i) => i.provider_item_id !== providerItemId)
+    }))
+    try {
+      await api.cancelDownload(providerItemId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not cancel download'
+      get().showFlashToast(msg)
+      void get().loadDownloads()
+    }
+  },
   showFlashToast: (msg) => {
     set({ flashToast: msg })
     setTimeout(() => set({ flashToast: null }), 5000)

@@ -239,7 +239,7 @@ class TestLibraryIndex:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 52
+        assert version == 53
 
     def test_track_sources_and_stats_tables_created(self, tmp_path: Path) -> None:
         """The canonical-track child tables exist and are empty on a fresh DB (KAMP-535)."""
@@ -346,7 +346,7 @@ class TestLibraryIndex:
         }
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert {"track_sources", "track_stats"} <= tables
 
     def test_v45_backfill_populates_children(self, tmp_path: Path) -> None:
@@ -442,7 +442,7 @@ class TestLibraryIndex:
         ]
         n_src = index._conn.execute("SELECT COUNT(*) FROM track_sources").fetchone()[0]
         index.close()
-        assert version == 52
+        assert version == 53
         assert n_src == 0
 
     def test_stats_write_to_track_stats_only(self, tmp_path: Path) -> None:
@@ -990,7 +990,7 @@ class TestLibraryIndex:
         t = reopened.get_track_by_id(tid)
         ver = rc.execute("SELECT version FROM schema_version").fetchone()[0]
         reopened.close()
-        assert ver == 52
+        assert ver == 53
         assert not (dropped & cols)  # all 11 columns gone from tracks
         # KAMP-552 (v51, which also runs on this reopen) drops file_path/sale_item_id.
         assert not ({"file_path", "sale_item_id"} & cols)
@@ -1012,7 +1012,7 @@ class TestLibraryIndex:
         ver = reopened._conn.execute("SELECT version FROM schema_version").fetchone()[0]
         cols = {r[1] for r in reopened._conn.execute("PRAGMA table_info(tracks)")}
         reopened.close()
-        assert ver == 52
+        assert ver == 53
         assert "favorite" not in cols
 
     def test_v49_rolls_back_and_keeps_version_when_a_drop_fails(
@@ -1109,7 +1109,7 @@ class TestLibraryIndex:
         assert len(album_artist_ids) == 1 and None not in album_artist_ids
         assert album_casings == {"Sunn O)))"}  # both albums normalized
         assert track_casings == {"Sunn O)))"}  # tracks normalized too
-        assert ver == 52
+        assert ver == 53
         assert has_index is not None  # NOCASE uniqueness now enforced
 
     def test_v50_folds_play_time_and_removes_orphan_variant(
@@ -1233,7 +1233,7 @@ class TestLibraryIndex:
         reopened.close()
         backups = list(tmp_path.glob("library.db.bak-*"))
 
-        assert ver == 52
+        assert ver == 53
         assert has_index is not None
         assert backups == []  # no work -> no backup
 
@@ -3218,7 +3218,7 @@ class TestSearch:
         ]
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert len(results) == 1
         assert results[0].title == "Title"
 
@@ -3275,7 +3275,7 @@ class TestSearch:
         ).fetchone()
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert row is not None
         # date_added will be NULL since the file path is fake; that is expected.
         assert row[0] is None
@@ -3652,9 +3652,68 @@ class TestPreorderResurface:
         ).fetchone()[0]
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "last_track_added_at" in cols
         assert backfilled == 1234.0
+
+    def test_migration_v52_to_v53_extends_download_queue(self, tmp_path: Path) -> None:
+        """A pre-v53 DB gains the queue state-machine columns; position backfills
+        from the old FIFO order and existing rows survive (KAMP-564)."""
+        db_path = tmp_path / "library.db"
+        # Build a current DB, seed two queued rows with distinct queued_at, then
+        # rewind: drop the v53 columns and stamp version 52 so open runs the upgrade.
+        idx = LibraryIndex(db_path)
+        idx.enqueue_download("first")
+        import time
+
+        time.sleep(0.01)  # distinct queued_at so the FIFO backfill order is defined
+        idx.enqueue_download("second")
+        idx._conn.commit()
+        idx.close()
+        conn = sqlite3.connect(str(db_path))
+        for col in (
+            "status",
+            "position",
+            "size_bytes",
+            "size_is_estimate",
+            "error_text",
+            "album_name",
+            "album_artist",
+            "artwork_ref",
+        ):
+            conn.execute(f"ALTER TABLE download_queue DROP COLUMN {col}")
+        conn.execute("UPDATE schema_version SET version = 52")
+        conn.commit()
+        conn.close()
+
+        index = LibraryIndex(db_path)
+        version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
+            0
+        ]
+        cols = {r[1] for r in index._conn.execute("PRAGMA table_info(download_queue)")}
+        rows = index._conn.execute(
+            "SELECT sale_item_id, status, position FROM download_queue"
+            " ORDER BY position ASC"
+        ).fetchall()
+        index.close()
+
+        assert version == 53
+        assert {
+            "status",
+            "position",
+            "size_bytes",
+            "size_is_estimate",
+            "error_text",
+            "album_name",
+            "album_artist",
+            "artwork_ref",
+        } <= cols
+        # Existing rows survived, defaulted to 'queued', with position backfilled
+        # 1,2 to match the pre-v53 FIFO (queued_at) order.
+        assert [(r["sale_item_id"], r["status"], r["position"]) for r in rows] == [
+            ("first", "queued", 1),
+            ("second", "queued", 2),
+        ]
 
     def test_count_available_remote_tracks(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -4007,7 +4066,7 @@ class TestRecordPlayed:
         ).fetchone()
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert row is not None
         assert row[0] == 0
 
@@ -4472,7 +4531,7 @@ class TestFavorite:
         ).fetchone()
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert row is not None
         assert row[0] == 0  # existing tracks default to not-favorited
 
@@ -4585,7 +4644,7 @@ class TestAlbumFavorite:
         }
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -4769,7 +4828,7 @@ class TestMtimeReindex:
         ).fetchone()
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert row is not None
         # file_mtime is intentionally left NULL on migration so the next scan
         # treats all existing tracks as changed and re-reads their tags.
@@ -4864,7 +4923,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 52
+        assert version == 53
 
     def test_schema_version_9_after_migration(self, tmp_path: Path) -> None:
         index = self._make_index(tmp_path)
@@ -4872,7 +4931,7 @@ class TestSessionManagement:
             0
         ]
         index.close()
-        assert version == 52
+        assert version == 53
 
     def test_migration_v8_to_v9_nulls_flac_ogg_mtimes(self, tmp_path: Path) -> None:
         """v8→v9 resets file_mtime for FLAC/OGG rows so they are re-scanned.
@@ -5799,7 +5858,7 @@ class TestMigrationV11ToV12:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 52
+        assert version == 53
 
         index.close()
 
@@ -6490,7 +6549,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 52
+        assert version == 53
         index.close()
 
     def test_migration_existing_rows_get_empty_defaults(self, tmp_path: Path) -> None:
@@ -6525,7 +6584,7 @@ class TestMigrationV16ToV17:
         version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
             0
         ]
-        assert version == 52
+        assert version == 53
         index.close()
 
 
@@ -7066,7 +7125,7 @@ class TestBandcampCollection:
         reopened.close()
 
         assert row["sale_item_id"] == "bf-1"
-        assert version == 52
+        assert version == 53
         assert row2["sale_item_id"] == "bf-1"
 
     def test_reset_collection_sync_state(self, tmp_path: Path) -> None:
@@ -7199,7 +7258,7 @@ class TestBandcampCollection:
         index.close()
 
         assert state == {}
-        assert version == 52
+        assert version == 53
 
 
 class TestRemoteTrackSchema:
@@ -7615,7 +7674,7 @@ class TestRemoteTrackSchema:
         }
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "source" in cols
         assert "stream_url" in cols
         assert "stream_url_expires_at" in cols
@@ -7676,7 +7735,7 @@ class TestRemoteTrackSchema:
         ]
         index.close()
 
-        assert version == 52
+        assert version == 53
         sources = {r["file_path"]: r["source"] for r in rows}
         assert sources["bandcamp://123/1"] == "bandcamp"
         assert sources["/local/track.mp3"] == "local"
@@ -8498,7 +8557,7 @@ class TestMigrationV22:
         }
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert (
             rows.get("bandcamp://999/1") == "OldForm"
         ), "single-slash row was not normalised to double-slash"
@@ -8555,6 +8614,240 @@ class TestDownloadQueue:
         index.dequeue_download("nonexistent")  # must not raise
         assert index.pending_downloads() == []
         index.close()
+
+
+class TestDownloadQueueStateMachine:
+    """Persistent download-queue state machine: status transitions, ordering,
+    reorder, retry-to-end, cancel, size, and restart persistence (KAMP-564)."""
+
+    def _states(self, index: "LibraryIndex") -> "list[tuple[str, str]]":
+        """Return (sale_item_id, status) for every queue row in display order."""
+        return [(r["sale_item_id"], r["status"]) for r in index.download_queue_items()]
+
+    def test_enqueue_defaults_to_queued(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("111")
+        items = index.download_queue_items()
+        assert len(items) == 1
+        assert items[0]["status"] == "queued"
+        assert items[0]["position"] == 1
+        index.close()
+
+    def test_enqueue_stores_album_snapshot_and_size(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download(
+            "111",
+            album_name="Miss Colombia",
+            album_artist="Lido Pimienta",
+            artwork_ref="a0471946789",
+            size_bytes=81_200_000,
+            size_is_estimate=True,
+        )
+        item = index.download_queue_items()[0]
+        assert item["album_name"] == "Miss Colombia"
+        assert item["album_artist"] == "Lido Pimienta"
+        assert item["artwork_ref"] == "a0471946789"
+        assert item["size_bytes"] == 81_200_000
+        assert item["size_is_estimate"] is True
+        index.close()
+
+    def test_enqueue_appends_at_end(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        positions = [i["position"] for i in index.download_queue_items()]
+        assert positions == [1, 2, 3]
+        index.close()
+
+    def test_next_queued_download_is_lowest_position(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        assert index.next_queued_download() == "a"
+        index.close()
+
+    def test_next_queued_download_skips_downloading(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        index.enqueue_download("b")
+        index.mark_downloading("a")  # a is in-flight, not "queued"
+        assert index.next_queued_download() == "b"
+        index.close()
+
+    def test_next_queued_download_none_when_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.next_queued_download() is None
+        index.enqueue_download("a")
+        index.mark_downloading("a")
+        assert index.next_queued_download() is None  # only in-flight item remains
+        index.close()
+
+    def test_mark_downloading_sorts_to_top(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        index.mark_downloading("b")
+        # downloading first, then queued by position (a before c)
+        assert self._states(index) == [
+            ("b", "downloading"),
+            ("a", "queued"),
+            ("c", "queued"),
+        ]
+        index.close()
+
+    def test_mark_download_failed_records_error(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        index.mark_download_failed("a", "HTTP 429 too many requests")
+        item = index.download_queue_items()[0]
+        assert item["status"] == "failed"
+        assert item["error_text"] == "HTTP 429 too many requests"
+        index.close()
+
+    def test_mark_downloading_clears_prior_error(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        index.mark_download_failed("a", "boom")
+        index.mark_downloading("a")
+        item = index.download_queue_items()[0]
+        assert item["status"] == "downloading"
+        assert item["error_text"] is None
+        index.close()
+
+    def test_mark_download_done_removes_row(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        index.enqueue_download("b")
+        index.mark_download_done("a")
+        assert self._states(index) == [("b", "queued")]
+        index.close()
+
+    def test_failed_items_sort_last(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        index.mark_downloading("a")
+        index.mark_download_failed("b", "boom")
+        assert self._states(index) == [
+            ("a", "downloading"),
+            ("c", "queued"),
+            ("b", "failed"),
+        ]
+        index.close()
+
+    def test_retry_requeues_at_end(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        index.mark_download_failed("a", "boom")
+        index.retry_download("a")
+        # a returns to 'queued' but behind b and c (retry-to-end), error cleared
+        assert self._states(index) == [
+            ("b", "queued"),
+            ("c", "queued"),
+            ("a", "queued"),
+        ]
+        assert index.download_queue_items()[-1]["error_text"] is None
+        assert index.next_queued_download() == "b"
+        index.close()
+
+    def test_retry_nonexistent_is_noop(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.retry_download("nope")  # must not raise
+        assert index.download_queue_items() == []
+        index.close()
+
+    def test_cancel_removes_item(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        index.enqueue_download("b")
+        index.mark_download_failed("b", "boom")
+        index.cancel_download("a")  # cancel a queued item
+        index.cancel_download("b")  # cancel a failed item
+        assert index.download_queue_items() == []
+        index.close()
+
+    def test_reorder_queued_items(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        index.reorder_download_queue(["c", "a", "b"])
+        assert [i["sale_item_id"] for i in index.download_queue_items()] == [
+            "c",
+            "a",
+            "b",
+        ]
+        assert index.next_queued_download() == "c"
+        index.close()
+
+    def test_reorder_excludes_downloading_item(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        index.mark_downloading("a")  # fixed at top, not part of the reorder
+        index.reorder_download_queue(["c", "b"])
+        assert self._states(index) == [
+            ("a", "downloading"),
+            ("c", "queued"),
+            ("b", "queued"),
+        ]
+        index.close()
+
+    def test_reorder_rejects_mismatched_set(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        index.enqueue_download("b")
+        with pytest.raises(ValueError):
+            index.reorder_download_queue(["a"])  # missing 'b'
+        with pytest.raises(ValueError):
+            index.reorder_download_queue(["a", "b", "c"])  # unknown 'c'
+        index.close()
+
+    def test_reorder_rejects_downloading_item_in_list(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        index.enqueue_download("b")
+        index.mark_downloading("a")
+        with pytest.raises(ValueError):
+            index.reorder_download_queue(["a", "b"])  # 'a' is downloading, not queued
+        index.close()
+
+    def test_set_download_size_overwrites_estimate(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a", size_bytes=81_000_000, size_is_estimate=True)
+        # exact Content-Length arrives at download start
+        index.set_download_size("a", 82_531_204, is_estimate=False)
+        item = index.download_queue_items()[0]
+        assert item["size_bytes"] == 82_531_204
+        assert item["size_is_estimate"] is False
+        index.close()
+
+    def test_enqueue_is_idempotent_preserves_state(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        index.mark_downloading("a")
+        index.enqueue_download("a")  # re-enqueue is a no-op, does not reset status
+        assert self._states(index) == [("a", "downloading")]
+        index.close()
+
+    def test_persistence_survives_reopen(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "library.db"
+        index = LibraryIndex(db_path)
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        index.mark_downloading("a")
+        index.mark_download_failed("b", "boom")
+        index.reorder_download_queue(["c"])  # only c is queued
+        index.close()
+
+        reopened = LibraryIndex(db_path)
+        assert self._states(reopened) == [
+            ("a", "downloading"),
+            ("c", "queued"),
+            ("b", "failed"),
+        ]
+        assert reopened.download_queue_items()[2]["error_text"] == "boom"
+        reopened.close()
 
 
 class TestRemoveDownload:
@@ -9059,7 +9352,7 @@ class TestMigrationV23:
         }
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "download_queue" in tables
         assert "albums" in tables
         assert "album_favorites" not in tables
@@ -9137,7 +9430,7 @@ class TestMigrationV24:
         }
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "albums" in tables
         assert "album_favorites" not in tables
 
@@ -9346,7 +9639,7 @@ class TestMigrationV25:
         ]
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "is_available" in cols
 
     def test_migration_defaults_existing_rows_to_available(
@@ -9586,7 +9879,7 @@ class TestMigrationV26:
         ]
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "num_streamable_tracks" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -9686,7 +9979,7 @@ class TestMigrationV27:
         ]
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "duration" in cols
 
     def test_migration_defaults_existing_rows_to_zero(self, tmp_path: Path) -> None:
@@ -9802,7 +10095,7 @@ class TestMigrationV28:
         ]
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert rows["local/a.mp3"] is None  # zero-duration local: mtime nulled
         assert rows["local/b.mp3"] == 2000.0  # already has duration: untouched
         assert rows["bandcamp://1/1"] == 3000.0  # bandcamp: untouched
@@ -10307,7 +10600,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "playlists" in tables
         assert "playlist_tracks" in tables
 
@@ -10422,7 +10715,7 @@ class TestPlaylists:
         ).fetchone()[0]
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "track_id" in columns
         assert "file_path" not in columns
         assert len(rows) == 1
@@ -10520,7 +10813,7 @@ class TestPlaylists:
         }
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert "last_played_at" in columns
 
     # ------------------------------------------------------------------
@@ -10620,7 +10913,7 @@ class TestPlaylists:
         results = index.search_playlists("Existing Playlist")
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert len(results) == 1
         assert results[0]["title"] == "Existing Playlist"
 
@@ -11127,7 +11420,7 @@ class TestMagicPlaylists:
         fetched = index.get_magic_playlist_criteria(playlist_id)
         index.close()
 
-        assert version == 52
+        assert version == 53
         assert fetched == criteria
 
     # ------------------------------------------------------------------
@@ -12011,7 +12304,7 @@ class TestMigrationV38:
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
 
-        assert version == 52
+        assert version == 53
         assert "release_date" in cols
         assert "year" not in cols
 
@@ -13140,7 +13433,7 @@ class TestLooseSingleAttach:
         cards = [a for a in reopened.albums() if a.album == "Celebrity"]
         reopened.close()
 
-        assert version == 52
+        assert version == 53
         assert row["album_id"] == stream_album
         assert row["track_number"] == 1
         # The heal took a backup snapshot before mutating.
@@ -13160,7 +13453,7 @@ class TestLooseSingleAttach:
             0
         ]
         index.close()
-        assert version == 52
+        assert version == 53
         assert not list(tmp_path.glob("library.db.bak-*"))
 
     def test_v43_migration_restamps_attached_but_unstamped_single(
@@ -13203,7 +13496,7 @@ class TestLooseSingleAttach:
         cards = [a for a in reopened.albums() if a.album == "Celebrity"]
         reopened.close()
 
-        assert version == 52
+        assert version == 53
         assert stamped == "Celebrity"
         # No duplicate loose card, and the album now reads as owned.
         assert len(cards) == 1
@@ -13482,7 +13775,7 @@ class TestKamp552DropColumns:
         ver = reopened._conn.execute("SELECT version FROM schema_version").fetchone()[0]
         cols = {r[1] for r in reopened._conn.execute("PRAGMA table_info(tracks)")}
         reopened.close()
-        assert ver == 52
+        assert ver == 53
         assert "file_path" not in cols
         assert album_id is None  # dangling FK nulled
         assert fk == []

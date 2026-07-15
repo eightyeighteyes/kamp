@@ -1761,8 +1761,8 @@ class TestDownloadFile:
         return resp
 
     def test_reports_progress_when_content_length_present(self, tmp_path: Path) -> None:
-        """With a Content-Length header, on_progress fires with a non-decreasing
-        percentage that terminates at 100 (KAMP-436)."""
+        """With a Content-Length header, on_progress fires with non-decreasing
+        (downloaded, total) byte pairs terminating at (total, total) (KAMP-436/566)."""
         from itertools import count
 
         dest_base = tmp_path / "album"
@@ -1771,7 +1771,7 @@ class TestDownloadFile:
         session = MagicMock()
         session.get.return_value = self._make_resp_with_length(chunks, total)
 
-        progress: list[int] = []
+        progress: list[tuple[int, int]] = []
         # Advance monotonic time past the throttle interval on every chunk so
         # each step is emitted, letting us assert the full progression.
         with patch(
@@ -1782,42 +1782,42 @@ class TestDownloadFile:
                 dest_base,
                 session,
                 "mp3-v0",
-                on_progress=progress.append,
+                on_progress=lambda dl, tot: progress.append((dl, tot)),
             )
 
         assert progress, "expected at least one progress callback"
-        assert progress[-1] == 100
-        assert all(0 <= p <= 100 for p in progress)
-        assert progress == sorted(progress)  # non-decreasing
+        assert progress[-1] == (total, total)
+        assert all(0 <= dl <= total and tot == total for dl, tot in progress)
+        assert [dl for dl, _ in progress] == sorted(dl for dl, _ in progress)
 
     def test_no_progress_when_content_length_absent(self, tmp_path: Path) -> None:
-        """Without Content-Length the percentage is unknowable, so on_progress is
+        """Without Content-Length the total is unknowable, so on_progress is
         never called and the UI keeps its indeterminate pulse (KAMP-436)."""
         dest_base = tmp_path / "album"
         session = MagicMock()
         session.get.return_value = self._make_resp([_FAKE_ZIP])  # no Content-Length
 
-        progress: list[int] = []
+        progress: list[tuple[int, int]] = []
         _download_file(
             "https://cdn.example.com/f.zip",
             dest_base,
             session,
             "mp3-v0",
-            on_progress=progress.append,
+            on_progress=lambda dl, tot: progress.append((dl, tot)),
         )
 
         assert progress == []
 
     def test_progress_throttled_but_final_always_emitted(self, tmp_path: Path) -> None:
         """Rapid chunks within the throttle window are coalesced, but a terminal
-        100 is always delivered (KAMP-436)."""
+        (total, total) is always delivered (KAMP-436/566)."""
         dest_base = tmp_path / "album"
         chunks = [_ZIP_MAGIC + b"\x00" * 21] + [b"\x00" * 25] * 3
         total = sum(len(c) for c in chunks)
         session = MagicMock()
         session.get.return_value = self._make_resp_with_length(chunks, total)
 
-        progress: list[int] = []
+        progress: list[tuple[int, int]] = []
         # Time never advances → every intermediate emit is throttled away.
         with patch("kamp_daemon.bandcamp.time.monotonic", side_effect=lambda: 1000.0):
             _download_file(
@@ -1825,10 +1825,10 @@ class TestDownloadFile:
                 dest_base,
                 session,
                 "mp3-v0",
-                on_progress=progress.append,
+                on_progress=lambda dl, tot: progress.append((dl, tot)),
             )
 
-        assert progress == [100]
+        assert progress == [(total, total)]
 
 
 # ---------------------------------------------------------------------------

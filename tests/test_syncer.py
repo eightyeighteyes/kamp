@@ -312,21 +312,21 @@ class TestDispatchDownloadMsg:
 
     def test_progress_message_routes_to_progress_callback(self, tmp_path: Path) -> None:
         syncer = Syncer(_make_config(tmp_path))
-        progress: list[tuple[str, int]] = []
+        progress: list[tuple[str, int, int]] = []
         status: list[str] = []
-        syncer.progress_callback = lambda sid, pct: progress.append((sid, pct))
+        syncer.progress_callback = lambda sid, dl, tot: progress.append((sid, dl, tot))
         syncer.status_callback = status.append
 
-        syncer._dispatch_download_msg("progress:42", "12345")
+        syncer._dispatch_download_msg("progress:420:1000", "12345")
 
-        assert progress == [("12345", 42)]
+        assert progress == [("12345", 420, 1000)]
         assert status == []  # must NOT leak to the global sync indicator
 
     def test_status_message_routes_to_status_callback(self, tmp_path: Path) -> None:
         syncer = Syncer(_make_config(tmp_path))
-        progress: list[tuple[str, int]] = []
+        progress: list[tuple[str, int, int]] = []
         status: list[str] = []
-        syncer.progress_callback = lambda sid, pct: progress.append((sid, pct))
+        syncer.progress_callback = lambda sid, dl, tot: progress.append((sid, dl, tot))
         syncer.status_callback = status.append
 
         syncer._dispatch_download_msg("Downloading album 12345…", "12345")
@@ -336,17 +336,18 @@ class TestDispatchDownloadMsg:
 
     def test_malformed_progress_is_ignored(self, tmp_path: Path) -> None:
         syncer = Syncer(_make_config(tmp_path))
-        progress: list[tuple[str, int]] = []
-        syncer.progress_callback = lambda sid, pct: progress.append((sid, pct))
+        progress: list[tuple[str, int, int]] = []
+        syncer.progress_callback = lambda sid, dl, tot: progress.append((sid, dl, tot))
 
-        syncer._dispatch_download_msg("progress:notanint", "12345")
+        syncer._dispatch_download_msg("progress:notanint:1000", "12345")  # bad field
+        syncer._dispatch_download_msg("progress:500", "12345")  # missing total
 
         assert progress == []
 
     def test_progress_without_callback_is_safe(self, tmp_path: Path) -> None:
         syncer = Syncer(_make_config(tmp_path))
         # progress_callback unset (None) — must not raise.
-        syncer._dispatch_download_msg("progress:50", "12345")
+        syncer._dispatch_download_msg("progress:50:100", "12345")
 
 
 class TestLazyImport:

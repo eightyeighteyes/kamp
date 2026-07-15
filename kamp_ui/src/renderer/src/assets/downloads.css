@@ -43,6 +43,58 @@
   opacity: 0.6;
 }
 
+/* Queued cards are pointer-events drag origins (KAMP-570). */
+.download-card--draggable {
+  cursor: grab;
+  user-select: none;
+}
+.download-card--draggable:active {
+  cursor: grabbing;
+}
+
+/* Drag drop-indicators (mirror queue.css). */
+.download-card--drop-above {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+.download-card--drop-below {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+/* Retry / Cancel action buttons (KAMP-570). Hover-reveal on queued cards;
+   always visible on failed cards where Retry is a primary recovery action. */
+.download-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.download-card-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.1s ease,
+    color 0.1s ease,
+    background 0.1s ease;
+}
+.download-card:hover .download-card-btn,
+.download-card--failed .download-card-btn {
+  opacity: 1;
+}
+.download-card-btn:hover {
+  color: var(--accent);
+  background: var(--surface-hover);
+}
+
 .download-card-thumb {
   position: relative;
   flex: 0 0 48px;

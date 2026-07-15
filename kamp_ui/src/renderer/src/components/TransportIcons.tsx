@@ -224,6 +224,16 @@ export function RemoveFromQueueIcon({ size = 16 }: IconProps): React.JSX.Element
   )
 }
 
+// KAMP-570: retry a failed download — a clockwise circular arrow.
+export function RetryIcon({ size = 16 }: IconProps): React.JSX.Element {
+  return (
+    <svg width={size} height={size} {...STROKE_PROPS}>
+      <path d="M21 5v6h-6" />
+      <path d="M19 13a8 8 0 1 1-2-6.34L21 11" />
+    </svg>
+  )
+}
+
 export function FavoriteIcon({ active, size = 16 }: FavoriteIconProps): React.JSX.Element {
   return (
     <svg

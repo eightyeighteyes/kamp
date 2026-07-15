@@ -280,10 +280,12 @@ export default function App(): React.JSX.Element {
             if (state === 'done' || state === 'removed') {
               void useStore.getState().loadLibrary()
               void useStore.getState().refreshOpenAlbum()
-            } else if (state === 'error') {
-              // KAMP-571: surface a failure toast. The transient error event can
-              // beat the queue snapshot that flips the item to 'failed', so the
-              // name/reason lookup is best-effort with a generic fallback.
+            } else if (state === 'error' || state === 'failed') {
+              // KAMP-571: surface a failure toast. The queue worker emits 'failed'
+              // (e.g. after exhausting 429 back-off retries); the direct download
+              // path emits 'error'. The status event can beat the queue snapshot
+              // that flips the item to 'failed', so the name/reason lookup is
+              // best-effort with a generic fallback.
               const item = useStore
                 .getState()
                 .downloadQueue.find((i) => i.provider_item_id === saleItemId)

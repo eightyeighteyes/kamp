@@ -1,5 +1,6 @@
 import React from 'react'
 import { useStore } from '../store'
+import { useTooltip } from '../hooks/useTooltip'
 
 /**
  * Global download progress bar (KAMP-571): a thin, full-width bar rendered just
@@ -16,6 +17,7 @@ export function GlobalDownloadBar(): React.JSX.Element | null {
   const batch = useStore((s) => s.downloadBatch)
   const queue = useStore((s) => s.downloadQueue)
   const setActiveView = useStore((s) => s.setActiveView)
+  const tooltip = useTooltip()
 
   if (batch == null || batch.total === 0) return null
 
@@ -32,7 +34,7 @@ export function GlobalDownloadBar(): React.JSX.Element | null {
       type="button"
       className="global-download-bar"
       onClick={() => void setActiveView('downloads')}
-      title={`${activeCount} downloading — click to view`}
+      {...tooltip(`${activeCount} downloading — click to view`)}
       aria-label={`Downloads in progress (${activeCount}) — open Downloads view`}
       role="progressbar"
       aria-valuemin={0}

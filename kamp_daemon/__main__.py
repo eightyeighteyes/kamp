@@ -1264,6 +1264,10 @@ def _cmd_daemon(
         if total and _download_sizes_seen.get(pid) != total:
             index.set_download_size(pid, total, is_estimate=False)
             _download_sizes_seen[pid] = total
+            # Re-broadcast the queue snapshot once the exact size is known so the
+            # Downloads-view card shows the File Size (the snapshot is otherwise
+            # only pushed on state transitions, before Content-Length arrives).
+            app.state.notify_download_queue()
         app.state.notify_album_download_progress(pid, downloaded, total)
 
     core.syncer.progress_callback = _on_download_progress

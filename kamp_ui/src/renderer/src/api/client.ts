@@ -355,7 +355,7 @@ export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
   post('/api/v1/config/library-path', { path })
 
 export type UiState = {
-  active_view: 'library' | 'now-playing' | 'home'
+  active_view: 'library' | 'now-playing' | 'home' | 'downloads'
   sort_order:
     | 'album_artist'
     | 'album'
@@ -369,7 +369,7 @@ export type UiState = {
 
 export const getUiState = (): Promise<UiState> => get('/api/v1/ui')
 export const setActiveViewApi = (
-  view: 'library' | 'now-playing' | 'home'
+  view: 'library' | 'now-playing' | 'home' | 'downloads'
 ): Promise<{ ok: boolean }> => post('/api/v1/ui/active-view', { view })
 export const setSortOrderApi = (
   sortOrder:
@@ -439,6 +439,37 @@ export const downloadAlbum = (saleItemId: string): Promise<{ ok: boolean }> =>
 
 export const removeDownload = (saleItemId: string): Promise<{ ok: boolean }> =>
   del(`/api/v1/bandcamp/collection/${encodeURIComponent(saleItemId)}/download`)
+
+// ---------------------------------------------------------------------------
+// Download queue (KAMP-568) — provider-neutral /api/v1/downloads surface
+// ---------------------------------------------------------------------------
+
+// One row of the download queue; mirrors the daemon's download_queue_items()
+// (KAMP-564/566). Also the payload shape of the `download.queue` WS snapshot.
+export type DownloadItem = {
+  provider: string
+  provider_item_id: string
+  status: 'queued' | 'downloading' | 'failed'
+  position: number
+  size_bytes: number | null
+  size_is_estimate: boolean
+  error_text: string | null
+  album_name: string | null
+  album_artist: string | null
+  artwork_ref: string | null
+  queued_at: number
+}
+
+export const getDownloads = (): Promise<{ items: DownloadItem[] }> => get('/api/v1/downloads')
+
+export const reorderDownloads = (providerItemIds: string[]): Promise<{ ok: boolean }> =>
+  post('/api/v1/downloads/reorder', { provider_item_ids: providerItemIds })
+
+export const retryDownload = (id: string): Promise<{ ok: boolean }> =>
+  post(`/api/v1/downloads/${encodeURIComponent(id)}/retry`)
+
+export const cancelDownload = (id: string): Promise<{ ok: boolean }> =>
+  del(`/api/v1/downloads/${encodeURIComponent(id)}`)
 
 // ---------------------------------------------------------------------------
 // Player
@@ -776,6 +807,12 @@ export type PipelineStageMessage = {
   // ("" before extraction, and for pre-558 daemons).
   album?: string
 }
+// KAMP-566/568: full download-queue snapshot for the Downloads view, broadcast
+// on every queue transition. `items` is the same shape as GET /api/v1/downloads.
+export type DownloadQueueMessage = {
+  type: 'download.queue'
+  items: DownloadItem[]
+}
 export type ServerMessage =
   | StateMessage
   | TrackChangedMessage
@@ -786,6 +823,7 @@ export type ServerMessage =
   | AlbumDownloadMessage
   | MagicPlaylistUpdatedMessage
   | PipelineStageMessage
+  | DownloadQueueMessage
 
 export async function getDeferredOps(): Promise<{ op_id: number; track_id: number }[]> {
   const res = await fetch(`${BASE_URL}/api/v1/deferred-ops`, {
@@ -812,7 +850,10 @@ export function connectStateStream(
   onMagicPlaylistUpdated?: (id: number) => void,
   // KAMP-562: per-album pipeline stage. Named distinctly from the preload's
   // global `onPipelineStage` (which drives the nav-bar indicator).
-  onAlbumPipelineStage?: (saleItemId: string | null, stage: string, committed: boolean) => void
+  onAlbumPipelineStage?: (saleItemId: string | null, stage: string, committed: boolean) => void,
+  // KAMP-568: full download-queue snapshot for the Downloads view. Appended last
+  // so the existing positional callbacks keep their indices.
+  onDownloadQueue?: (items: DownloadItem[]) => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 
@@ -834,6 +875,7 @@ export function connectStateStream(
       else if (msg.type === 'magic_playlist.updated') onMagicPlaylistUpdated?.(msg.id)
       else if (msg.type === 'pipeline.stage')
         onAlbumPipelineStage?.(msg.sale_item_id ?? null, msg.stage, msg.committed ?? false)
+      else if (msg.type === 'download.queue') onDownloadQueue?.(msg.items)
     } catch {
       // malformed message — ignore
     }

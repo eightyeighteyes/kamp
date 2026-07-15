@@ -6,6 +6,7 @@ import { BaseKampView } from './components/BaseKampView'
 import { ExtensionPanel } from './components/ExtensionPanel'
 import { LibraryView } from './components/LibraryView'
 import { NowPlayingView } from './components/NowPlayingView'
+import { DownloadsView } from './components/DownloadsView'
 import { PreferencesDialog } from './components/PreferencesDialog'
 import { QueuePanel } from './components/QueuePanel'
 import { BandcampButton } from './components/BandcampButton'
@@ -49,6 +50,13 @@ registerBuiltInPanel({
   defaultSlot: 'main',
   compatibleSlots: ['main'],
   component: NowPlayingView
+})
+registerBuiltInPanel({
+  id: 'kamp.downloads',
+  title: 'Downloads',
+  defaultSlot: 'main',
+  compatibleSlots: ['main'],
+  component: DownloadsView
 })
 registerBuiltInPanel({
   id: 'kamp.artist-list',
@@ -230,6 +238,7 @@ export default function App(): React.JSX.Element {
           void loadUiState().then(() => loadLibrary())
           void loadQueue()
           void loadConfig()
+          void useStore.getState().loadDownloads() // KAMP-568: seed Downloads view
           // Reconcile pip state in case deferred_op.completed was missed
           // while the WS was disconnected.
           void getDeferredOps().then((ops) => {
@@ -292,6 +301,10 @@ export default function App(): React.JSX.Element {
             // the rescan flips isRemote, avoiding a flash to the plain badge.
             useStore.getState().clearAlbumTagging(saleItemId)
           }
+        },
+        // KAMP-568: full download-queue snapshot → Downloads-view store slice.
+        (items) => {
+          useStore.getState().setDownloadQueue(items)
         }
       )
     }
@@ -542,6 +555,7 @@ export default function App(): React.JSX.Element {
     if (panel.kind === 'builtin' && panel.id === 'kamp.library') return activeView === 'library'
     if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing')
       return activeView === 'now-playing'
+    if (panel.kind === 'builtin' && panel.id === 'kamp.downloads') return activeView === 'downloads'
     return false
   }
 
@@ -558,6 +572,9 @@ export default function App(): React.JSX.Element {
       if (selectedArtist !== null || selectedAlbum !== null) selectArtist(null)
     } else if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing') {
       void setActiveView('now-playing')
+      setActiveExtPanel(null)
+    } else if (panel.kind === 'builtin' && panel.id === 'kamp.downloads') {
+      void setActiveView('downloads')
       setActiveExtPanel(null)
     } else if (panel.kind === 'extension') {
       setActiveExtPanel(panel.id)
@@ -581,6 +598,7 @@ export default function App(): React.JSX.Element {
     const isHomePane = !searchQuery && !activeExtPanel && activeView === 'home'
     const isLibraryPane = !searchQuery && !activeExtPanel && activeView === 'library'
     const isNowPlayingPane = !searchQuery && !activeExtPanel && activeView === 'now-playing'
+    const isDownloadsPane = !searchQuery && !activeExtPanel && activeView === 'downloads'
     return (
       <>
         {/* key=panel.id forces a fresh component+DOM node on extension panel
@@ -595,6 +613,9 @@ export default function App(): React.JSX.Element {
         </div>
         <div className={isNowPlayingPane ? 'view-pane view-pane--active' : 'view-pane'}>
           <NowPlayingView />
+        </div>
+        <div className={isDownloadsPane ? 'view-pane view-pane--active' : 'view-pane'}>
+          <DownloadsView />
         </div>
       </>
     )

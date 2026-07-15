@@ -7,11 +7,15 @@ import logging.handlers
 import multiprocessing
 import queue
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import BandcampConfig, Config, _state_dir
+
+if TYPE_CHECKING:
+    from kamp_core.library import LibraryIndex
 
 
 class NeedsLoginError(Exception):
@@ -199,6 +203,69 @@ def _replay_log_queue(log_q: Any) -> None:
             logging.getLogger(record.name).handle(record)
         except queue.Empty:
             break
+
+
+def process_next_download(
+    index: "LibraryIndex",
+    download_fn: Callable[[str], Any],
+    *,
+    provider: str = "bandcamp",
+    on_state: Callable[[str, str], None] | None = None,
+    retry_delays: Sequence[int] = (5, 10, 20),
+    sleep: Callable[[float], None] = time.sleep,
+) -> str | None:
+    """Process the next queued download through the persistent state machine.
+
+    The enqueue-then-process-in-order engine (KAMP-565). Pops the lowest-position
+    'queued' item, marks it 'downloading', runs *download_fn* (the per-item
+    downloader, e.g. ``Syncer.download_album``) with 429 back-off, then either
+    removes it on success ('done' has no row state) or leaves it 'failed' with its
+    error text. **A failed item never aborts the batch** — the failure is captured
+    and the function returns normally so the caller can pull the next item.
+
+    *on_state* (if given) is called ``(provider_item_id, state)`` on each
+    transition ('downloading' | 'done' | 'failed') for WebSocket broadcast.
+
+    Returns the processed provider_item_id, or None when the queue is empty.
+    """
+    pid = index.next_queued_download(provider=provider)
+    if pid is None:
+        return None
+
+    index.mark_downloading(pid, provider=provider)
+    if on_state is not None:
+        on_state(pid, "downloading")
+
+    # 429 back-off: retry the whole item after a delay; the trailing None is the
+    # final attempt with no further retry. Non-429 errors fail immediately.
+    for delay in list(retry_delays) + [None]:
+        try:
+            download_fn(pid)
+        except NeedsLoginError:
+            logger.warning("Download: no valid session for %s", pid)
+            index.mark_download_failed(pid, "Login required", provider=provider)
+            if on_state is not None:
+                on_state(pid, "failed")
+            return pid
+        except Exception as exc:
+            if "429" in str(exc) and delay is not None:
+                logger.warning(
+                    "Download rate-limited for %s; retrying in %ds", pid, delay
+                )
+                sleep(delay)
+                continue
+            logger.exception("Download failed for %s", pid)
+            index.mark_download_failed(pid, str(exc)[:200], provider=provider)
+            if on_state is not None:
+                on_state(pid, "failed")
+            return pid
+        else:
+            index.mark_download_done(pid, provider=provider)
+            if on_state is not None:
+                on_state(pid, "done")
+            return pid
+
+    return pid  # pragma: no cover - loop always returns inside
 
 
 class Syncer:

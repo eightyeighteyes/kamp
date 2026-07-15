@@ -8879,6 +8879,33 @@ class TestDownloadQueueStateMachine:
         assert [i["provider"] for i in index.download_queue_items()] == ["other"]
         index.close()
 
+    def test_reset_downloading_to_queued(self, tmp_path: Path) -> None:
+        """An interrupted 'downloading' item is re-queued at its original position
+        (head) so the processing loop resumes it first after a restart (KAMP-565)."""
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        index.mark_downloading("a")  # simulate a crash mid-download
+        assert index.next_queued_download() == "b"  # 'a' is invisible while downloading
+
+        n = index.reset_downloading_to_queued()
+        assert n == 1
+        # 'a' is queued again and, keeping position 1, is picked first.
+        assert self._states(index) == [
+            ("a", "queued"),
+            ("b", "queued"),
+            ("c", "queued"),
+        ]
+        assert index.next_queued_download() == "a"
+        index.close()
+
+    def test_reset_downloading_to_queued_noop_when_none(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")  # 'queued', not 'downloading'
+        assert index.reset_downloading_to_queued() == 0
+        assert self._states(index) == [("a", "queued")]
+        index.close()
+
 
 class TestRemoveDownload:
     """Tests for local_tracks_for_sale_item_id and remove_download."""

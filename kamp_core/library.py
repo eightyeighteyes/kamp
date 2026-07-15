@@ -5300,6 +5300,23 @@ class LibraryIndex:
         """Complete an item: remove it from the queue (done has no row state)."""
         self.dequeue_download(provider_item_id, provider=provider)
 
+    def reset_downloading_to_queued(self, *, provider: str = "bandcamp") -> int:
+        """Re-queue any items left in 'downloading' by an interrupted run.
+
+        Called once on daemon startup: a crash/kill mid-download leaves a row in
+        'downloading', which ``next_queued_download`` never returns, so it would
+        stall forever. Flipping it back to 'queued' (position unchanged, so it
+        keeps its place at the head) lets the processing loop resume it first.
+        Returns the number of rows reset.
+        """
+        cur = self._conn.execute(
+            "UPDATE download_queue SET status = 'queued' "
+            "WHERE provider = ? AND status = 'downloading'",
+            (provider,),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
     def retry_download(
         self, provider_item_id: str, *, provider: str = "bandcamp"
     ) -> None:

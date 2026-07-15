@@ -16,7 +16,13 @@ from kamp_daemon.config import (
     MusicBrainzConfig,
     PathsConfig,
 )
-from kamp_daemon.syncer import NeedsLoginError, Syncer, logout
+from kamp_core.library import LibraryIndex
+from kamp_daemon.syncer import (
+    NeedsLoginError,
+    Syncer,
+    logout,
+    process_next_download,
+)
 
 
 def _make_config(tmp_path: Path, poll_interval: int = 0) -> Config:
@@ -972,3 +978,120 @@ class TestDownloadAlbum:
             pytest.raises(RuntimeError, match="Album download failed"),
         ):
             syncer.download_album("42")
+
+
+class TestProcessNextDownload:
+    """process_next_download: the enqueue-then-process-in-order engine (KAMP-565)."""
+
+    @staticmethod
+    def _states(index: LibraryIndex) -> list[tuple[str, str]]:
+        return [
+            (r["provider_item_id"], r["status"]) for r in index.download_queue_items()
+        ]
+
+    def test_returns_none_when_queue_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert process_next_download(index, lambda pid: None) is None
+        index.close()
+
+    def test_success_removes_item_and_reports_states(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        states: list[tuple[str, str]] = []
+        pid = process_next_download(
+            index, lambda pid: None, on_state=lambda p, s: states.append((p, s))
+        )
+        assert pid == "a"
+        assert index.download_queue_items() == []  # done → row deleted
+        assert states == [("a", "downloading"), ("a", "done")]
+        index.close()
+
+    def test_processes_in_position_order(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        processed = [process_next_download(index, lambda pid: None) for _ in range(3)]
+        assert processed == ["a", "b", "c"]
+        assert process_next_download(index, lambda pid: None) is None
+        index.close()
+
+    def test_failure_is_captured_and_batch_continues(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b"):
+            index.enqueue_download(sid)
+
+        def _dl(pid: str) -> None:
+            if pid == "a":
+                raise RuntimeError("CDN exploded")
+
+        # 'a' fails but does not raise out; it is left 'failed' with error text.
+        first = process_next_download(index, _dl)
+        assert first == "a"
+        assert index.download_queue_items()[-1]["status"] == "failed"
+        assert "CDN exploded" in index.download_queue_items()[-1]["error_text"]
+        # Processing continues: 'b' is next and succeeds.
+        second = process_next_download(index, _dl)
+        assert second == "b"
+        assert self._states(index) == [("a", "failed")]
+        index.close()
+
+    def test_needs_login_marks_failed(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+
+        def _dl(pid: str) -> None:
+            raise NeedsLoginError("no session")
+
+        pid = process_next_download(index, _dl)
+        assert pid == "a"
+        item = index.download_queue_items()[0]
+        assert item["status"] == "failed"
+        assert item["error_text"] == "Login required"
+        index.close()
+
+    def test_429_retries_then_succeeds(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        attempts = {"n": 0}
+        slept: list[float] = []
+
+        def _dl(pid: str) -> None:
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise RuntimeError("HTTP 429 Too Many Requests")
+
+        pid = process_next_download(
+            index, _dl, retry_delays=(5, 10, 20), sleep=slept.append
+        )
+        assert pid == "a"
+        assert attempts["n"] == 3  # failed twice, succeeded on the third
+        assert slept == [5, 10]  # backed off before each retry
+        assert index.download_queue_items() == []  # ultimately done
+        index.close()
+
+    def test_429_exhausted_marks_failed(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+
+        def _dl(pid: str) -> None:
+            raise RuntimeError("HTTP 429 Too Many Requests")
+
+        pid = process_next_download(
+            index, _dl, retry_delays=(1, 1), sleep=lambda _s: None
+        )
+        assert pid == "a"
+        assert index.download_queue_items()[0]["status"] == "failed"
+        index.close()
+
+    def test_non_429_error_does_not_retry(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        attempts = {"n": 0}
+
+        def _dl(pid: str) -> None:
+            attempts["n"] += 1
+            raise RuntimeError("permanent boom")
+
+        process_next_download(index, _dl, sleep=lambda _s: None)
+        assert attempts["n"] == 1  # no retry for non-429 errors
+        index.close()

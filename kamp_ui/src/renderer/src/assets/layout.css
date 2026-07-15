@@ -517,3 +517,13 @@ html[data-platform='win32'] .view-tabs {
   animation: toast-in 0.22s ease-out;
   pointer-events: none;
 }
+
+/* Error-toned variant (KAMP-571) — download failures and other error toasts. */
+.flash-toast--error {
+  border-color: var(--error);
+  border-left: 3px solid var(--error);
+}
+
+.flash-toast--error .album-rename-toast-bar {
+  background: var(--error);
+}

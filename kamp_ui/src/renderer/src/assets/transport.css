@@ -13,6 +13,45 @@
   flex-shrink: 0;
 }
 
+/* Global download progress bar (KAMP-571) — a thin, full-width, clickable bar that
+   sits directly above the transport in every view while downloads are in flight.
+   No chrome (it's a <button>); brightens on hover; no height animation. */
+.global-download-bar {
+  position: relative;
+  z-index: 10;
+  flex-shrink: 0;
+  width: 100%;
+  height: 4px;
+  padding: 0;
+  border: none;
+  background: var(--border);
+  cursor: pointer;
+  overflow: hidden;
+  display: block;
+}
+
+.global-download-bar:hover {
+  background: var(--surface-hover);
+}
+
+.global-download-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.global-download-bar:hover .global-download-bar-fill {
+  filter: brightness(1.15);
+}
+
+/* No live byte-progress yet → sliding pulse (reuses the KAMP-566 keyframe). */
+.global-download-bar-fill--indeterminate {
+  width: 40%;
+  transition: none;
+  animation: download-progress-slide 1.2s ease-in-out infinite;
+}
+
 .transport-track-info {
   --track-info-w: 220px;
   width: var(--track-info-w);

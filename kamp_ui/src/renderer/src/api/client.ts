@@ -786,7 +786,9 @@ export type AudioLevelMessage = {
 export type AlbumDownloadMessage = {
   type: 'bandcamp.album-download'
   sale_item_id: string
-  state: 'queued' | 'downloading' | 'done' | 'error' | 'removed'
+  // 'failed' is emitted by the queue worker (process_next_download); 'error' by the
+  // direct single-album download path. Both signal a failure.
+  state: 'queued' | 'downloading' | 'done' | 'error' | 'failed' | 'removed'
   // KAMP-436: byte-progress percent (0–100). Present only on 'downloading'
   // updates when the server knows the total size; absent → keep the pulse.
   progress?: number
@@ -844,7 +846,7 @@ export function connectStateStream(
   onTrackChanged?: () => void,
   onAlbumDownload?: (
     saleItemId: string,
-    state: 'queued' | 'downloading' | 'done' | 'error' | 'removed',
+    state: 'queued' | 'downloading' | 'done' | 'error' | 'failed' | 'removed',
     progress?: number
   ) => void,
   onMagicPlaylistUpdated?: (id: number) => void,

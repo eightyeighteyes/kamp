@@ -10,6 +10,7 @@ import { DownloadsView } from './components/DownloadsView'
 import { PreferencesDialog } from './components/PreferencesDialog'
 import { QueuePanel } from './components/QueuePanel'
 import { BandcampButton } from './components/BandcampButton'
+import { GlobalDownloadBar } from './components/GlobalDownloadBar'
 import { PipelineIndicator } from './components/PipelineIndicator'
 import { SearchBar } from './components/SearchBar'
 import { SearchView } from './components/SearchView'
@@ -105,6 +106,7 @@ export default function App(): React.JSX.Element {
   const bumpMagicPlaylistVersion = useStore((s) => s.bumpMagicPlaylistVersion)
   const serverStatus = useStore((s) => s.serverStatus)
   const flashToast = useStore((s) => s.flashToast)
+  const flashToastTone = useStore((s) => s.flashToastTone)
   const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
   const activeView = useStore((s) => s.activeView)
   const setActiveView = useStore((s) => s.setActiveView)
@@ -278,6 +280,18 @@ export default function App(): React.JSX.Element {
             if (state === 'done' || state === 'removed') {
               void useStore.getState().loadLibrary()
               void useStore.getState().refreshOpenAlbum()
+            } else if (state === 'error' || state === 'failed') {
+              // KAMP-571: surface a failure toast. The queue worker emits 'failed'
+              // (e.g. after exhausting 429 back-off retries); the direct download
+              // path emits 'error'. The status event can beat the queue snapshot
+              // that flips the item to 'failed', so the name/reason lookup is
+              // best-effort with a generic fallback.
+              const item = useStore
+                .getState()
+                .downloadQueue.find((i) => i.provider_item_id === saleItemId)
+              const name = item?.album_name || 'an album'
+              const reason = item?.error_text ? `: ${item.error_text}` : ''
+              useStore.getState().showFlashToast(`Download failed — ${name}${reason}`, 'error')
             }
           }
         },
@@ -689,6 +703,9 @@ export default function App(): React.JSX.Element {
         </main>
         {!showSetup && isPanelVisible(rightPanel) && <SlotPanel panel={rightPanel!} />}
       </div>
+      {/* KAMP-571: global download progress bar, directly above the transport in
+          every view (hides itself when the queue is idle). */}
+      <GlobalDownloadBar />
       {bottomPanel && <SlotPanel panel={bottomPanel} />}
       <UpdateBanner />
       {showShortcuts && <KeyboardShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
@@ -711,7 +728,10 @@ export default function App(): React.JSX.Element {
       {/* Phase 2 iframes live here in a hidden holding area until their panel tab is activated */}
       <SandboxedExtensionLoader extensions={phase2Extensions} />
       {flashToast && (
-        <div className="flash-toast" role="status">
+        <div
+          className={`flash-toast${flashToastTone === 'error' ? ' flash-toast--error' : ''}`}
+          role="status"
+        >
           <span className="album-rename-toast-text">{flashToast}</span>
           <div className="album-rename-toast-bar" style={{ animationDuration: '5000ms' }} />
         </div>

@@ -78,39 +78,39 @@ export function DownloadCard({
         )}
       </div>
       {sizeLabel && <div className="download-card-size">{sizeLabel}</div>}
-      {(isQueued || isFailed) && (onRetry || onCancel) && (
-        <div className="download-card-actions">
-          {isFailed && onRetry && (
-            <button
-              className="download-card-btn"
-              {...tooltip('Retry download')}
-              aria-label="Retry download"
-              // stopPropagation on pointerdown so the button doesn't start a card drag
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                onRetry(id)
-              }}
-            >
-              <RetryIcon size={15} />
-            </button>
-          )}
-          {onCancel && (
-            <button
-              className="download-card-btn"
-              {...tooltip('Remove from queue')}
-              aria-label="Remove from queue"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                onCancel(id)
-              }}
-            >
-              <RemoveFromQueueIcon size={16} />
-            </button>
-          )}
-        </div>
-      )}
+      {/* Always rendered (empty on the downloading card) so its reserved width
+          keeps the size column right-aligned across the three sections (KAMP-579). */}
+      <div className="download-card-actions">
+        {isFailed && onRetry && (
+          <button
+            className="download-card-btn"
+            {...tooltip('Retry download')}
+            aria-label="Retry download"
+            // stopPropagation on pointerdown so the button doesn't start a card drag
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              onRetry(id)
+            }}
+          >
+            <RetryIcon size={15} />
+          </button>
+        )}
+        {onCancel && (
+          <button
+            className="download-card-btn"
+            {...tooltip('Remove from queue')}
+            aria-label="Remove from queue"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              onCancel(id)
+            }}
+          >
+            <RemoveFromQueueIcon size={16} />
+          </button>
+        )}
+      </div>
       {isDownloading && (
         <div
           className={`download-progress${

@@ -20,6 +20,7 @@ from kamp_daemon.bandcamp import (
     _download_file,
     _download_item,
     _parse_content_length,
+    _parse_size_mb,
     _ensure_session,
     _extract_pagedata,
     _fetch_collection,
@@ -32,10 +33,12 @@ from kamp_daemon.bandcamp import (
     _session_from_cookie_file,
     _username_from_logout_cookie,
     _validate_session,
+    backfill_download_sizes,
     download_single_album,
     fetch_album_art_bytes,
     fetch_album_tracks,
     fetch_stream_url,
+    get_download_size_bytes,
     mark_collection_synced,
     refresh_stream_url,
     sync_collection_stream,
@@ -3470,3 +3473,160 @@ class TestDownloadSingleAlbum:
             self._run(
                 tmp_path, collection=[self._collection_item("42", with_url=False)]
             )
+
+
+class TestParseSizeMb:
+    """_parse_size_mb: Bandcamp download-page size string → bytes (KAMP-574)."""
+
+    def test_mb_with_decimal(self) -> None:
+        assert _parse_size_mb("81.2MB") == 81_200_000
+
+    def test_mb_whole(self) -> None:
+        assert _parse_size_mb("259MB") == 259_000_000
+
+    def test_gb(self) -> None:
+        assert _parse_size_mb("1.2GB") == 1_200_000_000
+
+    def test_bare_number_is_mb(self) -> None:
+        assert _parse_size_mb("57") == 57_000_000
+
+    def test_whitespace_and_case(self) -> None:
+        assert _parse_size_mb("  92.5 mb ") == 92_500_000
+
+    def test_none_and_garbage(self) -> None:
+        assert _parse_size_mb(None) is None
+        assert _parse_size_mb("") is None
+        assert _parse_size_mb("unknown") is None
+
+
+class TestGetDownloadSizeBytes:
+    """get_download_size_bytes: read size_mb from the download page (KAMP-574)."""
+
+    def _session(self, blob: dict[str, Any]) -> MagicMock:
+        session = MagicMock()
+        resp = MagicMock()
+        resp.text = _make_pagedata_html(blob)
+        resp.raise_for_status = MagicMock()
+        session.get.return_value = resp
+        return session
+
+    def test_returns_bytes_for_format(self) -> None:
+        blob = {
+            "download_items": [
+                {"downloads": {"flac": {"url": "x", "size_mb": "252.2MB"}}}
+            ]
+        }
+        assert (
+            get_download_size_bytes(
+                "https://bc/download?x", "flac", self._session(blob)
+            )
+            == 252_200_000
+        )
+
+    def test_none_when_format_absent(self) -> None:
+        blob = {"download_items": [{"downloads": {"mp3-v0": {"size_mb": "81MB"}}}]}
+        assert (
+            get_download_size_bytes(
+                "https://bc/download?x", "flac", self._session(blob)
+            )
+            is None
+        )
+
+    def test_none_when_no_downloads(self) -> None:
+        blob = {"download_items": [{"downloads": {}}]}
+        assert (
+            get_download_size_bytes(
+                "https://bc/download?x", "flac", self._session(blob)
+            )
+            is None
+        )
+
+    def test_none_on_network_error(self) -> None:
+        session = MagicMock()
+        session.get.side_effect = RuntimeError("boom")
+        assert get_download_size_bytes("https://bc/download?x", "flac", session) is None
+
+
+class TestBackfillDownloadSizes:
+    """backfill_download_sizes: estimate File Size on queued items (KAMP-574)."""
+
+    def _collection(self, sids: list[str]) -> list[dict[str, Any]]:
+        return [
+            {"sale_item_id": s, "redownload_url": f"https://bc/download?sid={s}"}
+            for s in sids
+        ]
+
+    def test_sizes_queued_items_as_estimates(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = ["a", "b"]
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            return_value=self._collection(["a", "b"]),
+        )
+        mocker.patch(
+            "kamp_daemon.bandcamp.get_download_size_bytes",
+            side_effect=[81_000_000, 252_000_000],
+        )
+        updated: list[str] = []
+        slept: list[float] = []
+
+        n = backfill_download_sizes(
+            index,
+            "flac",
+            MagicMock(),
+            on_updated=updated.append,
+            sleep=slept.append,
+        )
+
+        assert n == 2
+        index.set_download_size.assert_any_call("a", 81_000_000, is_estimate=True)
+        index.set_download_size.assert_any_call("b", 252_000_000, is_estimate=True)
+        assert updated == ["a", "b"]
+        assert slept == [1.0]  # throttle between the two items (not before the first)
+
+    def test_skips_items_without_resolvable_size(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = ["a", "b"]
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            return_value=self._collection(["a", "b"]),
+        )
+        # 'a' has no size_mb (None); 'b' resolves.
+        mocker.patch(
+            "kamp_daemon.bandcamp.get_download_size_bytes",
+            side_effect=[None, 100_000_000],
+        )
+        n = backfill_download_sizes(index, "flac", MagicMock(), sleep=lambda _s: None)
+        assert n == 1
+        index.set_download_size.assert_called_once_with(
+            "b", 100_000_000, is_estimate=True
+        )
+
+    def test_noop_when_nothing_queued(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = []
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
+        n = backfill_download_sizes(index, "flac", MagicMock())
+        assert n == 0
+        fetch.assert_not_called()  # no collection fetch when nothing needs sizing
+        index.set_download_size.assert_not_called()
+
+    def test_skips_item_missing_from_collection(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = ["a", "gone"]
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        # collection only has 'a' — 'gone' has no redownload_url and is skipped.
+        mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            return_value=self._collection(["a"]),
+        )
+        mocker.patch(
+            "kamp_daemon.bandcamp.get_download_size_bytes", return_value=50_000_000
+        )
+        n = backfill_download_sizes(index, "flac", MagicMock(), sleep=lambda _s: None)
+        assert n == 1
+        index.set_download_size.assert_called_once_with(
+            "a", 50_000_000, is_estimate=True
+        )

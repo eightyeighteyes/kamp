@@ -5272,6 +5272,24 @@ class LibraryIndex:
         ).fetchone()
         return None if row is None else str(row["provider_item_id"])
 
+    def queued_downloads_missing_size(self, *, provider: str = "bandcamp") -> list[str]:
+        """Return provider_item_ids of 'queued' items that have no size yet.
+
+        Drives the KAMP-574 background size-backfill: only 'queued' rows with a
+        NULL size_bytes are returned (downloading/failed/already-sized rows are
+        excluded), front-of-queue first, so an estimate is never written over the
+        exact Content-Length an in-flight download will set.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT provider_item_id FROM download_queue
+             WHERE provider = ? AND status = 'queued' AND size_bytes IS NULL
+             ORDER BY position ASC, id ASC
+            """,
+            (provider,),
+        ).fetchall()
+        return [str(r["provider_item_id"]) for r in rows]
+
     def mark_downloading(
         self, provider_item_id: str, *, provider: str = "bandcamp"
     ) -> None:

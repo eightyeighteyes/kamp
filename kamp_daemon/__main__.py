@@ -1075,6 +1075,41 @@ def _cmd_daemon(
         target=_download_worker, daemon=True, name="album-dl-worker"
     ).start()
 
+    # ---------------------------------------------------------------------------
+    # Download size backfill (KAMP-574)
+    # ---------------------------------------------------------------------------
+    # Queued items have no File Size until they download (Content-Length). This
+    # background poll fills an *estimate* from each item's download-page size_mb,
+    # throttled, and re-broadcasts the queue snapshot so the Downloads-view cards
+    # update. Best-effort: it only touches the network when queued items lack a
+    # size and a Bandcamp session exists, and never crashes the daemon.
+    _SIZE_BACKFILL_INTERVAL = 8.0  # seconds between poll cycles
+
+    def _size_backfill_worker() -> None:
+        import time as _t
+
+        from .bandcamp import _make_requests_session, backfill_download_sizes
+
+        while True:
+            try:
+                session_data = index.get_session("bandcamp")
+                if session_data and index.queued_downloads_missing_size():
+                    bc = Config.load(index).bandcamp
+                    if bc is not None:
+                        backfill_download_sizes(
+                            index,
+                            bc.format,
+                            _make_requests_session(session_data),
+                            on_updated=lambda _pid: app.state.notify_download_queue(),
+                        )
+            except Exception:
+                _logger.exception("Download size backfill cycle failed")
+            _t.sleep(_SIZE_BACKFILL_INTERVAL)
+
+    threading.Thread(
+        target=_size_backfill_worker, daemon=True, name="download-size-backfill"
+    ).start()
+
     # Wrap the existing on_track_end callback to also push track.changed events.
     # Done here (after app creation) so app.state is guaranteed to be available.
     _original_on_track_end = engine.on_track_end

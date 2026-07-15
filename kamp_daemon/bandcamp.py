@@ -534,6 +534,11 @@ def sync_collection_stream(
             if fetch_index > 0:
                 time.sleep(0.5)
             fetch_index += 1
+            # KAMP-544: snapshot how many streamable tracks this album has BEFORE
+            # the re-sync. If it rises, a pre-order gained a newly-released track
+            # (incremental release or full graduation) and the album should jump
+            # back to the top of "date added" with the new-arrival highlight.
+            available_before = index.count_available_remote_tracks(str(sid))
             try:
                 tracks = fetch_album_tracks(
                     album_url,
@@ -561,6 +566,13 @@ def sync_collection_stream(
                     elif is_preorder_already:
                         # All tracks are now released — graduate to normal remote.
                         index.set_collection_item_mode(str(sid), "remote")
+                    # KAMP-544: re-surface the album when it gained streamable
+                    # tracks. The `available_before > 0` guard skips the first-ever
+                    # index of an album (0 -> N) — that album is already new by its
+                    # date_added; only a *subsequent* increase is a re-arrival.
+                    available_after = index.count_available_remote_tracks(str(sid))
+                    if available_before > 0 and available_after > available_before:
+                        index.bump_album_new_content(str(sid), time.time())
             except Exception as exc:
                 logger.warning(
                     "fetch_album_tracks: skipping tracks for %r by %r (%s): %s",

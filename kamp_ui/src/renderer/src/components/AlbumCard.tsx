@@ -79,12 +79,12 @@ export function AlbumCard({
     setIsHovered,
     auraActive,
     staticBorderGradient,
-    dismissHighlight
+    markHighlightPlayed
   } = useNewArrivalHighlight(album)
 
-  // Dismiss the highlight the first time this album becomes the active playing track.
+  // Clear the highlight the first time this album becomes the active playing track.
   useEffect(() => {
-    if (isNew && isActive && playing) dismissHighlight(album)
+    if (isNew && isActive && playing) markHighlightPlayed(album)
   }, [isNew, isActive, playing]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // artBlurred persists through the post-download rescan window:

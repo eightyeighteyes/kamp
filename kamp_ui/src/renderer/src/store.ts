@@ -14,6 +14,7 @@ import type {
   AlbumTagsCollision,
   ConfigValues,
   CriteriaDoc,
+  DownloadItem,
   PlayerState,
   Playlist,
   PlaylistTrack,
@@ -68,7 +69,7 @@ type PlayerStore = {
   peakDb: number | null
 
   configuredLibraryPath: string | null
-  activeView: 'library' | 'now-playing' | 'home'
+  activeView: 'library' | 'now-playing' | 'home' | 'downloads'
   moduleOrder: string[]
   hiddenModules: string[]
   moduleDisplayStyles: Record<string, DisplayStyle>
@@ -128,6 +129,11 @@ type PlayerStore = {
   // keyed by sale_item_id. Drives the pulsing tag badge until the rescan flips
   // the album to local.
   taggingAlbumIds: Set<string>
+  // KAMP-568: full download-queue snapshot (Now Downloading / Queued / Failed) for
+  // the Downloads view. Loaded once via GET /api/v1/downloads and kept live by the
+  // `download.queue` WS event. Distinct from the per-album KAMP-436 sets above,
+  // which decorate the library grid.
+  downloadQueue: DownloadItem[]
   flashToast: string | null
   styleRailVisible: boolean
   selectedTheme: ThemeName
@@ -144,7 +150,7 @@ type PlayerStore = {
   ) => Promise<void>
   setSortDir: (dir: 'asc' | 'desc') => Promise<void>
   setLibraryFilter: (filters: string[]) => void
-  setActiveView: (view: 'library' | 'now-playing' | 'home') => Promise<void>
+  setActiveView: (view: 'library' | 'now-playing' | 'home' | 'downloads') => Promise<void>
   setModuleOrder: (ids: string[]) => void
   hideModule: (id: string) => void
   showModule: (id: string) => void
@@ -161,6 +167,9 @@ type PlayerStore = {
   markAlbumTagging: (saleItemId: string) => void
   clearAlbumTagging: (saleItemId: string) => void
   removeDownload: (saleItemId: string) => Promise<void>
+  // KAMP-568: download-queue snapshot (Downloads view)
+  loadDownloads: () => Promise<void>
+  setDownloadQueue: (items: DownloadItem[]) => void
   showFlashToast: (msg: string) => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
@@ -429,6 +438,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   queuedAlbumIds: new Set<string>(),
   downloadProgress: new Map<string, number>(),
   taggingAlbumIds: new Set<string>(),
+  downloadQueue: [],
   flashToast: null,
   styleRailVisible: false,
   selectedTheme: (localStorage.getItem('kamp:selected-theme') as ThemeName | null) ?? 'kamp',
@@ -631,6 +641,17 @@ export const useStore = create<PlayerStore>((set, get) => ({
       get().showFlashToast(msg)
     }
   },
+  // KAMP-568: seed the Downloads view from the REST snapshot; live updates then
+  // arrive via the `download.queue` WS event (setDownloadQueue).
+  loadDownloads: async () => {
+    try {
+      const { items } = await api.getDownloads()
+      set({ downloadQueue: items })
+    } catch {
+      // best-effort; the WS snapshot will populate on the next transition
+    }
+  },
+  setDownloadQueue: (items) => set({ downloadQueue: items }),
   showFlashToast: (msg) => {
     set({ flashToast: msg })
     setTimeout(() => set({ flashToast: null }), 5000)

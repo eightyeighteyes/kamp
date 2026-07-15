@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import type { DownloadItem } from '../api/client'
+import { artUrl } from '../api/client'
 import { formatBytes } from '../utils/formatBytes'
 
 /**
@@ -19,10 +20,14 @@ export function DownloadCard({
   item: DownloadItem
   progress?: number
 }): React.JSX.Element {
-  // artwork_ref is a public Bandcamp CDN URL (or null). Used directly — the item
-  // is mid-download and not yet in the library, so artUrl() would 404.
   const [artFailed, setArtFailed] = useState(false)
-  const showArt = item.artwork_ref != null && item.artwork_ref !== '' && !artFailed
+  // Resolve art through the daemon's /api/v1/album-art endpoint (same-origin, so
+  // the renderer CSP allows it, unlike the raw bcbits.com `artwork_ref` URL). The
+  // endpoint serves cached Bandcamp CDN art for collection items via its
+  // band_name/item_title fallback, even before the album is downloaded.
+  const artSrc =
+    item.album_artist && item.album_name ? artUrl(item.album_artist, item.album_name) : null
+  const showArt = artSrc != null && !artFailed
 
   const size = formatBytes(item.size_bytes)
   const sizeLabel = size ? (item.size_is_estimate ? `~${size}` : size) : ''
@@ -33,7 +38,7 @@ export function DownloadCard({
   return (
     <div className={`download-card${isFailed ? ' download-card--failed' : ''}`}>
       <div className="download-card-thumb">
-        {showArt && <img src={item.artwork_ref ?? ''} alt="" onError={() => setArtFailed(true)} />}
+        {showArt && <img src={artSrc ?? ''} alt="" onError={() => setArtFailed(true)} />}
       </div>
       <div className="download-card-info">
         <div className="download-card-title">{item.album_name || 'Unknown album'}</div>

@@ -2925,7 +2925,10 @@ class TestBandcampCollectionDownload:
         mock_index.set_track_source_for_item.assert_not_called()
         # Enqueued with the album snapshot for the Downloads-view card.
         mock_index.enqueue_download.assert_called_once_with(
-            "42", album_name="Album 42", album_artist="Artist 42"
+            "42",
+            album_name="Album 42",
+            album_artist="Artist 42",
+            redownload_url=None,  # KAMP-575: ledger lacks a live URL → fallback
         )
         # Item placed on the in-memory queue
         assert dl_q.get_nowait() == "42"

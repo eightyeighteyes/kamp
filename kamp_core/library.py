@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 53
+_SCHEMA_VERSION = 54
 
 
 class NoStreamableVersionError(Exception):
@@ -417,6 +417,12 @@ CREATE TABLE IF NOT EXISTS download_queue (
     album_name       TEXT,
     album_artist     TEXT,
     artwork_ref      TEXT,
+    -- redownload_url (KAMP-575): the Bandcamp download *page* link, captured from
+    -- the collection item at enqueue time. Reused on download and size-estimation
+    -- so those paths need not re-fetch the whole collection per item (the source of
+    -- the 429 storm). Long-lived; the ephemeral CDN URL is resolved fresh per call.
+    -- NULL when the enqueuer didn't have it (e.g. the REST single-download path).
+    redownload_url   TEXT,
     UNIQUE (provider, provider_item_id)
 );
 
@@ -2282,7 +2288,24 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 53")
             self._conn.commit()
-            version = 53  # noqa: F841
+            version = 53
+
+        if version == 53:
+            # v53 -> v54 (KAMP-575): persist the Bandcamp download-page link on each
+            # queue row so the download worker and size-backfill reuse it instead of
+            # re-paginating the whole collection per item (which triggered 429s).
+            # Unconstrained column → a plain ALTER is safe (no rebuild, unlike v53).
+            # Presence-guarded so a re-run after a crash is idempotent.
+            dq_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(download_queue)")
+            }
+            if "redownload_url" not in dq_cols:
+                self._conn.execute(
+                    "ALTER TABLE download_queue ADD COLUMN redownload_url TEXT"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 54")
+            self._conn.commit()
+            version = 54  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -5201,6 +5224,7 @@ class LibraryIndex:
         artwork_ref: str | None = None,
         size_bytes: int | None = None,
         size_is_estimate: bool = True,
+        redownload_url: str | None = None,
     ) -> None:
         """Add (*provider*, *provider_item_id*) to the download queue as 'queued'.
 
@@ -5210,13 +5234,19 @@ class LibraryIndex:
         its current state) so double-clicks don't produce duplicate work. The
         optional album snapshot / size are stored on the row so the UI card renders
         without a join; callers that only have an id may omit them.
+
+        *redownload_url* (KAMP-575) is the Bandcamp download-page link for the item,
+        stored so the download worker and size-backfill reuse it instead of
+        re-fetching the whole collection per item. Omit it when unavailable (the
+        download path then falls back to a one-off collection re-fetch).
         """
         self._conn.execute(
             """
             INSERT OR IGNORE INTO download_queue
                 (provider, provider_item_id, status, position,
-                 album_name, album_artist, artwork_ref, size_bytes, size_is_estimate)
-            VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)
+                 album_name, album_artist, artwork_ref, size_bytes, size_is_estimate,
+                 redownload_url)
+            VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 provider,
@@ -5227,6 +5257,7 @@ class LibraryIndex:
                 artwork_ref,
                 size_bytes,
                 1 if size_is_estimate else 0,
+                redownload_url,
             ),
         )
         self._conn.commit()
@@ -5304,9 +5335,15 @@ class LibraryIndex:
     def mark_download_failed(
         self, provider_item_id: str, error_text: str, *, provider: str = "bandcamp"
     ) -> None:
-        """Transition an item to 'failed', recording *error_text* for the card."""
+        """Transition an item to 'failed', recording *error_text* for the card.
+
+        Also clears redownload_url (KAMP-575): if the stored link was the cause
+        (stale/dead), a subsequent retry finds no URL and re-fetches a fresh one,
+        healing the item without any inline stale-vs-ratelimit guesswork.
+        """
         self._conn.execute(
-            "UPDATE download_queue SET status = 'failed', error_text = ? "
+            "UPDATE download_queue "
+            "SET status = 'failed', error_text = ?, redownload_url = NULL "
             "WHERE provider = ? AND provider_item_id = ?",
             (error_text, provider, provider_item_id),
         )
@@ -5382,6 +5419,22 @@ class LibraryIndex:
         )
         self._conn.commit()
 
+    def set_download_redownload_url(
+        self, provider_item_id: str, redownload_url: str, *, provider: str = "bandcamp"
+    ) -> None:
+        """Store the download-page link on a queue row (KAMP-575).
+
+        Lets the download worker fill URLs with a single collection fetch per drain
+        (see prefetch_redownload_urls) so it can then download every item via the
+        fast path instead of re-fetching the collection once per item.
+        """
+        self._conn.execute(
+            "UPDATE download_queue SET redownload_url = ? "
+            "WHERE provider = ? AND provider_item_id = ?",
+            (redownload_url, provider, provider_item_id),
+        )
+        self._conn.commit()
+
     def reorder_download_queue(
         self, ordered_provider_item_ids: list[str], *, provider: str = "bandcamp"
     ) -> None:
@@ -5450,6 +5503,56 @@ class LibraryIndex:
             }
             for r in rows
         ]
+
+    def get_download_item(
+        self, provider_item_id: str, *, provider: str = "bandcamp"
+    ) -> dict[str, Any] | None:
+        """Return one queue row as a dict, or None if absent (KAMP-575).
+
+        The download worker uses this to recover the stored ``redownload_url`` plus
+        the album snapshot (``album_name``/``album_artist`` = band/title) so it can
+        download without re-fetching the collection.
+        """
+        r = self._conn.execute(
+            """
+            SELECT provider, provider_item_id, status, position,
+                   size_bytes, size_is_estimate, error_text,
+                   album_name, album_artist, artwork_ref, redownload_url
+              FROM download_queue
+             WHERE provider = ? AND provider_item_id = ?
+            """,
+            (provider, provider_item_id),
+        ).fetchone()
+        if r is None:
+            return None
+        return {
+            "provider": r["provider"],
+            "provider_item_id": r["provider_item_id"],
+            "status": r["status"],
+            "position": r["position"],
+            "size_bytes": r["size_bytes"],
+            "size_is_estimate": bool(r["size_is_estimate"]),
+            "error_text": r["error_text"],
+            "album_name": r["album_name"],
+            "album_artist": r["album_artist"],
+            "artwork_ref": r["artwork_ref"],
+            "redownload_url": r["redownload_url"],
+        }
+
+    def download_redownload_urls(
+        self, *, provider: str = "bandcamp"
+    ) -> dict[str, str | None]:
+        """Map provider_item_id → stored redownload_url for all queued rows (KAMP-575).
+
+        Lets the size-backfill reuse stored links instead of re-fetching the whole
+        collection. A value is None when the row has no stored URL.
+        """
+        rows = self._conn.execute(
+            "SELECT provider_item_id, redownload_url FROM download_queue "
+            "WHERE provider = ? AND status = 'queued'",
+            (provider,),
+        ).fetchall()
+        return {str(r["provider_item_id"]): r["redownload_url"] for r in rows}
 
     def update_track_after_album_drain(
         self,

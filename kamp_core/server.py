@@ -3123,6 +3123,10 @@ def create_app(
             sale_item_id,
             album_name=item.get("item_title") or None,
             album_artist=item.get("band_name") or None,
+            # KAMP-575: the ledger row rarely carries a live redownload_url, so this
+            # is usually None → the download worker falls back to a one-off
+            # collection re-fetch for this single item (no batch storm).
+            redownload_url=item.get("redownload_url") or None,
         )
         dl_queue.put(sale_item_id)  # wake the worker
 

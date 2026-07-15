@@ -40,6 +40,7 @@ from kamp_daemon.bandcamp import (
     fetch_stream_url,
     get_download_size_bytes,
     mark_collection_synced,
+    prefetch_redownload_urls,
     refresh_stream_url,
     sync_collection_stream,
     sync_new_purchases,
@@ -3396,6 +3397,9 @@ class TestDownloadSingleAlbum:
         config = _bc_config(tmp_path)
         watch_folder = tmp_path / "watch"
         index = MagicMock()
+        # No stored redownload_url → exercise the fallback (collection re-fetch)
+        # path. The fast path is covered separately (KAMP-575).
+        index.get_download_item.return_value = None
 
         def fake_download_item(
             item: dict,
@@ -3441,6 +3445,7 @@ class TestDownloadSingleAlbum:
     def test_updates_collection_mode_and_track_source(self, tmp_path: Path) -> None:
         config = _bc_config(tmp_path)
         index = MagicMock()
+        index.get_download_item.return_value = None  # fallback path
         fake_collection = [self._collection_item("42")]
 
         with (
@@ -3473,6 +3478,87 @@ class TestDownloadSingleAlbum:
             self._run(
                 tmp_path, collection=[self._collection_item("42", with_url=False)]
             )
+
+    def test_fast_path_uses_stored_url_without_collection_fetch(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-575: a queue row with a stored redownload_url downloads WITHOUT any
+        collection fetch or fan-info call — reconstructing the item from local DB.
+        This is the regression fix: no per-item collection re-fetch → no 429 storm.
+        """
+        config = _bc_config(tmp_path)
+        index = MagicMock()
+        index.get_download_item.return_value = {
+            "redownload_url": "https://bandcamp.com/download?id=42&sig=xyz",
+            "album_artist": "Test Band",
+            "album_name": "Test Album",
+        }
+        index.get_collection_item.return_value = {"tralbum_id": "tr-99"}
+
+        captured: dict[str, Any] = {}
+
+        def fake_download_item(item: dict, *_a: object, **_k: object) -> Path:
+            captured.update(item)
+            dest = tmp_path / "42.zip"
+            dest.write_bytes(b"zip")
+            return dest
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=MagicMock()
+            ),
+            patch("kamp_daemon.bandcamp._get_fan_info") as fan,
+            patch("kamp_daemon.bandcamp._fetch_collection") as fetch,
+            patch(
+                "kamp_daemon.bandcamp._download_item", side_effect=fake_download_item
+            ),
+        ):
+            dest = download_single_album(config, tmp_path / "watch", index, "42")
+
+        assert dest.exists()
+        fetch.assert_not_called()  # the whole point: no collection walk
+        fan.assert_not_called()  # nor a collection_summary hit
+        # Item reconstructed from local DB: URL + band/title from the row, tralbum
+        # from the ledger.
+        assert (
+            captured["redownload_url"] == "https://bandcamp.com/download?id=42&sig=xyz"
+        )
+        assert captured["band_name"] == "Test Band"
+        assert captured["item_title"] == "Test Album"
+        index.set_collection_item_mode.assert_called_once_with("42", "local")
+        index.add_pending_ingest.assert_called_once_with(str(dest), "42", "tr-99")
+
+    def test_no_stored_url_falls_back_to_collection_fetch(self, tmp_path: Path) -> None:
+        """No stored redownload_url → the collection is fetched to resolve it."""
+        config = _bc_config(tmp_path)
+        index = MagicMock()
+        index.get_download_item.return_value = {"redownload_url": None}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=MagicMock()
+            ),
+            patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u")) as fan,
+            patch(
+                "kamp_daemon.bandcamp._fetch_collection",
+                return_value=[self._collection_item("42")],
+            ) as fetch,
+            patch(
+                "kamp_daemon.bandcamp._download_item", return_value=tmp_path / "a.zip"
+            ),
+        ):
+            download_single_album(config, tmp_path / "watch", index, "42")
+
+        fetch.assert_called_once()  # fell back to the collection re-fetch
+        fan.assert_called_once()
 
 
 class TestParseSizeMb:
@@ -3547,23 +3633,63 @@ class TestGetDownloadSizeBytes:
         assert get_download_size_bytes("https://bc/download?x", "flac", session) is None
 
 
+class TestPrefetchRedownloadUrls:
+    """prefetch_redownload_urls: fill missing queue URLs with one fetch (KAMP-575)."""
+
+    def test_populates_missing_urls_with_one_fetch(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"111": None, "222": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            return_value=[
+                {"sale_item_id": 111, "redownload_url": "https://dl/111"},
+                {"sale_item_id": 222, "redownload_url": "https://dl/222"},
+            ],
+        )
+        n = prefetch_redownload_urls(index, MagicMock())
+        assert n == 2
+        fetch.assert_called_once()  # ONE collection fetch for the whole batch
+        index.set_download_redownload_url.assert_any_call("111", "https://dl/111")
+        index.set_download_redownload_url.assert_any_call("222", "https://dl/222")
+
+    def test_noop_when_no_missing_urls(self, mocker: MockerFixture) -> None:
+        """All queued rows already have URLs → no network I/O, nothing written."""
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"111": "https://dl/111"}
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
+        n = prefetch_redownload_urls(index, MagicMock())
+        assert n == 0
+        fetch.assert_not_called()
+        index.set_download_redownload_url.assert_not_called()
+
+    def test_skips_items_not_in_collection(self, mocker: MockerFixture) -> None:
+        """A queued id absent from the collection is left unfilled (per-item
+        fallback will resolve it)."""
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"111": None, "999": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            return_value=[{"sale_item_id": 111, "redownload_url": "https://dl/111"}],
+        )
+        n = prefetch_redownload_urls(index, MagicMock())
+        assert n == 1
+        index.set_download_redownload_url.assert_called_once_with(
+            "111", "https://dl/111"
+        )
+
+
 class TestBackfillDownloadSizes:
     """backfill_download_sizes: estimate File Size on queued items (KAMP-574)."""
-
-    def _collection(self, sids: list[str]) -> list[dict[str, Any]]:
-        return [
-            {"sale_item_id": s, "redownload_url": f"https://bc/download?sid={s}"}
-            for s in sids
-        ]
 
     def test_sizes_queued_items_as_estimates(self, mocker: MockerFixture) -> None:
         index = MagicMock()
         index.queued_downloads_missing_size.return_value = ["a", "b"]
-        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
-        mocker.patch(
-            "kamp_daemon.bandcamp._fetch_collection",
-            return_value=self._collection(["a", "b"]),
-        )
+        index.download_redownload_urls.return_value = {
+            "a": "https://bc/download?sid=a",
+            "b": "https://bc/download?sid=b",
+        }
         mocker.patch(
             "kamp_daemon.bandcamp.get_download_size_bytes",
             side_effect=[81_000_000, 252_000_000],
@@ -3583,16 +3709,15 @@ class TestBackfillDownloadSizes:
         index.set_download_size.assert_any_call("a", 81_000_000, is_estimate=True)
         index.set_download_size.assert_any_call("b", 252_000_000, is_estimate=True)
         assert updated == ["a", "b"]
-        assert slept == [1.0]  # throttle between the two items (not before the first)
+        assert slept == [1.0]  # throttle between the two fetches (not before the first)
 
     def test_skips_items_without_resolvable_size(self, mocker: MockerFixture) -> None:
         index = MagicMock()
         index.queued_downloads_missing_size.return_value = ["a", "b"]
-        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
-        mocker.patch(
-            "kamp_daemon.bandcamp._fetch_collection",
-            return_value=self._collection(["a", "b"]),
-        )
+        index.download_redownload_urls.return_value = {
+            "a": "https://bc/download?sid=a",
+            "b": "https://bc/download?sid=b",
+        }
         # 'a' has no size_mb (None); 'b' resolves.
         mocker.patch(
             "kamp_daemon.bandcamp.get_download_size_bytes",
@@ -3607,21 +3732,20 @@ class TestBackfillDownloadSizes:
     def test_noop_when_nothing_queued(self, mocker: MockerFixture) -> None:
         index = MagicMock()
         index.queued_downloads_missing_size.return_value = []
-        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
+        size = mocker.patch("kamp_daemon.bandcamp.get_download_size_bytes")
         n = backfill_download_sizes(index, "flac", MagicMock())
         assert n == 0
-        fetch.assert_not_called()  # no collection fetch when nothing needs sizing
+        size.assert_not_called()  # nothing to size
         index.set_download_size.assert_not_called()
 
-    def test_skips_item_missing_from_collection(self, mocker: MockerFixture) -> None:
+    def test_skips_item_without_stored_url(self, mocker: MockerFixture) -> None:
+        """An item without a stored URL is skipped — the backfill NEVER fetches the
+        collection to resolve it (the prefetch fills it in on a later cycle)."""
         index = MagicMock()
-        index.queued_downloads_missing_size.return_value = ["a", "gone"]
-        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
-        # collection only has 'a' — 'gone' has no redownload_url and is skipped.
-        mocker.patch(
-            "kamp_daemon.bandcamp._fetch_collection",
-            return_value=self._collection(["a"]),
-        )
+        index.queued_downloads_missing_size.return_value = ["a", "nourl"]
+        index.download_redownload_urls.return_value = {"a": "https://bc/download?sid=a"}
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
+        fan = mocker.patch("kamp_daemon.bandcamp._get_fan_info")
         mocker.patch(
             "kamp_daemon.bandcamp.get_download_size_bytes", return_value=50_000_000
         )
@@ -3630,3 +3754,25 @@ class TestBackfillDownloadSizes:
         index.set_download_size.assert_called_once_with(
             "a", 50_000_000, is_estimate=True
         )
+        fetch.assert_not_called()  # never touches the rate-limited collection endpoint
+        fan.assert_not_called()
+
+    def test_never_fetches_collection(self, mocker: MockerFixture) -> None:
+        """KAMP-575: the backfill sizes items via stored URLs only and never hits
+        the collection endpoint (which is what tripped the 429s)."""
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = ["a", "b"]
+        index.download_redownload_urls.return_value = {
+            "a": "https://bc/download?sid=a",
+            "b": "https://bc/download?sid=b",
+        }
+        fan = mocker.patch("kamp_daemon.bandcamp._get_fan_info")
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
+        mocker.patch(
+            "kamp_daemon.bandcamp.get_download_size_bytes",
+            side_effect=[81_000_000, 252_000_000],
+        )
+        n = backfill_download_sizes(index, "flac", MagicMock(), sleep=lambda _s: None)
+        assert n == 2
+        fetch.assert_not_called()
+        fan.assert_not_called()

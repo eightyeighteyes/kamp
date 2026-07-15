@@ -3656,32 +3656,30 @@ class TestPreorderResurface:
         assert "last_track_added_at" in cols
         assert backfilled == 1234.0
 
-    def test_migration_v52_to_v53_extends_download_queue(self, tmp_path: Path) -> None:
-        """A pre-v53 DB gains the queue state-machine columns; position backfills
-        from the old FIFO order and existing rows survive (KAMP-564)."""
+    def test_migration_v52_to_v53_rebuilds_download_queue(self, tmp_path: Path) -> None:
+        """A pre-v53 DB's Bandcamp-specific download_queue (sale_item_id) is rebuilt
+        into the platform-neutral (provider, provider_item_id) state-machine shape;
+        existing rows survive as provider='bandcamp' with position backfilled from
+        the old FIFO order (KAMP-564)."""
         db_path = tmp_path / "library.db"
-        # Build a current DB, seed two queued rows with distinct queued_at, then
-        # rewind: drop the v53 columns and stamp version 52 so open runs the upgrade.
-        idx = LibraryIndex(db_path)
-        idx.enqueue_download("first")
-        import time
-
-        time.sleep(0.01)  # distinct queued_at so the FIFO backfill order is defined
-        idx.enqueue_download("second")
-        idx._conn.commit()
-        idx.close()
+        # Build a current DB, then rewind download_queue to the genuine KAMP-408
+        # (v23) shape — a table keyed on sale_item_id — and stamp version 52 so open
+        # runs the v53 rebuild. Two rows with distinct queued_at fix the FIFO order.
+        LibraryIndex(db_path).close()
         conn = sqlite3.connect(str(db_path))
-        for col in (
-            "status",
-            "position",
-            "size_bytes",
-            "size_is_estimate",
-            "error_text",
-            "album_name",
-            "album_artist",
-            "artwork_ref",
-        ):
-            conn.execute(f"ALTER TABLE download_queue DROP COLUMN {col}")
+        conn.execute("DROP TABLE download_queue")
+        conn.execute(
+            "CREATE TABLE download_queue ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " sale_item_id TEXT NOT NULL UNIQUE,"
+            " queued_at REAL NOT NULL DEFAULT (unixepoch()))"
+        )
+        conn.execute(
+            "INSERT INTO download_queue (sale_item_id, queued_at) VALUES ('first', 1.0)"
+        )
+        conn.execute(
+            "INSERT INTO download_queue (sale_item_id, queued_at) VALUES ('second', 2.0)"
+        )
         conn.execute("UPDATE schema_version SET version = 52")
         conn.commit()
         conn.close()
@@ -3692,13 +3690,16 @@ class TestPreorderResurface:
         ]
         cols = {r[1] for r in index._conn.execute("PRAGMA table_info(download_queue)")}
         rows = index._conn.execute(
-            "SELECT sale_item_id, status, position FROM download_queue"
+            "SELECT provider, provider_item_id, status, position FROM download_queue"
             " ORDER BY position ASC"
         ).fetchall()
         index.close()
 
         assert version == 53
+        assert "sale_item_id" not in cols
         assert {
+            "provider",
+            "provider_item_id",
             "status",
             "position",
             "size_bytes",
@@ -3708,11 +3709,14 @@ class TestPreorderResurface:
             "album_artist",
             "artwork_ref",
         } <= cols
-        # Existing rows survived, defaulted to 'queued', with position backfilled
-        # 1,2 to match the pre-v53 FIFO (queued_at) order.
-        assert [(r["sale_item_id"], r["status"], r["position"]) for r in rows] == [
-            ("first", "queued", 1),
-            ("second", "queued", 2),
+        # Existing rows survived as bandcamp items, defaulted to 'queued', with
+        # position backfilled 1,2 to match the pre-v53 FIFO (queued_at) order.
+        assert [
+            (r["provider"], r["provider_item_id"], r["status"], r["position"])
+            for r in rows
+        ] == [
+            ("bandcamp", "first", "queued", 1),
+            ("bandcamp", "second", "queued", 2),
         ]
 
     def test_count_available_remote_tracks(self, tmp_path: Path) -> None:
@@ -8621,8 +8625,10 @@ class TestDownloadQueueStateMachine:
     reorder, retry-to-end, cancel, size, and restart persistence (KAMP-564)."""
 
     def _states(self, index: "LibraryIndex") -> "list[tuple[str, str]]":
-        """Return (sale_item_id, status) for every queue row in display order."""
-        return [(r["sale_item_id"], r["status"]) for r in index.download_queue_items()]
+        """Return (provider_item_id, status) for every queue row in display order."""
+        return [
+            (r["provider_item_id"], r["status"]) for r in index.download_queue_items()
+        ]
 
     def test_enqueue_defaults_to_queued(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
@@ -8772,7 +8778,7 @@ class TestDownloadQueueStateMachine:
         for sid in ("a", "b", "c"):
             index.enqueue_download(sid)
         index.reorder_download_queue(["c", "a", "b"])
-        assert [i["sale_item_id"] for i in index.download_queue_items()] == [
+        assert [i["provider_item_id"] for i in index.download_queue_items()] == [
             "c",
             "a",
             "b",
@@ -8848,6 +8854,30 @@ class TestDownloadQueueStateMachine:
         ]
         assert reopened.download_queue_items()[2]["error_text"] == "boom"
         reopened.close()
+
+    def test_provider_defaults_to_bandcamp(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        assert index.download_queue_items()[0]["provider"] == "bandcamp"
+        index.close()
+
+    def test_same_item_id_distinct_across_providers(self, tmp_path: Path) -> None:
+        """Identity is (provider, provider_item_id): the same id under two providers
+        is two independent rows, and per-provider ops don't cross-talk."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("x", provider="bandcamp")
+        index.enqueue_download("x", provider="other")
+        assert len(index.download_queue_items()) == 2
+        # A transition on one provider's item leaves the other untouched.
+        index.mark_downloading("x", provider="other")
+        by_provider = {i["provider"]: i["status"] for i in index.download_queue_items()}
+        assert by_provider == {"bandcamp": "queued", "other": "downloading"}
+        # Per-provider reads/removes are scoped.
+        assert index.next_queued_download(provider="bandcamp") == "x"
+        assert index.next_queued_download(provider="other") is None
+        index.cancel_download("x", provider="bandcamp")
+        assert [i["provider"] for i in index.download_queue_items()] == ["other"]
+        index.close()
 
 
 class TestRemoveDownload:

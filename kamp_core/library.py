@@ -388,9 +388,13 @@ CREATE TABLE IF NOT EXISTS bandcamp_collection (
     num_streamable_tracks INTEGER NOT NULL DEFAULT 0
 );
 
--- Serialized album download queue (KAMP-408; extended into a state machine by
--- KAMP-564). UNIQUE on sale_item_id prevents double-enqueue; INSERT OR IGNORE is
--- idempotent. queued_at is a Unix timestamp used for FIFO replay order on restart.
+-- Serialized album download queue (KAMP-408; extended into a platform-neutral
+-- state machine by KAMP-564). Identity is (provider, provider_item_id) — the same
+-- generalization track_sources uses — so downloads are not tied to Bandcamp even
+-- though it is the only provider today (provider defaults to 'bandcamp';
+-- provider_item_id is the old sale_item_id). UNIQUE(provider, provider_item_id)
+-- prevents double-enqueue; INSERT OR IGNORE is idempotent. queued_at is a Unix
+-- timestamp used for FIFO replay order on restart.
 --
 -- KAMP-564 state machine: status is one of 'queued' | 'downloading' | 'failed'.
 -- A completed download is DELETEd (there is no 'done' row state), matching the
@@ -399,10 +403,11 @@ CREATE TABLE IF NOT EXISTS bandcamp_collection (
 -- the KAMP-563 spike (exact Content-Length at download time, or an approximate
 -- pre-download estimate when size_is_estimate=1). album_name/album_artist/
 -- artwork_ref are a denormalized snapshot for the card so it renders without a
--- join to bandcamp_collection.
+-- join to the provider's collection table.
 CREATE TABLE IF NOT EXISTS download_queue (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    sale_item_id     TEXT    NOT NULL UNIQUE,
+    provider         TEXT    NOT NULL DEFAULT 'bandcamp',
+    provider_item_id TEXT    NOT NULL,
     queued_at        REAL    NOT NULL DEFAULT (unixepoch()),
     status           TEXT    NOT NULL DEFAULT 'queued',
     position         INTEGER NOT NULL DEFAULT 0,
@@ -411,7 +416,8 @@ CREATE TABLE IF NOT EXISTS download_queue (
     error_text       TEXT,
     album_name       TEXT,
     album_artist     TEXT,
-    artwork_ref      TEXT
+    artwork_ref      TEXT,
+    UNIQUE (provider, provider_item_id)
 );
 
 -- Download → pipeline provenance handoff (KAMP-523). When the Bandcamp
@@ -2225,42 +2231,55 @@ class LibraryIndex:
 
         if version == 52:
             # v52 -> v53 (KAMP-564): grow the KAMP-408 download_queue into a
-            # persistent state machine for the Downloads view. Purely additive
-            # nullable/defaulted columns — no FK rebuild. Each ADD COLUMN is guarded
-            # by a presence check so a partial/retried migration is idempotent.
-            # Existing queued rows are all 'queued'; backfill position from the old
-            # FIFO order (queued_at, then id) so replay order is preserved.
-            dq_cols = {
+            # persistent, platform-neutral state machine for the Downloads view.
+            # Rebuild rather than ALTER: the old table keyed on the Bandcamp-specific
+            # `sale_item_id`, but downloads are a general capability (other services
+            # may follow), so identity becomes (provider, provider_item_id) — the
+            # same generalization track_sources already uses. download_queue has no
+            # foreign keys and nothing references it, so a plain create/copy/drop/
+            # rename inside the migration transaction is safe (no FK-off dance).
+            old_cols = {
                 r[1] for r in self._conn.execute("PRAGMA table_info(download_queue)")
             }
-            _additions = [
-                ("status", "TEXT NOT NULL DEFAULT 'queued'"),
-                ("position", "INTEGER NOT NULL DEFAULT 0"),
-                ("size_bytes", "INTEGER"),
-                ("size_is_estimate", "INTEGER NOT NULL DEFAULT 1"),
-                ("error_text", "TEXT"),
-                ("album_name", "TEXT"),
-                ("album_artist", "TEXT"),
-                ("artwork_ref", "TEXT"),
-            ]
-            for col, decl in _additions:
-                if col not in dq_cols:
-                    self._conn.execute(
-                        f"ALTER TABLE download_queue ADD COLUMN {col} {decl}"
+            if "provider_item_id" not in old_cols:
+                self._conn.execute("DROP TABLE IF EXISTS download_queue_v53")
+                self._conn.execute("""
+                    CREATE TABLE download_queue_v53 (
+                        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                        provider         TEXT    NOT NULL DEFAULT 'bandcamp',
+                        provider_item_id TEXT    NOT NULL,
+                        queued_at        REAL    NOT NULL DEFAULT (unixepoch()),
+                        status           TEXT    NOT NULL DEFAULT 'queued',
+                        position         INTEGER NOT NULL DEFAULT 0,
+                        size_bytes       INTEGER,
+                        size_is_estimate INTEGER NOT NULL DEFAULT 1,
+                        error_text       TEXT,
+                        album_name       TEXT,
+                        album_artist     TEXT,
+                        artwork_ref      TEXT,
+                        UNIQUE (provider, provider_item_id)
                     )
-            if "position" not in dq_cols:
-                # Backfill position to match the pre-v53 FIFO order. Done in Python
-                # (rather than UPDATE ... FROM / ROW_NUMBER, which need newer SQLite)
-                # to stay portable across the SQLite versions users may ship. 1-based;
-                # new/retried items later append at MAX(position)+1.
+                    """)
+                # Copy existing rows: every pre-v53 item is a Bandcamp sale_item_id,
+                # so provider='bandcamp' and provider_item_id=sale_item_id. Backfill
+                # position from the old FIFO order (queued_at, then id) so replay
+                # order is preserved; status defaults to 'queued'. Done in Python
+                # (not ROW_NUMBER) to stay portable across shipped SQLite versions.
                 old_rows = self._conn.execute(
-                    "SELECT id FROM download_queue ORDER BY queued_at ASC, id ASC"
+                    "SELECT id, sale_item_id, queued_at FROM download_queue "
+                    "ORDER BY queued_at ASC, id ASC"
                 ).fetchall()
                 for pos, row in enumerate(old_rows, start=1):
                     self._conn.execute(
-                        "UPDATE download_queue SET position = ? WHERE id = ?",
-                        (pos, row[0]),
+                        "INSERT INTO download_queue_v53 "
+                        "(id, provider, provider_item_id, queued_at, position) "
+                        "VALUES (?, 'bandcamp', ?, ?, ?)",
+                        (row[0], row[1], row[2], pos),
                     )
+                self._conn.execute("DROP TABLE download_queue")
+                self._conn.execute(
+                    "ALTER TABLE download_queue_v53 RENAME TO download_queue"
+                )
             self._conn.execute("UPDATE schema_version SET version = 53")
             self._conn.commit()
             version = 53  # noqa: F841
@@ -5174,31 +5193,34 @@ class LibraryIndex:
 
     def enqueue_download(
         self,
-        sale_item_id: str,
+        provider_item_id: str,
         *,
+        provider: str = "bandcamp",
         album_name: str | None = None,
         album_artist: str | None = None,
         artwork_ref: str | None = None,
         size_bytes: int | None = None,
         size_is_estimate: bool = True,
     ) -> None:
-        """Add *sale_item_id* to the persistent download queue as 'queued'.
+        """Add (*provider*, *provider_item_id*) to the download queue as 'queued'.
 
-        INSERT OR IGNORE makes this idempotent — re-enqueuing an already-present
-        item is a no-op (regardless of its current state) so double-clicks don't
-        produce duplicate work. The optional album snapshot / size are stored on
-        the row so the UI card renders without a join; callers that only have an
-        id (the KAMP-408 single-album path) may omit them.
+        *provider_item_id* is the service's opaque item id (a Bandcamp sale_item_id
+        today); *provider* defaults to 'bandcamp'. INSERT OR IGNORE makes this
+        idempotent — re-enqueuing an already-present item is a no-op (regardless of
+        its current state) so double-clicks don't produce duplicate work. The
+        optional album snapshot / size are stored on the row so the UI card renders
+        without a join; callers that only have an id may omit them.
         """
         self._conn.execute(
             """
             INSERT OR IGNORE INTO download_queue
-                (sale_item_id, status, position,
+                (provider, provider_item_id, status, position,
                  album_name, album_artist, artwork_ref, size_bytes, size_is_estimate)
-            VALUES (?, 'queued', ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)
             """,
             (
-                sale_item_id,
+                provider,
+                provider_item_id,
                 self._next_download_position(),
                 album_name,
                 album_artist,
@@ -5209,62 +5231,78 @@ class LibraryIndex:
         )
         self._conn.commit()
 
-    def dequeue_download(self, sale_item_id: str) -> None:
-        """Remove *sale_item_id* from the queue (e.g. after a completed download)."""
+    def dequeue_download(
+        self, provider_item_id: str, *, provider: str = "bandcamp"
+    ) -> None:
+        """Remove an item from the queue (e.g. after a completed download)."""
         self._conn.execute(
-            "DELETE FROM download_queue WHERE sale_item_id = ?", (sale_item_id,)
+            "DELETE FROM download_queue " "WHERE provider = ? AND provider_item_id = ?",
+            (provider, provider_item_id),
         )
         self._conn.commit()
 
-    def pending_downloads(self) -> list[str]:
-        """Return all queued sale_item_ids in FIFO order (oldest first).
+    def pending_downloads(self, *, provider: str = "bandcamp") -> list[str]:
+        """Return all queued provider_item_ids in FIFO order (oldest first).
 
         Used on daemon restart to replay any downloads that survived a shutdown.
-        Preserved verbatim for the KAMP-408 single-album worker; returns every
-        row regardless of state, ordered by the original queued_at/id FIFO.
+        Preserved for the KAMP-408 single-album worker; returns every row for
+        *provider* regardless of state, ordered by the original queued_at/id FIFO.
         """
         rows = self._conn.execute(
-            "SELECT sale_item_id FROM download_queue ORDER BY queued_at ASC, id ASC"
+            "SELECT provider_item_id FROM download_queue "
+            "WHERE provider = ? ORDER BY queued_at ASC, id ASC",
+            (provider,),
         ).fetchall()
-        return [r["sale_item_id"] for r in rows]
+        return [r["provider_item_id"] for r in rows]
 
-    def next_queued_download(self) -> str | None:
+    def next_queued_download(self, *, provider: str = "bandcamp") -> str | None:
         """Return the next item to download: the lowest-position 'queued' row.
 
         The dequeue-next-in-order pick for the processing loop. Returns None when
         no item is currently queued (an in-flight 'downloading' item is skipped).
         """
-        row = self._conn.execute("""
-            SELECT sale_item_id FROM download_queue
-             WHERE status = 'queued'
+        row = self._conn.execute(
+            """
+            SELECT provider_item_id FROM download_queue
+             WHERE provider = ? AND status = 'queued'
              ORDER BY position ASC, id ASC
              LIMIT 1
-            """).fetchone()
-        return None if row is None else str(row["sale_item_id"])
+            """,
+            (provider,),
+        ).fetchone()
+        return None if row is None else str(row["provider_item_id"])
 
-    def mark_downloading(self, sale_item_id: str) -> None:
-        """Transition *sale_item_id* to 'downloading' and clear any prior error."""
+    def mark_downloading(
+        self, provider_item_id: str, *, provider: str = "bandcamp"
+    ) -> None:
+        """Transition an item to 'downloading' and clear any prior error."""
         self._conn.execute(
             "UPDATE download_queue SET status = 'downloading', error_text = NULL "
-            "WHERE sale_item_id = ?",
-            (sale_item_id,),
+            "WHERE provider = ? AND provider_item_id = ?",
+            (provider, provider_item_id),
         )
         self._conn.commit()
 
-    def mark_download_failed(self, sale_item_id: str, error_text: str) -> None:
-        """Transition *sale_item_id* to 'failed', recording *error_text* for the card."""
+    def mark_download_failed(
+        self, provider_item_id: str, error_text: str, *, provider: str = "bandcamp"
+    ) -> None:
+        """Transition an item to 'failed', recording *error_text* for the card."""
         self._conn.execute(
             "UPDATE download_queue SET status = 'failed', error_text = ? "
-            "WHERE sale_item_id = ?",
-            (error_text, sale_item_id),
+            "WHERE provider = ? AND provider_item_id = ?",
+            (error_text, provider, provider_item_id),
         )
         self._conn.commit()
 
-    def mark_download_done(self, sale_item_id: str) -> None:
-        """Complete *sale_item_id*: remove it from the queue (done has no row state)."""
-        self.dequeue_download(sale_item_id)
+    def mark_download_done(
+        self, provider_item_id: str, *, provider: str = "bandcamp"
+    ) -> None:
+        """Complete an item: remove it from the queue (done has no row state)."""
+        self.dequeue_download(provider_item_id, provider=provider)
 
-    def retry_download(self, sale_item_id: str) -> None:
+    def retry_download(
+        self, provider_item_id: str, *, provider: str = "bandcamp"
+    ) -> None:
         """Re-queue a failed item at the END of the queue, clearing its error.
 
         No-op if the id is not present. Retry-to-end matches the epic: a retried
@@ -5273,23 +5311,30 @@ class LibraryIndex:
         self._conn.execute(
             "UPDATE download_queue "
             "SET status = 'queued', error_text = NULL, position = ? "
-            "WHERE sale_item_id = ?",
-            (self._next_download_position(), sale_item_id),
+            "WHERE provider = ? AND provider_item_id = ?",
+            (self._next_download_position(), provider, provider_item_id),
         )
         self._conn.commit()
 
-    def cancel_download(self, sale_item_id: str) -> None:
-        """Cancel/remove *sale_item_id* from the queue (Queued or Failed card X).
+    def cancel_download(
+        self, provider_item_id: str, *, provider: str = "bandcamp"
+    ) -> None:
+        """Cancel/remove an item from the queue (Queued or Failed card X).
 
         Named to avoid colliding with :meth:`remove_download`, which reverts an
         already-downloaded album back to streaming — a different operation.
         """
-        self.dequeue_download(sale_item_id)
+        self.dequeue_download(provider_item_id, provider=provider)
 
     def set_download_size(
-        self, sale_item_id: str, size_bytes: int | None, *, is_estimate: bool = True
+        self,
+        provider_item_id: str,
+        size_bytes: int | None,
+        *,
+        provider: str = "bandcamp",
+        is_estimate: bool = True,
     ) -> None:
-        """Set the file size for *sale_item_id*.
+        """Set the file size for an item.
 
         Per the KAMP-563 spike: an approximate pre-download value (is_estimate=True,
         from the download page's size_mb) is overwritten by the exact Content-Length
@@ -5297,34 +5342,40 @@ class LibraryIndex:
         """
         self._conn.execute(
             "UPDATE download_queue SET size_bytes = ?, size_is_estimate = ? "
-            "WHERE sale_item_id = ?",
-            (size_bytes, 1 if is_estimate else 0, sale_item_id),
+            "WHERE provider = ? AND provider_item_id = ?",
+            (size_bytes, 1 if is_estimate else 0, provider, provider_item_id),
         )
         self._conn.commit()
 
-    def reorder_download_queue(self, ordered_sale_item_ids: list[str]) -> None:
-        """Reassign queued-item positions to the given order.
+    def reorder_download_queue(
+        self, ordered_provider_item_ids: list[str], *, provider: str = "bandcamp"
+    ) -> None:
+        """Reassign queued-item positions for *provider* to the given order.
 
-        *ordered_sale_item_ids* must be exactly the current set of 'queued' items
-        (a permutation) — the currently-'downloading' item is fixed at the top and
-        is never part of the ordering. Raises ValueError on any mismatch so a stale
-        UI reorder is rejected rather than silently corrupting order.
+        *ordered_provider_item_ids* must be exactly the current set of 'queued'
+        items for *provider* (a permutation) — the currently-'downloading' item is
+        fixed at the top and is never part of the ordering. Raises ValueError on any
+        mismatch so a stale UI reorder is rejected rather than silently corrupting
+        order.
         """
         current = [
-            str(r["sale_item_id"])
+            str(r["provider_item_id"])
             for r in self._conn.execute(
-                "SELECT sale_item_id FROM download_queue WHERE status = 'queued'"
+                "SELECT provider_item_id FROM download_queue "
+                "WHERE provider = ? AND status = 'queued'",
+                (provider,),
             ).fetchall()
         ]
-        if sorted(ordered_sale_item_ids) != sorted(current):
+        if sorted(ordered_provider_item_ids) != sorted(current):
             raise ValueError(
                 "reorder_download_queue requires exactly the current queued items; "
-                f"got {ordered_sale_item_ids!r}, queued={current!r}"
+                f"got {ordered_provider_item_ids!r}, queued={current!r}"
             )
-        for pos, sid in enumerate(ordered_sale_item_ids, start=1):
+        for pos, pid in enumerate(ordered_provider_item_ids, start=1):
             self._conn.execute(
-                "UPDATE download_queue SET position = ? WHERE sale_item_id = ?",
-                (pos, sid),
+                "UPDATE download_queue SET position = ? "
+                "WHERE provider = ? AND provider_item_id = ?",
+                (pos, provider, pid),
             )
         self._conn.commit()
 
@@ -5332,11 +5383,11 @@ class LibraryIndex:
         """Return every queue row as a dict, in display order for the Downloads view.
 
         Ordered downloading → queued (by position) → failed, so the caller can slice
-        into the three UI sections. Each dict carries all columns (status, position,
-        size_bytes, size_is_estimate, error_text, album snapshot, …).
+        into the three UI sections. Each dict carries all columns (provider,
+        provider_item_id, status, position, size, error, album snapshot, …).
         """
         rows = self._conn.execute("""
-            SELECT sale_item_id, queued_at, status, position,
+            SELECT provider, provider_item_id, queued_at, status, position,
                    size_bytes, size_is_estimate, error_text,
                    album_name, album_artist, artwork_ref
               FROM download_queue
@@ -5350,7 +5401,8 @@ class LibraryIndex:
             """).fetchall()
         return [
             {
-                "sale_item_id": r["sale_item_id"],
+                "provider": r["provider"],
+                "provider_item_id": r["provider_item_id"],
                 "queued_at": r["queued_at"],
                 "status": r["status"],
                 "position": r["position"],

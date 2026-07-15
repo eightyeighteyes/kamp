@@ -2891,6 +2891,8 @@ class TestBandcampCollectionDownload:
         mock_index.get_collection_item.return_value = {
             "sale_item_id": "42",
             "mode": "remote",
+            "item_title": "Album 42",
+            "band_name": "Artist 42",
         }
         dl_q: _queue.Queue[str] = _queue.Queue()
         ws_messages: list[dict] = []
@@ -2912,7 +2914,10 @@ class TestBandcampCollectionDownload:
         # DB enqueue and mode update must be called
         mock_index.set_collection_item_mode.assert_called_once_with("42", "local")
         mock_index.set_track_source_for_item.assert_not_called()
-        mock_index.enqueue_download.assert_called_once_with("42")
+        # Enqueued with the album snapshot for the Downloads-view card.
+        mock_index.enqueue_download.assert_called_once_with(
+            "42", album_name="Album 42", album_artist="Artist 42"
+        )
         # Item placed on the in-memory queue
         assert dl_q.get_nowait() == "42"
         # WS broadcast is 'queued', not 'downloading'
@@ -2957,6 +2962,48 @@ class TestBandcampCollectionDownload:
         # Both items are on the queue in FIFO order
         assert dl_q.get_nowait() == "11"
         assert dl_q.get_nowait() == "22"
+
+    def test_retry_requeues_and_broadcasts_queued(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """POST .../retry re-queues a failed item and wakes the worker (KAMP-565)."""
+        import queue as _queue
+
+        dl_q: _queue.Queue[str] = _queue.Queue()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            dl_queue=dl_q,
+        )
+        with TestClient(app) as c:
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.receive_json()  # consume initial state push
+                resp = c.post("/api/v1/bandcamp/collection/42/retry")
+                msg = ws.receive_json()
+
+        assert resp.status_code == 200
+        mock_index.retry_download.assert_called_once_with("42")
+        assert dl_q.get_nowait() == "42"  # worker woken
+        assert msg == {
+            "type": "bandcamp.album-download",
+            "sale_item_id": "42",
+            "state": "queued",
+        }
+
+    def test_retry_returns_503_when_dl_queue_not_configured(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).post("/api/v1/bandcamp/collection/42/retry")
+        assert resp.status_code == 503
+        mock_index.retry_download.assert_not_called()
 
     def test_notify_album_download_progress_broadcasts_percent(
         self,

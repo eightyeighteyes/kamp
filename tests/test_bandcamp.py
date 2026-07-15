@@ -526,7 +526,7 @@ class TestSyncNewPurchases:
         tmp_path: Path,
         items: list[dict[str, Any]],
         known_ids: list[str] | None = None,
-    ) -> list[Path]:
+    ) -> tuple[list[Path], MagicMock]:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
@@ -557,61 +557,45 @@ class TestSyncNewPurchases:
             ),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            return sync_new_purchases(config, watch_folder, index)
+            return sync_new_purchases(config, watch_folder, index), index
 
-    def test_downloads_new_items(self, tmp_path: Path) -> None:
+    def test_enqueues_new_items(self, tmp_path: Path) -> None:
+        # Regular purchases are enqueued for the persistent queue (KAMP-565),
+        # not downloaded inline — so nothing is downloaded synchronously.
         items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
-        paths = self._run(tmp_path, items)
-        assert len(paths) == 2
-        assert all(p.suffix == ".zip" for p in paths)
-        assert all(p.exists() for p in paths)
+        paths, index = self._run(tmp_path, items)
+        assert paths == []
+        assert index.enqueue_download.call_count == 2
+        enqueued_ids = {c.args[0] for c in index.enqueue_download.call_args_list}
+        assert enqueued_ids == {"1", "2"}
 
     def test_skips_known_items(self, tmp_path: Path) -> None:
         items = [_item(1), _item(2)]
-        paths = self._run(tmp_path, items, known_ids=["1", "2"])
+        paths, index = self._run(tmp_path, items, known_ids=["1", "2"])
         assert paths == []
+        index.enqueue_download.assert_not_called()
 
-    def test_downloads_only_new_items(self, tmp_path: Path) -> None:
+    def test_enqueues_only_new_items(self, tmp_path: Path) -> None:
         items = [_item(1), _item(2), _item(3)]
-        paths = self._run(tmp_path, items, known_ids=["1"])
-        assert len(paths) == 2
+        paths, index = self._run(tmp_path, items, known_ids=["1"])
+        assert paths == []
+        assert index.enqueue_download.call_count == 2
 
-    def test_state_updated_after_download(self, tmp_path: Path) -> None:
-        watch_folder = tmp_path / "watch"
-        config = _bc_config(tmp_path)
-        items = [_item(99)]
-        mock_session = _make_requests_mock(items)
-        index = MagicMock()
-        index.get_collection_state.return_value = {}
-
-        def fake_download(
-            item: dict[str, Any],
-            bc_config: BandcampConfig,
-            watch_dir: Path,
-            session: Any,
-        ) -> Path:
-            watch_dir.mkdir(parents=True, exist_ok=True)
-            path = watch_dir / f"{item['sale_item_id']}.zip"
-            path.write_bytes(b"fake")
-            return path
-
-        with (
-            patch(
-                "kamp_daemon.bandcamp._ensure_session",
-                return_value=_make_session_data(),
-            ),
-            patch(
-                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
-            ),
-            patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
-        ):
-            sync_new_purchases(config, watch_folder, index)
-
-        # Verify the index was asked to record the downloaded item.
+    def test_state_updated_after_enqueue(self, tmp_path: Path) -> None:
+        # A regular new purchase is recorded 'remote' (owned, not yet local) and
+        # enqueued with its album snapshot; the worker flips it to 'local' later.
+        items = [_item(99, "Band X", "Rec Y")]
+        paths, index = self._run(tmp_path, items)
+        assert paths == []
         index.upsert_collection_item.assert_called_once()
-        call_kwargs = index.upsert_collection_item.call_args
-        assert call_kwargs[0][0] == "99"
-        assert call_kwargs[1]["mode"] == "local"
+        call = index.upsert_collection_item.call_args
+        assert call.args[0] == "99"
+        assert call.kwargs["mode"] == "remote"
+        index.enqueue_download.assert_called_once()
+        eq = index.enqueue_download.call_args
+        assert eq.args[0] == "99"
+        assert eq.kwargs["album_name"] == "Rec Y"
+        assert eq.kwargs["album_artist"] == "Band X"
 
     def test_state_persists_across_calls(self, tmp_path: Path) -> None:
         watch_folder = tmp_path / "watch"
@@ -661,7 +645,12 @@ class TestSyncNewPurchases:
 
         assert paths == []
 
-    def test_skips_failed_download_continues_others(self, tmp_path: Path) -> None:
+    def test_one_item_failing_does_not_abort_enqueue_of_others(
+        self, tmp_path: Path
+    ) -> None:
+        # A per-item error during discovery/enqueue must not stop the rest of the
+        # batch (the loop's try/except). Make the first enqueue raise; the second
+        # item must still be enqueued.
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         items = [_item(1), _item(2)]
@@ -670,20 +659,13 @@ class TestSyncNewPurchases:
         index.get_collection_state.return_value = {}
         call_num = 0
 
-        def fake_download(
-            item: dict[str, Any],
-            bc_config: BandcampConfig,
-            watch_dir: Path,
-            session: Any,
-        ) -> Path:
+        def flaky_enqueue(provider_item_id: str, **_kw: Any) -> None:
             nonlocal call_num
             call_num += 1
             if call_num == 1:
-                raise BandcampAPIError("simulated failure")
-            watch_dir.mkdir(parents=True, exist_ok=True)
-            path = watch_dir / f"{item['sale_item_id']}.zip"
-            path.write_bytes(b"fake")
-            return path
+                raise RuntimeError("simulated enqueue failure")
+
+        index.enqueue_download.side_effect = flaky_enqueue
 
         with (
             patch(
@@ -693,11 +675,11 @@ class TestSyncNewPurchases:
             patch(
                 "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
             ),
-            patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
             paths = sync_new_purchases(config, watch_folder, index)
 
-        assert len(paths) == 1
+        assert paths == []  # regular purchases are enqueued, not downloaded
+        assert index.enqueue_download.call_count == 2  # both attempted despite one fail
 
     def test_warns_when_item_missing_from_redownload_urls(self, tmp_path: Path) -> None:
         """Items absent from the API redownload_urls dict are warned and skipped."""
@@ -755,7 +737,9 @@ class TestSyncNewPurchases:
         ):
             paths = sync_new_purchases(config, watch_folder, index)
 
-        assert len(paths) == 1  # only item 2 downloaded
+        assert paths == []  # item 1 skipped (no url), item 2 enqueued (not downloaded)
+        index.enqueue_download.assert_called_once()
+        assert index.enqueue_download.call_args.args[0] == "2"
 
     def test_refreshes_metadata_for_existing_items(self, tmp_path: Path) -> None:
         """Existing items get band_name/album_url/tralbum_id refreshed even if not downloaded."""
@@ -768,7 +752,7 @@ class TestSyncNewPurchases:
                 tralbum_id=42,
             )
         ]
-        paths = self._run(tmp_path, items, known_ids=["1"])
+        paths, _ = self._run(tmp_path, items, known_ids=["1"])
 
         # No downloads — item was already known.
         assert paths == []
@@ -985,8 +969,12 @@ class TestSyncNewPurchasesPreorder:
 
         assert (tmp_path / "watch" / "1.zip").exists()
 
-    def test_released_preorder_is_downloaded_as_local(self, tmp_path: Path) -> None:
-        """When is_preorder flips to False the ZIP is downloaded and mode='local'."""
+    def test_released_preorder_is_enqueued_not_downloaded_inline(
+        self, tmp_path: Path
+    ) -> None:
+        """When is_preorder flips to False the item is a regular purchase: it is
+        enqueued (recorded 'remote' pre-download) and the worker later flips it to
+        'local' — no inline download in the sync pass (KAMP-565)."""
         item = _item(1, "Band", "Released Album")
         item["is_preorder"] = False
         item["num_streamable_tracks"] = 10
@@ -1006,10 +994,11 @@ class TestSyncNewPurchasesPreorder:
             fake_download=fake_dl,
         )
 
-        assert (tmp_path / "watch" / "1.zip").exists()
+        assert not (tmp_path / "watch" / "1.zip").exists()  # not downloaded inline
+        index.enqueue_download.assert_called_once()
+        assert index.enqueue_download.call_args.args[0] == "1"
         calls = index.upsert_collection_item.call_args_list
-        local_calls = [c for c in calls if c[1].get("mode") == "local"]
-        assert len(local_calls) == 1
+        assert [c for c in calls if c[1].get("mode") == "remote"]  # recorded remote
 
     def test_no_redownload_url_falls_back_to_warning(self, tmp_path: Path) -> None:
         """Items with no redownload_url at all get a warning (genuine edge case)."""

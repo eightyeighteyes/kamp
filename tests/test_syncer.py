@@ -1024,11 +1024,15 @@ class TestProcessNextDownload:
             if pid == "a":
                 raise RuntimeError("CDN exploded")
 
+        states: list[tuple[str, str]] = []
         # 'a' fails but does not raise out; it is left 'failed' with error text.
-        first = process_next_download(index, _dl)
+        first = process_next_download(
+            index, _dl, on_state=lambda p, s: states.append((p, s))
+        )
         assert first == "a"
         assert index.download_queue_items()[-1]["status"] == "failed"
         assert "CDN exploded" in index.download_queue_items()[-1]["error_text"]
+        assert states == [("a", "downloading"), ("a", "failed")]
         # Processing continues: 'b' is next and succeeds.
         second = process_next_download(index, _dl)
         assert second == "b"
@@ -1042,11 +1046,15 @@ class TestProcessNextDownload:
         def _dl(pid: str) -> None:
             raise NeedsLoginError("no session")
 
-        pid = process_next_download(index, _dl)
+        states: list[tuple[str, str]] = []
+        pid = process_next_download(
+            index, _dl, on_state=lambda p, s: states.append((p, s))
+        )
         assert pid == "a"
         item = index.download_queue_items()[0]
         assert item["status"] == "failed"
         assert item["error_text"] == "Login required"
+        assert states == [("a", "downloading"), ("a", "failed")]
         index.close()
 
     def test_429_retries_then_succeeds(self, tmp_path: Path) -> None:

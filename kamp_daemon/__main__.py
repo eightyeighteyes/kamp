@@ -528,7 +528,7 @@ def _cmd_daemon(
 ) -> None:
     import queue as _queue_mod
     import threading
-    import time as _time
+
     import uvicorn
 
     from kamp_core.library import LibraryIndex, Track
@@ -1026,65 +1026,51 @@ def _cmd_daemon(
     )
 
     # ---------------------------------------------------------------------------
-    # Single-consumer album download worker (KAMP-408)
+    # Single-consumer album download worker (KAMP-408; queue engine KAMP-565)
     # ---------------------------------------------------------------------------
-    # Serializes all album downloads one at a time (FIFO) so Bandcamp doesn't
-    # 429 us.  Retries rate-limited requests with an exponential back-off
-    # (5 s → 10 s → 20 s) before giving up.
+    # Drains the persistent download_queue one item at a time in `position` order,
+    # driving each through the state machine (downloading → done, or failed +
+    # continue) via process_next_download.  Serializing avoids Bandcamp 429s;
+    # rate-limited requests retry with 5 s → 10 s → 20 s back-off.  `_dl_queue` is
+    # now only a wake signal — endpoints and completed syncs put a sentinel to
+    # nudge the worker; ordering lives in the DB, not the in-memory queue.
 
     def _download_worker() -> None:
-        from .syncer import NeedsLoginError
+        from .syncer import process_next_download
+
+        def _on_state(provider_item_id: str, state: str) -> None:
+            app.state.notify_album_download_status(provider_item_id, state)
+            if state == "done":
+                app.state.notify_library_changed()
+
+        def _wait_for_work() -> None:
+            # Block until an enqueue/sync puts a wake sentinel, with a short
+            # fallback timeout so downloads enqueued by the background poll-sync
+            # (which doesn't signal us directly) are still picked up promptly.
+            try:
+                _dl_queue.get(timeout=5.0)
+            except _queue_mod.Empty:
+                pass
+
+        # A download left 'downloading' by a crash would stall (next_queued_download
+        # only returns 'queued'); re-queue it so this run resumes it first.
+        n_reset = index.reset_downloading_to_queued()
+        if n_reset:
+            _logger.info("Re-queued %d interrupted download(s) after restart", n_reset)
 
         while True:
-            sale_item_id = _dl_queue.get()
-            app.state.notify_album_download_status(sale_item_id, "downloading")
-
-            fn = _album_download_trigger_ref[0]
-            if fn is None:
-                _logger.error(
-                    "Album download trigger not configured for %s", sale_item_id
-                )
-                app.state.notify_album_download_status(sale_item_id, "error")
-                index.dequeue_download(sale_item_id)
+            if _album_download_trigger_ref[0] is None:
+                _wait_for_work()  # trigger not wired yet (startup race)
                 continue
-
-            delays = [5, 10, 20]
-            for delay in delays + [None]:
-                try:
-                    fn(sale_item_id)
-                    app.state.notify_album_download_status(sale_item_id, "done")
-                    app.state.notify_library_changed()
-                    break
-                except NeedsLoginError:
-                    _logger.warning(
-                        "Album download: no valid session for %s", sale_item_id
-                    )
-                    app.state.notify_album_download_status(sale_item_id, "error")
-                    break
-                except Exception as exc:
-                    if "429" in str(exc) and delay is not None:
-                        _logger.warning(
-                            "Album download rate-limited for %s; retrying in %ds",
-                            sale_item_id,
-                            delay,
-                        )
-                        _time.sleep(delay)
-                        continue
-                    _logger.exception("Album download failed for %s", sale_item_id)
-                    app.state.notify_album_download_status(sale_item_id, "error")
-                    break
-
-            index.dequeue_download(sale_item_id)
+            pid = process_next_download(
+                index, _album_download_trigger_ref[0], on_state=_on_state
+            )
+            if pid is None:
+                _wait_for_work()  # queue drained — sleep until woken or timeout
 
     threading.Thread(
         target=_download_worker, daemon=True, name="album-dl-worker"
     ).start()
-
-    # Replay any downloads that survived a daemon restart.  These are put onto
-    # the in-memory queue so the worker picks them up in FIFO order.
-    for _pending_sid in index.pending_downloads():
-        _dl_queue.put(_pending_sid)
-        _logger.info("Replayed queued download: %s", _pending_sid)
 
     # Wrap the existing on_track_end callback to also push track.changed events.
     # Done here (after app creation) so app.state is guaranteed to be available.

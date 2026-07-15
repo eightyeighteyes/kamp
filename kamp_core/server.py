@@ -461,6 +461,12 @@ class AlbumFavoriteRequest(BaseModel):
     favorite: bool
 
 
+class ReorderDownloadsRequest(BaseModel):
+    # KAMP-567: the desired order of the currently-'queued' items (a permutation);
+    # the downloading item is fixed at the top and is not included.
+    provider_item_ids: list[str]
+
+
 class SearchOut(BaseModel):
     albums: list[AlbumOut]
     tracks: list[TrackOut]
@@ -3130,26 +3136,77 @@ def create_app(
         _notify_download_queue()  # structured snapshot for the Downloads view
         return {"ok": True}
 
-    @app.post("/api/v1/bandcamp/collection/{sale_item_id}/retry")
-    def retry_collection_item(sale_item_id: str) -> dict[str, Any]:
-        """Retry a failed download: re-queue it at the END of the queue (KAMP-565).
+    # ------------------------------------------------------------------
+    # Download-queue management (KAMP-567) — provider-neutral REST surface
+    # over the KAMP-564 state machine. Every mutation broadcasts the KAMP-566
+    # download.queue snapshot so connected clients converge.
+    # ------------------------------------------------------------------
+
+    @app.get("/api/v1/downloads")
+    def list_downloads() -> dict[str, Any]:
+        """Return the full download queue in display order (KAMP-567).
+
+        Items are ordered downloading → queued (by position) → failed, each
+        carrying the card fields (status, position, size, error_text, album
+        snapshot). Same shape as the ``download.queue`` WebSocket snapshot.
+        """
+        return {"items": index.download_queue_items()}
+
+    @app.post("/api/v1/downloads/reorder")
+    def reorder_downloads(req: ReorderDownloadsRequest) -> dict[str, Any]:
+        """Reorder the queued items (KAMP-567).
+
+        The body must list exactly the currently-'queued' provider_item_ids in the
+        desired order; the downloading item is fixed at the top and excluded.
+        Returns 400 if the list is not that exact set (e.g. a stale UI reorder).
+        """
+        try:
+            index.reorder_download_queue(req.provider_item_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _notify_download_queue()
+        return {"ok": True}
+
+    @app.post("/api/v1/downloads/{provider_item_id}/retry")
+    def retry_download_item(provider_item_id: str) -> dict[str, Any]:
+        """Retry a failed download: re-queue it at the END of the queue (KAMP-567).
 
         Returns 503 if the download queue is not configured.
         """
         if dl_queue is None:
             raise HTTPException(status_code=503, detail="Album download not configured")
 
-        index.retry_download(sale_item_id)
-        dl_queue.put(sale_item_id)  # wake the worker
+        index.retry_download(provider_item_id)
+        dl_queue.put(provider_item_id)  # wake the worker
 
+        # Per-item event keeps the library-grid card in sync (queued decoration).
         _broadcast(
             {
                 "type": "bandcamp.album-download",
-                "sale_item_id": sale_item_id,
+                "sale_item_id": provider_item_id,
                 "state": "queued",
             }
         )
-        _notify_download_queue()  # structured snapshot for the Downloads view
+        _notify_download_queue()
+        return {"ok": True}
+
+    @app.delete("/api/v1/downloads/{provider_item_id}")
+    def cancel_download_item(provider_item_id: str) -> dict[str, Any]:
+        """Cancel a queued or failed item — remove it from the queue (KAMP-567).
+
+        Distinct from ``DELETE /api/v1/bandcamp/collection/{id}/download``, which
+        reverts a completed download back to streaming.
+        """
+        index.cancel_download(provider_item_id)
+        # 'removed' clears the library-grid card's queued/failed decoration.
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": provider_item_id,
+                "state": "removed",
+            }
+        )
+        _notify_download_queue()
         return {"ok": True}
 
     @app.delete("/api/v1/bandcamp/collection/{sale_item_id}/download")

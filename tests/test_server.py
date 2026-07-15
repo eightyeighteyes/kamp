@@ -2970,50 +2970,6 @@ class TestBandcampCollectionDownload:
         assert dl_q.get_nowait() == "11"
         assert dl_q.get_nowait() == "22"
 
-    def test_retry_requeues_and_broadcasts_queued(
-        self,
-        mock_index: MagicMock,
-        mock_engine: MagicMock,
-        mock_queue: MagicMock,
-    ) -> None:
-        """POST .../retry re-queues a failed item and wakes the worker (KAMP-565)."""
-        import queue as _queue
-
-        dl_q: _queue.Queue[str] = _queue.Queue()
-        app = create_app(
-            index=mock_index,
-            engine=mock_engine,
-            queue=mock_queue,
-            dl_queue=dl_q,
-        )
-        with TestClient(app) as c:
-            with c.websocket_connect("/api/v1/ws") as ws:
-                ws.receive_json()  # consume initial state push
-                resp = c.post("/api/v1/bandcamp/collection/42/retry")
-                msg = ws.receive_json()
-                snapshot = ws.receive_json()
-
-        assert resp.status_code == 200
-        mock_index.retry_download.assert_called_once_with("42")
-        assert dl_q.get_nowait() == "42"  # worker woken
-        assert msg == {
-            "type": "bandcamp.album-download",
-            "sale_item_id": "42",
-            "state": "queued",
-        }
-        assert snapshot == {"type": "download.queue", "items": []}  # KAMP-566
-
-    def test_retry_returns_503_when_dl_queue_not_configured(
-        self,
-        mock_index: MagicMock,
-        mock_engine: MagicMock,
-        mock_queue: MagicMock,
-    ) -> None:
-        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
-        resp = TestClient(app).post("/api/v1/bandcamp/collection/42/retry")
-        assert resp.status_code == 503
-        mock_index.retry_download.assert_not_called()
-
     def test_notify_album_download_progress_broadcasts_bytes_and_percent(
         self,
         mock_index: MagicMock,
@@ -3116,6 +3072,144 @@ class TestBandcampCollectionDownload:
     ) -> None:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         assert callable(getattr(app.state, "notify_album_download_status", None))
+
+
+# ---------------------------------------------------------------------------
+# /api/v1/downloads — queue management (KAMP-567)
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadQueueEndpoints:
+    """GET/POST/DELETE /api/v1/downloads — list / reorder / retry / cancel."""
+
+    def _app(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        dl_q: Any = None,
+    ) -> Any:
+        return create_app(
+            index=mock_index, engine=mock_engine, queue=mock_queue, dl_queue=dl_q
+        )
+
+    def test_list_returns_queue_items(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        items = [
+            {
+                "provider": "bandcamp",
+                "provider_item_id": "1",
+                "status": "downloading",
+                "position": 1,
+                "size_bytes": 1000,
+                "size_is_estimate": False,
+                "error_text": None,
+                "album_name": "A1",
+                "album_artist": "Artist",
+                "artwork_ref": None,
+                "queued_at": 1.0,
+            }
+        ]
+        mock_index.download_queue_items.return_value = items
+        app = self._app(mock_index, mock_engine, mock_queue)
+        resp = TestClient(app).get("/api/v1/downloads")
+        assert resp.status_code == 200
+        assert resp.json() == {"items": items}
+
+    def test_reorder_reorders_and_broadcasts_snapshot(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        app = self._app(mock_index, mock_engine, mock_queue)
+        with TestClient(app) as c:
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.receive_json()  # initial state push
+                resp = c.post(
+                    "/api/v1/downloads/reorder",
+                    json={"provider_item_ids": ["c", "a", "b"]},
+                )
+                snapshot = ws.receive_json()
+        assert resp.status_code == 200
+        mock_index.reorder_download_queue.assert_called_once_with(["c", "a", "b"])
+        assert snapshot == {"type": "download.queue", "items": []}
+
+    def test_reorder_invalid_permutation_returns_400(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        mock_index.reorder_download_queue.side_effect = ValueError("stale reorder")
+        app = self._app(mock_index, mock_engine, mock_queue)
+        resp = TestClient(app).post(
+            "/api/v1/downloads/reorder", json={"provider_item_ids": ["a"]}
+        )
+        assert resp.status_code == 400
+
+    def test_retry_requeues_wakes_and_broadcasts(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        import queue as _queue
+
+        dl_q: _queue.Queue[str] = _queue.Queue()
+        app = self._app(mock_index, mock_engine, mock_queue, dl_q)
+        with TestClient(app) as c:
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.receive_json()  # initial state push
+                resp = c.post("/api/v1/downloads/42/retry")
+                msg = ws.receive_json()
+                snapshot = ws.receive_json()
+        assert resp.status_code == 200
+        mock_index.retry_download.assert_called_once_with("42")
+        assert dl_q.get_nowait() == "42"  # worker woken
+        assert msg == {
+            "type": "bandcamp.album-download",
+            "sale_item_id": "42",
+            "state": "queued",
+        }
+        assert snapshot == {"type": "download.queue", "items": []}
+
+    def test_retry_returns_503_when_dl_queue_not_configured(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        app = self._app(mock_index, mock_engine, mock_queue)  # dl_queue=None
+        resp = TestClient(app).post("/api/v1/downloads/42/retry")
+        assert resp.status_code == 503
+        mock_index.retry_download.assert_not_called()
+
+    def test_cancel_removes_and_broadcasts_removed(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        app = self._app(mock_index, mock_engine, mock_queue)
+        with TestClient(app) as c:
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.receive_json()  # initial state push
+                resp = c.delete("/api/v1/downloads/42")
+                msg = ws.receive_json()
+                snapshot = ws.receive_json()
+        assert resp.status_code == 200
+        mock_index.cancel_download.assert_called_once_with("42")
+        assert msg == {
+            "type": "bandcamp.album-download",
+            "sale_item_id": "42",
+            "state": "removed",
+        }
+        assert snapshot == {"type": "download.queue", "items": []}
 
 
 # DELETE /api/v1/bandcamp/collection/{sale_item_id}/download

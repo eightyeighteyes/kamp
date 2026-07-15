@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useTooltip } from '../hooks/useTooltip'
+import { fileManagerName } from '../hooks/platformLabel'
 import { useStore } from '../store'
 
 // The stage label the daemon emits for the metadata-tagging step. Every other
@@ -15,16 +16,21 @@ type IndicatorMode = 'idle' | 'copying' | 'tagging'
  * visual mode and tooltip. Extracted so the state machine is reviewable without
  * a renderer (kamp_ui has no unit-test runner).
  *
- * - ''            → idle folder (tooltip is the folder action, set by the caller)
+ * - ''            → idle folder, "Open Music Library in {fileManager}"
  * - 'Tagging'     → pulsing tag, "Tagging {album}…"
  * - anything else → spinning arrows, "Copying {album} to Library…"
  *
  * album is "" before extraction (and for pre-558 daemons); the tooltip drops the
  * trailing " {album}" in that case rather than showing a double space.
+ * fileManager is the platform's file-manager name (Finder / Explorer / Files).
  */
-function deriveState(stage: string, album: string): { mode: IndicatorMode; tooltip: string } {
+function deriveState(
+  stage: string,
+  album: string,
+  fileManager: string
+): { mode: IndicatorMode; tooltip: string } {
   if (stage === '') {
-    return { mode: 'idle', tooltip: 'Open Music Library in Finder/Explorer' }
+    return { mode: 'idle', tooltip: `Open Music Library in ${fileManager}` }
   }
   const name = album.trim()
   if (stage === TAGGING_STAGE) {
@@ -51,7 +57,7 @@ export function PipelineIndicator(): React.JSX.Element {
     })
   }, [])
 
-  const { mode, tooltip: tip } = deriveState(stage, album)
+  const { mode, tooltip: tip } = deriveState(stage, album, fileManagerName())
 
   if (mode === 'idle') {
     // Idle is an actionable button: click opens the Music Library folder. Disabled

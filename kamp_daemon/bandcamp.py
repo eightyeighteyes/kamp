@@ -1450,41 +1450,33 @@ def backfill_download_sizes(
     for *fmt* and store it as an estimate (``is_estimate=True``). The exact
     Content-Length written when the item starts downloading later overrides it.
 
-    Reuses each item's ``redownload_url`` persisted on the queue row at enqueue
-    (KAMP-575), so no collection fetch is needed in the common case; it hits one
-    download page per item, throttled (``throttle`` seconds between items) to avoid
-    Bandcamp 429s. The collection is fetched once only as a fallback when some item
-    to size lacks a stored URL (e.g. a REST-enqueued item). *on_updated* fires with
-    the provider_item_id after each successful size write (used to re-broadcast the
-    queue snapshot). Returns the number of items sized. Items whose size can't be
-    resolved are skipped (they keep a NULL size and retry on the next cycle).
+    Uses only each item's stored ``redownload_url`` (KAMP-575) — it NEVER fetches
+    the collection here. The collection endpoint is the rate-limited one; the
+    per-item download PAGE this hits is not, so this can run alongside downloads
+    without competing them into 429s. Items still lacking a stored URL are skipped
+    and picked up on a later cycle once the download worker's per-drain prefetch
+    fills them in. Requests are throttled (``throttle`` seconds between page
+    fetches). *on_updated* fires with the provider_item_id after each successful
+    size write (used to re-broadcast the queue snapshot). Returns the number of
+    items sized; unresolved items keep a NULL size and retry next cycle.
     """
     pids = index.queued_downloads_missing_size()
     if not pids:
         return 0
 
-    # Prefer stored redownload_urls — the whole point of KAMP-575 is to avoid the
-    # per-cycle full-collection walk that contended for the rate limit.
     url_by_sid: dict[str, str] = {
         pid: url for pid, url in index.download_redownload_urls().items() if url
     }
-    # Pay for a single collection fetch only if some item still lacks a URL.
-    if any(pid not in url_by_sid for pid in pids):
-        fan_id, _username = _get_fan_info(session)
-        collection = _fetch_collection(fan_id, session, index)
-        for item in collection:
-            sid = item.get("sale_item_id")
-            url = item.get("redownload_url")
-            if sid is not None and url:
-                url_by_sid.setdefault(str(sid), url)
 
     sized = 0
-    for i, pid in enumerate(pids):
+    fetched = 0
+    for pid in pids:
         redownload_url = url_by_sid.get(pid)
         if not redownload_url:
-            continue
-        if i > 0:
+            continue  # no stored URL yet → skip (the prefetch will fill it in)
+        if fetched > 0:
             sleep(throttle)  # rate-limit download-page requests
+        fetched += 1
         size = get_download_size_bytes(redownload_url, fmt, session)
         if size is None:
             continue

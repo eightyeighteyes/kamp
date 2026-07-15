@@ -1035,11 +1035,6 @@ def _cmd_daemon(
     # now only a wake signal — endpoints and completed syncs put a sentinel to
     # nudge the worker; ordering lives in the DB, not the in-memory queue.
 
-    # Set while the download worker is draining the queue. The size-backfill
-    # (KAMP-574) yields to it: downloads own the Bandcamp rate budget while active,
-    # so an every-8s collection walk can't starve them into 429s (KAMP-575).
-    _downloads_active = threading.Event()
-
     def _download_worker() -> None:
         from .bandcamp import _make_requests_session, prefetch_redownload_urls
         from .syncer import process_next_download
@@ -1064,8 +1059,9 @@ def _cmd_daemon(
         def _prefetch_urls() -> None:
             # One collection fetch per drain to fill any missing redownload_urls, so
             # every item downloads via the fast path (no per-item collection re-fetch
-            # — the 429 storm). Best-effort: a failure just leaves the per-item
-            # fallback to resolve URLs (the size-backfill is paused, so it has room).
+            # — the 429 storm). This also populates URLs the size-backfill needs, so
+            # it too avoids the collection endpoint. Best-effort: a failure just
+            # leaves the per-item fallback to resolve URLs.
             try:
                 session_data = index.get_session("bandcamp")
                 if session_data:
@@ -1091,11 +1087,10 @@ def _cmd_daemon(
                 _wait_for_work()  # trigger not wired yet (startup race)
                 continue
             if index.next_queued_download() is None:
-                _downloads_active.clear()  # nothing to do → let the backfill run
                 _wait_for_work()
                 continue
-            # Draining: claim the rate budget and fill URLs once for the whole batch.
-            _downloads_active.set()
+            # Draining: fill any missing URLs once for the whole batch, then drain
+            # via the fast path (no per-item collection re-fetch).
             _prefetch_urls()
             while (
                 process_next_download(
@@ -1103,7 +1098,7 @@ def _cmd_daemon(
                 )
                 is not None
             ):
-                pass  # drain fully before yielding the budget back
+                pass  # drain the whole queue before sleeping again
 
     threading.Thread(
         target=_download_worker, daemon=True, name="album-dl-worker"
@@ -1127,11 +1122,6 @@ def _cmd_daemon(
 
         backoff = _SIZE_BACKFILL_INTERVAL
         while True:
-            # Yield to active downloads — they own the rate budget while draining, so
-            # this optional size poll never competes them into 429s (KAMP-575).
-            if _downloads_active.is_set():
-                _t.sleep(_SIZE_BACKFILL_INTERVAL)
-                continue
             try:
                 session_data = index.get_session("bandcamp")
                 if session_data and index.queued_downloads_missing_size():

@@ -450,6 +450,10 @@ def sync_new_purchases(
                     album_name=item_title,
                     album_artist=band_name,
                     artwork_ref=str(item.get("item_art_url", "") or ""),
+                    # KAMP-575: persist the download-page link (already embedded in
+                    # this collection item) so the worker needn't re-fetch the whole
+                    # collection per item at download time.
+                    redownload_url=item.get("redownload_url"),
                 )
                 enqueued += 1
                 if status_callback:
@@ -666,24 +670,49 @@ def download_single_album(
     session_data = _ensure_session(bc_config, index)
     session = _make_requests_session(session_data)
 
-    fan_id, _ = _get_fan_info(session)
+    # KAMP-575 fast path: if the queue row carries the download-page link captured
+    # at enqueue time, reuse it and skip the collection fetch entirely (the per-item
+    # re-fetch was the 429 storm). No _get_fan_info either — that call hits
+    # collection_summary, which we no longer need. The item dict is reconstructed
+    # from local DB: band_name/item_title from the row's album snapshot (stored
+    # verbatim at enqueue), tralbum_id from the collection ledger. On any failure
+    # the item is marked failed (which NULLs the stored URL), so a retry re-fetches.
+    queue_row = index.get_download_item(sale_item_id)
+    stored_url = queue_row.get("redownload_url") if queue_row else None
+    item: dict[str, Any] | None = None
 
-    # Use the same collection API path that sync_new_purchases uses.
-    # _fetch_collection paginates the full collection and embeds redownload_url
-    # (from each page's redownload_urls dict) directly into every item dict.
-    # _get_download_links (HTML scrape) only shows recent purchases on the
-    # profile page and misses items that are not in the visible scroll window.
-    if status_callback:
-        status_callback(f"Fetching collection for {sale_item_id}…")
-    collection = _fetch_collection(fan_id, session, index)
+    if stored_url:
+        ledger = index.get_collection_item(sale_item_id) or {}
+        item = {
+            "sale_item_id": int(sale_item_id),
+            "redownload_url": stored_url,
+            "band_name": (queue_row or {}).get("album_artist")
+            or ledger.get("band_name")
+            or "Unknown Artist",
+            "item_title": (queue_row or {}).get("album_name")
+            or ledger.get("item_title")
+            or "Unknown Album",
+            "tralbum_id": ledger.get("tralbum_id", ""),
+        }
+    else:
+        # Fallback (no stored URL — e.g. a REST-enqueued item, or a healed retry).
+        # Use the same collection API path that sync_new_purchases uses.
+        # _fetch_collection paginates the full collection and embeds redownload_url
+        # (from each page's redownload_urls dict) directly into every item dict.
+        # _get_download_links (HTML scrape) only shows recent purchases on the
+        # profile page and misses items outside the visible scroll window.
+        fan_id, _ = _get_fan_info(session)
+        if status_callback:
+            status_callback(f"Fetching collection for {sale_item_id}…")
+        collection = _fetch_collection(fan_id, session, index)
 
-    target_id = int(sale_item_id)
-    item = next((i for i in collection if i.get("sale_item_id") == target_id), None)
-    if item is None or not item.get("redownload_url"):
-        raise BandcampAPIError(
-            f"No download link found for sale_item_id={sale_item_id} "
-            f"(item not in collection or redownload_url missing)"
-        )
+        target_id = int(sale_item_id)
+        item = next((i for i in collection if i.get("sale_item_id") == target_id), None)
+        if item is None or not item.get("redownload_url"):
+            raise BandcampAPIError(
+                f"No download link found for sale_item_id={sale_item_id} "
+                f"(item not in collection or redownload_url missing)"
+            )
 
     if status_callback:
         status_callback(f"Downloading album {sale_item_id}…")
@@ -1393,24 +1422,33 @@ def backfill_download_sizes(
     for *fmt* and store it as an estimate (``is_estimate=True``). The exact
     Content-Length written when the item starts downloading later overrides it.
 
-    Fetches the collection once to resolve each item's ``redownload_url``, then
-    hits one download page per item, throttled (``throttle`` seconds between
-    items) to avoid Bandcamp 429s. *on_updated* fires with the provider_item_id
-    after each successful size write (used to re-broadcast the queue snapshot).
-    Returns the number of items sized. Items whose size can't be resolved are
-    skipped (they keep a NULL size and retry on the next cycle).
+    Reuses each item's ``redownload_url`` persisted on the queue row at enqueue
+    (KAMP-575), so no collection fetch is needed in the common case; it hits one
+    download page per item, throttled (``throttle`` seconds between items) to avoid
+    Bandcamp 429s. The collection is fetched once only as a fallback when some item
+    to size lacks a stored URL (e.g. a REST-enqueued item). *on_updated* fires with
+    the provider_item_id after each successful size write (used to re-broadcast the
+    queue snapshot). Returns the number of items sized. Items whose size can't be
+    resolved are skipped (they keep a NULL size and retry on the next cycle).
     """
     pids = index.queued_downloads_missing_size()
     if not pids:
         return 0
 
-    fan_id, _username = _get_fan_info(session)
-    collection = _fetch_collection(fan_id, session, index)
+    # Prefer stored redownload_urls — the whole point of KAMP-575 is to avoid the
+    # per-cycle full-collection walk that contended for the rate limit.
     url_by_sid: dict[str, str] = {
-        str(item["sale_item_id"]): item["redownload_url"]
-        for item in collection
-        if item.get("sale_item_id") is not None and item.get("redownload_url")
+        pid: url for pid, url in index.download_redownload_urls().items() if url
     }
+    # Pay for a single collection fetch only if some item still lacks a URL.
+    if any(pid not in url_by_sid for pid in pids):
+        fan_id, _username = _get_fan_info(session)
+        collection = _fetch_collection(fan_id, session, index)
+        for item in collection:
+            sid = item.get("sale_item_id")
+            url = item.get("redownload_url")
+            if sid is not None and url:
+                url_by_sid.setdefault(str(sid), url)
 
     sized = 0
     for i, pid in enumerate(pids):

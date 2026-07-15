@@ -122,9 +122,10 @@ def _download_album_worker(
                 index=index,
                 sale_item_id=sale_item_id,
                 status_callback=lambda msg: status_q.put(msg),
-                # KAMP-436: byte-progress rides the same queue with a "progress:"
-                # prefix so the parent can demux it to progress_callback.
-                on_progress=lambda pct: status_q.put(f"progress:{pct}"),
+                # KAMP-436/566: byte-progress rides the same queue with a
+                # "progress:<downloaded>:<total>" prefix so the parent can demux it
+                # to progress_callback(sale_item_id, downloaded, total).
+                on_progress=lambda dl, tot: status_q.put(f"progress:{dl}:{tot}"),
             )
             result_q.put(("ok", str(dest)))
         finally:
@@ -280,10 +281,10 @@ class Syncer:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self.status_callback: Callable[[str], None] | None = None
-        # KAMP-436: per-album byte-progress, addressed by sale_item_id. Distinct
-        # from status_callback, which drives the global menu-bar sync indicator
-        # and carries no album identity.
-        self.progress_callback: Callable[[str, int], None] | None = None
+        # KAMP-436/566: per-album byte-progress (sale_item_id, downloaded_bytes,
+        # total_bytes), addressed by sale_item_id. Distinct from status_callback,
+        # which drives the global menu-bar sync indicator and carries no identity.
+        self.progress_callback: Callable[[str, int, int], None] | None = None
         self.error_callback: Callable[[str, str, str], None] | None = None
         self.on_tracks_indexed: Callable[[], None] | None = None
 
@@ -517,17 +518,19 @@ class Syncer:
     def _dispatch_download_msg(self, msg: str, sale_item_id: str) -> None:
         """Route a status_q message from the download subprocess.
 
-        Byte-progress arrives as ``"progress:<int>"`` and is demuxed to
-        ``progress_callback(sale_item_id, pct)``; every other message is a
-        human-readable status string for the global sync indicator (KAMP-436).
+        Byte-progress arrives as ``"progress:<downloaded>:<total>"`` and is demuxed
+        to ``progress_callback(sale_item_id, downloaded, total)``; a malformed
+        payload is ignored. Every other message is a human-readable status string
+        for the global sync indicator (KAMP-436/566).
         """
         if msg.startswith("progress:"):
             if self.progress_callback is not None:
+                parts = msg[len("progress:") :].split(":")
                 try:
-                    pct = int(msg[len("progress:") :])
-                except ValueError:
+                    downloaded, total = int(parts[0]), int(parts[1])
+                except (ValueError, IndexError):
                     return
-                self.progress_callback(sale_item_id, pct)
+                self.progress_callback(sale_item_id, downloaded, total)
             return
         if self.status_callback is not None:
             self.status_callback(msg)

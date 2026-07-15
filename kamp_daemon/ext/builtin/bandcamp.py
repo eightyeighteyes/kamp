@@ -180,14 +180,15 @@ class KampBandcampSyncer(BaseSyncer):
         self._inner.on_tracks_indexed = cb
 
     @property
-    def progress_callback(self) -> Callable[[str, int], None] | None:
-        """Per-album byte-progress callback (sale_item_id, percent) (KAMP-436)."""
+    def progress_callback(self) -> Callable[[str, int, int], None] | None:
+        """Per-album byte-progress callback (sale_item_id, downloaded_bytes,
+        total_bytes) (KAMP-436/566)."""
         if self._inner is None:
             return None
         return self._inner.progress_callback
 
     @progress_callback.setter
-    def progress_callback(self, cb: Callable[[str, int], None] | None) -> None:
+    def progress_callback(self, cb: Callable[[str, int, int], None] | None) -> None:
         # Without this setter the assignment lands on the wrapper instead of the
         # inner Syncer that actually runs download_album, so progress is never
         # forwarded — the exact bug behind KAMP-436 showing no reveal.

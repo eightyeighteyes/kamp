@@ -67,6 +67,8 @@ def mock_index() -> MagicMock:
     index.get_magic_playlist_criteria.return_value = None
     # Default: no magic playlists for field_index building.
     index.list_all_magic_criteria.return_value = []
+    # Default: empty download queue so download.queue snapshots serialize (KAMP-566).
+    index.download_queue_items.return_value = []
     return index
 
 
@@ -2908,6 +2910,7 @@ class TestBandcampCollectionDownload:
                 ws.receive_json()  # consume initial state push
                 resp = c.post("/api/v1/bandcamp/collection/42/download")
                 ws_messages.append(ws.receive_json())
+                ws_messages.append(ws.receive_json())
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
@@ -2926,6 +2929,8 @@ class TestBandcampCollectionDownload:
             "sale_item_id": "42",
             "state": "queued",
         }
+        # Followed by a structured download.queue snapshot (KAMP-566)
+        assert ws_messages[1] == {"type": "download.queue", "items": []}
 
     def test_second_download_also_broadcasts_queued(
         self,
@@ -2951,14 +2956,16 @@ class TestBandcampCollectionDownload:
             with c.websocket_connect("/api/v1/ws") as ws:
                 ws.receive_json()  # consume initial state push
                 c.post("/api/v1/bandcamp/collection/11/download")
-                msg1 = ws.receive_json()
                 c.post("/api/v1/bandcamp/collection/22/download")
-                msg2 = ws.receive_json()
+                # Each POST emits an album-download 'queued' + a download.queue
+                # snapshot; collect the per-item events (ignore snapshots).
+                events = [ws.receive_json() for _ in range(4)]
 
-        assert msg1["state"] == "queued"
-        assert msg1["sale_item_id"] == "11"
-        assert msg2["state"] == "queued"
-        assert msg2["sale_item_id"] == "22"
+        album_events = [e for e in events if e["type"] == "bandcamp.album-download"]
+        assert [(e["sale_item_id"], e["state"]) for e in album_events] == [
+            ("11", "queued"),
+            ("22", "queued"),
+        ]
         # Both items are on the queue in FIFO order
         assert dl_q.get_nowait() == "11"
         assert dl_q.get_nowait() == "22"
@@ -2984,6 +2991,7 @@ class TestBandcampCollectionDownload:
                 ws.receive_json()  # consume initial state push
                 resp = c.post("/api/v1/bandcamp/collection/42/retry")
                 msg = ws.receive_json()
+                snapshot = ws.receive_json()
 
         assert resp.status_code == 200
         mock_index.retry_download.assert_called_once_with("42")
@@ -2993,6 +3001,7 @@ class TestBandcampCollectionDownload:
             "sale_item_id": "42",
             "state": "queued",
         }
+        assert snapshot == {"type": "download.queue", "items": []}  # KAMP-566
 
     def test_retry_returns_503_when_dl_queue_not_configured(
         self,
@@ -3005,26 +3014,89 @@ class TestBandcampCollectionDownload:
         assert resp.status_code == 503
         mock_index.retry_download.assert_not_called()
 
-    def test_notify_album_download_progress_broadcasts_percent(
+    def test_notify_album_download_progress_broadcasts_bytes_and_percent(
         self,
         mock_index: MagicMock,
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
-        """KAMP-436: per-album byte-progress rides bandcamp.album-download with a
-        numeric progress field and state='downloading'."""
+        """KAMP-436/566: per-album progress rides bandcamp.album-download with the
+        derived percent (for the art reveal) plus raw downloaded/total bytes."""
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)
         with c.websocket_connect("/api/v1/ws") as ws:
             ws.receive_json()  # consume initial player.state
-            app.state.notify_album_download_progress("12345", 42)
+            app.state.notify_album_download_progress("12345", 420, 1000)
             msg = ws.receive_json()
         assert msg == {
             "type": "bandcamp.album-download",
             "sale_item_id": "12345",
             "state": "downloading",
             "progress": 42,
+            "downloaded_bytes": 420,
+            "total_bytes": 1000,
         }
+
+    def test_notify_album_download_progress_zero_total_is_safe(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """A zero total (unknowable size) yields progress 0 without dividing by zero."""
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()
+            app.state.notify_album_download_progress("12345", 0, 0)
+            msg = ws.receive_json()
+        assert msg["progress"] == 0
+        assert msg["total_bytes"] == 0
+
+    def test_notify_download_queue_broadcasts_snapshot(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """KAMP-566: notify_download_queue broadcasts a download.queue snapshot of
+        the full queue (status/size/error/album metadata) for the Downloads view."""
+        items = [
+            {
+                "provider": "bandcamp",
+                "provider_item_id": "1",
+                "status": "downloading",
+                "position": 1,
+                "size_bytes": 1000,
+                "size_is_estimate": False,
+                "error_text": None,
+                "album_name": "Album One",
+                "album_artist": "Artist One",
+                "artwork_ref": None,
+                "queued_at": 1.0,
+            },
+            {
+                "provider": "bandcamp",
+                "provider_item_id": "2",
+                "status": "failed",
+                "position": 2,
+                "size_bytes": None,
+                "size_is_estimate": True,
+                "error_text": "HTTP 500",
+                "album_name": "Album Two",
+                "album_artist": "Artist Two",
+                "artwork_ref": None,
+                "queued_at": 2.0,
+            },
+        ]
+        mock_index.download_queue_items.return_value = items
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # consume initial player.state
+            app.state.notify_download_queue()
+            msg = ws.receive_json()
+        assert msg == {"type": "download.queue", "items": items}
 
     def test_notify_album_download_progress_exposed_on_app_state(
         self,
@@ -3034,6 +3106,7 @@ class TestBandcampCollectionDownload:
     ) -> None:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         assert callable(getattr(app.state, "notify_album_download_progress", None))
+        assert callable(getattr(app.state, "notify_download_queue", None))
 
     def test_notify_album_download_status_exposed_on_app_state(
         self,

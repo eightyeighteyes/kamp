@@ -649,7 +649,7 @@ def download_single_album(
     index: "LibraryIndex",
     sale_item_id: str,
     status_callback: Callable[[str], None] | None = None,
-    on_progress: Callable[[int], None] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> Path:
     """Download one Bandcamp purchase to *watch_dir* by its *sale_item_id*.
 
@@ -1357,7 +1357,7 @@ def _download_item(
     bc_config: BandcampConfig,
     watch_dir: Path,
     session: _AnySession,
-    on_progress: Callable[[int], None] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> Path:
     band_name: str = item.get("band_name", "Unknown Artist")
     item_title: str = item.get("item_title", "Unknown Album")
@@ -1457,7 +1457,7 @@ def _download_file(
     dest_base: Path,
     session: _requests.Session,
     fmt: str,
-    on_progress: Callable[[int], None] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> Path:
     """Stream *cdn_url* to a file under *dest_base*, following redirects.
 
@@ -1485,13 +1485,14 @@ def _download_file(
                 content_type,
                 cdn_url,
             )
-            # KAMP-436: report byte-progress so the album card can reveal its
-            # art bottom-up. Only possible when the server declares a total;
+            # KAMP-436/566: report byte-progress as (downloaded, total) so the
+            # album card can reveal its art bottom-up and the Downloads view can
+            # show exact sizes. Only possible when the server declares a total;
             # throttled by wall-clock time so we emit ~2/s, not per chunk.
             total = _parse_content_length(resp.headers.get("Content-Length"))
             written = 0
             last_emit = time.monotonic()
-            last_pct = -1
+            last_written = -1
             with open(tmp, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=1024 * 1024):
                     fh.write(chunk)
@@ -1500,15 +1501,13 @@ def _download_file(
                     written += len(chunk)
                     now = time.monotonic()
                     if now - last_emit >= _PROGRESS_MIN_INTERVAL:
-                        pct = min(100, written * 100 // total)
-                        if pct != last_pct:
-                            on_progress(pct)
-                            last_pct = pct
+                        on_progress(written, total)
+                        last_written = written
                         last_emit = now
-            # Always land on a definitive 100 once the bytes are all written,
-            # even if the last in-loop emit was throttled or short of 100.
-            if on_progress is not None and total and last_pct != 100:
-                on_progress(100)
+            # Always land on a definitive (total, total) once the bytes are all
+            # written, even if the last in-loop emit was throttled short of it.
+            if on_progress is not None and total and last_written != total:
+                on_progress(total, total)
 
         with open(tmp, "rb") as fh:
             magic = fh.read(4)

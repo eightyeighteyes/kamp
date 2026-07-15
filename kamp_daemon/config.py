@@ -179,7 +179,7 @@ _CONFIG_KEY_CHOICES: dict[str, frozenset[str]] = {
         {"mp3-v0", "mp3-320", "flac", "aac-hi", "vorbis", "alac", "wav"}
     ),
     "bandcamp.collection_mode": frozenset({"stream", "download"}),
-    "ui.active_view": frozenset({"library", "now-playing", "home"}),
+    "ui.active_view": frozenset({"library", "now-playing", "home", "downloads"}),
     "ui.sort_order": frozenset(
         {"album_artist", "album", "date_added", "last_played", "release_date"}
     ),

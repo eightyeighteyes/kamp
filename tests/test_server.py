@@ -1903,6 +1903,12 @@ class TestUiStateEndpoints:
         assert resp.status_code == 200
         assert client.get("/api/v1/ui").json()["active_view"] == "home"
 
+    def test_set_active_view_downloads_persists(self, client: TestClient) -> None:
+        """The 'downloads' view (KAMP-568) is accepted and round-trips through GET."""
+        resp = client.post("/api/v1/ui/active-view", json={"view": "downloads"})
+        assert resp.status_code == 200
+        assert client.get("/api/v1/ui").json()["active_view"] == "downloads"
+
     def test_set_active_view_invalid_returns_422(self, client: TestClient) -> None:
         resp = client.post("/api/v1/ui/active-view", json={"view": "bogus"})
         assert resp.status_code == 422

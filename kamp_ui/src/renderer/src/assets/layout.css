@@ -242,9 +242,43 @@ html[data-platform='win32'] .view-tabs {
   cursor: default;
 }
 
+/* Idle state is a real <button>: reset the native chrome, keep the rail look. */
+.pipeline-indicator--idle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.pipeline-indicator--idle:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.pipeline-indicator--idle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .pipeline-indicator--active {
   color: var(--accent);
+}
+
+/* Copying: spinning two-arrows (transform only — safe in the Electron renderer). */
+.pipeline-indicator--copying svg {
+  animation: spin 1s linear infinite;
+}
+
+/* Tagging: pulsing tag (opacity only). */
+.pipeline-indicator--tagging {
   animation: bandcamp-pulse 1.4s ease-in-out infinite;
+}
+
+/* Respect reduced-motion: hold the highlighted icon steady, no spin/pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .pipeline-indicator--copying svg,
+  .pipeline-indicator--tagging {
+    animation: none;
+  }
 }
 
 .bandcamp-context-menu {

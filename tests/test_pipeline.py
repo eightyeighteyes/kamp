@@ -491,7 +491,11 @@ class TestStageCallback:
             patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
             patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[]),
         ):
-            run(album_dir, config, stage_callback=lambda s, _sid, _c: calls.append(s))
+            run(
+                album_dir,
+                config,
+                stage_callback=lambda s, _sid, _c, _alb: calls.append(s),
+            )
 
         assert calls == ["Extracting", "Tagging", "Updating artwork", "Moving", ""]
 
@@ -504,7 +508,7 @@ class TestStageCallback:
         bad_zip.write_bytes(b"not a zip")
         calls: list[str] = []
 
-        run(bad_zip, config, stage_callback=lambda s, _sid, _c: calls.append(s))
+        run(bad_zip, config, stage_callback=lambda s, _sid, _c, _alb: calls.append(s))
 
         assert calls[-1] == ""
 
@@ -516,7 +520,11 @@ class TestStageCallback:
         calls: list[str] = []
 
         with patch("musicbrainzngs.search_releases", return_value={"release-list": []}):
-            run(album_dir, config, stage_callback=lambda s, _sid, _c: calls.append(s))
+            run(
+                album_dir,
+                config,
+                stage_callback=lambda s, _sid, _c, _alb: calls.append(s),
+            )
 
         assert calls[-1] == ""
 
@@ -555,7 +563,7 @@ class TestStageCallback:
             run(
                 album_dir,
                 config,
-                stage_callback=lambda s, sid, c: stages.append((s, sid, c)),
+                stage_callback=lambda s, sid, c, _alb: stages.append((s, sid, c)),
                 index_path=db,
             )
 
@@ -591,7 +599,7 @@ class TestStageCallback:
             run(
                 album_dir,
                 config,
-                stage_callback=lambda s, sid, c: stages.append((s, sid, c)),
+                stage_callback=lambda s, sid, c, _alb: stages.append((s, sid, c)),
                 index_path=db,
             )
 
@@ -615,10 +623,43 @@ class TestStageCallback:
             run(
                 album_dir,
                 config,
-                stage_callback=lambda s, sid, c: stages.append((s, sid, c)),
+                stage_callback=lambda s, sid, c, _alb: stages.append((s, sid, c)),
             )  # no index_path → no provenance
 
         assert {sid for _s, sid, _c in stages} == {None}
+
+    # -- KAMP-558: stage payload carries the album display label --------------
+
+    def test_stage_payload_carries_album_after_extraction(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        """The album label is empty before extraction (so the Extracting tooltip
+        stays generic) and becomes the on-disk album folder name for every stage
+        after extraction succeeds (KAMP-558)."""
+        album_dir = self._setup_dir(config)  # created as watch_folder/"test-album"
+        stages: list[tuple[str, str]] = []
+
+        with (
+            patch.object(
+                KampMusicBrainzTagger, "tag_release", return_value=MOCK_TRACKS
+            ),
+            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
+            patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[]),
+        ):
+            run(
+                album_dir,
+                config,
+                stage_callback=lambda s, _sid, _c, alb: stages.append((s, alb)),
+            )
+
+        by_stage = dict(stages)
+        # Extracting fires before we know the album folder → generic (empty).
+        assert by_stage["Extracting"] == ""
+        # Post-extraction stages carry the album folder name.
+        assert by_stage["Tagging"] == "test-album"
+        assert by_stage["Moving"] == "test-album"
+        # The terminal reset also carries it (the closure keeps the resolved name).
+        assert by_stage[""] == "test-album"
 
 
 # ---------------------------------------------------------------------------

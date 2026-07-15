@@ -947,6 +947,16 @@ app.whenReady().then(async () => {
     shell.showItemInFolder(filePath)
   })
 
+  // KAMP-558: open a folder (the Music Library) in Finder/Explorer. shell.openPath
+  // reports failure via a resolved non-empty string (never throws), so surface it
+  // in the log rather than failing silently when the folder is missing/renamed.
+  ipcMain.on('shell:open-path', (_event, path: string) => {
+    if (!path) return
+    void shell.openPath(path).then((err) => {
+      if (err) console.error(`[kamp] shell.openPath(${path}) failed: ${err}`)
+    })
+  })
+
   ipcMain.on('shell:open-external', (_event, url: string) => {
     void shell.openExternal(url)
   })

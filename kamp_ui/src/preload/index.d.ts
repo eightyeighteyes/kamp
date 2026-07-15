@@ -16,7 +16,7 @@ declare global {
         triggerSyncAll: () => Promise<{ ok: boolean }>
       }
       pipeline: {
-        onStage: (callback: (stage: string) => void) => () => void
+        onStage: (callback: (stage: string, album: string) => void) => () => void
       }
       onUpdateAvailable: (
         callback: (data: { version: string; notes: string }) => void
@@ -24,6 +24,7 @@ declare global {
       dismissUpdate: (version: string) => Promise<void>
       getApiToken: () => string | null
       showItemInFolder: (filePath: string) => void
+      openPath: (path: string) => void
       openExternal: (url: string) => void
       setBgColor: (color: string) => void
     }

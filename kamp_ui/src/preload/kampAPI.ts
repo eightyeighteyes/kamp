@@ -43,7 +43,7 @@ const registerCallbacks = new Set<(manifest: PanelManifest) => void>()
 const trackChangeCallbacks = new Set<(state: PlayerState) => void>()
 const playStateChangeCallbacks = new Set<(state: PlayerState) => void>()
 const syncStatusCallbacks = new Set<(state: 'idle' | 'syncing') => void>()
-const pipelineStageCallbacks = new Set<(stage: string) => void>()
+const pipelineStageCallbacks = new Set<(stage: string, album: string) => void>()
 let _pushWs: WebSocket | null = null
 
 function ensurePushWs(): void {
@@ -77,8 +77,10 @@ function ensurePushWs(): void {
         const state = (msg as unknown as { state: 'idle' | 'syncing' }).state
         syncStatusCallbacks.forEach((cb) => cb(state))
       } else if (msg.type === 'pipeline.stage') {
-        const stage = (msg as unknown as { stage: string }).stage
-        pipelineStageCallbacks.forEach((cb) => cb(stage))
+        // KAMP-558: album is "" before extraction (and for pre-558 daemons); the
+        // indicator renders a generic tooltip in that case.
+        const { stage, album } = msg as unknown as { stage: string; album?: string }
+        pipelineStageCallbacks.forEach((cb) => cb(stage, album ?? ''))
       } else if (msg.type === 'bandcamp.proxy-fetch') {
         // Relay a bandcamp.com HTTP request through Electron's net module so
         // Chromium's TLS stack (real browser fingerprint) is used instead of
@@ -110,7 +112,7 @@ export function onBandcampSyncStatus(callback: (state: 'idle' | 'syncing') => vo
   return () => syncStatusCallbacks.delete(callback)
 }
 
-export function onPipelineStage(callback: (stage: string) => void): () => void {
+export function onPipelineStage(callback: (stage: string, album: string) => void): () => void {
   pipelineStageCallbacks.add(callback)
   return () => pipelineStageCallbacks.delete(callback)
 }

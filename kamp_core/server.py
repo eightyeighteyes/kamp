@@ -1044,7 +1044,10 @@ def create_app(
         _broadcast({"type": "bandcamp.sync-status", "state": state})
 
     def _notify_pipeline_stage(
-        stage: str, sale_item_id: str | None = None, committed: bool = False
+        stage: str,
+        sale_item_id: str | None = None,
+        committed: bool = False,
+        album: str = "",
     ) -> None:
         """Broadcast the current pipeline stage to all connected WebSocket clients.
 
@@ -1056,6 +1059,8 @@ def create_app(
         global pipeline indicator ignores it and reads only ``stage``.
         *committed* is True on the terminal "" reset only when the item reached
         the library, letting the UI tell success (rescan coming) from quarantine.
+        KAMP-558: *album* is a human-readable album label ("" before extraction)
+        so the pipeline indicator can show "Copying {album}…" / "Tagging {album}…".
         Called from the watcher thread — _broadcast is thread-safe.
         """
         _broadcast(
@@ -1064,6 +1069,7 @@ def create_app(
                 "stage": stage,
                 "sale_item_id": sale_item_id,
                 "committed": committed,
+                "album": album,
             }
         )
 

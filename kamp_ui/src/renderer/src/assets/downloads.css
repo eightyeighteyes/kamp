@@ -65,8 +65,13 @@
 .download-card-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 2px;
-  flex: 0 0 auto;
+  /* Reserve space for up to two buttons (2 x 24px + 2px gap) on every card —
+     including the button-less downloading card, which renders an empty actions
+     div — so the size column's right edge stays aligned across the Now
+     Downloading / Queued / Failed sections (KAMP-579). */
+  flex: 0 0 50px;
 }
 .download-card-btn {
   display: flex;

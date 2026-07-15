@@ -1035,7 +1035,13 @@ def _cmd_daemon(
     # now only a wake signal — endpoints and completed syncs put a sentinel to
     # nudge the worker; ordering lives in the DB, not the in-memory queue.
 
+    # Set while the download worker is draining the queue. The size-backfill
+    # (KAMP-574) yields to it: downloads own the Bandcamp rate budget while active,
+    # so an every-8s collection walk can't starve them into 429s (KAMP-575).
+    _downloads_active = threading.Event()
+
     def _download_worker() -> None:
+        from .bandcamp import _make_requests_session, prefetch_redownload_urls
         from .syncer import process_next_download
 
         def _on_state(provider_item_id: str, state: str) -> None:
@@ -1055,6 +1061,25 @@ def _cmd_daemon(
             except _queue_mod.Empty:
                 pass
 
+        def _prefetch_urls() -> None:
+            # One collection fetch per drain to fill any missing redownload_urls, so
+            # every item downloads via the fast path (no per-item collection re-fetch
+            # — the 429 storm). Best-effort: a failure just leaves the per-item
+            # fallback to resolve URLs (the size-backfill is paused, so it has room).
+            try:
+                session_data = index.get_session("bandcamp")
+                if session_data:
+                    n = prefetch_redownload_urls(
+                        index, _make_requests_session(session_data)
+                    )
+                    if n:
+                        _logger.info("Prefetched %d download URL(s) for the queue", n)
+            except Exception:
+                _logger.warning(
+                    "Download URL prefetch failed; falling back to per-item resolution",
+                    exc_info=True,
+                )
+
         # A download left 'downloading' by a crash would stall (next_queued_download
         # only returns 'queued'); re-queue it so this run resumes it first.
         n_reset = index.reset_downloading_to_queued()
@@ -1065,11 +1090,20 @@ def _cmd_daemon(
             if _album_download_trigger_ref[0] is None:
                 _wait_for_work()  # trigger not wired yet (startup race)
                 continue
-            pid = process_next_download(
-                index, _album_download_trigger_ref[0], on_state=_on_state
-            )
-            if pid is None:
-                _wait_for_work()  # queue drained — sleep until woken or timeout
+            if index.next_queued_download() is None:
+                _downloads_active.clear()  # nothing to do → let the backfill run
+                _wait_for_work()
+                continue
+            # Draining: claim the rate budget and fill URLs once for the whole batch.
+            _downloads_active.set()
+            _prefetch_urls()
+            while (
+                process_next_download(
+                    index, _album_download_trigger_ref[0], on_state=_on_state
+                )
+                is not None
+            ):
+                pass  # drain fully before yielding the budget back
 
     threading.Thread(
         target=_download_worker, daemon=True, name="album-dl-worker"
@@ -1084,13 +1118,20 @@ def _cmd_daemon(
     # update. Best-effort: it only touches the network when queued items lack a
     # size and a Bandcamp session exists, and never crashes the daemon.
     _SIZE_BACKFILL_INTERVAL = 8.0  # seconds between poll cycles
+    _SIZE_BACKFILL_MAX_BACKOFF = 300.0  # cap the 429 back-off at 5 minutes
 
     def _size_backfill_worker() -> None:
         import time as _t
 
         from .bandcamp import _make_requests_session, backfill_download_sizes
 
+        backoff = _SIZE_BACKFILL_INTERVAL
         while True:
+            # Yield to active downloads — they own the rate budget while draining, so
+            # this optional size poll never competes them into 429s (KAMP-575).
+            if _downloads_active.is_set():
+                _t.sleep(_SIZE_BACKFILL_INTERVAL)
+                continue
             try:
                 session_data = index.get_session("bandcamp")
                 if session_data and index.queued_downloads_missing_size():
@@ -1102,9 +1143,20 @@ def _cmd_daemon(
                             _make_requests_session(session_data),
                             on_updated=lambda _pid: app.state.notify_download_queue(),
                         )
-            except Exception:
-                _logger.exception("Download size backfill cycle failed")
-            _t.sleep(_SIZE_BACKFILL_INTERVAL)
+                backoff = _SIZE_BACKFILL_INTERVAL  # success → reset the back-off
+                _t.sleep(_SIZE_BACKFILL_INTERVAL)
+            except Exception as exc:
+                # A 429 means we're rate-limited; exponentially back off instead of
+                # hammering every 8s (which poisoned the budget and spammed the log).
+                if "429" in str(exc):
+                    backoff = min(backoff * 2, _SIZE_BACKFILL_MAX_BACKOFF)
+                    _logger.warning(
+                        "Download size backfill rate-limited; backing off %.0fs",
+                        backoff,
+                    )
+                else:
+                    _logger.exception("Download size backfill cycle failed")
+                _t.sleep(backoff)
 
     threading.Thread(
         target=_size_backfill_worker, daemon=True, name="download-size-backfill"

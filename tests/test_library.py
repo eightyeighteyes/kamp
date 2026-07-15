@@ -8793,6 +8793,16 @@ class TestDownloadQueueStateMachine:
         assert row["redownload_url"] is None
         index.close()
 
+    def test_set_download_redownload_url(self, tmp_path: Path) -> None:
+        """KAMP-575: the download worker fills a missing URL (via one collection
+        fetch per drain) so subsequent items download via the fast path."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")  # enqueued without a URL
+        assert index.get_download_item("a")["redownload_url"] is None  # type: ignore[index]
+        index.set_download_redownload_url("a", "https://dl/fresh")
+        assert index.get_download_item("a")["redownload_url"] == "https://dl/fresh"  # type: ignore[index]
+        index.close()
+
     def test_next_queued_download_is_lowest_position(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         for sid in ("a", "b", "c"):

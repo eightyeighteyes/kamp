@@ -1407,6 +1407,34 @@ def get_download_size_bytes(
         return None
 
 
+def prefetch_redownload_urls(index: "LibraryIndex", session: _AnySession) -> int:
+    """Fill missing redownload_urls on queued rows with a SINGLE collection fetch.
+
+    The download worker calls this once per drain (KAMP-575) so it can then download
+    every item via the fast path — no per-item collection re-fetch, which was the
+    429 storm. Rows that already have a URL (freshly enqueued with it) are left
+    alone, so this is a no-op (and does no network I/O) once URLs are populated.
+
+    Returns the number of rows populated. Best-effort: the caller catches failures;
+    a 429 here just leaves rows unfilled so the per-item fallback runs (with the
+    size-backfill paused, it has room). Never raises for a "nothing to do" case.
+    """
+    missing = {pid for pid, url in index.download_redownload_urls().items() if not url}
+    if not missing:
+        return 0
+
+    fan_id, _username = _get_fan_info(session)
+    collection = _fetch_collection(fan_id, session, index)
+    n = 0
+    for item in collection:
+        sid = item.get("sale_item_id")
+        url = item.get("redownload_url")
+        if sid is not None and url and str(sid) in missing:
+            index.set_download_redownload_url(str(sid), url)
+            n += 1
+    return n
+
+
 def backfill_download_sizes(
     index: "LibraryIndex",
     fmt: str,

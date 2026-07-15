@@ -5419,6 +5419,22 @@ class LibraryIndex:
         )
         self._conn.commit()
 
+    def set_download_redownload_url(
+        self, provider_item_id: str, redownload_url: str, *, provider: str = "bandcamp"
+    ) -> None:
+        """Store the download-page link on a queue row (KAMP-575).
+
+        Lets the download worker fill URLs with a single collection fetch per drain
+        (see prefetch_redownload_urls) so it can then download every item via the
+        fast path instead of re-fetching the collection once per item.
+        """
+        self._conn.execute(
+            "UPDATE download_queue SET redownload_url = ? "
+            "WHERE provider = ? AND provider_item_id = ?",
+            (redownload_url, provider, provider_item_id),
+        )
+        self._conn.commit()
+
     def reorder_download_queue(
         self, ordered_provider_item_ids: list[str], *, provider: str = "bandcamp"
     ) -> None:

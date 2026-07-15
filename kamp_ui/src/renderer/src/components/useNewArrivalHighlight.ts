@@ -50,25 +50,45 @@ export interface NewArrivalHighlight {
   auraActive: boolean
   // Defined only when isNew && highlightStyle === 'static'; set as --static-border-gradient
   staticBorderGradient: string | undefined
-  dismissHighlight: (album: Album) => void
+  markHighlightPlayed: (album: Album) => void
+}
+
+/**
+ * Pure predicate for the new-arrival highlight (KAMP-544).
+ *
+ * The highlight is fully derived — no persistent dismissal store. It shows when
+ * the album's most-recent content-arrival time (`added_at`, backed server-side by
+ * `last_track_added_at`) is within the cutoff AND newer than both the last play
+ * and this session's play-echo. So a pre-order that gains a track (added_at jumps
+ * to detection-time) re-surfaces even after an earlier track was played, and the
+ * sparkle still clears the instant the user hits play (the ephemeral echo).
+ */
+export function computeIsNew(
+  album: Album,
+  opts: { highlightEnabled: boolean; cutoffSecs: number; playedEcho: number | undefined }
+): boolean {
+  const addedAt = album.added_at
+  if (!opts.highlightEnabled || addedAt === null || addedAt < opts.cutoffSecs) return false
+  if (album.last_played_at !== null && addedAt <= album.last_played_at) return false
+  if (opts.playedEcho !== undefined && addedAt <= opts.playedEcho) return false
+  return true
 }
 
 export function useNewArrivalHighlight(album: Album): NewArrivalHighlight {
   const highlightEnabled = useStore((s) => s.highlightEnabled)
   const highlightCutoffSecs = useStore((s) => s.highlightCutoffSecs)
   const highlightStyle = useStore((s) => s.highlightStyle)
-  const dismissedHighlightKeys = useStore((s) => s.dismissedHighlightKeys)
-  const dismissHighlight = useStore((s) => s.dismissHighlight)
+  const playedHighlights = useStore((s) => s.playedHighlights)
+  const markHighlightPlayed = useStore((s) => s.markHighlightPlayed)
 
   const albumHighlightKey = album.missing_album
     ? String(album.track_id ?? '')
     : `${album.album_artist}::${album.album}`
-  const isNew =
-    highlightEnabled &&
-    album.added_at !== null &&
-    album.added_at >= highlightCutoffSecs &&
-    album.last_played_at === null &&
-    !dismissedHighlightKeys.has(albumHighlightKey)
+  const isNew = computeIsNew(album, {
+    highlightEnabled,
+    cutoffSecs: highlightCutoffSecs,
+    playedEcho: playedHighlights.get(albumHighlightKey)
+  })
 
   // Start mounting=true so the fast sweep fires immediately; cleared after 1.2s
   const [isMounting, setIsMounting] = useState(isNew)
@@ -198,6 +218,6 @@ export function useNewArrivalHighlight(album: Album): NewArrivalHighlight {
     setIsHovered,
     auraActive,
     staticBorderGradient,
-    dismissHighlight
+    markHighlightPlayed
   }
 }

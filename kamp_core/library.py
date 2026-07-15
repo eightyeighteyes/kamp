@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 51
+_SCHEMA_VERSION = 52
 
 
 class NoStreamableVersionError(Exception):
@@ -272,6 +272,13 @@ CREATE TABLE IF NOT EXISTS albums (
     sale_item_id   TEXT    REFERENCES bandcamp_collection(sale_item_id),
     favorite       INTEGER NOT NULL DEFAULT 0,
     date_added     REAL,
+    -- last_track_added_at: detection-time when the album most recently GAINED a
+    -- track (KAMP-544). Unlike date_added (MIN across tracks) this moves forward
+    -- when a pre-order gains a newly-released track, so the album re-surfaces at
+    -- the top of the "date added" sort. Written only by the migration backfill
+    -- and Syncer's bump_album_new_content — never recomputed from tracks, so a
+    -- future aggregate rebuild can't clobber a bump. Reads COALESCE to date_added.
+    last_track_added_at REAL,
     last_played_at REAL,
     play_count_avg REAL    NOT NULL DEFAULT 0,
     art_version    REAL,
@@ -2174,6 +2181,31 @@ class LibraryIndex:
                         self._conn.execute("PRAGMA foreign_keys=ON")
                         self._create_tracks_with_stats_view()
 
+        if version == 51:
+            # v51 -> v52 (KAMP-544): add albums.last_track_added_at — the
+            # detection-time at which the album most recently gained a track, so a
+            # pre-order that picks up a newly-released track re-surfaces at the top
+            # of the "date added" sort (which now keys on
+            # COALESCE(last_track_added_at, date_added)). Purely additive nullable
+            # column — no FK rebuild. Backfill from date_added so existing albums
+            # keep their current ordering until a sync bumps them. Idempotent via a
+            # presence check.
+            album_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(albums)")}
+            if "last_track_added_at" not in album_cols:
+                self._conn.execute(
+                    "ALTER TABLE albums ADD COLUMN last_track_added_at REAL"
+                )
+                # Backfill from date_added when present. Synthetic old-version DBs
+                # in the migration tests may lack it; a NULL last_track_added_at is
+                # fine (reads COALESCE it back to date_added / sort unaffected).
+                if "date_added" in album_cols:
+                    self._conn.execute(
+                        "UPDATE albums SET last_track_added_at = date_added"
+                    )
+            self._conn.execute("UPDATE schema_version SET version = 52")
+            self._conn.commit()
+            version = 52  # noqa: F841
+
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
 
@@ -3533,6 +3565,44 @@ class LibraryIndex:
             " WHERE sale_item_id = ?"
             " AND (date_added IS NULL OR date_added > ?)",
             (date_added, sale_item_id, date_added),
+        )
+        self._conn.commit()
+
+    def count_available_remote_tracks(self, sale_item_id: str) -> int:
+        """Count the streamable (available) remote tracks for *sale_item_id* (KAMP-544).
+
+        Backs the sync-time "did this pre-order gain a track?" signal: when this
+        count increases across a sync, a new track became available (an incremental
+        pre-order release, or the full pre-order → released graduation). ``is_available``
+        lives on ``track_sources``; matches both the canonical bandcamp:// (POSIX)
+        and bandcamp:\\ (Windows) uri forms, mirroring ``update_remote_track_date_added``.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM track_sources"
+            " WHERE (uri LIKE ? OR uri LIKE ?) AND is_available = 1",
+            (
+                f"bandcamp://{sale_item_id}/%",
+                f"bandcamp:\\{sale_item_id}\\%",
+            ),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def bump_album_new_content(self, sale_item_id: str, ts: float) -> None:
+        """Move the album's ``last_track_added_at`` forward to *ts* (KAMP-544).
+
+        Called when a sync detects the album gained a newly-available track. The
+        MAX-wins rule keeps the column monotonic (a spurious lower value never
+        pulls the album back down), so the album jumps to — and holds — the top of
+        the "date added" sort until it ages out of the highlight cutoff. This is the
+        only writer of ``last_track_added_at`` besides the v52 migration backfill:
+        it is deliberately NOT recomputed in ``_refresh_album_aggregates`` so a
+        future aggregate rebuild cannot clobber a bump.
+        """
+        self._conn.execute(
+            "UPDATE albums SET last_track_added_at ="
+            " MAX(COALESCE(last_track_added_at, 0), ?)"
+            " WHERE sale_item_id = ?",
+            (ts, sale_item_id),
         )
         self._conn.commit()
 
@@ -5572,7 +5642,10 @@ class LibraryIndex:
                 a.source            AS album_source,
                 a.sale_item_id,
                 a.favorite          AS is_favorite,
-                a.date_added        AS sort_date_added,
+                -- "date added" sorts on the latest content-arrival time so a
+                -- pre-order that gained a track re-surfaces (KAMP-544); falls back
+                -- to date_added for albums never bumped.
+                COALESCE(a.last_track_added_at, a.date_added) AS sort_date_added,
                 a.last_played_at    AS sort_last_played,
                 a.play_count_avg    AS sort_play_count_avg,
                 NULLIF(a.release_date, '')  AS sort_release_date,

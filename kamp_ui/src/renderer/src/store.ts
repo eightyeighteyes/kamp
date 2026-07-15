@@ -80,7 +80,13 @@ type PlayerStore = {
   highlightEnabled: boolean
   highlightCutoffSecs: number
   highlightStyle: string
-  dismissedHighlightKeys: Set<string>
+  // KAMP-544: ephemeral, non-persisted "played this session" echo — album key ->
+  // epoch-seconds captured when playback started. Masks the latency between
+  // hitting play and the server's last_played_at syncing back into the album list
+  // so the new-arrival sparkle vanishes instantly. Not written to localStorage:
+  // on restart last_played_at alone governs, and a later content bump (added_at >
+  // this timestamp) re-shows the highlight for free.
+  playedHighlights: Map<string, number>
   topAlbumsCount: number
   topTracksCount: number
   topArtistsCount: number
@@ -160,7 +166,7 @@ type PlayerStore = {
   setRecentlyAddedDays: (n: number) => void
   setHighlightEnabled: (enabled: boolean) => void
   setHighlightStyle: (style: string) => void
-  dismissHighlight: (album: Album) => void
+  markHighlightPlayed: (album: Album) => void
   setTopAlbumsCount: (n: number) => void
   setTopTracksCount: (n: number) => void
   setTopArtistsCount: (n: number) => void
@@ -365,14 +371,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   highlightEnabled: localStorage.getItem('kamp:highlight-enabled') !== 'false',
   highlightCutoffSecs: Date.now() / 1000 - 5 * 86400,
   highlightStyle: localStorage.getItem('kamp:highlight-style') ?? 'shiny',
-  dismissedHighlightKeys: (() => {
-    try {
-      const saved = localStorage.getItem('kamp:dismissed-highlights')
-      return new Set<string>(saved ? (JSON.parse(saved) as string[]) : [])
-    } catch {
-      return new Set<string>()
-    }
-  })(),
+  playedHighlights: new Map<string, number>(),
   topAlbumsCount: (() => {
     const saved = localStorage.getItem('kamp:top-albums-count')
     return saved ? parseInt(saved) : 10
@@ -657,15 +656,20 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ highlightStyle: style })
   },
 
-  dismissHighlight: (album) => {
+  markHighlightPlayed: (album) => {
+    // KAMP-544: record the moment this album started playing so its new-arrival
+    // sparkle clears immediately (before last_played_at round-trips from the
+    // server). Ephemeral — never persisted. A later sync that adds a track bumps
+    // added_at past this timestamp, which re-shows the highlight.
     const key = album.missing_album
       ? String(album.track_id ?? '')
       : `${album.album_artist}::${album.album}`
-    const next = new Set(get().dismissedHighlightKeys)
-    if (next.has(key)) return
-    next.add(key)
-    localStorage.setItem('kamp:dismissed-highlights', JSON.stringify([...next]))
-    set({ dismissedHighlightKeys: next })
+    const nowSecs = Date.now() / 1000
+    const current = get().playedHighlights
+    if (current.get(key) === nowSecs) return
+    const next = new Map(current)
+    next.set(key, nowSecs)
+    set({ playedHighlights: next })
   },
 
   setTopAlbumsCount: (n) => {

@@ -2839,6 +2839,77 @@ class TestSyncCollectionStream:
 
         index.update_remote_track_date_added.assert_not_called()
 
+    def _run_with_counts(
+        self, tmp_path: Path, item: dict[str, Any], counts: list[int]
+    ) -> MagicMock:
+        """Run a stream sync for one item, stubbing the available-track counts.
+
+        *counts* is [before, after] returned by count_available_remote_tracks
+        (called once before the fetch and once after the upsert).
+        """
+        from kamp_core.library import Track
+        from pathlib import Path as _Path
+
+        fake_track = Track(
+            file_path=_Path("bandcamp://1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2026",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock([item])
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.return_value = False  # force the fetch branch
+        index.count_available_remote_tracks.side_effect = counts
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[fake_track]),
+        ):
+            sync_collection_stream(config, watch_folder, index)
+        return index
+
+    def test_bumps_new_content_when_available_count_increases(
+        self, tmp_path: Path
+    ) -> None:
+        """An album that gained a streamable track is re-surfaced (KAMP-544)."""
+        index = self._run_with_counts(tmp_path, _item(1), counts=[1, 2])
+        index.bump_album_new_content.assert_called_once()
+        sid, ts = index.bump_album_new_content.call_args[0]
+        assert sid == "1"
+        assert isinstance(ts, float)
+
+    def test_no_bump_when_available_count_unchanged(self, tmp_path: Path) -> None:
+        """A re-sync that adds no new streamable track does not bump (KAMP-544)."""
+        index = self._run_with_counts(tmp_path, _item(1), counts=[2, 2])
+        index.bump_album_new_content.assert_not_called()
+
+    def test_no_bump_on_first_index_when_before_zero(self, tmp_path: Path) -> None:
+        """The first index of an album (0 -> N available) does not bump (KAMP-544).
+
+        A brand-new album is already 'new' by its date_added; only a *subsequent*
+        increase counts as a re-arrival, so the before>0 guard skips this case.
+        """
+        index = self._run_with_counts(tmp_path, _item(1), counts=[0, 3])
+        index.bump_album_new_content.assert_not_called()
+
 
 class TestStreamSyncArtPrefetch:
     """Art prefetch behaviour in sync_collection_stream."""

@@ -345,7 +345,8 @@ def sync_new_purchases(
     watch_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded: list[Path] = []
-    download_index = 0  # throttle counter for download-page requests
+    enqueued = 0  # regular purchases handed to the persistent download queue
+    download_index = 0  # throttle counter for inline preorder download-page requests
     for item in new_items:
         sid = str(item.get("sale_item_id", ""))
         band_name = str(item.get("band_name", ""))
@@ -392,49 +393,78 @@ def sync_new_purchases(
             )
             continue
 
-        # Throttle download-page requests to avoid Bandcamp 429 rate limiting.
-        if download_index > 0:
-            time.sleep(1)
-        download_index += 1
         try:
-            if status_callback:
-                status_callback(f"{item_title} by {band_name}")
-            path = _download_item(item, bc_config, watch_dir, session)
-            downloaded.append(path)
-            # Pre-orders stay as 'preorder' until is_preorder flips to False.
-            mode = "preorder" if is_preorder else "local"
-            index.upsert_collection_item(
-                sid,
-                mode=mode,
-                item_type=str(item.get("sale_item_type", "p")),
-                band_name=band_name,
-                item_title=item_title,
-                album_url=album_url,
-                tralbum_id=str(item.get("tralbum_id", "")),
-                synced_at=time.time(),
-                added_at=_parse_purchased(item.get("purchased")),
-                num_streamable_tracks=api_streamable,
-            )
-            # KAMP-523: hand the download's identity to the ingest pipeline so it
-            # writes the metadata we already own and stamps a provenance tag,
-            # instead of re-deriving identity from tags via MusicBrainz.
-            index.add_pending_ingest(
-                str(path), str(sid), str(item.get("tralbum_id", ""))
-            )
-            logger.info(
-                "Downloaded: %s (mode=%s, streamable_tracks=%d)",
-                path.name,
-                mode,
-                api_streamable,
-            )
+            if is_preorder:
+                # Pre-order with newly-released tracks: download inline and keep
+                # 'preorder' mode. Kept off the persistent queue (KAMP-565) so the
+                # KAMP-544 resurface bookkeeping — mode preservation and the
+                # num_streamable_tracks watermark — stays exactly as-is; the generic
+                # queue path (download_single_album) would flip it to 'local'.
+                if download_index > 0:
+                    time.sleep(1)  # throttle download-page requests vs 429s
+                download_index += 1
+                if status_callback:
+                    status_callback(f"{item_title} by {band_name}")
+                path = _download_item(item, bc_config, watch_dir, session)
+                downloaded.append(path)
+                index.upsert_collection_item(
+                    sid,
+                    mode="preorder",
+                    item_type=str(item.get("sale_item_type", "p")),
+                    band_name=band_name,
+                    item_title=item_title,
+                    album_url=album_url,
+                    tralbum_id=str(item.get("tralbum_id", "")),
+                    synced_at=time.time(),
+                    added_at=_parse_purchased(item.get("purchased")),
+                    num_streamable_tracks=api_streamable,
+                )
+                # KAMP-523: hand the download's identity to the ingest pipeline.
+                index.add_pending_ingest(
+                    str(path), str(sid), str(item.get("tralbum_id", ""))
+                )
+                logger.info(
+                    "Downloaded pre-order: %s (streamable_tracks=%d)",
+                    path.name,
+                    api_streamable,
+                )
+            else:
+                # Regular new purchase: enqueue for the persistent download queue
+                # (KAMP-565). Record the collection row as 'remote' (owned, not yet
+                # local) so a re-sync skips it while queued and the worker's
+                # download_single_album can flip it to 'local' after downloading.
+                index.upsert_collection_item(
+                    sid,
+                    mode="remote",
+                    item_type=str(item.get("sale_item_type", "p")),
+                    band_name=band_name,
+                    item_title=item_title,
+                    album_url=album_url,
+                    tralbum_id=str(item.get("tralbum_id", "")),
+                    synced_at=time.time(),
+                    added_at=_parse_purchased(item.get("purchased")),
+                    num_streamable_tracks=api_streamable,
+                )
+                index.enqueue_download(
+                    sid,
+                    album_name=item_title,
+                    album_artist=band_name,
+                    artwork_ref=str(item.get("item_art_url", "") or ""),
+                )
+                enqueued += 1
+                if status_callback:
+                    status_callback(f"Queued {item_title} by {band_name}")
+                logger.info("Queued for download: %r by %r", item_title, band_name)
         except Exception as exc:
             logger.error(
-                "Failed to download %r by %r: %s",
+                "Failed to handle %r by %r: %s",
                 item_title,
                 band_name,
                 exc,
             )
 
+    if enqueued:
+        logger.info("Enqueued %d new purchase(s) for download.", enqueued)
     return downloaded
 
 

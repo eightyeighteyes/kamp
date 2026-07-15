@@ -3078,7 +3078,8 @@ def create_app(
         Returns 404 if the item is not in the collection.
         Returns 503 if the download queue is not configured.
         """
-        if not index.get_collection_item(sale_item_id):
+        item = index.get_collection_item(sale_item_id)
+        if not item:
             raise HTTPException(status_code=404, detail="Collection item not found")
         if dl_queue is None:
             raise HTTPException(status_code=503, detail="Album download not configured")
@@ -3090,9 +3091,35 @@ def create_app(
         index.set_collection_item_mode(sale_item_id, "local")
 
         # Persist first so a restart can replay the queue even if the process
-        # dies before the worker picks up the in-memory item.
-        index.enqueue_download(sale_item_id)
-        dl_queue.put(sale_item_id)
+        # dies before the worker picks up the in-memory item. The album snapshot
+        # lets the Downloads-view card render without a join (KAMP-564).
+        index.enqueue_download(
+            sale_item_id,
+            album_name=item.get("item_title") or None,
+            album_artist=item.get("band_name") or None,
+        )
+        dl_queue.put(sale_item_id)  # wake the worker
+
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": sale_item_id,
+                "state": "queued",
+            }
+        )
+        return {"ok": True}
+
+    @app.post("/api/v1/bandcamp/collection/{sale_item_id}/retry")
+    def retry_collection_item(sale_item_id: str) -> dict[str, Any]:
+        """Retry a failed download: re-queue it at the END of the queue (KAMP-565).
+
+        Returns 503 if the download queue is not configured.
+        """
+        if dl_queue is None:
+            raise HTTPException(status_code=503, detail="Album download not configured")
+
+        index.retry_download(sale_item_id)
+        dl_queue.put(sale_item_id)  # wake the worker
 
         _broadcast(
             {

@@ -12773,6 +12773,11 @@ class TestDisplayArtistOverride:
         db = tmp_path / "library.db"
         LibraryIndex(db).close()
         conn = sqlite3.connect(str(db))
+        # Drop the view first: it projects display_artist through, and SQLite
+        # (version-dependently) refuses a DROP COLUMN that a view references.
+        # A real pre-v55 DB has a view built without the column anyway, and
+        # open() recreates it from PRAGMA table_info after migrating.
+        conn.execute("DROP VIEW IF EXISTS tracks_with_stats")
         conn.execute("ALTER TABLE tracks DROP COLUMN display_artist")
         conn.execute("UPDATE schema_version SET version = 54")
         conn.commit()
@@ -12793,6 +12798,9 @@ class TestDisplayArtistOverride:
         expression must fall back to the plain column instead of crashing."""
         index = LibraryIndex(tmp_path / "library.db")
         index.upsert_many([self._stream_track()])
+        # Drop the view before the column — it projects display_artist through
+        # and SQLite (version-dependently) blocks the DROP COLUMN otherwise.
+        index._conn.execute("DROP VIEW IF EXISTS tracks_with_stats")
         index._conn.execute("ALTER TABLE tracks DROP COLUMN display_artist")
 
         index._rebuild_fts()  # must not raise

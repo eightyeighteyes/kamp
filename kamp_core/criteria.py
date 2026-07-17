@@ -114,6 +114,25 @@ def _condition_sql(cond: "Condition") -> tuple[str, list[Any], bool]:
             subquery = "NOT " + subquery
         return subquery, [playlist_id], False
 
+    # Genre is multi-value (KAMP-586): resolve via the normalized track_genres
+    # join, not the flat "; "-joined tracks.genre column — a flat `= ?` would
+    # silently stop matching once an album has more than one genre.
+    if field == "track.genre":
+        if op in ("is", "is_not"):
+            match, genre_param = "g.name = ? COLLATE NOCASE", value
+        elif op in ("contains", "not_contains"):
+            match, genre_param = "g.name LIKE ?", f"%{value}%"
+        else:
+            raise ValueError(f"Operator {op!r} not supported for genre")
+        subquery = (
+            "EXISTS (SELECT 1 FROM track_genres tg"
+            " JOIN genres g ON g.id = tg.genre_id"
+            f" WHERE tg.track_id = tracks.id AND {match})"
+        )
+        if op in ("is_not", "not_contains"):
+            subquery = "NOT " + subquery
+        return subquery, [genre_param], False
+
     if field not in _FIELD_MAP:
         raise ValueError(f"Unknown magic playlist field: {field!r}")
 

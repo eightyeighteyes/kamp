@@ -722,10 +722,24 @@ export type AlbumMetaResult = {
 export const patchAlbumMeta = (
   albumArtist: string,
   album: string,
-  opts: { genre?: string; label?: string; release_date?: string; mb_release_id?: string }
+  opts: {
+    genre?: string
+    // Multi-value genre (KAMP-586): the album's full genre set, applied to every track.
+    genres?: string[]
+    label?: string
+    release_date?: string
+    mb_release_id?: string
+  }
 ): Promise<AlbumMetaResult> => {
   const params = new URLSearchParams({ album_artist: albumArtist, album })
   return patch(`/api/v1/albums/meta?${params}`, opts)
+}
+
+// Every distinct genre in the library (KAMP-586), for the edit-panel autocomplete.
+export async function getGenres(): Promise<string[]> {
+  const res = await fetch(`${BASE_URL}/api/v1/genres`, { headers: _authHeaders() })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return (await res.json()) as string[]
 }
 
 // ---------------------------------------------------------------------------

@@ -1,15 +1,22 @@
 import React, { useEffect, useRef } from 'react'
+import { getGenres } from '../api/client'
 import type { Track } from '../api/client'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
 import { TagIcon, ChevronIcon } from './TransportIcons'
+import { GenreChipsInput } from './GenreChipsInput'
 
 interface AlbumMetaPanelProps {
   tracks: Track[]
   editMode: boolean
   expanded: boolean
   onToggle: () => void
-  onSave: (opts: { genre?: string; label?: string; release_date?: string }) => Promise<void>
+  onSave: (opts: {
+    genre?: string
+    genres?: string[]
+    label?: string
+    release_date?: string
+  }) => Promise<void>
   onHandleMouseDown?: (e: React.MouseEvent) => void
   onHandleDoubleClick?: () => void
 }
@@ -23,6 +30,22 @@ function commonValue(tracks: Track[], key: keyof Track): string {
   const first = values[0] ?? ''
   if (values.every((v) => v === first)) return first
   return '(mixed)'
+}
+
+/**
+ * The union of every track's genres (KAMP-586). Track.genre is a "; "-joined
+ * display string; a "mixed" album rolls its tracks' genres up into one set that
+ * is applied to every track on save. Case-insensitive dedup, sorted.
+ */
+function unionGenres(tracks: Track[]): string[] {
+  const seen = new Map<string, string>()
+  for (const t of tracks) {
+    for (const g of (t.genre ?? '').split(';')) {
+      const name = g.trim()
+      if (name && !seen.has(name.toLowerCase())) seen.set(name.toLowerCase(), name)
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b))
 }
 
 function hasAnyMeta(tracks: Track[], releaseDate: string): boolean {
@@ -96,7 +119,6 @@ export function AlbumMetaPanel({
 }: AlbumMetaPanelProps): React.JSX.Element {
   const panelRef = useRef<HTMLDivElement>(null)
 
-  const [genre, setGenre] = React.useState(() => commonValue(tracks, 'genre'))
   const [label, setLabel] = React.useState(() => commonValue(tracks, 'label'))
   const [releaseDate, setReleaseDate] = React.useState(() => commonValue(tracks, 'release_date'))
   // Track the last-seen tracks reference so we can sync on external changes
@@ -104,10 +126,30 @@ export function AlbumMetaPanel({
   const [syncedTracks, setSyncedTracks] = React.useState(tracks)
   if (syncedTracks !== tracks) {
     setSyncedTracks(tracks)
-    setGenre(commonValue(tracks, 'genre'))
     setLabel(commonValue(tracks, 'label'))
     setReleaseDate(commonValue(tracks, 'release_date'))
   }
+
+  // Library genre vocabulary for the chips autocomplete — loaded lazily the
+  // first time the panel enters edit mode (KAMP-586).
+  const [genreSuggestions, setGenreSuggestions] = React.useState<string[]>([])
+  useEffect(() => {
+    if (!editMode) return
+    let cancelled = false
+    void getGenres().then(
+      (g) => {
+        if (!cancelled) setGenreSuggestions(g)
+      },
+      () => {
+        /* autocomplete is best-effort */
+      }
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [editMode])
+
+  const albumGenres = unionGenres(tracks)
 
   // Instant show/hide — Electron's renderer produces jank with CSS/JS height
   // animations (see CLAUDE.md "CSS height animations in Electron").
@@ -120,9 +162,8 @@ export function AlbumMetaPanel({
   const mbId = tracks[0]?.mb_release_id ?? ''
   const hasContent = hasAnyMeta(tracks, commonValue(tracks, 'release_date'))
 
-  const handleSaveGenre = (): void => {
-    const current = commonValue(tracks, 'genre')
-    if (genre !== current) void onSave({ genre })
+  const handleSaveGenres = (genres: string[]): void => {
+    void onSave({ genres })
   }
 
   const handleSaveLabel = (): void => {
@@ -168,13 +209,19 @@ export function AlbumMetaPanel({
               onBlur={handleSaveReleaseDate}
             />
           )}
-          <MetaField
-            label="GENRE"
-            value={genre}
-            editMode={editMode}
-            onChange={setGenre}
-            onBlur={handleSaveGenre}
-          />
+          {(albumGenres.length > 0 || editMode) && (
+            <div className="album-meta-row">
+              <dt className="album-meta-dt">GENRE</dt>
+              <dd className="album-meta-dd">
+                <GenreChipsInput
+                  chips={albumGenres}
+                  suggestions={genreSuggestions}
+                  editMode={editMode}
+                  onCommit={handleSaveGenres}
+                />
+              </dd>
+            </div>
+          )}
           <MetaField
             label="LABEL"
             value={label}

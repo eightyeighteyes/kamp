@@ -539,6 +539,18 @@ class TestArtistsEndpoint:
         assert c.get("/api/v1/artists").json() == ["Aesop Rock", "Zeppelin"]
 
 
+class TestGenresEndpoint:
+    def test_returns_empty_list_when_no_genres(self, client: TestClient) -> None:
+        assert client.get("/api/v1/genres").json() == []
+
+    def test_returns_genre_list(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.all_genres.return_value = ["Jazz", "Rock"]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        assert TestClient(app).get("/api/v1/genres").json() == ["Jazz", "Rock"]
+
+
 class TestTopArtistsEndpoint:
     def test_returns_empty_list_when_no_artists(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -4134,10 +4146,11 @@ class TestPatchAlbumMetaEndpoint:
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
+        # KAMP-586: genre now routes through the shared apply_genres service,
+        # not update_album_meta.
         track = self._make_track()
         updated = Track(**{**track.__dict__, "genre": "Jazz"})
-        mock_index.tracks_for_album.return_value = [track]
-        mock_index.update_album_meta.return_value = [updated]
+        mock_index.tracks_for_album.return_value = [updated]
 
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         with patch("kamp_core.library.write_meta_tags_to_file"):
@@ -4149,8 +4162,30 @@ class TestPatchAlbumMetaEndpoint:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["tracks"]) == 1
         assert data["tracks"][0]["genre"] == "Jazz"
+        mock_index.apply_genres.assert_called_once()
+        assert mock_index.apply_genres.call_args.args[1] == ["Jazz"]
+
+    def test_patch_genres_list_routes_to_apply_genres(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        updated = Track(**{**self._make_track().__dict__, "genre": "Jazz; J-Pop"})
+        mock_index.tracks_for_album.return_value = [updated]
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        with patch("kamp_core.library.write_meta_tags_to_file"):
+            resp = TestClient(app).patch(
+                "/api/v1/albums/meta",
+                params={"album_artist": "Artist", "album": "Record"},
+                json={"genres": ["Jazz", "J-Pop"]},
+            )
+
+        assert resp.status_code == 200
+        assert mock_index.apply_genres.call_args.args[1] == ["Jazz", "J-Pop"]
+        assert mock_index.apply_genres.call_args.kwargs["mode"] == "replace"
 
     def test_patch_label_and_year_persisted(
         self,
@@ -4160,8 +4195,7 @@ class TestPatchAlbumMetaEndpoint:
     ) -> None:
         track = self._make_track()
         updated = Track(**{**track.__dict__, "label": "ECM", "release_date": "1975"})
-        mock_index.tracks_for_album.return_value = [track]
-        mock_index.update_album_meta.return_value = [updated]
+        mock_index.tracks_for_album.return_value = [updated]
 
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         with patch("kamp_core.library.write_meta_tags_to_file"):
@@ -4172,14 +4206,81 @@ class TestPatchAlbumMetaEndpoint:
             )
 
         assert resp.status_code == 200
+        # genre no longer routed through update_album_meta (KAMP-586).
         mock_index.update_album_meta.assert_called_once_with(
             "Artist",
             "Record",
-            genre=None,
             label="ECM",
             release_date="1975",
             mb_release_id=None,
         )
+        mock_index.apply_genres.assert_not_called()
+
+    def test_multi_value_genre_end_to_end_local_and_remote(
+        self,
+        tmp_path: Path,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Real DB + files (KAMP-586): PATCH genres applies to every track's
+        normalized rows; the local file's tag is written multi-value; the
+        remote track gets DB genres but no (impossible) file write."""
+        import mutagen.id3 as id3
+
+        from kamp_core.library import LibraryIndex
+
+        local_mp3 = tmp_path / "01.mp3"
+        local_mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(local_mp3))
+
+        index = LibraryIndex(tmp_path / "library.db")
+        local = Track(
+            file_path=local_mp3,
+            title="A",
+            artist="Band",
+            album_artist="Band",
+            album="Rec",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+        )
+        remote = Track(
+            file_path=Path("bandcamp://S1/2"),
+            title="B",
+            artist="Band",
+            album_artist="Band",
+            album="Rec",
+            release_date="2020",
+            track_number=2,
+            disc_number=1,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        index.upsert_many([local, remote])
+
+        app = create_app(index=index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/albums/meta",
+            params={"album_artist": "Band", "album": "Rec"},
+            json={"genres": ["Jazz", "J-Pop"]},
+        )
+
+        assert resp.status_code == 200
+        # Both tracks carry the genres in the DB (denormalized display string).
+        genres = {t.genre for t in index.all_tracks()}
+        assert genres == {"J-Pop; Jazz"}
+        # The local file's TCON was written multi-value; the remote had no file.
+        tcon = id3.ID3(str(local_mp3))["TCON"]
+        assert set(tcon.text) == {"Jazz", "J-Pop"}
+        assert index.all_genres() == ["J-Pop", "Jazz"]
+        index.close()
 
     def test_returns_404_for_unknown_album(
         self,
@@ -4377,11 +4478,11 @@ class TestPatchAlbumMetaEndpoint:
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
-        """Bandcamp tracks must not trigger write_meta_tags_to_file."""
+        """Bandcamp tracks must not trigger write_meta_tags_to_file, but their
+        genres still update in the DB via apply_genres (KAMP-586)."""
         remote = self._make_remote_track()
         updated = Track(**{**remote.__dict__, "genre": "Jazz"})
-        mock_index.tracks_for_album.return_value = [remote]
-        mock_index.update_album_meta.return_value = [updated]
+        mock_index.tracks_for_album.return_value = [updated]
 
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         with patch("kamp_core.library.write_meta_tags_to_file") as mock_write:
@@ -4392,15 +4493,9 @@ class TestPatchAlbumMetaEndpoint:
             )
 
         assert resp.status_code == 200
-        mock_write.assert_not_called()
-        mock_index.update_album_meta.assert_called_once_with(
-            "Artist",
-            "Record",
-            genre="Jazz",
-            label=None,
-            release_date=None,
-            mb_release_id=None,
-        )
+        mock_write.assert_not_called()  # no local file to write
+        mock_index.apply_genres.assert_called_once()  # DB still updated
+        assert mock_index.apply_genres.call_args.args[1] == ["Jazz"]
 
     def test_mixed_album_writes_files_only_for_local_tracks(
         self,

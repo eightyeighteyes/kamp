@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 55
+_SCHEMA_VERSION = 56
 
 
 class NoStreamableVersionError(Exception):
@@ -243,6 +243,24 @@ CREATE TABLE IF NOT EXISTS track_stats (
     last_played REAL,
     updated_at  REAL
 );
+
+-- Normalized multi-value genre (KAMP-586). genres holds the distinct genre
+-- vocabulary; track_genres is the many-to-many link. tracks.genre/albums.genre
+-- remain "; "-joined denormalized DISPLAY strings derived from these — never
+-- parsed back for lookup (KAMP-554). Unlike artists (KAMP-545), genres is a
+-- brand-new table with no possible pre-existing case-variant rows, so the
+-- NOCASE-unique constraint is safe inline in the CREATE on every DB.
+CREATE TABLE IF NOT EXISTS genres (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    UNIQUE (name COLLATE NOCASE)
+);
+CREATE TABLE IF NOT EXISTS track_genres (
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    genre_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,
+    PRIMARY KEY (track_id, genre_id)
+);
+CREATE INDEX IF NOT EXISTS idx_track_genres_genre ON track_genres(genre_id);
 
 -- First-class album entity (KAMP-418). Replaces the GROUP BY (album_artist, album)
 -- derived-aggregate pattern. COLLATE NOCASE on the UNIQUE constraint prevents
@@ -578,6 +596,12 @@ class Track:
     mb_release_id: str
     mb_recording_id: str
     genre: str = field(default="")
+    # Multi-value genres (KAMP-586). Write-path field: the readers populate it
+    # from the file's native multi-value tag, and upsert_many/apply_genres write
+    # it to the normalized track_genres table. `genre` stays the "; "-joined
+    # denormalized display string. compare=False so existing Track-equality
+    # tests are undisturbed.
+    genres: list[str] = field(default_factory=list, compare=False)
     label: str = field(default="")
     id: int = field(default=0, compare=False)
     date_added: float | None = field(default=None, compare=False)
@@ -2319,7 +2343,44 @@ class LibraryIndex:
                 self._conn.execute("ALTER TABLE tracks ADD COLUMN display_artist TEXT")
             self._conn.execute("UPDATE schema_version SET version = 55")
             self._conn.commit()
-            version = 55  # noqa: F841
+            version = 55
+
+        if version == 55:
+            # v55 -> v56 (KAMP-586): backfill the normalized genres/track_genres
+            # tables (created empty by _DDL above) from the existing single-value
+            # tracks.genre column. Old MP3 rows hold a " / "-joined composite from
+            # the pre-586 reader, so split on " / " to recover the real values —
+            # M4A/Vorbis rows were first-only so the split is a no-op there.
+            # Guard on column presence: a synthetic partial-schema test DB may
+            # predate the genre columns and has nothing to backfill (KAMP-552).
+            _tcols = {r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")}
+            if "genre" in _tcols:
+                for row in self._conn.execute(
+                    "SELECT id, genre FROM tracks WHERE genre != ''"
+                ).fetchall():
+                    names = [
+                        part.strip()
+                        for part in str(row["genre"]).split(" / ")
+                        if part.strip()
+                    ]
+                    self._set_track_genres(row["id"], names)
+            # Recompute albums.genre as the DISTINCT union now that track_genres
+            # is populated (SQLite forbids GROUP_CONCAT(DISTINCT x, sep), hence
+            # the nested subquery).
+            _acols = {r[1] for r in self._conn.execute("PRAGMA table_info(albums)")}
+            if "genre" in _acols:
+                self._conn.execute(
+                    "UPDATE albums SET genre = COALESCE("
+                    "  (SELECT GROUP_CONCAT(name, '; ') FROM"
+                    "     (SELECT DISTINCT g.name FROM track_genres tg"
+                    "        JOIN genres g ON g.id = tg.genre_id"
+                    "        JOIN tracks t ON t.id = tg.track_id"
+                    "      WHERE t.album_id = albums.id ORDER BY g.name COLLATE NOCASE)),"
+                    "  '')"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 56")
+            self._conn.commit()
+            version = 56  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -4542,13 +4603,28 @@ class LibraryIndex:
 
         existing_local: list[tuple[int, Track]] = []
         existing_stream: list[tuple[int, Track]] = []
+        # KAMP-586: (track_id, genre_names) to write into the normalized
+        # track_genres table. A directly-constructed Track carries genre but an
+        # empty genres list, so bridge from the scalar; the readers populate
+        # genres from the file's native multi-value tag.
+        genre_writes: list[tuple[int, list[str]]] = []
+
+        def _genre_names(t: Track) -> list[str]:
+            return t.genres if t.genres else ([t.genre] if t.genre.strip() else [])
+
         for uri, t in by_uri.items():
             _u, kind, _prov, _pid = _derive_source_fields(
                 t.file_path, t.source, t.sale_item_id
             )
             if uri in id_map:
-                bucket = existing_stream if kind == "stream" else existing_local
+                is_stream = kind == "stream"
+                bucket = existing_stream if is_stream else existing_local
                 bucket.append((id_map[uri], t))
+                names = _genre_names(t)
+                # Stream re-sync: skip an empty incoming list to preserve a
+                # user's genre edits, mirroring genre=COALESCE(NULLIF(?,'')).
+                if not (is_stream and not names):
+                    genre_writes.append((id_map[uri], names))
             else:
                 cur = self._conn.execute(
                     "INSERT INTO tracks"
@@ -4559,6 +4635,7 @@ class LibraryIndex:
                     _track_to_params(t),
                 )
                 id_map[uri] = cur.lastrowid  # type: ignore[assignment]
+                genre_writes.append((id_map[uri], _genre_names(t)))
         # Identity/catalog fields, positional for both UPDATE batches (id last).
         _upd = lambda tid, t: (
             t.title,
@@ -4594,6 +4671,13 @@ class LibraryIndex:
                 " label=COALESCE(NULLIF(?,''), label) WHERE id=?",
                 [_upd(tid, t) for tid, t in existing_stream],
             )
+
+        # KAMP-586: sync the normalized genres/track_genres tables. Must run
+        # before Step 4 (_refresh_album_aggregates reads track_genres for the
+        # album genre union). _set_track_genres also rewrites the denormalized
+        # tracks.genre to its canonical "; "-joined form.
+        for tid, names in genre_writes:
+            self._set_track_genres(tid, names)
 
         # Step 3: assign album_id on the track rows we just inserted/updated.
         file_paths = [_canonical_track_uri(t.file_path) for t in named]
@@ -4817,7 +4901,11 @@ class LibraryIndex:
                                   FROM tracks_with_stats t WHERE t.album_id = albums.id),
                 source         = {_ALBUM_SOURCE_SUBQUERY},
                 release_date   = (SELECT MAX(t.release_date)   FROM tracks t WHERE t.album_id = albums.id),
-                genre          = (SELECT MAX(t.genre)          FROM tracks t WHERE t.album_id = albums.id),
+                genre          = COALESCE((SELECT GROUP_CONCAT(name, '; ') FROM
+                                    (SELECT DISTINCT g.name FROM track_genres tg
+                                       JOIN genres g ON g.id = tg.genre_id
+                                       JOIN tracks t ON t.id = tg.track_id
+                                     WHERE t.album_id = albums.id ORDER BY g.name COLLATE NOCASE)), ''),
                 label          = (SELECT MAX(t.label)          FROM tracks t WHERE t.album_id = albums.id),
                 mb_release_id  = (SELECT MAX(t.mb_release_id)  FROM tracks t WHERE t.album_id = albums.id)
             WHERE id IN ({id_placeholders})
@@ -5969,6 +6057,123 @@ class LibraryIndex:
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.favorite"})
+
+    # -- Multi-value genre (KAMP-586) ---------------------------------------
+
+    def _set_track_genres(self, track_id: int, names: list[str]) -> str:
+        """Replace *track_id*'s genres; return the canonical "; "-joined string.
+
+        The single chokepoint for genre-to-DB writes (KAMP-586). Strips blanks,
+        dedups case-insensitively (first-seen casing becomes canonical via the
+        NOCASE-unique genres table), rewrites the track's track_genres rows, and
+        syncs the denormalized tracks.genre so the normalized and display forms
+        never drift. Caller commits.
+        """
+        seen: dict[str, str] = {}
+        for raw in names:
+            name = raw.strip()
+            if name and name.casefold() not in seen:
+                seen[name.casefold()] = name
+
+        self._conn.execute("DELETE FROM track_genres WHERE track_id = ?", (track_id,))
+        canonical: list[str] = []
+        for name in seen.values():
+            self._conn.execute(
+                "INSERT OR IGNORE INTO genres (name) VALUES (?)", (name,)
+            )
+            row = self._conn.execute(
+                "SELECT id, name FROM genres WHERE name = ? COLLATE NOCASE", (name,)
+            ).fetchone()
+            self._conn.execute(
+                "INSERT OR IGNORE INTO track_genres (track_id, genre_id) VALUES (?, ?)",
+                (track_id, row["id"]),
+            )
+            canonical.append(row["name"])  # canonical casing from the genres table
+        joined = "; ".join(sorted(canonical, key=str.casefold))
+        self._conn.execute(
+            "UPDATE tracks SET genre = ? WHERE id = ?", (joined, track_id)
+        )
+        return joined
+
+    def apply_genres(
+        self,
+        track_ids: list[int],
+        genres: list[str],
+        *,
+        mode: str = "replace",
+    ) -> None:
+        """Apply *genres* to every track in *track_ids* (DB only — no file I/O).
+
+        The shared write path for the genre sprint (KAMP-586). ``replace`` sets
+        each track's genres to exactly *genres*; ``merge`` adds them to whatever
+        the track already has. Refreshes the affected albums' genre union and
+        signals magic-playlist recompute. File writes are the caller's job (the
+        album-meta endpoint writes them in its is_remote-guarded loop).
+
+        NOTE: ``merge`` is a seam for later producers (KAMP-587/588/591); it is
+        mechanism-tested only and its dedup/casing contract firms up when its
+        first consumer lands.
+        """
+        if not track_ids:
+            return
+        for track_id in track_ids:
+            if mode == "merge":
+                existing = [
+                    r["name"]
+                    for r in self._conn.execute(
+                        "SELECT g.name FROM track_genres tg"
+                        " JOIN genres g ON g.id = tg.genre_id"
+                        " WHERE tg.track_id = ?",
+                        (track_id,),
+                    ).fetchall()
+                ]
+                self._set_track_genres(track_id, existing + genres)
+            else:
+                self._set_track_genres(track_id, genres)
+        # Refresh the album-genre union for the affected albums.
+        placeholders = ",".join("?" for _ in track_ids)
+        album_ids = [
+            r["album_id"]
+            for r in self._conn.execute(
+                f"SELECT DISTINCT album_id FROM tracks"
+                f" WHERE id IN ({placeholders}) AND album_id IS NOT NULL",
+                track_ids,
+            ).fetchall()
+        ]
+        for album_id in album_ids:
+            self._refresh_album_genre(album_id)
+        self._conn.commit()
+        if self.on_fields_changed:
+            self.on_fields_changed({"track.genre"})
+
+    def _refresh_album_genre(self, album_id: int) -> None:
+        """Recompute one album's denormalized genre as the DISTINCT track union.
+
+        SQLite forbids GROUP_CONCAT(DISTINCT x, sep), so the distinct set is
+        collected in a subquery first. Caller commits.
+        """
+        self._conn.execute(
+            "UPDATE albums SET genre = COALESCE("
+            "  (SELECT GROUP_CONCAT(name, '; ') FROM"
+            "     (SELECT DISTINCT g.name FROM track_genres tg"
+            "        JOIN genres g ON g.id = tg.genre_id"
+            "        JOIN tracks t ON t.id = tg.track_id"
+            "      WHERE t.album_id = ? ORDER BY g.name COLLATE NOCASE)), '')"
+            " WHERE id = ?",
+            (album_id, album_id),
+        )
+
+    def all_genres(self) -> list[str]:
+        """Return every distinct genre name in the library, sorted (KAMP-586).
+
+        Backs the album-edit autocomplete and (later) the genre sidebar.
+        """
+        return [
+            r["name"]
+            for r in self._conn.execute(
+                "SELECT name FROM genres ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        ]
 
     def update_album_meta(
         self,
@@ -7753,6 +7958,10 @@ def _read_mp3_tags(path: Path) -> Track:
         return str(frame).replace("\x00", " / ")
 
     artist = _str("TPE1")
+    # Multi-value genre (KAMP-586): a TCON frame's .text is already the list of
+    # separate values; the legacy `genre` string keeps its " / "-join for display.
+    _tcon = tags.get("TCON")
+    genres = [str(g).strip() for g in (_tcon.text if _tcon else []) if str(g).strip()]
     return Track(
         file_path=path,
         ext="mp3",
@@ -7768,6 +7977,7 @@ def _read_mp3_tags(path: Path) -> Track:
         or _str("TXXX:MusicBrainz Release Id"),
         mb_recording_id=_str("TXXX:MusicBrainz Track Id"),
         genre=_str("TCON"),
+        genres=genres,
         label=_str("TPUB"),
         duration=duration,
         sale_item_id=_str("TXXX:KAMP_SALE_ITEM_ID"),
@@ -7801,6 +8011,9 @@ def _read_m4a_tags(path: Path) -> Track:
     disc_number = disk[0][0] if disk else 1
 
     artist = _s("\xa9ART")
+    # Multi-value genre (KAMP-586): \xa9gen is a list of values.
+    _gen_vals = tags.get("\xa9gen") or []
+    genres = [str(v).strip() for v in _gen_vals if str(v).strip()]
     return Track(
         file_path=path,
         ext="m4a",
@@ -7816,6 +8029,7 @@ def _read_m4a_tags(path: Path) -> Track:
         or _s("----:com.apple.iTunes:MusicBrainz Release Id"),
         mb_recording_id=_s("----:com.apple.iTunes:MusicBrainz Track Id"),
         genre=_s("\xa9gen"),
+        genres=genres,
         label=_s("----:com.apple.iTunes:LABEL"),
         duration=duration,
         sale_item_id=_s("----:com.apple.iTunes:KAMP_SALE_ITEM_ID"),
@@ -7852,6 +8066,9 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
         return vals[0] if vals else ""
 
     artist = _s("ARTIST")
+    # Multi-value genre (KAMP-586): Vorbis allows repeated GENRE comments; the
+    # dict above normalized them to a list.
+    genres = [str(g).strip() for g in tags.get("GENRE", []) if str(g).strip()]
     return Track(
         file_path=path,
         ext="flac" if is_flac else "ogg",
@@ -7867,6 +8084,7 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
         mb_release_id=_s("MUSICBRAINZ_ALBUMID"),
         mb_recording_id=_s("MUSICBRAINZ_TRACKID"),
         genre=_s("GENRE"),
+        genres=genres,
         label=_s("LABEL") or _s("ORGANIZATION"),
         duration=duration,
         sale_item_id=_s("KAMP_SALE_ITEM_ID"),
@@ -7996,6 +8214,7 @@ def write_meta_tags_to_file(
     path: Path,
     *,
     genre: str | None = None,
+    genres: list[str] | None = None,
     label: str | None = None,
     release_date: str | None = None,
     mb_release_id: str | None = None,
@@ -8004,15 +8223,30 @@ def write_meta_tags_to_file(
 
     Only the fields that are not None are written; the others are left
     unchanged on disk.  This is a tag-only operation — no file rename occurs.
+
+    Genre is multi-value (KAMP-586): pass *genres* (a list) to write native
+    multi-value tags; the legacy scalar *genre* is accepted for back-compat and
+    treated as a single-element list. An empty list clears the genre tag.
     """
+    # Resolve to one effective genre list (None = leave unchanged).
+    genre_list: list[str] | None
+    if genres is not None:
+        genre_list = [g for g in genres if g.strip()]
+    elif genre is not None:
+        genre_list = [genre] if genre.strip() else []
+    else:
+        genre_list = None
+
     suffix = path.suffix.lower()
     if suffix == ".mp3":
         try:
             tags = id3.ID3(str(path))
         except Exception:
             tags = id3.ID3()
-        if genre is not None:
-            tags["TCON"] = id3.TCON(encoding=3, text=genre)
+        if genre_list is not None:
+            tags.delall("TCON")
+            if genre_list:
+                tags["TCON"] = id3.TCON(encoding=3, text=genre_list)
         if label is not None:
             tags["TPUB"] = id3.TPUB(encoding=3, text=label)
         if release_date is not None:
@@ -8026,8 +8260,11 @@ def write_meta_tags_to_file(
         audio = mutagen.mp4.MP4(str(path))
         if audio.tags is None:
             audio.add_tags()
-        if genre is not None:
-            audio.tags["\xa9gen"] = [genre]  # type: ignore[index]
+        if genre_list is not None:
+            if genre_list:
+                audio.tags["\xa9gen"] = genre_list  # type: ignore[index]
+            else:
+                audio.tags.pop("\xa9gen", None)  # type: ignore[union-attr]
         if label is not None:
             audio.tags["----:com.apple.iTunes:LABEL"] = [  # type: ignore[index]
                 mutagen.mp4.MP4FreeForm(label.encode())
@@ -8039,25 +8276,19 @@ def write_meta_tags_to_file(
                 mutagen.mp4.MP4FreeForm(mb_release_id.encode())
             ]
         audio.save()
-    elif suffix == ".flac":
-        audio = mutagen.flac.FLAC(str(path))
+    elif suffix in (".flac", ".ogg"):
+        audio = (
+            mutagen.flac.FLAC(str(path))
+            if suffix == ".flac"
+            else mutagen.oggvorbis.OggVorbis(str(path))
+        )
         if audio.tags is None:
             audio.add_tags()
-        if genre is not None:
-            audio.tags["GENRE"] = [genre]  # type: ignore[index]
-        if label is not None:
-            audio.tags["LABEL"] = [label]  # type: ignore[index]
-        if release_date is not None:
-            audio.tags["DATE"] = [release_date]  # type: ignore[index]
-        if mb_release_id is not None:
-            audio.tags["MUSICBRAINZ_ALBUMID"] = [mb_release_id]  # type: ignore[index]
-        audio.save()
-    elif suffix == ".ogg":
-        audio = mutagen.oggvorbis.OggVorbis(str(path))
-        if audio.tags is None:
-            audio.add_tags()
-        if genre is not None:
-            audio.tags["GENRE"] = [genre]  # type: ignore[index]
+        if genre_list is not None:
+            if genre_list:
+                audio.tags["GENRE"] = genre_list  # type: ignore[index]
+            else:
+                audio.tags.pop("GENRE", None)  # type: ignore[union-attr]
         if label is not None:
             audio.tags["LABEL"] = [label]  # type: ignore[index]
         if release_date is not None:

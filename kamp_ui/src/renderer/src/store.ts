@@ -211,7 +211,13 @@ type PlayerStore = {
   patchAlbumMeta: (
     albumArtist: string,
     album: string,
-    opts: { genre?: string; label?: string; release_date?: string; mb_release_id?: string }
+    opts: {
+      genre?: string
+      genres?: string[]
+      label?: string
+      release_date?: string
+      mb_release_id?: string
+    }
   ) => Promise<void>
   loadLibrary: () => Promise<void>
   loadUiState: () => Promise<void>

@@ -449,9 +449,11 @@ class TestPatchAlbumMetaMbReleaseId:
             )
 
         assert resp.status_code == 200
+        # KAMP-586: genre routes through apply_genres, so the file-write and
+        # update_album_meta calls no longer carry a scalar genre.
         mock_write.assert_called_once_with(
             track.file_path,
-            genre=None,
+            genres=None,
             label=None,
             release_date=None,
             mb_release_id="new-mbid",
@@ -459,11 +461,11 @@ class TestPatchAlbumMetaMbReleaseId:
         mock_index.update_album_meta.assert_called_once_with(
             "Band",
             "Record",
-            genre=None,
             label=None,
             release_date=None,
             mb_release_id="new-mbid",
         )
+        mock_index.apply_genres.assert_not_called()
 
     def test_returns_400_when_only_mb_release_id_absent_alongside_other_nones(
         self,

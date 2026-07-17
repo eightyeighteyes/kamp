@@ -70,6 +70,59 @@ class TestTrackArtistRetagOp:
         assert str(tags["TPE1"]) == "New Guy"
         index.close()
 
+    def test_skips_write_when_track_deleted_before_drain(self, tmp_path: Path) -> None:
+        """A track removed while its artist op was pending completes the op
+        without crashing (nothing to write to)."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        index = LibraryIndex(tmp_path / "db.sqlite")
+        index.upsert_track(_sample_track(mp3))
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+        op_id = index.queue_deferred_op(
+            "track_artist_retag", row.id, json.dumps({"artist": "New Guy"})
+        )
+        op = next(
+            o for o in index.pending_deferred_ops_for_track(row.id) if o.id == op_id
+        )
+        index.remove_track(mp3)
+
+        execute_op(op, index, None, MagicMock(), MagicMock())
+
+        assert index.all_pending_deferred_ops() == []
+        index.close()
+
+    def test_album_retag_with_merged_artist_writes_tpe1(self, tmp_path: Path) -> None:
+        """An artist edit merged into a pending album_retag op is honored."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        index = LibraryIndex(tmp_path / "db.sqlite")
+        index.upsert_track(_sample_track(mp3))
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+        payload = json.dumps(
+            {
+                "old_path": str(mp3),
+                "new_path": str(mp3),
+                "new_album": "New Album",
+                "new_album_artist": "New AA",
+                "new_artist": None,
+                "is_case_only": False,
+                "artist": "Merged Guy",
+            }
+        )
+        op_id = index.queue_deferred_op("album_retag", row.id, payload)
+        op = next(
+            o for o in index.pending_deferred_ops_for_track(row.id) if o.id == op_id
+        )
+
+        execute_op(op, index, None, MagicMock(), MagicMock())
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TPE1"]) == "Merged Guy"
+        assert str(tags["TALB"]) == "New Album"
+        index.close()
+
     def test_track_retag_with_artist_writes_both(self, tmp_path: Path) -> None:
         mp3 = tmp_path / "01.mp3"
         _make_mp3(mp3, title="Old")

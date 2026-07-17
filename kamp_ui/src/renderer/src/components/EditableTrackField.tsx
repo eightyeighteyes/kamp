@@ -2,33 +2,39 @@ import React, { useRef, useState } from 'react'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
 
+// Generalized inline editor for per-track text fields (title, artist —
+// KAMP-582). One shared input class drives both the styling and the Tab
+// navigation ring, so Tab walks title → artist → next row in DOM order.
 type Props = {
   trackId: number
-  title: string
+  value: string
   editMode: boolean
   deferred?: boolean
-  onSave: (trackId: number, title: string) => Promise<void>
+  /** Outer span class, e.g. 'track-row-title' or 'track-row-artist'. */
+  className: string
+  onSave: (trackId: number, value: string) => Promise<void>
 }
 
-export function EditableTrackTitle({
+export function EditableTrackField({
   trackId,
-  title,
+  value: fieldValue,
   editMode,
   deferred,
+  className,
   onSave
 }: Props): React.JSX.Element {
-  const [value, setValue] = useState(title)
-  const [prevTitle, setPrevTitle] = useState(title)
+  const [value, setValue] = useState(fieldValue)
+  const [prevValue, setPrevValue] = useState(fieldValue)
   const [saving, setSaving] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const cancelRef = useRef(false)
   const tooltip = useTooltip()
 
-  // Sync external title changes (e.g. after refreshOpenAlbum) back into local state.
+  // Sync external value changes (e.g. after refreshOpenAlbum) back into local state.
   // Render-time update avoids the cascading-render issue of useEffect setState.
-  if (title !== prevTitle) {
-    setPrevTitle(title)
-    setValue(title)
+  if (fieldValue !== prevValue) {
+    setPrevValue(fieldValue)
+    setValue(fieldValue)
   }
 
   const pip = deferred ? (
@@ -41,8 +47,8 @@ export function EditableTrackTitle({
 
   if (!editMode) {
     return (
-      <span className="track-row-title">
-        {title}
+      <span className={className}>
+        {fieldValue}
         {pip}
       </span>
     )
@@ -54,7 +60,7 @@ export function EditableTrackTitle({
       return
     }
     const trimmed = value.trim()
-    if (!trimmed || trimmed === title || saving) return
+    if (!trimmed || trimmed === fieldValue || saving) return
     setSaving(true)
     try {
       await onSave(trackId, trimmed)
@@ -64,7 +70,7 @@ export function EditableTrackTitle({
   }
 
   return (
-    <span className="track-row-title track-row-title--editable">
+    <span className={`${className} track-row-title--editable`}>
       <input
         ref={inputRef}
         className={`track-row-title--input${saving ? ' saving' : ''}`}
@@ -81,7 +87,7 @@ export function EditableTrackTitle({
           } else if (e.key === 'Escape') {
             e.stopPropagation()
             cancelRef.current = true
-            setValue(title)
+            setValue(fieldValue)
             inputRef.current?.blur()
           } else if (e.key === 'Tab') {
             const inputs = Array.from(

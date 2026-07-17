@@ -11,7 +11,7 @@ import type {
 } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { TrackContextMenu } from './TrackContextMenu'
-import { EditableTrackTitle } from './EditableTrackTitle'
+import { EditableTrackField } from './EditableTrackField'
 import { EditableAlbumField } from './EditableAlbumField'
 import { CollisionModal } from './CollisionModal'
 import { AlbumMetaPanel } from './AlbumMetaPanel'
@@ -109,6 +109,7 @@ export function TrackList(): React.JSX.Element | null {
   const patchAlbumMeta = useStore((s) => s.patchAlbumMeta)
   const patchTrackTitle = useStore((s) => s.patchTrackTitle)
   const patchTrackDisplay = useStore((s) => s.patchTrackDisplay)
+  const patchTrackArtist = useStore((s) => s.patchTrackArtist)
   const patchAlbumTags = useStore((s) => s.patchAlbumTags)
   const patchAlbumDisplay = useStore((s) => s.patchAlbumDisplay)
   const refreshOpenAlbum = useStore((s) => s.refreshOpenAlbum)
@@ -857,14 +858,15 @@ export function TrackList(): React.JSX.Element | null {
                       <WarnIcon size={11} />
                     </span>
                   )}
-                  <EditableTrackTitle
+                  <EditableTrackField
                     trackId={track.id}
-                    title={track.title}
+                    value={track.title}
+                    className="track-row-title"
                     editMode={albumEditMode}
                     deferred={track.id in deferredOps}
                     onSave={async (trackId, newTitle) => {
                       if (isRemoteTrack) {
-                        await patchTrackDisplay(trackId, newTitle)
+                        await patchTrackDisplay(trackId, { display_title: newTitle })
                         return
                       }
                       const result = await patchTrackTitle(trackId, newTitle)
@@ -874,7 +876,19 @@ export function TrackList(): React.JSX.Element | null {
                     }}
                   />
                 </span>
-                <span className="track-row-artist">{track.artist}</span>
+                <EditableTrackField
+                  trackId={track.id}
+                  value={track.artist}
+                  className="track-row-artist"
+                  editMode={albumEditMode}
+                  onSave={async (trackId, newArtist) => {
+                    if (isRemoteTrack) {
+                      await patchTrackDisplay(trackId, { display_artist: newArtist })
+                      return
+                    }
+                    await patchTrackArtist(trackId, newArtist)
+                  }}
+                />
                 <span className="track-row-duration">
                   {track.duration > 0 ? formatTime(track.duration) : '—'}
                 </span>

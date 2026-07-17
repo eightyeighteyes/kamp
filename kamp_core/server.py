@@ -586,9 +586,21 @@ class AlbumTagsOut(BaseModel):
 
 
 class TrackDisplayRequest(BaseModel):
-    """Display-only title override for a streaming track (KAMP-467)."""
+    """Display-only overrides for a streaming track (KAMP-467, artist KAMP-582).
+
+    Partial-update semantics: only fields present in the request body are
+    written (checked via model_fields_set); an explicit null/empty clears
+    that field's override.
+    """
 
     display_title: str | None = None
+    display_artist: str | None = None
+
+
+class TrackArtistRequest(BaseModel):
+    """Canonical per-track artist edit for a local track (KAMP-582)."""
+
+    artist: str
 
 
 class AlbumDisplayRequest(BaseModel):
@@ -1556,6 +1568,77 @@ def create_app(
         _notify_library_changed()
         return _track_out(index, updated)  # type: ignore[arg-type]
 
+    @app.patch("/api/v1/tracks/{track_id}/artist")
+    def patch_track_artist(track_id: int, req: "TrackArtistRequest") -> Any:
+        """Edit a local track's artist tag (KAMP-582). Tag-only — no rename.
+
+        Artist is not part of the default path template, so unlike title edits
+        no file move (and no collision handling) is needed. With a custom
+        {artist} template the path drifts until the next title/album edit
+        reconciles it — accepted trade-off. Streaming tracks use the display
+        override (PATCH /display) instead: 400 here.
+
+        If the track is currently playing or in the gapless-lookahead slot the
+        DB (and thus the UI) updates immediately but the file write is
+        deferred until the lock releases — a mutagen tag resize on a playing
+        file shifts audio offsets under mpv's open handle (KAMP-309).
+        """
+        from fastapi.responses import JSONResponse
+
+        from kamp_core.library import write_artist_to_file
+
+        track = index.get_track_by_id(track_id)
+        if track is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        if track.is_remote:
+            raise HTTPException(
+                status_code=400,
+                detail="Streaming tracks use the display override endpoint",
+            )
+
+        current = queue.current()
+        lookahead = queue.peek_next()
+        if (current and current.id == track_id) or (
+            lookahead and lookahead.id == track_id
+        ):
+            # deferred_ops is UNIQUE(track_id) with replace-on-insert: merge
+            # into a pending rename op rather than clobbering it.
+            pending = index.pending_deferred_ops_for_track(track_id)
+            if pending:
+                data = _json.loads(pending[0].payload_json)
+                data["artist"] = req.artist
+                op_id = index.queue_deferred_op(
+                    pending[0].op_type, track_id, _json.dumps(data)
+                )
+            else:
+                op_id = index.queue_deferred_op(
+                    "track_artist_retag", track_id, _json.dumps({"artist": req.artist})
+                )
+            updated = index.update_track_artist(track_id, req.artist)
+            if updated is not None:
+                queue.update_track_by_id(track_id, updated)
+            _notify_library_changed()
+            return JSONResponse(
+                status_code=202, content={"deferred": True, "op_id": op_id}
+            )
+
+        try:
+            write_artist_to_file(track.file_path, req.artist)
+        except Exception as exc:
+            logger.exception(
+                "artist tag write failed for track %d (%s)", track.id, track.file_path
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to write artist to {track.file_path}: {exc}",
+            ) from exc
+
+        updated = index.update_track_artist(track_id, req.artist)
+        if updated is not None:
+            queue.update_track_by_id(track_id, updated)
+        _notify_library_changed()
+        return _track_out(index, updated)  # type: ignore[arg-type]
+
     @app.get("/api/v1/deferred-ops")
     def get_deferred_ops() -> list[dict[str, Any]]:
         """Return pending deferred ops for frontend reconciliation on WS reconnect."""
@@ -2111,17 +2194,29 @@ def create_app(
 
     @app.patch("/api/v1/tracks/{track_id}/display", response_model=TrackOut)
     def patch_track_display(track_id: int, req: "TrackDisplayRequest") -> TrackOut:
-        """Set (or clear) the display title for a streaming track (KAMP-467).
+        """Set (or clear) display overrides for a streaming track (KAMP-467/582).
 
-        Writes only to the DB — no file operations are performed.
-        Passing null or empty string for display_title clears the override and
-        restores the Bandcamp canonical title.
-        Returns 404 if the track is not found.
+        Writes only to the DB — no file operations are performed. Partial
+        update: a field absent from the body is left untouched, so a
+        display_artist edit cannot clear a display_title override (or vice
+        versa); an explicit null or empty string clears that field.
+        Returns 404 if the track is not found, 400 for an empty body.
         """
         track = index.get_track_by_id(track_id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
-        updated = index.update_track_display_title(track_id, req.display_title)
+        fields = req.model_fields_set
+        if not fields:
+            raise HTTPException(status_code=400, detail="No changes requested")
+        updated: Track | None = track
+        if "display_title" in fields:
+            updated = index.update_track_display_title(track_id, req.display_title)
+        if "display_artist" in fields:
+            updated = index.update_track_display_artist(track_id, req.display_artist)
+        # Patch the in-memory queue so Now Playing / SMTC / the scrobbler see
+        # the override without a restart.
+        if updated is not None:
+            queue.update_track_by_id(track_id, updated)
         _notify_library_changed()
         return _track_out(index, updated)  # type: ignore[arg-type]
 

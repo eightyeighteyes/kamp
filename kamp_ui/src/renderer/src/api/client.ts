@@ -593,16 +593,50 @@ export async function patchTrackTags(
   }
   return res.json() as Promise<Track>
 }
+// Partial update (KAMP-582): send ONLY the field being edited — the server
+// leaves absent fields untouched, so a display_artist edit can't clear a
+// display_title override (or vice versa). Explicit null clears a field.
+export type TrackDisplayFields = {
+  display_title?: string | null
+  display_artist?: string | null
+}
+
 export async function patchTrackDisplay(
   trackId: number,
-  displayTitle: string | null
+  fields: TrackDisplayFields
 ): Promise<Track> {
   const res = await fetch(`${BASE_URL}/api/v1/tracks/${trackId}/display`, {
     method: 'PATCH',
     headers: _authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ display_title: displayTitle || null })
+    body: JSON.stringify(fields)
   })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json() as Promise<Track>
+}
+
+export type TrackArtistDeferred = { deferred: true; op_id: number }
+
+export async function patchTrackArtist(
+  trackId: number,
+  artist: string
+): Promise<Track | TrackArtistDeferred> {
+  const res = await fetch(`${BASE_URL}/api/v1/tracks/${trackId}/artist`, {
+    method: 'PATCH',
+    headers: _authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ artist })
+  })
+  // 202: the track is playing — DB updated, file write deferred to track-end.
+  if (res.status === 202) return res.json() as Promise<TrackArtistDeferred>
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`
+    try {
+      const json = (await res.json()) as { detail?: string }
+      if (json.detail && typeof json.detail === 'string') message = json.detail
+    } catch {
+      // ignore
+    }
+    throw new Error(message)
+  }
   return res.json() as Promise<Track>
 }
 

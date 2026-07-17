@@ -14,6 +14,145 @@ from kamp_core.deferred_ops import MAX_ATTEMPTS, drain_all, drain_for_track, exe
 from kamp_core.library import DeferredOp, LibraryIndex, Track
 
 # ---------------------------------------------------------------------------
+# track_artist_retag + artist-augmented track_retag (KAMP-582)
+# ---------------------------------------------------------------------------
+
+
+class TestTrackArtistRetagOp:
+    def test_execute_writes_artist_tag_and_completes(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        index = LibraryIndex(tmp_path / "db.sqlite")
+        index.upsert_track(_sample_track(mp3))
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+        op_id = index.queue_deferred_op(
+            "track_artist_retag", row.id, json.dumps({"artist": "New Guy"})
+        )
+        op = next(
+            o for o in index.pending_deferred_ops_for_track(row.id) if o.id == op_id
+        )
+        on_completed = MagicMock()
+        notify = MagicMock()
+
+        execute_op(op, index, None, on_completed, notify)
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TPE1"]) == "New Guy"
+        assert index.pending_deferred_ops_for_track(row.id) == []
+        on_completed.assert_called_once_with(row.id, op_id)
+        notify.assert_called_once()
+        index.close()
+
+    def test_execute_resolves_current_path_from_index(self, tmp_path: Path) -> None:
+        """The payload carries no path: a rename between queueing and drain must
+        not strand the write on a stale location."""
+        old = tmp_path / "01.mp3"
+        _make_mp3(old)
+        index = LibraryIndex(tmp_path / "db.sqlite")
+        index.upsert_track(_sample_track(old))
+        row = index.get_track_by_path(old)
+        assert row is not None
+        op_id = index.queue_deferred_op(
+            "track_artist_retag", row.id, json.dumps({"artist": "New Guy"})
+        )
+        # Simulate a later title-edit rename before the drain runs.
+        new = tmp_path / "01 - Renamed.mp3"
+        old.rename(new)
+        index.move_track(old, new, "Renamed", time.time())
+        op = next(
+            o for o in index.pending_deferred_ops_for_track(row.id) if o.id == op_id
+        )
+
+        execute_op(op, index, None, MagicMock(), MagicMock())
+
+        tags = id3.ID3(str(new))
+        assert str(tags["TPE1"]) == "New Guy"
+        index.close()
+
+    def test_skips_write_when_track_deleted_before_drain(self, tmp_path: Path) -> None:
+        """A track removed while its artist op was pending completes the op
+        without crashing (nothing to write to)."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        index = LibraryIndex(tmp_path / "db.sqlite")
+        index.upsert_track(_sample_track(mp3))
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+        op_id = index.queue_deferred_op(
+            "track_artist_retag", row.id, json.dumps({"artist": "New Guy"})
+        )
+        op = next(
+            o for o in index.pending_deferred_ops_for_track(row.id) if o.id == op_id
+        )
+        index.remove_track(mp3)
+
+        execute_op(op, index, None, MagicMock(), MagicMock())
+
+        assert index.all_pending_deferred_ops() == []
+        index.close()
+
+    def test_album_retag_with_merged_artist_writes_tpe1(self, tmp_path: Path) -> None:
+        """An artist edit merged into a pending album_retag op is honored."""
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        index = LibraryIndex(tmp_path / "db.sqlite")
+        index.upsert_track(_sample_track(mp3))
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+        payload = json.dumps(
+            {
+                "old_path": str(mp3),
+                "new_path": str(mp3),
+                "new_album": "New Album",
+                "new_album_artist": "New AA",
+                "new_artist": None,
+                "is_case_only": False,
+                "artist": "Merged Guy",
+            }
+        )
+        op_id = index.queue_deferred_op("album_retag", row.id, payload)
+        op = next(
+            o for o in index.pending_deferred_ops_for_track(row.id) if o.id == op_id
+        )
+
+        execute_op(op, index, None, MagicMock(), MagicMock())
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TPE1"]) == "Merged Guy"
+        assert str(tags["TALB"]) == "New Album"
+        index.close()
+
+    def test_track_retag_with_artist_writes_both(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3, title="Old")
+        index = LibraryIndex(tmp_path / "db.sqlite")
+        index.upsert_track(_sample_track(mp3, title="Old"))
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+        payload = json.dumps(
+            {
+                "old_path": str(mp3),
+                "new_path": str(mp3),
+                "title": "New Title",
+                "is_case_only": False,
+                "artist": "New Guy",
+            }
+        )
+        op_id = index.queue_deferred_op("track_retag", row.id, payload)
+        op = next(
+            o for o in index.pending_deferred_ops_for_track(row.id) if o.id == op_id
+        )
+
+        execute_op(op, index, None, MagicMock(), MagicMock())
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TIT2"]) == "New Title"
+        assert str(tags["TPE1"]) == "New Guy"
+        index.close()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

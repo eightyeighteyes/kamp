@@ -282,7 +282,8 @@ type PlayerStore = {
     title: string,
     overwrite?: boolean
   ) => Promise<api.TrackTagsCollision | null>
-  patchTrackDisplay: (trackId: number, displayTitle: string | null) => Promise<void>
+  patchTrackDisplay: (trackId: number, fields: api.TrackDisplayFields) => Promise<void>
+  patchTrackArtist: (trackId: number, artist: string) => Promise<void>
   patchAlbumTags: (
     albumArtist: string,
     album: string,
@@ -1452,8 +1453,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     return null
   },
 
-  patchTrackDisplay: async (trackId, displayTitle) => {
-    const updated = await api.patchTrackDisplay(trackId, displayTitle)
+  patchTrackDisplay: async (trackId, fields) => {
+    const updated = await api.patchTrackDisplay(trackId, fields)
     // Update the track in the open track list without reloading the whole library.
     set((s) => ({
       library: {
@@ -1461,6 +1462,23 @@ export const useStore = create<PlayerStore>((set, get) => ({
         tracks: s.library.tracks.map((t) => (t.id === trackId ? updated : t))
       }
     }))
+    void get().loadQueue()
+  },
+
+  patchTrackArtist: async (trackId, artist) => {
+    const result = await api.patchTrackArtist(trackId, artist)
+    if ('deferred' in result) {
+      // DB already updated server-side; only the file write is pending.
+      set((s) => ({ deferredOps: { ...s.deferredOps, [trackId]: result.op_id } }))
+      await get().refreshOpenAlbum()
+    } else {
+      set((s) => ({
+        library: {
+          ...s.library,
+          tracks: s.library.tracks.map((t) => (t.id === trackId ? result : t))
+        }
+      }))
+    }
     void get().loadQueue()
   },
 

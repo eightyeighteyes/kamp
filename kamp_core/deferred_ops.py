@@ -41,7 +41,11 @@ def execute_op(
     Raises on failure — callers are responsible for calling fail_deferred_op
     and deciding whether to retry.
     """
-    from kamp_core.library import write_album_tags_to_file, write_title_to_file
+    from kamp_core.library import (
+        write_album_tags_to_file,
+        write_artist_to_file,
+        write_title_to_file,
+    )
 
     payload = json.loads(op.payload_json)
 
@@ -52,6 +56,10 @@ def execute_op(
         is_case_only: bool = payload.get("is_case_only", False)
 
         write_title_to_file(old_path, title)
+        # KAMP-582: an artist edit on a locked track merges into a pending
+        # rename op (deferred_ops is UNIQUE(track_id)) — honor it here.
+        if payload.get("artist"):
+            write_artist_to_file(old_path, payload["artist"])
 
         if str(old_path) != str(new_path):
             new_path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +88,9 @@ def execute_op(
         write_album_tags_to_file(
             old_path, new_album, new_album_artist, artist=new_artist
         )
+        # KAMP-582: a per-track artist edit merged into this pending album op.
+        if payload.get("artist"):
+            write_artist_to_file(old_path, payload["artist"])
 
         if str(old_path) != str(new_path):
             new_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +109,22 @@ def execute_op(
 
         if lib_watcher is not None and str(old_path) != str(new_path):
             lib_watcher.scan_now()
+
+    elif op.op_type == "track_artist_retag":
+        # KAMP-582: tag-only artist write deferred while the track was playing.
+        # The DB was updated when the op was queued; only the file write is
+        # outstanding. The payload carries no path — resolve the track's
+        # CURRENT location so a rename that landed while this op was pending
+        # doesn't strand the write on a stale path.
+        track = index.get_track_by_id(op.track_id)
+        if track is None:
+            logger.warning(
+                "deferred op %d: track %d no longer exists, skipping artist write",
+                op.id,
+                op.track_id,
+            )
+        else:
+            write_artist_to_file(track.file_path, payload["artist"])
 
     else:
         raise ValueError(f"unknown deferred op type: {op.op_type!r}")

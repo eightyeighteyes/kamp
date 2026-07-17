@@ -614,6 +614,9 @@ class AlbumDisplayRequest(BaseModel):
 
 class AlbumMetaRequest(BaseModel):
     genre: str | None = None
+    # Multi-value genre (KAMP-586): the album's full genre set, applied to every
+    # track (replace). Supersedes the scalar `genre` when present.
+    genres: list[str] | None = None
     label: str | None = None
     release_date: str | None = None
     mb_release_id: str | None = None
@@ -1390,6 +1393,11 @@ def create_app(
     @app.get("/api/v1/artists", response_model=list[str])
     def get_artists() -> list[str]:
         return index.artists()
+
+    @app.get("/api/v1/genres", response_model=list[str])
+    def get_genres() -> list[str]:
+        """Every distinct genre in the library (KAMP-586), for autocomplete."""
+        return index.all_genres()
 
     @app.get("/api/v1/tracks/top", response_model=list[TrackOut])
     def get_top_tracks(limit: int = 10) -> list[TrackOut]:
@@ -2288,11 +2296,24 @@ def create_app(
 
         if (
             req.genre is None
+            and req.genres is None
             and req.label is None
             and req.release_date is None
             and req.mb_release_id is None
         ):
             raise HTTPException(status_code=400, detail="No changes requested")
+
+        # Genre (multi-value, KAMP-586) goes through the shared apply_genres DB
+        # service; the scalar `genre` is bridged for older callers. File writes
+        # stay in this one is_remote-guarded loop so genre and label/date/mbid
+        # are written in a single pass (apply_genres is DB-only).
+        genre_list: list[str] | None
+        if req.genres is not None:
+            genre_list = req.genres
+        elif req.genre is not None:
+            genre_list = [req.genre] if req.genre.strip() else []
+        else:
+            genre_list = None
 
         for track in tracks:
             if track.is_remote:
@@ -2300,7 +2321,7 @@ def create_app(
             try:
                 write_meta_tags_to_file(
                     track.file_path,
-                    genre=req.genre,
+                    genres=genre_list,
                     label=req.label,
                     release_date=req.release_date,
                     mb_release_id=req.mb_release_id,
@@ -2314,15 +2335,20 @@ def create_app(
                     detail=f"Failed to write tags to {track.file_path}: {exc}",
                 ) from exc
 
-        updated = index.update_album_meta(
+        # Genre → normalized tables (all tracks, local + remote); label/date/mbid
+        # → the scalar path. update_album_meta must not also write genre or it
+        # would clobber the normalized rollup with a flat string.
+        if genre_list is not None:
+            index.apply_genres([t.id for t in tracks], genre_list, mode="replace")
+        index.update_album_meta(
             album_artist,
             album,
-            genre=req.genre,
             label=req.label,
             release_date=req.release_date,
             mb_release_id=req.mb_release_id,
         )
         _notify_library_changed()
+        updated = index.tracks_for_album(album_artist, album)
         return AlbumMetaOut(tracks=_tracks_out(index, updated))
 
     _MAX_LOOKUP_CANDIDATES = 10

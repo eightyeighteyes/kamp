@@ -629,9 +629,24 @@ class MusicBrainzReleaseOut(BaseModel):
     tracks: list[MusicBrainzTrackOut]
 
 
+class MusicBrainzCandidateOut(BaseModel):
+    # Shallow by design: no tracks field, so "not yet hydrated" can never be
+    # confused with "hydrated, zero matching tracks" (KAMP-584). The UI
+    # hydrates a candidate on demand via /albums/musicbrainz/release/{mbid}.
+    mbid: str
+    release_group_mbid: str
+    title: str
+    album_artist: str
+    release_date: str
+    label: str
+    release_type: str
+    is_current: bool = False
+
+
 class MusicBrainzLookupOut(BaseModel):
-    # Ranked best-first. KAMP-230 always uses candidates[0]; KAMP-231 adds a picker.
-    candidates: list[MusicBrainzReleaseOut]
+    # Ranked best-first; candidates[0] is the album's current release when
+    # its stored mb_release_id still resolves (is_current=True).
+    candidates: list[MusicBrainzCandidateOut]
 
 
 class ItunesCandidateOut(BaseModel):
@@ -932,7 +947,8 @@ def create_app(
     art_cache_dir: Path | None = None,
     dev_mode: bool = False,
     auth_token: str | None = None,
-    mb_lookup_fn: Callable[..., Any] | None = None,
+    mb_search_fn: Callable[[str, str], list[Any]] | None = None,
+    mb_release_fn: Callable[[str], Any] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -2204,21 +2220,58 @@ def create_app(
         _notify_library_changed()
         return AlbumMetaOut(tracks=_tracks_out(index, updated))
 
+    _MAX_LOOKUP_CANDIDATES = 10
+
+    def _to_candidate_out(r: Any, is_current: bool = False) -> MusicBrainzCandidateOut:
+        return MusicBrainzCandidateOut(
+            mbid=r.mbid,
+            release_group_mbid=r.release_group_mbid,
+            title=r.title,
+            album_artist=r.album_artist,
+            release_date=r.release_date,
+            label=r.label,
+            release_type=r.release_type,
+            is_current=is_current,
+        )
+
+    def _to_release_out(r: Any) -> MusicBrainzReleaseOut:
+        sorted_tracks = sorted(r.tracks.values(), key=lambda t: (t.disc, t.number))
+        return MusicBrainzReleaseOut(
+            mbid=r.mbid,
+            release_group_mbid=r.release_group_mbid,
+            title=r.title,
+            album_artist=r.album_artist,
+            release_date=r.release_date,
+            label=r.label,
+            release_type=r.release_type,
+            tracks=[
+                MusicBrainzTrackOut(
+                    track_number=t.number,
+                    disc_number=t.disc,
+                    title=t.title,
+                    recording_mbid=t.recording_mbid,
+                )
+                for t in sorted_tracks
+            ],
+        )
+
     @app.get("/api/v1/albums/musicbrainz", response_model=MusicBrainzLookupOut)
     async def get_album_musicbrainz(
         album_artist: str, album: str
     ) -> MusicBrainzLookupOut:
-        """Fetch ranked MusicBrainz release candidates for an album.
+        """Fetch shallow MusicBrainz release candidates for an album (KAMP-584).
 
-        Uses the same tier-1 (per-track recording votes) + tier-2 (album-level
-        search) strategy as the import pipeline.  Returns up to 5 candidates
-        sorted best-first.  The frontend uses candidates[0] for KAMP-230;
-        KAMP-231 will add a picker that steps through the full list.
+        One album-level search (no per-track calls, no per-candidate
+        hydration) so the lookup stays interactive.  If the album already has
+        a stored mb_release_id that still resolves, that release is pinned
+        first with is_current=True; a dead stored id degrades to search-only.
+        Candidates carry no track lists — the UI hydrates the viewed
+        candidate via GET /api/v1/albums/musicbrainz/release/{mbid}.
 
         Returns 404 if no tracks are found or if MusicBrainz has no match.
-        Returns 503 if mb_lookup_fn was not wired up at server construction.
+        Returns 503 if mb_search_fn was not wired up at server construction.
         """
-        if mb_lookup_fn is None:
+        if mb_search_fn is None:
             raise HTTPException(
                 status_code=503, detail="MusicBrainz lookup not available"
             )
@@ -2227,40 +2280,77 @@ def create_app(
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
 
-        tuples = [(t.artist, t.title, t.album) for t in tracks]
-        try:
-            from kamp_daemon.tagger import TaggingError
+        stored_mbid = next((t.mb_release_id for t in tracks if t.mb_release_id), "")
 
-            releases = await asyncio.get_event_loop().run_in_executor(
-                None, mb_lookup_fn, tuples
+        def _do_lookup() -> tuple[Any | None, list[Any]]:
+            pinned = None
+            if stored_mbid and mb_release_fn is not None:
+                try:
+                    pinned = mb_release_fn(stored_mbid)
+                except Exception:
+                    # Deleted/merged-away id — the search results still stand.
+                    logger.info(
+                        "Stored MB release id %s no longer resolves; "
+                        "falling back to search only",
+                        stored_mbid,
+                    )
+            return pinned, mb_search_fn(album_artist, album)
+
+        try:
+            pinned, results = await asyncio.get_event_loop().run_in_executor(
+                None, _do_lookup
             )
         except Exception as exc:
-            # TaggingError and network failures both surface as 404 with the
-            # human-readable message so the frontend can show "No match found".
+            # Network failures surface as 404 with the human-readable message
+            # so the frontend can show "No match found".
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        def _to_release_out(r: Any) -> MusicBrainzReleaseOut:
-            sorted_tracks = sorted(r.tracks.values(), key=lambda t: (t.disc, t.number))
-            return MusicBrainzReleaseOut(
-                mbid=r.mbid,
-                release_group_mbid=r.release_group_mbid,
-                title=r.title,
-                album_artist=r.album_artist,
-                release_date=r.release_date,
-                label=r.label,
-                release_type=r.release_type,
-                tracks=[
-                    MusicBrainzTrackOut(
-                        track_number=t.number,
-                        disc_number=t.disc,
-                        title=t.title,
-                        recording_mbid=t.recording_mbid,
-                    )
-                    for t in sorted_tracks
-                ],
+        candidates: list[MusicBrainzCandidateOut] = []
+        if pinned is not None:
+            candidates.append(_to_candidate_out(pinned, is_current=True))
+            # Dedupe on the id MB actually returned — a merged stored id
+            # resolves to the target release, whose id may differ.
+            results = [r for r in results if r.mbid != pinned.mbid]
+        candidates.extend(_to_candidate_out(r) for r in results)
+        candidates = candidates[:_MAX_LOOKUP_CANDIDATES]
+
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No MusicBrainz results for artist={album_artist!r} "
+                    f"album={album!r}"
+                ),
             )
 
-        return MusicBrainzLookupOut(candidates=[_to_release_out(r) for r in releases])
+        return MusicBrainzLookupOut(candidates=candidates)
+
+    @app.get(
+        "/api/v1/albums/musicbrainz/release/{mbid}",
+        response_model=MusicBrainzReleaseOut,
+    )
+    async def get_musicbrainz_release(mbid: str) -> MusicBrainzReleaseOut:
+        """Hydrate one MusicBrainz release (full detail incl. track list).
+
+        Serves the modal's on-demand candidate hydration (KAMP-584).  The
+        returned mbid may differ from the requested one when MB has merged
+        the release — callers should use the returned id.
+
+        Returns 404 for unknown/unparseable releases; 503 if unwired.
+        """
+        if mb_release_fn is None:
+            raise HTTPException(
+                status_code=503, detail="MusicBrainz lookup not available"
+            )
+
+        try:
+            release = await asyncio.get_event_loop().run_in_executor(
+                None, mb_release_fn, mbid
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        return _to_release_out(release)
 
     @app.get("/api/v1/albums/art/search", response_model=ItunesSearchOut)
     async def search_album_art(album_artist: str, album: str) -> ItunesSearchOut:

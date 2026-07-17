@@ -78,31 +78,35 @@ def mock_queue() -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/v1/albums/musicbrainz
+# GET /api/v1/albums/musicbrainz — shallow candidate list (KAMP-584)
 # ---------------------------------------------------------------------------
 
 
 class TestGetAlbumMusicBrainz:
-    """GET /api/v1/albums/musicbrainz returns ranked MB candidates."""
+    """GET /api/v1/albums/musicbrainz returns shallow ranked MB candidates."""
 
-    def test_happy_path_returns_candidates(
+    def _app(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+        **kwargs: object,
+    ) -> TestClient:
+        return TestClient(
+            create_app(index=mock_index, engine=mock_engine, queue=mock_queue, **kwargs)
+        )
+
+    def test_happy_path_returns_shallow_candidates(
         self,
         mock_index: MagicMock,
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
-        tracks = [_track(1), _track(2)]
-        mock_index.tracks_for_album.return_value = tracks
-        release = _fake_release()
-        lookup_fn = MagicMock(return_value=[release])
+        mock_index.tracks_for_album.return_value = [_track(1), _track(2)]
+        search_fn = MagicMock(return_value=[_fake_release()])
 
-        app = create_app(
-            index=mock_index,
-            engine=mock_engine,
-            queue=mock_queue,
-            mb_lookup_fn=lookup_fn,
-        )
-        resp = TestClient(app).get(
+        client = self._app(mock_index, mock_engine, mock_queue, mb_search_fn=search_fn)
+        resp = client.get(
             "/api/v1/albums/musicbrainz",
             params={"album_artist": "Band", "album": "Record"},
         )
@@ -117,39 +121,134 @@ class TestGetAlbumMusicBrainz:
         assert c["release_date"] == "2021"
         assert c["label"] == "MB Label"
         assert c["release_type"] == "Album"
-        assert len(c["tracks"]) == 1
-        assert c["tracks"][0]["title"] == "MB Track 1"
-        assert c["tracks"][0]["recording_mbid"] == "rec-1"
+        assert c["is_current"] is False
+        # Shallow contract: candidates never carry a track list.
+        assert "tracks" not in c
 
-        # Verify the lookup received the correct (artist, title, album) tuples
-        lookup_fn.assert_called_once_with(
-            [("Band", "Track 1", "Record"), ("Band", "Track 2", "Record")]
-        )
+        # One album-level search — no per-track tuples anymore.
+        search_fn.assert_called_once_with("Band", "Record")
 
-    def test_returns_multiple_candidates(
+    def test_stored_release_id_pinned_first_and_current(
         self,
         mock_index: MagicMock,
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
-        mock_index.tracks_for_album.return_value = [_track(1)]
-        releases = [_fake_release("r1"), _fake_release("r2")]
-        releases[1].title = "MB Record (Deluxe)"
-
-        app = create_app(
-            index=mock_index,
-            engine=mock_engine,
-            queue=mock_queue,
-            mb_lookup_fn=MagicMock(return_value=releases),
+        track = _track(1)
+        track.mb_release_id = "stored-1"
+        mock_index.tracks_for_album.return_value = [track]
+        search_fn = MagicMock(
+            return_value=[
+                _fake_release("s1"),
+                _fake_release("stored-1"),
+                _fake_release("s2"),
+            ]
         )
-        resp = TestClient(app).get(
+        release_fn = MagicMock(return_value=_fake_release("stored-1"))
+
+        client = self._app(
+            mock_index,
+            mock_engine,
+            mock_queue,
+            mb_search_fn=search_fn,
+            mb_release_fn=release_fn,
+        )
+        resp = client.get(
             "/api/v1/albums/musicbrainz",
             params={"album_artist": "Band", "album": "Record"},
         )
 
         assert resp.status_code == 200
-        assert len(resp.json()["candidates"]) == 2
-        assert resp.json()["candidates"][1]["mbid"] == "r2"
+        candidates = resp.json()["candidates"]
+        assert [c["mbid"] for c in candidates] == ["stored-1", "s1", "s2"]
+        assert candidates[0]["is_current"] is True
+        assert candidates[1]["is_current"] is False
+        release_fn.assert_called_once_with("stored-1")
+
+    def test_pin_dedupes_on_canonical_id(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """A merged stored mbid resolves to a new id; dedupe uses the returned id."""
+        track = _track(1)
+        track.mb_release_id = "merged-away"
+        mock_index.tracks_for_album.return_value = [track]
+        search_fn = MagicMock(
+            return_value=[_fake_release("canonical-1"), _fake_release("s2")]
+        )
+        release_fn = MagicMock(return_value=_fake_release("canonical-1"))
+
+        client = self._app(
+            mock_index,
+            mock_engine,
+            mock_queue,
+            mb_search_fn=search_fn,
+            mb_release_fn=release_fn,
+        )
+        resp = client.get(
+            "/api/v1/albums/musicbrainz",
+            params={"album_artist": "Band", "album": "Record"},
+        )
+
+        candidates = resp.json()["candidates"]
+        assert [c["mbid"] for c in candidates] == ["canonical-1", "s2"]
+        assert candidates[0]["is_current"] is True
+
+    def test_pin_degrades_to_search_on_failure(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """A dead stored mbid must not fail the whole lookup."""
+        track = _track(1)
+        track.mb_release_id = "gone-mbid"
+        mock_index.tracks_for_album.return_value = [track]
+        search_fn = MagicMock(return_value=[_fake_release("s1")])
+        release_fn = MagicMock(side_effect=Exception("not found"))
+
+        client = self._app(
+            mock_index,
+            mock_engine,
+            mock_queue,
+            mb_search_fn=search_fn,
+            mb_release_fn=release_fn,
+        )
+        resp = client.get(
+            "/api/v1/albums/musicbrainz",
+            params={"album_artist": "Band", "album": "Record"},
+        )
+
+        assert resp.status_code == 200
+        assert [c["mbid"] for c in resp.json()["candidates"]] == ["s1"]
+
+    def test_candidates_capped_at_ten(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = _track(1)
+        track.mb_release_id = "stored-1"
+        mock_index.tracks_for_album.return_value = [track]
+        search_fn = MagicMock(return_value=[_fake_release(f"s{i}") for i in range(12)])
+        release_fn = MagicMock(return_value=_fake_release("stored-1"))
+
+        client = self._app(
+            mock_index,
+            mock_engine,
+            mock_queue,
+            mb_search_fn=search_fn,
+            mb_release_fn=release_fn,
+        )
+        resp = client.get(
+            "/api/v1/albums/musicbrainz",
+            params={"album_artist": "Band", "album": "Record"},
+        )
+
+        assert len(resp.json()["candidates"]) == 10
 
     def test_returns_404_when_album_not_found(
         self,
@@ -159,41 +258,51 @@ class TestGetAlbumMusicBrainz:
     ) -> None:
         mock_index.tracks_for_album.return_value = []
 
-        app = create_app(
-            index=mock_index,
-            engine=mock_engine,
-            queue=mock_queue,
-            mb_lookup_fn=MagicMock(),
+        client = self._app(
+            mock_index, mock_engine, mock_queue, mb_search_fn=MagicMock()
         )
-        resp = TestClient(app).get(
+        resp = client.get(
             "/api/v1/albums/musicbrainz",
             params={"album_artist": "Ghost", "album": "Void"},
         )
         assert resp.status_code == 404
 
-    def test_returns_404_when_mb_lookup_raises(
+    def test_returns_404_when_search_raises(
         self,
         mock_index: MagicMock,
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
         mock_index.tracks_for_album.return_value = [_track(1)]
-        lookup_fn = MagicMock(side_effect=Exception("No MusicBrainz results"))
+        search_fn = MagicMock(side_effect=Exception("MB is down"))
 
-        app = create_app(
-            index=mock_index,
-            engine=mock_engine,
-            queue=mock_queue,
-            mb_lookup_fn=lookup_fn,
+        client = self._app(mock_index, mock_engine, mock_queue, mb_search_fn=search_fn)
+        resp = client.get(
+            "/api/v1/albums/musicbrainz",
+            params={"album_artist": "Unknown", "album": "Untitled"},
         )
-        resp = TestClient(app).get(
+        assert resp.status_code == 404
+        assert "MB is down" in resp.json()["detail"]
+
+    def test_returns_404_when_no_results(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        mock_index.tracks_for_album.return_value = [_track(1)]
+
+        client = self._app(
+            mock_index, mock_engine, mock_queue, mb_search_fn=MagicMock(return_value=[])
+        )
+        resp = client.get(
             "/api/v1/albums/musicbrainz",
             params={"album_artist": "Unknown", "album": "Untitled"},
         )
         assert resp.status_code == 404
         assert "No MusicBrainz results" in resp.json()["detail"]
 
-    def test_returns_503_when_lookup_fn_not_wired(
+    def test_returns_503_when_search_fn_not_wired(
         self,
         mock_index: MagicMock,
         mock_engine: MagicMock,
@@ -201,14 +310,43 @@ class TestGetAlbumMusicBrainz:
     ) -> None:
         mock_index.tracks_for_album.return_value = [_track(1)]
 
-        app = create_app(
-            index=mock_index, engine=mock_engine, queue=mock_queue
-        )  # no mb_lookup_fn
-        resp = TestClient(app).get(
+        client = self._app(mock_index, mock_engine, mock_queue)  # no mb fns
+        resp = client.get(
             "/api/v1/albums/musicbrainz",
             params={"album_artist": "Band", "album": "Record"},
         )
         assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/albums/musicbrainz/release/{mbid} — on-demand hydration (KAMP-584)
+# ---------------------------------------------------------------------------
+
+
+class TestGetMusicBrainzRelease:
+    def test_returns_full_release_with_tracks(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        release_fn = MagicMock(return_value=_fake_release("release-1"))
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            mb_release_fn=release_fn,
+        )
+        resp = TestClient(app).get("/api/v1/albums/musicbrainz/release/release-1")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mbid"] == "release-1"
+        assert len(data["tracks"]) == 1
+        assert data["tracks"][0]["title"] == "MB Track 1"
+        assert data["tracks"][0]["recording_mbid"] == "rec-1"
+        release_fn.assert_called_once_with("release-1")
 
     def test_tracks_sorted_by_disc_then_number(
         self,
@@ -216,7 +354,6 @@ class TestGetAlbumMusicBrainz:
         mock_engine: MagicMock,
         mock_queue: MagicMock,
     ) -> None:
-        mock_index.tracks_for_album.return_value = [_track(1)]
         t1, t2, t3 = MagicMock(), MagicMock(), MagicMock()
         t1.number, t1.disc, t1.title, t1.recording_mbid = 2, 1, "Second", "rec-2"
         t2.number, t2.disc, t2.title, t2.recording_mbid = 1, 2, "Disc2T1", "rec-3"
@@ -228,14 +365,41 @@ class TestGetAlbumMusicBrainz:
             index=mock_index,
             engine=mock_engine,
             queue=mock_queue,
-            mb_lookup_fn=MagicMock(return_value=[release]),
+            mb_release_fn=MagicMock(return_value=release),
         )
-        resp = TestClient(app).get(
-            "/api/v1/albums/musicbrainz",
-            params={"album_artist": "Band", "album": "Record"},
-        )
-        titles = [t["title"] for t in resp.json()["candidates"][0]["tracks"]]
+        resp = TestClient(app).get("/api/v1/albums/musicbrainz/release/release-1")
+
+        titles = [t["title"] for t in resp.json()["tracks"]]
         assert titles == ["First", "Second", "Disc2T1"]
+
+    def test_returns_404_when_release_not_found(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        release_fn = MagicMock(side_effect=Exception("entity not found"))
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            mb_release_fn=release_fn,
+        )
+        resp = TestClient(app).get("/api/v1/albums/musicbrainz/release/gone-mbid")
+
+        assert resp.status_code == 404
+        assert "entity not found" in resp.json()["detail"]
+
+    def test_returns_503_when_release_fn_not_wired(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).get("/api/v1/albums/musicbrainz/release/any-mbid")
+        assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

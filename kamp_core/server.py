@@ -42,6 +42,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 from kamp_core.library import (
+    AlbumInfo,
     ArtistInfo,
     LibraryIndex,
     LibraryScanner,
@@ -352,6 +353,38 @@ class AlbumOut(BaseModel):
     # User-set display overrides for streaming albums (KAMP-467). None means no override.
     display_album: str | None = None
     display_album_artist: str | None = None
+    # DISTINCT union of the album's track genres (KAMP-550); backs the library
+    # genre filter. Canonical names, sorted NOCASE.
+    genres: list[str] = []
+
+    @classmethod
+    def from_album_info(cls, a: "AlbumInfo") -> "AlbumOut":
+        """Build from an AlbumInfo. The single mapping so a new field can't be
+        dropped at a subset of the (many) construction sites (KAMP-550/554)."""
+        return cls(
+            album_artist=a.album_artist,
+            album=a.album,
+            release_date=a.release_date,
+            track_count=a.track_count,
+            has_art=a.has_art,
+            missing_album=a.missing_album,
+            track_id=a.missing_track_id,
+            art_version=a.art_version,
+            added_at=a.added_at,
+            last_played_at=a.last_played_at,
+            play_count_avg=a.play_count_avg,
+            favorite=a.favorite,
+            has_favorite_track=a.has_favorite_track,
+            source=a.source,
+            has_remote_tracks=a.has_remote_tracks,
+            sale_item_id=a.sale_item_id,
+            is_preorder=a.is_preorder,
+            num_streamable_tracks=a.num_streamable_tracks,
+            album_url=a.album_url,
+            display_album=a.display_album,
+            display_album_artist=a.display_album_artist,
+            genres=a.genres,
+        )
 
 
 class PlayerStateOut(BaseModel):
@@ -1355,29 +1388,7 @@ def create_app(
         # direction="" means use the natural per-key default (historical behaviour).
         sort_dir = direction if direction in ("asc", "desc") else None
         return [
-            AlbumOut(
-                album_artist=a.album_artist,
-                album=a.album,
-                release_date=a.release_date,
-                track_count=a.track_count,
-                has_art=a.has_art,
-                missing_album=a.missing_album,
-                track_id=a.missing_track_id,
-                art_version=a.art_version,
-                added_at=a.added_at,
-                last_played_at=a.last_played_at,
-                play_count_avg=a.play_count_avg,
-                favorite=a.favorite,
-                has_favorite_track=a.has_favorite_track,
-                source=a.source,
-                has_remote_tracks=a.has_remote_tracks,
-                sale_item_id=a.sale_item_id,
-                is_preorder=a.is_preorder,
-                num_streamable_tracks=a.num_streamable_tracks,
-                album_url=a.album_url,
-                display_album=a.display_album,
-                display_album_artist=a.display_album_artist,
-            )
+            AlbumOut.from_album_info(a)
             for a in index.albums(sort=sort, sort_dir=sort_dir)
         ]
 
@@ -2255,29 +2266,7 @@ def create_app(
         if result is None:
             raise HTTPException(status_code=404, detail="Album not found")
         _notify_library_changed()
-        return AlbumOut(
-            album_artist=result.album_artist,
-            album=result.album,
-            release_date=result.release_date,
-            track_count=result.track_count,
-            has_art=result.has_art,
-            missing_album=result.missing_album,
-            track_id=result.missing_track_id,
-            art_version=result.art_version,
-            added_at=result.added_at,
-            last_played_at=result.last_played_at,
-            play_count_avg=result.play_count_avg,
-            favorite=result.favorite,
-            has_favorite_track=result.has_favorite_track,
-            source=result.source,
-            has_remote_tracks=result.has_remote_tracks,
-            sale_item_id=result.sale_item_id,
-            is_preorder=result.is_preorder,
-            num_streamable_tracks=result.num_streamable_tracks,
-            album_url=result.album_url,
-            display_album=result.display_album,
-            display_album_artist=result.display_album_artist,
-        )
+        return AlbumOut.from_album_info(result)
 
     @app.patch("/api/v1/albums/meta")
     def patch_album_meta(
@@ -2636,29 +2625,7 @@ def create_app(
         albums = index.albums()
         for a in albums:
             if a.album_artist == body.album_artist and a.album == body.album:
-                return AlbumOut(
-                    album_artist=a.album_artist,
-                    album=a.album,
-                    release_date=a.release_date,
-                    track_count=a.track_count,
-                    has_art=a.has_art,
-                    missing_album=a.missing_album,
-                    track_id=a.missing_track_id,
-                    art_version=a.art_version,
-                    added_at=a.added_at,
-                    last_played_at=a.last_played_at,
-                    play_count_avg=a.play_count_avg,
-                    favorite=a.favorite,
-                    has_favorite_track=a.has_favorite_track,
-                    source=a.source,
-                    has_remote_tracks=a.has_remote_tracks,
-                    sale_item_id=a.sale_item_id,
-                    is_preorder=a.is_preorder,
-                    num_streamable_tracks=a.num_streamable_tracks,
-                    album_url=a.album_url,
-                    display_album=a.display_album,
-                    display_album_artist=a.display_album_artist,
-                )
+                return AlbumOut.from_album_info(a)
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
     @app.post("/api/v1/albums/art/apply-local", response_model=AlbumOut)
@@ -2766,29 +2733,7 @@ def create_app(
         albums = index.albums()
         for a in albums:
             if a.album_artist == album_artist and a.album == album:
-                return AlbumOut(
-                    album_artist=a.album_artist,
-                    album=a.album,
-                    release_date=a.release_date,
-                    track_count=a.track_count,
-                    has_art=a.has_art,
-                    missing_album=a.missing_album,
-                    track_id=a.missing_track_id,
-                    art_version=a.art_version,
-                    added_at=a.added_at,
-                    last_played_at=a.last_played_at,
-                    play_count_avg=a.play_count_avg,
-                    favorite=a.favorite,
-                    has_favorite_track=a.has_favorite_track,
-                    source=a.source,
-                    has_remote_tracks=a.has_remote_tracks,
-                    sale_item_id=a.sale_item_id,
-                    is_preorder=a.is_preorder,
-                    num_streamable_tracks=a.num_streamable_tracks,
-                    album_url=a.album_url,
-                    display_album=a.display_album,
-                    display_album_artist=a.display_album_artist,
-                )
+                return AlbumOut.from_album_info(a)
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
     @app.get("/api/v1/album-art")
@@ -2926,29 +2871,7 @@ def create_app(
         fts_keys = {(t.album_artist.lower(), t.album.lower()) for t in fts_tracks}
         fts_ids = {t.id for t in fts_tracks if not t.album}
         albums = [
-            AlbumOut(
-                album_artist=a.album_artist,
-                album=a.album,
-                release_date=a.release_date,
-                track_count=a.track_count,
-                has_art=a.has_art,
-                missing_album=a.missing_album,
-                track_id=a.missing_track_id,
-                art_version=a.art_version,
-                added_at=a.added_at,
-                last_played_at=a.last_played_at,
-                play_count_avg=a.play_count_avg,
-                favorite=a.favorite,
-                has_favorite_track=a.has_favorite_track,
-                source=a.source,
-                has_remote_tracks=a.has_remote_tracks,
-                sale_item_id=a.sale_item_id,
-                is_preorder=a.is_preorder,
-                num_streamable_tracks=a.num_streamable_tracks,
-                album_url=a.album_url,
-                display_album=a.display_album,
-                display_album_artist=a.display_album_artist,
-            )
+            AlbumOut.from_album_info(a)
             for a in index.albums(sort=sort)
             if (a.album_artist.lower(), a.album.lower()) in fts_keys
             or (a.missing_album and a.missing_track_id in fts_ids)

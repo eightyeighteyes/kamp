@@ -44,6 +44,7 @@ def _album(
     release_date: str = "2024",
     count: int = 10,
     has_art: bool = False,
+    genres: list[str] | None = None,
 ) -> AlbumInfo:
     return AlbumInfo(
         album_artist=artist,
@@ -51,6 +52,7 @@ def _album(
         release_date=release_date,
         track_count=count,
         has_art=has_art,
+        genres=genres or [],
     )
 
 
@@ -268,6 +270,18 @@ class TestAlbumsEndpoint:
         c = TestClient(app)
         album = c.get("/api/v1/albums").json()[0]
         assert album["has_art"] is True
+
+    def test_album_exposes_genres(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        # The genre list drives the library genre filter (KAMP-550).
+        mock_index.albums.return_value = [
+            _album("Artist", "Record", genres=["J-Pop", "Jazz"])
+        ]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        album = c.get("/api/v1/albums").json()[0]
+        assert album["genres"] == ["J-Pop", "Jazz"]
 
     def test_album_includes_art_version(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -6951,7 +6965,30 @@ class TestPatchAlbumDisplayEndpoint:
             source="bandcamp",
             display_album="Short",
             display_album_artist="B",
+            genres=["Shoegaze"],
         )
+
+    def test_response_carries_genres(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        # Regression: this response flows back into the UI's open-album state, so
+        # a display edit must NOT blank the album's genres. Guards the shared
+        # AlbumOut.from_album_info() covering all five construction sites (KAMP-550).
+        mock_index.update_album_display.return_value = self._album_info()
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/albums/display",
+            json={
+                "album_artist": "Band",
+                "album": "Long Name",
+                "display_album": "Short",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["genres"] == ["Shoegaze"]
 
     def test_returns_updated_album(
         self,

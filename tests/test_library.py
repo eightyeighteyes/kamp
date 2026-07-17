@@ -13058,6 +13058,41 @@ class TestMultiValueGenre:
         index.close()
         assert album_genre == "J-Pop; Jazz"  # union, sorted, no duplicate Jazz
 
+    # -- albums() genre exposure (KAMP-550) ----------------------------------
+
+    def test_albums_exposes_genre_union_as_list(self, tmp_path: Path) -> None:
+        # The per-album genres list drives the sidebar genre filter; it is built
+        # from the normalized track_genres (canonical names), not by re-splitting
+        # the denormalized "; " string, so the sidebar and filter can't diverge.
+        index = self._index(tmp_path)
+        index.upsert_many(
+            [
+                self._local(tmp_path / "1.mp3", ["Jazz"]),
+                self._local(tmp_path / "2.mp3", ["J-Pop", "Jazz"]),
+            ]
+        )
+        album = index.albums()[0]
+        index.close()
+        assert album.genres == ["J-Pop", "Jazz"]  # union, deduped, sorted NOCASE
+
+    def test_albums_genres_empty_when_untagged(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.upsert_many([self._local(tmp_path / "1.mp3", [])])
+        album = index.albums()[0]
+        index.close()
+        assert album.genres == []
+
+    def test_albums_missing_album_track_carries_its_genres(
+        self, tmp_path: Path
+    ) -> None:
+        # A track with an empty album tag surfaces as its own virtual album with
+        # no album row, so its genres resolve by track id, not album id.
+        index = self._index(tmp_path)
+        index.upsert_many([self._local(tmp_path / "1.mp3", ["Ambient"], album="")])
+        album = next(a for a in index.albums() if a.missing_album)
+        index.close()
+        assert album.genres == ["Ambient"]
+
     # -- apply_genres --------------------------------------------------------
 
     def test_apply_genres_replace_sets_all_tracks(self, tmp_path: Path) -> None:
@@ -13077,6 +13112,20 @@ class TestMultiValueGenre:
         index.close()
         assert genres == {"Hip-Hop; Plunderphonics"}
         assert album_genre == "Hip-Hop; Plunderphonics"
+
+    def test_all_genres_excludes_orphans_after_removal(self, tmp_path: Path) -> None:
+        # KAMP-550 bug: removing a genre's last track link left it lingering in
+        # the sidebar/autocomplete list. all_genres() must drop a genre once no
+        # track carries it, even though its genres-table row persists.
+        index = self._index(tmp_path)
+        index.upsert_many([self._local(tmp_path / "1.mp3", ["Unknown"])])
+        tid = index.all_tracks()[0].id
+
+        index.apply_genres([tid], ["Punk"], mode="replace")
+
+        names = index.all_genres()
+        index.close()
+        assert names == ["Punk"]  # "Unknown" is orphaned and no longer listed
 
     def test_apply_genres_fires_on_fields_changed(self, tmp_path: Path) -> None:
         index = self._index(tmp_path)

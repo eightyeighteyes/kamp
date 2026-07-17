@@ -21,7 +21,9 @@ const ALBUM_SORT_OPTIONS = [
 export function AlbumGrid(): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
   const selectedArtist = useStore((s) => s.library.selectedArtist)
+  const selectedGenre = useStore((s) => s.library.selectedGenre)
   const selectArtist = useStore((s) => s.selectArtist)
+  const selectGenre = useStore((s) => s.selectGenre)
   const libraryFilter = useStore((s) => s.libraryFilter)
   const sortOrder = useStore((s) => s.sortOrder)
   const sortDir = useStore((s) => s.sortDir)
@@ -41,7 +43,17 @@ export function AlbumGrid(): React.JSX.Element {
     }
   }, [])
 
-  let visible = selectedArtist ? albums.filter((a) => a.album_artist === selectedArtist) : albums
+  // Genre takes precedence over artist (KAMP-550). The two are mutually
+  // exclusive via the store actions, but precedence keeps the grid deterministic
+  // even if both were somehow set. Genre matches on canonical-name membership —
+  // no re-parsing of a joined string, so it can't diverge from the sidebar list.
+  let visible = albums
+  if (selectedGenre) {
+    const g = selectedGenre.toLowerCase()
+    visible = albums.filter((a) => a.genres.some((name) => name.toLowerCase() === g))
+  } else if (selectedArtist) {
+    visible = albums.filter((a) => a.album_artist === selectedArtist)
+  }
 
   if (libraryFilter.length > 0) {
     const QUALITATIVE_FILTERS = ['favorite_album', 'has_favorite_track', 'unplayed', 'top_albums']
@@ -76,6 +88,7 @@ export function AlbumGrid(): React.JSX.Element {
   const emptyMessage = (): string => {
     if (albums.length === 0) return 'No albums in library.'
     if (libraryFilter.length > 0) return 'No albums match the active filter.'
+    if (selectedGenre) return 'No albums for this genre.'
     return 'No albums for this artist.'
   }
 
@@ -92,13 +105,15 @@ export function AlbumGrid(): React.JSX.Element {
         <SourceControl />
         <FilterControl />
       </div>
-      {selectedArtist && (
+      {(selectedGenre || selectedArtist) && (
         <nav className="breadcrumb album-grid-breadcrumb" aria-label="Navigation">
-          <button onClick={() => selectArtist(null)}>Library</button>
+          <button onClick={() => (selectedGenre ? selectGenre(null) : selectArtist(null))}>
+            Library
+          </button>
           <span className="breadcrumb-sep" aria-hidden="true">
             ›
           </span>
-          <span>{selectedArtist}</span>
+          <span>{selectedGenre ?? selectedArtist}</span>
         </nav>
       )}
       {visible.length === 0 ? (

@@ -305,7 +305,9 @@ export function PlaylistView(): React.JSX.Element | null {
           favorite: albumFavMap.get(key) ?? false,
           has_favorite_track: t.favorite,
           source: t.source === 'bandcamp' ? 'bandcamp' : 'local',
-          has_remote_tracks: t.source !== 'local'
+          has_remote_tracks: t.source !== 'local',
+          // Synthesised from a playlist track; the genre filter never runs here.
+          genres: []
         })
       } else {
         const alb = seen.get(key)!

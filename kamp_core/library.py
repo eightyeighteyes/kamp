@@ -685,6 +685,11 @@ class AlbumInfo:
     # no override; the canonical album/album_artist is the authoritative value.
     display_album: str | None = None
     display_album_artist: str | None = None
+    # DISTINCT union of the album's track genres (KAMP-550), built from the
+    # normalized track_genres tables — canonical names, sorted NOCASE. Backs the
+    # library genre filter; the client matches on membership without re-parsing
+    # the denormalized "; " display string.
+    genres: list[str] = field(default_factory=list, compare=False)
 
     # Allow dict-style access so callers can use a["album_artist"] etc.
     def __getitem__(self, key: str) -> Any:
@@ -6402,6 +6407,27 @@ class LibraryIndex:
             WHERE t.album = ''
             ORDER BY {order_by}
             """).fetchall()  # noqa: S608 — order_by is from a whitelist, not user input
+        # Per-album genre union (KAMP-550), read from the normalized track_genres
+        # in one grouped pass. Keyed both by album_id (named albums) and track_id
+        # (missing-album virtual entries have no albums row), so each entry can
+        # resolve its own. Ordered by NOCASE name so each union comes out sorted;
+        # genres.name is already the single canonical casing, so plain membership
+        # dedup suffices.
+        genres_by_album: dict[int, list[str]] = {}
+        genres_by_track: dict[int, list[str]] = {}
+        for gr in self._conn.execute(
+            "SELECT t.album_id AS aid, t.id AS tid, g.name AS name"
+            " FROM track_genres tg"
+            " JOIN genres g ON g.id = tg.genre_id"
+            " JOIN tracks t ON t.id = tg.track_id"
+            " ORDER BY g.name COLLATE NOCASE"
+        ).fetchall():
+            if gr["aid"] is not None:
+                album_list = genres_by_album.setdefault(gr["aid"], [])
+                if gr["name"] not in album_list:
+                    album_list.append(gr["name"])
+            genres_by_track.setdefault(gr["tid"], []).append(gr["name"])
+
         return [
             AlbumInfo(
                 album_id=r["album_id"],
@@ -6428,6 +6454,11 @@ class LibraryIndex:
                 sale_item_id=r["sale_item_id"],
                 display_album=r["display_album"],
                 display_album_artist=r["display_album_artist"],
+                genres=(
+                    genres_by_track.get(r["missing_track_id"], [])
+                    if r["missing_album"]
+                    else genres_by_album.get(r["album_id"], [])
+                ),
             )
             for r in rows
         ]

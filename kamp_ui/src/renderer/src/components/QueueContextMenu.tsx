@@ -158,7 +158,8 @@ export function QueueContextMenu({
                     favorite: false,
                     has_favorite_track: false,
                     source: 'local',
-                    has_remote_tracks: false
+                    has_remote_tracks: false,
+                    genres: []
                   }
                   void setActiveView('library')
                   void selectAlbum(found)

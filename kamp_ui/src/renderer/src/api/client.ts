@@ -95,6 +95,9 @@ export type Album = {
   // User-set display overrides for streaming albums (KAMP-467). Undefined means no override.
   display_album?: string
   display_album_artist?: string
+  // DISTINCT union of the album's track genres (KAMP-550); backs the library
+  // genre filter. Canonical names, sorted NOCASE.
+  genres: string[]
 }
 
 export type PlayerState = {

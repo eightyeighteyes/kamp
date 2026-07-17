@@ -6,8 +6,17 @@ const ARTIST_WIDTH_DEFAULT = 200
 
 export function ArtistPanel(): React.JSX.Element {
   const artists = useStore((s) => s.library.artists)
-  const selected = useStore((s) => s.library.selectedArtist)
+  const genres = useStore((s) => s.library.genres)
+  const selectedArtist = useStore((s) => s.library.selectedArtist)
+  const selectedGenre = useStore((s) => s.library.selectedGenre)
   const selectArtist = useStore((s) => s.selectArtist)
+  const selectGenre = useStore((s) => s.selectGenre)
+  // Which list is shown. Seeded from the active filter so re-opening while a
+  // genre is selected lands on the Genres tab (KAMP-550). Switching tabs is a
+  // pure view change — it never alters the active filter.
+  const [tab, setTab] = useState<'artists' | 'genres'>(
+    selectedGenre !== null ? 'genres' : 'artists'
+  )
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const saved = parseFloat(localStorage.getItem(ARTIST_WIDTH_KEY) ?? '')
     const max = window.innerWidth * 0.33
@@ -80,28 +89,79 @@ export function ArtistPanel(): React.JSX.Element {
       className={`artist-panel${isResizing ? ' artist-panel--resizing' : ''}`}
       style={{ width: panelWidth }}
     >
-      <div className="panel-header">Artists</div>
-      <ul className="artist-list">
-        <li
-          className={selected === null ? 'active' : ''}
-          tabIndex={0}
-          onClick={() => selectArtist(null)}
-          onKeyDown={(e) => e.key === 'Enter' && selectArtist(null)}
+      <div className="library-tabs" role="tablist" aria-label="Library filter">
+        <button
+          id="lib-tab-artists"
+          role="tab"
+          aria-selected={tab === 'artists'}
+          className={`library-tab${tab === 'artists' ? ' active' : ''}`}
+          onClick={() => setTab('artists')}
         >
-          All Artists
-        </li>
-        {artists.map((artist) => (
+          Artists
+        </button>
+        <button
+          id="lib-tab-genres"
+          role="tab"
+          aria-selected={tab === 'genres'}
+          className={`library-tab${tab === 'genres' ? ' active' : ''}`}
+          onClick={() => setTab('genres')}
+        >
+          Genres
+        </button>
+      </div>
+      {tab === 'artists' ? (
+        <ul className="artist-list" role="tabpanel" aria-labelledby="lib-tab-artists">
           <li
-            key={artist}
-            className={selected === artist ? 'active' : ''}
+            className={selectedArtist === null ? 'active' : ''}
             tabIndex={0}
-            onClick={() => selectArtist(artist)}
-            onKeyDown={(e) => e.key === 'Enter' && selectArtist(artist)}
+            onClick={() => selectArtist(null)}
+            onKeyDown={(e) => e.key === 'Enter' && selectArtist(null)}
           >
-            {artist}
+            All Artists
           </li>
-        ))}
-      </ul>
+          {artists.map((artist) => (
+            <li
+              key={artist}
+              className={selectedArtist === artist ? 'active' : ''}
+              tabIndex={0}
+              onClick={() => selectArtist(artist)}
+              onKeyDown={(e) => e.key === 'Enter' && selectArtist(artist)}
+            >
+              {artist}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <ul className="artist-list" role="tabpanel" aria-labelledby="lib-tab-genres">
+          {genres.length === 0 ? (
+            <li className="library-list-empty" aria-disabled="true">
+              No genres tagged yet
+            </li>
+          ) : (
+            <>
+              <li
+                className={selectedGenre === null ? 'active' : ''}
+                tabIndex={0}
+                onClick={() => selectGenre(null)}
+                onKeyDown={(e) => e.key === 'Enter' && selectGenre(null)}
+              >
+                All Genres
+              </li>
+              {genres.map((genre) => (
+                <li
+                  key={genre}
+                  className={selectedGenre === genre ? 'active' : ''}
+                  tabIndex={0}
+                  onClick={() => selectGenre(genre)}
+                  onKeyDown={(e) => e.key === 'Enter' && selectGenre(genre)}
+                >
+                  {genre}
+                </li>
+              ))}
+            </>
+          )}
+        </ul>
+      )}
       <div
         className="artist-resize-handle"
         onMouseDown={handleResizeMouseDown}

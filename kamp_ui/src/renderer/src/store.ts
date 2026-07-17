@@ -43,7 +43,11 @@ export type TraceStyle = 'clean' | 'glowy' | 'trippy'
 type LibraryState = {
   albums: Album[]
   artists: string[]
+  genres: string[]
   selectedArtist: string | null
+  // Active genre filter (KAMP-550). Mutually exclusive with selectedArtist:
+  // picking one clears the other.
+  selectedGenre: string | null
   selectedAlbum: Album | null
   tracks: Track[]
   tracksAlbumKey: string | null // "artist\0album" key for the loaded track list
@@ -222,6 +226,7 @@ type PlayerStore = {
   loadLibrary: () => Promise<void>
   loadUiState: () => Promise<void>
   selectArtist: (artist: string | null) => void
+  selectGenre: (genre: string | null) => void
   selectAlbum: (album: Album | null) => Promise<void>
   loadTracks: (albumArtist: string, album: string, trackId?: number | null) => Promise<void>
   setCollectionType: (type: 'albums' | 'playlists') => void
@@ -371,7 +376,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
   library: {
     albums: [],
     artists: [],
+    genres: [],
     selectedArtist: null,
+    selectedGenre: null,
     selectedAlbum: null,
     tracks: [],
     tracksAlbumKey: null,
@@ -979,9 +986,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
     try {
       const sort = get().sortOrder
       const dir = get().sortDir
-      const [albums, artists, playlists] = await Promise.all([
+      const [albums, artists, genres, playlists] = await Promise.all([
         api.getAlbums(sort, dir),
         api.getArtists(),
+        api.getGenres(),
         api.getPlaylists()
       ])
       set((s) => {
@@ -1001,6 +1009,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
             ...s.library,
             albums,
             artists,
+            genres,
             playlists,
             selectedAlbum: refreshedSelectedAlbum
           },
@@ -1042,8 +1051,17 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   patchOpenAlbum: (album) => set((s) => ({ library: { ...s.library, selectedAlbum: album } })),
 
+  // Artist and genre filters are mutually exclusive (KAMP-550): selecting one
+  // clears the other so only one filter is ever active.
   selectArtist: (artist) =>
-    set((s) => ({ library: { ...s.library, selectedArtist: artist, selectedAlbum: null } })),
+    set((s) => ({
+      library: { ...s.library, selectedArtist: artist, selectedGenre: null, selectedAlbum: null }
+    })),
+
+  selectGenre: (genre) =>
+    set((s) => ({
+      library: { ...s.library, selectedGenre: genre, selectedArtist: null, selectedAlbum: null }
+    })),
 
   selectAlbum: async (album) => {
     set((s) => ({

@@ -5,7 +5,7 @@ import { TOOLTIPS } from '../tooltipStrings'
 import { artUrl, fetchMusicBrainzCandidates, patchTrackMeta } from '../api/client'
 import type {
   AlbumTagsCollision,
-  MusicBrainzRelease,
+  MusicBrainzCandidate,
   Track,
   TrackTagsCollision
 } from '../api/client'
@@ -58,7 +58,7 @@ type AlbumRenameToast = {
 type MBFetchState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ready'; candidates: MusicBrainzRelease[] }
+  | { status: 'ready'; candidates: MusicBrainzCandidate[] }
   | { status: 'error'; message: string }
 
 function HeroImage({

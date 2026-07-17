@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import type { MusicBrainzRelease, Track } from '../api/client'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { fetchMusicBrainzRelease } from '../api/client'
+import type { MusicBrainzCandidate, MusicBrainzRelease, Track } from '../api/client'
 
 // Fields that can be toggled between local and MB values.
 type FieldId = 'title' | 'album_artist' | 'release_date' | 'label'
@@ -15,11 +16,13 @@ type SelectionState = {
 export type MBApplyPayload = {
   album: Record<FieldId, 'local' | 'mb'>
   tracks: Record<TrackKey, 'local' | 'mb'>
+  // Full release only: applying a shallow candidate would stamp a new
+  // mb_release_id while leaving every track's recording id stale (KAMP-584).
   release: MusicBrainzRelease
 }
 
 type Props = {
-  candidates: MusicBrainzRelease[]
+  candidates: MusicBrainzCandidate[]
   localTracks: Track[]
   onApply: (payload: MBApplyPayload) => void
   onClose: () => void
@@ -44,14 +47,24 @@ function findMBTrack(
   )
 }
 
-function defaultSelection(release: MusicBrainzRelease, localTracks: Track[]): SelectionState {
-  const album: Record<FieldId, 'local' | 'mb'> = {
-    title: release.title !== localTracks[0]?.album ? 'mb' : 'local',
-    album_artist: release.album_artist !== localTracks[0]?.album_artist ? 'mb' : 'local',
-    release_date: release.release_date !== localTracks[0]?.release_date ? 'mb' : 'local',
-    label: release.label !== localTracks[0]?.label ? 'mb' : 'local'
+// Album-level defaults come from the shallow candidate, so they're available
+// before hydration and survive the shallow → hydrated swap untouched.
+function defaultAlbumSelection(
+  candidate: MusicBrainzCandidate,
+  localTracks: Track[]
+): Record<FieldId, 'local' | 'mb'> {
+  return {
+    title: candidate.title !== localTracks[0]?.album ? 'mb' : 'local',
+    album_artist: candidate.album_artist !== localTracks[0]?.album_artist ? 'mb' : 'local',
+    release_date: candidate.release_date !== localTracks[0]?.release_date ? 'mb' : 'local',
+    label: candidate.label !== localTracks[0]?.label ? 'mb' : 'local'
   }
+}
 
+function defaultTrackSelection(
+  release: MusicBrainzRelease,
+  localTracks: Track[]
+): Record<TrackKey, 'local' | 'mb'> {
   const tracks: Record<TrackKey, 'local' | 'mb'> = {}
   for (const local of localTracks) {
     const mb = findMBTrack(release, local)
@@ -59,8 +72,7 @@ function defaultSelection(release: MusicBrainzRelease, localTracks: Track[]): Se
     const key = trackKey(local.disc_number, local.track_number)
     tracks[key] = mb.title !== local.title ? 'mb' : 'local'
   }
-
-  return { album, tracks }
+  return tracks
 }
 
 function Toggle({
@@ -106,15 +118,70 @@ export function MusicBrainzModal({
   const localAlbum = localTracks[0]
 
   const [candidateIndex, setCandidateIndex] = useState(0)
-  const release = candidates[candidateIndex]
+  const candidate = candidates[candidateIndex]
 
-  const [sel, setSel] = useState<SelectionState>(() => defaultSelection(release, localTracks))
+  // Lazy hydration cache, keyed by the candidate's mbid (not index): rapid
+  // navigation can resolve out of order, and a cached entry must land on the
+  // candidate that requested it. A merged mbid hydrates to a release whose
+  // own id differs — Apply uses the hydrated (canonical) release.
+  const [hydrated, setHydrated] = useState<Record<string, MusicBrainzRelease>>({})
+  const [hydrationError, setHydrationError] = useState<Record<string, string>>({})
+  const hydrateAbortRef = useRef<AbortController | null>(null)
 
-  // Reset selection when the active candidate changes (render-time derived state pattern).
-  const [prevRelease, setPrevRelease] = useState(release)
-  if (release !== prevRelease) {
-    setPrevRelease(release)
-    setSel(defaultSelection(release, localTracks))
+  const release: MusicBrainzRelease | undefined = hydrated[candidate.mbid]
+
+  useEffect(() => {
+    const mbid = candidate.mbid
+    if (hydrated[mbid] || hydrationError[mbid]) return
+    // Supersede any in-flight hydration — one request at a time.
+    hydrateAbortRef.current?.abort()
+    const ctrl = new AbortController()
+    hydrateAbortRef.current = ctrl
+    fetchMusicBrainzRelease(mbid, ctrl.signal).then(
+      (r) => {
+        if (!ctrl.signal.aborted) setHydrated((prev) => ({ ...prev, [mbid]: r }))
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return
+        const msg = err instanceof Error ? err.message : 'Failed to load release'
+        setHydrationError((prev) => ({ ...prev, [mbid]: msg }))
+      }
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidate.mbid])
+
+  // Abort in-flight hydration when the modal unmounts (close).
+  useEffect(() => {
+    return () => {
+      hydrateAbortRef.current?.abort()
+      hydrateAbortRef.current = null
+    }
+  }, [])
+
+  const [sel, setSel] = useState<SelectionState>(() => ({
+    album: defaultAlbumSelection(candidate, localTracks),
+    tracks: release ? defaultTrackSelection(release, localTracks) : {}
+  }))
+
+  // Reset selection when the active candidate changes (render-time derived
+  // state pattern), keyed by mbid so the shallow → hydrated swap of the same
+  // candidate does NOT wipe the user's album-field toggles.
+  const [prevMbid, setPrevMbid] = useState(candidate.mbid)
+  const [trackDefaultsFor, setTrackDefaultsFor] = useState<string | null>(
+    release ? candidate.mbid : null
+  )
+  if (candidate.mbid !== prevMbid) {
+    setPrevMbid(candidate.mbid)
+    setSel({
+      album: defaultAlbumSelection(candidate, localTracks),
+      tracks: release ? defaultTrackSelection(release, localTracks) : {}
+    })
+    setTrackDefaultsFor(release ? candidate.mbid : null)
+  } else if (release && trackDefaultsFor !== candidate.mbid) {
+    // Hydration just resolved for the viewed candidate: merge in the
+    // per-track defaults without touching album-field selections.
+    setTrackDefaultsFor(candidate.mbid)
+    setSel((s) => ({ ...s, tracks: defaultTrackSelection(release, localTracks) }))
   }
 
   useEffect(() => {
@@ -136,25 +203,25 @@ export function MusicBrainzModal({
       {
         field: 'title',
         localVal: localAlbum?.album ?? '',
-        mbVal: release.title
+        mbVal: candidate.title
       },
       {
         field: 'album_artist',
         localVal: localAlbum?.album_artist ?? '',
-        mbVal: release.album_artist
+        mbVal: candidate.album_artist
       },
       {
         field: 'release_date',
         localVal: localAlbum?.release_date ?? '',
-        mbVal: release.release_date
+        mbVal: candidate.release_date
       },
       {
         field: 'label',
         localVal: localAlbum?.label ?? '',
-        mbVal: release.label
+        mbVal: candidate.label
       }
     ],
-    [release, localAlbum]
+    [candidate, localAlbum]
   )
 
   return (
@@ -169,7 +236,7 @@ export function MusicBrainzModal({
         {/* Header */}
         <div className="mb-modal__header">
           <h2 id="mb-modal-title" className="mb-modal__title">
-            MusicBrainz — {release.title}
+            MusicBrainz — {candidate.title}
           </h2>
           <div className="mb-modal__header-right">
             {candidates.length > 1 && (
@@ -197,8 +264,9 @@ export function MusicBrainzModal({
                 </button>
               </div>
             )}
-            {release.release_type && (
-              <span className="mb-modal__release-type">{release.release_type}</span>
+            {candidate.is_current && <span className="mb-modal__release-type">Current</span>}
+            {candidate.release_type && (
+              <span className="mb-modal__release-type">{candidate.release_type}</span>
             )}
           </div>
         </div>
@@ -230,51 +298,68 @@ export function MusicBrainzModal({
             )
           })}
 
-          {/* Track-level titles */}
+          {/* Track-level titles (available once the candidate is hydrated) */}
           <div className="mb-modal__section-label">Tracks</div>
-          {localTracks.map((local) => {
-            const mb = findMBTrack(release, local)
-            const key = trackKey(local.disc_number, local.track_number)
+          {!release && hydrationError[candidate.mbid] && (
+            <div className="mb-cmp-row mb-cmp-row--unmatched">
+              <div className="mb-cmp-row__values" style={{ gridColumn: '1 / -1' }}>
+                <span className="mb-cmp-row__mb--no-match">
+                  Couldn&apos;t load this release: {hydrationError[candidate.mbid]}
+                </span>
+              </div>
+            </div>
+          )}
+          {!release && !hydrationError[candidate.mbid] && (
+            <div className="mb-cmp-row mb-cmp-row--unmatched">
+              <div className="mb-cmp-row__values" style={{ gridColumn: '1 / -1' }}>
+                <span className="mb-cmp-row__local">Loading track list…</span>
+              </div>
+            </div>
+          )}
+          {release &&
+            localTracks.map((local) => {
+              const mb = findMBTrack(release, local)
+              const key = trackKey(local.disc_number, local.track_number)
 
-            if (!mb) {
+              if (!mb) {
+                return (
+                  <div key={local.id} className="mb-cmp-row mb-cmp-row--unmatched">
+                    <span className="mb-cmp-row__label">
+                      {local.disc_number > 1 ? `${local.disc_number}-` : ''}
+                      {local.track_number}
+                    </span>
+                    <div className="mb-cmp-row__values" style={{ gridColumn: '2 / -1' }}>
+                      <span className="mb-cmp-row__local">{local.title}</span>
+                      <span className="mb-cmp-row__mb--no-match">no MB match</span>
+                    </div>
+                  </div>
+                )
+              }
+
+              const isDiff = local.title !== mb.title
+              const chosen = sel.tracks[key] ?? 'local'
               return (
-                <div key={local.id} className="mb-cmp-row mb-cmp-row--unmatched">
+                <div key={local.id} className="mb-cmp-row">
                   <span className="mb-cmp-row__label">
                     {local.disc_number > 1 ? `${local.disc_number}-` : ''}
                     {local.track_number}
                   </span>
-                  <div className="mb-cmp-row__values" style={{ gridColumn: '2 / -1' }}>
-                    <span className="mb-cmp-row__local">{local.title}</span>
-                    <span className="mb-cmp-row__mb--no-match">no MB match</span>
+                  <Toggle side={chosen} onChange={(v) => setTrackField(key, v)} />
+                  <div className="mb-cmp-row__values">
+                    <span
+                      className={`mb-cmp-row__local${chosen === 'mb' && isDiff ? ' mb-cmp-row__local--overridden' : ''}`}
+                    >
+                      {local.title}
+                    </span>
+                    <span
+                      className={`mb-cmp-row__mb${isDiff ? ' mb-cmp-row__mb--diff' : ' mb-cmp-row__mb--same'}`}
+                    >
+                      {mb.title}
+                    </span>
                   </div>
                 </div>
               )
-            }
-
-            const isDiff = local.title !== mb.title
-            const chosen = sel.tracks[key] ?? 'local'
-            return (
-              <div key={local.id} className="mb-cmp-row">
-                <span className="mb-cmp-row__label">
-                  {local.disc_number > 1 ? `${local.disc_number}-` : ''}
-                  {local.track_number}
-                </span>
-                <Toggle side={chosen} onChange={(v) => setTrackField(key, v)} />
-                <div className="mb-cmp-row__values">
-                  <span
-                    className={`mb-cmp-row__local${chosen === 'mb' && isDiff ? ' mb-cmp-row__local--overridden' : ''}`}
-                  >
-                    {local.title}
-                  </span>
-                  <span
-                    className={`mb-cmp-row__mb${isDiff ? ' mb-cmp-row__mb--diff' : ' mb-cmp-row__mb--same'}`}
-                  >
-                    {mb.title}
-                  </span>
-                </div>
-              </div>
-            )
-          })}
+            })}
         </div>
 
         {/* Footer */}
@@ -285,7 +370,8 @@ export function MusicBrainzModal({
           <button
             className="mb-modal__btn mb-modal__btn--accent"
             type="button"
-            onClick={() => onApply({ album: sel.album, tracks: sel.tracks, release })}
+            disabled={!release}
+            onClick={() => release && onApply({ album: sel.album, tracks: sel.tracks, release })}
           >
             Apply selected
           </button>

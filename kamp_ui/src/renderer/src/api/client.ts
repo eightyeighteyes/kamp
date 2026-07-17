@@ -695,7 +695,7 @@ export const patchAlbumMeta = (
 }
 
 // ---------------------------------------------------------------------------
-// MusicBrainz lookup (KAMP-230)
+// MusicBrainz lookup (KAMP-230, shallow candidates + lazy hydration KAMP-584)
 // ---------------------------------------------------------------------------
 
 export type MusicBrainzTrack = {
@@ -703,6 +703,20 @@ export type MusicBrainzTrack = {
   disc_number: number
   title: string
   recording_mbid: string
+}
+
+// Shallow search candidate — deliberately has no tracks field, so an
+// un-hydrated candidate can never be mistaken for a release with zero
+// matching tracks. Hydrate via fetchMusicBrainzRelease before applying.
+export type MusicBrainzCandidate = {
+  mbid: string
+  release_group_mbid: string
+  title: string
+  album_artist: string
+  release_date: string
+  label: string
+  release_type: string
+  is_current: boolean
 }
 
 export type MusicBrainzRelease = {
@@ -720,7 +734,7 @@ export async function fetchMusicBrainzCandidates(
   albumArtist: string,
   album: string,
   signal: AbortSignal
-): Promise<MusicBrainzRelease[]> {
+): Promise<MusicBrainzCandidate[]> {
   const params = new URLSearchParams({ album_artist: albumArtist, album })
   const res = await fetch(`${BASE_URL}/api/v1/albums/musicbrainz?${params}`, {
     headers: _authHeaders(),
@@ -736,8 +750,29 @@ export async function fetchMusicBrainzCandidates(
     }
     throw new Error(message)
   }
-  const data = (await res.json()) as { candidates: MusicBrainzRelease[] }
+  const data = (await res.json()) as { candidates: MusicBrainzCandidate[] }
   return data.candidates
+}
+
+export async function fetchMusicBrainzRelease(
+  mbid: string,
+  signal: AbortSignal
+): Promise<MusicBrainzRelease> {
+  const res = await fetch(
+    `${BASE_URL}/api/v1/albums/musicbrainz/release/${encodeURIComponent(mbid)}`,
+    { headers: _authHeaders(), signal }
+  )
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`
+    try {
+      const json = (await res.json()) as { detail?: string }
+      if (json.detail && typeof json.detail === 'string') message = json.detail
+    } catch {
+      // ignore
+    }
+    throw new Error(message)
+  }
+  return (await res.json()) as MusicBrainzRelease
 }
 
 export async function patchTrackMeta(trackId: number, mbRecordingId: string): Promise<Track> {

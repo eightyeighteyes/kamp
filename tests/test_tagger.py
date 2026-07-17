@@ -12,6 +12,7 @@ import pytest
 from kamp_daemon.ext.types import TrackMetadata
 from kamp_daemon.tagger import (
     ReleaseInfo,
+    ReleaseNotFoundError,
     TaggingError,
     TrackInfo,
     _lookup_release_by_acoustid,
@@ -27,9 +28,10 @@ from kamp_daemon.tagger import (
     _write_tags,
     configure_musicbrainz,
     is_tagged,
-    lookup_releases_from_tracks,
+    lookup_release_by_mbid,
     read_release_mbids,
     read_track_metadata_from_file,
+    search_release_candidates,
     tag_directory,
     write_sale_item_id,
     write_tags_from_track_metadata,
@@ -2086,82 +2088,209 @@ class TestWriteTagsFromTrackMetadata:
 
 
 # ---------------------------------------------------------------------------
-# lookup_releases_from_tracks (KAMP-230)
+# search_release_candidates / lookup_release_by_mbid (KAMP-584)
 # ---------------------------------------------------------------------------
 
-RECORDING_HIT: dict[str, Any] = {
-    "recording-list": [
+# Shaped like real ws/2 *search* results: medium-list carries counts, never
+# track listings; label-info/date/release-group are per-release optional.
+SEARCH_RESULT_SHALLOW: dict[str, Any] = {
+    "release-list": [
         {
-            "id": "rec-1",
-            "title": "First Track",
-            "release-list": [{"id": "abc-123"}, {"id": "other-123"}],
-        }
+            "id": "new-100",
+            "title": "Great Album",
+            "date": "2021-05-01",
+            "ext:score": "100",
+            "artist-credit": [
+                {
+                    "name": "Cool Artist",
+                    "artist": {
+                        "id": "am-1",
+                        "name": "Cool Artist",
+                        "sort-name": "Artist, Cool",
+                    },
+                }
+            ],
+            "release-group": {"id": "rg-1", "primary-type": "Album"},
+            "label-info-list": [
+                {"label": {"name": "Reissue Label"}, "catalog-number": "RL-2"}
+            ],
+            "medium-list": [{"format": "CD", "track-count": 10}],
+        },
+        {
+            "id": "old-100",
+            "title": "Great Album",
+            "date": "1999-01-01",
+            "ext:score": "100",
+            "artist-credit": [
+                {"name": "Cool Artist", "artist": {"name": "Cool Artist"}}
+            ],
+            "release-group": {"id": "rg-1", "primary-type": "Album"},
+            "medium-list": [{"format": "CD", "track-count": 10}],
+        },
+        {
+            # Minimal entry: no date, artist-credit, release-group, or label-info.
+            "id": "minimal-90",
+            "title": "Great Album",
+            "ext:score": "90",
+        },
     ]
 }
 
 
-class TestLookupReleasesFromTracks:
-    def test_raises_on_empty_input(self) -> None:
-        with pytest.raises(TaggingError, match="No tracks provided"):
-            lookup_releases_from_tracks([])
-
-    def test_happy_path_tier1_vote(self) -> None:
-        """Tier-1 path: recording votes resolve to a release."""
-        tracks = [("Cool Artist", "First Track", "Great Album")]
-        empty_releases: dict[str, Any] = {"release-list": []}
-        with patch("musicbrainzngs.search_recordings", return_value=RECORDING_HIT):
-            with patch("musicbrainzngs.search_releases", return_value=empty_releases):
-                with patch(
-                    "musicbrainzngs.get_release_by_id",
-                    return_value=SAMPLE_RELEASE_DETAIL,
-                ):
-                    releases = lookup_releases_from_tracks(tracks)
-
-        assert len(releases) >= 1
-        assert releases[0].mbid == "abc-123"
-        assert releases[0].title == "Great Album"
-
-    def test_falls_back_to_tier2_when_no_votes(self) -> None:
-        """When no recording results, falls back to album-level search."""
-        tracks = [("Cool Artist", "First Track", "Great Album")]
-        empty_recordings: dict[str, Any] = {"recording-list": []}
-        with patch("musicbrainzngs.search_recordings", return_value=empty_recordings):
-            with patch("musicbrainzngs.search_releases", return_value=SAMPLE_RELEASE):
-                with patch(
-                    "musicbrainzngs.get_release_by_id",
-                    return_value=SAMPLE_RELEASE_DETAIL,
-                ):
-                    releases = lookup_releases_from_tracks(tracks)
-
-        assert len(releases) >= 1
-        assert releases[0].mbid == "abc-123"
-
-    def test_raises_when_all_paths_fail(self) -> None:
-        """Raises TaggingError when both tier-1 and tier-2 find nothing."""
-        tracks = [("Unknown", "???", "???")]
-        empty_recordings: dict[str, Any] = {"recording-list": []}
-        empty_releases: dict[str, Any] = {"release-list": []}
-        with patch("musicbrainzngs.search_recordings", return_value=empty_recordings):
-            with patch("musicbrainzngs.search_releases", return_value=empty_releases):
-                with pytest.raises(TaggingError, match="No MusicBrainz results"):
-                    lookup_releases_from_tracks(tracks)
-
-    def test_skips_tracks_without_title(self) -> None:
-        """Tracks with empty title strings do not make recording API calls."""
-        tracks = [("Artist", "", "Album"), ("Artist", "Real Title", "Album")]
-        empty_releases: dict[str, Any] = {"release-list": []}
+class TestSearchReleaseCandidates:
+    def test_single_search_call_no_hydration(self) -> None:
+        """One search_releases call; get_release_by_id is never invoked."""
         with patch(
-            "musicbrainzngs.search_recordings", return_value=RECORDING_HIT
-        ) as mock_rec:
-            with patch("musicbrainzngs.search_releases", return_value=empty_releases):
-                with patch(
-                    "musicbrainzngs.get_release_by_id",
-                    return_value=SAMPLE_RELEASE_DETAIL,
-                ):
-                    lookup_releases_from_tracks(tracks)
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ) as mock_search:
+            with patch("musicbrainzngs.get_release_by_id") as mock_get:
+                candidates = search_release_candidates("Cool Artist", "Great Album")
 
-        # Only one call — the empty-title track is skipped.
-        assert mock_rec.call_count == 1
+        assert mock_search.call_count == 1
+        mock_get.assert_not_called()
+        assert len(candidates) == 3
+        assert all(c.tracks == {} for c in candidates)
+
+    def test_score_primary_date_tiebreak_ordering(self) -> None:
+        """Relevance score wins; earliest date breaks ties among equal scores."""
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ):
+            candidates = search_release_candidates("Cool Artist", "Great Album")
+
+        assert [c.mbid for c in candidates] == ["old-100", "new-100", "minimal-90"]
+
+    def test_default_limit_is_ten(self) -> None:
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ) as mock_search:
+            search_release_candidates("Cool Artist", "Great Album")
+
+        assert mock_search.call_args.kwargs["limit"] == 10
+
+    def test_custom_limit_forwarded(self) -> None:
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ) as mock_search:
+            search_release_candidates("Cool Artist", "Great Album", limit=3)
+
+        assert mock_search.call_args.kwargs["limit"] == 3
+
+    def test_optional_fields_default_empty(self) -> None:
+        """Per-release optional MB search fields parse to empty defaults."""
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ):
+            candidates = search_release_candidates("Cool Artist", "Great Album")
+
+        minimal = candidates[-1]
+        assert minimal.mbid == "minimal-90"
+        assert minimal.release_date == ""
+        assert minimal.label == ""
+        assert minimal.release_type == ""
+        assert minimal.album_artist == ""
+
+    def test_parsed_shallow_fields(self) -> None:
+        """Fields present in search results land on the candidate."""
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ):
+            candidates = search_release_candidates("Cool Artist", "Great Album")
+
+        newest = next(c for c in candidates if c.mbid == "new-100")
+        assert newest.title == "Great Album"
+        assert newest.album_artist == "Cool Artist"
+        assert newest.release_date == "2021-05-01"
+        assert newest.label == "Reissue Label"
+        assert newest.release_type == "Album"
+
+    def test_edition_suffix_retry(self) -> None:
+        """Empty first search retries with the edition suffix stripped."""
+        empty: dict[str, Any] = {"release-list": []}
+        with patch(
+            "musicbrainzngs.search_releases",
+            side_effect=[empty, SEARCH_RESULT_SHALLOW],
+        ) as mock_search:
+            candidates = search_release_candidates(
+                "Cool Artist", "Great Album (Super Deluxe Edition)"
+            )
+
+        assert len(candidates) == 3
+        assert mock_search.call_count == 2
+        assert mock_search.call_args.kwargs["release"] == "Great Album"
+
+    def test_returns_empty_list_when_nothing_found(self) -> None:
+        empty: dict[str, Any] = {"release-list": []}
+        with patch("musicbrainzngs.search_releases", return_value=empty):
+            assert search_release_candidates("Unknown", "???") == []
+
+    def test_skips_unparseable_candidate(self) -> None:
+        """A candidate the parser rejects is skipped, not fatal."""
+        broken: dict[str, Any] = {
+            "release-list": [
+                {"title": "No Id Here", "ext:score": "100"},  # missing "id"
+                dict(SEARCH_RESULT_SHALLOW["release-list"][2]),
+            ]
+        }
+        with patch("musicbrainzngs.search_releases", return_value=broken):
+            candidates = search_release_candidates("Cool Artist", "Great Album")
+
+        assert [c.mbid for c in candidates] == ["minimal-90"]
+
+
+class TestLookupReleaseByMbid:
+    def test_returns_parsed_release_with_tracks(self) -> None:
+        with patch(
+            "musicbrainzngs.get_release_by_id", return_value=SAMPLE_RELEASE_DETAIL
+        ):
+            release = lookup_release_by_mbid("abc-123")
+
+        assert release.mbid == "abc-123"
+        assert len(release.tracks) == 2
+
+    def test_merged_mbid_returns_canonical_id(self) -> None:
+        """A merged MBID resolves to the merge target; callers get the new id."""
+        with patch(
+            "musicbrainzngs.get_release_by_id", return_value=SAMPLE_RELEASE_DETAIL
+        ):
+            release = lookup_release_by_mbid("merged-away-mbid")
+
+        assert release.mbid == "abc-123"
+
+    def test_fails_fast_on_404(self) -> None:
+        """HTTP 404 raises ReleaseNotFoundError immediately — no retry backoff."""
+        not_found = musicbrainzngs.ResponseError(cause=MagicMock(code=404))
+        with patch(
+            "musicbrainzngs.get_release_by_id", side_effect=not_found
+        ) as mock_get:
+            with patch("kamp_daemon.tagger.time.sleep") as mock_sleep:
+                with pytest.raises(ReleaseNotFoundError):
+                    lookup_release_by_mbid("gone-mbid")
+
+        assert mock_get.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_release_not_found_is_a_tagging_error(self) -> None:
+        """Existing except TaggingError handlers keep working."""
+        assert issubclass(ReleaseNotFoundError, TaggingError)
+
+    def test_retries_on_transient_error(self) -> None:
+        """Non-404 web service errors still ride the retry backoff."""
+        call_count = 0
+
+        def flaky(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise musicbrainzngs.WebServiceError("503")
+            return SAMPLE_RELEASE_DETAIL
+
+        with patch("musicbrainzngs.get_release_by_id", side_effect=flaky):
+            with patch("kamp_daemon.tagger.time.sleep"):
+                release = lookup_release_by_mbid("abc-123")
+
+        assert call_count == 3
+        assert release.mbid == "abc-123"
 
 
 # ---------------------------------------------------------------------------

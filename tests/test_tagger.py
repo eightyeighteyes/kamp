@@ -15,6 +15,8 @@ from kamp_daemon.tagger import (
     ReleaseNotFoundError,
     TaggingError,
     TrackInfo,
+    _BASE_INCLUDES,
+    _DETAIL_INCLUDES,
     _lookup_release_by_acoustid,
     _lookup_release_by_recordings,
     _parse_release,
@@ -470,6 +472,135 @@ class TestParseReleaseMultiArtist:
 
         assert release.artist == "Ali & Charif Megarbane"
         assert release.album_artist == "Ali & Charif Megarbane"
+
+
+# ---------------------------------------------------------------------------
+# Per-track artist credit (KAMP-583)
+# ---------------------------------------------------------------------------
+
+# A compilation: the release is credited to "Various Artists" while each track
+# carries its own artist-credit. Deliberately NOT SAMPLE_RELEASE_DETAIL — that
+# fixture is shared by ~24 tests that assert TrackInfo equality, and giving its
+# tracks an artist credit would flip TrackInfo.artist non-empty for all of them.
+COMPILATION_RELEASE_DETAIL: dict[str, Any] = {
+    "release": {
+        "id": "comp-1",
+        "title": "A Compilation",
+        "date": "1999-01-01",
+        "artist-credit": [{"name": "Various Artists"}],
+        "release-group": {"id": "rg-comp", "primary-type": "Album"},
+        "medium-list": [
+            {
+                "position": "1",
+                "track-list": [
+                    # Track-level credit: what is printed on THIS release.
+                    {
+                        "number": "1",
+                        "position": "1",
+                        "artist-credit": [{"name": "First Act"}],
+                        "recording": {"id": "rec-1", "title": "First Track"},
+                    },
+                    # Multi-artist credit with a joinphrase.
+                    {
+                        "number": "2",
+                        "position": "2",
+                        "artist-credit": [
+                            {"name": "Ali"},
+                            " & ",
+                            {"name": "Charif Megarbane"},
+                        ],
+                        "recording": {"id": "rec-2", "title": "Second Track"},
+                    },
+                    # No `name` key — only the nested artist.name (the shape the
+                    # existing SAMPLE_RELEASE fixture uses).
+                    {
+                        "number": "3",
+                        "position": "3",
+                        "artist-credit": [{"artist": {"name": "Nested Only"}}],
+                        "recording": {"id": "rec-3", "title": "Third Track"},
+                    },
+                    # No artist credit at all → empty, never a crash.
+                    {
+                        "number": "4",
+                        "position": "4",
+                        "recording": {"id": "rec-4", "title": "Fourth Track"},
+                    },
+                ],
+            }
+        ],
+    }
+}
+
+
+class TestParseReleaseTrackArtist:
+    def _tracks(self) -> dict[str, TrackInfo]:
+        return _parse_release(COMPILATION_RELEASE_DETAIL["release"]).tracks
+
+    def test_track_level_credit_is_parsed(self) -> None:
+        assert self._tracks()["1-1"].artist == "First Act"
+
+    def test_multi_artist_joinphrase_is_flattened(self) -> None:
+        assert self._tracks()["1-2"].artist == "Ali & Charif Megarbane"
+
+    def test_credit_without_name_key_uses_nested_artist_name(self) -> None:
+        assert self._tracks()["1-3"].artist == "Nested Only"
+
+    def test_missing_credit_is_empty_string(self) -> None:
+        assert self._tracks()["1-4"].artist == ""
+
+    def test_trailing_joinphrase_is_stripped(self) -> None:
+        """A dangling joinphrase (MB emits e.g. 'A feat. ') must not leave
+        trailing whitespace on the artist string."""
+        raw = {
+            "id": "r1",
+            "title": "T",
+            "artist-credit": [{"name": "AA"}],
+            "medium-list": [
+                {
+                    "position": "1",
+                    "track-list": [
+                        {
+                            "number": "1",
+                            "position": "1",
+                            "artist-credit": [{"name": "Solo Act"}, " & "],
+                            "recording": {"id": "rec-1", "title": "T1"},
+                        }
+                    ],
+                }
+            ],
+        }
+        assert _parse_release(raw).tracks["1-1"].artist == "Solo Act &"
+
+    def test_album_artist_parse_is_unaffected(self) -> None:
+        """Track credits must not disturb the release-level artist parse."""
+        release = _parse_release(COMPILATION_RELEASE_DETAIL["release"])
+        assert release.album_artist == "Various Artists"
+
+    def test_release_without_track_credits_leaves_artist_empty(self) -> None:
+        """Releases fetched without the artist-credits include (the pipeline
+        paths) parse fine and simply carry no track artist."""
+        release = _parse_release(SAMPLE_RELEASE_DETAIL["release"])
+        assert all(t.artist == "" for t in release.tracks.values())
+
+
+class TestMusicBrainzIncludes:
+    def test_detail_includes_request_artist_credits(self) -> None:
+        """The manual-modal hydration path must ask MB for artist credits, or
+        every track artist silently comes back empty."""
+        assert "artist-credits" in _DETAIL_INCLUDES
+        for inc in _BASE_INCLUDES:
+            assert inc in _DETAIL_INCLUDES
+
+    def test_base_includes_omit_artist_credits(self) -> None:
+        """The pipeline paths don't use track artists — keep their payloads lean."""
+        assert "artist-credits" not in _BASE_INCLUDES
+
+    def test_lookup_release_by_mbid_uses_detail_includes(self) -> None:
+        with patch(
+            "musicbrainzngs.get_release_by_id", return_value=COMPILATION_RELEASE_DETAIL
+        ) as mock_get:
+            lookup_release_by_mbid("comp-1")
+        assert mock_get.call_args.kwargs["includes"] == _DETAIL_INCLUDES
 
 
 class TestEditionSuffixRetry:

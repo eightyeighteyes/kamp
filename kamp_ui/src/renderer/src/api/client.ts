@@ -737,6 +737,9 @@ export type MusicBrainzTrack = {
   disc_number: number
   title: string
   recording_mbid: string
+  // Credited track artist (KAMP-583) — diverges from the album artist on
+  // compilations. Empty when MB has no credit for the track.
+  artist: string
 }
 
 // Shallow search candidate — deliberately has no tracks field, so an

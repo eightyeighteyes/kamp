@@ -41,6 +41,7 @@ def _fake_release(mbid: str = "release-1") -> MagicMock:
     track.disc = 1
     track.title = "MB Track 1"
     track.recording_mbid = "rec-1"
+    track.artist = "MB Track Artist"
 
     r = MagicMock()
     r.mbid = mbid
@@ -346,6 +347,8 @@ class TestGetMusicBrainzRelease:
         assert len(data["tracks"]) == 1
         assert data["tracks"][0]["title"] == "MB Track 1"
         assert data["tracks"][0]["recording_mbid"] == "rec-1"
+        # KAMP-583: per-track credited artist reaches the modal.
+        assert data["tracks"][0]["artist"] == "MB Track Artist"
         release_fn.assert_called_once_with("release-1")
 
     def test_tracks_sorted_by_disc_then_number(
@@ -358,6 +361,8 @@ class TestGetMusicBrainzRelease:
         t1.number, t1.disc, t1.title, t1.recording_mbid = 2, 1, "Second", "rec-2"
         t2.number, t2.disc, t2.title, t2.recording_mbid = 1, 2, "Disc2T1", "rec-3"
         t3.number, t3.disc, t3.title, t3.recording_mbid = 1, 1, "First", "rec-1"
+        for t in (t1, t2, t3):
+            t.artist = "A"
         release = _fake_release()
         release.tracks = {"1-2": t1, "2-1": t2, "1-1": t3}
 

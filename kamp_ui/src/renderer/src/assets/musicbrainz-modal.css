@@ -204,6 +204,13 @@
   border-bottom: none;
 }
 
+/* Track artist sub-row (KAMP-583): hangs off the track row above it, so it
+   drops the divider and tucks in under its parent. */
+.mb-cmp-row--sub {
+  border-bottom: none;
+  padding-top: 0;
+}
+
 /* Field label */
 .mb-cmp-row__label {
   font-size: 11px;
@@ -212,6 +219,12 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.mb-cmp-row__label--sub {
+  padding-left: 12px;
+  font-style: italic;
+  opacity: 0.75;
 }
 
 /* Values column — stacked local on top, MB below */

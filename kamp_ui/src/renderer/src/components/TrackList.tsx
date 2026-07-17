@@ -335,17 +335,22 @@ export function TrackList(): React.JSX.Element | null {
       await patchAlbumTags(album.album_artist, album.album, tagOpts)
     }
 
-    // 3. Track titles (sequential) + recording MBIDs (parallel)
-    const mbTrackMap = new Map(
-      mbRelease.tracks.map((t) => [`${t.disc_number}-${t.track_number}`, t])
-    )
+    // 3. Track titles + artists (sequential) + recording MBIDs (parallel).
+    // The modal already resolved each local track to its MB counterpart, so
+    // there is no key derivation here to drift from the modal's (KAMP-583).
+    const localById = new Map(tracks.map((t) => [t.id, t]))
     const mbidPromises: Promise<unknown>[] = []
-    for (const local of tracks) {
-      const key = `${local.disc_number}-${local.track_number}`
-      const mbTrack = mbTrackMap.get(key)
-      if (!mbTrack) continue
-      if (payload.tracks[key] === 'mb' && local.title !== mbTrack.title) {
+    for (const entry of payload.tracks) {
+      const local = localById.get(entry.localId)
+      if (!local) continue
+      const mbTrack = entry.mb
+      // Title and artist both rewrite this file's tags: keep them sequential
+      // (never in mbidPromises) so two mutagen writes can't race on one file.
+      if (entry.title === 'mb' && local.title !== mbTrack.title) {
         await patchTrackTitle(local.id, mbTrack.title)
+      }
+      if (entry.artist === 'mb' && mbTrack.artist && local.artist !== mbTrack.artist) {
+        await patchTrackArtist(local.id, mbTrack.artist)
       }
       if (mbTrack.recording_mbid && local.mb_recording_id !== mbTrack.recording_mbid) {
         mbidPromises.push(patchTrackMeta(local.id, mbTrack.recording_mbid))

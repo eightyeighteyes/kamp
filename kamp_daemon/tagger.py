@@ -33,6 +33,15 @@ _EDITION_RE = re.compile(
 )
 
 
+# MusicBrainz `inc` parameters. _BASE_INCLUDES covers every lookup; the manual
+# album-edit hydration additionally requests artist credits so each track's
+# credited artist (the compilation case) comes back — KAMP-583. The coupling is
+# named rather than implicit because _parse_release is shared: a caller that
+# omits the include silently yields TrackInfo.artist == "".
+_BASE_INCLUDES = ["artists", "recordings", "release-groups", "labels"]
+_DETAIL_INCLUDES = _BASE_INCLUDES + ["artist-credits"]
+
+
 class TaggingError(Exception):
     pass
 
@@ -82,6 +91,10 @@ class TrackInfo:
     title: str
     recording_mbid: str = ""
     total_tracks: int = 0
+    # Credited track artist (KAMP-583). Populated ONLY for releases fetched via
+    # lookup_release_by_mbid, whose _DETAIL_INCLUDES requests artist credits;
+    # the pipeline paths use _BASE_INCLUDES and leave this empty.
+    artist: str = ""
 
 
 def is_tagged(path: Path) -> bool:
@@ -608,7 +621,7 @@ def _lookup_release_by_acoustid(
     detail = _mb_call(
         musicbrainzngs.get_release_by_id,
         winning_mbid,
-        includes=["artists", "recordings", "release-groups", "labels"],
+        includes=_BASE_INCLUDES,
     )
     return _parse_release(detail["release"]), file_acoustid_ids
 
@@ -879,7 +892,7 @@ def _lookup_release_by_recordings(audio_files: list[Path]) -> ReleaseInfo:
     detail = _mb_call(
         musicbrainzngs.get_release_by_id,
         winning_mbid,
-        includes=["artists", "recordings", "release-groups", "labels"],
+        includes=_BASE_INCLUDES,
     )
     return _parse_release(detail["release"])
 
@@ -940,7 +953,7 @@ def lookup_release_from_tracks(
         detail = _mb_call(
             musicbrainzngs.get_release_by_id,
             winning_mbid,
-            includes=["artists", "recordings", "release-groups", "labels"],
+            includes=_BASE_INCLUDES,
         )
         return _parse_release(detail["release"])
 
@@ -986,11 +999,14 @@ def lookup_release_by_mbid(mbid: str) -> ReleaseInfo:
     missing release is deterministic).  Note that a merged MBID resolves to
     the merge target, so the returned ReleaseInfo.mbid may differ from the
     requested one; callers should use the returned id.
+
+    Uses _DETAIL_INCLUDES: this is the manual album-edit picker's path, the
+    only consumer of per-track artist credits (KAMP-583).
     """
     detail = _mb_call(
         musicbrainzngs.get_release_by_id,
         mbid,
-        includes=["artists", "recordings", "release-groups", "labels"],
+        includes=_DETAIL_INCLUDES,
     )
     return _parse_release(detail["release"])
 
@@ -1099,7 +1115,7 @@ def _search_releases(artist: str, album: str) -> list[ReleaseInfo]:
         detail = _mb_call(
             musicbrainzngs.get_release_by_id,
             candidate_mbid,
-            includes=["artists", "recordings", "release-groups", "labels"],
+            includes=_BASE_INCLUDES,
         )
         try:
             releases.append(_parse_release(detail["release"]))
@@ -1108,6 +1124,28 @@ def _search_releases(artist: str, album: str) -> list[ReleaseInfo]:
             continue
 
     return releases
+
+
+def _flatten_artist_credit(artist_credit: list[Any]) -> str:
+    """Render a musicbrainzngs artist-credit list as its display string.
+
+    musicbrainzngs returns a flat list alternating between name-credit dicts
+    and joinphrase strings (e.g. [{"name": "Ali"}, " & ", {"name": "Charif"}]),
+    so the display name is the walk over both. A credit dict may carry the
+    printed name directly or only the nested artist's name.
+
+    (musicbrainzngs computes the same thing as "artist-credit-phrase", but only
+    when it parses real XML — our tests mock get_release_by_id and hand-write
+    dicts, which never carry that key, so the walk stays ours.)
+    """
+    return "".join(
+        (
+            item
+            if isinstance(item, str)
+            else (item.get("name") or item.get("artist", {}).get("name", ""))
+        )
+        for item in artist_credit
+    ).strip()
 
 
 def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
@@ -1120,21 +1158,10 @@ def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
     release_type: str = release_group.get("primary-type", "")
     original_date: str = release_group.get("first-release-date", "")
 
-    # Artist credit — musicbrainzngs returns a flat list alternating between name-credit
-    # dicts and joinphrase strings (e.g. [{"name": "Ali"}, " & ", {"name": "Charif..."}]).
     artist_credit = raw.get("artist-credit", [])
     credits = [c for c in artist_credit if isinstance(c, dict)]
     artists = [c.get("name") or c.get("artist", {}).get("name", "") for c in credits]
-    # Reconstruct the display string by walking the raw list, taking names from dicts
-    # and joinphrases from interleaved strings.
-    artist = "".join(
-        (
-            item
-            if isinstance(item, str)
-            else (item.get("name") or item.get("artist", {}).get("name", ""))
-        )
-        for item in artist_credit
-    ).strip()
+    artist = _flatten_artist_credit(artist_credit)
     album_artist = artist
     artist_sort = " ".join(c.get("artist", {}).get("sort-name", "") for c in credits)
     album_artist_sort = artist_sort
@@ -1171,12 +1198,16 @@ def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
                 track_num = int(pos) if str(pos).isdigit() else 0
             recording = track_raw.get("recording", {})
             key = f"{disc_num}-{track_num}"
+            # Track-level credit is what this release prints for the track — the
+            # compilation case, where it diverges from the release artist. Empty
+            # unless the lookup requested _DETAIL_INCLUDES (KAMP-583).
             tracks[key] = TrackInfo(
                 number=track_num,
                 disc=disc_num,
                 title=recording.get("title", ""),
                 recording_mbid=recording.get("id", ""),
                 total_tracks=total_tracks,
+                artist=_flatten_artist_credit(track_raw.get("artist-credit", [])),
             )
 
     return ReleaseInfo(

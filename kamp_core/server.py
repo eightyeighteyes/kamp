@@ -628,6 +628,9 @@ class MusicBrainzTrackOut(BaseModel):
     disc_number: int
     title: str
     recording_mbid: str
+    # Credited track artist (KAMP-583). Empty unless the release was hydrated
+    # via lookup_release_by_mbid, which is the only path that requests it.
+    artist: str = ""
 
 
 class MusicBrainzReleaseOut(BaseModel):
@@ -1467,15 +1470,22 @@ def create_app(
         if (current and current.id == track_id) or (
             lookahead and lookahead.id == track_id
         ):
-            payload = _json.dumps(
-                {
-                    "old_path": str(old_path),
-                    "new_path": str(new_path),
-                    "title": req.title,
-                    "is_case_only": is_case_only,
-                }
-            )
-            op_id = index.queue_deferred_op("track_retag", track_id, payload)
+            data: dict[str, Any] = {
+                "old_path": str(old_path),
+                "new_path": str(new_path),
+                "title": req.title,
+                "is_case_only": is_case_only,
+            }
+            # deferred_ops is UNIQUE(track_id) with replace-on-insert, so a
+            # fresh payload would silently drop a pending artist write (the
+            # artist endpoint merges the other direction — keep it symmetric,
+            # KAMP-583).
+            pending = index.pending_deferred_ops_for_track(track_id)
+            if pending:
+                prior = _json.loads(pending[0].payload_json)
+                if prior.get("artist"):
+                    data["artist"] = prior["artist"]
+            op_id = index.queue_deferred_op("track_retag", track_id, _json.dumps(data))
             return JSONResponse(
                 status_code=202, content={"deferred": True, "op_id": op_id}
             )
@@ -2345,6 +2355,7 @@ def create_app(
                     disc_number=t.disc,
                     title=t.title,
                     recording_mbid=t.recording_mbid,
+                    artist=t.artist,
                 )
                 for t in sorted_tracks
             ],

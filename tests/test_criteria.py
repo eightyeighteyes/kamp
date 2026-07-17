@@ -169,11 +169,33 @@ def test_track_artist_is_not() -> None:
     assert params == ["Nickelback"]
 
 
+def test_track_genre_is_uses_track_genres_exists() -> None:
+    # KAMP-586: genre resolves via the normalized join, not the flat column.
+    frag, params, join = build_query(
+        _criteria(_group(_cond("track.genre", "is", "Jazz")))
+    )
+    assert "EXISTS" in frag
+    assert "track_genres" in frag
+    assert "g.name = ? COLLATE NOCASE" in frag
+    assert not frag.startswith("NOT")
+    assert params == ["Jazz"]
+    assert join is False
+
+
+def test_track_genre_is_not_negates_exists() -> None:
+    frag, params, _ = build_query(
+        _criteria(_group(_cond("track.genre", "is_not", "Jazz")))
+    )
+    assert "NOT EXISTS" in frag
+    assert params == ["Jazz"]
+
+
 def test_track_genre_contains_wraps_value() -> None:
     frag, params, _ = build_query(
         _criteria(_group(_cond("track.genre", "contains", "Rock")))
     )
-    assert "LIKE ?" in frag
+    assert "EXISTS" in frag
+    assert "g.name LIKE ?" in frag
     assert params == ["%Rock%"]
 
 
@@ -181,7 +203,8 @@ def test_track_genre_not_contains() -> None:
     frag, params, _ = build_query(
         _criteria(_group(_cond("track.genre", "not_contains", "Pop")))
     )
-    assert "NOT LIKE ?" in frag
+    assert "NOT EXISTS" in frag
+    assert "g.name LIKE ?" in frag
     assert params == ["%Pop%"]
 
 

@@ -13120,6 +13120,38 @@ class TestMultiValueGenre:
 
     # -- migration backfill --------------------------------------------------
 
+    def test_magic_playlist_genre_matches_multi_value_album(
+        self, tmp_path: Path
+    ) -> None:
+        """A `track.genre is "Jazz"` rule matches a track tagged ["Jazz","J-Pop"]
+        — the whole reason genre criteria must resolve via track_genres and not
+        the flat "; "-joined column (KAMP-586)."""
+        index = self._index(tmp_path)
+        index.upsert_many(
+            [
+                self._local(tmp_path / "1.mp3", ["Jazz", "J-Pop"]),
+                self._local(tmp_path / "2.mp3", ["Rock"], album="Other"),
+            ]
+        )
+        jazz_track = next(t for t in index.all_tracks() if "Jazz" in t.genre)
+        pid = index.create_magic_playlist(
+            "Jazz",
+            MagicCriteria(
+                groups=[
+                    Group(
+                        conditions=[
+                            Condition(field="track.genre", op="is", value="Jazz")
+                        ],
+                        match="all",
+                    )
+                ],
+                match="all",
+            ),
+        )
+        matched = index.evaluate_magic_playlist(pid)
+        index.close()
+        assert matched == [jazz_track.id]
+
     def test_migration_backfill_splits_mp3_composite(self, tmp_path: Path) -> None:
         """A pre-v56 DB whose tracks.genre holds a " / "-joined MP3 composite
         backfills into separate genre rows (no composite junk in the list)."""

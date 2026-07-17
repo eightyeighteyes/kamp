@@ -1188,6 +1188,40 @@ class TestPatchTrackArtistEndpoint:
         assert ops[0].op_type == "track_artist_retag"
         index.close()
 
+    def test_title_edit_preserves_pending_artist_op(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """The mirror of the merge below: queue_deferred_op is INSERT OR REPLACE
+        on UNIQUE(track_id), so a title edit after an artist edit on a PLAYING
+        track would silently drop the pending artist write (KAMP-583)."""
+        import json as _json
+
+        mp3, track = self._local_mp3_track(tmp_path)
+        client, index = self._client_with_track(
+            tmp_path, track, _mock_engine, _mock_queue
+        )
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+        _mock_queue.current.return_value = row
+
+        # Artist first this time, then title — the reverse of the Apply order.
+        resp1 = client.patch(
+            f"/api/v1/tracks/{row.id}/artist", json={"artist": "New Guy"}
+        )
+        assert resp1.status_code == 202
+        resp2 = client.patch(
+            f"/api/v1/tracks/{row.id}/tags", json={"title": "New Song"}
+        )
+        assert resp2.status_code == 202
+
+        ops = index.pending_deferred_ops_for_track(row.id)
+        assert len(ops) == 1
+        assert ops[0].op_type == "track_retag"
+        payload = _json.loads(ops[0].payload_json)
+        assert payload["title"] == "New Song"
+        assert payload["artist"] == "New Guy"
+        index.close()
+
     def test_augments_pending_retag_op_instead_of_replacing(
         self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
     ) -> None:

@@ -1031,3 +1031,193 @@ class TestAlbumRenameWithLockedTrack:
         payload = json.loads(ops[0].payload_json)
         assert "New Album" in payload["old_path"]
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Server endpoint: PATCH /api/v1/tracks/{track_id}/artist (KAMP-582)
+# ---------------------------------------------------------------------------
+
+
+class TestPatchTrackArtistEndpoint:
+    def _client_with_track(
+        self,
+        tmp_path: Path,
+        track: Track,
+        engine: MagicMock,
+        queue: MagicMock,
+    ) -> tuple[TestClient, LibraryIndex]:
+        db = LibraryIndex(tmp_path / "db.sqlite")
+        db.upsert_track(track)
+        app = create_app(
+            index=db,
+            engine=engine,
+            queue=queue,
+            library_path=tmp_path,
+        )
+        return TestClient(app, raise_server_exceptions=False), db
+
+    def _local_mp3_track(self, tmp_path: Path) -> tuple[Path, Track]:
+        mp3 = tmp_path / "Artist" / "2024 - Album" / "01 - Song.mp3"
+        mp3.parent.mkdir(parents=True)
+        _make_mp3(
+            mp3,
+            album_artist="Artist",
+            album="Album",
+            release_date="2024",
+            track="1",
+            title="Song",
+        )
+        track = _sample_track(
+            mp3,
+            title="Song",
+            artist="Old Guy",
+            album_artist="Artist",
+            album="Album",
+            release_date="2024",
+        )
+        return mp3, track
+
+    def test_updates_file_and_db_without_move(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        mp3, track = self._local_mp3_track(tmp_path)
+        client, index = self._client_with_track(
+            tmp_path, track, _mock_engine, _mock_queue
+        )
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+
+        resp = client.patch(
+            f"/api/v1/tracks/{row.id}/artist", json={"artist": "New Guy"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["artist"] == "New Guy"
+        # Tag written, file NOT moved (artist edits are tag-only).
+        assert mp3.exists()
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TPE1"]) == "New Guy"
+        updated = index.get_track_by_id(row.id)
+        assert updated is not None
+        assert updated.artist == "New Guy"
+        # Queue snapshot patched so Now Playing/SMTC/scrobbler see the edit.
+        _mock_queue.update_track_by_id.assert_called_once()
+        index.close()
+
+    def test_returns_404_for_unknown_track(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        mp3, track = self._local_mp3_track(tmp_path)
+        client, index = self._client_with_track(
+            tmp_path, track, _mock_engine, _mock_queue
+        )
+        resp = client.patch("/api/v1/tracks/99999/artist", json={"artist": "X"})
+        assert resp.status_code == 404
+        index.close()
+
+    def test_returns_400_for_remote_track(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        remote = _sample_track(
+            Path("bandcamp://S1/1"),
+            title="Stream",
+            ext="",
+            source="bandcamp",
+        )
+        client, index = self._client_with_track(
+            tmp_path, remote, _mock_engine, _mock_queue
+        )
+        row = index.get_track_by_path("bandcamp://S1/1")
+        assert row is not None
+
+        resp = client.patch(f"/api/v1/tracks/{row.id}/artist", json={"artist": "X"})
+        assert resp.status_code == 400
+        index.close()
+
+    def test_returns_500_and_keeps_db_when_file_write_fails(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        mp3, track = self._local_mp3_track(tmp_path)
+        client, index = self._client_with_track(
+            tmp_path, track, _mock_engine, _mock_queue
+        )
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+
+        with patch(
+            "kamp_core.library.write_artist_to_file",
+            side_effect=OSError("permission denied"),
+        ):
+            resp = client.patch(
+                f"/api/v1/tracks/{row.id}/artist", json={"artist": "New Guy"}
+            )
+
+        assert resp.status_code == 500
+        # File write failed before the DB update: canonical artist unchanged.
+        unchanged = index.get_track_by_id(row.id)
+        assert unchanged is not None
+        assert unchanged.artist == "Old Guy"
+        index.close()
+
+    def test_defers_file_write_when_track_is_playing(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        mp3, track = self._local_mp3_track(tmp_path)
+        client, index = self._client_with_track(
+            tmp_path, track, _mock_engine, _mock_queue
+        )
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+        _mock_queue.current.return_value = row
+
+        resp = client.patch(
+            f"/api/v1/tracks/{row.id}/artist", json={"artist": "New Guy"}
+        )
+
+        assert resp.status_code == 202
+        assert resp.json()["deferred"] is True
+        # DB (and thus UI) updates immediately; only the file write defers.
+        updated = index.get_track_by_id(row.id)
+        assert updated is not None
+        assert updated.artist == "New Guy"
+        # File untouched while the track is locked (fixture writes no TPE1).
+        tags = id3.ID3(str(mp3))
+        assert "TPE1" not in tags
+        ops = index.pending_deferred_ops_for_track(row.id)
+        assert len(ops) == 1
+        assert ops[0].op_type == "track_artist_retag"
+        index.close()
+
+    def test_augments_pending_retag_op_instead_of_replacing(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """UNIQUE(track_id) on deferred_ops means a naive second op would REPLACE
+        a pending title rename — the artist edit must merge into it instead."""
+        import json as _json
+
+        mp3, track = self._local_mp3_track(tmp_path)
+        client, index = self._client_with_track(
+            tmp_path, track, _mock_engine, _mock_queue
+        )
+        row = index.get_track_by_path(mp3)
+        assert row is not None
+        _mock_queue.current.return_value = row
+
+        # A title edit on the playing track queues a track_retag op.
+        resp1 = client.patch(
+            f"/api/v1/tracks/{row.id}/tags", json={"title": "New Song"}
+        )
+        assert resp1.status_code == 202
+        # An artist edit on the same playing track must not clobber it.
+        resp2 = client.patch(
+            f"/api/v1/tracks/{row.id}/artist", json={"artist": "New Guy"}
+        )
+        assert resp2.status_code == 202
+
+        ops = index.pending_deferred_ops_for_track(row.id)
+        assert len(ops) == 1
+        assert ops[0].op_type == "track_retag"
+        payload = _json.loads(ops[0].payload_json)
+        assert payload["title"] == "New Song"
+        assert payload["artist"] == "New Guy"
+        index.close()

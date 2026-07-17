@@ -6742,6 +6742,106 @@ class TestPatchTrackDisplayEndpoint:
 
         assert resp.status_code == 404
 
+    def test_sets_display_artist_without_touching_title(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """KAMP-582 partial-update semantics: a field absent from the request
+        is left untouched (a display_artist edit must not clear a display_title
+        override, and vice versa)."""
+        track = _bandcamp_track()
+        track.id = 7
+        updated = Track(**{**track.__dict__, "artist": "Edited Artist"})
+        updated.id = 7
+        mock_index.get_track_by_id.return_value = track
+        mock_index.update_track_display_artist.return_value = updated
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/tracks/7/display", json={"display_artist": "Edited Artist"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["artist"] == "Edited Artist"
+        mock_index.update_track_display_artist.assert_called_once_with(
+            7, "Edited Artist"
+        )
+        mock_index.update_track_display_title.assert_not_called()
+
+    def test_display_title_only_does_not_touch_artist(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = _bandcamp_track()
+        track.id = 7
+        mock_index.get_track_by_id.return_value = track
+        mock_index.update_track_display_title.return_value = track
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/tracks/7/display", json={"display_title": "Short"}
+        )
+
+        assert resp.status_code == 200
+        mock_index.update_track_display_artist.assert_not_called()
+
+    def test_explicit_null_clears_display_artist(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = _bandcamp_track()
+        track.id = 7
+        mock_index.get_track_by_id.return_value = track
+        mock_index.update_track_display_artist.return_value = track
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/tracks/7/display", json={"display_artist": None}
+        )
+
+        assert resp.status_code == 200
+        mock_index.update_track_display_artist.assert_called_once_with(7, None)
+
+    def test_empty_body_returns_400(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = _bandcamp_track()
+        track.id = 7
+        mock_index.get_track_by_id.return_value = track
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch("/api/v1/tracks/7/display", json={})
+
+        assert resp.status_code == 400
+
+    def test_patches_queue_snapshot(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        track = _bandcamp_track()
+        track.id = 7
+        mock_index.get_track_by_id.return_value = track
+        mock_index.update_track_display_artist.return_value = track
+
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        resp = TestClient(app).patch(
+            "/api/v1/tracks/7/display", json={"display_artist": "X"}
+        )
+
+        assert resp.status_code == 200
+        mock_queue.update_track_by_id.assert_called_once()
+
 
 class TestPatchAlbumDisplayEndpoint:
     """PATCH /api/v1/albums/display — display-only album title and artist override."""

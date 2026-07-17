@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 56
+_SCHEMA_VERSION = 57
 
 
 class NoStreamableVersionError(Exception):
@@ -161,7 +161,18 @@ class MagicCriteria:
         return cls(groups=[Group.from_dict(g) for g in d["groups"]], match=d["match"])
 
 
-_DDL = """\
+# Single source of truth for the tracks_fts schema (KAMP-601 added `genre`).
+# Reused by _DDL (fresh DBs) and _rebuild_fts's one-time recreate (existing DBs
+# gain the column since FTS5 can't ALTER). Keep in sync with _refresh_track_fts_row.
+_TRACKS_FTS_CREATE = """\
+CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
+    title, artist, album_artist, album, genre,
+    tokenize = 'unicode61'
+);"""
+
+# NOTE: _DDL is an f-string so it can embed _TRACKS_FTS_CREATE. It currently
+# contains no literal braces; any added must be doubled ({{ }}).
+_DDL = f"""\
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
@@ -310,12 +321,9 @@ CREATE TABLE IF NOT EXISTS albums (
 );
 
 -- FTS5 virtual table for full-text search across track metadata.
--- Indexed fields: title, artist, album_artist, album.
+-- Indexed fields: title, artist, album_artist, album, genre (KAMP-601).
 -- rowid maps to tracks.id so we can JOIN back for full track data.
-CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
-    title, artist, album_artist, album,
-    tokenize = 'unicode61'
-);
+{_TRACKS_FTS_CREATE}
 
 CREATE TABLE IF NOT EXISTS player_state (
     id         INTEGER PRIMARY KEY CHECK (id = 1),  -- single-row table
@@ -2385,7 +2393,18 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 56")
             self._conn.commit()
-            version = 56  # noqa: F841
+            version = 56
+
+        if version == 56:
+            # v56 -> v57 (KAMP-601): tracks_fts gains a genre column so free-text
+            # search matches genre. FTS5 can't ALTER, so _rebuild_fts recreates
+            # the table (genre is absent from it here) and reindexes, including
+            # the denormalized tracks.genre — so "jazz" matches a track tagged
+            # "Free Jazz". No data change beyond the index.
+            self._rebuild_fts()
+            self._conn.execute("UPDATE schema_version SET version = 57")
+            self._conn.commit()
+            version = 57  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -3349,6 +3368,20 @@ class LibraryIndex:
         cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
         }
+        # FTS5 can't ALTER, so grow the schema by recreating — but only when the
+        # genre column is missing (KAMP-601), which confines the destructive DDL
+        # to the one-time heal and leaves the ~10 runtime bulk callers as plain
+        # DELETE+INSERT (no schema-cookie churn across the connection pool).
+        # .execute (not executescript) keeps it inside the caller's transaction.
+        fts_cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(tracks_fts)").fetchall()
+        }
+        if "genre" not in fts_cols:
+            self._conn.execute("DROP TABLE IF EXISTS tracks_fts")
+            self._conn.execute(_TRACKS_FTS_CREATE)
+        # Genre value is guarded on the tracks column existing: the early-heal
+        # (v2/v42/v50) path runs before genre is added, so insert '' there.
+        genre_val = ", genre" if "genre" in cols else ", ''"
         self._conn.execute("DELETE FROM tracks_fts")
         if "display_title" in cols:
             # display_artist arrived at v55, well after display_title (v35): this
@@ -3361,18 +3394,19 @@ class LibraryIndex:
                 else "artist"
             )
             self._conn.execute(
-                "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album) "
+                "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album, genre) "
                 "SELECT id"
                 ", COALESCE(display_title, title)"
                 f", {artist_expr}"
                 ", COALESCE(display_album_artist, album_artist)"
                 ", COALESCE(display_album, album)"
+                f"{genre_val}"
                 " FROM tracks"
             )
         else:
             self._conn.execute(
-                "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album) "
-                "SELECT id, title, artist, album_artist, album FROM tracks"
+                "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album, genre) "
+                f"SELECT id, title, artist, album_artist, album{genre_val} FROM tracks"
             )
         self._conn.execute("DELETE FROM playlists_fts")
         self._conn.execute(
@@ -3388,12 +3422,13 @@ class LibraryIndex:
         """
         self._conn.execute("DELETE FROM tracks_fts WHERE rowid=?", (track_id,))
         self._conn.execute(
-            "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album)"
+            "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album, genre)"
             " SELECT id"
             ", COALESCE(display_title, title)"
             ", COALESCE(display_artist, artist)"
             ", COALESCE(display_album_artist, album_artist)"
             ", COALESCE(display_album, album)"
+            ", genre"
             " FROM tracks WHERE id=?",
             (track_id,),
         )
@@ -6073,6 +6108,13 @@ class LibraryIndex:
         NOCASE-unique genres table), rewrites the track's track_genres rows, and
         syncs the denormalized tracks.genre so the normalized and display forms
         never drift. Caller commits.
+
+        NOTE (KAMP-601): this updates tracks.genre but does NOT refresh the FTS
+        index. Runtime callers must reindex afterwards (apply_genres calls
+        _refresh_track_fts_row; the scanner's upsert_many ends in _rebuild_fts) or
+        genre search goes stale. It is intentionally left out here because this
+        also runs inside the v56 migration backfill, where _refresh_track_fts_row
+        is forbidden — future runtime producers (KAMP-587/588/591) must reindex.
         """
         seen: dict[str, str] = {}
         for raw in names:
@@ -6147,6 +6189,12 @@ class LibraryIndex:
         ]
         for album_id in album_ids:
             self._refresh_album_genre(album_id)
+        # Keep the FTS genre column current so an edited genre is immediately
+        # searchable (KAMP-601), mirroring update_track_artist. Per-row reindex,
+        # not a full _rebuild_fts, since apply_genres can be an album/library-wide
+        # bulk call. Before the commit so genre + FTS land atomically.
+        for track_id in track_ids:
+            self._refresh_track_fts_row(track_id)
         self._conn.commit()
         if self.on_fields_changed:
             self.on_fields_changed({"track.genre"})

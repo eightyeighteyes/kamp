@@ -1869,6 +1869,54 @@ class TestSearchEndpoint:
         assert len(data["playlists"]) == 1
         assert data["playlists"][0]["id"] == 3
 
+    def test_genre_query_lights_up_all_facets(
+        self,
+        tmp_path: Path,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Real DB (KAMP-601): a genre query returns the matching track, its
+        album, and a playlist containing it — the endpoint fans matched tracks
+        out to every facet with no genre-specific endpoint code."""
+        import mutagen.id3 as id3
+
+        from kamp_core.library import LibraryIndex
+
+        mp3 = tmp_path / "01.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                Track(
+                    file_path=mp3,
+                    title="Naima",
+                    artist="Coltrane",
+                    album_artist="John Coltrane",
+                    album="Giant Steps",
+                    release_date="1960",
+                    track_number=1,
+                    disc_number=1,
+                    ext="mp3",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    genres=["Jazz"],
+                )
+            ]
+        )
+        pl = index.create_playlist("Faves")
+        index.add_track_to_playlist(pl["id"], str(mp3))
+
+        app = create_app(index=index, engine=mock_engine, queue=mock_queue)
+        data = TestClient(app).get("/api/v1/search?q=jazz").json()
+        index.close()
+
+        assert [t["title"] for t in data["tracks"]] == ["Naima"]
+        assert any(a["album"] == "Giant Steps" for a in data["albums"])
+        assert any(p["title"] == "Faves" for p in data["playlists"])
+
 
 # ---------------------------------------------------------------------------
 # UI state endpoints

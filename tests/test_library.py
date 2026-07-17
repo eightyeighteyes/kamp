@@ -2866,6 +2866,40 @@ class TestTagReaders:
         assert track.title == ""
         assert track.ext == "ogg"
 
+    def test_read_mp3_multi_value_genre(self, tmp_path: Path) -> None:
+        # KAMP-586: a TCON with multiple values reads back as a genres list.
+        mp3 = tmp_path / "multi.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TCON"] = id3.TCON(encoding=3, text=["Jazz", "J-Pop"])
+        tags.save(str(mp3))
+        track = _read_mp3_tags(mp3)
+        assert track.genres == ["Jazz", "J-Pop"]
+
+    def test_read_m4a_multi_value_genre(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "multi.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {"\xa9gen": ["Jazz", "J-Pop"], "\xa9nam": ["T"]}
+        mock_audio.info.length = 1.0
+        with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
+            track = _read_m4a_tags(m4a)
+        assert track.genres == ["Jazz", "J-Pop"]
+
+    def test_read_vorbis_multi_value_genre(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "multi.ogg"
+        ogg.write_bytes(b"\x00" * 8)
+        mock_audio = MagicMock()
+        # Vorbis comments: repeated GENRE keys arrive as a list.
+        mock_audio.tags = {"genre": ["Jazz", "J-Pop"], "title": ["T"]}
+        mock_audio.pictures = []
+        mock_audio.info.length = 1.0
+        with patch(
+            "kamp_core.library.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            track = _read_vorbis_tags(ogg, is_flac=False)
+        assert track.genres == ["Jazz", "J-Pop"]
+
     def test_read_tags_logs_and_returns_none_on_unexpected_error(
         self, tmp_path: Path
     ) -> None:
@@ -6345,6 +6379,46 @@ class TestWriteMetaTagsToFile:
         assert str(tags["TCON"]) == "Blues"
         assert str(tags["TPUB"]) == "Chess Records"
         assert str(tags["TDRC"]) == "1958"
+
+    def test_writes_multi_value_genre_to_mp3_roundtrip(self, tmp_path: Path) -> None:
+        # KAMP-586: multi-value genres round-trip through the real ID3 TCON frame
+        # and back out via the reader as a list.
+        mp3 = tmp_path / "track.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        id3.ID3().save(str(mp3))
+
+        write_meta_tags_to_file(mp3, genres=["Jazz", "J-Pop"])
+
+        assert _read_mp3_tags(mp3).genres == ["Jazz", "J-Pop"]
+
+    def test_empty_genres_clears_mp3_tcon(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "track.mp3"
+        mp3.write_bytes(b"\xff\xfb" * 64)
+        tags = id3.ID3()
+        tags["TCON"] = id3.TCON(encoding=3, text=["Jazz"])
+        tags.save(str(mp3))
+
+        write_meta_tags_to_file(mp3, genres=[])
+
+        assert id3.ID3(str(mp3)).get("TCON") is None
+
+    def test_writes_multi_value_genre_to_flac(self, tmp_path: Path) -> None:
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"\x00" * 8)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_core.library.mutagen.flac.FLAC", return_value=mock_audio):
+            write_meta_tags_to_file(flac, genres=["Jazz", "J-Pop"])
+        assert mock_audio.tags["GENRE"] == ["Jazz", "J-Pop"]
+
+    def test_writes_multi_value_genre_to_m4a(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
+            write_meta_tags_to_file(m4a, genres=["Jazz", "J-Pop"])
+        assert mock_audio.tags["\xa9gen"] == ["Jazz", "J-Pop"]
 
     def test_writes_genre_and_label_to_m4a(self, tmp_path: Path) -> None:
         import mutagen.mp4

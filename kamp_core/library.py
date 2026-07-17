@@ -7958,6 +7958,10 @@ def _read_mp3_tags(path: Path) -> Track:
         return str(frame).replace("\x00", " / ")
 
     artist = _str("TPE1")
+    # Multi-value genre (KAMP-586): a TCON frame's .text is already the list of
+    # separate values; the legacy `genre` string keeps its " / "-join for display.
+    _tcon = tags.get("TCON")
+    genres = [str(g).strip() for g in (_tcon.text if _tcon else []) if str(g).strip()]
     return Track(
         file_path=path,
         ext="mp3",
@@ -7973,6 +7977,7 @@ def _read_mp3_tags(path: Path) -> Track:
         or _str("TXXX:MusicBrainz Release Id"),
         mb_recording_id=_str("TXXX:MusicBrainz Track Id"),
         genre=_str("TCON"),
+        genres=genres,
         label=_str("TPUB"),
         duration=duration,
         sale_item_id=_str("TXXX:KAMP_SALE_ITEM_ID"),
@@ -8006,6 +8011,9 @@ def _read_m4a_tags(path: Path) -> Track:
     disc_number = disk[0][0] if disk else 1
 
     artist = _s("\xa9ART")
+    # Multi-value genre (KAMP-586): \xa9gen is a list of values.
+    _gen_vals = tags.get("\xa9gen") or []
+    genres = [str(v).strip() for v in _gen_vals if str(v).strip()]
     return Track(
         file_path=path,
         ext="m4a",
@@ -8021,6 +8029,7 @@ def _read_m4a_tags(path: Path) -> Track:
         or _s("----:com.apple.iTunes:MusicBrainz Release Id"),
         mb_recording_id=_s("----:com.apple.iTunes:MusicBrainz Track Id"),
         genre=_s("\xa9gen"),
+        genres=genres,
         label=_s("----:com.apple.iTunes:LABEL"),
         duration=duration,
         sale_item_id=_s("----:com.apple.iTunes:KAMP_SALE_ITEM_ID"),
@@ -8057,6 +8066,9 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
         return vals[0] if vals else ""
 
     artist = _s("ARTIST")
+    # Multi-value genre (KAMP-586): Vorbis allows repeated GENRE comments; the
+    # dict above normalized them to a list.
+    genres = [str(g).strip() for g in tags.get("GENRE", []) if str(g).strip()]
     return Track(
         file_path=path,
         ext="flac" if is_flac else "ogg",
@@ -8072,6 +8084,7 @@ def _read_vorbis_tags(path: Path, *, is_flac: bool) -> Track:
         mb_release_id=_s("MUSICBRAINZ_ALBUMID"),
         mb_recording_id=_s("MUSICBRAINZ_TRACKID"),
         genre=_s("GENRE"),
+        genres=genres,
         label=_s("LABEL") or _s("ORGANIZATION"),
         duration=duration,
         sale_item_id=_s("KAMP_SALE_ITEM_ID"),
@@ -8201,6 +8214,7 @@ def write_meta_tags_to_file(
     path: Path,
     *,
     genre: str | None = None,
+    genres: list[str] | None = None,
     label: str | None = None,
     release_date: str | None = None,
     mb_release_id: str | None = None,
@@ -8209,15 +8223,30 @@ def write_meta_tags_to_file(
 
     Only the fields that are not None are written; the others are left
     unchanged on disk.  This is a tag-only operation — no file rename occurs.
+
+    Genre is multi-value (KAMP-586): pass *genres* (a list) to write native
+    multi-value tags; the legacy scalar *genre* is accepted for back-compat and
+    treated as a single-element list. An empty list clears the genre tag.
     """
+    # Resolve to one effective genre list (None = leave unchanged).
+    genre_list: list[str] | None
+    if genres is not None:
+        genre_list = [g for g in genres if g.strip()]
+    elif genre is not None:
+        genre_list = [genre] if genre.strip() else []
+    else:
+        genre_list = None
+
     suffix = path.suffix.lower()
     if suffix == ".mp3":
         try:
             tags = id3.ID3(str(path))
         except Exception:
             tags = id3.ID3()
-        if genre is not None:
-            tags["TCON"] = id3.TCON(encoding=3, text=genre)
+        if genre_list is not None:
+            tags.delall("TCON")
+            if genre_list:
+                tags["TCON"] = id3.TCON(encoding=3, text=genre_list)
         if label is not None:
             tags["TPUB"] = id3.TPUB(encoding=3, text=label)
         if release_date is not None:
@@ -8231,8 +8260,11 @@ def write_meta_tags_to_file(
         audio = mutagen.mp4.MP4(str(path))
         if audio.tags is None:
             audio.add_tags()
-        if genre is not None:
-            audio.tags["\xa9gen"] = [genre]  # type: ignore[index]
+        if genre_list is not None:
+            if genre_list:
+                audio.tags["\xa9gen"] = genre_list  # type: ignore[index]
+            else:
+                audio.tags.pop("\xa9gen", None)  # type: ignore[union-attr]
         if label is not None:
             audio.tags["----:com.apple.iTunes:LABEL"] = [  # type: ignore[index]
                 mutagen.mp4.MP4FreeForm(label.encode())
@@ -8244,25 +8276,19 @@ def write_meta_tags_to_file(
                 mutagen.mp4.MP4FreeForm(mb_release_id.encode())
             ]
         audio.save()
-    elif suffix == ".flac":
-        audio = mutagen.flac.FLAC(str(path))
+    elif suffix in (".flac", ".ogg"):
+        audio = (
+            mutagen.flac.FLAC(str(path))
+            if suffix == ".flac"
+            else mutagen.oggvorbis.OggVorbis(str(path))
+        )
         if audio.tags is None:
             audio.add_tags()
-        if genre is not None:
-            audio.tags["GENRE"] = [genre]  # type: ignore[index]
-        if label is not None:
-            audio.tags["LABEL"] = [label]  # type: ignore[index]
-        if release_date is not None:
-            audio.tags["DATE"] = [release_date]  # type: ignore[index]
-        if mb_release_id is not None:
-            audio.tags["MUSICBRAINZ_ALBUMID"] = [mb_release_id]  # type: ignore[index]
-        audio.save()
-    elif suffix == ".ogg":
-        audio = mutagen.oggvorbis.OggVorbis(str(path))
-        if audio.tags is None:
-            audio.add_tags()
-        if genre is not None:
-            audio.tags["GENRE"] = [genre]  # type: ignore[index]
+        if genre_list is not None:
+            if genre_list:
+                audio.tags["GENRE"] = genre_list  # type: ignore[index]
+            else:
+                audio.tags.pop("GENRE", None)  # type: ignore[union-attr]
         if label is not None:
             audio.tags["LABEL"] = [label]  # type: ignore[index]
         if release_date is not None:

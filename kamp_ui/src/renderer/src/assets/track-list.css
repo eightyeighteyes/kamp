@@ -1217,6 +1217,97 @@
   padding-bottom: 0;
 }
 
+/* Multi-value genre chips + autocomplete (KAMP-586) */
+.genre-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.genre-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--accent-dim);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.genre-chip-remove {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 1px;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.genre-chip-remove:hover {
+  opacity: 1;
+}
+
+.genre-chips-input-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 80px;
+}
+
+.genre-chips-input {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  padding: 1px 0;
+  width: 100%;
+  min-width: 0;
+}
+
+.genre-autocomplete {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 2px);
+  left: 0;
+  min-width: 140px;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface-raised, #22242b);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.genre-autocomplete-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.genre-autocomplete-item:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.08));
+}
+
 /* Copy-to-clipboard button for read-only fields (e.g. MusicBrainz ID) */
 .meta-field-copy-btn {
   background: none;

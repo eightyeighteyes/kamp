@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 54
+_SCHEMA_VERSION = 55
 
 
 class NoStreamableVersionError(Exception):
@@ -194,7 +194,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     -- NULL means "use the canonical value from Bandcamp".
     display_title        TEXT,
     display_album        TEXT,
-    display_album_artist TEXT
+    display_album_artist TEXT,
+    display_artist       TEXT
 );
 
 -- Canonical-track model, expand phase (KAMP-535, epic KAMP-533). A track's
@@ -719,13 +720,15 @@ class DownloadOverrides:
     ``album_artist`` / ``album`` are the *effective* names to stamp on the
     downloaded files (user display override, else synced canonical, else the
     collection ledger) so a download matches its streaming origin — empty only
-    when the item is entirely unknown. ``titles`` is keyed by track_number and
-    holds only the tracks the user actually renamed.
+    when the item is entirely unknown. ``titles`` / ``artists`` are keyed by
+    track_number and hold only the tracks the user actually edited (KAMP-582
+    added per-track artist overrides).
     """
 
     album_artist: str
     album: str
     titles: dict[int, str]
+    artists: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -2305,7 +2308,18 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 54")
             self._conn.commit()
-            version = 54  # noqa: F841
+            version = 54
+
+        if version == 54:
+            # v54 -> v55 (KAMP-582): per-track display artist override for
+            # streaming tracks, sibling of display_title (v35). Unconstrained
+            # column → plain ALTER; presence-guarded for idempotent re-runs.
+            track_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tracks)")}
+            if "display_artist" not in track_cols:
+                self._conn.execute("ALTER TABLE tracks ADD COLUMN display_artist TEXT")
+            self._conn.execute("UPDATE schema_version SET version = 55")
+            self._conn.commit()
+            version = 55  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -2790,6 +2804,15 @@ class LibraryIndex:
         )
         # Identity: streaming display_* win if the survivor's is NULL; non-empty
         # mb/genre/label fill a blank survivor field from the loser.
+        # display_artist (v55) is guarded: this merge also runs from the v42/v50
+        # migration heals, where the column does not exist yet.
+        track_cols = {r[1] for r in c.execute("PRAGMA table_info(tracks)")}
+        artist_clause = (
+            " display_artist = COALESCE(display_artist,"
+            "   (SELECT display_artist FROM tracks WHERE id=?)),"
+            if "display_artist" in track_cols
+            else ""
+        )
         c.execute(
             "UPDATE tracks SET"
             " mb_release_id = CASE WHEN mb_release_id != '' THEN mb_release_id"
@@ -2800,6 +2823,7 @@ class LibraryIndex:
             "   ELSE (SELECT genre FROM tracks WHERE id=?) END,"
             " label = CASE WHEN label != '' THEN label"
             "   ELSE (SELECT label FROM tracks WHERE id=?) END,"
+            f"{artist_clause}"
             " display_title = COALESCE(display_title, (SELECT display_title FROM tracks WHERE id=?)),"
             " display_album = COALESCE(display_album, (SELECT display_album FROM tracks WHERE id=?)),"
             " display_album_artist = COALESCE(display_album_artist,"
@@ -2810,6 +2834,7 @@ class LibraryIndex:
                 loser_id,
                 loser_id,
                 loser_id,
+                *([loser_id] if artist_clause else []),
                 loser_id,
                 loser_id,
                 loser_id,
@@ -3260,11 +3285,20 @@ class LibraryIndex:
         }
         self._conn.execute("DELETE FROM tracks_fts")
         if "display_title" in cols:
+            # display_artist arrived at v55, well after display_title (v35): this
+            # rebuild also runs inside the v2/v42/v50 migration steps, where the
+            # column does not exist yet — guard it separately or those upgrades
+            # crash with "no such column".
+            artist_expr = (
+                "COALESCE(display_artist, artist)"
+                if "display_artist" in cols
+                else "artist"
+            )
             self._conn.execute(
                 "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album) "
                 "SELECT id"
                 ", COALESCE(display_title, title)"
-                ", artist"
+                f", {artist_expr}"
                 ", COALESCE(display_album_artist, album_artist)"
                 ", COALESCE(display_album, album)"
                 " FROM tracks"
@@ -3277,6 +3311,25 @@ class LibraryIndex:
         self._conn.execute("DELETE FROM playlists_fts")
         self._conn.execute(
             "INSERT INTO playlists_fts(rowid, title) SELECT id, title FROM playlists"
+        )
+
+    def _refresh_track_fts_row(self, track_id: int) -> None:
+        """Re-index one track's FTS row with display overrides applied.
+
+        Runtime-only (assumes the current schema): callers running inside
+        migrations must use _rebuild_fts, which guards for missing display
+        columns. Caller commits.
+        """
+        self._conn.execute("DELETE FROM tracks_fts WHERE rowid=?", (track_id,))
+        self._conn.execute(
+            "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album)"
+            " SELECT id"
+            ", COALESCE(display_title, title)"
+            ", COALESCE(display_artist, artist)"
+            ", COALESCE(display_album_artist, album_artist)"
+            ", COALESCE(display_album, album)"
+            " FROM tracks WHERE id=?",
+            (track_id,),
         )
 
     # ------------------------------------------------------------------
@@ -4218,18 +4271,44 @@ class LibraryIndex:
             "UPDATE tracks SET display_title = ? WHERE id = ?", (value, track_id)
         )
         # Update FTS so the new display title is immediately searchable.
-        self._conn.execute("DELETE FROM tracks_fts WHERE rowid=?", (track_id,))
-        self._conn.execute(
-            "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album)"
-            " SELECT id"
-            ", COALESCE(display_title, title)"
-            ", artist"
-            ", COALESCE(display_album_artist, album_artist)"
-            ", COALESCE(display_album, album)"
-            " FROM tracks WHERE id=?",
-            (track_id,),
-        )
+        self._refresh_track_fts_row(track_id)
         self._conn.commit()
+        return self.get_track_by_id(track_id)
+
+    def update_track_display_artist(
+        self, track_id: int, display_artist: str | None
+    ) -> "Track | None":
+        """Set (or clear) the display artist override for a streaming track (KAMP-582).
+
+        Sibling of update_track_display_title: passing None or an empty string
+        clears the override and restores the Bandcamp canonical artist.
+        Returns the updated Track, or None if the track is not found.
+        """
+        value = display_artist or None  # normalise empty string → NULL
+        self._conn.execute(
+            "UPDATE tracks SET display_artist = ? WHERE id = ?", (value, track_id)
+        )
+        self._refresh_track_fts_row(track_id)
+        self._conn.commit()
+        return self.get_track_by_id(track_id)
+
+    def update_track_artist(self, track_id: int, artist: str) -> "Track | None":
+        """Update a local track's canonical artist in the DB + FTS (KAMP-582).
+
+        Tag-only edit: the file write happens separately (write_artist_to_file)
+        and no rename occurs — artist is not part of the default path template.
+        Returns the updated Track, or None if the track is not found.
+        """
+        cur = self._conn.execute(
+            "UPDATE tracks SET artist = ? WHERE id = ?", (artist, track_id)
+        )
+        if cur.rowcount == 0:
+            return None
+        self._refresh_track_fts_row(track_id)
+        self._conn.commit()
+        # Magic playlists filter on track.artist — recompute and push.
+        if self.on_fields_changed:
+            self.on_fields_changed({"track.artist"})
         return self.get_track_by_id(track_id)
 
     def update_album_display(
@@ -4268,17 +4347,7 @@ class LibraryIndex:
             ).fetchall()
         ]
         for tid in track_ids:
-            self._conn.execute("DELETE FROM tracks_fts WHERE rowid=?", (tid,))
-            self._conn.execute(
-                "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album)"
-                " SELECT id"
-                ", COALESCE(display_title, title)"
-                ", artist"
-                ", COALESCE(display_album_artist, album_artist)"
-                ", COALESCE(display_album, album)"
-                " FROM tracks WHERE id=?",
-                (tid,),
-            )
+            self._refresh_track_fts_row(tid)
         self._conn.commit()
         results = self.albums()
         for a in results:
@@ -5581,17 +5650,7 @@ class LibraryIndex:
                 (new_artist, track_id),
             )
         # Rebuild FTS for the affected row.
-        self._conn.execute("DELETE FROM tracks_fts WHERE rowid=?", (track_id,))
-        self._conn.execute(
-            "INSERT INTO tracks_fts(rowid, title, artist, album_artist, album)"
-            " SELECT id"
-            ", COALESCE(display_title, title)"
-            ", artist"
-            ", COALESCE(display_album_artist, album_artist)"
-            ", COALESCE(display_album, album)"
-            " FROM tracks WHERE id=?",
-            (track_id,),
-        )
+        self._refresh_track_fts_row(track_id)
         self._conn.commit()
 
     def remove_track(self, file_path: Path) -> None:
@@ -6317,24 +6376,36 @@ class LibraryIndex:
         ).fetchone()
 
         titles: dict[int, str] = {}
+        artists: dict[int, str] = {}
         if album is not None:
-            ambiguous: set[int] = set()
-            for r in self._conn.execute(
-                f"SELECT track_number, display_title FROM tracks"
-                f" WHERE album_id = ? AND {_eff_source('tracks')} = 'bandcamp'"
-                "   AND display_title IS NOT NULL AND display_title != ''",
-                (album["id"],),
-            ).fetchall():
-                tno = r["track_number"]
-                if tno in titles:
-                    ambiguous.add(tno)
-                titles[tno] = r["display_title"]
-            for tno in ambiguous:
-                titles.pop(tno, None)
+
+            def _collect(column: str) -> dict[int, str]:
+                # Per-track overrides keyed by track_number; a number that
+                # appears on more than one disc is ambiguous and dropped
+                # (avoids cross-disc misapply).
+                out: dict[int, str] = {}
+                ambiguous: set[int] = set()
+                for r in self._conn.execute(
+                    f"SELECT track_number, {column} FROM tracks"
+                    f" WHERE album_id = ? AND {_eff_source('tracks')} = 'bandcamp'"
+                    f"   AND {column} IS NOT NULL AND {column} != ''",
+                    (album["id"],),
+                ).fetchall():
+                    tno = r["track_number"]
+                    if tno in out:
+                        ambiguous.add(tno)
+                    out[tno] = r[column]
+                for tno in ambiguous:
+                    out.pop(tno, None)
+                return out
+
+            titles = _collect("display_title")
+            artists = _collect("display_artist")
             return DownloadOverrides(
                 album_artist=album["display_album_artist"] or album["album_artist"],
                 album=album["display_album"] or album["album"],
                 titles=titles,
+                artists=artists,
             )
 
         # No synced album row (downloaded without syncing streaming rows): fall
@@ -7558,7 +7629,7 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         # use it in place of the Bandcamp-sourced canonical value.  The override is
         # NULL for local tracks and for streaming tracks the user has not edited.
         title=row["display_title"] or row["title"],
-        artist=row["artist"],
+        artist=row["display_artist"] or row["artist"],
         album_artist=row["display_album_artist"] or row["album_artist"],
         album=row["display_album"] or row["album"],
         release_date=row["release_date"],
@@ -7832,6 +7903,42 @@ def write_title_to_file(path: Path, title: str) -> None:
         audio.save()
     else:
         raise ValueError(f"Unsupported format for title write: {path.suffix}")
+
+
+def write_artist_to_file(path: Path, artist: str) -> None:
+    """Write a new per-track artist tag to an audio file without touching other tags.
+
+    Tag-only (KAMP-582): artist edits never rename/move the file — see the
+    tags PATCH for the rename machinery that titles need and artists don't.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".mp3":
+        try:
+            tags = id3.ID3(str(path))
+        except Exception:
+            tags = id3.ID3()
+        tags["TPE1"] = id3.TPE1(encoding=3, text=artist)
+        tags.save(str(path))
+    elif suffix == ".m4a":
+        audio = mutagen.mp4.MP4(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags["\xa9ART"] = [artist]  # type: ignore[index]
+        audio.save()
+    elif suffix == ".flac":
+        audio = mutagen.flac.FLAC(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags["ARTIST"] = [artist]  # type: ignore[index]
+        audio.save()
+    elif suffix == ".ogg":
+        audio = mutagen.oggvorbis.OggVorbis(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags["ARTIST"] = [artist]  # type: ignore[index]
+        audio.save()
+    else:
+        raise ValueError(f"Unsupported format for artist write: {path.suffix}")
 
 
 def write_album_tags_to_file(

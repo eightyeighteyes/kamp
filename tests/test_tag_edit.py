@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mutagen.id3 as id3
 import pytest
 from fastapi.testclient import TestClient
 
-from kamp_core.library import LibraryIndex, Track, write_title_to_file
+from kamp_core.library import (
+    LibraryIndex,
+    Track,
+    write_artist_to_file,
+    write_title_to_file,
+)
 from kamp_core.path_utils import (
     make_path_vars,
     render_destination,
@@ -129,6 +134,71 @@ class TestWriteTitleToFile:
         f.write_bytes(b"\x00" * 16)
         with pytest.raises(ValueError):
             write_title_to_file(f, "Title")
+
+
+# ---------------------------------------------------------------------------
+# write_artist_to_file (KAMP-582)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteArtistToFile:
+    def test_updates_mp3_artist_tag(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "track.mp3"
+        _make_mp3(mp3, title="Song", album_artist="Band")
+
+        write_artist_to_file(mp3, "Feature Act")
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TPE1"]) == "Feature Act"
+
+    def test_preserves_other_tags(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "track.mp3"
+        _make_mp3(mp3, title="Song", album="Record", album_artist="Band")
+
+        write_artist_to_file(mp3, "Feature Act")
+
+        tags = id3.ID3(str(mp3))
+        assert str(tags["TIT2"]) == "Song"
+        assert str(tags["TALB"]) == "Record"
+        assert str(tags["TPE2"]) == "Band"
+
+    def test_writes_m4a_artist_key(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "track.m4a"
+        m4a.write_bytes(b"\x00" * 32)
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_core.library.mutagen.mp4.MP4", return_value=mock_audio):
+            write_artist_to_file(m4a, "Feature Act")
+        assert mock_audio.tags["\xa9ART"] == ["Feature Act"]
+        mock_audio.save.assert_called_once()
+
+    def test_writes_flac_artist_key(self, tmp_path: Path) -> None:
+        flac = tmp_path / "track.flac"
+        flac.write_bytes(b"fLaC")
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_core.library.mutagen.flac.FLAC", return_value=mock_audio):
+            write_artist_to_file(flac, "Feature Act")
+        assert mock_audio.tags["ARTIST"] == ["Feature Act"]
+        mock_audio.save.assert_called_once()
+
+    def test_writes_ogg_artist_key(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "track.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch(
+            "kamp_core.library.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            write_artist_to_file(ogg, "Feature Act")
+        assert mock_audio.tags["ARTIST"] == ["Feature Act"]
+        mock_audio.save.assert_called_once()
+
+    def test_raises_on_unsupported_format(self, tmp_path: Path) -> None:
+        f = tmp_path / "track.wav"
+        f.write_bytes(b"\x00" * 16)
+        with pytest.raises(ValueError):
+            write_artist_to_file(f, "Artist")
 
 
 # ---------------------------------------------------------------------------

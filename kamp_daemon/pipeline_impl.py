@@ -377,6 +377,11 @@ def _tag_known_bandcamp(
             edited_title = overrides.titles.get(track.track_number)
             if edited_title:
                 track.title = edited_title
+            # KAMP-582: user display_artist edits on the streaming version
+            # carry into the downloaded files, like title edits.
+            edited_artist = overrides.artists.get(track.track_number)
+            if edited_artist:
+                track.artist = edited_artist
         track.release_mbid = mbid
         track.release_group_mbid = rg_mbid
         write_tags_from_track_metadata(audio_file, track, total_tracks=total)

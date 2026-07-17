@@ -1150,6 +1150,7 @@ class TestKnownBandcampBranch:
         t1 = idx.get_track_by_path("bandcamp://S1/1")
         assert t1 is not None
         idx.update_track_display_title(t1.id, "Renamed Track 1")
+        idx.update_track_display_artist(t1.id, "Renamed Artist 1")
         idx.close()
 
     def test_writes_known_metadata_and_provenance_without_musicbrainz(
@@ -1188,6 +1189,8 @@ class TestKnownBandcampBranch:
         assert str(tags["TPE2"]) == "Display Artist"
         assert str(tags["TALB"]) == "Display Album"
         assert str(tags["TIT2"]) == "Renamed Track 1"
+        # KAMP-582: per-track artist override carries into the downloaded file.
+        assert str(tags["TPE1"]) == "Renamed Artist 1"
         assert str(tags["TXXX:KAMP_SALE_ITEM_ID"]) == "S1"
 
         # Provenance handoff consumed.

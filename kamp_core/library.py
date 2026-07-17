@@ -6169,14 +6169,22 @@ class LibraryIndex:
         )
 
     def all_genres(self) -> list[str]:
-        """Return every distinct genre name in the library, sorted (KAMP-586).
+        """Return every genre applied to at least one track, sorted (KAMP-586).
 
-        Backs the album-edit autocomplete and (later) the genre sidebar.
+        Backs the album-edit autocomplete and the genre sidebar (KAMP-550).
+        A genre whose last track link was removed is an orphan: its
+        ``genres``-table row lingers (``_set_track_genres`` only INSERTs OR
+        IGNOREs, never deletes) but it must not appear in the list, or a genre
+        no album carries would haunt the sidebar. Joining ``track_genres``
+        drops orphans and keeps this list consistent with the per-album genre
+        sets, which are already derived from ``track_genres``.
         """
         return [
             r["name"]
             for r in self._conn.execute(
-                "SELECT name FROM genres ORDER BY name COLLATE NOCASE"
+                "SELECT DISTINCT g.name FROM genres g"
+                " JOIN track_genres tg ON tg.genre_id = g.id"
+                " ORDER BY g.name COLLATE NOCASE"
             ).fetchall()
         ]
 

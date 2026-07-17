@@ -13113,6 +13113,20 @@ class TestMultiValueGenre:
         assert genres == {"Hip-Hop; Plunderphonics"}
         assert album_genre == "Hip-Hop; Plunderphonics"
 
+    def test_all_genres_excludes_orphans_after_removal(self, tmp_path: Path) -> None:
+        # KAMP-550 bug: removing a genre's last track link left it lingering in
+        # the sidebar/autocomplete list. all_genres() must drop a genre once no
+        # track carries it, even though its genres-table row persists.
+        index = self._index(tmp_path)
+        index.upsert_many([self._local(tmp_path / "1.mp3", ["Unknown"])])
+        tid = index.all_tracks()[0].id
+
+        index.apply_genres([tid], ["Punk"], mode="replace")
+
+        names = index.all_genres()
+        index.close()
+        assert names == ["Punk"]  # "Unknown" is orphaned and no longer listed
+
     def test_apply_genres_fires_on_fields_changed(self, tmp_path: Path) -> None:
         index = self._index(tmp_path)
         index.upsert_many([self._local(tmp_path / "1.mp3", ["Jazz"])])

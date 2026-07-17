@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchMusicBrainzRelease } from '../api/client'
-import type { MusicBrainzCandidate, MusicBrainzRelease, Track } from '../api/client'
+import type {
+  MusicBrainzCandidate,
+  MusicBrainzRelease,
+  MusicBrainzTrack,
+  Track
+} from '../api/client'
 
 // Fields that can be toggled between local and MB values.
 type FieldId = 'title' | 'album_artist' | 'release_date' | 'label'
@@ -11,11 +16,25 @@ type TrackKey = string
 type SelectionState = {
   album: Record<FieldId, 'local' | 'mb'>
   tracks: Record<TrackKey, 'local' | 'mb'>
+  // Per-track artist choice, keyed like `tracks` (KAMP-583).
+  trackArtists: Record<TrackKey, 'local' | 'mb'>
+}
+
+// One entry per local track the modal could resolve to an MB track. Resolution
+// happens HERE, once, and the resolved MB track travels with the choice —
+// previously the modal resolved with findMBTrack's disc normalisation but the
+// apply path re-derived its own key from raw MB coords, so on a disc-shifted
+// album the modal showed a toggle and Apply silently skipped the track.
+export type MBTrackApply = {
+  localId: number
+  mb: MusicBrainzTrack
+  title: 'local' | 'mb'
+  artist: 'local' | 'mb'
 }
 
 export type MBApplyPayload = {
   album: Record<FieldId, 'local' | 'mb'>
-  tracks: Record<TrackKey, 'local' | 'mb'>
+  tracks: MBTrackApply[]
   // Full release only: applying a shallow candidate would stamp a new
   // mb_release_id while leaving every track's recording id stale (KAMP-584).
   release: MusicBrainzRelease
@@ -73,6 +92,26 @@ function defaultTrackSelection(
     tracks[key] = mb.title !== local.title ? 'mb' : 'local'
   }
   return tracks
+}
+
+// An artist row only exists where MB and local disagree, so its default is
+// always 'mb' — there is nothing to choose on rows that already agree.
+function defaultTrackArtistSelection(
+  release: MusicBrainzRelease,
+  localTracks: Track[]
+): Record<TrackKey, 'local' | 'mb'> {
+  const artists: Record<TrackKey, 'local' | 'mb'> = {}
+  for (const local of localTracks) {
+    const mb = findMBTrack(release, local)
+    if (!mb || !artistDiffers(mb, local)) continue
+    artists[trackKey(local.disc_number, local.track_number)] = 'mb'
+  }
+  return artists
+}
+
+// MB must actually have a credit, and it must differ from what we hold.
+function artistDiffers(mb: MusicBrainzTrack, local: Track): boolean {
+  return !!mb.artist && mb.artist !== local.artist
 }
 
 function Toggle({
@@ -160,7 +199,8 @@ export function MusicBrainzModal({
 
   const [sel, setSel] = useState<SelectionState>(() => ({
     album: defaultAlbumSelection(candidate, localTracks),
-    tracks: release ? defaultTrackSelection(release, localTracks) : {}
+    tracks: release ? defaultTrackSelection(release, localTracks) : {},
+    trackArtists: release ? defaultTrackArtistSelection(release, localTracks) : {}
   }))
 
   // Reset selection when the active candidate changes (render-time derived
@@ -174,14 +214,19 @@ export function MusicBrainzModal({
     setPrevMbid(candidate.mbid)
     setSel({
       album: defaultAlbumSelection(candidate, localTracks),
-      tracks: release ? defaultTrackSelection(release, localTracks) : {}
+      tracks: release ? defaultTrackSelection(release, localTracks) : {},
+      trackArtists: release ? defaultTrackArtistSelection(release, localTracks) : {}
     })
     setTrackDefaultsFor(release ? candidate.mbid : null)
   } else if (release && trackDefaultsFor !== candidate.mbid) {
     // Hydration just resolved for the viewed candidate: merge in the
     // per-track defaults without touching album-field selections.
     setTrackDefaultsFor(candidate.mbid)
-    setSel((s) => ({ ...s, tracks: defaultTrackSelection(release, localTracks) }))
+    setSel((s) => ({
+      ...s,
+      tracks: defaultTrackSelection(release, localTracks),
+      trackArtists: defaultTrackArtistSelection(release, localTracks)
+    }))
   }
 
   useEffect(() => {
@@ -197,6 +242,26 @@ export function MusicBrainzModal({
 
   const setTrackField = (key: TrackKey, v: 'local' | 'mb'): void =>
     setSel((s) => ({ ...s, tracks: { ...s.tracks, [key]: v } }))
+
+  const setTrackArtistField = (key: TrackKey, v: 'local' | 'mb'): void =>
+    setSel((s) => ({ ...s, trackArtists: { ...s.trackArtists, [key]: v } }))
+
+  // Resolve local → MB once, at Apply, so the caller never re-derives keys.
+  const buildApplyTracks = (r: MusicBrainzRelease): MBTrackApply[] => {
+    const out: MBTrackApply[] = []
+    for (const local of localTracks) {
+      const mb = findMBTrack(r, local)
+      if (!mb) continue
+      const key = trackKey(local.disc_number, local.track_number)
+      out.push({
+        localId: local.id,
+        mb,
+        title: sel.tracks[key] ?? 'local',
+        artist: sel.trackArtists[key] ?? 'local'
+      })
+    }
+    return out
+  }
 
   const albumFieldRows: Array<{ field: FieldId; localVal: string; mbVal: string }> = useMemo(
     () => [
@@ -338,26 +403,47 @@ export function MusicBrainzModal({
 
               const isDiff = local.title !== mb.title
               const chosen = sel.tracks[key] ?? 'local'
+              // Artist gets its own row, but only where MB actually disagrees:
+              // on a single-artist album every track would otherwise carry a
+              // redundant row with nothing to choose (KAMP-583).
+              const showArtist = artistDiffers(mb, local)
+              const artistChosen = sel.trackArtists[key] ?? 'local'
               return (
-                <div key={local.id} className="mb-cmp-row">
-                  <span className="mb-cmp-row__label">
-                    {local.disc_number > 1 ? `${local.disc_number}-` : ''}
-                    {local.track_number}
-                  </span>
-                  <Toggle side={chosen} onChange={(v) => setTrackField(key, v)} />
-                  <div className="mb-cmp-row__values">
-                    <span
-                      className={`mb-cmp-row__local${chosen === 'mb' && isDiff ? ' mb-cmp-row__local--overridden' : ''}`}
-                    >
-                      {local.title}
+                <React.Fragment key={local.id}>
+                  <div className="mb-cmp-row">
+                    <span className="mb-cmp-row__label">
+                      {local.disc_number > 1 ? `${local.disc_number}-` : ''}
+                      {local.track_number}
                     </span>
-                    <span
-                      className={`mb-cmp-row__mb${isDiff ? ' mb-cmp-row__mb--diff' : ' mb-cmp-row__mb--same'}`}
-                    >
-                      {mb.title}
-                    </span>
+                    <Toggle side={chosen} onChange={(v) => setTrackField(key, v)} />
+                    <div className="mb-cmp-row__values">
+                      <span
+                        className={`mb-cmp-row__local${chosen === 'mb' && isDiff ? ' mb-cmp-row__local--overridden' : ''}`}
+                      >
+                        {local.title}
+                      </span>
+                      <span
+                        className={`mb-cmp-row__mb${isDiff ? ' mb-cmp-row__mb--diff' : ' mb-cmp-row__mb--same'}`}
+                      >
+                        {mb.title}
+                      </span>
+                    </div>
                   </div>
-                </div>
+                  {showArtist && (
+                    <div className="mb-cmp-row mb-cmp-row--sub">
+                      <span className="mb-cmp-row__label mb-cmp-row__label--sub">artist</span>
+                      <Toggle side={artistChosen} onChange={(v) => setTrackArtistField(key, v)} />
+                      <div className="mb-cmp-row__values">
+                        <span
+                          className={`mb-cmp-row__local${artistChosen === 'mb' ? ' mb-cmp-row__local--overridden' : ''}`}
+                        >
+                          {local.artist || <em style={{ opacity: 0.4 }}>empty</em>}
+                        </span>
+                        <span className="mb-cmp-row__mb mb-cmp-row__mb--diff">{mb.artist}</span>
+                      </div>
+                    </div>
+                  )}
+                </React.Fragment>
               )
             })}
         </div>
@@ -371,7 +457,9 @@ export function MusicBrainzModal({
             className="mb-modal__btn mb-modal__btn--accent"
             type="button"
             disabled={!release}
-            onClick={() => release && onApply({ album: sel.album, tracks: sel.tracks, release })}
+            onClick={() =>
+              release && onApply({ album: sel.album, tracks: buildApplyTracks(release), release })
+            }
           >
             Apply selected
           </button>

@@ -1275,10 +1275,10 @@
 }
 
 .genre-autocomplete {
-  position: absolute;
-  z-index: 20;
-  top: calc(100% + 2px);
-  left: 0;
+  /* Portaled to document.body (see GenreChipsInput) so surrounding track rows
+     cannot clip or paint over it; positioned inline from the input's rect. */
+  position: fixed;
+  z-index: 1100;
   min-width: 140px;
   max-height: 200px;
   overflow-y: auto;
@@ -1304,7 +1304,8 @@
   font-size: 12px;
 }
 
-.genre-autocomplete-item:hover {
+.genre-autocomplete-item:hover,
+.genre-autocomplete-item.active {
   background: var(--surface-hover, rgba(255, 255, 255, 0.08));
 }
 

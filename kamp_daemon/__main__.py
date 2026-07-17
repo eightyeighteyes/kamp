@@ -520,6 +520,45 @@ def _cmd_sync(config: Config, download_all: bool = False) -> None:
         syncer.sync_once()
 
 
+def _build_config_values(
+    config: Config,
+    bc_session: dict[str, object] | None,
+    bc_ever_connected: bool,
+) -> dict[str, object]:
+    """Build the config snapshot GET /api/v1/config serves to the UI (KAMP-576).
+
+    Kept as a module-level pure function, not an inline dict, so a test can
+    assert every settable non-``ui.`` key is present: this dict silently
+    drifted from the ``_CONFIG_KEY_TYPES`` allowlist and dropped
+    ``artwork.save_format``, so a disabled "embed art" toggle read as enabled
+    again after restart. ``ui.*`` keys are intentionally absent — they ship via
+    the separate ``/api/v1/ui-state`` endpoint.
+    """
+    bc_username: str | None = bc_session.get("username") if bc_session else None  # type: ignore[assignment]
+    return {
+        "paths.watch_folder": (
+            str(config.paths.watch_folder) if config.paths.watch_folder else None
+        ),
+        "paths.library": str(config.paths.library) if config.paths.library else None,
+        "musicbrainz.trust-musicbrainz-when-tags-conflict": config.musicbrainz.trust_musicbrainz_when_tags_conflict,
+        "artwork.min_dimension": config.artwork.min_dimension,
+        "artwork.max_bytes": config.artwork.max_bytes,
+        "artwork.save_format": config.artwork.save_format,
+        "library.path_template": config.library.path_template,
+        "bandcamp.connected": bc_session is not None,
+        "bandcamp.username": bc_username,
+        "bandcamp.ever_connected": bc_ever_connected,
+        "bandcamp.format": config.bandcamp.format if config.bandcamp else None,
+        "bandcamp.poll_interval_minutes": (
+            config.bandcamp.poll_interval_minutes if config.bandcamp else None
+        ),
+        "bandcamp.collection_mode": (
+            config.bandcamp.collection_mode if config.bandcamp else None
+        ),
+        "lastfm.username": config.lastfm.username if config.lastfm else None,
+    }
+
+
 def _cmd_daemon(
     config: Config,
     host: str = "127.0.0.1",
@@ -946,29 +985,8 @@ def _cmd_daemon(
 
     # Bandcamp username comes only from the session (set after Electron login flow).
     _bc_session = index.get_session("bandcamp")
-    _bc_username: str | None = _bc_session.get("username") if _bc_session else None
     _bc_ever_connected = index.get_setting("bandcamp.ever_connected") == "true"
-    _config_values: dict[str, object] = {
-        "paths.watch_folder": (
-            str(config.paths.watch_folder) if config.paths.watch_folder else None
-        ),
-        "paths.library": str(config.paths.library) if config.paths.library else None,
-        "musicbrainz.trust-musicbrainz-when-tags-conflict": config.musicbrainz.trust_musicbrainz_when_tags_conflict,
-        "artwork.min_dimension": config.artwork.min_dimension,
-        "artwork.max_bytes": config.artwork.max_bytes,
-        "library.path_template": config.library.path_template,
-        "bandcamp.connected": _bc_session is not None,
-        "bandcamp.username": _bc_username,
-        "bandcamp.ever_connected": _bc_ever_connected,
-        "bandcamp.format": config.bandcamp.format if config.bandcamp else None,
-        "bandcamp.poll_interval_minutes": (
-            config.bandcamp.poll_interval_minutes if config.bandcamp else None
-        ),
-        "bandcamp.collection_mode": (
-            config.bandcamp.collection_mode if config.bandcamp else None
-        ),
-        "lastfm.username": config.lastfm.username if config.lastfm else None,
-    }
+    _config_values = _build_config_values(config, _bc_session, _bc_ever_connected)
 
     # Generate a fresh shared-secret token on every daemon start.  Electron
     # re-reads the file on reconnect so there is no persistent state to sync.

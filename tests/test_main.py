@@ -1,7 +1,55 @@
 """Tests for kamp_daemon.__main__ helpers."""
 
 import logging
+from pathlib import Path
 from unittest.mock import patch
+
+from kamp_core.library import LibraryIndex
+from kamp_daemon.__main__ import _build_config_values
+from kamp_daemon.config import _CONFIG_KEY_TYPES, Config
+
+
+class TestBuildConfigValues:
+    """The startup config snapshot GET /api/v1/config serves (KAMP-576).
+
+    Built by a testable function precisely because the previous inline dict
+    silently drifted from the settable-key allowlist and dropped
+    artwork.save_format, so the toggle never survived a restart.
+    """
+
+    def _config(self, tmp_path: Path, **settings: str) -> Config:
+        db = LibraryIndex(tmp_path / "library.db")
+        Config.write_defaults(db)
+        for key, value in settings.items():
+            db.set_setting(key, value)
+        cfg = Config.load(db)
+        db.close()
+        return cfg
+
+    def test_includes_save_format_reflecting_stored_value(self, tmp_path: Path) -> None:
+        cfg = self._config(tmp_path, **{"artwork.save_format": "cover-file"})
+        snapshot = _build_config_values(cfg, bc_session=None, bc_ever_connected=False)
+        assert snapshot["artwork.save_format"] == "cover-file"
+
+    def test_every_settable_non_ui_key_is_present(self, tmp_path: Path) -> None:
+        """Drift guard: every settable key that isn't served by the separate
+        /ui-state endpoint must appear in the snapshot, or its preference
+        cannot survive a restart (this is the whole KAMP-576 bug class)."""
+        cfg = self._config(tmp_path)
+        snapshot = _build_config_values(cfg, bc_session=None, bc_ever_connected=False)
+        for key in _CONFIG_KEY_TYPES:
+            if key.startswith("ui."):
+                continue
+            assert key in snapshot, f"{key} missing from config snapshot"
+
+    def test_reflects_bandcamp_session_presence(self, tmp_path: Path) -> None:
+        cfg = self._config(tmp_path)
+        snapshot = _build_config_values(
+            cfg, bc_session={"username": "alice"}, bc_ever_connected=True
+        )
+        assert snapshot["bandcamp.connected"] is True
+        assert snapshot["bandcamp.username"] == "alice"
+        assert snapshot["bandcamp.ever_connected"] is True
 
 
 class TestLogNoiseSuppression:

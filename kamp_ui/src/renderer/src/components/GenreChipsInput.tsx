@@ -48,7 +48,17 @@ export function GenreChipsInput({
     setChips([...chips, name])
   }
 
-  const removeChip = (name: string): void => setChips(chips.filter((c) => c !== name))
+  const removeChip = (name: string): void => {
+    const next = chips.filter((c) => c !== name)
+    setChips(next)
+    // Persist removals immediately instead of waiting for the container's blur.
+    // Clicking a chip's × can leave focus outside the input (on macOS a button
+    // click doesn't focus it), so the focusout that normally commits never
+    // fires when the user then navigates away — the removal was silently
+    // dropped and the genre "healed" on reopen (KAMP-550). Adds keep focus in
+    // the input, so their blur-commit already works.
+    if (!sameSet(next, initialChips)) onCommit(next)
+  }
 
   const commit = (): void => {
     if (!sameSet(chips, initialChips)) onCommit(chips)

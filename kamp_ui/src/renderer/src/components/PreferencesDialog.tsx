@@ -1208,7 +1208,7 @@ export function PreferencesDialog({
                       label="Fetch genres from Last.fm"
                       configKey="tagging.lastfm_genres"
                       hint="After a download, kamp adds genres from Last.fm (canonical genres only). Best-effort — it runs in the background and never slows a download."
-                      initialValue={configValues?.['tagging.lastfm_genres'] ?? false}
+                      initialValue={configValues?.['tagging.lastfm_genres'] ?? true}
                       onSave={handleSave}
                     />
                   </div>

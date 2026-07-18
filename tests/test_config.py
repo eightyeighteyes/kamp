@@ -68,17 +68,17 @@ class TestLoad:
         assert config.ui.sort_order == "album_artist"
         assert config.ui.queue_panel_open == 0
 
-    def test_tagging_lastfm_genres_default_false(self, db: LibraryIndex) -> None:
-        # KAMP-587: opt-in, default off.
+    def test_tagging_lastfm_genres_default_true(self, db: LibraryIndex) -> None:
+        # KAMP-587: on by default; ingested files gain genres out of the box.
         Config.write_defaults(db)
-        config = Config.load(db)
-        assert config.tagging.lastfm_genres is False
-
-    def test_tagging_lastfm_genres_loads_true(self, db: LibraryIndex) -> None:
-        Config.write_defaults(db)
-        db.set_setting("tagging.lastfm_genres", "true")
         config = Config.load(db)
         assert config.tagging.lastfm_genres is True
+
+    def test_tagging_lastfm_genres_loads_false(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        db.set_setting("tagging.lastfm_genres", "false")
+        config = Config.load(db)
+        assert config.tagging.lastfm_genres is False
 
     def test_load_seeds_defaults_on_fresh_install(self, db: LibraryIndex) -> None:
         config = Config.load(db)

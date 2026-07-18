@@ -48,9 +48,10 @@ class MusicBrainzConfig:
 
 @dataclass
 class TaggingConfig:
-    # KAMP-587: opt-in Last.fm genre enrichment after ingest. Default off — it
-    # makes external calls and writes genre tags, so it isn't enabled silently.
-    lastfm_genres: bool = False
+    # KAMP-587: Last.fm genre enrichment after ingest. Default ON — the feature's
+    # point is that ingested files gain genres; it's best-effort and async, so it
+    # never slows or fails a download. Users can turn it off in Tagging prefs.
+    lastfm_genres: bool = True
 
 
 @dataclass
@@ -101,7 +102,7 @@ _CONFIG_DEFAULTS: dict[str, str] = {
     "artwork.min_dimension": "1000",
     "artwork.max_bytes": "1000000",
     "artwork.save_format": "embedded",
-    "tagging.lastfm_genres": "false",
+    "tagging.lastfm_genres": "true",
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
     "bandcamp.format": "mp3-v0",
     "bandcamp.poll_interval_minutes": "0",

@@ -40,6 +40,7 @@ from kamp_daemon.bandcamp import (
     fetch_stream_url,
     get_download_size_bytes,
     mark_collection_synced,
+    parse_album_keywords,
     prefetch_redownload_urls,
     refresh_stream_url,
     sync_collection_stream,
@@ -2708,6 +2709,36 @@ class TestSyncCollectionStream:
         assert album_count == 2  # both albums counted in bandcamp_collection
         assert track_count == 0  # no tracks indexed (fetch failed)
 
+    def test_caches_album_keywords_after_indexing(self, tmp_path: Path) -> None:
+        # KAMP-588: after a streamed album is indexed, its Bandcamp tags (carried
+        # on the tracks' genres) are cached on the collection row for downloads.
+        from pathlib import Path as _Path
+
+        from kamp_core.library import Track
+
+        track = Track(
+            file_path=_Path("bandcamp://1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            genres=["shoegaze", "dream pop"],
+        )
+        _result, index = self._run(
+            tmp_path, [_item(1)], already_have_tracks=False, fake_tracks=[track]
+        )
+        index.set_collection_keywords.assert_called_once_with(
+            "1", ["shoegaze", "dream pop"]
+        )
+
     def test_batch_indexed_callback_fires_per_new_batch(self, tmp_path: Path) -> None:
         """batch_indexed_callback fires once per album batch that has new tracks."""
         from kamp_core.library import Track
@@ -3026,6 +3057,31 @@ class TestFetchAlbumTracks:
             "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
         )
         assert all(t.source == "bandcamp" for t in result)
+
+    def test_sets_genres_from_bandcamp_tags(self) -> None:
+        # KAMP-588: artist tags in the page HTML become Track.genres (format words
+        # dropped); applied to every track on the album.
+        html = _stream_album_page_html(
+            tracks=[{"title": "T", "track_num": 1, "artist": None, "duration": 100.0}]
+        ).replace(
+            "</body>",
+            '<a class="tag" href="/tag/shoegaze">shoegaze</a>'
+            '<a class="tag" href="/tag/vinyl">vinyl</a></body>',
+        )
+        result = fetch_album_tracks(
+            "https://b.bandcamp.com/album/x", 1, "B", "A", self._make_session(html)
+        )
+        assert result[0].genres == ["shoegaze"]  # vinyl dropped
+
+    def test_no_tags_leaves_genres_empty(self) -> None:
+        result = fetch_album_tracks(
+            "https://b.bandcamp.com/album/x",
+            1,
+            "B",
+            "A",
+            self._make_session(_stream_album_page_html()),
+        )
+        assert all(t.genres == [] for t in result)
 
     def test_no_stream_url(self) -> None:
         html = _stream_album_page_html()
@@ -3776,3 +3832,77 @@ class TestBackfillDownloadSizes:
         assert n == 2
         fetch.assert_not_called()
         fan.assert_not_called()
+
+
+class TestParseAlbumKeywords:
+    """Bandcamp album-page tag extraction → genre names (KAMP-588)."""
+
+    def test_extracts_tag_links(self) -> None:
+        html = (
+            '<div class="tralbum-tags">'
+            '<a class="tag" href="/tag/shoegaze">shoegaze</a>'
+            '<a class="tag" href="/tag/dream-pop">dream pop</a>'
+            "</div>"
+        )
+        assert parse_album_keywords(html) == ["shoegaze", "dream pop"]
+
+    def test_tolerates_attribute_order(self) -> None:
+        # href before class, extra attributes.
+        html = '<a href="/tag/noise" data-x="1" class="tag" rel="tag">noise</a>'
+        assert parse_album_keywords(html) == ["noise"]
+
+    def test_unescapes_entities(self) -> None:
+        html = '<a class="tag" href="/tag/drum-bass">drum &amp; bass</a>'
+        assert parse_album_keywords(html) == ["drum & bass"]
+
+    def test_case_insensitive_dedupe_order_preserving(self) -> None:
+        html = (
+            '<a class="tag" href="/tag/techno">Techno</a>'
+            '<a class="tag" href="/tag/house">house</a>'
+            '<a class="tag" href="/tag/techno">techno</a>'
+        )
+        # first-seen casing wins; order preserved; no duplicate.
+        assert parse_album_keywords(html) == ["Techno", "house"]
+
+    def test_drops_format_words(self) -> None:
+        html = (
+            '<a class="tag" href="/tag/ambient">ambient</a>'
+            '<a class="tag" href="/tag/vinyl">vinyl</a>'
+            '<a class="tag" href="/tag/cassette">Cassette</a>'
+        )
+        assert parse_album_keywords(html) == ["ambient"]
+
+    def test_keeps_location_tags(self) -> None:
+        # Locations are unbounded — left in for the user to prune.
+        html = (
+            '<a class="tag" href="/tag/post-punk">post-punk</a>'
+            '<a class="tag" href="/tag/seattle">seattle</a>'
+        )
+        assert parse_album_keywords(html) == ["post-punk", "seattle"]
+
+    def test_ldjson_fallback_when_no_tag_links(self) -> None:
+        html = (
+            '<script type="application/ld+json">'
+            '{"@type": "MusicAlbum", "keywords": ["jazz", "fusion"]}'
+            "</script>"
+        )
+        assert parse_album_keywords(html) == ["jazz", "fusion"]
+
+    def test_ldjson_comma_string_keywords(self) -> None:
+        html = (
+            '<script type="application/ld+json">'
+            '{"keywords": "jazz, fusion, vinyl"}'
+            "</script>"
+        )
+        # comma-split, format word dropped.
+        assert parse_album_keywords(html) == ["jazz", "fusion"]
+
+    def test_tag_links_preferred_over_ldjson(self) -> None:
+        html = (
+            '<a class="tag" href="/tag/metal">metal</a>'
+            '<script type="application/ld+json">{"keywords": ["pop"]}</script>'
+        )
+        assert parse_album_keywords(html) == ["metal"]
+
+    def test_empty_when_no_tags(self) -> None:
+        assert parse_album_keywords("<html><body>no tags here</body></html>") == []

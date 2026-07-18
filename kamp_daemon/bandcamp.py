@@ -584,6 +584,10 @@ def sync_collection_stream(
                 )
                 if tracks:
                     index.upsert_many(tracks)
+                    # KAMP-588: cache the album's Bandcamp tags so a later download
+                    # can stamp them into the files (and KAMP-591 has a fast path).
+                    # All tracks share the album keywords.
+                    index.set_collection_keywords(str(sid), tracks[0].genres)
                     track_count += len(tracks)
                     logger.debug(
                         "Indexed %d track(s) for %r by %r",
@@ -1161,6 +1165,75 @@ def fetch_stream_url(
     )
 
 
+# Bandcamp tags that describe the format/medium rather than a genre — dropped so
+# they don't pollute the genre list (KAMP-588). Location tags (cities/countries)
+# are an unbounded set and are left in; the user prunes them via the KAMP-586
+# chips editor. Compared case-folded.
+_KEYWORD_FORMAT_DENYLIST = frozenset(
+    {
+        "vinyl",
+        "vinyl lp",
+        "cassette",
+        "tape",
+        "cd",
+        "compact disc",
+        "digital",
+        "download",
+        "lp",
+        "ep",
+        "7 inch",
+        "10 inch",
+        "12 inch",
+        "merch",
+    }
+)
+
+
+def parse_album_keywords(html: str) -> list[str]:
+    """Extract artist-supplied Bandcamp tags from an album page as genre names.
+
+    Multi-source, most genre-precise first (KAMP-588): the ``<a class="tag">``
+    links are the artist's own tags with no artist/album-name pollution; the
+    ld+json ``keywords`` field is a robust fallback if the markup changes.
+    HTML-unescaped, stripped, case-insensitively de-duplicated, order-preserving;
+    format/medium words (see denylist) are dropped. Returns ``[]`` when nothing
+    is found — callers WARN if a real page yielded none so a Cloudflare challenge
+    page or a markup change can't ship the feature silently dead.
+    """
+    raw: list[str] = []
+
+    # 1. <a class="tag" href="/tag/...">text</a> — tolerant of attribute order.
+    raw.extend(
+        re.findall(r'<a\b[^>]*\bclass="tag"[^>]*>([^<]+)</a>', html, re.IGNORECASE)
+    )
+
+    # 2. Fallback: the ld+json MusicAlbum "keywords" (list or comma string).
+    if not raw:
+        for m in re.finditer(
+            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
+            html,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            try:
+                data = json.loads(m.group(1))
+            except (ValueError, TypeError):
+                continue
+            kw = data.get("keywords") if isinstance(data, dict) else None
+            if isinstance(kw, str):
+                raw.extend(kw.split(","))
+            elif isinstance(kw, list):
+                raw.extend(str(k) for k in kw)
+            if raw:
+                break
+
+    seen: dict[str, str] = {}
+    for token in raw:
+        name = html_lib.unescape(token).strip()
+        if name and name.casefold() not in _KEYWORD_FORMAT_DENYLIST:
+            seen.setdefault(name.casefold(), name)
+    return list(seen.values())
+
+
 def fetch_album_tracks(
     album_url: str,
     sale_item_id: int,
@@ -1208,6 +1281,14 @@ def fetch_album_tracks(
         year_match = re.search(r"\b(19|20)\d{2}\b", raw_release_date)
         release_date_iso = year_match.group(0) if year_match else ""
 
+    # KAMP-588: artist-supplied Bandcamp tags → genres, from the page HTML already
+    # fetched. WARN when a fetched page yields none so a markup change or a
+    # Cloudflare challenge page can't ship the feature silently dead — most
+    # Bandcamp albums are tagged.
+    keywords = parse_album_keywords(resp.text)
+    if not keywords:
+        logger.warning("fetch_album_tracks: no Bandcamp tags parsed for %s", album_url)
+
     result: list[Track] = []
     for t in trackinfo:
         track_num = t.get("track_num") or (1 if is_single_track else None)
@@ -1235,6 +1316,7 @@ def fetch_album_tracks(
                 date_added=date_added if date_added is not None else time.time(),
                 is_available=is_available,
                 duration=float(t.get("duration") or 0.0),
+                genres=list(keywords),
             )
         )
     return result

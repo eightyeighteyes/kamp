@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 57
+_SCHEMA_VERSION = 58
 
 
 class NoStreamableVersionError(Exception):
@@ -412,7 +412,10 @@ CREATE TABLE IF NOT EXISTS bandcamp_collection (
     mode                  TEXT NOT NULL DEFAULT 'local',
     synced_at             REAL,
     added_at              REAL NOT NULL DEFAULT 0,
-    num_streamable_tracks INTEGER NOT NULL DEFAULT 0
+    num_streamable_tracks INTEGER NOT NULL DEFAULT 0,
+    -- KAMP-588: JSON array of the album's Bandcamp tags, cached at sync time so a
+    -- later download can stamp them into the files (and KAMP-591 has a fast path).
+    keywords              TEXT
 );
 
 -- Serialized album download queue (KAMP-408; extended into a platform-neutral
@@ -766,6 +769,10 @@ class DownloadOverrides:
     album: str
     titles: dict[int, str]
     artists: dict[int, str] = field(default_factory=dict)
+    # KAMP-588: the album's cached Bandcamp tags, written into the downloaded
+    # files' genre tags at ingest so the local files carry them (the scan then
+    # round-trips them to track_genres). Empty when none were cached.
+    genres: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2404,7 +2411,25 @@ class LibraryIndex:
             self._rebuild_fts()
             self._conn.execute("UPDATE schema_version SET version = 57")
             self._conn.commit()
-            version = 57  # noqa: F841
+            version = 57
+
+        if version == 57:
+            # v57 -> v58 (KAMP-588): bandcamp_collection gains a keywords column
+            # (JSON array of the album's Bandcamp tags). Unconstrained nullable
+            # column, so a plain ADD COLUMN suffices (not the FK-aware rebuild);
+            # the table is not projected through tracks_with_stats, so no
+            # DROP-VIEW-first trap. Guard on presence for idempotency.
+            _bccols = {
+                r[1]
+                for r in self._conn.execute("PRAGMA table_info(bandcamp_collection)")
+            }
+            if "keywords" not in _bccols:
+                self._conn.execute(
+                    "ALTER TABLE bandcamp_collection ADD COLUMN keywords TEXT"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 58")
+            self._conn.commit()
+            version = 58  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -3899,6 +3924,17 @@ class LibraryIndex:
         )
         self._conn.commit()
         return cur.rowcount > 0
+
+    def set_collection_keywords(self, sale_item_id: str, keywords: list[str]) -> None:
+        """Cache an album's Bandcamp tags (KAMP-588) as a JSON array on its
+        collection row, so a later download can stamp them into the files and the
+        KAMP-591 backfill has a fast path. Dedicated setter (not folded into
+        upsert_collection_item, whose 6 tagless call sites stay untouched)."""
+        self._conn.execute(
+            "UPDATE bandcamp_collection SET keywords = ? WHERE sale_item_id = ?",
+            (json.dumps(keywords), sale_item_id),
+        )
+        self._conn.commit()
 
     def get_remote_collection(self) -> list[dict[str, Any]]:
         """Return all bandcamp_collection rows with mode='remote'."""
@@ -6667,6 +6703,16 @@ class LibraryIndex:
             (sale_item_id,),
         ).fetchone()
 
+        # KAMP-588: the Bandcamp tags cached on the collection row (independent of
+        # any albums row) — stamped into the downloaded files as genres.
+        kw_row = self._conn.execute(
+            "SELECT keywords FROM bandcamp_collection WHERE sale_item_id = ?",
+            (sale_item_id,),
+        ).fetchone()
+        genres: list[str] = (
+            json.loads(kw_row["keywords"]) if kw_row and kw_row["keywords"] else []
+        )
+
         titles: dict[int, str] = {}
         artists: dict[int, str] = {}
         if album is not None:
@@ -6698,6 +6744,7 @@ class LibraryIndex:
                 album=album["display_album"] or album["album"],
                 titles=titles,
                 artists=artists,
+                genres=genres,
             )
 
         # No synced album row (downloaded without syncing streaming rows): fall
@@ -6713,6 +6760,7 @@ class LibraryIndex:
             album_artist=(bc["band_name"] or "").strip(),
             album=(bc["item_title"] or "").strip(),
             titles=titles,
+            genres=genres,
         )
 
     def search(self, query: str) -> list[Track]:

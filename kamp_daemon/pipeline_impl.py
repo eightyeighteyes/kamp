@@ -385,6 +385,14 @@ def _tag_known_bandcamp(
         track.release_group_mbid = rg_mbid
         write_tags_from_track_metadata(audio_file, track, total_tracks=total)
         write_sale_item_id(audio_file, provenance.sale_item_id)
+        # KAMP-588: stamp the album's cached Bandcamp tags as native multi-value
+        # genres so the downloaded files carry them; the watch-folder scan then
+        # round-trips them into track_genres. Replace-semantics, so it doesn't
+        # duplicate any genre frame write_tags_from_track_metadata left.
+        if overrides is not None and overrides.genres:
+            from kamp_core.library import write_meta_tags_to_file  # noqa: PLC0415
+
+            write_meta_tags_to_file(audio_file, genres=overrides.genres)
 
     if overrides is not None and overrides.album:
         title = overrides.album

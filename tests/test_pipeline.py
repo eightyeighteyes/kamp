@@ -1176,6 +1176,36 @@ class TestKnownBandcampBranch:
         assert idx.pending_ingest_for_path(str(extracted)) is None
         idx.close()
 
+    def test_writes_cached_bandcamp_genres_to_files(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        # KAMP-588: cached Bandcamp tags are stamped as native multi-value genres
+        # onto the downloaded files during ingest.
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+        self._seed_db(db)
+
+        from kamp_core.library import LibraryIndex
+
+        idx = LibraryIndex(db)
+        idx.set_collection_keywords("S1", ["Shoegaze", "Dream Pop"])
+        extracted = config.paths.watch_folder / "album"
+        extracted.mkdir()
+        f1 = extracted / "01.mp3"
+        _make_bandcamp_mp3(f1, "Artist X", "Album Y", "Track 1", 1)
+        idx.add_pending_ingest(str(extracted), "S1", "T1")
+        idx.close()
+
+        with patch("kamp_daemon.pipeline_impl.KampMusicBrainzTagger") as mock_tagger:
+            mock_tagger.return_value.tag_release.side_effect = Exception("no network")
+            run(extracted, config, index_path=db)
+
+        moved = list(config.paths.library.rglob("*.mp3"))
+        track1 = next(p for p in moved if p.name.startswith("01"))
+        tcon = id3.ID3(str(track1))["TCON"]
+        assert list(tcon.text) == ["Shoegaze", "Dream Pop"]
+
     def test_records_mbid_and_keeps_bandcamp_names_without_overrides(
         self, tmp_path: Path, config: Config
     ) -> None:

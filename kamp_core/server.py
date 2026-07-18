@@ -3096,7 +3096,7 @@ def create_app(
     )
     # Boolean config keys — stored as Python bool so GET returns true/false, not a
     # string (KAMP-587 re-added this after 589 dropped the last bool key).
-    _BOOL_CONFIG_KEYS = frozenset({"tagging.lastfm_genres"})
+    _BOOL_CONFIG_KEYS = frozenset({"tagging.lastfm_genres", "tagging.bandcamp_genres"})
 
     @app.patch("/api/v1/config")
     def patch_config(req: ConfigPatchRequest) -> dict[str, Any]:

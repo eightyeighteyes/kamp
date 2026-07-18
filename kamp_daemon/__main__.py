@@ -544,6 +544,7 @@ def _build_config_values(
         "artwork.max_bytes": config.artwork.max_bytes,
         "artwork.save_format": config.artwork.save_format,
         "tagging.lastfm_genres": config.tagging.lastfm_genres,
+        "tagging.bandcamp_genres": config.tagging.bandcamp_genres,
         "library.path_template": config.library.path_template,
         "bandcamp.connected": bc_session is not None,
         "bandcamp.username": bc_username,

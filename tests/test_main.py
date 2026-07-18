@@ -31,6 +31,13 @@ class TestBuildConfigValues:
         snapshot = _build_config_values(cfg, bc_session=None, bc_ever_connected=False)
         assert snapshot["artwork.save_format"] == "cover-file"
 
+    def test_includes_bandcamp_genres_reflecting_stored_value(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = self._config(tmp_path, **{"tagging.bandcamp_genres": "false"})
+        snapshot = _build_config_values(cfg, bc_session=None, bc_ever_connected=False)
+        assert snapshot["tagging.bandcamp_genres"] is False
+
     def test_every_settable_non_ui_key_is_present(self, tmp_path: Path) -> None:
         """Drift guard: every settable key that isn't served by the separate
         /ui-state endpoint must appear in the snapshot, or its preference

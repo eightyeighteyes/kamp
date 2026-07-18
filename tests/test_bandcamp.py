@@ -2578,6 +2578,7 @@ class TestSyncCollectionStream:
         already_have_tracks: bool = True,
         fake_tracks: list[Any] | None = None,
         existing_state: dict[str, str] | None = None,
+        apply_bandcamp_genres: bool = True,
     ) -> tuple[tuple[int, int], MagicMock]:
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
@@ -2598,7 +2599,12 @@ class TestSyncCollectionStream:
             ),
             patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=fake_tracks),
         ):
-            result = sync_collection_stream(config, watch_folder, index)
+            result = sync_collection_stream(
+                config,
+                watch_folder,
+                index,
+                apply_bandcamp_genres=apply_bandcamp_genres,
+            )
 
         return result, index
 
@@ -2738,6 +2744,49 @@ class TestSyncCollectionStream:
         index.set_collection_keywords.assert_called_once_with(
             "1", ["shoegaze", "dream pop"]
         )
+        # apply_bandcamp_genres defaults True — the tracks keep their genres.
+        upserted = index.upsert_many.call_args[0][0]
+        assert upserted[0].genres == ["shoegaze", "dream pop"]
+
+    def test_disabled_bandcamp_genres_caches_but_strips_from_tracks(
+        self, tmp_path: Path
+    ) -> None:
+        # With the toggle off, the labels are still cached on the collection row,
+        # but stripped from the tracks so they never reach the library.
+        from pathlib import Path as _Path
+
+        from kamp_core.library import Track
+
+        track = Track(
+            file_path=_Path("bandcamp://1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            genres=["shoegaze", "dream pop"],
+        )
+        _result, index = self._run(
+            tmp_path,
+            [_item(1)],
+            already_have_tracks=False,
+            fake_tracks=[track],
+            apply_bandcamp_genres=False,
+        )
+        # Cache still holds the labels...
+        index.set_collection_keywords.assert_called_once_with(
+            "1", ["shoegaze", "dream pop"]
+        )
+        # ...but the upserted track has no genres.
+        upserted = index.upsert_many.call_args[0][0]
+        assert upserted[0].genres == []
 
     def test_batch_indexed_callback_fires_per_new_batch(self, tmp_path: Path) -> None:
         """batch_indexed_callback fires once per album batch that has new tracks."""

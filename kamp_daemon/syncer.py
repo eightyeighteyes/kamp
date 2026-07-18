@@ -59,7 +59,12 @@ def _sync_worker(
         try:
             if bc_config.collection_mode == "stream":
                 from .bandcamp import sync_collection_stream
+                from .config import Config
 
+                # Read the "apply Bandcamp labels as genres" toggle from the DB
+                # (subprocess: no inherited config) so a disabled toggle stops the
+                # labels reaching the library while sync still caches them.
+                apply_bc_genres = Config.load(index).tagging.bandcamp_genres
                 album_count, track_count = sync_collection_stream(
                     bc_config=bc_config,
                     watch_dir=watch_dir,
@@ -67,6 +72,7 @@ def _sync_worker(
                     status_callback=lambda msg: status_q.put(msg),
                     art_cache_dir=_state_dir() / "art_cache",
                     batch_indexed_callback=lambda: notify_q.put(True),
+                    apply_bandcamp_genres=apply_bc_genres,
                 )
                 result_q.put(("ok_stream", (album_count, track_count)))
             else:

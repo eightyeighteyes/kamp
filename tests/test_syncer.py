@@ -865,6 +865,7 @@ class TestStreamMode:
             status_callback: object = None,
             art_cache_dir: object = None,
             batch_indexed_callback: object = None,
+            apply_bandcamp_genres: bool = True,
         ) -> tuple[int, int]:
             if batch_indexed_callback is not None:
                 batch_indexed_callback()

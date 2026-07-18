@@ -331,6 +331,30 @@ class TestRunGenreBackfill:
         # Breaker never trips (reset at album 3), so Last.fm stays on throughout.
         assert flags == [True, True, True, True]
 
+    def test_disabled_bandcamp_genres_skips_rescrape_and_apply(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With bandcamp_genres off, a cache-miss album is NOT re-scraped and no
+        # Bandcamp labels are passed to enrich (Last.fm still runs).
+        index = _index(
+            [_album(1, sale_item_id="S1", keywords=None, album_url="https://x/a")]
+        )
+        session = MagicMock()
+        cfg = _config()
+        cfg.tagging.bandcamp_genres = False
+        passed: list[Any] = []
+        monkeypatch.setattr(
+            gb,
+            "enrich_album_genres",
+            lambda idx, ids, cfg, *, extra_genres=(): passed.append(list(extra_genres))
+            or [],
+        )
+        gb.run_genre_backfill(
+            index, cfg, session, _Progress(), threading.Event(), sleep=lambda _s: None
+        )
+        session.get.assert_not_called()  # no re-scrape
+        assert passed == [[]]  # no Bandcamp labels applied
+
     def test_lastfm_circuit_breaker_trips(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

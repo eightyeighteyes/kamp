@@ -124,6 +124,11 @@ def run(
                 overrides = index.download_overrides_for_sale_item(
                     provenance.sale_item_id
                 )
+                # When applying Bandcamp labels as genres is disabled, drop the
+                # cached labels so they're not stamped onto the downloaded files
+                # (the collection-row cache still holds them for a toggle-on).
+                if overrides is not None and not config.tagging.bandcamp_genres:
+                    overrides.genres = []
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Provenance lookup failed (non-fatal): %s", exc)
 

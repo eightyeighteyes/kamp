@@ -426,6 +426,7 @@ export type ConfigValues = {
   'artwork.max_bytes': number | null
   'artwork.save_format': string | null
   'tagging.lastfm_genres': boolean | null
+  'tagging.bandcamp_genres': boolean | null
   'library.path_template': string | null
   'bandcamp.connected': boolean | null
   'bandcamp.username': string | null

@@ -479,6 +479,7 @@ def sync_collection_stream(
     status_callback: Callable[[str], None] | None = None,
     art_cache_dir: Path | None = None,
     batch_indexed_callback: Callable[[], None] | None = None,
+    apply_bandcamp_genres: bool = True,
 ) -> tuple[int, int]:
     """Index all Bandcamp purchases as remote rows — no ZIP download.
 
@@ -583,11 +584,18 @@ def sync_collection_stream(
                     date_added=purchased_ts,
                 )
                 if tracks:
-                    index.upsert_many(tracks)
                     # KAMP-588: cache the album's Bandcamp tags so a later download
                     # can stamp them into the files (and KAMP-591 has a fast path).
-                    # All tracks share the album keywords.
+                    # All tracks share the album keywords. Cache BEFORE any strip
+                    # below so the labels persist even when applying them is off.
                     index.set_collection_keywords(str(sid), tracks[0].genres)
+                    # When applying Bandcamp labels as genres is disabled, drop them
+                    # from the tracks before upsert so they never reach the library
+                    # (the cache above still holds them for a later toggle-on).
+                    if not apply_bandcamp_genres:
+                        for _t in tracks:
+                            _t.genres = []
+                    index.upsert_many(tracks)
                     track_count += len(tracks)
                     logger.debug(
                         "Indexed %d track(s) for %r by %r",

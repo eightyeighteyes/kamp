@@ -116,7 +116,14 @@ def run_genre_backfill(
             t.id for t in index.tracks_for_album(album["album_artist"], album["album"])
         ]
         if ids and not cancel.is_set():
-            extra = _bandcamp_extra_genres(index, album, session, cancel)
+            # When applying Bandcamp labels is disabled, skip the re-scrape
+            # entirely — no point paying the network (and ban risk) to warm a
+            # cache the user has turned off; the cheap sync-time cache still runs.
+            extra = (
+                _bandcamp_extra_genres(index, album, session, cancel)
+                if config.tagging.bandcamp_genres
+                else []
+            )
             cfg = config if lastfm_ok else cfg_no_lastfm
             started = time.monotonic()
             try:

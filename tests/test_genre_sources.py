@@ -311,16 +311,36 @@ class TestEnrichAlbumGenres:
         assert applied == []
         assert db_genres == {"Jazz"}
 
-    def test_enrich_new_tracks_enriches_local_album(
+    def test_enrich_new_tracks_resolves_ids_from_db(
         self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        index, _ = self._seed_local(tmp_path, ["Jazz"])
-        tracks = index.all_tracks()
+        # A scan's new_tracks are read from files and carry id=0, so the trigger
+        # must resolve real ids from the DB by album — grouping on track.id would
+        # resolve nothing (the bug behind "not working after ingest").
+        from kamp_core.library import Track
+
+        index, mp3 = self._seed_local(tmp_path, ["Jazz"])
+        real_tid = index.all_tracks()[0].id
+        scan_track = Track(
+            file_path=mp3,
+            title="T",
+            artist="Slowdive",
+            album_artist="Slowdive",
+            album="Souvlaki",
+            release_date="1993",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+        )
+        assert scan_track.id == 0  # no DB id, like a real scan result
         monkeypatch.setattr(
             gs, "enabled_sources", lambda cfg: [_StubSource(["Shoegaze"])]
         )
-        gs.enrich_new_tracks(index, tracks, self._config())
-        genre = index.get_track_by_id(tracks[0].id).genre
+        gs.enrich_new_tracks(index, [scan_track], self._config())
+        genre = index.get_track_by_id(real_tid).genre
         index.close()
         assert "Shoegaze" in genre and "Jazz" in genre
 

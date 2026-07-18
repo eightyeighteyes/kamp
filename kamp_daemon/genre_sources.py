@@ -136,7 +136,16 @@ class LastfmGenreSource(GenreSource):
 
     def fetch(self, query: GenreQuery) -> list[str]:
         raw = _run_with_timeout(lambda: self._fetch_raw(query), _FETCH_TIMEOUT_SECONDS)
-        return canonicalize(raw)
+        result = canonicalize(raw)
+        if raw and not result:
+            logger.info(
+                "Last.fm: all %d tag(s) for %r/%r were filtered out by the genre "
+                "allowlist — none matched (extend kamp_daemon/data/genres.txt to keep more)",
+                len(raw),
+                query.album_artist,
+                query.album,
+            )
+        return result
 
     def _fetch_raw(self, query: GenreQuery) -> list[str]:
         net = self._get_network()
@@ -149,7 +158,7 @@ class LastfmGenreSource(GenreSource):
                 limit=_TOP_TAGS_LIMIT
             ),
         ]
-        for getter in getters:
+        for label, getter in zip(("album", "artist"), getters):
             try:
                 for top in getter():
                     try:
@@ -159,7 +168,21 @@ class LastfmGenreSource(GenreSource):
                     if weight >= _MIN_TAG_WEIGHT:
                         tags.append(str(top.item.get_name()))
             except Exception as exc:  # noqa: BLE001 — one getter failing is fine
-                logger.debug("Last.fm getter failed (best-effort): %s", exc)
+                logger.info(
+                    "Last.fm %s tags for %r/%r failed (best-effort): %s",
+                    label,
+                    query.album_artist,
+                    query.album,
+                    exc,
+                )
+        logger.info(
+            "Last.fm: %r by %r → %d raw tag(s) at/above weight %d: %s",
+            query.album,
+            query.album_artist,
+            len(tags),
+            _MIN_TAG_WEIGHT,
+            tags,
+        )
         return tags
 
 
@@ -218,8 +241,21 @@ def enrich_album_genres(
     query = GenreQuery(album_artist=first.album_artist, album=first.album)
     genres = fetch_all_genres(sources, query)
     if not genres:
+        logger.info(
+            "genre enrich: %r by %r — no genres applied (no source returned a "
+            "canonical genre)",
+            query.album,
+            query.album_artist,
+        )
         return []
 
+    logger.info(
+        "genre enrich: %r by %r → applying %s to %d track(s)",
+        query.album,
+        query.album_artist,
+        genres,
+        len(tracks),
+    )
     index.apply_genres([t.id for t in tracks], genres, mode="merge")
 
     from kamp_core.library import write_meta_tags_to_file  # noqa: PLC0415
@@ -250,22 +286,44 @@ def enrich_new_tracks(
 ) -> None:
     """Enrich the albums of newly-scanned LOCAL tracks (KAMP-587 trigger core).
 
-    Called with a scan's ``new_tracks`` after each ingest. Groups by album so an
-    album is fetched once, skips remote/streaming tracks (they have no file to
-    stamp), and is a cheap no-op when no source is enabled. Synchronous and
-    best-effort; the daemon runs it on a background thread so a slow Last.fm can
-    never stall the scan.
+    Called with a scan's ``new_tracks`` after each ingest. Resolves each new
+    album's tracks fresh from the DB (scan-produced Track objects don't carry a
+    DB id), skips remote/streaming albums, and is a cheap no-op when no source is
+    enabled. Synchronous and best-effort; the daemon runs it on a background
+    thread so a slow Last.fm can never stall the scan.
     """
     if not enabled_sources(config):
+        logger.info("genre enrich: skipped — no genre source is enabled")
         return
-    by_album: dict[tuple[str, str], list[int]] = {}
-    for track in tracks:
-        if not track.is_remote:
-            by_album.setdefault((track.album_artist, track.album), []).append(track.id)
-    for ids in by_album.values():
+    # Unique album keys of the new LOCAL tracks. Their track_ids are resolved from
+    # the DB below — the Track objects a scan yields are read from files and have
+    # id=0, so grouping on track.id would resolve nothing.
+    album_keys = {
+        (track.album_artist, track.album)
+        for track in tracks
+        if not track.is_remote and track.album
+    }
+    if not album_keys:
+        logger.info(
+            "genre enrich: %d new track(s) but none are a local album — "
+            "nothing to enrich",
+            len(tracks),
+        )
+        return
+    logger.info(
+        "genre enrich: enriching %d album(s) from %d new track(s)",
+        len(album_keys),
+        len(tracks),
+    )
+    for album_artist, album in album_keys:
         try:
-            enrich_album_genres(index, ids, config)
-        except (
-            Exception
-        ) as exc:  # noqa: BLE001 — one album failing can't break the rest
-            logger.warning("genre enrichment failed (best-effort): %s", exc)
+            ids = [t.id for t in index.tracks_for_album(album_artist, album)]
+            if ids:
+                enrich_album_genres(index, ids, config)
+        except Exception as exc:  # noqa: BLE001 — one album can't break the rest
+            logger.warning(
+                "genre enrichment failed for %r/%r (best-effort): %s",
+                album_artist,
+                album,
+                exc,
+            )

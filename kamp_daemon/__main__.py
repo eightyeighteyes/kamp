@@ -543,6 +543,7 @@ def _build_config_values(
         "artwork.min_dimension": config.artwork.min_dimension,
         "artwork.max_bytes": config.artwork.max_bytes,
         "artwork.save_format": config.artwork.save_format,
+        "tagging.lastfm_genres": config.tagging.lastfm_genres,
         "library.path_template": config.library.path_template,
         "bandcamp.connected": bc_session is not None,
         "bandcamp.username": bc_username,
@@ -1254,6 +1255,25 @@ def _cmd_daemon(
                     )
             except Exception:
                 _logger.exception("Error invoking extensions after library scan")
+
+            # KAMP-587: enrich the new tracks' genres from external sources
+            # (Last.fm) off the scan thread so a slow/hung fetch can never stall
+            # it. enrich_new_tracks no-ops when the toggle is off (checked inside
+            # the thread via a fresh config load). Best-effort throughout.
+            if result.new_tracks:
+                _new_tracks = result.new_tracks
+
+                def _enrich() -> None:
+                    from .genre_sources import enrich_new_tracks
+
+                    try:
+                        enrich_new_tracks(index, _new_tracks, Config.load(index))
+                    except Exception:
+                        _logger.exception("Error enriching genres after scan")
+
+                threading.Thread(
+                    target=_enrich, daemon=True, name="genre-enrich"
+                ).start()
         finally:
             # Bump the server's library version so connected WebSocket clients
             # receive a "library.changed" push and reload the album list.

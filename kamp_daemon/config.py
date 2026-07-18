@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,6 +44,14 @@ class MusicBrainzConfig:
     # (trust-when-tags-conflict); the pipeline now always keeps existing file
     # tags on conflict. Kept as a namespace to avoid churning its ~8 call sites.
     pass
+
+
+@dataclass
+class TaggingConfig:
+    # KAMP-587: Last.fm genre enrichment after ingest. Default ON — the feature's
+    # point is that ingested files gain genres; it's best-effort and async, so it
+    # never slows or fails a download. Users can turn it off in Tagging prefs.
+    lastfm_genres: bool = True
 
 
 @dataclass
@@ -94,6 +102,7 @@ _CONFIG_DEFAULTS: dict[str, str] = {
     "artwork.min_dimension": "1000",
     "artwork.max_bytes": "1000000",
     "artwork.save_format": "embedded",
+    "tagging.lastfm_genres": "true",
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
     "bandcamp.format": "mp3-v0",
     "bandcamp.poll_interval_minutes": "0",
@@ -112,6 +121,7 @@ _CONFIG_KEY_TYPES: dict[str, type] = {
     "artwork.min_dimension": int,
     "artwork.max_bytes": int,
     "artwork.save_format": str,
+    "tagging.lastfm_genres": bool,
     "library.path_template": str,
     "bandcamp.format": str,
     "bandcamp.poll_interval_minutes": int,
@@ -197,6 +207,7 @@ class Config:
     musicbrainz: MusicBrainzConfig
     artwork: ArtworkConfig
     library: LibraryConfig
+    tagging: TaggingConfig = field(default_factory=TaggingConfig)
     bandcamp: BandcampConfig | None = None
     lastfm: LastfmConfig | None = None
     ui: UiConfig = None  # type: ignore[assignment]  # set in __post_init__
@@ -299,6 +310,9 @@ class Config:
             except (ValueError, TypeError):
                 return int(_CONFIG_DEFAULTS[key])
 
+        def _bool(key: str) -> bool:
+            return _get(key).lower() == "true"
+
         lastfm: LastfmConfig | None = None
         _lastfm_session = db.get_session("lastfm")
         if _lastfm_session and _lastfm_session.get("session_key"):
@@ -324,6 +338,9 @@ class Config:
             ),
             library=LibraryConfig(
                 path_template=_get("library.path_template"),
+            ),
+            tagging=TaggingConfig(
+                lastfm_genres=_bool("tagging.lastfm_genres"),
             ),
             bandcamp=BandcampConfig(
                 format=_get("bandcamp.format"),
@@ -386,9 +403,12 @@ def config_set(db: "LibraryIndex", key: str, value: str) -> None:
         raise KeyError(f"Unknown config key {key!r}. Valid keys: {valid}")
 
     target_type = _CONFIG_KEY_TYPES[key]
-    # No bool config keys remain after KAMP-589; re-add a bool branch here (with
-    # a test) when the next bool key lands.
-    if target_type == int:
+    if target_type == bool:
+        # Re-added in KAMP-587 for tagging.lastfm_genres (589 removed the last one).
+        if value.lower() not in ("true", "false"):
+            raise ValueError(f"Key {key!r} requires true or false, got {value!r}")
+        db_value = value.lower()
+    elif target_type == int:
         try:
             db_value = str(int(value))
         except ValueError:

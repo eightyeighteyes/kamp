@@ -1206,6 +1206,43 @@ class TestKnownBandcampBranch:
         tcon = id3.ID3(str(track1))["TCON"]
         assert list(tcon.text) == ["Shoegaze", "Dream Pop"]
 
+    def test_disabled_bandcamp_genres_not_written_to_files(
+        self, tmp_path: Path, config: Config
+    ) -> None:
+        # With the toggle off, cached Bandcamp labels are NOT stamped onto the
+        # downloaded files (the cache row still holds them for a later toggle-on).
+        config.tagging.bandcamp_genres = False
+        config.paths.watch_folder.mkdir(parents=True)
+        config.paths.library.mkdir(parents=True)
+        db = tmp_path / "lib.db"
+        self._seed_db(db)
+
+        from kamp_core.library import LibraryIndex
+
+        idx = LibraryIndex(db)
+        idx.set_collection_keywords("S1", ["Shoegaze", "Dream Pop"])
+        extracted = config.paths.watch_folder / "album"
+        extracted.mkdir()
+        f1 = extracted / "01.mp3"
+        _make_bandcamp_mp3(f1, "Artist X", "Album Y", "Track 1", 1)
+        idx.add_pending_ingest(str(extracted), "S1", "T1")
+        # Cache is intact and unaffected by the toggle.
+        assert idx.download_overrides_for_sale_item("S1").genres == [
+            "Shoegaze",
+            "Dream Pop",
+        ]
+        idx.close()
+
+        with patch("kamp_daemon.pipeline_impl.KampMusicBrainzTagger") as mock_tagger:
+            mock_tagger.return_value.tag_release.side_effect = Exception("no network")
+            run(extracted, config, index_path=db)
+
+        moved = list(config.paths.library.rglob("*.mp3"))
+        track1 = next(p for p in moved if p.name.startswith("01"))
+        tags = id3.ID3(str(track1))
+        # No Bandcamp genre frame written (TCON absent, or empty if MB set one).
+        assert "TCON" not in tags or list(tags["TCON"].text) in ([], [""])
+
     def test_records_mbid_and_keeps_bandcamp_names_without_overrides(
         self, tmp_path: Path, config: Config
     ) -> None:

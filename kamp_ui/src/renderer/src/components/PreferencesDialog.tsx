@@ -1227,6 +1227,13 @@ export function PreferencesDialog({
                       initialValue={configValues?.['tagging.lastfm_genres'] ?? true}
                       onSave={handleSave}
                     />
+                    <BoolRow
+                      label="Use bandcamp album labels as genres"
+                      configKey="tagging.bandcamp_genres"
+                      hint="Use artist supplied labels on bandcamp items as additional genre tags."
+                      initialValue={configValues?.['tagging.bandcamp_genres'] ?? true}
+                      onSave={handleSave}
+                    />
                     <div className="prefs-row">
                       <div className="prefs-row-header">
                         <span className="prefs-label">Update library genres</span>

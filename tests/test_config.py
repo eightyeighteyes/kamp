@@ -80,6 +80,18 @@ class TestLoad:
         config = Config.load(db)
         assert config.tagging.lastfm_genres is False
 
+    def test_tagging_bandcamp_genres_default_true(self, db: LibraryIndex) -> None:
+        # Bandcamp album labels are applied as genres by default.
+        Config.write_defaults(db)
+        config = Config.load(db)
+        assert config.tagging.bandcamp_genres is True
+
+    def test_tagging_bandcamp_genres_loads_false(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        db.set_setting("tagging.bandcamp_genres", "false")
+        config = Config.load(db)
+        assert config.tagging.bandcamp_genres is False
+
     def test_load_seeds_defaults_on_fresh_install(self, db: LibraryIndex) -> None:
         config = Config.load(db)
         assert config.bandcamp is not None
@@ -247,6 +259,11 @@ class TestConfigSet:
         Config.write_defaults(db)
         config_set(db, "tagging.lastfm_genres", "true")
         assert db.get_setting("tagging.lastfm_genres") == "true"
+
+    def test_set_bandcamp_genres_bool_key(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        config_set(db, "tagging.bandcamp_genres", "false")
+        assert db.get_setting("tagging.bandcamp_genres") == "false"
 
     def test_bool_wrong_value_raises_value_error(self, db: LibraryIndex) -> None:
         with pytest.raises(ValueError, match="requires true or false"):

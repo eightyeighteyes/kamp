@@ -18,9 +18,10 @@ from __future__ import annotations
 import logging
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kamp_core.library import LibraryIndex
@@ -216,20 +217,36 @@ def fetch_all_genres(sources: list[GenreSource], query: GenreQuery) -> list[str]
     return list(seen.values())
 
 
-def enrich_album_genres(
-    index: "LibraryIndex", track_ids: list[int], config: "Config"
-) -> list[str]:
-    """Fetch genres for the album containing *track_ids* from the enabled sources
-    and merge them in — DB via ``apply_genres(merge)`` and, for local tracks, the
-    files. The shared enrichment core (KAMP-587; KAMP-591 reuses it library-wide).
+# Serializes genre writes so the 587 ingest-enrichment and the 591 library
+# backfill can never write the same file's tags concurrently (SQLite serializes
+# the DB, but two mutagen save()s on one file can produce a torn tag).
+_ENRICH_LOCK = threading.Lock()
 
-    Best-effort and idempotent: returns the genres it applied ([] when nothing is
-    enabled, no tracks resolve, or no source yielded a genre). Files must be
-    written too, not just the DB: a local file's re-scan REPLACES its DB genres
-    from the file, so a DB-only addition would be wiped on the next scan.
+
+def enrich_album_genres(
+    index: "LibraryIndex",
+    track_ids: list[int],
+    config: "Config",
+    *,
+    extra_genres: "Sequence[str]" = (),
+) -> list[str]:
+    """Merge genres into the album containing *track_ids* — DB via
+    ``apply_genres(merge)`` and, for local tracks, the files. The shared
+    enrichment core (KAMP-587; KAMP-591 reuses it library-wide).
+
+    Genres come from the enabled sources (Last.fm, allowlist-filtered) unioned
+    with *extra_genres*. ``extra_genres`` is applied VERBATIM — it is the caller's
+    already-filtered source (KAMP-591 passes Bandcamp keywords, pre-filtered by
+    ``parse_album_keywords``); re-running the Last.fm allowlist would diverge from
+    588 and drop the artist's niche tags. Crucially, extra_genres alone can drive
+    an apply even when Last.fm is off/empty.
+
+    Best-effort and idempotent: returns the genres applied ([] when no track
+    resolves or the union is empty). Files must be written, not just the DB: a
+    local file's re-scan REPLACES its DB genres from the file, so a DB-only
+    addition would be wiped on the next scan.
     """
-    sources = enabled_sources(config)
-    if not sources or not track_ids:
+    if not track_ids:
         return []
     tracks = [t for t in (index.get_track_by_id(tid) for tid in track_ids) if t]
     if not tracks:
@@ -239,11 +256,19 @@ def enrich_album_genres(
     # this keys correctly for compilations / various-artists.
     first = tracks[0]
     query = GenreQuery(album_artist=first.album_artist, album=first.album)
-    genres = fetch_all_genres(sources, query)
-    if not genres:
+    fetched = fetch_all_genres(enabled_sources(config), query)  # allowlist-filtered
+
+    # Union the fetched (Last.fm) + extra (verbatim) genres, order-preserving,
+    # case-insensitively deduped. Gate on the UNION so Bandcamp-only genres apply.
+    seen: dict[str, str] = {}
+    for name in (*fetched, *extra_genres):
+        cf = name.casefold()
+        if name and cf not in seen:
+            seen[cf] = name
+    to_apply = list(seen.values())
+    if not to_apply:
         logger.info(
-            "genre enrich: %r by %r — no genres applied (no source returned a "
-            "canonical genre)",
+            "genre enrich: %r by %r — no genres applied",
             query.album,
             query.album_artist,
         )
@@ -253,32 +278,32 @@ def enrich_album_genres(
         "genre enrich: %r by %r → applying %s to %d track(s)",
         query.album,
         query.album_artist,
-        genres,
+        to_apply,
         len(tracks),
     )
-    index.apply_genres([t.id for t in tracks], genres, mode="merge")
-
     from kamp_core.library import write_meta_tags_to_file  # noqa: PLC0415
 
-    for track in tracks:
-        if track.is_remote:
-            continue
-        # Re-read the post-merge canonical set. The DB read exposes it as the
-        # denormalized "; "-joined `genre` string (the `genres` list is a
-        # write-path field, empty on DB read), so split it for the file write.
-        merged = index.get_track_by_id(track.id)
-        if merged is None:
-            continue
-        names = [g.strip() for g in merged.genre.split(";") if g.strip()]
-        try:
-            write_meta_tags_to_file(Path(merged.file_path), genres=names)
-        except Exception as exc:  # noqa: BLE001 — best-effort file write
-            logger.warning(
-                "genre enrich: file write failed for %s (best-effort): %s",
-                merged.file_path,
-                exc,
-            )
-    return genres
+    with _ENRICH_LOCK:
+        index.apply_genres([t.id for t in tracks], to_apply, mode="merge")
+        for track in tracks:
+            if track.is_remote:
+                continue
+            # Re-read the post-merge canonical set. The DB read exposes it as the
+            # denormalized "; "-joined `genre` string (the `genres` list is a
+            # write-path field, empty on DB read), so split it for the file write.
+            merged = index.get_track_by_id(track.id)
+            if merged is None:
+                continue
+            names = [g.strip() for g in merged.genre.split(";") if g.strip()]
+            try:
+                write_meta_tags_to_file(Path(merged.file_path), genres=names)
+            except Exception as exc:  # noqa: BLE001 — best-effort file write
+                logger.warning(
+                    "genre enrich: file write failed for %s (best-effort): %s",
+                    merged.file_path,
+                    exc,
+                )
+    return to_apply
 
 
 def enrich_new_tracks(

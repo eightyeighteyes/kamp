@@ -939,6 +939,10 @@ export function PreferencesDialog({
   const scanLibrary = useStore((s) => s.scanLibrary)
   const scanStatus = useStore((s) => s.scanStatus)
   const scanProgress = useStore((s) => s.scanProgress)
+  const genreBackfill = useStore((s) => s.genreBackfill)
+  const startGenreBackfill = useStore((s) => s.startGenreBackfill)
+  const cancelGenreBackfill = useStore((s) => s.cancelGenreBackfill)
+  const refreshGenreBackfill = useStore((s) => s.refreshGenreBackfill)
   const prefsInitialTab = useStore((s) => s.prefsInitialTab)
   const [activeTab, setActiveTab] = useState<'general' | 'tagging' | 'services' | 'extensions'>(
     () => prefsInitialTab
@@ -985,6 +989,18 @@ export function PreferencesDialog({
       void loadConfig()
     }
   }, [prefsOpen, configValues, loadConfig])
+
+  // KAMP-591: while the Tagging tab is open, resync genre-backfill progress and
+  // poll (~1 Hz) as long as a run is active. The interval is bounded by the tab
+  // being visible, so a multi-hour run never polls after prefs is closed.
+  const backfillActive = genreBackfill?.active ?? false
+  useEffect(() => {
+    if (!prefsOpen || activeTab !== 'tagging') return
+    void refreshGenreBackfill()
+    if (!backfillActive) return
+    const poll = setInterval(() => void refreshGenreBackfill(), 1000)
+    return () => clearInterval(poll)
+  }, [prefsOpen, activeTab, backfillActive, refreshGenreBackfill])
 
   // Close on Escape.
   useEffect(() => {
@@ -1211,6 +1227,64 @@ export function PreferencesDialog({
                       initialValue={configValues?.['tagging.lastfm_genres'] ?? true}
                       onSave={handleSave}
                     />
+                    <div className="prefs-row">
+                      <div className="prefs-row-header">
+                        <span className="prefs-label">Update library genres</span>
+                      </div>
+                      {backfillActive ? (
+                        <div className="prefs-scan-status">
+                          <span className="prefs-scan-scanning">
+                            {genreBackfill && genreBackfill.total > 0
+                              ? `Updating genres… ${genreBackfill.done} / ${genreBackfill.total} albums`
+                              : 'Starting…'}
+                          </span>
+                          {genreBackfill && genreBackfill.total > 0 && (
+                            <div className="prefs-scan-progress">
+                              <div
+                                className="prefs-scan-progress-fill"
+                                style={{
+                                  width: `${(genreBackfill.done / genreBackfill.total) * 100}%`
+                                }}
+                              />
+                            </div>
+                          )}
+                          <button
+                            className="prefs-choose-btn"
+                            onClick={() => void cancelGenreBackfill()}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          className="prefs-choose-btn"
+                          onClick={() => void startGenreBackfill()}
+                        >
+                          Update Library Genres
+                        </button>
+                      )}
+                      {!backfillActive && genreBackfill?.state === 'done' && (
+                        <p className="prefs-hint">
+                          Genre update complete{' '}
+                          {genreBackfill.total > 0 ? `(${genreBackfill.total} albums)` : ''}.
+                        </p>
+                      )}
+                      {!backfillActive && genreBackfill?.state === 'cancelled' && (
+                        <p className="prefs-hint">Genre update cancelled.</p>
+                      )}
+                      {!backfillActive && genreBackfill?.state === 'error' && (
+                        <p className="prefs-hint" style={{ color: 'var(--error)' }}>
+                          Genre update failed — check the server logs.
+                        </p>
+                      )}
+                      {!backfillActive && !genreBackfill && (
+                        <p className="prefs-hint">
+                          Re-fetch genres for every album from Last.fm (and re-scrape original tags
+                          for older Bandcamp albums). Runs in the background; existing genres are
+                          kept and only added to.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </>
               )}

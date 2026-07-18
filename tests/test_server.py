@@ -565,6 +565,60 @@ class TestGenresEndpoint:
         assert TestClient(app).get("/api/v1/genres").json() == ["Jazz", "Rock"]
 
 
+class TestGenreBackfillEndpoints:
+    """POST/GET /api/v1/genres/backfill (KAMP-591)."""
+
+    def test_start_spawns_worker(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        called = threading.Event()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_genre_backfill_start=called.set,
+        )
+        resp = TestClient(app).post("/api/v1/genres/backfill")
+        assert resp.json() == {"ok": True, "started": True}
+        assert called.wait(timeout=2.0)  # the daemon thread ran the callback
+
+    def test_start_rejected_when_active(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        start = MagicMock()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_genre_backfill_start=start,
+        )
+        app.state.notify_genre_backfill_progress(1, 10, "running")  # mark active
+        resp = TestClient(app).post("/api/v1/genres/backfill")
+        assert resp.json() == {"ok": True, "started": False}
+        start.assert_not_called()
+
+    def test_cancel_calls_callback(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        cancel = MagicMock()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_genre_backfill_cancel=cancel,
+        )
+        TestClient(app).post("/api/v1/genres/backfill/cancel")
+        cancel.assert_called_once()
+
+    def test_progress_snapshot(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        app.state.notify_genre_backfill_progress(3, 10, "running")
+        data = TestClient(app).get("/api/v1/genres/backfill/progress").json()
+        assert data == {"active": True, "done": 3, "total": 10, "state": "running"}
+
+
 class TestTopArtistsEndpoint:
     def test_returns_empty_list_when_no_artists(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

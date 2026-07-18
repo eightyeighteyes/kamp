@@ -263,6 +263,37 @@ class TestEnrichAlbumGenres:
         assert db_genres == {"Jazz", "Shoegaze"}  # merge, not replace
         assert set(id3.ID3(str(mp3))["TCON"].text) == {"Jazz", "Shoegaze"}
 
+    def test_extra_genres_apply_verbatim_without_lastfm(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # KAMP-591: extra_genres (Bandcamp keywords) apply even when Last.fm is
+        # off/empty, and VERBATIM — "Portland" is not in the allowlist but a
+        # Bandcamp album's location tag is kept (588 consistency), unlike Last.fm.
+        index, _ = self._seed_local(tmp_path, [])
+        tid = index.all_tracks()[0].id
+        monkeypatch.setattr(gs, "enabled_sources", lambda cfg: [])  # Last.fm off
+        applied = gs.enrich_album_genres(
+            index, [tid], self._config(), extra_genres=["Portland", "Shoegaze"]
+        )
+        genre = index.get_track_by_id(tid).genre
+        index.close()
+        assert set(applied) == {"Portland", "Shoegaze"}
+        assert "Portland" in genre and "Shoegaze" in genre
+
+    def test_union_lastfm_and_extra_deduped(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        index, _ = self._seed_local(tmp_path, [])
+        tid = index.all_tracks()[0].id
+        monkeypatch.setattr(
+            gs, "enabled_sources", lambda cfg: [_StubSource(["Shoegaze"])]
+        )
+        applied = gs.enrich_album_genres(
+            index, [tid], self._config(), extra_genres=["shoegaze", "Dream Pop"]
+        )
+        index.close()
+        assert applied == ["Shoegaze", "Dream Pop"]  # dedup, order-preserving
+
     def test_file_write_failure_is_best_effort(
         self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

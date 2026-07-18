@@ -401,6 +401,23 @@ export type ScanProgress = {
 
 export const getScanProgress = (): Promise<ScanProgress> => get('/api/v1/library/scan/progress')
 
+// KAMP-591: library-wide genre backfill (re-fetch genres for every album).
+export type GenreBackfillProgress = {
+  active: boolean
+  done: number
+  total: number
+  state: 'idle' | 'running' | 'done' | 'cancelled' | 'error'
+}
+
+export const startGenreBackfill = (): Promise<{ ok: boolean; started: boolean }> =>
+  post('/api/v1/genres/backfill')
+
+export const cancelGenreBackfill = (): Promise<{ ok: boolean }> =>
+  post('/api/v1/genres/backfill/cancel')
+
+export const getGenreBackfillProgress = (): Promise<GenreBackfillProgress> =>
+  get('/api/v1/genres/backfill/progress')
+
 export type ConfigValues = {
   'paths.watch_folder': string | null
   'paths.library': string | null

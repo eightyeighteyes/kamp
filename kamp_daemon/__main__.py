@@ -983,6 +983,55 @@ def _cmd_daemon(
             _logger.exception("Unhandled error during Bandcamp sync-all")
             app.state.notify_bandcamp_sync_status("")  # back to idle
 
+    # --- KAMP-591: library-wide genre backfill ("Update Library Genres") ---
+    _genre_backfill_cancel = threading.Event()
+    _genre_backfill_lock = threading.Lock()
+    _genre_backfill_running = [False]  # boxed for the closure
+
+    def _on_genre_backfill_start() -> None:
+        with _genre_backfill_lock:
+            if _genre_backfill_running[0]:
+                return  # already running — reject the concurrent start
+            _genre_backfill_running[0] = True
+        _genre_backfill_cancel.clear()
+        try:
+            from .genre_backfill import run_genre_backfill
+
+            cfg = Config.load(index)
+            # Best-effort proxy-aware Bandcamp session (None when not logged in →
+            # the per-album re-scrape is skipped and Last.fm still runs).
+            session = None
+            session_data = index.get_session("bandcamp")
+            if session_data:
+                try:
+                    from .bandcamp import _make_requests_session
+
+                    session = _make_requests_session(session_data)
+                except Exception:
+                    _logger.exception(
+                        "genre backfill: could not build a Bandcamp session"
+                    )
+            # A completed library (nothing pending) means the user wants a fresh
+            # re-run; a partial state (crash/cancel) resumes the remainder instead.
+            if not index.albums_pending_genre_enrichment():
+                index.clear_genre_enrichment_marks()
+            run_genre_backfill(
+                index,
+                cfg,
+                session,
+                app.state.notify_genre_backfill_progress,
+                _genre_backfill_cancel,
+            )
+        except Exception:
+            _logger.exception("Unhandled error in genre backfill")
+            app.state.notify_genre_backfill_progress(0, 0, "error")
+        finally:
+            with _genre_backfill_lock:
+                _genre_backfill_running[0] = False
+
+    def _on_genre_backfill_cancel() -> None:
+        _genre_backfill_cancel.set()
+
     # Bandcamp username comes only from the session (set after Electron login flow).
     _bc_session = index.get_session("bandcamp")
     _bc_ever_connected = index.get_setting("bandcamp.ever_connected") == "true"
@@ -1034,6 +1083,8 @@ def _cmd_daemon(
         on_bandcamp_disconnect=_on_bandcamp_disconnect,
         on_bandcamp_sync_trigger=_on_bandcamp_sync_trigger,
         on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,
+        on_genre_backfill_start=_on_genre_backfill_start,
+        on_genre_backfill_cancel=_on_genre_backfill_cancel,
         dl_queue=_dl_queue,
         art_cache_dir=_state_dir() / "art_cache",
         refresh_stream_url=_refresh_stream_url,

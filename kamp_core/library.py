@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 58
+_SCHEMA_VERSION = 59
 
 
 class NoStreamableVersionError(Exception):
@@ -317,6 +317,10 @@ CREATE TABLE IF NOT EXISTS albums (
     -- NULL means "use the canonical value from Bandcamp".
     display_album        TEXT,
     display_album_artist TEXT,
+    -- KAMP-591: when the library-wide genre backfill last enriched this album.
+    -- NULL means pending; the resumable worker skips already-marked albums so a
+    -- crash/cancel resumes instead of restarting the multi-hour run.
+    genres_enriched_at   REAL,
     UNIQUE (album_artist, album)
 );
 
@@ -2429,7 +2433,21 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 58")
             self._conn.commit()
-            version = 58  # noqa: F841
+            version = 58
+
+        if version == 58:
+            # v58 -> v59 (KAMP-591): albums gains genres_enriched_at — the resume
+            # checkpoint for the library-wide genre backfill. Unconstrained nullable
+            # column → plain ADD COLUMN (the albums() query selects explicit columns,
+            # so no view is affected). Presence-guarded for idempotency.
+            _acols2 = {r[1] for r in self._conn.execute("PRAGMA table_info(albums)")}
+            if "genres_enriched_at" not in _acols2:
+                self._conn.execute(
+                    "ALTER TABLE albums ADD COLUMN genres_enriched_at REAL"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 59")
+            self._conn.commit()
+            version = 59  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -3934,6 +3952,39 @@ class LibraryIndex:
             "UPDATE bandcamp_collection SET keywords = ? WHERE sale_item_id = ?",
             (json.dumps(keywords), sale_item_id),
         )
+        self._conn.commit()
+
+    # -- genre backfill checkpoint (KAMP-591) --------------------------------
+
+    def albums_pending_genre_enrichment(self) -> list[dict[str, Any]]:
+        """Albums the genre backfill hasn't processed yet (genres_enriched_at IS
+        NULL), oldest first. Each row carries what the worker needs: the album id
+        (to mark done), the names (to resolve tracks + query sources), and the
+        Bandcamp identity/cache (album_url + keywords) for the re-scrape path.
+        Missing-album virtual entries aren't in this table, so they're excluded."""
+        return [
+            dict(r)
+            for r in self._conn.execute(
+                "SELECT a.id, a.album_artist, a.album, a.sale_item_id,"
+                " bc.album_url, bc.keywords"
+                " FROM albums a"
+                " LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id"
+                " WHERE a.genres_enriched_at IS NULL"
+                " ORDER BY a.id"
+            ).fetchall()
+        ]
+
+    def mark_album_genres_enriched(self, album_id: int, ts: float) -> None:
+        """Checkpoint an album as processed by the backfill so a restart resumes."""
+        self._conn.execute(
+            "UPDATE albums SET genres_enriched_at = ? WHERE id = ?", (ts, album_id)
+        )
+        self._conn.commit()
+
+    def clear_genre_enrichment_marks(self) -> None:
+        """Reset every album's checkpoint so a fresh Update Library Genres run
+        re-processes the whole library (KAMP-591)."""
+        self._conn.execute("UPDATE albums SET genres_enriched_at = NULL")
         self._conn.commit()
 
     def get_remote_collection(self) -> list[dict[str, Any]]:

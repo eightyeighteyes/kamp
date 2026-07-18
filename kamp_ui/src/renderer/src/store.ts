@@ -1642,9 +1642,22 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   setConfigValue: async (key, value) => {
     await api.patchConfig(key, value)
-    set((s) => ({
-      configValues: s.configValues ? { ...s.configValues, [key]: value } : s.configValues
-    }))
+    // Coerce the optimistic cache to the type the server would return (booleans
+    // and numbers), matching the type loadConfig() populated. Storing the raw
+    // string corrupts a bool key — "false" is truthy, so a disabled toggle
+    // re-renders as ON when the dialog reopens (loadConfig only runs when the
+    // cache is null). Preserve the existing value's type as the source of truth.
+    set((s) => {
+      if (!s.configValues) return s
+      const prev = s.configValues[key as keyof typeof s.configValues]
+      const coerced: string | boolean | number =
+        typeof prev === 'boolean'
+          ? value === 'true'
+          : typeof prev === 'number'
+            ? Number(value)
+            : value
+      return { configValues: { ...s.configValues, [key]: coerced } }
+    })
   },
 
   openPrefs: (tab) => set({ prefsOpen: true, prefsInitialTab: tab ?? 'general' }),

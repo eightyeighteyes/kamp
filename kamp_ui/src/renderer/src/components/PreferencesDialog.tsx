@@ -940,7 +940,7 @@ export function PreferencesDialog({
   const scanStatus = useStore((s) => s.scanStatus)
   const scanProgress = useStore((s) => s.scanProgress)
   const prefsInitialTab = useStore((s) => s.prefsInitialTab)
-  const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions'>(
+  const [activeTab, setActiveTab] = useState<'general' | 'tagging' | 'services' | 'extensions'>(
     () => prefsInitialTab
   )
 
@@ -998,9 +998,10 @@ export function PreferencesDialog({
 
   if (!prefsOpen) return null
 
-  // Show a loading placeholder while config is being fetched (General/Services tabs).
+  // Show a loading placeholder while config is being fetched (config-backed tabs).
   const configLoading =
-    configValues === null && (activeTab === 'general' || activeTab === 'services')
+    configValues === null &&
+    (activeTab === 'general' || activeTab === 'tagging' || activeTab === 'services')
 
   const hasBandcamp = configValues !== null
 
@@ -1055,6 +1056,14 @@ export function PreferencesDialog({
             onClick={() => setActiveTab('general')}
           >
             General
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab === 'tagging'}
+            className={`prefs-tab${activeTab === 'tagging' ? ' prefs-tab--active' : ''}`}
+            onClick={() => setActiveTab('tagging')}
+          >
+            Tagging
           </button>
           <button
             role="tab"
@@ -1139,6 +1148,31 @@ export function PreferencesDialog({
                     />
                   </div>
 
+                  {/* ABOUT */}
+                  <div className="prefs-section">
+                    <div className="prefs-section-label">About</div>
+                    <div className="prefs-row">
+                      <button
+                        className="prefs-choose-btn"
+                        onClick={() => window.api.openExternal(DISCORD_INVITE_URL)}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <DiscordIcon size={16} />
+                          Join Discord
+                        </span>
+                      </button>
+                      <p className="prefs-hint">Give feedback and connect with other Kamp users.</p>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
+          {activeTab === 'tagging' && (
+            <>
+              {configLoading ? null : (
+                <>
                   {/* ARTWORK */}
                   <div className="prefs-section">
                     <div className="prefs-section-label">Artwork</div>
@@ -1165,23 +1199,6 @@ export function PreferencesDialog({
                       initialValue={str('artwork.save_format') !== 'cover-file'}
                       onSave={handleArtworkSave}
                     />
-                  </div>
-
-                  {/* ABOUT */}
-                  <div className="prefs-section">
-                    <div className="prefs-section-label">About</div>
-                    <div className="prefs-row">
-                      <button
-                        className="prefs-choose-btn"
-                        onClick={() => window.api.openExternal(DISCORD_INVITE_URL)}
-                      >
-                        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <DiscordIcon size={16} />
-                          Join Discord
-                        </span>
-                      </button>
-                      <p className="prefs-hint">Give feedback and connect with other Kamp users.</p>
-                    </div>
                   </div>
                 </>
               )}
@@ -1238,20 +1255,6 @@ export function PreferencesDialog({
                     onConnected={() => void loadConfig()}
                     onDisconnected={() => void loadConfig()}
                   />
-
-                  {/* MUSICBRAINZ */}
-                  <div className="prefs-section">
-                    <div className="prefs-section-label">MusicBrainz</div>
-                    <BoolRow
-                      label="Trust MusicBrainz when tags conflict"
-                      configKey="musicbrainz.trust-musicbrainz-when-tags-conflict"
-                      hint="When off, if MusicBrainz returns a different artist or album than the file's existing tags, the ID3 tags are left unchanged and only artwork is updated."
-                      initialValue={
-                        configValues?.['musicbrainz.trust-musicbrainz-when-tags-conflict'] ?? true
-                      }
-                      onSave={handleSave}
-                    />
-                  </div>
                 </>
               )}
             </>

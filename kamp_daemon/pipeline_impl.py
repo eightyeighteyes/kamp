@@ -212,14 +212,13 @@ def run(
                 tracks = [read_track_metadata_from_file(f) for f in audio_files]
                 tagger = KampMusicBrainzTagger(ctx)
                 enriched = tagger.tag_release(tracks)
-                if (
-                    not config.musicbrainz.trust_musicbrainz_when_tags_conflict
-                    and _mb_tags_conflict(tracks, enriched)
-                ):
+                if _mb_tags_conflict(tracks, enriched):
                     # MB returned different artist/album than the existing file
                     # tags — likely a mis-match for a release not yet in the DB.
                     # Keep the existing ID3 tags but still use the MB MBID for
                     # artwork: the MBID is valid even if the name strings differ.
+                    # KAMP-589 removed the trust-MB override, so this is always
+                    # the conflict path.
                     first = tracks[0] if tracks else None
                     logger.warning(
                         "MusicBrainz tags conflict with existing file tags "

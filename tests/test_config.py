@@ -10,6 +10,7 @@ from pytest_mock import MockerFixture
 from kamp_core.library import LibraryIndex
 from kamp_daemon.config import (
     _CONFIG_DEFAULTS,
+    _CONFIG_KEY_TYPES,
     Config,
     LastfmConfig,
     BandcampConfig,
@@ -37,7 +38,7 @@ def db(tmp_path: Path, mocker: MockerFixture) -> LibraryIndex:
 
 
 class TestWriteDefaults:
-    def test_writes_all_11_keys(self, db: LibraryIndex) -> None:
+    def test_writes_all_default_keys(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
         settings = db.get_all_settings()
         assert len(settings) == len(_CONFIG_DEFAULTS)
@@ -57,7 +58,6 @@ class TestLoad:
         # Paths have no default — they are None until the user sets them via onboarding.
         assert config.paths.watch_folder is None
         assert config.paths.library is None
-        assert config.musicbrainz.trust_musicbrainz_when_tags_conflict is False
         assert config.artwork.min_dimension == 1000
         assert config.artwork.max_bytes == 1_000_000
         assert config.bandcamp is not None
@@ -189,13 +189,14 @@ class TestConfigShow:
         Config.write_defaults(db)
         output = config_show(db)
         assert "[paths]" in output
-        assert "[musicbrainz]" in output
         assert "[artwork]" in output
         assert "[library]" in output
         assert "[bandcamp]" in output
         assert "[ui]" in output
         # Last.fm credentials are in the session store, not config — no [lastfm] section.
         assert "[lastfm]" not in output
+        # KAMP-589 removed the only musicbrainz key, so its section is gone too.
+        assert "[musicbrainz]" not in output
 
     def test_includes_key_value_pairs(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
@@ -228,14 +229,6 @@ class TestConfigSet:
         config_set(db, "artwork.min_dimension", "500")
         assert db.get_setting("artwork.min_dimension") == "500"
 
-    def test_set_bool_key(self, db: LibraryIndex) -> None:
-        Config.write_defaults(db)
-        config_set(db, "musicbrainz.trust-musicbrainz-when-tags-conflict", "false")
-        assert (
-            db.get_setting("musicbrainz.trust-musicbrainz-when-tags-conflict")
-            == "false"
-        )
-
     def test_round_trip_load_after_set(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
         config_set(db, "paths.watch_folder", "~/round/trip")
@@ -250,10 +243,6 @@ class TestConfigSet:
     def test_wrong_type_raises_value_error(self, db: LibraryIndex) -> None:
         with pytest.raises(ValueError, match="requires an integer"):
             config_set(db, "artwork.min_dimension", "not-an-int")
-
-    def test_bool_wrong_value_raises_value_error(self, db: LibraryIndex) -> None:
-        with pytest.raises(ValueError, match="requires true or false"):
-            config_set(db, "musicbrainz.trust-musicbrainz-when-tags-conflict", "yes")
 
     def test_bandcamp_format_valid_value_succeeds(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
@@ -307,6 +296,16 @@ class TestConfigSet:
     def test_set_lastfm_session_key_raises_deprecated(self, db: LibraryIndex) -> None:
         with pytest.raises(KeyError, match="deprecated"):
             config_set(db, "lastfm.session_key", "newkey")
+
+    def test_deprecated_trust_musicbrainz_raises(self, db: LibraryIndex) -> None:
+        # KAMP-589: the trust-MusicBrainz option was removed; setting it hints.
+        with pytest.raises(KeyError, match="deprecated"):
+            config_set(db, "musicbrainz.trust-musicbrainz-when-tags-conflict", "true")
+
+    def test_trust_musicbrainz_absent_from_key_types(self) -> None:
+        assert (
+            "musicbrainz.trust-musicbrainz-when-tags-conflict" not in _CONFIG_KEY_TYPES
+        )
 
     def test_path_key_relative_raises(self, db: LibraryIndex) -> None:
         with pytest.raises(ValueError, match="requires an absolute path"):

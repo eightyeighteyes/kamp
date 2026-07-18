@@ -540,7 +540,6 @@ def _build_config_values(
             str(config.paths.watch_folder) if config.paths.watch_folder else None
         ),
         "paths.library": str(config.paths.library) if config.paths.library else None,
-        "musicbrainz.trust-musicbrainz-when-tags-conflict": config.musicbrainz.trust_musicbrainz_when_tags_conflict,
         "artwork.min_dimension": config.artwork.min_dimension,
         "artwork.max_bytes": config.artwork.max_bytes,
         "artwork.save_format": config.artwork.save_format,

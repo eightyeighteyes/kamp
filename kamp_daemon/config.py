@@ -40,8 +40,10 @@ class PathsConfig:
 
 @dataclass
 class MusicBrainzConfig:
-    # When False: skip ID3 writes when MB artist/album differs from existing tags.
-    trust_musicbrainz_when_tags_conflict: bool = False
+    # Reserved for future MusicBrainz config. KAMP-589 removed the sole field
+    # (trust-when-tags-conflict); the pipeline now always keeps existing file
+    # tags on conflict. Kept as a namespace to avoid churning its ~8 call sites.
+    pass
 
 
 @dataclass
@@ -89,7 +91,6 @@ def _prompt(label: str, default: str) -> str:
 # Default values for all non-path config keys (stored as text in the DB).
 # Last.fm credentials are stored in the OS keychain via the sessions table, not here.
 _CONFIG_DEFAULTS: dict[str, str] = {
-    "musicbrainz.trust-musicbrainz-when-tags-conflict": "false",
     "artwork.min_dimension": "1000",
     "artwork.max_bytes": "1000000",
     "artwork.save_format": "embedded",
@@ -108,7 +109,6 @@ _CONFIG_DEFAULTS: dict[str, str] = {
 _CONFIG_KEY_TYPES: dict[str, type] = {
     "paths.watch_folder": str,
     "paths.library": str,
-    "musicbrainz.trust-musicbrainz-when-tags-conflict": bool,
     "artwork.min_dimension": int,
     "artwork.max_bytes": int,
     "artwork.save_format": str,
@@ -169,6 +169,10 @@ _DEPRECATED_KEY_MESSAGES: dict[str, str] = {
     # Deprecated in TASK-151: Last.fm credentials moved to OS keychain.
     "lastfm.session_key": "Last.fm credentials are managed via the Last.fm connect flow.",
     "lastfm.username": "Last.fm credentials are managed via the Last.fm connect flow.",
+    # Deprecated in KAMP-589: MusicBrainz never overwrites conflicting file tags.
+    "musicbrainz.trust-musicbrainz-when-tags-conflict": (
+        "MusicBrainz no longer overwrites conflicting file tags; this option was removed."
+    ),
 }
 _DEPRECATED_KEYS: frozenset[str] = frozenset(_DEPRECATED_KEY_MESSAGES)
 
@@ -289,9 +293,6 @@ class Config:
         def _get(key: str) -> str:
             return settings.get(key, _CONFIG_DEFAULTS.get(key, ""))
 
-        def _bool(key: str) -> bool:
-            return _get(key).lower() == "true"
-
         def _int(key: str) -> int:
             try:
                 return int(_get(key))
@@ -315,11 +316,7 @@ class Config:
                 watch_folder=_get_path("paths.watch_folder"),
                 library=_get_path("paths.library"),
             ),
-            musicbrainz=MusicBrainzConfig(
-                trust_musicbrainz_when_tags_conflict=_bool(
-                    "musicbrainz.trust-musicbrainz-when-tags-conflict"
-                ),
-            ),
+            musicbrainz=MusicBrainzConfig(),
             artwork=ArtworkConfig(
                 min_dimension=_int("artwork.min_dimension"),
                 max_bytes=_int("artwork.max_bytes"),
@@ -389,11 +386,9 @@ def config_set(db: "LibraryIndex", key: str, value: str) -> None:
         raise KeyError(f"Unknown config key {key!r}. Valid keys: {valid}")
 
     target_type = _CONFIG_KEY_TYPES[key]
-    if target_type == bool:
-        if value.lower() not in ("true", "false"):
-            raise ValueError(f"Key {key!r} requires true or false, got {value!r}")
-        db_value = value.lower()
-    elif target_type == int:
+    # No bool config keys remain after KAMP-589; re-add a bool branch here (with
+    # a test) when the next bool key lands.
+    if target_type == int:
         try:
             db_value = str(int(value))
         except ValueError:

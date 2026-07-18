@@ -405,7 +405,6 @@ export type ConfigValues = {
   'paths.watch_folder': string | null
   'paths.library': string | null
   'musicbrainz.contact': string | null
-  'musicbrainz.trust-musicbrainz-when-tags-conflict': boolean | null
   'artwork.min_dimension': number | null
   'artwork.max_bytes': number | null
   'artwork.save_format': string | null

@@ -179,9 +179,8 @@ class TestReload:
         """reload() replaces the stored config."""
         syncer = Syncer(_make_config(tmp_path, poll_interval=0))
         new_config = _make_config(tmp_path, poll_interval=0)
-        new_config.musicbrainz.trust_musicbrainz_when_tags_conflict = False
         syncer.reload(new_config)
-        assert syncer._config.musicbrainz.trust_musicbrainz_when_tags_conflict is False
+        assert syncer._config is new_config
 
     def test_reload_changed_interval_no_existing_thread(self, tmp_path: Path) -> None:
         """reload() with interval change when no thread was running starts one."""

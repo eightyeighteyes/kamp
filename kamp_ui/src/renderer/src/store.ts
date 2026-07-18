@@ -18,6 +18,7 @@ import type {
   PlayerState,
   Playlist,
   PlaylistTrack,
+  GenreBackfillProgress,
   QueueState,
   ScanProgress,
   ScanResult,
@@ -66,6 +67,8 @@ type PlayerStore = {
   lastScanResult: ScanResult | null
   scanError: string | null
   scanProgress: ScanProgress | null
+  // KAMP-591: library-wide genre backfill progress (null when never started this session).
+  genreBackfill: GenreBackfillProgress | null
 
   leftDb: number | null
   rightDb: number | null
@@ -312,6 +315,9 @@ type PlayerStore = {
   refreshOpenAlbum: () => Promise<void>
   patchOpenAlbum: (album: Album) => void
   scanLibrary: () => Promise<void>
+  startGenreBackfill: () => Promise<void>
+  cancelGenreBackfill: () => Promise<void>
+  refreshGenreBackfill: () => Promise<void>
   setLibraryPath: (path: string) => Promise<void>
   setWatchFolderPath: (path: string) => Promise<void>
   applyServerState: (state: PlayerState) => void
@@ -393,6 +399,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   lastScanResult: null,
   scanError: null,
   scanProgress: null,
+  genreBackfill: null,
   leftDb: null,
   rightDb: null,
   crestDb: null,
@@ -1669,6 +1676,42 @@ export const useStore = create<PlayerStore>((set, get) => ({
       set({ scanStatus: 'error', scanError: msg, scanProgress: null })
     } finally {
       clearInterval(pollInterval)
+    }
+  },
+
+  // KAMP-591: library-wide genre backfill. The daemon owns the long-running task;
+  // the UI kicks it off and polls the GET progress endpoint (~1 Hz) while it runs.
+  // Polling — not the websocket — mirrors scanLibrary and keeps the progress
+  // read self-contained: it only matters while the preferences dialog is open.
+  startGenreBackfill: async () => {
+    set({
+      genreBackfill: { active: true, done: 0, total: 0, state: 'running' }
+    })
+    try {
+      await api.startGenreBackfill()
+    } catch {
+      set({ genreBackfill: { active: false, done: 0, total: 0, state: 'error' } })
+      return
+    }
+    void get().refreshGenreBackfill()
+  },
+
+  cancelGenreBackfill: async () => {
+    try {
+      await api.cancelGenreBackfill()
+    } catch {
+      // best-effort — the poll will reflect the true state
+    }
+  },
+
+  // One-shot fetch of the current backfill progress. Cadence is owned by the
+  // caller (PreferencesDialog polls while open + active) so no interval outlives
+  // the dialog — a multi-hour run shouldn't poll forever after prefs is closed.
+  refreshGenreBackfill: async () => {
+    try {
+      set({ genreBackfill: await api.getGenreBackfillProgress() })
+    } catch {
+      // transient — leave the last known state in place
     }
   }
 }))

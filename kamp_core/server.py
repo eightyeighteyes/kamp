@@ -992,6 +992,8 @@ def create_app(
     on_bandcamp_disconnect: Callable[[], None] | None = None,
     on_bandcamp_sync_trigger: Callable[[], None] | None = None,
     on_bandcamp_sync_all_trigger: Callable[[], None] | None = None,
+    on_genre_backfill_start: Callable[[], None] | None = None,
+    on_genre_backfill_cancel: Callable[[], None] | None = None,
     dl_queue: _queue.Queue[str] | None = None,
     refresh_stream_url: Callable[[str, int], tuple[str, float] | None] | None = None,
     check_stream_url: Callable[[str], int] | None = None,
@@ -1025,6 +1027,11 @@ def create_app(
             "num_albums": 0,
             "num_artists": 0,
         },
+        # genre_backfill (KAMP-591): written by the backfill worker thread, read by
+        # GET /api/v1/genres/backfill/progress (reconnecting clients) + pushed live
+        # over the "genre_backfill.progress" WebSocket event. state ∈ idle/running/
+        # done/cancelled.
+        "genre_backfill": {"active": False, "done": 0, "total": 0, "state": "idle"},
         "ui_active_view": ui_active_view,
         "ui_sort_order": ui_sort_order,
         "ui_sort_dir": ui_sort_dir,
@@ -1191,6 +1198,28 @@ def create_app(
     app.state.notify_play_state_changed = _notify_play_state_changed
     app.state.notify_bandcamp_sync_status = _notify_bandcamp_sync_status
     app.state.notify_pipeline_stage = _notify_pipeline_stage
+
+    def _notify_genre_backfill_progress(done: int, total: int, state: str) -> None:
+        """Update the genre-backfill snapshot (for GET on reconnect) and push it
+        live to WebSocket clients (KAMP-591)."""
+        active = state == "running"
+        _state["genre_backfill"] = {
+            "active": active,
+            "done": done,
+            "total": total,
+            "state": state,
+        }
+        _broadcast(
+            {
+                "type": "genre_backfill.progress",
+                "active": active,
+                "done": done,
+                "total": total,
+                "state": state,
+            }
+        )
+
+    app.state.notify_genre_backfill_progress = _notify_genre_backfill_progress
 
     def _notify_deferred_op_completed(track_id: int, op_id: int) -> None:
         # Refresh the in-memory queue so the renamed track shows the new path/title
@@ -3237,6 +3266,35 @@ def create_app(
             target=on_bandcamp_sync_all_trigger, daemon=True, name="sync-all"
         ).start()
         return {"ok": True}
+
+    @app.post("/api/v1/genres/backfill")
+    def start_genre_backfill() -> dict[str, Any]:
+        """Start the library-wide genre backfill in the background (KAMP-591).
+
+        Returns immediately; progress arrives via ``genre_backfill.progress``
+        WebSocket events (and GET …/progress for reconnecting clients). Rejects a
+        concurrent start — the run can last hours.
+        """
+        import threading
+
+        if on_genre_backfill_start is None:
+            raise HTTPException(status_code=503, detail="Genre backfill not configured")
+        if _state["genre_backfill"]["active"]:
+            return {"ok": True, "started": False}  # already running
+        threading.Thread(
+            target=on_genre_backfill_start, daemon=True, name="genre-backfill"
+        ).start()
+        return {"ok": True, "started": True}
+
+    @app.post("/api/v1/genres/backfill/cancel")
+    def cancel_genre_backfill() -> dict[str, Any]:
+        if on_genre_backfill_cancel is not None:
+            on_genre_backfill_cancel()
+        return {"ok": True}
+
+    @app.get("/api/v1/genres/backfill/progress")
+    def get_genre_backfill_progress() -> dict[str, Any]:
+        return cast(dict[str, Any], _state["genre_backfill"])
 
     @app.post("/api/v1/bandcamp/collection/{sale_item_id}/download")
     def download_collection_item(sale_item_id: str) -> dict[str, Any]:

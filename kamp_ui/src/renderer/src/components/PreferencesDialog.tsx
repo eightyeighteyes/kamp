@@ -1200,6 +1200,18 @@ export function PreferencesDialog({
                       onSave={handleArtworkSave}
                     />
                   </div>
+
+                  {/* GENRES */}
+                  <div className="prefs-section">
+                    <div className="prefs-section-label">Genres</div>
+                    <BoolRow
+                      label="Fetch genres from Last.fm"
+                      configKey="tagging.lastfm_genres"
+                      hint="After a download, kamp adds genres from Last.fm (canonical genres only). Best-effort — it runs in the background and never slows a download."
+                      initialValue={configValues?.['tagging.lastfm_genres'] ?? false}
+                      onSave={handleSave}
+                    />
+                  </div>
                 </>
               )}
             </>

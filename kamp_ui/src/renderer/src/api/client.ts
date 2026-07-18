@@ -408,6 +408,7 @@ export type ConfigValues = {
   'artwork.min_dimension': number | null
   'artwork.max_bytes': number | null
   'artwork.save_format': string | null
+  'tagging.lastfm_genres': boolean | null
   'library.path_template': string | null
   'bandcamp.connected': boolean | null
   'bandcamp.username': string | null

@@ -3065,6 +3065,9 @@ def create_app(
     _INT_CONFIG_KEYS = frozenset(
         {"artwork.min_dimension", "artwork.max_bytes", "bandcamp.poll_interval_minutes"}
     )
+    # Boolean config keys — stored as Python bool so GET returns true/false, not a
+    # string (KAMP-587 re-added this after 589 dropped the last bool key).
+    _BOOL_CONFIG_KEYS = frozenset({"tagging.lastfm_genres"})
 
     @app.patch("/api/v1/config")
     def patch_config(req: ConfigPatchRequest) -> dict[str, Any]:
@@ -3076,6 +3079,8 @@ def create_app(
         # Coerce to the correct Python type before caching in memory.
         if req.key in _INT_CONFIG_KEYS:
             coerced: Any = int(req.value)
+        elif req.key in _BOOL_CONFIG_KEYS:
+            coerced = req.value.lower() == "true"
         else:
             coerced = req.value
         _state["config"][req.key] = coerced

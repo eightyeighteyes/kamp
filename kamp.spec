@@ -96,6 +96,11 @@ datas = [
     # a nonexistent --script path, the script silently never loads, and the
     # script-message-driven transport controls become no-ops (KAMP-519).
     ("kamp_core/kamp_fade.lua", "kamp_core"),
+    # genres.txt is the canonical genre allowlist for KAMP-587 Last.fm enrichment;
+    # genre_sources.py loads it via Path(__file__).parent/"data"/"genres.txt".
+    # collect_submodules gathers only .py, so this non-Python sibling must be
+    # staged explicitly, or the filter silently drops every tag in the frozen app.
+    ("kamp_daemon/data/genres.txt", "kamp_daemon/data"),
 ]
 
 a = Analysis(

@@ -1,0 +1,248 @@
+# Canonical genre allowlist for KAMP-587 Last.fm genre enrichment.
+# Last.fm top-tags are an unbounded, noisy vocabulary ("seen live", "spotify",
+# "00s", "favourites"). Rather than chase junk with a denylist, incoming tags are
+# filtered THROUGH this allowlist (case-insensitive), and emitted in the canonical
+# casing below. One genre per line; blank lines and lines starting with # ignored.
+# Curate freely — adding a line makes that genre eligible; the user can still add
+# anything by hand via the album genre chips editor.
+
+# -- Broad families --
+Rock
+Pop
+Jazz
+Blues
+Folk
+Country
+Classical
+Electronic
+Hip-Hop
+Rap
+R&B
+Soul
+Funk
+Reggae
+Metal
+Punk
+Experimental
+Ambient
+Instrumental
+Soundtrack
+World
+Latin
+Gospel
+Spoken Word
+Comedy
+Easy Listening
+Singer-Songwriter
+
+# -- Rock --
+Alternative Rock
+Indie Rock
+Classic Rock
+Hard Rock
+Psychedelic Rock
+Progressive Rock
+Art Rock
+Garage Rock
+Surf Rock
+Glam Rock
+Southern Rock
+Blues Rock
+Folk Rock
+Country Rock
+Krautrock
+Math Rock
+Post-Rock
+Noise Rock
+Space Rock
+Stoner Rock
+Grunge
+Britpop
+Shoegaze
+Dream Pop
+Slowcore
+Emo
+Post-Hardcore
+Hardcore
+Screamo
+Pop Punk
+Skate Punk
+Post-Punk
+New Wave
+No Wave
+Gothic Rock
+Industrial Rock
+Rockabilly
+
+# -- Pop --
+Indie Pop
+Synth-Pop
+Electropop
+Dance-Pop
+Power Pop
+Art Pop
+Chamber Pop
+Baroque Pop
+Bubblegum Pop
+K-Pop
+J-Pop
+City Pop
+Hyperpop
+Sophisti-Pop
+
+# -- Electronic --
+House
+Deep House
+Tech House
+Progressive House
+Acid House
+Techno
+Detroit Techno
+Minimal Techno
+Trance
+Drum and Bass
+Jungle
+Breakbeat
+Dubstep
+Garage
+UK Garage
+2-Step
+Grime
+Footwork
+Downtempo
+Trip-Hop
+IDM
+Glitch
+Electro
+Synthwave
+Vaporwave
+Chillwave
+Chiptune
+EBM
+Industrial
+Darkwave
+Coldwave
+Witch House
+Big Beat
+Nu-Disco
+Disco
+Italo Disco
+Eurodance
+Hardstyle
+Gabber
+Ambient Techno
+Dub Techno
+Lo-Fi
+Future Bass
+
+# -- Hip-Hop / R&B --
+Boom Bap
+Trap
+Conscious Hip-Hop
+Gangsta Rap
+Alternative Hip-Hop
+Instrumental Hip-Hop
+Cloud Rap
+Drill
+G-Funk
+Neo-Soul
+Contemporary R&B
+Quiet Storm
+New Jack Swing
+Motown
+
+# -- Jazz --
+Bebop
+Hard Bop
+Cool Jazz
+Free Jazz
+Modal Jazz
+Jazz Fusion
+Smooth Jazz
+Swing
+Big Band
+Dixieland
+Bossa Nova
+Latin Jazz
+Nu Jazz
+Spiritual Jazz
+Avant-Garde Jazz
+
+# -- Metal --
+Heavy Metal
+Thrash Metal
+Death Metal
+Black Metal
+Doom Metal
+Sludge Metal
+Power Metal
+Progressive Metal
+Speed Metal
+Groove Metal
+Nu Metal
+Metalcore
+Deathcore
+Folk Metal
+Symphonic Metal
+Gothic Metal
+Industrial Metal
+Djent
+Grindcore
+
+# -- Folk / Country / Roots --
+Contemporary Folk
+Traditional Folk
+Freak Folk
+Indie Folk
+Americana
+Bluegrass
+Alt-Country
+Outlaw Country
+Honky Tonk
+Delta Blues
+Chicago Blues
+Zydeco
+Cajun
+Celtic
+
+# -- World / Regional --
+Afrobeat
+Afrobeats
+Highlife
+Soukous
+Salsa
+Cumbia
+Merengue
+Bachata
+Reggaeton
+Bossa
+Samba
+Flamenco
+Fado
+Bhangra
+Bollywood
+Klezmer
+Dub
+Dancehall
+Ska
+Rocksteady
+Roots Reggae
+
+# -- Ambient / Experimental --
+Drone
+Dark Ambient
+Noise
+Musique Concrète
+Field Recording
+Minimalism
+Neoclassical
+Modern Classical
+New Age
+
+# -- Other --
+Lounge
+Exotica
+Bluegrass Gospel
+Christmas
+Children's Music
+Video Game Music

@@ -3065,8 +3065,6 @@ def create_app(
     _INT_CONFIG_KEYS = frozenset(
         {"artwork.min_dimension", "artwork.max_bytes", "bandcamp.poll_interval_minutes"}
     )
-    # Boolean config keys — stored as Python bool so JSON serialises as true/false.
-    _BOOL_CONFIG_KEYS = frozenset({"musicbrainz.trust-musicbrainz-when-tags-conflict"})
 
     @app.patch("/api/v1/config")
     def patch_config(req: ConfigPatchRequest) -> dict[str, Any]:
@@ -3078,8 +3076,6 @@ def create_app(
         # Coerce to the correct Python type before caching in memory.
         if req.key in _INT_CONFIG_KEYS:
             coerced: Any = int(req.value)
-        elif req.key in _BOOL_CONFIG_KEYS:
-            coerced = req.value.lower() == "true"
         else:
             coerced = req.value
         _state["config"][req.key] = coerced

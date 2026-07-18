@@ -721,15 +721,13 @@ class TestMbTagsConflict:
 # ---------------------------------------------------------------------------
 
 
-def _make_conflict_config(tmp_path: Path, trust: bool) -> Config:
+def _make_conflict_config(tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(
             watch_folder=tmp_path / "watch",
             library=tmp_path / "library",
         ),
-        musicbrainz=MusicBrainzConfig(
-            trust_musicbrainz_when_tags_conflict=trust,
-        ),
+        musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=5_000_000),
         library=LibraryConfig(
             path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
@@ -762,7 +760,8 @@ MB_CONFLICTING_TRACKS = [
 
 
 class TestMbConflictFallback:
-    """When trust=False and MB returns mismatched tags, ID3 writes are skipped."""
+    """When MB returns mismatched tags, ID3 writes are skipped (KAMP-589: always;
+    the trust-MB override was removed) but artwork still uses the MB MBID."""
 
     def _setup_album(self, config: Config) -> tuple[Path, Path]:
         config.paths.watch_folder.mkdir(parents=True)
@@ -773,9 +772,9 @@ class TestMbConflictFallback:
         _make_mp3_with_tags(mp3, artist="File Artist", album="File Album")
         return album_dir, mp3
 
-    def test_skips_id3_write_on_conflict_when_not_trusted(self, tmp_path: Path) -> None:
-        """When trust=False and tags conflict, write_tags_from_track_metadata is not called."""
-        config = _make_conflict_config(tmp_path, trust=False)
+    def test_skips_id3_write_on_conflict(self, tmp_path: Path) -> None:
+        """When tags conflict, write_tags_from_track_metadata is not called (KAMP-589)."""
+        config = _make_conflict_config(tmp_path)
         album_dir, mp3 = self._setup_album(config)
 
         with (
@@ -792,11 +791,9 @@ class TestMbConflictFallback:
 
         mock_write.assert_not_called()
 
-    def test_artwork_still_runs_on_conflict_when_not_trusted(
-        self, tmp_path: Path
-    ) -> None:
+    def test_artwork_still_runs_on_conflict(self, tmp_path: Path) -> None:
         """Artwork step always runs even when ID3 tags are skipped due to conflict."""
-        config = _make_conflict_config(tmp_path, trust=False)
+        config = _make_conflict_config(tmp_path)
         album_dir, mp3 = self._setup_album(config)
 
         with (
@@ -818,28 +815,9 @@ class TestMbConflictFallback:
         assert call_kwargs.kwargs["release_mbid"] == "rel-123"
         assert call_kwargs.kwargs["release_group_mbid"] == "rg-123"
 
-    def test_writes_id3_when_trusted_despite_conflict(self, tmp_path: Path) -> None:
-        """When trust=True (default), MB tags are written even if they differ."""
-        config = _make_conflict_config(tmp_path, trust=True)
-        album_dir, mp3 = self._setup_album(config)
-
-        with (
-            patch.object(
-                KampMusicBrainzTagger, "tag_release", return_value=MB_CONFLICTING_TRACKS
-            ),
-            patch(
-                "kamp_daemon.pipeline_impl.write_tags_from_track_metadata"
-            ) as mock_write,
-            patch("kamp_daemon.pipeline_impl._fetch_and_embed_via_extension"),
-            patch("kamp_daemon.pipeline_impl.move_to_library", return_value=[mp3]),
-        ):
-            run(album_dir, config)
-
-        mock_write.assert_called_once()
-
     def test_writes_id3_when_no_conflict(self, tmp_path: Path) -> None:
-        """When tags agree with MB, ID3 is written normally even with trust=False."""
-        config = _make_conflict_config(tmp_path, trust=False)
+        """When tags agree with MB, ID3 is written normally (no conflict)."""
+        config = _make_conflict_config(tmp_path)
         config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
         album_dir = config.paths.watch_folder / "mb-album"

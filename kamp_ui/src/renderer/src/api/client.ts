@@ -763,6 +763,11 @@ export async function getGenres(): Promise<string[]> {
   return (await res.json()) as string[]
 }
 
+// Remove a genre from every tagged track (DB + file tags) and the DB (KAMP-606).
+// Query param, not path — genre names can contain '/'.
+export const deleteGenre = (name: string): Promise<{ ok: boolean; tracks_updated: number }> =>
+  del(`/api/v1/genres?name=${encodeURIComponent(name)}`)
+
 // ---------------------------------------------------------------------------
 // MusicBrainz lookup (KAMP-230, shallow candidates + lazy hydration KAMP-584)
 // ---------------------------------------------------------------------------

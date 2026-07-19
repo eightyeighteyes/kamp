@@ -24,6 +24,36 @@ interface TooltipDisplay {
   phase: Phase
 }
 
+// The bubble is memoized on `display` so it only re-renders when the tooltip
+// itself changes — NOT on every parent (whole-app) re-render. Without this, a
+// frequent app re-render (audio metering, playback ticks) would re-apply the
+// inline `left: display.x` and wipe the horizontal clamp applied imperatively in
+// the layout effect below, letting the tooltip escape the viewport edge on tabs
+// pinned to the app border (KAMP-612).
+interface TooltipBubbleProps {
+  display: TooltipDisplay
+  bubbleRef: React.RefObject<HTMLDivElement | null>
+}
+
+function TooltipBubbleImpl({ display, bubbleRef }: TooltipBubbleProps): React.ReactElement {
+  return createPortal(
+    <div
+      ref={bubbleRef}
+      role="tooltip"
+      id="kamp-tooltip"
+      className="kamp-tooltip"
+      data-phase={display.phase}
+      data-direction={display.above ? 'above' : 'below'}
+      style={{ left: display.x, top: display.y }}
+    >
+      {display.text}
+    </div>,
+    document.body
+  )
+}
+
+const TooltipBubble = React.memo(TooltipBubbleImpl)
+
 export function TooltipProvider({ children }: { children: React.ReactNode }): React.ReactElement {
   const [display, setDisplay] = useState<TooltipDisplay | null>(null)
   const portalRef = useRef<HTMLDivElement>(null)
@@ -106,21 +136,7 @@ export function TooltipProvider({ children }: { children: React.ReactNode }): Re
   return (
     <TooltipContext.Provider value={{ arm, disarm }}>
       {children}
-      {display &&
-        createPortal(
-          <div
-            ref={portalRef}
-            role="tooltip"
-            id="kamp-tooltip"
-            className="kamp-tooltip"
-            data-phase={display.phase}
-            data-direction={display.above ? 'above' : 'below'}
-            style={{ left: display.x, top: display.y }}
-          >
-            {display.text}
-          </div>,
-          document.body
-        )}
+      {display && <TooltipBubble display={display} bubbleRef={portalRef} />}
     </TooltipContext.Provider>
   )
 }

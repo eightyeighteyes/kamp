@@ -3,6 +3,7 @@ import { useStore } from '../store'
 
 const COLLECTION_WIDTH_KEY = 'kamp:collection-panel-width'
 const COLLECTION_WIDTH_DEFAULT = 200
+const COLLECTION_TAB_KEY = 'kamp:collection-tab'
 
 export function CollectionPanel(): React.JSX.Element {
   const artists = useStore((s) => s.library.artists)
@@ -11,12 +12,19 @@ export function CollectionPanel(): React.JSX.Element {
   const selectedGenre = useStore((s) => s.library.selectedGenre)
   const selectArtist = useStore((s) => s.selectArtist)
   const selectGenre = useStore((s) => s.selectGenre)
-  // Which list is shown. Seeded from the active filter so re-opening while a
-  // genre is selected lands on the Genres tab (KAMP-550). Switching tabs is a
-  // pure view change — it never alters the active filter.
-  const [tab, setTab] = useState<'artists' | 'genres'>(
-    selectedGenre !== null ? 'genres' : 'artists'
-  )
+  // Which list is shown. An active genre filter forces the Genres tab so
+  // re-opening while a genre is selected lands there (KAMP-550); otherwise the
+  // last explicitly-chosen tab is restored across restarts (KAMP-612).
+  // Switching tabs is a pure view change — it never alters the active filter.
+  const [tab, setTabState] = useState<'artists' | 'genres'>(() => {
+    if (selectedGenre !== null) return 'genres'
+    return localStorage.getItem(COLLECTION_TAB_KEY) === 'genres' ? 'genres' : 'artists'
+  })
+
+  function setTab(next: 'artists' | 'genres'): void {
+    localStorage.setItem(COLLECTION_TAB_KEY, next)
+    setTabState(next)
+  }
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const saved = parseFloat(localStorage.getItem(COLLECTION_WIDTH_KEY) ?? '')
     const max = window.innerWidth * 0.33

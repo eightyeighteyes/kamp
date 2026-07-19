@@ -783,6 +783,15 @@ export interface GenreMerge {
 
 export const getGenreMerges = (): Promise<GenreMerge[]> => get('/api/v1/genres/merges')
 
+// Rename a genre everywhere (DB + file tags) — KAMP-608. Renaming onto an
+// existing genre folds the two (one-time). Rejects invalid names (400) and
+// backfill races (409).
+export const renameGenre = (
+  old: string,
+  next: string
+): Promise<{ ok: boolean; tracks_updated: number }> =>
+  post('/api/v1/genres/rename', { old, new: next })
+
 // ---------------------------------------------------------------------------
 // MusicBrainz lookup (KAMP-230, shallow candidates + lazy hydration KAMP-584)
 // ---------------------------------------------------------------------------

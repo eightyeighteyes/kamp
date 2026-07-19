@@ -7364,3 +7364,93 @@ class TestMergeGenres:
         res = client.get("/api/v1/genres/merges")
         assert res.status_code == 200
         assert res.json() == [{"source": "Jazz", "target": "Rock"}]
+
+
+# ---------------------------------------------------------------------------
+# Rename genre endpoint (KAMP-608)
+# ---------------------------------------------------------------------------
+
+
+class TestRenameGenre:
+    """POST /api/v1/genres/rename (KAMP-608)."""
+
+    def test_writes_renamed_tags_and_renames(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.validate_genre_rename.return_value = None
+        mock_index.tracks_for_genre.return_value = [
+            _gtrack(1, "/music/a.mp3"),
+            _gtrack(2, "/music/b.mp3"),
+        ]
+        mock_index.genres_for_track.side_effect = lambda tid: {
+            1: ["shoegaze."],
+            2: ["shoegaze.", "Ambient"],
+        }[tid]
+        mock_index.rename_genre.return_value = 2
+        with patch("kamp_core.library.write_meta_tags_to_file") as wtf:
+            res = client.post(
+                "/api/v1/genres/rename",
+                json={"old": "shoegaze.", "new": "Shoegaze"},
+            )
+        assert res.status_code == 200
+        assert res.json() == {"ok": True, "tracks_updated": 2}
+        calls = {c.args[0]: c.kwargs["genres"] for c in wtf.call_args_list}
+        assert calls[Path("/music/a.mp3")] == ["Shoegaze"]
+        assert calls[Path("/music/b.mp3")] == ["Shoegaze", "Ambient"]
+        mock_index.rename_genre.assert_called_once_with("shoegaze.", "Shoegaze")
+
+    def test_skips_remote_tracks(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.validate_genre_rename.return_value = None
+        mock_index.tracks_for_genre.return_value = [
+            _gtrack(3, "bandcamp://x", is_remote=True)
+        ]
+        mock_index.rename_genre.return_value = 1
+        with patch("kamp_core.library.write_meta_tags_to_file") as wtf:
+            res = client.post(
+                "/api/v1/genres/rename",
+                json={"old": "shoegaze.", "new": "Shoegaze"},
+            )
+        assert res.status_code == 200
+        wtf.assert_not_called()
+        mock_index.rename_genre.assert_called_once_with("shoegaze.", "Shoegaze")
+
+    def test_invalid_rename_is_400_and_writes_nothing(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.validate_genre_rename.side_effect = ValueError("bad name")
+        with patch("kamp_core.library.write_meta_tags_to_file") as wtf:
+            res = client.post(
+                "/api/v1/genres/rename", json={"old": "shoegaze.", "new": "a; b"}
+            )
+        assert res.status_code == 400
+        wtf.assert_not_called()
+        mock_index.rename_genre.assert_not_called()
+
+    def test_conflict_while_backfill_running(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        client.app.state.notify_genre_backfill_progress(0, 10, "running")
+        res = client.post(
+            "/api/v1/genres/rename", json={"old": "shoegaze.", "new": "Shoegaze"}
+        )
+        assert res.status_code == 409
+        mock_index.rename_genre.assert_not_called()
+
+    def test_file_write_failure_leaves_rename_unrecorded(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.validate_genre_rename.return_value = None
+        mock_index.tracks_for_genre.return_value = [_gtrack(1, "/music/a.mp3")]
+        mock_index.genres_for_track.return_value = ["shoegaze."]
+        with patch(
+            "kamp_core.library.write_meta_tags_to_file",
+            side_effect=OSError("locked"),
+        ):
+            res = client.post(
+                "/api/v1/genres/rename",
+                json={"old": "shoegaze.", "new": "Shoegaze"},
+            )
+        assert res.status_code == 500
+        mock_index.rename_genre.assert_not_called()

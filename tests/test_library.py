@@ -3686,6 +3686,141 @@ class TestMergeGenre:
 
 
 # ---------------------------------------------------------------------------
+# Rename / edit genre (KAMP-608)
+# ---------------------------------------------------------------------------
+
+
+class TestRenameGenre:
+    """LibraryIndex.rename_genre / validate_genre_rename (KAMP-608)."""
+
+    def _track(
+        self, tmp_path: Path, name: str, album: str, genres: list[str]
+    ) -> "Track":
+        return Track(
+            file_path=tmp_path / f"{name}.mp3",
+            title=name,
+            artist="Artist",
+            album_artist="Artist",
+            album=album,
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genres=genres,
+        )
+
+    def _index(self, tmp_path: Path) -> LibraryIndex:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                self._track(tmp_path, "a", "AlbumA", ["shoegaze."]),
+                self._track(tmp_path, "b", "AlbumB", ["shoegaze.", "Ambient"]),
+                self._track(tmp_path, "c", "AlbumC", ["Rock"]),
+            ]
+        )
+        return index
+
+    def _genres_of(self, index: LibraryIndex, title: str) -> list[str]:
+        tid = next(t for t in index.all_tracks() if t.title == title).id
+        return index.genres_for_track(tid)
+
+    def test_in_place_rename_to_new_name(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        count = index.rename_genre("shoegaze.", "Shoegaze")
+        assert count == 2
+        assert "Shoegaze" in index.all_genres()
+        assert "shoegaze." not in index.all_genres()
+        assert self._genres_of(index, "a") == ["Shoegaze"]
+        assert sorted(self._genres_of(index, "b")) == ["Ambient", "Shoegaze"]
+        index.close()
+
+    def test_case_only_rename_no_duplicate_row(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._track(tmp_path, "x", "AlbumX", ["shoegaze"])])
+        index.rename_genre("shoegaze", "Shoegaze")
+        assert index.all_genres() == ["Shoegaze"]
+        rows = index._conn.execute(
+            "SELECT COUNT(*) AS n FROM genres WHERE name = 'Shoegaze' COLLATE NOCASE"
+        ).fetchone()["n"]
+        assert rows == 1
+        assert self._genres_of(index, "x") == ["Shoegaze"]
+        index.close()
+
+    def test_rename_onto_existing_folds_one_time(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                self._track(tmp_path, "a", "AlbumA", ["shoegaze."]),
+                self._track(tmp_path, "b", "AlbumB", ["Shoegaze"]),
+            ]
+        )
+        index.rename_genre("shoegaze.", "Shoegaze")  # fold typo into the survivor
+        assert index.all_genres() == ["Shoegaze"]
+        assert self._genres_of(index, "a") == ["Shoegaze"]
+        # One-time fold: NO persistent merge rule was created.
+        assert index.list_genre_merges() == []
+        index.close()
+
+    def test_rename_onto_existing_dedupes_when_track_has_both(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [self._track(tmp_path, "x", "AlbumX", ["shoegaze.", "Shoegaze"])]
+        )
+        index.rename_genre("shoegaze.", "Shoegaze")
+        assert self._genres_of(index, "x") == ["Shoegaze"]  # single, not two
+        index.close()
+
+    def test_rename_updates_search(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._track(tmp_path, "s", "AlbumS", ["shoegaze."])])
+        index.rename_genre("shoegaze.", "Dreampop")
+        assert {t.title for t in index.search("dreampop")} == {"s"}
+        assert index.search("shoegaze") == []
+        index.close()
+
+    def test_rename_absent_genre_returns_zero(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        assert index.rename_genre("Nope", "Whatever") == 0
+        index.close()
+
+    def test_rename_merge_target_follows(self, tmp_path: Path) -> None:
+        # Renaming a genre that is a merge target keeps the merge pointing at it.
+        index = self._index(tmp_path)
+        index.create_genre_merge("shoegaze.", "Rock")  # Rock is a merge target
+        index.rename_genre("Rock", "Rock & Roll")
+        assert index.list_genre_merges() == [
+            {"source": "shoegaze.", "target": "Rock & Roll"}
+        ]
+        index.upsert_many([self._track(tmp_path, "n", "AlbumN", ["shoegaze."])])
+        assert self._genres_of(index, "n") == ["Rock & Roll"]
+        index.close()
+
+    def test_rename_onto_merge_source_rejected(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.create_genre_merge("shoegaze.", "Rock")  # "shoegaze." is now a source
+        with pytest.raises(ValueError):
+            index.rename_genre("Ambient", "shoegaze.")
+        index.close()
+
+    def test_rename_rejects_delimiter(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        with pytest.raises(ValueError):
+            index.rename_genre("shoegaze.", "a; b")
+        index.close()
+
+    def test_rename_rejects_empty(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        with pytest.raises(ValueError):
+            index.rename_genre("shoegaze.", "   ")
+        index.close()
+
+
+# ---------------------------------------------------------------------------
 # Sort and record_played
 # ---------------------------------------------------------------------------
 

@@ -27,6 +27,63 @@
   gap: 16px;
 }
 
+/* Merge-genre target picker (KAMP-607) */
+.merge-genre-filter {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  font-size: 13px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.merge-genre-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.merge-genre-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 13px;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.merge-genre-option:hover {
+  background: var(--surface-hover);
+}
+
+.merge-genre-option.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.merge-genre-empty {
+  padding: 10px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-dim);
+}
+
+.modal-btn--destructive:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .modal-title {
   margin: 0;
   font-size: 14px;

@@ -2,7 +2,7 @@ import React from 'react'
 import { useStore } from '../store'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
-import { CollectionIcon } from './TransportIcons'
+import { CollectionIcon, QueueIcon } from './TransportIcons'
 
 // Floating rounded toggle tabs anchored to the bottom edges of the app body.
 // They render independently of the panels themselves so they stay clickable
@@ -13,6 +13,8 @@ export function PanelToggleTabs(): React.JSX.Element {
   const activeView = useStore((s) => s.activeView)
   const collectionPanelVisible = useStore((s) => s.collectionPanelVisible)
   const toggleCollectionPanel = useStore((s) => s.toggleCollectionPanel)
+  const queueVisible = useStore((s) => s.queueVisible)
+  const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
 
   return (
     <>
@@ -28,6 +30,16 @@ export function PanelToggleTabs(): React.JSX.Element {
           <CollectionIcon size={18} />
         </button>
       )}
+      {/* Queue is available in every view. */}
+      <button
+        className={`panel-tab panel-tab--queue${queueVisible ? ' active' : ''}`}
+        onClick={toggleQueuePanel}
+        {...tooltip(TOOLTIPS.TRANSPORT_QUEUE)}
+        aria-label="Queue"
+        aria-pressed={queueVisible}
+      >
+        <QueueIcon size={18} />
+      </button>
     </>
   )
 }

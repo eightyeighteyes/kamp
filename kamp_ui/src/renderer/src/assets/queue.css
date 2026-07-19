@@ -219,15 +219,6 @@
   font-size: 12px;
 }
 
-/* Queue toggle button in transport bar */
-.queue-toggle-btn {
-  font-size: 15px;
-}
-
-.queue-toggle-btn.active {
-  color: var(--accent);
-}
-
 .favorite-btn {
   color: var(--text-dim);
 }

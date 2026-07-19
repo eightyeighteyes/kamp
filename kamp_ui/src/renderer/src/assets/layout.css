@@ -340,6 +340,52 @@ html[data-platform='win32'] .view-tabs {
   display: flex;
   flex: 1;
   overflow: hidden;
+  /* Anchor for the floating panel-toggle tabs (KAMP-612). */
+  position: relative;
+}
+
+/* Floating rounded panel-toggle tabs, anchored to the app-body bottom edges.
+   Rendered outside the panels so they persist when a panel is collapsed
+   (collapsed panels are unmounted). KAMP-612. */
+.panel-tab {
+  position: absolute;
+  bottom: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.panel-tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.panel-tab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.panel-tab--collection {
+  left: 0;
+  border-left: none;
+  border-top-right-radius: 17px;
+  border-bottom-right-radius: 17px;
+}
+
+.panel-tab--queue {
+  right: 0;
+  border-right: none;
+  border-top-left-radius: 17px;
+  border-bottom-left-radius: 17px;
 }
 
 .main-content {

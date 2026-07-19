@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { useStore } from './store'
 import { connectStateStream, getDeferredOps } from './api/client'
 import { CollectionPanel } from './components/CollectionPanel'
+import { PanelToggleTabs } from './components/PanelToggleTabs'
 import { BaseKampView } from './components/BaseKampView'
 import { ExtensionPanel } from './components/ExtensionPanel'
 import { LibraryView } from './components/LibraryView'
@@ -704,6 +705,7 @@ export default function App(): React.JSX.Element {
           {renderMainContent()}
         </main>
         {!showSetup && isPanelVisible(rightPanel) && <SlotPanel panel={rightPanel!} />}
+        {!showSetup && <PanelToggleTabs />}
       </div>
       {/* KAMP-571: global download progress bar, directly above the transport in
           every view (hides itself when the queue is idle). */}

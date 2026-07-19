@@ -27,6 +27,17 @@ export function CollectionPanel(): React.JSX.Element {
     localStorage.setItem(COLLECTION_TAB_KEY, next)
     setTabState(next)
   }
+
+  // KAMP-611: when a genre becomes the active filter (e.g. clicking a genre pill
+  // on an album), surface the Genres tab. Render-phase sync on the selectedGenre
+  // transition (same pattern as GenreChipsInput/AlbumMetaPanel) — state-only, never
+  // persisted, so a user's explicit Artists preference (KAMP-612) survives once the
+  // filter clears. Only fires on an actual change, so manual tab switches stick.
+  const [prevGenre, setPrevGenre] = useState(selectedGenre)
+  if (selectedGenre !== prevGenre) {
+    setPrevGenre(selectedGenre)
+    if (selectedGenre !== null) setTabState('genres')
+  }
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const saved = parseFloat(localStorage.getItem(COLLECTION_WIDTH_KEY) ?? '')
     const max = window.innerWidth * 0.33

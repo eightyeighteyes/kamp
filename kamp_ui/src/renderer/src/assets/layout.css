@@ -374,16 +374,14 @@ html[data-platform='win32'] .view-tabs {
   border-color: var(--accent);
 }
 
+/* left / right offsets are set inline so the tab tracks the panel's inner edge
+   (open) or rests against the app edge (closed). KAMP-612. */
 .panel-tab--collection {
-  left: 0;
-  border-left: none;
   border-top-right-radius: 17px;
   border-bottom-right-radius: 17px;
 }
 
 .panel-tab--queue {
-  right: 0;
-  border-right: none;
   border-top-left-radius: 17px;
   border-bottom-left-radius: 17px;
 }

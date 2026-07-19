@@ -5,6 +5,7 @@ import { TOOLTIPS } from '../tooltipStrings'
 import { QueueContextMenu } from './QueueContextMenu'
 import { QueueAlbumCard } from './QueueAlbumCard'
 import { FavoriteIcon, WarnIcon, GoToAlbumIcon } from './TransportIcons'
+import { PanelToggleTab } from './PanelToggleTab'
 import type { Track } from '../api/client'
 import { computeNewOrder } from '../utils/computeNewOrder'
 
@@ -39,7 +40,6 @@ type ContextMenu = {
 export function QueuePanel(): React.JSX.Element {
   const queue = useStore((s) => s.queue)
   const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
-  const setQueuePanelWidth = useStore((s) => s.setQueuePanelWidth)
   const moveQueueTrack = useStore((s) => s.moveQueueTrack)
   const reorderQueue = useStore((s) => s.reorderQueue)
   const skipToQueueTrack = useStore((s) => s.skipToQueueTrack)
@@ -73,12 +73,6 @@ export function QueuePanel(): React.JSX.Element {
   const [isResizing, setIsResizing] = useState(false)
   const dragStartXRef = useRef(0)
   const widthAtDragStartRef = useRef(QUEUE_WIDTH_DEFAULT)
-
-  // Mirror the live width into the store so the floating Queue toggle tab tracks
-  // the panel's inner edge, including during a resize drag (KAMP-612).
-  useEffect(() => {
-    setQueuePanelWidth(queueWidth)
-  }, [queueWidth, setQueuePanelWidth])
   const didDragRef = useRef(false)
   const albumGroupingActive = useStore((s) => s.albumGroupingActive)
   const setAlbumGroupingActive = useStore((s) => s.setAlbumGroupingActive)
@@ -756,6 +750,8 @@ export function QueuePanel(): React.JSX.Element {
         onMouseDown={handleResizeMouseDown}
         onDoubleClick={handleResizeDoubleClick}
       />
+      {/* Inner-edge toggle: a child of the panel so it tracks the resize edge. */}
+      <PanelToggleTab panel="queue" placement="inner" active onClick={toggleQueuePanel} />
       <div className="queue-panel-header">
         <div className="queue-panel-header-left">
           <span className="queue-panel-label">QUEUE</span>

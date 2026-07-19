@@ -125,12 +125,6 @@ type PlayerStore = {
   queueVisible: boolean
   collectionPanelVisible: boolean
   collectionPanelSnapshot: boolean | null // saved visibility before entering Now Playing
-  // KAMP-612: live mirrors of the panels' own resizable widths, so the floating
-  // toggle tabs can sit at each panel's inner edge and track a resize drag. The
-  // panels remain the source of truth (they own persistence); these are updated
-  // via setCollectionPanelWidth / setQueuePanelWidth on every width change.
-  collectionPanelWidth: number
-  queuePanelWidth: number
   queue: QueueState | null
   albumGroupingActive: boolean
   downloadingAlbumIds: Set<string>
@@ -165,8 +159,6 @@ type PlayerStore = {
   setServerStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void
   toggleQueuePanel: () => void
   toggleCollectionPanel: () => void
-  setCollectionPanelWidth: (width: number) => void
-  setQueuePanelWidth: (width: number) => void
   loadQueue: () => Promise<void>
   setSearchQuery: (q: string) => void
   setSortOrder: (
@@ -500,11 +492,6 @@ export const useStore = create<PlayerStore>((set, get) => ({
   // Client-only persistence — no backend endpoint needed for this toggle.
   collectionPanelVisible: localStorage.getItem('kamp:collection-panel-visible') !== 'false',
   collectionPanelSnapshot: null,
-  // Seed from the panels' persisted widths so the toggle tabs are positioned
-  // correctly on first paint, before the panels mount and sync (KAMP-612).
-  collectionPanelWidth:
-    parseFloat(localStorage.getItem('kamp:collection-panel-width') ?? '') || 200,
-  queuePanelWidth: parseFloat(localStorage.getItem('kamp:queue-width') ?? '') || 280,
   queue: null,
   albumGroupingActive: localStorage.getItem('kamp:album-view') === 'true',
   downloadingAlbumIds: new Set<string>(),
@@ -538,11 +525,6 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ collectionPanelVisible: next })
     localStorage.setItem('kamp:collection-panel-visible', String(next))
   },
-
-  // Live width mirrors for the floating toggle tabs (KAMP-612). Pure state — the
-  // panels own localStorage persistence.
-  setCollectionPanelWidth: (width) => set({ collectionPanelWidth: width }),
-  setQueuePanelWidth: (width) => set({ queuePanelWidth: width }),
 
   loadQueue: async () => {
     try {

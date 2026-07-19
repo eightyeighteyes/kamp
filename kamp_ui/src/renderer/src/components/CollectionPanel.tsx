@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
+import { PanelToggleTab } from './PanelToggleTab'
 
 const COLLECTION_WIDTH_KEY = 'kamp:collection-panel-width'
 const COLLECTION_WIDTH_DEFAULT = 200
@@ -12,7 +13,7 @@ export function CollectionPanel(): React.JSX.Element {
   const selectedGenre = useStore((s) => s.library.selectedGenre)
   const selectArtist = useStore((s) => s.selectArtist)
   const selectGenre = useStore((s) => s.selectGenre)
-  const setCollectionPanelWidth = useStore((s) => s.setCollectionPanelWidth)
+  const toggleCollectionPanel = useStore((s) => s.toggleCollectionPanel)
   // Which list is shown. An active genre filter forces the Genres tab so
   // re-opening while a genre is selected lands there (KAMP-550); otherwise the
   // last explicitly-chosen tab is restored across restarts (KAMP-612).
@@ -37,12 +38,6 @@ export function CollectionPanel(): React.JSX.Element {
   const dragStartXRef = useRef(0)
   const widthAtDragStartRef = useRef(COLLECTION_WIDTH_DEFAULT)
   const didDragRef = useRef(false)
-
-  // Mirror the live width into the store so the floating Collection toggle tab
-  // tracks the panel's inner edge, including during a resize drag (KAMP-612).
-  useEffect(() => {
-    setCollectionPanelWidth(panelWidth)
-  }, [panelWidth, setCollectionPanelWidth])
 
   // Clamp width to 33% when the window shrinks.
   useEffect(() => {
@@ -182,6 +177,8 @@ export function CollectionPanel(): React.JSX.Element {
         onMouseDown={handleResizeMouseDown}
         onDoubleClick={handleResizeDoubleClick}
       />
+      {/* Inner-edge toggle: a child of the panel so it tracks the resize edge. */}
+      <PanelToggleTab panel="collection" placement="inner" active onClick={toggleCollectionPanel} />
     </aside>
   )
 }

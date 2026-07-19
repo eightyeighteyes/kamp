@@ -230,6 +230,7 @@ type PlayerStore = {
   loadUiState: () => Promise<void>
   selectArtist: (artist: string | null) => void
   selectGenre: (genre: string | null) => void
+  openGenreFilter: (genre: string) => void
   selectAlbum: (album: Album | null) => Promise<void>
   loadTracks: (albumArtist: string, album: string, trackId?: number | null) => Promise<void>
   setCollectionType: (type: 'albums' | 'playlists') => void
@@ -1069,6 +1070,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set((s) => ({
       library: { ...s.library, selectedGenre: genre, selectedArtist: null, selectedAlbum: null }
     })),
+
+  // KAMP-611: navigate to a genre's filter from a genre pill. Applies the filter
+  // (which clears the open album back to the grid) and opens the Collection panel
+  // if it's collapsed so the active filter is visible. CollectionPanel flips to
+  // the Genres tab off `selectedGenre`.
+  openGenreFilter: (genre) => {
+    get().selectGenre(genre)
+    if (!get().collectionPanelVisible) get().toggleCollectionPanel()
+  },
 
   selectAlbum: async (album) => {
     set((s) => ({

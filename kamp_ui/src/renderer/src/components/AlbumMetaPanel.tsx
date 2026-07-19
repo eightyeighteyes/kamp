@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react'
+import { useStore } from '../store'
 import { getGenres } from '../api/client'
 import type { Track } from '../api/client'
 import { useTooltip } from '../hooks/useTooltip'
@@ -118,6 +119,7 @@ export function AlbumMetaPanel({
   onHandleDoubleClick
 }: AlbumMetaPanelProps): React.JSX.Element {
   const panelRef = useRef<HTMLDivElement>(null)
+  const openGenreFilter = useStore((s) => s.openGenreFilter)
 
   const [label, setLabel] = React.useState(() => commonValue(tracks, 'label'))
   const [releaseDate, setReleaseDate] = React.useState(() => commonValue(tracks, 'release_date'))
@@ -218,6 +220,7 @@ export function AlbumMetaPanel({
                   suggestions={genreSuggestions}
                   editMode={editMode}
                   onCommit={handleSaveGenres}
+                  onGenreClick={openGenreFilter}
                 />
               </dd>
             </div>

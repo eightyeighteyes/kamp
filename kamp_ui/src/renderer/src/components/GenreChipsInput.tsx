@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useTooltip } from '../hooks/useTooltip'
 
 // Multi-value genre editor (KAMP-586): removable chips + type-ahead autocomplete
 // sourced from genres already in the library. Genres may contain spaces
@@ -10,6 +11,9 @@ type Props = {
   suggestions: string[]
   editMode: boolean
   onCommit: (genres: string[]) => void
+  // KAMP-611: when provided, read-only chips become clickable and navigate to
+  // that genre's filter. Ignored in edit mode (chips stay inert there).
+  onGenreClick?: (genre: string) => void
 }
 
 function sameSet(a: string[], b: string[]): boolean {
@@ -22,8 +26,10 @@ export function GenreChipsInput({
   chips: initial,
   suggestions,
   editMode,
-  onCommit
+  onCommit,
+  onGenreClick
 }: Props): React.JSX.Element {
+  const tooltip = useTooltip()
   const [chips, setChips] = useState(initial)
   const [input, setInput] = useState('')
   const [open, setOpen] = useState(false)
@@ -98,11 +104,23 @@ export function GenreChipsInput({
     if (chips.length === 0) return <span className="meta-field--empty">—</span>
     return (
       <span className="genre-chips genre-chips--readonly">
-        {chips.map((c) => (
-          <span key={c} className="genre-chip">
-            {c}
-          </span>
-        ))}
+        {chips.map((c) =>
+          onGenreClick ? (
+            <button
+              key={c}
+              type="button"
+              className="genre-chip genre-chip--clickable"
+              {...tooltip(`Show ${c}`)}
+              onClick={() => onGenreClick(c)}
+            >
+              {c}
+            </button>
+          ) : (
+            <span key={c} className="genre-chip">
+              {c}
+            </span>
+          )
+        )}
       </span>
     )
   }

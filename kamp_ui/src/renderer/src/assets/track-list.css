@@ -1238,6 +1238,25 @@
   white-space: nowrap;
 }
 
+/* KAMP-611: read-only chip that navigates to the genre filter. Button reset so
+   it reads as a chip, plus a hover/focus affordance signalling it's actionable. */
+.genre-chip--clickable {
+  font: inherit;
+  font-size: 11px;
+  color: inherit;
+  cursor: pointer;
+}
+
+.genre-chip--clickable:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.genre-chip--clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .genre-chip-remove {
   background: none;
   border: none;

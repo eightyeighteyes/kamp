@@ -340,6 +340,70 @@ html[data-platform='win32'] .view-tabs {
   display: flex;
   flex: 1;
   overflow: hidden;
+  /* Anchor for the floating panel-toggle tabs (KAMP-612). */
+  position: relative;
+}
+
+/* Floating rounded panel-toggle tabs, anchored to the app-body bottom edges.
+   Rendered outside the panels so they persist when a panel is collapsed
+   (collapsed panels are unmounted). KAMP-612. */
+.panel-tab {
+  position: absolute;
+  bottom: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.panel-tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.panel-tab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.panel-tab--collection {
+  border-top-right-radius: 17px;
+  border-bottom-right-radius: 17px;
+}
+
+.panel-tab--queue {
+  border-top-left-radius: 17px;
+  border-bottom-left-radius: 17px;
+}
+
+/* Edge placement: the reopen handle, resting against the app-body edge while the
+   panel is collapsed. */
+.panel-tab--edge.panel-tab--collection {
+  left: 0;
+}
+
+.panel-tab--edge.panel-tab--queue {
+  right: 0;
+}
+
+/* Inner placement: a child of the (relatively-positioned) panel, translated fully
+   past the panel's inner edge so it overlaps the library and moves with a resize. */
+.panel-tab--inner.panel-tab--collection {
+  right: 0;
+  transform: translateX(100%);
+}
+
+.panel-tab--inner.panel-tab--queue {
+  left: 0;
+  transform: translateX(-100%);
 }
 
 .main-content {
@@ -393,19 +457,22 @@ html[data-platform='win32'] .view-tabs {
   margin: 0 -16px;
 }
 
-/* Artist panel ------------------------------------------------------------- */
+/* Collection panel --------------------------------------------------------- */
 
-.artist-panel {
+.collection-panel {
   min-width: 200px;
   flex-shrink: 0;
   position: relative;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* visible (not hidden) so the inner-edge toggle tab can poke over the library
+     while staying a child of the panel — that coupling makes it track resize
+     exactly. The list scrolls via its own overflow. KAMP-612. */
+  overflow: visible;
 }
 
-.artist-resize-handle {
+.collection-resize-handle {
   position: absolute;
   right: 0;
   top: 0;
@@ -415,12 +482,12 @@ html[data-platform='win32'] .view-tabs {
   z-index: 10;
 }
 
-.artist-panel--resizing {
+.collection-panel--resizing {
   cursor: ew-resize;
   user-select: none;
 }
 
-.artist-panel--resizing .artist-list li:hover {
+.collection-panel--resizing .collection-list li:hover {
   background: none;
 }
 
@@ -476,7 +543,7 @@ html[data-platform='win32'] .view-tabs {
   background: none;
 }
 
-.artist-list {
+.collection-list {
   list-style: none;
   overflow-y: auto;
   flex: 1;
@@ -484,7 +551,7 @@ html[data-platform='win32'] .view-tabs {
   scrollbar-color: var(--border) transparent;
 }
 
-.artist-list li {
+.collection-list li {
   padding: 8px 14px;
   cursor: pointer;
   border-radius: 4px;
@@ -494,18 +561,18 @@ html[data-platform='win32'] .view-tabs {
   text-overflow: ellipsis;
 }
 
-.artist-list li:hover {
+.collection-list li:hover {
   background: var(--surface-hover);
 }
 
-.artist-list li.active {
+.collection-list li.active {
   background: var(--accent-dim);
   color: var(--accent);
 }
 
 /* Focus-visible rings ----------------------------------------------------- */
 
-.artist-list li:focus-visible,
+.collection-list li:focus-visible,
 .album-card:focus-visible,
 .transport-btn:focus-visible,
 .back-btn:focus-visible,
@@ -534,7 +601,7 @@ html[data-platform='win32'] .view-tabs {
 }
 
 .track-row:active,
-.artist-list li:active {
+.collection-list li:active {
   opacity: 0.7;
 }
 

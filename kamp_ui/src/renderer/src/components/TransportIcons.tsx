@@ -95,6 +95,22 @@ export function QueueIcon({ size = 20 }: IconProps): React.JSX.Element {
   )
 }
 
+export function CollectionIcon({ size = 20 }: IconProps): React.JSX.Element {
+  // Stacked-crate "collection" glyph (KAMP-612 asset). Native viewBox is 1200.
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 1200 1200"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="m938.63 911.52h-677.27c-26.664 0-48.359-21.695-48.359-48.359v-349.62c0-26.664 21.695-48.359 48.359-48.359h677.26c26.676 0 48.371 21.695 48.371 48.359v349.62c0.011719 26.664-21.695 48.359-48.359 48.359zm-677.27-404.33c-3.457 0-6.3594 2.9141-6.3594 6.3594v349.61c0 3.4453 2.9141 6.3594 6.3594 6.3594h677.26c3.457 0 6.3711-2.9141 6.3711-6.3594v-349.62c0-3.4453-2.9141-6.3594-6.3711-6.3594h-677.26zm639.86-109.36c0-11.594-9.3945-21-21-21h-560.45c-11.594 0-21 9.4062-21 21s9.4062 21 21 21h560.44c11.602 0 21.008-9.4062 21.008-21zm-68.496-88.344c0-11.594-9.3945-21-21-21h-423.45c-11.594 0-21 9.4062-21 21s9.4062 21 21 21h423.46c11.59 0 20.996-9.4062 20.996-21z" />
+    </svg>
+  )
+}
+
 export function QueueAddIcon({ size = 20 }: IconProps): React.JSX.Element {
   return (
     <svg width={size} height={size} {...STROKE_PROPS}>

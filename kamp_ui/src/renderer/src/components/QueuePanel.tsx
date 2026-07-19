@@ -5,6 +5,7 @@ import { TOOLTIPS } from '../tooltipStrings'
 import { QueueContextMenu } from './QueueContextMenu'
 import { QueueAlbumCard } from './QueueAlbumCard'
 import { FavoriteIcon, WarnIcon, GoToAlbumIcon } from './TransportIcons'
+import { PanelToggleTab } from './PanelToggleTab'
 import type { Track } from '../api/client'
 import { computeNewOrder } from '../utils/computeNewOrder'
 
@@ -749,6 +750,8 @@ export function QueuePanel(): React.JSX.Element {
         onMouseDown={handleResizeMouseDown}
         onDoubleClick={handleResizeDoubleClick}
       />
+      {/* Inner-edge toggle: a child of the panel so it tracks the resize edge. */}
+      <PanelToggleTab panel="queue" placement="inner" active onClick={toggleQueuePanel} />
       <div className="queue-panel-header">
         <div className="queue-panel-header-left">
           <span className="queue-panel-label">QUEUE</span>

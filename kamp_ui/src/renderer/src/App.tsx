@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from './store'
 import { connectStateStream, getDeferredOps } from './api/client'
-import { ArtistPanel } from './components/ArtistPanel'
+import { CollectionPanel } from './components/CollectionPanel'
+import { PanelToggleTabs } from './components/PanelToggleTabs'
 import { BaseKampView } from './components/BaseKampView'
 import { ExtensionPanel } from './components/ExtensionPanel'
 import { LibraryView } from './components/LibraryView'
@@ -60,17 +61,19 @@ registerBuiltInPanel({
   component: DownloadsView
 })
 registerBuiltInPanel({
-  id: 'kamp.artist-list',
-  title: 'Artists',
+  id: 'kamp.collection',
+  title: 'Collection',
   defaultSlot: 'left',
-  compatibleSlots: ['left', 'right'],
-  component: ArtistPanel
+  // KAMP-612: Collection is fixed to the left slot; slots no longer swap.
+  compatibleSlots: ['left'],
+  component: CollectionPanel
 })
 registerBuiltInPanel({
   id: 'kamp.queue',
   title: 'Queue',
   defaultSlot: 'right',
-  compatibleSlots: ['left', 'right'],
+  // KAMP-612: Queue is fixed to the right slot; slots no longer swap.
+  compatibleSlots: ['right'],
   component: QueuePanel
 })
 registerBuiltInPanel({
@@ -118,8 +121,8 @@ export default function App(): React.JSX.Element {
   const loadQueue = useStore((s) => s.loadQueue)
   const queueVisible = useStore((s) => s.queueVisible)
   const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
-  const artistPanelVisible = useStore((s) => s.artistPanelVisible)
-  const toggleArtistPanel = useStore((s) => s.toggleArtistPanel)
+  const collectionPanelVisible = useStore((s) => s.collectionPanelVisible)
+  const toggleCollectionPanel = useStore((s) => s.toggleCollectionPanel)
   const openPrefs = useStore((s) => s.openPrefs)
   const toggleStyleRail = useStore((s) => s.toggleStyleRail)
   const selectArtist = useStore((s) => s.selectArtist)
@@ -379,10 +382,10 @@ export default function App(): React.JSX.Element {
           if (e.metaKey || e.ctrlKey) break
           toggleQueuePanel()
           break
-        case 'a':
-        case 'A':
-          // Artist panel is only relevant in Library.
-          if (activeView === 'library') toggleArtistPanel()
+        case 'c':
+        case 'C':
+          // Collection panel is only relevant in Library.
+          if (activeView === 'library') toggleCollectionPanel()
           break
       }
     }
@@ -397,7 +400,7 @@ export default function App(): React.JSX.Element {
     searchQuery,
     setSearchQuery,
     toggleQueuePanel,
-    toggleArtistPanel,
+    toggleCollectionPanel,
     openPrefs
   ])
 
@@ -640,7 +643,7 @@ export default function App(): React.JSX.Element {
   const isPanelVisible = (p: UnifiedPanel | undefined): boolean => {
     if (!p) return false
     if (p.id === 'kamp.queue') return queueVisible
-    if (p.id === 'kamp.artist-list') return activeView === 'library' && artistPanelVisible
+    if (p.id === 'kamp.collection') return activeView === 'library' && collectionPanelVisible
     return true
   }
 
@@ -702,6 +705,7 @@ export default function App(): React.JSX.Element {
           {renderMainContent()}
         </main>
         {!showSetup && isPanelVisible(rightPanel) && <SlotPanel panel={rightPanel!} />}
+        {!showSetup && <PanelToggleTabs />}
       </div>
       {/* KAMP-571: global download progress bar, directly above the transport in
           every view (hides itself when the queue is idle). */}

@@ -8,7 +8,6 @@ import {
   PauseIcon,
   PlayIcon,
   PrevIcon,
-  QueueIcon,
   RepeatIcon,
   ShuffleIcon,
   StopIcon,
@@ -24,8 +23,6 @@ export function TransportBar(): React.JSX.Element {
   const prev = useStore((s) => s.prev)
   const seek = useStore((s) => s.seek)
   const setVolume = useStore((s) => s.setVolume)
-  const queueVisible = useStore((s) => s.queueVisible)
-  const toggleQueuePanel = useStore((s) => s.toggleQueuePanel)
   const setFavorite = useStore((s) => s.setFavorite)
   const queue = useStore((s) => s.queue)
   const setShuffle = useStore((s) => s.setShuffle)
@@ -301,16 +298,6 @@ export function TransportBar(): React.JSX.Element {
         />
         <span className="volume-label">{volume}</span>
       </div>
-
-      <button
-        className={`transport-btn queue-toggle-btn${queueVisible ? ' active' : ''}`}
-        onClick={toggleQueuePanel}
-        {...tooltip(TOOLTIPS.TRANSPORT_QUEUE)}
-        aria-label="Queue"
-        aria-pressed={queueVisible}
-      >
-        <QueueIcon />
-      </button>
     </div>
   )
 }

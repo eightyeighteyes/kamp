@@ -8,7 +8,9 @@
   background: var(--surface);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* visible so the inner-edge toggle tab can poke over the library as a child of
+     the panel, tracking resize exactly. Inner content scrolls on its own. KAMP-612. */
+  overflow: visible;
 }
 
 .queue-resize-handle {
@@ -217,15 +219,6 @@
   height: 100%;
   color: var(--text-dim);
   font-size: 12px;
-}
-
-/* Queue toggle button in transport bar */
-.queue-toggle-btn {
-  font-size: 15px;
-}
-
-.queue-toggle-btn.active {
-  color: var(--accent);
 }
 
 .favorite-btn {

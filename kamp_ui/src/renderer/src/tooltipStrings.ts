@@ -8,6 +8,7 @@ export const TOOLTIPS = {
   TRANSPORT_SHUFFLE: 'Shuffle',
   TRANSPORT_REPEAT: 'Repeat',
   TRANSPORT_QUEUE: 'Queue (Q)',
+  COLLECTION_TOGGLE: 'Collection (C)',
   TRANSPORT_FAVORITE_ADD: 'Add to favorites',
   TRANSPORT_FAVORITE_REMOVE: 'Remove from favorites',
 

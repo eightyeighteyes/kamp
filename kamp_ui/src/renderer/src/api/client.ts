@@ -768,6 +768,21 @@ export async function getGenres(): Promise<string[]> {
 export const deleteGenre = (name: string): Promise<{ ok: boolean; tracks_updated: number }> =>
   del(`/api/v1/genres?name=${encodeURIComponent(name)}`)
 
+// Merge one genre into another (KAMP-607): retro-retags tracks + persists the
+// source->target map. Rejects chains/self-merge (400) and backfill races (409).
+export const mergeGenres = (
+  source: string,
+  target: string
+): Promise<{ ok: boolean; tracks_updated: number }> =>
+  post('/api/v1/genres/merge', { source, target })
+
+export interface GenreMerge {
+  source: string
+  target: string
+}
+
+export const getGenreMerges = (): Promise<GenreMerge[]> => get('/api/v1/genres/merges')
+
 // ---------------------------------------------------------------------------
 // MusicBrainz lookup (KAMP-230, shallow candidates + lazy hydration KAMP-584)
 // ---------------------------------------------------------------------------

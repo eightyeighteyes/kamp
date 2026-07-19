@@ -232,6 +232,7 @@ type PlayerStore = {
   selectGenre: (genre: string | null) => void
   openGenreFilter: (genre: string) => void
   removeGenre: (name: string) => Promise<void>
+  mergeGenre: (source: string, target: string) => Promise<void>
   selectAlbum: (album: Album | null) => Promise<void>
   loadTracks: (albumArtist: string, album: string, trackId?: number | null) => Promise<void>
   setCollectionType: (type: 'albums' | 'playlists') => void
@@ -1087,6 +1088,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
   removeGenre: async (name) => {
     await api.deleteGenre(name)
     if (get().library.selectedGenre === name) get().selectGenre(null)
+    await get().loadLibrary()
+    await get().refreshOpenAlbum()
+  },
+
+  // KAMP-607: merge source into target. The source disappears; the active filter
+  // follows it to the target if it was selected. Refresh library + open album.
+  mergeGenre: async (source, target) => {
+    await api.mergeGenres(source, target)
+    if (get().library.selectedGenre === source) get().selectGenre(target)
     await get().loadLibrary()
     await get().refreshOpenAlbum()
   },

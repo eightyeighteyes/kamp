@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 59
+_SCHEMA_VERSION = 60
 
 
 class NoStreamableVersionError(Exception):
@@ -272,6 +272,17 @@ CREATE TABLE IF NOT EXISTS track_genres (
     PRIMARY KEY (track_id, genre_id)
 );
 CREATE INDEX IF NOT EXISTS idx_track_genres_genre ON track_genres(genre_id);
+
+-- Genre merges (KAMP-607). A source genre folds into a target: every inbound
+-- genre is routed source -> target at the _set_track_genres chokepoint. source
+-- is unique (a genre merges into at most one target); no chains are allowed (a
+-- target can't be a source), enforced in application code. Names are strings,
+-- not FKs to genres.id, so a merge survives its source's orphan-row deletion.
+CREATE TABLE IF NOT EXISTS genre_merges (
+    source TEXT NOT NULL,
+    target TEXT NOT NULL,
+    UNIQUE (source COLLATE NOCASE)
+);
 
 -- First-class album entity (KAMP-418). Replaces the GROUP BY (album_artist, album)
 -- derived-aggregate pattern. COLLATE NOCASE on the UNIQUE constraint prevents
@@ -861,6 +872,10 @@ class LibraryIndex:
         # when a field referenced by magic criteria changes. Default None so
         # library mutations work without a server context (e.g. in tests).
         self.on_fields_changed: Callable[[set[str]], None] | None = None
+        # KAMP-607: genre merge map (source.casefold() -> target). Populated by
+        # _load_merge_map() during _migrate; empty here so _set_track_genres is a
+        # safe no-op if it runs before the load (e.g. the v56 backfill).
+        self._merge_map: dict[str, str] = {}
         # Correct permissions on existing installs where the file was created
         # with the default umask (644).
         if db_path.exists():
@@ -917,6 +932,12 @@ class LibraryIndex:
         # (the version still bumped). track_stats + tracks exist by now (_DDL), so
         # the view builds; it is rebuilt with final columns after _migrate.
         self._create_tracks_with_stats_view()
+        # KAMP-607: load the genre merge map now — genre_merges was just created
+        # by _DDL (CREATE IF NOT EXISTS), so it exists on every DB at this point,
+        # BEFORE the version if-ladder below. Any current or future backfill-style
+        # migration that re-runs _set_track_genres must see the merges, or it would
+        # silently retag merged tracks back to their source.
+        self._load_merge_map()
         row = self._conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             # Brand-new database — stamp current version and populate FTS.
@@ -2447,7 +2468,21 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 59")
             self._conn.commit()
-            version = 59  # noqa: F841
+            version = 59
+
+        if version == 59:
+            # v59 -> v60 (KAMP-607): genre_merges table. The table itself is
+            # created up front by _DDL (CREATE IF NOT EXISTS, so it already exists
+            # on every DB by now); this step only records the version bump. New
+            # empty table, no data backfill.
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS genre_merges ("
+                " source TEXT NOT NULL, target TEXT NOT NULL,"
+                " UNIQUE (source COLLATE NOCASE))"
+            )
+            self._conn.execute("UPDATE schema_version SET version = 60")
+            self._conn.commit()
+            version = 60  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -6206,7 +6241,15 @@ class LibraryIndex:
         seen: dict[str, str] = {}
         for raw in names:
             name = raw.strip()
-            if name and name.casefold() not in seen:
+            if not name:
+                continue
+            # KAMP-607: route a merged-away genre to its target before dedup, so
+            # scan, Last.fm enrichment, manual edits, and bandcamp keywords all
+            # land on the surviving genre. No chains exist (enforced at merge
+            # creation), so a single hop suffices. Same .casefold() folding as the
+            # dedup below, so the map and the dedup can never disagree.
+            name = self._merge_map.get(name.casefold(), name)
+            if name.casefold() not in seen:
                 seen[name.casefold()] = name
 
         self._conn.execute("DELETE FROM track_genres WHERE track_id = ?", (track_id,))
@@ -6395,6 +6438,124 @@ class LibraryIndex:
         # DB, not merely hidden by all_genres' JOIN). Its track_genres rows are
         # already gone via the rewrites above, so ON DELETE CASCADE is a no-op.
         self._conn.execute("DELETE FROM genres WHERE id = ?", (genre_id,))
+        # KAMP-607: removing a genre dissolves any merge it takes part in —
+        # removing a merge target un-merges its sources (a fresh inbound source
+        # then stays itself); removing a source drops its now-defunct rule.
+        merges_touched = self._conn.execute(
+            "DELETE FROM genre_merges"
+            " WHERE source = ? COLLATE NOCASE OR target = ? COLLATE NOCASE",
+            (name, name),
+        ).rowcount
+        for album_id in album_ids:
+            self._refresh_album_genre(album_id)
+        for tid in track_ids:
+            self._refresh_track_fts_row(tid)
+        self._conn.commit()
+        if merges_touched:
+            self._load_merge_map()
+        if self.on_fields_changed:
+            self.on_fields_changed({"track.genre"})
+        return len(track_ids)
+
+    def _load_merge_map(self) -> None:
+        """Refresh the in-memory genre merge map from genre_merges (KAMP-607).
+
+        Keyed on source.casefold() -> target, matching _set_track_genres' dedup
+        folding exactly. Reassigns the whole dict (a single atomic reference swap)
+        so background scan/enrichment threads reading the map never see a torn
+        state — no lock needed.
+        """
+        self._merge_map = {
+            r["source"].casefold(): r["target"]
+            for r in self._conn.execute(
+                "SELECT source, target FROM genre_merges"
+            ).fetchall()
+        }
+
+    def list_genre_merges(self) -> list[dict[str, str]]:
+        """All active genre merges as {source, target}, sorted by source (KAMP-607)."""
+        return [
+            {"source": r["source"], "target": r["target"]}
+            for r in self._conn.execute(
+                "SELECT source, target FROM genre_merges"
+                " ORDER BY source COLLATE NOCASE"
+            ).fetchall()
+        ]
+
+    def validate_genre_merge(self, source: str, target: str) -> None:
+        """Raise ValueError if merging *source* into *target* is not allowed (KAMP-607).
+
+        No self-merge and no chains: a merge target may not itself be a source,
+        and a source may not already be a target of another merge.
+        """
+        source = source.strip()
+        target = target.strip()
+        if not source or not target:
+            raise ValueError("source and target are required")
+        if source.casefold() == target.casefold():
+            raise ValueError("a genre cannot be merged into itself")
+        if self._conn.execute(
+            "SELECT 1 FROM genre_merges WHERE source = ? COLLATE NOCASE", (target,)
+        ).fetchone():
+            raise ValueError(
+                "the target is already merged into another genre (no chains)"
+            )
+        if self._conn.execute(
+            "SELECT 1 FROM genre_merges WHERE target = ? COLLATE NOCASE", (source,)
+        ).fetchone():
+            raise ValueError("the source is a merge target and cannot be merged")
+
+    def create_genre_merge(self, source: str, target: str) -> int:
+        """Merge *source* into *target* (KAMP-607).
+
+        Records the source->target rule, retroactively retags every track
+        carrying the source to the target (DB only — the caller writes the mapped
+        tag to the files, like remove_genre), and deletes the now-orphaned source
+        vocabulary row. Returns the number of retagged tracks. Re-validates
+        internally. Caller need not commit.
+        """
+        self.validate_genre_merge(source, target)
+        source = source.strip()
+        target = target.strip()
+        # Replace any existing rule for this source, then refresh the cache so the
+        # retro-retag below maps source -> target through _set_track_genres.
+        self._conn.execute(
+            "DELETE FROM genre_merges WHERE source = ? COLLATE NOCASE", (source,)
+        )
+        self._conn.execute(
+            "INSERT INTO genre_merges (source, target) VALUES (?, ?)", (source, target)
+        )
+        self._load_merge_map()
+        src_row = self._conn.execute(
+            "SELECT id FROM genres WHERE name = ? COLLATE NOCASE", (source,)
+        ).fetchone()
+        track_ids: list[int] = []
+        album_ids: list[int] = []
+        if src_row is not None:
+            genre_id = src_row["id"]
+            track_ids = [
+                r["track_id"]
+                for r in self._conn.execute(
+                    "SELECT track_id FROM track_genres WHERE genre_id = ?", (genre_id,)
+                ).fetchall()
+            ]
+            if track_ids:
+                placeholders = ",".join("?" for _ in track_ids)
+                album_ids = [
+                    r["album_id"]
+                    for r in self._conn.execute(
+                        f"SELECT DISTINCT album_id FROM tracks"
+                        f" WHERE id IN ({placeholders}) AND album_id IS NOT NULL",
+                        track_ids,
+                    ).fetchall()
+                ]
+            # Re-applying each track's current genres routes source -> target via
+            # the freshly-loaded map inside _set_track_genres.
+            for tid in track_ids:
+                self._set_track_genres(tid, self.genres_for_track(tid))
+            # The source is now orphaned (no track links it). Drop its vocab row;
+            # the string-keyed merge rule keeps mapping future inbound source.
+            self._conn.execute("DELETE FROM genres WHERE id = ?", (genre_id,))
         for album_id in album_ids:
             self._refresh_album_genre(album_id)
         for tid in track_ids:

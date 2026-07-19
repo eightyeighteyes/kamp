@@ -29,7 +29,7 @@ const GROUPS: Group[] = [
       { keys: [mod, 'K'], description: 'Focus search' },
       { keys: ['L'], description: 'Library / Now Playing' },
       { keys: ['Q'], description: 'Queue panel' },
-      { keys: ['A'], description: 'Artist panel', note: 'Library only' },
+      { keys: ['C'], description: 'Collection panel', note: 'Library only' },
       { keys: [mod, ','], description: 'Preferences' }
     ]
   },

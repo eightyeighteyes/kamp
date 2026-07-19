@@ -63,14 +63,16 @@ registerBuiltInPanel({
   id: 'kamp.collection',
   title: 'Collection',
   defaultSlot: 'left',
-  compatibleSlots: ['left', 'right'],
+  // KAMP-612: Collection is fixed to the left slot; slots no longer swap.
+  compatibleSlots: ['left'],
   component: CollectionPanel
 })
 registerBuiltInPanel({
   id: 'kamp.queue',
   title: 'Queue',
   defaultSlot: 'right',
-  compatibleSlots: ['left', 'right'],
+  // KAMP-612: Queue is fixed to the right slot; slots no longer swap.
+  compatibleSlots: ['right'],
   component: QueuePanel
 })
 registerBuiltInPanel({
@@ -379,9 +381,9 @@ export default function App(): React.JSX.Element {
           if (e.metaKey || e.ctrlKey) break
           toggleQueuePanel()
           break
-        case 'a':
-        case 'A':
-          // Artist panel is only relevant in Library.
+        case 'c':
+        case 'C':
+          // Collection panel is only relevant in Library.
           if (activeView === 'library') toggleCollectionPanel()
           break
       }

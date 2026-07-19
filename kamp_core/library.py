@@ -6323,6 +6323,87 @@ class LibraryIndex:
             ).fetchall()
         ]
 
+    def genres_for_track(self, track_id: int) -> list[str]:
+        """Canonical genre names linked to *track_id*, sorted NOCASE (KAMP-606).
+
+        Reads the normalized track_genres rows so callers get exact canonical
+        casing without re-parsing the denormalized "; "-joined tracks.genre
+        (a genre name may itself contain "; ").
+        """
+        return [
+            r["name"]
+            for r in self._conn.execute(
+                "SELECT g.name FROM track_genres tg"
+                " JOIN genres g ON g.id = tg.genre_id"
+                " WHERE tg.track_id = ?"
+                " ORDER BY g.name COLLATE NOCASE",
+                (track_id,),
+            ).fetchall()
+        ]
+
+    def remove_genre(self, name: str) -> int:
+        """Remove *name* from every track and delete it from the vocabulary (KAMP-606).
+
+        Strips the genre from all tagged tracks' normalized rows (and the
+        denormalized tracks.genre, via the _set_track_genres chokepoint), deletes
+        the now-orphaned genres row, and refreshes the affected albums' genre
+        union plus the FTS index. DB only — the caller writes the stripped tag to
+        the audio files (the DELETE endpoint's is_remote-guarded loop), exactly
+        as apply_genres leaves file I/O to its caller. Returns the number of
+        tracks that carried the genre (0 if there is no such genre).
+        """
+        row = self._conn.execute(
+            "SELECT id FROM genres WHERE name = ? COLLATE NOCASE", (name,)
+        ).fetchone()
+        if row is None:
+            return 0
+        genre_id = row["id"]
+        track_ids = [
+            r["track_id"]
+            for r in self._conn.execute(
+                "SELECT track_id FROM track_genres WHERE genre_id = ?", (genre_id,)
+            ).fetchall()
+        ]
+        # Affected albums, snapshotted before the mutation.
+        album_ids: list[int] = []
+        if track_ids:
+            placeholders = ",".join("?" for _ in track_ids)
+            album_ids = [
+                r["album_id"]
+                for r in self._conn.execute(
+                    f"SELECT DISTINCT album_id FROM tracks"
+                    f" WHERE id IN ({placeholders}) AND album_id IS NOT NULL",
+                    track_ids,
+                ).fetchall()
+            ]
+        # Rewrite each track's genres to everything BUT the removed one. Deriving
+        # the survivors from track_genres (canonical rows), never from splitting
+        # the "; "-joined tracks.genre, keeps casing exact and is immune to a
+        # genre name that itself contains the delimiter.
+        for tid in track_ids:
+            remaining = [
+                r["name"]
+                for r in self._conn.execute(
+                    "SELECT g.name FROM track_genres tg"
+                    " JOIN genres g ON g.id = tg.genre_id"
+                    " WHERE tg.track_id = ? AND tg.genre_id != ?",
+                    (tid, genre_id),
+                ).fetchall()
+            ]
+            self._set_track_genres(tid, remaining)
+        # Delete the now-orphaned vocabulary row (the issue wants it gone from the
+        # DB, not merely hidden by all_genres' JOIN). Its track_genres rows are
+        # already gone via the rewrites above, so ON DELETE CASCADE is a no-op.
+        self._conn.execute("DELETE FROM genres WHERE id = ?", (genre_id,))
+        for album_id in album_ids:
+            self._refresh_album_genre(album_id)
+        for tid in track_ids:
+            self._refresh_track_fts_row(tid)
+        self._conn.commit()
+        if self.on_fields_changed:
+            self.on_fields_changed({"track.genre"})
+        return len(track_ids)
+
     def update_album_meta(
         self,
         album_artist: str,
@@ -6643,6 +6724,23 @@ class LibraryIndex:
             "SELECT * FROM tracks_with_stats WHERE album_id = ?"
             " ORDER BY disc_number, track_number",
             (album_id,),
+        ).fetchall()
+        return [_row_to_track(r) for r in rows]
+
+    def tracks_for_genre(self, name: str) -> list[Track]:
+        """Every track carrying *name* (NOCASE), as Track objects (KAMP-606).
+
+        Backs the remove-genre endpoint's file-write loop, which needs each
+        track's file_path + is_remote. Matches on the normalized track_genres
+        link, not the denormalized string.
+        """
+        rows = self._conn.execute(
+            "SELECT t.* FROM tracks_with_stats t"
+            " JOIN track_genres tg ON tg.track_id = t.id"
+            " JOIN genres g ON g.id = tg.genre_id"
+            " WHERE g.name = ? COLLATE NOCASE"
+            " ORDER BY t.id",
+            (name,),
         ).fetchall()
         return [_row_to_track(r) for r in rows]
 

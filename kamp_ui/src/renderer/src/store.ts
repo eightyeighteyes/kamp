@@ -233,6 +233,7 @@ type PlayerStore = {
   openGenreFilter: (genre: string) => void
   removeGenre: (name: string) => Promise<void>
   mergeGenre: (source: string, target: string) => Promise<void>
+  renameGenre: (oldName: string, newName: string) => Promise<void>
   selectAlbum: (album: Album | null) => Promise<void>
   loadTracks: (albumArtist: string, album: string, trackId?: number | null) => Promise<void>
   setCollectionType: (type: 'albums' | 'playlists') => void
@@ -1097,6 +1098,14 @@ export const useStore = create<PlayerStore>((set, get) => ({
   mergeGenre: async (source, target) => {
     await api.mergeGenres(source, target)
     if (get().library.selectedGenre === source) get().selectGenre(target)
+    await get().loadLibrary()
+    await get().refreshOpenAlbum()
+  },
+
+  // KAMP-608: rename a genre everywhere. The active filter follows the rename.
+  renameGenre: async (oldName, newName) => {
+    await api.renameGenre(oldName, newName)
+    if (get().library.selectedGenre === oldName) get().selectGenre(newName)
     await get().loadLibrary()
     await get().refreshOpenAlbum()
   },

@@ -4,6 +4,7 @@ import { PanelToggleTab } from './PanelToggleTab'
 import { GenreContextMenu } from './GenreContextMenu'
 import { RemoveGenreModal } from './RemoveGenreModal'
 import { MergeGenreModal } from './MergeGenreModal'
+import { GenreEditInput } from './GenreEditInput'
 
 const COLLECTION_WIDTH_KEY = 'kamp:collection-panel-width'
 const COLLECTION_WIDTH_DEFAULT = 200
@@ -18,11 +19,14 @@ export function CollectionPanel(): React.JSX.Element {
   const selectGenre = useStore((s) => s.selectGenre)
   const removeGenre = useStore((s) => s.removeGenre)
   const mergeGenre = useStore((s) => s.mergeGenre)
+  const renameGenre = useStore((s) => s.renameGenre)
   const toggleCollectionPanel = useStore((s) => s.toggleCollectionPanel)
-  // Genre right-click menu + destructive merge/removal confirmations (KAMP-606/607).
+  // Genre right-click menu + destructive merge/removal confirmations (KAMP-606/607)
+  // + inline rename (KAMP-608).
   const [genreMenu, setGenreMenu] = useState<{ x: number; y: number; genre: string } | null>(null)
   const [pendingRemove, setPendingRemove] = useState<string | null>(null)
   const [pendingMerge, setPendingMerge] = useState<string | null>(null)
+  const [editingGenre, setEditingGenre] = useState<string | null>(null)
   // Which list is shown. An active genre filter forces the Genres tab so
   // re-opening while a genre is selected lands there (KAMP-550); otherwise the
   // last explicitly-chosen tab is restored across restarts (KAMP-612).
@@ -177,21 +181,35 @@ export function CollectionPanel(): React.JSX.Element {
               >
                 All Genres
               </li>
-              {genres.map((genre) => (
-                <li
-                  key={genre}
-                  className={selectedGenre === genre ? 'active' : ''}
-                  tabIndex={0}
-                  onClick={() => selectGenre(genre)}
-                  onKeyDown={(e) => e.key === 'Enter' && selectGenre(genre)}
-                  onContextMenu={(e) => {
-                    e.preventDefault()
-                    setGenreMenu({ x: e.clientX, y: e.clientY, genre })
-                  }}
-                >
-                  {genre}
-                </li>
-              ))}
+              {genres.map((genre) => {
+                const editing = editingGenre === genre
+                return (
+                  <li
+                    key={genre}
+                    className={selectedGenre === genre ? 'active' : ''}
+                    tabIndex={editing ? -1 : 0}
+                    onClick={editing ? undefined : () => selectGenre(genre)}
+                    onKeyDown={editing ? undefined : (e) => e.key === 'Enter' && selectGenre(genre)}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setGenreMenu({ x: e.clientX, y: e.clientY, genre })
+                    }}
+                  >
+                    {editing ? (
+                      <GenreEditInput
+                        initial={genre}
+                        onCommit={(value) => {
+                          void renameGenre(genre, value)
+                          setEditingGenre(null)
+                        }}
+                        onCancel={() => setEditingGenre(null)}
+                      />
+                    ) : (
+                      genre
+                    )}
+                  </li>
+                )
+              })}
             </>
           )}
         </ul>
@@ -208,6 +226,7 @@ export function CollectionPanel(): React.JSX.Element {
           x={genreMenu.x}
           y={genreMenu.y}
           genre={genreMenu.genre}
+          onEdit={() => setEditingGenre(genreMenu.genre)}
           onMerge={() => setPendingMerge(genreMenu.genre)}
           onRemove={() => setPendingRemove(genreMenu.genre)}
           onClose={() => setGenreMenu(null)}

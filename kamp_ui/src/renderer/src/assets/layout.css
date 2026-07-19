@@ -565,6 +565,20 @@ html[data-platform='win32'] .view-tabs {
   background: var(--surface-hover);
 }
 
+/* Inline genre rename input (KAMP-608) — sized to sit inside the list item. */
+.genre-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1px 4px;
+  margin: -2px 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  outline: none;
+}
+
 .collection-list li.active {
   background: var(--accent-dim);
   color: var(--accent);

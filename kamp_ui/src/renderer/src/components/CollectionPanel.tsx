@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 
-const ARTIST_WIDTH_KEY = 'kamp:artist-panel-width'
-const ARTIST_WIDTH_DEFAULT = 200
+const COLLECTION_WIDTH_KEY = 'kamp:collection-panel-width'
+const COLLECTION_WIDTH_DEFAULT = 200
 
-export function ArtistPanel(): React.JSX.Element {
+export function CollectionPanel(): React.JSX.Element {
   const artists = useStore((s) => s.library.artists)
   const genres = useStore((s) => s.library.genres)
   const selectedArtist = useStore((s) => s.library.selectedArtist)
@@ -18,15 +18,15 @@ export function ArtistPanel(): React.JSX.Element {
     selectedGenre !== null ? 'genres' : 'artists'
   )
   const [panelWidth, setPanelWidth] = useState<number>(() => {
-    const saved = parseFloat(localStorage.getItem(ARTIST_WIDTH_KEY) ?? '')
+    const saved = parseFloat(localStorage.getItem(COLLECTION_WIDTH_KEY) ?? '')
     const max = window.innerWidth * 0.33
     return isNaN(saved)
-      ? ARTIST_WIDTH_DEFAULT
-      : Math.min(max, Math.max(ARTIST_WIDTH_DEFAULT, saved))
+      ? COLLECTION_WIDTH_DEFAULT
+      : Math.min(max, Math.max(COLLECTION_WIDTH_DEFAULT, saved))
   })
   const [isResizing, setIsResizing] = useState(false)
   const dragStartXRef = useRef(0)
-  const widthAtDragStartRef = useRef(ARTIST_WIDTH_DEFAULT)
+  const widthAtDragStartRef = useRef(COLLECTION_WIDTH_DEFAULT)
   const didDragRef = useRef(false)
 
   // Clamp width to 33% when the window shrinks.
@@ -35,7 +35,7 @@ export function ArtistPanel(): React.JSX.Element {
       const max = window.innerWidth * 0.33
       setPanelWidth((w) => {
         if (w > max) {
-          localStorage.setItem(ARTIST_WIDTH_KEY, String(Math.round(max)))
+          localStorage.setItem(COLLECTION_WIDTH_KEY, String(Math.round(max)))
           return max
         }
         return w
@@ -59,7 +59,7 @@ export function ArtistPanel(): React.JSX.Element {
       if (!didDragRef.current) return
       const max = window.innerWidth * 0.33
       setPanelWidth(
-        Math.min(max, Math.max(ARTIST_WIDTH_DEFAULT, widthAtDragStartRef.current + delta))
+        Math.min(max, Math.max(COLLECTION_WIDTH_DEFAULT, widthAtDragStartRef.current + delta))
       )
     }
 
@@ -69,7 +69,7 @@ export function ArtistPanel(): React.JSX.Element {
       setIsResizing(false)
       if (didDragRef.current) {
         setPanelWidth((w) => {
-          localStorage.setItem(ARTIST_WIDTH_KEY, String(Math.round(w)))
+          localStorage.setItem(COLLECTION_WIDTH_KEY, String(Math.round(w)))
           return w
         })
       }
@@ -80,13 +80,13 @@ export function ArtistPanel(): React.JSX.Element {
   }
 
   function handleResizeDoubleClick(): void {
-    setPanelWidth(ARTIST_WIDTH_DEFAULT)
-    localStorage.setItem(ARTIST_WIDTH_KEY, String(ARTIST_WIDTH_DEFAULT))
+    setPanelWidth(COLLECTION_WIDTH_DEFAULT)
+    localStorage.setItem(COLLECTION_WIDTH_KEY, String(COLLECTION_WIDTH_DEFAULT))
   }
 
   return (
     <aside
-      className={`artist-panel${isResizing ? ' artist-panel--resizing' : ''}`}
+      className={`collection-panel${isResizing ? ' collection-panel--resizing' : ''}`}
       style={{ width: panelWidth }}
     >
       <div className="library-tabs" role="tablist" aria-label="Library filter">
@@ -110,7 +110,7 @@ export function ArtistPanel(): React.JSX.Element {
         </button>
       </div>
       {tab === 'artists' ? (
-        <ul className="artist-list" role="tabpanel" aria-labelledby="lib-tab-artists">
+        <ul className="collection-list" role="tabpanel" aria-labelledby="lib-tab-artists">
           <li
             className={selectedArtist === null ? 'active' : ''}
             tabIndex={0}
@@ -132,7 +132,7 @@ export function ArtistPanel(): React.JSX.Element {
           ))}
         </ul>
       ) : (
-        <ul className="artist-list" role="tabpanel" aria-labelledby="lib-tab-genres">
+        <ul className="collection-list" role="tabpanel" aria-labelledby="lib-tab-genres">
           {genres.length === 0 ? (
             <li className="library-list-empty" aria-disabled="true">
               No genres tagged yet
@@ -163,7 +163,7 @@ export function ArtistPanel(): React.JSX.Element {
         </ul>
       )}
       <div
-        className="artist-resize-handle"
+        className="collection-resize-handle"
         onMouseDown={handleResizeMouseDown}
         onDoubleClick={handleResizeDoubleClick}
       />

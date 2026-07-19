@@ -123,8 +123,8 @@ type PlayerStore = {
   searchQuery: string
   searchResults: SearchResult | null
   queueVisible: boolean
-  artistPanelVisible: boolean
-  artistPanelSnapshot: boolean | null // saved visibility before entering Now Playing
+  collectionPanelVisible: boolean
+  collectionPanelSnapshot: boolean | null // saved visibility before entering Now Playing
   queue: QueueState | null
   albumGroupingActive: boolean
   downloadingAlbumIds: Set<string>
@@ -158,7 +158,7 @@ type PlayerStore = {
   setAudioLevel: (leftDb: number, rightDb: number, crestDb: number, peakDb: number) => void
   setServerStatus: (status: 'connected' | 'reconnecting' | 'disconnected') => void
   toggleQueuePanel: () => void
-  toggleArtistPanel: () => void
+  toggleCollectionPanel: () => void
   loadQueue: () => Promise<void>
   setSearchQuery: (q: string) => void
   setSortOrder: (
@@ -490,8 +490,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
   searchResults: null,
   queueVisible: false,
   // Client-only persistence — no backend endpoint needed for this toggle.
-  artistPanelVisible: localStorage.getItem('kamp:artist-panel-visible') !== 'false',
-  artistPanelSnapshot: null,
+  collectionPanelVisible: localStorage.getItem('kamp:collection-panel-visible') !== 'false',
+  collectionPanelSnapshot: null,
   queue: null,
   albumGroupingActive: localStorage.getItem('kamp:album-view') === 'true',
   downloadingAlbumIds: new Set<string>(),
@@ -520,10 +520,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
     void api.setQueuePanelApi(next)
   },
 
-  toggleArtistPanel: () => {
-    const next = !get().artistPanelVisible
-    set({ artistPanelVisible: next })
-    localStorage.setItem('kamp:artist-panel-visible', String(next))
+  toggleCollectionPanel: () => {
+    const next = !get().collectionPanelVisible
+    set({ collectionPanelVisible: next })
+    localStorage.setItem('kamp:collection-panel-visible', String(next))
   },
 
   loadQueue: async () => {
@@ -589,20 +589,20 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   setActiveView: async (view) => {
-    const { artistPanelVisible, artistPanelSnapshot } = get()
+    const { collectionPanelVisible, collectionPanelSnapshot } = get()
     if (view === 'library') {
-      // Restore the artist panel to its pre-non-library state.
-      const restored = artistPanelSnapshot ?? artistPanelVisible
-      set({ activeView: view, artistPanelSnapshot: null, artistPanelVisible: restored })
-      localStorage.setItem('kamp:artist-panel-visible', String(restored))
+      // Restore the collection panel to its pre-non-library state.
+      const restored = collectionPanelSnapshot ?? collectionPanelVisible
+      set({ activeView: view, collectionPanelSnapshot: null, collectionPanelVisible: restored })
+      localStorage.setItem('kamp:collection-panel-visible', String(restored))
     } else {
-      // Hide the artist panel (only relevant in Library) on any non-library view.
+      // Hide the collection panel (only relevant in Library) on any non-library view.
       // Preserve any existing snapshot so round-trips through multiple non-library views
       // (e.g. now-playing → home → library) still restore the original user preference.
       // Persist false so a restart outside the library doesn't reopen the panel.
-      const snapshot = artistPanelSnapshot ?? artistPanelVisible
-      set({ activeView: view, artistPanelSnapshot: snapshot, artistPanelVisible: false })
-      localStorage.setItem('kamp:artist-panel-visible', 'false')
+      const snapshot = collectionPanelSnapshot ?? collectionPanelVisible
+      set({ activeView: view, collectionPanelSnapshot: snapshot, collectionPanelVisible: false })
+      localStorage.setItem('kamp:collection-panel-visible', 'false')
     }
     try {
       await api.setActiveViewApi(view)

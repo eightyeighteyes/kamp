@@ -393,9 +393,9 @@ html[data-platform='win32'] .view-tabs {
   margin: 0 -16px;
 }
 
-/* Artist panel ------------------------------------------------------------- */
+/* Collection panel --------------------------------------------------------- */
 
-.artist-panel {
+.collection-panel {
   min-width: 200px;
   flex-shrink: 0;
   position: relative;
@@ -405,7 +405,7 @@ html[data-platform='win32'] .view-tabs {
   overflow: hidden;
 }
 
-.artist-resize-handle {
+.collection-resize-handle {
   position: absolute;
   right: 0;
   top: 0;
@@ -415,12 +415,12 @@ html[data-platform='win32'] .view-tabs {
   z-index: 10;
 }
 
-.artist-panel--resizing {
+.collection-panel--resizing {
   cursor: ew-resize;
   user-select: none;
 }
 
-.artist-panel--resizing .artist-list li:hover {
+.collection-panel--resizing .collection-list li:hover {
   background: none;
 }
 
@@ -476,7 +476,7 @@ html[data-platform='win32'] .view-tabs {
   background: none;
 }
 
-.artist-list {
+.collection-list {
   list-style: none;
   overflow-y: auto;
   flex: 1;
@@ -484,7 +484,7 @@ html[data-platform='win32'] .view-tabs {
   scrollbar-color: var(--border) transparent;
 }
 
-.artist-list li {
+.collection-list li {
   padding: 8px 14px;
   cursor: pointer;
   border-radius: 4px;
@@ -494,18 +494,18 @@ html[data-platform='win32'] .view-tabs {
   text-overflow: ellipsis;
 }
 
-.artist-list li:hover {
+.collection-list li:hover {
   background: var(--surface-hover);
 }
 
-.artist-list li.active {
+.collection-list li.active {
   background: var(--accent-dim);
   color: var(--accent);
 }
 
 /* Focus-visible rings ----------------------------------------------------- */
 
-.artist-list li:focus-visible,
+.collection-list li:focus-visible,
 .album-card:focus-visible,
 .transport-btn:focus-visible,
 .back-btn:focus-visible,
@@ -534,7 +534,7 @@ html[data-platform='win32'] .view-tabs {
 }
 
 .track-row:active,
-.artist-list li:active {
+.collection-list li:active {
   opacity: 0.7;
 }
 

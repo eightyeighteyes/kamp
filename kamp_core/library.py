@@ -6578,6 +6578,101 @@ class LibraryIndex:
             self.on_fields_changed({"track.genre"})
         return len(track_ids)
 
+    def validate_genre_rename(self, old: str, new: str) -> None:
+        """Raise ValueError if renaming *old* to *new* is not allowed (KAMP-608).
+
+        *old* isn't inspected here (rename_genre no-ops on an absent genre); this
+        guards *new*.
+        """
+        new = new.strip()
+        if not new:
+            raise ValueError("new genre name is required")
+        if ";" in new:
+            raise ValueError("genre names cannot contain ';'")
+        # Renaming ONTO a merged-away name would land the file tag on `new` but the
+        # DB on that name's merge target (via _set_track_genres) — a silent file/DB
+        # divergence. Reject and point the user at the surviving genre.
+        target = self._merge_map.get(new.casefold())
+        if target is not None:
+            raise ValueError(
+                f"'{new}' is merged into '{target}'; edit '{target}' instead"
+            )
+
+    def rename_genre(self, old: str, new: str) -> int:
+        """Rename genre *old* to *new*, applied to every tagged track (KAMP-608).
+
+        DB only — the caller writes the new tag to the files (like remove_genre).
+        Renaming onto an existing genre folds *old* into it (a one-time union, not
+        a persistent merge rule). Returns the number of retagged tracks (0 if
+        *old* has no genre). Re-validates internally.
+        """
+        self.validate_genre_rename(old, new)
+        new = new.strip()
+        old_row = self._conn.execute(
+            "SELECT id FROM genres WHERE name = ? COLLATE NOCASE", (old,)
+        ).fetchone()
+        if old_row is None:
+            return 0
+        old_id = old_row["id"]
+        # Snapshot the affected tracks + albums before the retag loop mutates
+        # track_genres under us.
+        track_ids = [
+            r["track_id"]
+            for r in self._conn.execute(
+                "SELECT track_id FROM track_genres WHERE genre_id = ?", (old_id,)
+            ).fetchall()
+        ]
+        album_ids: list[int] = []
+        if track_ids:
+            placeholders = ",".join("?" for _ in track_ids)
+            album_ids = [
+                r["album_id"]
+                for r in self._conn.execute(
+                    f"SELECT DISTINCT album_id FROM tracks"
+                    f" WHERE id IN ({placeholders}) AND album_id IS NOT NULL",
+                    track_ids,
+                ).fetchall()
+            ]
+        existing = self._conn.execute(
+            "SELECT id FROM genres WHERE name = ? COLLATE NOCASE", (new,)
+        ).fetchone()
+        if existing is not None and existing["id"] != old_id:
+            # Collision: fold `old` into the existing survivor (one-time union). The
+            # survivor's canonical casing wins — _set_track_genres resolves `new` to
+            # the existing row.
+            for tid in track_ids:
+                replaced = [
+                    new if g.casefold() == old.casefold() else g
+                    for g in self.genres_for_track(tid)
+                ]
+                self._set_track_genres(tid, replaced)
+            # Keep any KAMP-607 merges that targeted `old` valid by re-pointing them
+            # at the survivor, then drop the now-orphaned `old` vocab row.
+            self._conn.execute(
+                "UPDATE genre_merges SET target_id = ? WHERE target_id = ?",
+                (existing["id"], old_id),
+            )
+            self._conn.execute("DELETE FROM genres WHERE id = ?", (old_id,))
+        else:
+            # In-place rename (brand-new name, or a case-only change to the same
+            # row). The id is unchanged, so a genre_merges.target_id pointing at it
+            # follows automatically.
+            self._conn.execute("UPDATE genres SET name = ? WHERE id = ?", (new, old_id))
+            # Resync each track's denormalized "; "-joined string to the new name.
+            for tid in track_ids:
+                self._set_track_genres(tid, self.genres_for_track(tid))
+        for album_id in album_ids:
+            self._refresh_album_genre(album_id)
+        for tid in track_ids:
+            self._refresh_track_fts_row(tid)
+        self._conn.commit()
+        # An in-place rename of a merge target changes its resolved name; a collision
+        # re-pointed target_ids. Either way, refresh the cached map.
+        self._load_merge_map()
+        if self.on_fields_changed:
+            self.on_fields_changed({"track.genre"})
+        return len(track_ids)
+
     def update_album_meta(
         self,
         album_artist: str,

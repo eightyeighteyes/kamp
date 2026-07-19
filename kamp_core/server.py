@@ -430,6 +430,11 @@ class GenreMergeRequest(BaseModel):
     target: str
 
 
+class GenreRenameRequest(BaseModel):
+    old: str
+    new: str
+
+
 class ShuffleRequest(BaseModel):
     shuffle: bool
     album_shuffle: bool = False
@@ -1563,6 +1568,56 @@ def create_app(
                 ) from exc
 
         updated = index.create_genre_merge(source, target)
+        _notify_library_changed()
+        return {"ok": True, "tracks_updated": updated}
+
+    @app.post("/api/v1/genres/rename")
+    def rename_genre(req: GenreRenameRequest) -> dict[str, Any]:
+        """Rename a genre, applied to every tagged track (KAMP-608).
+
+        Rewrites each non-remote track's audio-file tag (old -> new) then renames
+        the genre in the DB; renaming onto an existing genre folds the two (one
+        time). Files-first ordering + 409-during-backfill mirror the other genre
+        mutation endpoints.
+        """
+        from kamp_core.library import write_meta_tags_to_file
+
+        old = req.old.strip()
+        new = req.new.strip()
+        if _state["genre_backfill"]["active"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Genre backfill in progress; try again once it finishes",
+            )
+        # Validate BEFORE touching any files so a rejected rename writes nothing.
+        try:
+            index.validate_genre_rename(old, new)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        for track in index.tracks_for_genre(old):
+            if track.is_remote:
+                continue
+            mapped = _dedupe_casefold(
+                [
+                    new if g.casefold() == old.casefold() else g
+                    for g in index.genres_for_track(track.id)
+                ]
+            )
+            try:
+                write_meta_tags_to_file(track.file_path, genres=mapped)
+            except Exception as exc:
+                logger.exception(
+                    "genre tag write failed for track %d (%s)",
+                    track.id,
+                    track.file_path,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to write tags to {track.file_path}: {exc}",
+                ) from exc
+
+        updated = index.rename_genre(old, new)
         _notify_library_changed()
         return {"ok": True, "tracks_updated": updated}
 

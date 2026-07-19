@@ -276,11 +276,16 @@ CREATE INDEX IF NOT EXISTS idx_track_genres_genre ON track_genres(genre_id);
 -- Genre merges (KAMP-607). A source genre folds into a target: every inbound
 -- genre is routed source -> target at the _set_track_genres chokepoint. source
 -- is unique (a genre merges into at most one target); no chains are allowed (a
--- target can't be a source), enforced in application code. Names are strings,
--- not FKs to genres.id, so a merge survives its source's orphan-row deletion.
+-- target can't be a source), enforced in application code.
+--   source is a free-text NAME, not an FK: the merged-away genre's vocab row is
+--     deleted, and source is matched against inbound tag strings that may not be
+--     in the genres table.
+--   target_id is an FK to genres.id: the surviving genre is real and editable, so
+--     the merge follows a rename of the target automatically and ON DELETE CASCADE
+--     dissolves the merge if the target genre is removed.
 CREATE TABLE IF NOT EXISTS genre_merges (
-    source TEXT NOT NULL,
-    target TEXT NOT NULL,
+    source    TEXT NOT NULL,
+    target_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,
     UNIQUE (source COLLATE NOCASE)
 );
 
@@ -2477,7 +2482,8 @@ class LibraryIndex:
             # empty table, no data backfill.
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS genre_merges ("
-                " source TEXT NOT NULL, target TEXT NOT NULL,"
+                " source TEXT NOT NULL,"
+                " target_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,"
                 " UNIQUE (source COLLATE NOCASE))"
             )
             self._conn.execute("UPDATE schema_version SET version = 60")
@@ -6438,21 +6444,15 @@ class LibraryIndex:
         # DB, not merely hidden by all_genres' JOIN). Its track_genres rows are
         # already gone via the rewrites above, so ON DELETE CASCADE is a no-op.
         self._conn.execute("DELETE FROM genres WHERE id = ?", (genre_id,))
-        # KAMP-607: removing a genre dissolves any merge it takes part in —
-        # removing a merge target un-merges its sources (a fresh inbound source
-        # then stays itself); removing a source drops its now-defunct rule.
-        merges_touched = self._conn.execute(
-            "DELETE FROM genre_merges"
-            " WHERE source = ? COLLATE NOCASE OR target = ? COLLATE NOCASE",
-            (name, name),
-        ).rowcount
+        # KAMP-607: if this genre was a merge target, deleting its genres row
+        # cascades (ON DELETE CASCADE on genre_merges.target_id) the merges pointing
+        # at it, so its sources become un-merged. Refresh the cached map to match.
         for album_id in album_ids:
             self._refresh_album_genre(album_id)
         for tid in track_ids:
             self._refresh_track_fts_row(tid)
         self._conn.commit()
-        if merges_touched:
-            self._load_merge_map()
+        self._load_merge_map()
         if self.on_fields_changed:
             self.on_fields_changed({"track.genre"})
         return len(track_ids)
@@ -6460,15 +6460,17 @@ class LibraryIndex:
     def _load_merge_map(self) -> None:
         """Refresh the in-memory genre merge map from genre_merges (KAMP-607).
 
-        Keyed on source.casefold() -> target, matching _set_track_genres' dedup
-        folding exactly. Reassigns the whole dict (a single atomic reference swap)
-        so background scan/enrichment threads reading the map never see a torn
-        state — no lock needed.
+        Keyed on source.casefold() -> target NAME, resolving target_id through the
+        genres table so the map follows a rename of the target automatically. Same
+        folding as _set_track_genres' dedup. Reassigns the whole dict (one atomic
+        reference swap) so background scan/enrichment threads reading the map never
+        see a torn state — no lock needed.
         """
         self._merge_map = {
             r["source"].casefold(): r["target"]
             for r in self._conn.execute(
-                "SELECT source, target FROM genre_merges"
+                "SELECT gm.source AS source, g.name AS target"
+                " FROM genre_merges gm JOIN genres g ON g.id = gm.target_id"
             ).fetchall()
         }
 
@@ -6477,8 +6479,9 @@ class LibraryIndex:
         return [
             {"source": r["source"], "target": r["target"]}
             for r in self._conn.execute(
-                "SELECT source, target FROM genre_merges"
-                " ORDER BY source COLLATE NOCASE"
+                "SELECT gm.source AS source, g.name AS target"
+                " FROM genre_merges gm JOIN genres g ON g.id = gm.target_id"
+                " ORDER BY gm.source COLLATE NOCASE"
             ).fetchall()
         ]
 
@@ -6501,7 +6504,9 @@ class LibraryIndex:
                 "the target is already merged into another genre (no chains)"
             )
         if self._conn.execute(
-            "SELECT 1 FROM genre_merges WHERE target = ? COLLATE NOCASE", (source,)
+            "SELECT 1 FROM genre_merges gm JOIN genres g ON g.id = gm.target_id"
+            " WHERE g.name = ? COLLATE NOCASE",
+            (source,),
         ).fetchone():
             raise ValueError("the source is a merge target and cannot be merged")
 
@@ -6517,13 +6522,21 @@ class LibraryIndex:
         self.validate_genre_merge(source, target)
         source = source.strip()
         target = target.strip()
+        # Resolve the target to a genres.id (create the row if the survivor didn't
+        # exist yet — the retro-retag below would create it anyway). target_id is an
+        # FK, so the merge follows a later rename and cascades away on removal.
+        self._conn.execute("INSERT OR IGNORE INTO genres (name) VALUES (?)", (target,))
+        target_id = self._conn.execute(
+            "SELECT id FROM genres WHERE name = ? COLLATE NOCASE", (target,)
+        ).fetchone()["id"]
         # Replace any existing rule for this source, then refresh the cache so the
         # retro-retag below maps source -> target through _set_track_genres.
         self._conn.execute(
             "DELETE FROM genre_merges WHERE source = ? COLLATE NOCASE", (source,)
         )
         self._conn.execute(
-            "INSERT INTO genre_merges (source, target) VALUES (?, ?)", (source, target)
+            "INSERT INTO genre_merges (source, target_id) VALUES (?, ?)",
+            (source, target_id),
         )
         self._load_merge_map()
         src_row = self._conn.execute(

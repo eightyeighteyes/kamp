@@ -3632,6 +3632,28 @@ class TestMergeGenre:
         assert index.list_genre_merges() == [{"source": "Jazz", "target": "Rock"}]
         index.close()
 
+    def test_merge_follows_target_rename(self, tmp_path: Path) -> None:
+        # The merge stores target_id (an FK to genres.id), not the target name, so
+        # renaming the target genre keeps the merge pointing at the same row — a
+        # fresh inbound source maps to the new name once the map reloads. Guards
+        # the review concern that a free-text target would dangle on rename.
+        index = self._index(tmp_path)
+        index.create_genre_merge("Jazz", "Rock")
+        rock_id = index._conn.execute(
+            "SELECT id FROM genres WHERE name = 'Rock'"
+        ).fetchone()["id"]
+        index._conn.execute(
+            "UPDATE genres SET name = 'Rock & Roll' WHERE id = ?", (rock_id,)
+        )
+        index._conn.commit()
+        index._load_merge_map()
+        assert index.list_genre_merges() == [
+            {"source": "Jazz", "target": "Rock & Roll"}
+        ]
+        index.upsert_many([self._track(tmp_path, "z", "AlbumZ", ["Jazz"])])
+        assert self._genres_of(index, "z") == ["Rock & Roll"]
+        index.close()
+
     def test_rejects_self_merge(self, tmp_path: Path) -> None:
         index = self._index(tmp_path)
         with pytest.raises(ValueError):

@@ -425,6 +425,11 @@ class VolumeRequest(BaseModel):
     volume: int
 
 
+class GenreMergeRequest(BaseModel):
+    source: str
+    target: str
+
+
 class ShuffleRequest(BaseModel):
     shuffle: bool
     album_shuffle: bool = False
@@ -881,6 +886,22 @@ def _scrub_cover_art(directory: Path) -> None:
                     pass
     except OSError:
         pass
+
+
+def _dedupe_casefold(names: list[str]) -> list[str]:
+    """Order-preserving case-insensitive dedupe (KAMP-607).
+
+    Used to collapse a merged-away source into an existing target before writing
+    the file tag, so a track that had both source and target doesn't get the
+    survivor written twice.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        if name.casefold() not in seen:
+            seen.add(name.casefold())
+            out.append(name)
+    return out
 
 
 def _tracks_out(index: LibraryIndex, tracks: "list[Track]") -> list[TrackOut]:
@@ -1486,6 +1507,62 @@ def create_app(
                 ) from exc
 
         updated = index.remove_genre(name)
+        _notify_library_changed()
+        return {"ok": True, "tracks_updated": updated}
+
+    @app.get("/api/v1/genres/merges")
+    def get_genre_merges() -> list[dict[str, str]]:
+        """All active genre merges as {source, target} (KAMP-607)."""
+        return index.list_genre_merges()
+
+    @app.post("/api/v1/genres/merge")
+    def merge_genres(req: GenreMergeRequest) -> dict[str, Any]:
+        """Merge one genre into another (KAMP-607).
+
+        Retroactively retags every track carrying the source to the target (file
+        tags first, skipping remote-only tracks, then the DB) and records the
+        source->target rule so all future inbound genres map through it. Rejects
+        chains and self-merges. Files-first ordering + 409-during-backfill mirror
+        the remove-genre endpoint.
+        """
+        from kamp_core.library import write_meta_tags_to_file
+
+        source = req.source.strip()
+        target = req.target.strip()
+        if _state["genre_backfill"]["active"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Genre backfill in progress; try again once it finishes",
+            )
+        # Validate BEFORE touching any files so a rejected merge writes nothing.
+        try:
+            index.validate_genre_merge(source, target)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        for track in index.tracks_for_genre(source):
+            if track.is_remote:
+                continue
+            mapped = _dedupe_casefold(
+                [
+                    target if g.casefold() == source.casefold() else g
+                    for g in index.genres_for_track(track.id)
+                ]
+            )
+            try:
+                write_meta_tags_to_file(track.file_path, genres=mapped)
+            except Exception as exc:
+                logger.exception(
+                    "genre tag write failed for track %d (%s)",
+                    track.id,
+                    track.file_path,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to write tags to {track.file_path}: {exc}",
+                ) from exc
+
+        updated = index.create_genre_merge(source, target)
         _notify_library_changed()
         return {"ok": True, "tracks_updated": updated}
 

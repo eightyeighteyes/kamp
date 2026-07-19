@@ -7268,3 +7268,99 @@ class TestDeleteGenre:
             res = client.delete("/api/v1/genres", params={"name": "Jazz"})
         assert res.status_code == 500
         mock_index.remove_genre.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Genre merge endpoints (KAMP-607)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeGenres:
+    """POST /api/v1/genres/merge + GET /api/v1/genres/merges (KAMP-607)."""
+
+    def test_writes_mapped_tags_and_records_merge(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.validate_genre_merge.return_value = None
+        mock_index.tracks_for_genre.return_value = [
+            _gtrack(1, "/music/a.mp3"),
+            _gtrack(2, "/music/b.mp3"),
+        ]
+        mock_index.genres_for_track.side_effect = lambda tid: {
+            1: ["Jazz"],
+            2: ["Jazz", "Rock"],
+        }[tid]
+        mock_index.create_genre_merge.return_value = 2
+        with patch("kamp_core.library.write_meta_tags_to_file") as wtf:
+            res = client.post(
+                "/api/v1/genres/merge", json={"source": "Jazz", "target": "Rock"}
+            )
+        assert res.status_code == 200
+        assert res.json() == {"ok": True, "tracks_updated": 2}
+        calls = {c.args[0]: c.kwargs["genres"] for c in wtf.call_args_list}
+        assert calls[Path("/music/a.mp3")] == ["Rock"]
+        # Track that had both Jazz + Rock collapses to a single Rock in the file.
+        assert calls[Path("/music/b.mp3")] == ["Rock"]
+        mock_index.create_genre_merge.assert_called_once_with("Jazz", "Rock")
+
+    def test_skips_remote_tracks(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.validate_genre_merge.return_value = None
+        mock_index.tracks_for_genre.return_value = [
+            _gtrack(3, "bandcamp://x", is_remote=True)
+        ]
+        mock_index.create_genre_merge.return_value = 1
+        with patch("kamp_core.library.write_meta_tags_to_file") as wtf:
+            res = client.post(
+                "/api/v1/genres/merge", json={"source": "Jazz", "target": "Rock"}
+            )
+        assert res.status_code == 200
+        wtf.assert_not_called()
+        mock_index.create_genre_merge.assert_called_once_with("Jazz", "Rock")
+
+    def test_invalid_merge_is_400_and_writes_nothing(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.validate_genre_merge.side_effect = ValueError("no chains")
+        with patch("kamp_core.library.write_meta_tags_to_file") as wtf:
+            res = client.post(
+                "/api/v1/genres/merge", json={"source": "Rock", "target": "Jazz"}
+            )
+        assert res.status_code == 400
+        wtf.assert_not_called()
+        mock_index.create_genre_merge.assert_not_called()
+
+    def test_conflict_while_backfill_running(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        client.app.state.notify_genre_backfill_progress(0, 10, "running")
+        res = client.post(
+            "/api/v1/genres/merge", json={"source": "Jazz", "target": "Rock"}
+        )
+        assert res.status_code == 409
+        mock_index.create_genre_merge.assert_not_called()
+
+    def test_file_write_failure_leaves_merge_unrecorded(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.validate_genre_merge.return_value = None
+        mock_index.tracks_for_genre.return_value = [_gtrack(1, "/music/a.mp3")]
+        mock_index.genres_for_track.return_value = ["Jazz"]
+        with patch(
+            "kamp_core.library.write_meta_tags_to_file",
+            side_effect=OSError("locked"),
+        ):
+            res = client.post(
+                "/api/v1/genres/merge", json={"source": "Jazz", "target": "Rock"}
+            )
+        assert res.status_code == 500
+        mock_index.create_genre_merge.assert_not_called()
+
+    def test_list_genre_merges(self, client: TestClient, mock_index: MagicMock) -> None:
+        mock_index.list_genre_merges.return_value = [
+            {"source": "Jazz", "target": "Rock"}
+        ]
+        res = client.get("/api/v1/genres/merges")
+        assert res.status_code == 200
+        assert res.json() == [{"source": "Jazz", "target": "Rock"}]

@@ -3423,6 +3423,118 @@ class TestSearch:
 
 
 # ---------------------------------------------------------------------------
+# Remove genre (KAMP-606)
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveGenre:
+    """LibraryIndex.remove_genre / genres_for_track / tracks_for_genre (KAMP-606)."""
+
+    def _track(
+        self, tmp_path: Path, name: str, album: str, genres: list[str]
+    ) -> "Track":
+        return Track(
+            file_path=tmp_path / f"{name}.mp3",
+            title=name,
+            artist="Artist",
+            album_artist="Artist",
+            album=album,
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            genres=genres,
+        )
+
+    def _index(self, tmp_path: Path) -> LibraryIndex:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                self._track(tmp_path, "a", "AlbumA", ["Jazz"]),
+                self._track(tmp_path, "b", "AlbumB", ["Ambient", "Jazz"]),
+                self._track(tmp_path, "c", "AlbumC", ["Rock"]),
+            ]
+        )
+        return index
+
+    def _genre_of(self, index: LibraryIndex, title: str) -> str:
+        return next(t for t in index.all_tracks() if t.title == title).genre
+
+    def test_strips_from_all_tracks_and_drops_from_list(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        count = index.remove_genre("Jazz")
+        assert count == 2  # tracks a and b carried Jazz
+        assert "Jazz" not in index.all_genres()
+        assert self._genre_of(index, "a") == ""  # only genre was Jazz
+        index.close()
+
+    def test_keeps_other_genres_on_multi_genre_track(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.remove_genre("Jazz")
+        assert index.genres_for_track(
+            next(t for t in index.all_tracks() if t.title == "b").id
+        ) == ["Ambient"]
+        assert self._genre_of(index, "b") == "Ambient"
+        index.close()
+
+    def test_leaves_unrelated_genres_untouched(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.remove_genre("Jazz")
+        assert index.all_genres() == ["Ambient", "Rock"]
+        assert self._genre_of(index, "c") == "Rock"
+        index.close()
+
+    def test_deletes_orphan_vocabulary_row(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.remove_genre("Jazz")
+        row = index._conn.execute(
+            "SELECT id FROM genres WHERE name = ? COLLATE NOCASE", ("Jazz",)
+        ).fetchone()
+        assert row is None
+        index.close()
+
+    def test_case_insensitive(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        count = index.remove_genre("jAzZ")  # stored as "Jazz"
+        assert count == 2
+        assert "Jazz" not in index.all_genres()
+        index.close()
+
+    def test_nonexistent_genre_returns_zero(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        assert index.remove_genre("Techno") == 0
+        assert index.all_genres() == ["Ambient", "Jazz", "Rock"]
+        index.close()
+
+    def test_refreshes_album_genre_union(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.remove_genre("Jazz")
+        # AlbumB's denormalized union should now be just "Ambient".
+        genre = index._conn.execute(
+            "SELECT genre FROM albums WHERE album = ?", ("AlbumB",)
+        ).fetchone()["genre"]
+        assert genre == "Ambient"
+        index.close()
+
+    def test_removed_genre_no_longer_searchable(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many([self._track(tmp_path, "s", "AlbumS", ["Shoegaze"])])
+        assert {t.title for t in index.search("shoegaze")} == {"s"}
+        index.remove_genre("Shoegaze")
+        assert index.search("shoegaze") == []
+        index.close()
+
+    def test_tracks_for_genre_matches_nocase(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        titles = {t.title for t in index.tracks_for_genre("jazz")}
+        assert titles == {"a", "b"}
+        index.close()
+
+
+# ---------------------------------------------------------------------------
 # Sort and record_played
 # ---------------------------------------------------------------------------
 

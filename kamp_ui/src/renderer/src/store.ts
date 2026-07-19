@@ -231,6 +231,7 @@ type PlayerStore = {
   selectArtist: (artist: string | null) => void
   selectGenre: (genre: string | null) => void
   openGenreFilter: (genre: string) => void
+  removeGenre: (name: string) => Promise<void>
   selectAlbum: (album: Album | null) => Promise<void>
   loadTracks: (albumArtist: string, album: string, trackId?: number | null) => Promise<void>
   setCollectionType: (type: 'albums' | 'playlists') => void
@@ -1078,6 +1079,16 @@ export const useStore = create<PlayerStore>((set, get) => ({
   openGenreFilter: (genre) => {
     get().selectGenre(genre)
     if (!get().collectionPanelVisible) get().toggleCollectionPanel()
+  },
+
+  // KAMP-606: remove a genre from every tagged track (DB + file tags) and the
+  // DB. Clears the active filter if it was this genre, then refreshes the
+  // library (genre sidebar + album grid) and any open album's chips.
+  removeGenre: async (name) => {
+    await api.deleteGenre(name)
+    if (get().library.selectedGenre === name) get().selectGenre(null)
+    await get().loadLibrary()
+    await get().refreshOpenAlbum()
   },
 
   selectAlbum: async (album) => {

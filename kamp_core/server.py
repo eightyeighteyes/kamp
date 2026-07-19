@@ -1439,6 +1439,56 @@ def create_app(
         """Every distinct genre in the library (KAMP-586), for autocomplete."""
         return index.all_genres()
 
+    @app.delete("/api/v1/genres")
+    def delete_genre(name: str) -> dict[str, Any]:
+        """Remove a genre from every tagged track and the DB (KAMP-606).
+
+        Strips the genre from each track's audio-file tag (skipping remote-only
+        tracks, which have no local file) and then from the database, deleting
+        the vocabulary entry. File writes happen BEFORE the DB mutation so a
+        mid-way failure leaves the DB intact for the next scan to reconcile —
+        mirroring patch_album_meta. `name` is a query param, not a path segment,
+        because genre names can contain '/'.
+        """
+        from kamp_core.library import write_meta_tags_to_file
+
+        name = name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Genre name required")
+        # A running backfill writes genres off-thread; a concurrent removal could
+        # race it (re-adding the vocab row or a track link). Refuse until it ends.
+        if _state["genre_backfill"]["active"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Genre backfill in progress; try again once it finishes",
+            )
+
+        tracks = index.tracks_for_genre(name)
+        for track in tracks:
+            if track.is_remote:
+                continue
+            remaining = [
+                g
+                for g in index.genres_for_track(track.id)
+                if g.casefold() != name.casefold()
+            ]
+            try:
+                write_meta_tags_to_file(track.file_path, genres=remaining)
+            except Exception as exc:
+                logger.exception(
+                    "genre tag write failed for track %d (%s)",
+                    track.id,
+                    track.file_path,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to write tags to {track.file_path}: {exc}",
+                ) from exc
+
+        updated = index.remove_genre(name)
+        _notify_library_changed()
+        return {"ok": True, "tracks_updated": updated}
+
     @app.get("/api/v1/tracks/top", response_model=list[TrackOut])
     def get_top_tracks(limit: int = 10) -> list[TrackOut]:
         return _tracks_out(index, index.top_tracks(limit))

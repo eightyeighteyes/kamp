@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -7193,3 +7194,77 @@ class TestStatsEndpoint:
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         TestClient(app).get("/api/v1/stats?top_tracks=5")
         mock_index.get_stats.assert_called_once_with(top_tracks_limit=5)
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/v1/genres (KAMP-606)
+# ---------------------------------------------------------------------------
+
+
+def _gtrack(track_id: int, path: str, is_remote: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(id=track_id, file_path=Path(path), is_remote=is_remote)
+
+
+class TestDeleteGenre:
+    """Remove a genre from every tagged track and the DB (KAMP-606)."""
+
+    def test_writes_remaining_tags_and_removes(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.tracks_for_genre.return_value = [
+            _gtrack(1, "/music/a.mp3"),
+            _gtrack(2, "/music/b.mp3"),
+        ]
+        mock_index.genres_for_track.side_effect = lambda tid: {
+            1: ["Jazz"],
+            2: ["Ambient", "Jazz"],
+        }[tid]
+        mock_index.remove_genre.return_value = 2
+        with patch("kamp_core.library.write_meta_tags_to_file") as wtf:
+            res = client.delete("/api/v1/genres", params={"name": "Jazz"})
+        assert res.status_code == 200
+        assert res.json() == {"ok": True, "tracks_updated": 2}
+        # Each file's tag is rewritten with the removed genre stripped, others kept.
+        calls = {c.args[0]: c.kwargs["genres"] for c in wtf.call_args_list}
+        assert calls[Path("/music/a.mp3")] == []
+        assert calls[Path("/music/b.mp3")] == ["Ambient"]
+        mock_index.remove_genre.assert_called_once_with("Jazz")
+
+    def test_skips_remote_tracks(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.tracks_for_genre.return_value = [
+            _gtrack(3, "bandcamp://x", is_remote=True)
+        ]
+        mock_index.remove_genre.return_value = 1
+        with patch("kamp_core.library.write_meta_tags_to_file") as wtf:
+            res = client.delete("/api/v1/genres", params={"name": "Jazz"})
+        assert res.status_code == 200
+        wtf.assert_not_called()  # no local file to write
+        mock_index.remove_genre.assert_called_once_with("Jazz")
+
+    def test_blank_name_is_400(self, client: TestClient, mock_index: MagicMock) -> None:
+        res = client.delete("/api/v1/genres", params={"name": "  "})
+        assert res.status_code == 400
+        mock_index.remove_genre.assert_not_called()
+
+    def test_conflict_while_backfill_running(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        client.app.state.notify_genre_backfill_progress(0, 10, "running")
+        res = client.delete("/api/v1/genres", params={"name": "Jazz"})
+        assert res.status_code == 409
+        mock_index.remove_genre.assert_not_called()
+
+    def test_file_write_failure_leaves_db_untouched(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.tracks_for_genre.return_value = [_gtrack(1, "/music/a.mp3")]
+        mock_index.genres_for_track.return_value = ["Jazz"]
+        with patch(
+            "kamp_core.library.write_meta_tags_to_file",
+            side_effect=OSError("locked"),
+        ):
+            res = client.delete("/api/v1/genres", params={"name": "Jazz"})
+        assert res.status_code == 500
+        mock_index.remove_genre.assert_not_called()

@@ -4,6 +4,8 @@ import { getGenreMerges } from '../api/client'
 
 type Props = {
   source: string
+  // Pre-selected target when editing an existing merge (KAMP-610).
+  currentTarget?: string
   onConfirm: (target: string) => void
   onCancel: () => void
 }
@@ -11,10 +13,15 @@ type Props = {
 // Pick a target genre to merge the source into (KAMP-607). The target list
 // excludes the source itself and any genre that is already a merge source
 // (a merge target can't be a source — no chains).
-export function MergeGenreModal({ source, onConfirm, onCancel }: Props): React.JSX.Element {
+export function MergeGenreModal({
+  source,
+  currentTarget,
+  onConfirm,
+  onCancel
+}: Props): React.JSX.Element {
   const genres = useStore((s) => s.library.genres)
   const [filter, setFilter] = useState('')
-  const [selected, setSelected] = useState<string | null>(null)
+  const [selected, setSelected] = useState<string | null>(currentTarget ?? null)
   const [excluded, setExcluded] = useState<Set<string>>(new Set())
 
   // Esc = implicit Cancel.

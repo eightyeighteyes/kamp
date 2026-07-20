@@ -7454,3 +7454,73 @@ class TestRenameGenre:
             )
         assert res.status_code == 500
         mock_index.rename_genre.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Genre management: allow-list + merge delete (KAMP-610)
+# ---------------------------------------------------------------------------
+
+
+class TestGenreManagement:
+    """Allow-list add/revert/get + delete-merge endpoints (KAMP-610)."""
+
+    def test_delete_genre_merge(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        res = client.delete("/api/v1/genres/merge", params={"source": "Jazz"})
+        assert res.status_code == 200
+        mock_index.remove_genre_merge.assert_called_once_with("Jazz")
+
+    def test_get_allowlist_returns_extras_and_defaults(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.list_allowlist_extras.return_value = ["Vaporwave"]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            get_default_allowlist=lambda: ["Ambient", "Rock"],
+        )
+        res = TestClient(app).get("/api/v1/genres/allowlist")
+        assert res.status_code == 200
+        assert res.json() == {"extras": ["Vaporwave"], "defaults": ["Ambient", "Rock"]}
+
+    def test_add_allowlist_entry_fires_hook(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.list_allowlist_extras.return_value = ["Vaporwave"]
+        hook = MagicMock()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_allowlist_changed=hook,
+        )
+        res = TestClient(app).post(
+            "/api/v1/genres/allowlist", json={"name": "Vaporwave"}
+        )
+        assert res.status_code == 200
+        mock_index.add_allowlist_entry.assert_called_once_with("Vaporwave")
+        hook.assert_called_once()
+
+    def test_add_allowlist_entry_invalid_is_400(
+        self, client: TestClient, mock_index: MagicMock
+    ) -> None:
+        mock_index.add_allowlist_entry.side_effect = ValueError("bad name")
+        res = client.post("/api/v1/genres/allowlist", json={"name": "  "})
+        assert res.status_code == 400
+
+    def test_revert_allowlist_fires_hook(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        hook = MagicMock()
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_allowlist_changed=hook,
+        )
+        res = TestClient(app).post("/api/v1/genres/allowlist/revert")
+        assert res.status_code == 200
+        mock_index.clear_allowlist_extras.assert_called_once()
+        hook.assert_called_once()

@@ -792,6 +792,25 @@ export const renameGenre = (
 ): Promise<{ ok: boolean; tracks_updated: number }> =>
   post('/api/v1/genres/rename', { old, new: next })
 
+// Delete a genre merge rule (KAMP-610) — future-only; already-merged tracks keep
+// the target. Query param — names can contain '/'.
+export const deleteGenreMerge = (source: string): Promise<{ ok: boolean }> =>
+  del(`/api/v1/genres/merge?source=${encodeURIComponent(source)}`)
+
+// Genre allow-list management (KAMP-610).
+export interface GenreAllowlist {
+  extras: string[]
+  defaults: string[]
+}
+
+export const getGenreAllowlist = (): Promise<GenreAllowlist> => get('/api/v1/genres/allowlist')
+
+export const addAllowlistEntry = (name: string): Promise<{ ok: boolean; extras: string[] }> =>
+  post('/api/v1/genres/allowlist', { name })
+
+export const revertAllowlist = (): Promise<{ ok: boolean }> =>
+  post('/api/v1/genres/allowlist/revert')
+
 // ---------------------------------------------------------------------------
 // MusicBrainz lookup (KAMP-230, shallow candidates + lazy hydration KAMP-584)
 // ---------------------------------------------------------------------------

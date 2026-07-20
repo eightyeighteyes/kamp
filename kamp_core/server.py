@@ -435,6 +435,10 @@ class GenreRenameRequest(BaseModel):
     new: str
 
 
+class AllowlistAddRequest(BaseModel):
+    name: str
+
+
 class ShuffleRequest(BaseModel):
     shuffle: bool
     album_shuffle: bool = False
@@ -1020,6 +1024,8 @@ def create_app(
     on_bandcamp_sync_all_trigger: Callable[[], None] | None = None,
     on_genre_backfill_start: Callable[[], None] | None = None,
     on_genre_backfill_cancel: Callable[[], None] | None = None,
+    on_allowlist_changed: Callable[[], None] | None = None,
+    get_default_allowlist: Callable[[], list[str]] | None = None,
     dl_queue: _queue.Queue[str] | None = None,
     refresh_stream_url: Callable[[str, int], tuple[str, float] | None] | None = None,
     check_stream_url: Callable[[str], int] | None = None,
@@ -1520,6 +1526,18 @@ def create_app(
         """All active genre merges as {source, target} (KAMP-607)."""
         return index.list_genre_merges()
 
+    @app.delete("/api/v1/genres/merge")
+    def delete_genre_merge(source: str) -> dict[str, Any]:
+        """Delete a genre merge rule (KAMP-610).
+
+        Future-only: inbound *source* tags stop mapping to the target, but tracks
+        already retagged under the rule keep the target. Query param, not path —
+        genre names can contain '/'.
+        """
+        index.remove_genre_merge(source)
+        _notify_library_changed()
+        return {"ok": True}
+
     @app.post("/api/v1/genres/merge")
     def merge_genres(req: GenreMergeRequest) -> dict[str, Any]:
         """Merge one genre into another (KAMP-607).
@@ -1620,6 +1638,36 @@ def create_app(
         updated = index.rename_genre(old, new)
         _notify_library_changed()
         return {"ok": True, "tracks_updated": updated}
+
+    @app.get("/api/v1/genres/allowlist")
+    def get_genre_allowlist() -> dict[str, list[str]]:
+        """The user's allow-list additions + the shipped defaults (KAMP-610).
+
+        `defaults` is the read-only shipped list (for the optional full-list view);
+        it comes from a daemon-supplied callable so kamp_core never imports the
+        daemon-side genre_sources module.
+        """
+        defaults = get_default_allowlist() if get_default_allowlist is not None else []
+        return {"extras": index.list_allowlist_extras(), "defaults": defaults}
+
+    @app.post("/api/v1/genres/allowlist")
+    def add_genre_allowlist(req: AllowlistAddRequest) -> dict[str, Any]:
+        """Add a user entry to the genre allow list (KAMP-610)."""
+        try:
+            index.add_allowlist_entry(req.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if on_allowlist_changed is not None:
+            on_allowlist_changed()
+        return {"ok": True, "extras": index.list_allowlist_extras()}
+
+    @app.post("/api/v1/genres/allowlist/revert")
+    def revert_genre_allowlist() -> dict[str, Any]:
+        """Revert the allow list to the shipped default (drop all extras). KAMP-610."""
+        index.clear_allowlist_extras()
+        if on_allowlist_changed is not None:
+            on_allowlist_changed()
+        return {"ok": True}
 
     @app.get("/api/v1/tracks/top", response_model=list[TrackOut])
     def get_top_tracks(limit: int = 10) -> list[TrackOut]:

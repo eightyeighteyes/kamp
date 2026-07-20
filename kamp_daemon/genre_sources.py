@@ -39,8 +39,14 @@ _TOP_TAGS_LIMIT = 20
 _FETCH_TIMEOUT_SECONDS = 8.0
 
 _ALLOWLIST_PATH = Path(__file__).parent / "data" / "genres.txt"
-# casefold -> canonical display name; loaded once.
+# casefold -> canonical display name; built lazily, rebuilt when extras change.
 _allowlist: dict[str, str] | None = None
+# User additions to the allow list (KAMP-610), pushed in from the DB overlay by
+# the daemon. Merged on top of the shipped list at load. Guarded, together with
+# the cache, by _allowlist_lock — the HTTP endpoint thread writes while the
+# genre-enrich / backfill threads read.
+_extras: list[str] = []
+_allowlist_lock = threading.Lock()
 
 
 @dataclass
@@ -60,24 +66,53 @@ class GenreSource(ABC):
         """Return canonical genres for *query*, or [] on any failure."""
 
 
+def _read_default_allowlist() -> dict[str, str]:
+    """Parse the shipped data/genres.txt into casefold -> canonical (KAMP-587)."""
+    out: dict[str, str] = {}
+    try:
+        for line in _ALLOWLIST_PATH.read_text(encoding="utf-8").splitlines():
+            name = line.strip()
+            if name and not name.startswith("#"):
+                out.setdefault(name.casefold(), name)
+    except OSError as exc:
+        # A missing data file (e.g. not staged into the frozen bundle) must not
+        # crash — it degrades to "no genres pass the filter", and the WARN makes
+        # that visible rather than silent.
+        logger.warning("genre allowlist not loaded from %s: %s", _ALLOWLIST_PATH, exc)
+    return out
+
+
+def default_allowlist_names() -> list[str]:
+    """The shipped canonical allow-list names, sorted, extras excluded (KAMP-610)."""
+    return sorted(_read_default_allowlist().values(), key=str.casefold)
+
+
+def set_allowlist_extras(names: list[str]) -> None:
+    """Replace the user allow-list additions and invalidate the cache (KAMP-610).
+
+    Called by the daemon whenever the DB overlay changes (and once at startup).
+    The cache rebuilds lazily on the next canonicalize; the lock makes the swap
+    safe against the enrichment/backfill threads reading concurrently.
+    """
+    global _extras, _allowlist
+    with _allowlist_lock:
+        _extras = list(names)
+        _allowlist = None
+
+
 def _load_allowlist() -> dict[str, str]:
     global _allowlist
-    if _allowlist is None:
-        out: dict[str, str] = {}
-        try:
-            for line in _ALLOWLIST_PATH.read_text(encoding="utf-8").splitlines():
-                name = line.strip()
-                if name and not name.startswith("#"):
-                    out.setdefault(name.casefold(), name)
-        except OSError as exc:
-            # A missing data file (e.g. not staged into the frozen bundle) must
-            # not crash — it degrades to "no genres pass the filter", and the
-            # WARN makes that visible rather than silent.
-            logger.warning(
-                "genre allowlist not loaded from %s: %s", _ALLOWLIST_PATH, exc
-            )
-        _allowlist = out
-    return _allowlist
+    with _allowlist_lock:
+        if _allowlist is None:
+            out = _read_default_allowlist()
+            # User extras layer on top; a shipped default's canonical casing wins
+            # on overlap (setdefault keeps the already-present key).
+            for name in _extras:
+                cleaned = name.strip()
+                if cleaned:
+                    out.setdefault(cleaned.casefold(), cleaned)
+            _allowlist = out
+        return _allowlist
 
 
 def canonicalize(tags: list[str]) -> list[str]:

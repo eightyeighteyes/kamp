@@ -94,6 +94,36 @@ class TestCanonicalize:
             gs._allowlist = None  # reset the module cache for other tests
 
 
+# --- allow-list extras (KAMP-610) -------------------------------------------
+
+
+class TestAllowlistExtras:
+    @pytest.fixture(autouse=True)
+    def _reset(self) -> Any:
+        yield
+        gs._extras = []
+        gs._allowlist = None  # restore pristine module state for other tests
+
+    def test_extras_pass_through_canonicalize(self) -> None:
+        gs.set_allowlist_extras(["Zzz Fake Genre"])
+        assert canonicalize(["zzz fake genre"]) == ["Zzz Fake Genre"]
+
+    def test_set_extras_invalidates_cache(self) -> None:
+        assert canonicalize(["zzz fake genre"]) == []  # loads cache without extras
+        gs.set_allowlist_extras(["Zzz Fake Genre"])
+        assert canonicalize(["zzz fake genre"]) == ["Zzz Fake Genre"]  # rebuilt
+
+    def test_default_casing_wins_over_extra(self) -> None:
+        gs.set_allowlist_extras(["shoegaze"])  # a shipped default is "Shoegaze"
+        assert canonicalize(["SHOEGAZE"]) == ["Shoegaze"]
+
+    def test_default_allowlist_names_excludes_extras(self) -> None:
+        gs.set_allowlist_extras(["Zzz Fake Genre"])
+        names = gs.default_allowlist_names()
+        assert "Zzz Fake Genre" not in names
+        assert "Shoegaze" in names  # a real shipped default
+
+
 # --- _run_with_timeout ------------------------------------------------------
 
 

@@ -289,6 +289,15 @@ CREATE TABLE IF NOT EXISTS genre_merges (
     UNIQUE (source COLLATE NOCASE)
 );
 
+-- User additions to the genre allow list (KAMP-610). The shipped allow list is
+-- data/genres.txt (daemon-side); these extras are merged on top at load. Purely
+-- additive and empty on a fresh DB, so it lives in _DDL only (created on every
+-- open via CREATE IF NOT EXISTS) with no data migration or version bump.
+CREATE TABLE IF NOT EXISTS genre_allowlist_extras (
+    name TEXT NOT NULL,
+    UNIQUE (name COLLATE NOCASE)
+);
+
 -- First-class album entity (KAMP-418). Replaces the GROUP BY (album_artist, album)
 -- derived-aggregate pattern. COLLATE NOCASE on the UNIQUE constraint prevents
 -- case-variant duplicates (e.g. "CASTLEBEAT" vs "Castlebeat") from coexisting.
@@ -6484,6 +6493,49 @@ class LibraryIndex:
                 " ORDER BY gm.source COLLATE NOCASE"
             ).fetchall()
         ]
+
+    def remove_genre_merge(self, source: str) -> None:
+        """Delete the merge rule for *source* (KAMP-610).
+
+        Future-only: inbound *source* tags stop mapping to the target, but tracks
+        already retagged under the rule keep the target (no retroactive un-tag).
+        Refreshes the in-memory map. No-op if there is no such rule.
+        """
+        self._conn.execute(
+            "DELETE FROM genre_merges WHERE source = ? COLLATE NOCASE", (source,)
+        )
+        self._conn.commit()
+        self._load_merge_map()
+
+    def add_allowlist_entry(self, name: str) -> None:
+        """Add a user entry to the genre allow list (KAMP-610).
+
+        Persisted overlay merged on top of the shipped data/genres.txt at load
+        time (daemon-side). Case-insensitively unique; a blank name is rejected.
+        """
+        name = name.strip()
+        if not name:
+            raise ValueError("genre name is required")
+        if ";" in name:
+            raise ValueError("genre names cannot contain ';'")
+        self._conn.execute(
+            "INSERT OR IGNORE INTO genre_allowlist_extras (name) VALUES (?)", (name,)
+        )
+        self._conn.commit()
+
+    def list_allowlist_extras(self) -> list[str]:
+        """User-added allow-list entries, sorted NOCASE (KAMP-610)."""
+        return [
+            r["name"]
+            for r in self._conn.execute(
+                "SELECT name FROM genre_allowlist_extras ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        ]
+
+    def clear_allowlist_extras(self) -> None:
+        """Revert the allow list to the shipped default by dropping all extras (KAMP-610)."""
+        self._conn.execute("DELETE FROM genre_allowlist_extras")
+        self._conn.commit()
 
     def validate_genre_merge(self, source: str, target: str) -> None:
         """Raise ValueError if merging *source* into *target* is not allowed (KAMP-607).

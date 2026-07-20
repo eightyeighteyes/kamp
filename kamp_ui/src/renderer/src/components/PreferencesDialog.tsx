@@ -5,6 +5,7 @@ import type { ExtensionStateHook } from '../hooks/useExtensionState'
 import { useExtensionInstall } from '../hooks/useExtensionInstall'
 import { connectLastfm, disconnectLastfm, disconnectBandcamp } from '../api/client'
 import { DiscordIcon } from './TransportIcons'
+import { GenreManagementSection } from './GenreManagementSection'
 
 // Keys whose values must be integers — sent as strings over the wire but
 // stored as numbers in the config.
@@ -1293,6 +1294,7 @@ export function PreferencesDialog({
                       )}
                     </div>
                   </div>
+                  <GenreManagementSection />
                 </>
               )}
             </>

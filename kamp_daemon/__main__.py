@@ -1064,6 +1064,16 @@ def _cmd_daemon(
 
     from kamp_daemon.bandcamp import check_stream_url as _check_stream_url
 
+    # KAMP-610: bridge the DB allow-list overlay into the genre_sources module
+    # cache. On any change (and once at startup) push the current extras and
+    # invalidate the cache so future enrichment sees them.
+    from kamp_daemon import genre_sources as _genre_sources
+
+    def _on_allowlist_changed() -> None:
+        _genre_sources.set_allowlist_extras(index.list_allowlist_extras())
+
+    _on_allowlist_changed()  # warm the cache with any persisted extras at startup
+
     app = create_app(
         index=index,
         engine=engine,
@@ -1086,6 +1096,8 @@ def _cmd_daemon(
         on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,
         on_genre_backfill_start=_on_genre_backfill_start,
         on_genre_backfill_cancel=_on_genre_backfill_cancel,
+        on_allowlist_changed=_on_allowlist_changed,
+        get_default_allowlist=_genre_sources.default_allowlist_names,
         dl_queue=_dl_queue,
         art_cache_dir=_state_dir() / "art_cache",
         refresh_stream_url=_refresh_stream_url,

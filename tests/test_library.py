@@ -3684,6 +3684,70 @@ class TestMergeGenre:
         assert self._genres_of(index, "j") == ["Jazz"]
         index.close()
 
+    def test_remove_genre_merge_is_future_only(self, tmp_path: Path) -> None:
+        # KAMP-610: deleting a merge rule stops future mapping but does NOT undo
+        # tracks already retagged to the target.
+        index = self._index(tmp_path)
+        index.create_genre_merge("Jazz", "Rock")  # a + b retagged Jazz -> Rock
+        index.remove_genre_merge("jazz")  # NOCASE
+        assert index.list_genre_merges() == []
+        # Already-merged tracks keep Rock.
+        assert self._genres_of(index, "a") == ["Rock"]
+        # A fresh inbound Jazz now stays Jazz.
+        index.upsert_many([self._track(tmp_path, "j", "AlbumJ", ["Jazz"])])
+        assert self._genres_of(index, "j") == ["Jazz"]
+        index.close()
+
+    def test_remove_genre_merge_absent_is_noop(self, tmp_path: Path) -> None:
+        index = self._index(tmp_path)
+        index.remove_genre_merge("Nope")  # no such rule — no error
+        index.close()
+
+
+# ---------------------------------------------------------------------------
+# Genre allow-list extras (KAMP-610)
+# ---------------------------------------------------------------------------
+
+
+class TestGenreAllowlistExtras:
+    """LibraryIndex allow-list overlay: add / list / clear (KAMP-610)."""
+
+    def test_add_and_list(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.add_allowlist_entry("Vaporwave")
+        index.add_allowlist_entry("Chillwave")
+        assert index.list_allowlist_extras() == [
+            "Chillwave",
+            "Vaporwave",
+        ]  # NOCASE sort
+        index.close()
+
+    def test_add_is_case_insensitively_unique(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.add_allowlist_entry("Vaporwave")
+        index.add_allowlist_entry("vaporwave")  # dup (NOCASE) — ignored
+        assert index.list_allowlist_extras() == ["Vaporwave"]
+        index.close()
+
+    def test_clear_reverts(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.add_allowlist_entry("Vaporwave")
+        index.clear_allowlist_extras()
+        assert index.list_allowlist_extras() == []
+        index.close()
+
+    def test_add_rejects_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        with pytest.raises(ValueError):
+            index.add_allowlist_entry("   ")
+        index.close()
+
+    def test_add_rejects_delimiter(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        with pytest.raises(ValueError):
+            index.add_allowlist_entry("a; b")
+        index.close()
+
 
 # ---------------------------------------------------------------------------
 # Rename / edit genre (KAMP-608)

@@ -113,15 +113,6 @@ export function QueuePanel(): React.JSX.Element {
     setAnchorIdx(null)
   }, [tracks.length, position])
 
-  // Alt → toggle album-grouping mode.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Alt') setAlbumGroupingActive(!albumGroupingActive)
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [albumGroupingActive, setAlbumGroupingActive])
-
   // Clamp width to 33% when the window shrinks.
   useEffect(() => {
     const onWindowResize = (): void => {

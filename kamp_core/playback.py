@@ -44,6 +44,11 @@ class PlaybackState:
     position: float = 0.0
     duration: float = 0.0
     volume: int = 100
+    # User mute (KAMP-559). Implemented as a `volume`-property gate, NOT mpv's
+    # `mute` property — kamp_fade.lua owns `mute` as its resume gate (KAMP-508) and
+    # clears it on every transport transition. `volume` stays the logical level
+    # while muted; muting only sends `set_property volume 0` to the output.
+    muted: bool = False
     # Wall-clock time of the last time-pos event from mpv. Used by
     # _state_snapshot() to extrapolate position when events stall (e.g.
     # after seeking near EOF of an HTTP stream: mpv drains its audio
@@ -1130,7 +1135,13 @@ class MpvPlaybackEngine:
         self._start_mpv()
 
     def _start_mpv(self) -> None:  # pragma: no cover
-        """Launch mpv and connect to its IPC channel."""
+        """Launch mpv and connect to its IPC channel.
+
+        Note (KAMP-559): a fresh mpv starts at `volume` 100. There is no mid-session
+        restart today, but if crash-recovery is ever added it must re-apply the mute
+        gate (send `set_property volume 0` when `state.muted`) — otherwise a restart
+        would play at full volume while `state.muted` still reads True.
+        """
         # Create the Job Object before Popen so we can assign mpv immediately
         # after it spawns. We rely on nested Jobs (Win8+) rather than
         # CREATE_BREAKAWAY_FROM_JOB — breakaway requires the parent's Job to
@@ -1516,8 +1527,29 @@ class MpvPlaybackEngine:
 
     @volume.setter
     def volume(self, value: int) -> None:
+        # INVARIANT (KAMP-559): mpv's `volume` property is written ONLY here. This
+        # setter always clears `state.muted` first, so any explicit volume change
+        # (e.g. dragging the slider) unmutes. If future code ever sends
+        # `set_property volume` elsewhere while muted, it would un-gate the output
+        # while `state.muted` still reads True — mute would silently break. Route
+        # all volume writes through this setter.
         self.state.volume = max(0, min(100, value))
+        self.state.muted = False
         self._send_command("set_property", "volume", self.state.volume)
+
+    @property
+    def muted(self) -> bool:
+        return self.state.muted
+
+    @muted.setter
+    def muted(self, value: bool) -> None:
+        # Gate the output via the `volume` property, never mpv's `mute` property
+        # (owned by kamp_fade.lua's resume gate — KAMP-508). `state.volume` keeps the
+        # logical level so unmute can restore it; muting drives the output to 0.
+        self.state.muted = bool(value)
+        self._send_command(
+            "set_property", "volume", 0 if self.state.muted else self.state.volume
+        )
 
     def shutdown(self) -> None:
         if self._proc is not None:

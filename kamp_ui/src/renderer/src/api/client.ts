@@ -105,6 +105,7 @@ export type PlayerState = {
   position: number
   duration: number
   volume: number
+  muted: boolean
   current_track: Track | null
   next_track: Track | null
   buffering: boolean
@@ -518,6 +519,7 @@ export const seek = (position: number): Promise<unknown> =>
   post('/api/v1/player/seek', { position })
 export const setVolume = (volume: number): Promise<unknown> =>
   post('/api/v1/player/volume', { volume })
+export const setMuted = (muted: boolean): Promise<unknown> => post('/api/v1/player/mute', { muted })
 export const nextTrack = (): Promise<unknown> => post('/api/v1/player/next')
 export const prevTrack = (): Promise<unknown> => post('/api/v1/player/prev')
 export const setShuffle = (shuffle: boolean, albumShuffle = false): Promise<unknown> =>

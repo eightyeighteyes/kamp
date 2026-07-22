@@ -11,6 +11,8 @@ export const TOOLTIPS = {
   COLLECTION_TOGGLE: 'Collection (C)',
   TRANSPORT_FAVORITE_ADD: 'Add to favorites',
   TRANSPORT_FAVORITE_REMOVE: 'Remove from favorites',
+  TRANSPORT_MUTE: 'Mute',
+  TRANSPORT_UNMUTE: 'Unmute',
 
   // Library / track list actions
   LIBRARY_FETCH_MB: 'Fetch tags from MusicBrainz',

@@ -11,7 +11,8 @@ import {
   RepeatIcon,
   ShuffleIcon,
   StopIcon,
-  VolumeIcon
+  VolumeIcon,
+  VolumeMutedIcon
 } from './TransportIcons'
 import { formatTime } from '../utils/formatTime'
 
@@ -23,6 +24,7 @@ export function TransportBar(): React.JSX.Element {
   const prev = useStore((s) => s.prev)
   const seek = useStore((s) => s.seek)
   const setVolume = useStore((s) => s.setVolume)
+  const setMuted = useStore((s) => s.setMuted)
   const setFavorite = useStore((s) => s.setFavorite)
   const queue = useStore((s) => s.queue)
   const setShuffle = useStore((s) => s.setShuffle)
@@ -35,7 +37,10 @@ export function TransportBar(): React.JSX.Element {
   const selectArtist = useStore((s) => s.selectArtist)
   const setActiveView = useStore((s) => s.setActiveView)
 
-  const { playing, position, duration, volume, current_track, buffering } = player
+  const { playing, position, duration, volume, muted, current_track, buffering } = player
+  // Show the muted glyph while explicitly muted OR at volume 0, so the icon never
+  // implies sound at zero output (KAMP-559).
+  const showMuted = muted || volume === 0
 
   const currentAlbum = current_track
     ? albums.find(
@@ -284,9 +289,16 @@ export function TransportBar(): React.JSX.Element {
       </div>
 
       <div className="transport-volume">
-        <span className="volume-icon" aria-hidden="true">
-          <VolumeIcon />
-        </span>
+        <button
+          type="button"
+          className={`volume-icon volume-icon--btn${showMuted ? ' volume-icon--muted' : ''}`}
+          onClick={() => void setMuted(!muted)}
+          aria-pressed={muted}
+          aria-label={muted ? 'Unmute' : 'Mute'}
+          {...tooltip(muted ? TOOLTIPS.TRANSPORT_UNMUTE : TOOLTIPS.TRANSPORT_MUTE)}
+        >
+          {showMuted ? <VolumeMutedIcon /> : <VolumeIcon />}
+        </button>
         <input
           type="range"
           className="volume-slider"

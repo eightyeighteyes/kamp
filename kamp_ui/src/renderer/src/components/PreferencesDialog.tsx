@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
+import type { PrefsTab } from '../store'
 import type { ExtensionInfo, ExtensionSettingSchema } from '../../../shared/kampAPI'
 import type { ExtensionStateHook } from '../hooks/useExtensionState'
 import { useExtensionInstall } from '../hooks/useExtensionInstall'
@@ -945,9 +946,7 @@ export function PreferencesDialog({
   const cancelGenreBackfill = useStore((s) => s.cancelGenreBackfill)
   const refreshGenreBackfill = useStore((s) => s.refreshGenreBackfill)
   const prefsInitialTab = useStore((s) => s.prefsInitialTab)
-  const [activeTab, setActiveTab] = useState<'general' | 'tagging' | 'services' | 'extensions'>(
-    () => prefsInitialTab
-  )
+  const [activeTab, setActiveTab] = useState<PrefsTab>(() => prefsInitialTab)
 
   // Sync the active tab whenever the dialog opens, so callers can direct to a
   // specific tab (e.g. "Bandcamp options…" → services) on each open.
@@ -1075,6 +1074,14 @@ export function PreferencesDialog({
         <div className="prefs-tabs" role="tablist">
           <button
             role="tab"
+            aria-selected={activeTab === 'about'}
+            className={`prefs-tab${activeTab === 'about' ? ' prefs-tab--active' : ''}`}
+            onClick={() => setActiveTab('about')}
+          >
+            About
+          </button>
+          <button
+            role="tab"
             aria-selected={activeTab === 'general'}
             className={`prefs-tab${activeTab === 'general' ? ' prefs-tab--active' : ''}`}
             onClick={() => setActiveTab('general')}
@@ -1109,6 +1116,33 @@ export function PreferencesDialog({
 
         {/* Scrollable body — content swaps per tab */}
         <div className="prefs-body" role="tabpanel">
+          {activeTab === 'about' && (
+            <>
+              {/* IDENTITY */}
+              <div className="prefs-section">
+                <div className="prefs-section-label">Kamp</div>
+                <p className="prefs-hint">Version {window.api.appVersion}</p>
+              </div>
+
+              {/* COMMUNITY */}
+              <div className="prefs-section">
+                <div className="prefs-section-label">Community</div>
+                <div className="prefs-row">
+                  <button
+                    className="prefs-choose-btn"
+                    onClick={() => window.api.openExternal(DISCORD_INVITE_URL)}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <DiscordIcon size={16} />
+                      Join Discord
+                    </span>
+                  </button>
+                  <p className="prefs-hint">Give feedback and connect with other Kamp users.</p>
+                </div>
+              </div>
+            </>
+          )}
+
           {activeTab === 'general' && (
             <>
               {configLoading ? null : (
@@ -1170,23 +1204,6 @@ export function PreferencesDialog({
                       hint="{album_artist}  {year}  {album}  {track}  {title}  {ext}"
                       onSave={handleSave}
                     />
-                  </div>
-
-                  {/* ABOUT */}
-                  <div className="prefs-section">
-                    <div className="prefs-section-label">About</div>
-                    <div className="prefs-row">
-                      <button
-                        className="prefs-choose-btn"
-                        onClick={() => window.api.openExternal(DISCORD_INVITE_URL)}
-                      >
-                        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <DiscordIcon size={16} />
-                          Join Discord
-                        </span>
-                      </button>
-                      <p className="prefs-hint">Give feedback and connect with other Kamp users.</p>
-                    </div>
                   </div>
                 </>
               )}

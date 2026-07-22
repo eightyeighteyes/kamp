@@ -40,6 +40,9 @@ export type MagicPlaylistModuleConfig = {
 }
 export type PlasmaMode = 'always' | 'sometimes' | 'never'
 export type TraceStyle = 'clean' | 'glowy' | 'trippy'
+// The Preferences dialog tabs. Shared by the store and PreferencesDialog so the
+// two unions can't drift (they previously disagreed on 'tagging').
+export type PrefsTab = 'about' | 'general' | 'tagging' | 'services' | 'extensions'
 
 type LibraryState = {
   albums: Album[]
@@ -332,10 +335,10 @@ type PlayerStore = {
   // Preferences
   configValues: ConfigValues | null
   prefsOpen: boolean
-  prefsInitialTab: 'general' | 'services' | 'extensions'
+  prefsInitialTab: PrefsTab
   loadConfig: () => Promise<void>
   setConfigValue: (key: string, value: string) => Promise<void>
-  openPrefs: (tab?: 'general' | 'services' | 'extensions') => void
+  openPrefs: (tab?: PrefsTab) => void
   closePrefs: () => void
 
   // Update notification
@@ -514,7 +517,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   selectedTheme: (localStorage.getItem('kamp:selected-theme') as ThemeName | null) ?? 'kamp',
   configValues: null,
   prefsOpen: false,
-  prefsInitialTab: 'general',
+  prefsInitialTab: 'about',
   updateAvailable: null,
   deferredOps: {},
 
@@ -1707,7 +1710,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     })
   },
 
-  openPrefs: (tab) => set({ prefsOpen: true, prefsInitialTab: tab ?? 'general' }),
+  openPrefs: (tab) => set({ prefsOpen: true, prefsInitialTab: tab ?? 'about' }),
   closePrefs: () => set({ prefsOpen: false }),
   setUpdateAvailable: (data) => set({ updateAvailable: data }),
 

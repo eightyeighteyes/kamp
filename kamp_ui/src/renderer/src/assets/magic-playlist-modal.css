@@ -225,6 +225,53 @@
   width: 64px;
 }
 
+/* Autocomplete (KAMP-551): the wrap takes the text input's flex slot; the dropdown
+   is portaled to document.body (see TextAutocompleteInput) so the modal can't clip
+   it — positioned inline from the input's rect, above the overlay (z-index 900). */
+.magic-autocomplete-wrap {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+}
+
+.magic-autocomplete-wrap .magic-input--text {
+  flex: 1;
+  min-width: 0;
+}
+
+.magic-autocomplete {
+  position: fixed;
+  z-index: 1100;
+  min-width: 140px;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface-raised, #22242b);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.magic-autocomplete-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.magic-autocomplete-item:hover,
+.magic-autocomplete-item.active {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.08));
+}
+
 /* Match pill --------------------------------------------------------------- */
 
 .match-pill {

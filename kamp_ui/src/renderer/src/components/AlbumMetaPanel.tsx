@@ -268,13 +268,6 @@ export function AlbumMetaPanel({
             <div className="album-meta-row">
               <dt className="album-meta-dt">GENRE</dt>
               <dd className="album-meta-dd">
-                <GenreChipsInput
-                  chips={albumGenres}
-                  suggestions={genreSuggestions}
-                  editMode={editMode}
-                  onCommit={handleSaveGenres}
-                  onGenreClick={openGenreFilter}
-                />
                 {editMode && onFetchGenres && (
                   <div className="genre-fetch">
                     <button
@@ -308,6 +301,13 @@ export function AlbumMetaPanel({
                     )}
                   </div>
                 )}
+                <GenreChipsInput
+                  chips={albumGenres}
+                  suggestions={genreSuggestions}
+                  editMode={editMode}
+                  onCommit={handleSaveGenres}
+                  onGenreClick={openGenreFilter}
+                />
               </dd>
             </div>
           )}

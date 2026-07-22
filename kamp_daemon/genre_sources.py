@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -375,6 +375,24 @@ def enrich_new_tracks(
         len(album_keys),
         len(tracks),
     )
+    enrich_albums(index, album_keys, config)
+
+
+def enrich_albums(
+    index: "LibraryIndex",
+    album_keys: "Iterable[tuple[str, str]]",
+    config: "Config",
+) -> None:
+    """Enrich each ``(album_artist, album)`` from the enabled sources (KAMP-618).
+
+    The album-keyed core shared by the local-ingest trigger (``enrich_new_tracks``)
+    and the streaming-add trigger: resolves each album's track ids fresh from the DB
+    and calls ``enrich_album_genres``. Cheap no-op when no source is enabled.
+    Synchronous and best-effort per album; callers run it on a background thread so a
+    slow Last.fm can never stall the sync. Does NOT mark albums enriched — the manual
+    backfill's checkpoint is independent (consistent with local ingest)."""
+    if not enabled_sources(config):
+        return
     for album_artist, album in album_keys:
         try:
             ids = [t.id for t in index.tracks_for_album(album_artist, album)]

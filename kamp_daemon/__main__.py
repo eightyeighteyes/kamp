@@ -1462,6 +1462,25 @@ def _cmd_daemon(
 
     core.syncer.progress_callback = _on_download_progress
     core.syncer.on_tracks_indexed = app.state.notify_library_changed
+
+    def _on_stream_albums_added(album_keys: list[tuple[str, str]]) -> None:
+        # KAMP-618: auto-enrich newly-added streaming albums with Last.fm genres on a
+        # background thread (best-effort) so a slow Last.fm never stalls the sync's UI
+        # refresh. Only when a Last.fm source is enabled — Bandcamp keywords were
+        # already applied inline during sync. enrich_albums is scoped to just these
+        # albums (NOT the whole pending set) and does not touch the manual backfill.
+        cfg = Config.load(index)
+        if not _genre_sources.enabled_sources(cfg):
+            return
+
+        def _run() -> None:
+            from .genre_sources import enrich_albums
+
+            enrich_albums(index, album_keys, cfg)
+
+        threading.Thread(target=_run, daemon=True, name="stream-genre-enrich").start()
+
+    core.syncer.on_stream_albums_added = _on_stream_albums_added
     core.watcher.stage_callback = app.state.notify_pipeline_stage
 
     # After each album finishes processing, run a library rescan directly on a

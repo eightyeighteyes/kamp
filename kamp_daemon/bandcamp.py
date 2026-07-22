@@ -480,7 +480,7 @@ def sync_collection_stream(
     art_cache_dir: Path | None = None,
     batch_indexed_callback: Callable[[], None] | None = None,
     apply_bandcamp_genres: bool = True,
-) -> tuple[int, int]:
+) -> tuple[int, int, list[tuple[str, str]]]:
     """Index all Bandcamp purchases as remote rows — no ZIP download.
 
     For each album, upserts a bandcamp_collection row and fetches the album
@@ -494,7 +494,9 @@ def sync_collection_stream(
     key (tralbum_id when available, else sid_<sale_item_id>).  Art fetch
     failures are best-effort — a warning is logged and sync continues.
 
-    Returns (album_count, track_count).
+    Returns (album_count, track_count, new_album_keys), where new_album_keys are the
+    (album_artist, album) tuples of albums indexed for the first time this run
+    (KAMP-618: the set to auto-enrich with Last.fm genres).
     """
     session_data = _ensure_session(bc_config, index)
     session = _make_requests_session(session_data)
@@ -511,6 +513,9 @@ def sync_collection_stream(
     existing_state = index.get_collection_state()
     album_count = 0
     track_count = 0
+    # (album_artist, album) of albums newly indexed this run — the streaming-add
+    # Last.fm genre-enrichment set (KAMP-618).
+    new_album_keys: list[tuple[str, str]] = []
     fetch_index = 0  # throttle counter for album-page requests
     for item in collection:
         sid = item.get("sale_item_id")
@@ -560,11 +565,12 @@ def sync_collection_stream(
         # tracks indexed before KAMP-513).  Pre-orders are always re-inspected so
         # newly released tracks and full-release transitions are caught.
         needs_backfill = index.has_remote_tracks_needing_date_backfill(str(sid))
+        # KAMP-618: a truly new album (no prior remote tracks) is a candidate for
+        # auto Last.fm genre enrichment; pre-order/backfill re-inspections of existing
+        # albums are not (they're already in the library).
+        is_new_album = not index.has_remote_album_tracks(str(sid))
         if album_url and (
-            is_preorder_already
-            or api_says_preorder
-            or not index.has_remote_album_tracks(str(sid))
-            or needs_backfill
+            is_preorder_already or api_says_preorder or is_new_album or needs_backfill
         ):
             if fetch_index > 0:
                 time.sleep(0.5)
@@ -597,6 +603,8 @@ def sync_collection_stream(
                             _t.genres = []
                     index.upsert_many(tracks)
                     track_count += len(tracks)
+                    if is_new_album:
+                        new_album_keys.append((band_name, item_title))
                     logger.debug(
                         "Indexed %d track(s) for %r by %r",
                         len(tracks),
@@ -656,7 +664,7 @@ def sync_collection_stream(
         album_count,
         track_count,
     )
-    return album_count, track_count
+    return album_count, track_count, new_album_keys
 
 
 def download_single_album(

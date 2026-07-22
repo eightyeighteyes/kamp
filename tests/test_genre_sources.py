@@ -455,3 +455,42 @@ class TestEnrichAlbumGenres:
         index.close()
         assert applied == ["Synth-Pop"]
         assert "Art Pop" in genre and "Synth-Pop" in genre
+
+    # KAMP-618: enrich_albums — the album-keyed core shared by local ingest and the
+    # streaming-add trigger.
+    def test_enrich_albums_enriches_each_key(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        index, _ = self._seed_local(tmp_path, ["Jazz"])
+        tid = index.all_tracks()[0].id
+        monkeypatch.setattr(
+            gs, "enabled_sources", lambda cfg: [_StubSource(["Shoegaze"])]
+        )
+        gs.enrich_albums(index, [("Slowdive", "Souvlaki")], self._config())
+        genre = index.get_track_by_id(tid).genre
+        index.close()
+        assert "Jazz" in genre and "Shoegaze" in genre  # merged, not replaced
+
+    def test_enrich_albums_noop_when_no_source(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        index, _ = self._seed_local(tmp_path, ["Jazz"])
+        tid = index.all_tracks()[0].id
+        monkeypatch.setattr(gs, "enabled_sources", lambda cfg: [])
+        gs.enrich_albums(index, [("Slowdive", "Souvlaki")], self._config(on=False))
+        genre = index.get_track_by_id(tid).genre
+        index.close()
+        assert genre == "Jazz"  # untouched
+
+    def test_enrich_albums_skips_unknown_album(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        index, _ = self._seed_local(tmp_path, ["Jazz"])
+        monkeypatch.setattr(
+            gs, "enabled_sources", lambda cfg: [_StubSource(["Shoegaze"])]
+        )
+        gs.enrich_albums(index, [("Nobody", "Nothing")], self._config())  # no tracks
+        tid = index.all_tracks()[0].id
+        genre = index.get_track_by_id(tid).genre
+        index.close()
+        assert genre == "Jazz"  # unrelated album untouched, no crash

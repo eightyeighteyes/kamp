@@ -1523,6 +1523,70 @@ class TestMpvPlaybackEngine:
         engine.volume = 75
         send.assert_called_once_with("set_property", "volume", 75)
 
+    def test_mute_fades_out_and_drops_slider_to_zero(self) -> None:
+        # KAMP-559: muting fades via the kampmute afade (script-message) and drops the
+        # slider to 0, remembering the level to restore. The `volume` property (logical
+        # level) is left untouched so unmute can fade back in to it.
+        engine, send = _make_engine()
+        engine.volume = 70
+        send.reset_mock()
+        engine.muted = True
+        assert engine.muted is True
+        assert engine.state.volume == 0
+        assert engine.state.pre_mute_volume == 70
+        send.assert_called_once_with("script-message", "kamp-mute")
+
+    def test_unmute_fades_in_and_restores_slider(self) -> None:
+        engine, send = _make_engine()
+        engine.volume = 70
+        engine.muted = True
+        send.reset_mock()
+        engine.muted = False
+        assert engine.muted is False
+        assert engine.state.volume == 70
+        send.assert_called_once_with("script-message", "kamp-unmute")
+
+    def test_mute_toggle_is_idempotent(self) -> None:
+        # Re-asserting the same mute state does nothing (endpoint sends absolute state).
+        engine, send = _make_engine()
+        engine.volume = 70
+        engine.muted = True
+        send.reset_mock()
+        engine.muted = True
+        send.assert_not_called()
+        assert engine.state.volume == 0
+
+    def test_mute_when_volume_zero_keeps_slider_zero(self) -> None:
+        # KAMP-559: muting/unmuting at volume 0 leaves the slider at 0.
+        engine, _ = _make_engine()
+        engine.volume = 0
+        engine.muted = True
+        assert engine.state.volume == 0
+        engine.muted = False
+        assert engine.state.volume == 0
+
+    def test_dragging_volume_while_muted_unmutes_and_fades_in(self) -> None:
+        engine, send = _make_engine()
+        engine.muted = True  # default volume 100 -> muted, slider 0, pre_mute 100
+        send.reset_mock()
+        engine.volume = 50
+        assert engine.muted is False
+        assert engine.state.volume == 50
+        send.assert_any_call("set_property", "volume", 50)
+        send.assert_any_call("script-message", "kamp-unmute")
+
+    def test_mute_never_writes_volume_property(self) -> None:
+        # KAMP-559: mute must fade via the afade, never a volume-property jump
+        # (zipper noise, KAMP-508) — and never mpv's `mute` property (resume gate).
+        engine, send = _make_engine()
+        engine.volume = 70
+        send.reset_mock()
+        engine.muted = True
+        engine.muted = False
+        for call in send.call_args_list:
+            assert call.args[:2] != ("set_property", "volume")
+            assert call.args[:2] != ("set_property", "mute")
+
     def test_stop_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.stop()

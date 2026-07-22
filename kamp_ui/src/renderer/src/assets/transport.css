@@ -195,12 +195,29 @@
   gap: 6px;
 }
 
-/* Wrap the VolumeIcon SVG in an inline-flex span so its box centers on the
+/* Wrap the VolumeIcon SVG in an inline-flex element so its box centers on the
    flex row's centerline, matching .transport-btn's centering. */
 .volume-icon {
   display: inline-flex;
   align-items: center;
   color: var(--text-dim);
+}
+
+/* The speaker icon is a mute toggle button (KAMP-559) — strip the native button
+   chrome so it reads as the plain icon it replaced. */
+.volume-icon--btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.volume-icon--btn:hover {
+  color: var(--text);
+}
+
+.volume-icon--muted {
+  color: var(--accent);
 }
 
 .volume-slider {

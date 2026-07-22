@@ -884,7 +884,18 @@ class TestPlayerStateEndpoint:
         assert data["position"] == pytest.approx(0.0)
         assert data["duration"] == pytest.approx(0.0)
         assert data["volume"] == 100
+        assert data["muted"] is False
         assert data["current_track"] is None
+
+    def test_state_reflects_muted(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        # The snapshot reads engine.state.muted directly (KAMP-559). Assigning
+        # engine.muted on a MagicMock does not run the real setter, so seed state.
+        mock_engine.state = PlaybackState(muted=True)
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        data = TestClient(app).get("/api/v1/player/state").json()
+        assert data["muted"] is True
 
     def test_includes_current_track_when_playing(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
@@ -990,6 +1001,11 @@ class TestPlayerControlEndpoints:
         response = client.post("/api/v1/player/volume", json={"volume": 80})
         assert response.status_code == 200
         assert mock_engine.volume == 80
+
+    def test_set_mute(self, client: TestClient, mock_engine: MagicMock) -> None:
+        response = client.post("/api/v1/player/mute", json={"muted": True})
+        assert response.status_code == 200
+        assert mock_engine.muted is True
 
     def test_next_track(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock

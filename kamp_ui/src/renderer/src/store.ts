@@ -64,6 +64,9 @@ type LibraryState = {
 
 type PlayerStore = {
   player: PlayerState
+  // Volume to restore when unmuting (KAMP-559). Mirrors the daemon's pre_mute_volume
+  // so the optimistic unmute can restore the slider before the next state broadcast.
+  preMuteVolume: number
   library: LibraryState
   serverStatus: 'connected' | 'reconnecting' | 'disconnected'
   scanStatus: 'idle' | 'scanning' | 'done' | 'error'
@@ -278,6 +281,7 @@ type PlayerStore = {
   prev: () => Promise<void>
   seek: (position: number) => Promise<void>
   setVolume: (volume: number) => Promise<void>
+  setMuted: (muted: boolean) => Promise<void>
   setAlbumGroupingActive: (active: boolean) => void
   setShuffle: (shuffle: boolean) => Promise<void>
   setRepeat: () => Promise<void>
@@ -351,6 +355,7 @@ const initialPlayer: PlayerState = {
   position: 0,
   duration: 0,
   volume: 100,
+  muted: false,
   current_track: null,
   next_track: null,
   buffering: false
@@ -389,6 +394,7 @@ const _ratchetFloor = (prevFloor: number, raw: number): number =>
 
 export const useStore = create<PlayerStore>((set, get) => ({
   player: initialPlayer,
+  preMuteVolume: 100,
   library: {
     albums: [],
     artists: [],
@@ -1342,7 +1348,22 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   setVolume: async (volume) => {
     await api.setVolume(volume)
-    set((s) => ({ player: { ...s.player, volume } }))
+    // The daemon clears mute on any explicit volume change (drag-to-unmute,
+    // KAMP-559); mirror that optimistically so the icon updates immediately.
+    set((s) => ({ player: { ...s.player, volume, muted: false } }))
+  },
+
+  setMuted: async (muted) => {
+    await api.setMuted(muted)
+    // Optimistically mirror the daemon (KAMP-559): mute drops the slider to 0 and
+    // remembers the level; unmute restores it. Keeps the icon + slider instant
+    // rather than waiting for the next state broadcast.
+    set((s) => {
+      if (muted) {
+        return { preMuteVolume: s.player.volume, player: { ...s.player, muted: true, volume: 0 } }
+      }
+      return { player: { ...s.player, muted: false, volume: s.preMuteVolume } }
+    })
   },
 
   setAlbumGroupingActive: (active) => {

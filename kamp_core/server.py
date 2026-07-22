@@ -392,6 +392,7 @@ class PlayerStateOut(BaseModel):
     position: float
     duration: float
     volume: int
+    muted: bool = False
     current_track: TrackOut | None
     next_track: TrackOut | None = None
     buffering: bool = False
@@ -423,6 +424,10 @@ class SeekRequest(BaseModel):
 
 class VolumeRequest(BaseModel):
     volume: int
+
+
+class MuteRequest(BaseModel):
+    muted: bool
 
 
 class GenreMergeRequest(BaseModel):
@@ -1435,6 +1440,7 @@ def create_app(
             position=pos,
             duration=engine.state.duration,
             volume=engine.state.volume,
+            muted=engine.state.muted,
             current_track=_track_out(index, current) if current else None,
             next_track=_track_out(index, nxt) if nxt else None,
             buffering=_state["buffering"],
@@ -3900,6 +3906,11 @@ def create_app(
     @app.post("/api/v1/player/volume")
     def set_volume(req: VolumeRequest) -> dict[str, Any]:
         engine.volume = req.volume
+        return {"ok": True}
+
+    @app.post("/api/v1/player/mute")
+    def set_mute(req: MuteRequest) -> dict[str, Any]:
+        engine.muted = req.muted
         return {"ok": True}
 
     @app.post("/api/v1/player/next")

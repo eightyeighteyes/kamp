@@ -180,6 +180,24 @@ class KampBandcampSyncer(BaseSyncer):
         self._inner.on_tracks_indexed = cb
 
     @property
+    def on_stream_albums_added(
+        self,
+    ) -> Callable[[list[tuple[str, str]]], None] | None:
+        """Callback fired once per stream sync with newly-indexed album keys (KAMP-618)."""
+        if self._inner is None:
+            return None
+        return self._inner.on_stream_albums_added
+
+    @on_stream_albums_added.setter
+    def on_stream_albums_added(
+        self, cb: Callable[[list[tuple[str, str]]], None] | None
+    ) -> None:
+        assert (
+            self._inner is not None
+        ), "call _configure() before setting on_stream_albums_added"
+        self._inner.on_stream_albums_added = cb
+
+    @property
     def progress_callback(self) -> Callable[[str, int, int], None] | None:
         """Per-album byte-progress callback (sale_item_id, downloaded_bytes,
         total_bytes) (KAMP-436/566)."""

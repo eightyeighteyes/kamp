@@ -2610,7 +2610,7 @@ class TestSyncCollectionStream:
 
     def test_upserts_all_items_as_remote(self, tmp_path: Path) -> None:
         items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
-        (album_count, _track_count), index = self._run(tmp_path, items)
+        (album_count, _track_count, _keys), index = self._run(tmp_path, items)
         assert album_count == 2
         calls = index.upsert_collection_item.call_args_list
         assert len(calls) == 2
@@ -2618,7 +2618,7 @@ class TestSyncCollectionStream:
 
     def test_returns_album_count(self, tmp_path: Path) -> None:
         items = [_item(10), _item(20), _item(30)]
-        (album_count, _), _ = self._run(tmp_path, items)
+        (album_count, _, _), _ = self._run(tmp_path, items)
         assert album_count == 3
 
     def test_fetches_tracks_for_new_albums(self, tmp_path: Path) -> None:
@@ -2642,23 +2642,26 @@ class TestSyncCollectionStream:
             source="bandcamp",
         )
         items = [_item(1)]
-        (album_count, track_count), index = self._run(
+        (album_count, track_count, new_keys), index = self._run(
             tmp_path, items, already_have_tracks=False, fake_tracks=[fake_track]
         )
         assert album_count == 1
         assert track_count == 1
         index.upsert_many.assert_called_once()
+        # KAMP-618: a first-time-indexed album is reported (by its collection
+        # band_name/item_title) for genre enrichment.
+        assert new_keys == [("Band", "Album")]
 
     def test_skips_track_fetch_for_existing_albums(self, tmp_path: Path) -> None:
         """Albums already in tracks table do not trigger fetch_album_tracks."""
         items = [_item(1), _item(2)]
-        (_counts, _), index = self._run(tmp_path, items, already_have_tracks=True)
+        (_counts, _, _), index = self._run(tmp_path, items, already_have_tracks=True)
         index.upsert_many.assert_not_called()
 
     def test_re_upserts_already_remote_item(self, tmp_path: Path) -> None:
         """Idempotent: collection row is always refreshed even if tracks exist."""
         items = [_item(99)]
-        (_counts, _), index = self._run(tmp_path, items, already_have_tracks=True)
+        (_counts, _, _), index = self._run(tmp_path, items, already_have_tracks=True)
         index.upsert_collection_item.assert_called_once()
         assert index.upsert_collection_item.call_args[1]["mode"] == "remote"
 
@@ -2669,7 +2672,7 @@ class TestSyncCollectionStream:
             _item(2, "New Band", "New Album"),
         ]
         # Item 1 was already downloaded; item 2 is new.
-        (album_count, _), index = self._run(
+        (album_count, _, _), index = self._run(
             tmp_path,
             items,
             existing_state={"1": "local"},
@@ -2708,7 +2711,7 @@ class TestSyncCollectionStream:
                 side_effect=BandcampAPIError("rate limited"),
             ),
         ):
-            album_count, track_count = sync_collection_stream(
+            album_count, track_count, _keys = sync_collection_stream(
                 config, watch_folder, index
             )
 

@@ -65,7 +65,7 @@ def _sync_worker(
                 # (subprocess: no inherited config) so a disabled toggle stops the
                 # labels reaching the library while sync still caches them.
                 apply_bc_genres = Config.load(index).tagging.bandcamp_genres
-                album_count, track_count = sync_collection_stream(
+                album_count, track_count, new_album_keys = sync_collection_stream(
                     bc_config=bc_config,
                     watch_dir=watch_dir,
                     index=index,
@@ -74,7 +74,7 @@ def _sync_worker(
                     batch_indexed_callback=lambda: notify_q.put(True),
                     apply_bandcamp_genres=apply_bc_genres,
                 )
-                result_q.put(("ok_stream", (album_count, track_count)))
+                result_q.put(("ok_stream", (album_count, track_count, new_album_keys)))
             else:
                 from .bandcamp import sync_new_purchases
 
@@ -293,6 +293,13 @@ class Syncer:
         self.progress_callback: Callable[[str, int, int], None] | None = None
         self.error_callback: Callable[[str, str, str], None] | None = None
         self.on_tracks_indexed: Callable[[], None] | None = None
+        # KAMP-618: fired ONCE at the end of a stream sync with the (album_artist,
+        # album) keys of albums indexed for the first time this run, so the daemon
+        # can auto-enrich them with Last.fm genres. Distinct from on_tracks_indexed
+        # (a per-batch UI ping that can fire mid-sync).
+        self.on_stream_albums_added: Callable[[list[tuple[str, str]]], None] | None = (
+            None
+        )
 
     # ------------------------------------------------------------------
     # Public interface
@@ -469,7 +476,7 @@ class Syncer:
             raise RuntimeError(f"Bandcamp sync failed: {value}")
 
         if status == "ok_stream":
-            album_count, track_count = value
+            album_count, track_count, new_album_keys = value
             if track_count:
                 logger.info(
                     "Sync complete: %d album(s), %d track(s) indexed as remote.",
@@ -482,6 +489,11 @@ class Syncer:
                 logger.info(
                     "Sync complete: %d album(s) already up to date.", album_count
                 )
+            # Fire ONCE, after the subprocess has fully completed, with the newly
+            # indexed albums (KAMP-618). on_tracks_indexed above can fire per-batch
+            # mid-sync, so it is the wrong hook for a one-shot enrichment trigger.
+            if new_album_keys and self.on_stream_albums_added is not None:
+                self.on_stream_albums_added(new_album_keys)
         else:
             paths = value or []
             if paths:

@@ -241,6 +241,26 @@ class TestKampBandcampSyncer:
         syncer = KampBandcampSyncer(_ctx())
         assert syncer.on_tracks_indexed is None
 
+    def test_on_stream_albums_added_getter_delegates(self) -> None:
+        """on_stream_albums_added getter returns the inner syncer's value (KAMP-618)."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer._inner.on_stream_albums_added = cb
+        assert syncer.on_stream_albums_added is cb
+
+    def test_on_stream_albums_added_setter_delegates(self) -> None:
+        """on_stream_albums_added setter writes THROUGH to the inner syncer (KAMP-436
+        wrapper lesson) — otherwise the auto genre-enrich trigger would dead-end."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer.on_stream_albums_added = cb
+        assert syncer._inner.on_stream_albums_added is cb
+
+    def test_on_stream_albums_added_none_before_configure(self) -> None:
+        """on_stream_albums_added returns None when _inner has not been configured."""
+        syncer = KampBandcampSyncer(_ctx())
+        assert syncer.on_stream_albums_added is None
+
     def test_methods_assert_before_configure(self) -> None:
         """Calling lifecycle methods before _configure() raises AssertionError."""
         syncer = KampBandcampSyncer(_ctx())

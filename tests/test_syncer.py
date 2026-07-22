@@ -783,7 +783,9 @@ class TestStreamMode:
         """sync_once() in stream mode does not call mark_synced() on first run."""
         syncer = Syncer(self._make_stream_config(tmp_path))
         with (
-            patch("kamp_daemon.bandcamp.sync_collection_stream", return_value=(2, 10)),
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(2, 10, [])
+            ),
             patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
             patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
             patch.object(syncer, "mark_synced") as mock_mark,
@@ -797,7 +799,9 @@ class TestStreamMode:
         """sync_all_purchases() in stream mode does not reset the collection state."""
         syncer = Syncer(self._make_stream_config(tmp_path))
         with (
-            patch("kamp_daemon.bandcamp.sync_collection_stream", return_value=(0, 0)),
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(0, 0, [])
+            ),
             patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
             patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
         ):
@@ -812,7 +816,7 @@ class TestStreamMode:
         syncer = Syncer(self._make_stream_config(tmp_path))
         with (
             patch(
-                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(3, 15)
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(3, 15, [])
             ) as mock_stream,
             patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
             patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
@@ -824,7 +828,9 @@ class TestStreamMode:
         """sync_once() in stream mode logs album and track counts when tracks indexed."""
         syncer = Syncer(self._make_stream_config(tmp_path))
         with (
-            patch("kamp_daemon.bandcamp.sync_collection_stream", return_value=(5, 42)),
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(5, 42, [])
+            ),
             patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
             patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
             patch("kamp_daemon.syncer.logger") as mock_log,
@@ -839,7 +845,9 @@ class TestStreamMode:
         fired: list[bool] = []
         syncer.on_tracks_indexed = lambda: fired.append(True)
         with (
-            patch("kamp_daemon.bandcamp.sync_collection_stream", return_value=(5, 42)),
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(5, 42, [])
+            ),
             patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
             patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
         ):
@@ -866,11 +874,11 @@ class TestStreamMode:
             art_cache_dir: object = None,
             batch_indexed_callback: object = None,
             apply_bandcamp_genres: bool = True,
-        ) -> tuple[int, int]:
+        ) -> tuple[int, int, list[tuple[str, str]]]:
             if batch_indexed_callback is not None:
                 batch_indexed_callback()
                 batch_indexed_callback()
-            return (2, 4)
+            return (2, 4, [])
 
         with (
             patch(
@@ -893,12 +901,47 @@ class TestStreamMode:
         fired: list[bool] = []
         syncer.on_tracks_indexed = lambda: fired.append(True)
         with (
-            patch("kamp_daemon.bandcamp.sync_collection_stream", return_value=(636, 0)),
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(636, 0, [])
+            ),
             patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
             patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
         ):
             syncer.sync_once()
         assert fired == []
+
+    def test_on_stream_albums_added_fires_with_new_keys(self, tmp_path: Path) -> None:
+        """KAMP-618: on_stream_albums_added fires once with the newly-indexed keys."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        got: list[list[tuple[str, str]]] = []
+        syncer.on_stream_albums_added = lambda keys: got.append(keys)
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream",
+                return_value=(1, 3, [("Slowdive", "Souvlaki")]),
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+        assert got == [[("Slowdive", "Souvlaki")]]
+
+    def test_on_stream_albums_added_not_fired_when_no_new_albums(
+        self, tmp_path: Path
+    ) -> None:
+        """No new albums this run -> the enrichment trigger stays silent."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        got: list[list[tuple[str, str]]] = []
+        syncer.on_stream_albums_added = lambda keys: got.append(keys)
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(2, 5, [])
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+        assert got == []
 
     def test_sync_once_stream_logs_up_to_date_when_no_new_tracks(
         self, tmp_path: Path
@@ -906,7 +949,9 @@ class TestStreamMode:
         """sync_once() in stream mode logs 'up to date' when track_count == 0."""
         syncer = Syncer(self._make_stream_config(tmp_path))
         with (
-            patch("kamp_daemon.bandcamp.sync_collection_stream", return_value=(636, 0)),
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(636, 0, [])
+            ),
             patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
             patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
             patch("kamp_daemon.syncer.logger") as mock_log,

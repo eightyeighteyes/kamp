@@ -1074,6 +1074,16 @@ def _cmd_daemon(
 
     _on_allowlist_changed()  # warm the cache with any persisted extras at startup
 
+    def _genre_fetch_fn(album_artist: str, album: str) -> list[str]:
+        # Per-album Fetch button (KAMP-605): read-only candidate fetch. Fresh config
+        # per call so runtime source toggles + allowlist changes are picked up (same
+        # as _on_genre_backfill_start).
+        from .genre_backfill import fetch_album_genre_candidates
+
+        return fetch_album_genre_candidates(
+            index, Config.load(index), album_artist, album
+        )
+
     app = create_app(
         index=index,
         engine=engine,
@@ -1106,6 +1116,7 @@ def _cmd_daemon(
         auth_token=_auth_token,
         mb_search_fn=search_release_candidates,
         mb_release_fn=lookup_release_by_mbid,
+        genre_fetch_fn=_genre_fetch_fn,
     )
 
     # ---------------------------------------------------------------------------

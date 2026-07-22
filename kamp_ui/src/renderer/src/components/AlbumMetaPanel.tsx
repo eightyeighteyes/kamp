@@ -18,8 +18,25 @@ interface AlbumMetaPanelProps {
     label?: string
     release_date?: string
   }) => Promise<void>
+  // KAMP-605: fetch candidate genres from the configured sources for this album.
+  onFetchGenres?: () => Promise<string[]>
   onHandleMouseDown?: (e: React.MouseEvent) => void
   onHandleDoubleClick?: () => void
+}
+
+// Union new genres into the existing list, case-insensitively (matches
+// GenreChipsInput.sameSet). Only adds — never reorders or drops existing (KAMP-605).
+function mergeGenres(existing: string[], added: string[]): string[] {
+  const have = new Set(existing.map((g) => g.toLowerCase()))
+  const out = [...existing]
+  for (const g of added) {
+    const name = g.trim()
+    if (name && !have.has(name.toLowerCase())) {
+      have.add(name.toLowerCase())
+      out.push(name)
+    }
+  }
+  return out
 }
 
 /**
@@ -115,11 +132,28 @@ export function AlbumMetaPanel({
   expanded,
   onToggle,
   onSave,
+  onFetchGenres,
   onHandleMouseDown,
   onHandleDoubleClick
 }: AlbumMetaPanelProps): React.JSX.Element {
   const panelRef = useRef<HTMLDivElement>(null)
   const openGenreFilter = useStore((s) => s.openGenreFilter)
+  const configValues = useStore((s) => s.configValues)
+  const tooltip = useTooltip()
+
+  // Genre Fetch (KAMP-605): busy flag + a transient status message.
+  const [fetchingGenres, setFetchingGenres] = React.useState(false)
+  const [fetchMsg, setFetchMsg] = React.useState('')
+  useEffect(() => {
+    if (!fetchMsg) return
+    const t = setTimeout(() => setFetchMsg(''), 4000)
+    return () => clearTimeout(t)
+  }, [fetchMsg])
+
+  // Gate the button when no genre source is enabled (fail open if config unloaded).
+  const genreSourcesEnabled =
+    configValues == null ||
+    !!(configValues['tagging.lastfm_genres'] || configValues['tagging.bandcamp_genres'])
 
   const [label, setLabel] = React.useState(() => commonValue(tracks, 'label'))
   const [releaseDate, setReleaseDate] = React.useState(() => commonValue(tracks, 'release_date'))
@@ -166,6 +200,25 @@ export function AlbumMetaPanel({
 
   const handleSaveGenres = (genres: string[]): void => {
     void onSave({ genres })
+  }
+
+  // KAMP-605: fetch candidates, merge (union) into the album's genres, and save via
+  // the normal genre PATCH. The user reviews by removing unwanted chips afterward
+  // (each removal persists, matching the panel's eager-write model).
+  const handleFetchGenres = async (): Promise<void> => {
+    if (!onFetchGenres || fetchingGenres) return
+    setFetchingGenres(true)
+    setFetchMsg('')
+    try {
+      const candidates = await onFetchGenres()
+      const merged = mergeGenres(albumGenres, candidates)
+      if (merged.length === albumGenres.length) setFetchMsg('No new genres')
+      else await onSave({ genres: merged })
+    } catch {
+      setFetchMsg('Fetch failed')
+    } finally {
+      setFetchingGenres(false)
+    }
   }
 
   const handleSaveLabel = (): void => {
@@ -222,6 +275,39 @@ export function AlbumMetaPanel({
                   onCommit={handleSaveGenres}
                   onGenreClick={openGenreFilter}
                 />
+                {editMode && onFetchGenres && (
+                  <div className="genre-fetch">
+                    <button
+                      type="button"
+                      className={`genre-fetch-btn${fetchingGenres ? ' genre-fetch-btn--loading' : ''}`}
+                      disabled={fetchingGenres || !genreSourcesEnabled}
+                      onClick={() => void handleFetchGenres()}
+                      {...tooltip(
+                        genreSourcesEnabled
+                          ? 'Fetch genres from your sources'
+                          : 'Enable Last.fm or Bandcamp genres in Preferences'
+                      )}
+                    >
+                      {fetchingGenres ? (
+                        <>
+                          Fetching
+                          <span className="genre-fetch-dots" aria-hidden="true">
+                            <span>.</span>
+                            <span>.</span>
+                            <span>.</span>
+                          </span>
+                        </>
+                      ) : (
+                        'Fetch'
+                      )}
+                    </button>
+                    {fetchMsg && (
+                      <span className="genre-fetch-msg" aria-live="polite">
+                        {fetchMsg}
+                      </span>
+                    )}
+                  </div>
+                )}
               </dd>
             </div>
           )}

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
-import { artUrl, fetchMusicBrainzCandidates, patchTrackMeta } from '../api/client'
+import { artUrl, fetchAlbumGenres, fetchMusicBrainzCandidates, patchTrackMeta } from '../api/client'
 import type {
   AlbumTagsCollision,
   MusicBrainzCandidate,
@@ -766,6 +766,9 @@ export function TrackList(): React.JSX.Element | null {
         expanded={albumMetaExpanded}
         onToggle={handleToggle}
         onSave={(opts) => patchAlbumMeta(album.album_artist, album.album, opts)}
+        onFetchGenres={() =>
+          fetchAlbumGenres(album.album_artist, album.album).then((r) => r.genres)
+        }
         onHandleMouseDown={handleResizeMouseDown}
         onHandleDoubleClick={handleResizeReset}
       />

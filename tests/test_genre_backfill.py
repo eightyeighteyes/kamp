@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -60,6 +61,89 @@ class _Progress:
 
     def __call__(self, done: int, total: int, state: str) -> None:
         self.calls.append((done, total, state))
+
+
+def _cfg(*, lastfm: bool = True, bandcamp: bool = True) -> Config:
+    base = _config()
+    return replace(
+        base,
+        tagging=replace(base.tagging, lastfm_genres=lastfm, bandcamp_genres=bandcamp),
+    )
+
+
+class TestFetchAlbumGenreCandidates:
+    """KAMP-605: the per-album Fetch button's read-only candidate engine."""
+
+    def test_unions_lastfm_and_cached_bandcamp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(gb, "fetch_all_genres", lambda s, q: ["Jazz"] if s else [])
+        index = MagicMock()
+        index.album_genre_row.return_value = {
+            "sale_item_id": "S1",
+            "keywords": '["Bebop"]',
+            "album_url": "u",
+        }
+        out = gb.fetch_album_genre_candidates(index, _cfg(), "A", "B")
+        assert out == ["Jazz", "Bebop"]
+        # Read-only: cached keywords are never re-written.
+        index.set_collection_keywords.assert_not_called()
+
+    def test_casefold_dedups(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gb, "fetch_all_genres", lambda s, q: ["Jazz"] if s else [])
+        index = MagicMock()
+        index.album_genre_row.return_value = {
+            "sale_item_id": "S1",
+            "keywords": '["jazz", "Bebop"]',
+            "album_url": None,
+        }
+        out = gb.fetch_album_genre_candidates(index, _cfg(), "A", "B")
+        assert out == ["Jazz", "Bebop"]
+
+    def test_bandcamp_disabled_skips_extras(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(gb, "fetch_all_genres", lambda s, q: ["Jazz"] if s else [])
+        index = MagicMock()
+        out = gb.fetch_album_genre_candidates(index, _cfg(bandcamp=False), "A", "B")
+        assert out == ["Jazz"]
+        index.album_genre_row.assert_not_called()
+
+    def test_lastfm_disabled_yields_bandcamp_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # enabled_sources is real: lastfm off -> no sources -> fake fetch returns [].
+        monkeypatch.setattr(gb, "fetch_all_genres", lambda s, q: ["Jazz"] if s else [])
+        index = MagicMock()
+        index.album_genre_row.return_value = {
+            "sale_item_id": "S1",
+            "keywords": '["Bebop"]',
+            "album_url": None,
+        }
+        out = gb.fetch_album_genre_candidates(index, _cfg(lastfm=False), "A", "B")
+        assert out == ["Bebop"]
+
+    def test_cold_bandcamp_cache_is_read_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No cached keywords + no session -> [] with no network and no cache write.
+        monkeypatch.setattr(gb, "fetch_all_genres", lambda s, q: [])
+        index = MagicMock()
+        index.album_genre_row.return_value = {
+            "sale_item_id": "S1",
+            "keywords": None,
+            "album_url": "https://x/album",
+        }
+        out = gb.fetch_album_genre_candidates(index, _cfg(), "A", "B")
+        assert out == []
+        index.set_collection_keywords.assert_not_called()
+
+    def test_missing_album_row_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gb, "fetch_all_genres", lambda s, q: ["Jazz"] if s else [])
+        index = MagicMock()
+        index.album_genre_row.return_value = None
+        out = gb.fetch_album_genre_candidates(index, _cfg(), "A", "B")
+        assert out == ["Jazz"]
 
 
 class TestRunGenreBackfill:

@@ -1,4 +1,5 @@
-import React, { useEffect, useReducer, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useStore } from '../store'
 import { previewCriteria } from '../api/client'
 import type { CriteriaDoc, CriteriaField, CriteriaOperator, Playlist } from '../api/client'
@@ -333,6 +334,141 @@ function PlaylistInput({
   )
 }
 
+// Single-value text input with a library-sourced autocomplete (KAMP-551), adapted
+// from GenreChipsInput's typeahead (filter + keyboard nav + body-portaled menu that
+// escapes the modal's stacking/scroll context). Suggestions are hints only — the
+// input stays free-text so substring values (for `contains`, etc.) are never blocked.
+function TextAutocompleteInput({
+  value,
+  suggestions,
+  onChange
+}: {
+  value: string
+  suggestions: string[]
+  onChange: (v: string) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  // -1 = nothing highlighted (Enter keeps the typed value rather than a suggestion).
+  const [active, setActive] = useState(-1)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const filtered = useMemo(() => {
+    const q = value.trim().toLowerCase()
+    return suggestions.filter((s) => !q || s.toLowerCase().includes(q)).slice(0, 8)
+  }, [value, suggestions])
+
+  // Hide the menu once the value already equals the only remaining suggestion.
+  const showMenu =
+    open &&
+    filtered.length > 0 &&
+    !(filtered.length === 1 && filtered[0].toLowerCase() === value.trim().toLowerCase())
+
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null)
+  useLayoutEffect(() => {
+    if (!showMenu) return
+    const place = (): void => {
+      const r = inputRef.current?.getBoundingClientRect()
+      if (r) setMenuPos({ top: r.bottom + 2, left: r.left, width: r.width })
+    }
+    place()
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [showMenu, filtered.length])
+
+  const pick = (s: string): void => {
+    onChange(s)
+    setOpen(false)
+    setActive(-1)
+  }
+
+  return (
+    <div
+      ref={wrapRef}
+      className="magic-autocomplete-wrap"
+      onBlur={(e) => {
+        if (!wrapRef.current?.contains(e.relatedTarget as Node | null)) setOpen(false)
+      }}
+    >
+      <input
+        ref={inputRef}
+        className="magic-input magic-input--text"
+        type="text"
+        value={value}
+        placeholder="value"
+        role="combobox"
+        aria-expanded={showMenu}
+        aria-controls="magic-autocomplete-list"
+        aria-activedescendant={active >= 0 ? `magic-autocomplete-opt-${active}` : undefined}
+        onChange={(e) => {
+          onChange(e.target.value)
+          setOpen(true)
+          setActive(-1)
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            setOpen(true)
+            setActive((i) => (filtered.length ? Math.min(i + 1, filtered.length - 1) : -1))
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault()
+            setActive((i) => Math.max(i - 1, -1))
+          } else if (e.key === 'Enter') {
+            if (active >= 0 && active < filtered.length) {
+              e.preventDefault()
+              pick(filtered[active])
+            } else {
+              setOpen(false)
+            }
+          } else if (e.key === 'Escape') {
+            setOpen(false)
+            setActive(-1)
+          }
+        }}
+      />
+      {showMenu &&
+        menuPos &&
+        createPortal(
+          <ul
+            id="magic-autocomplete-list"
+            className="magic-autocomplete"
+            role="listbox"
+            style={{ top: menuPos.top, left: menuPos.left, minWidth: menuPos.width }}
+          >
+            {filtered.map((s, i) => (
+              <li
+                key={s}
+                id={`magic-autocomplete-opt-${i}`}
+                role="option"
+                aria-selected={i === active}
+              >
+                <button
+                  type="button"
+                  className={`magic-autocomplete-item${i === active ? ' active' : ''}`}
+                  // onMouseDown fires before the input's blur, so the pick happens
+                  // before the menu closes.
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    pick(s)
+                  }}
+                  onMouseEnter={() => setActive(i)}
+                >
+                  {s}
+                </button>
+              </li>
+            ))}
+          </ul>,
+          document.body
+        )}
+    </div>
+  )
+}
+
 function DateInput({
   dateMeta,
   op,
@@ -432,6 +568,17 @@ function ConditionRow({
   const isBool = fieldType === 'bool'
   const isDate = fieldType === 'date'
 
+  // Autocomplete suggestions for text fields (KAMP-551): artist / album_artist draw
+  // from the library artists, genre from genres. Album has no suggestion source.
+  const artists = useStore((s) => s.library.artists)
+  const genres = useStore((s) => s.library.genres)
+  const suggestions =
+    condition.field === 'track.genre'
+      ? genres
+      : condition.field === 'track.artist' || condition.field === 'track.album_artist'
+        ? artists
+        : null
+
   const handleFieldChange = (newField: CriteriaField): void => {
     const newType = FIELD_META[newField].type
     const newOp = defaultOpForType(newType)
@@ -488,15 +635,22 @@ function ConditionRow({
         />
       )}
 
-      {fieldType === 'text' && (
-        <input
-          className="magic-input magic-input--text"
-          type="text"
-          value={condition.value}
-          placeholder="value"
-          onChange={(e) => onUpdate({ value: e.target.value })}
-        />
-      )}
+      {fieldType === 'text' &&
+        (suggestions ? (
+          <TextAutocompleteInput
+            value={condition.value}
+            suggestions={suggestions}
+            onChange={(v) => onUpdate({ value: v })}
+          />
+        ) : (
+          <input
+            className="magic-input magic-input--text"
+            type="text"
+            value={condition.value}
+            placeholder="value"
+            onChange={(e) => onUpdate({ value: e.target.value })}
+          />
+        ))}
 
       {fieldType === 'int' && (
         <input

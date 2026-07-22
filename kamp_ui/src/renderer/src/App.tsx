@@ -150,6 +150,13 @@ export default function App(): React.JSX.Element {
   const searchBarRef = useRef<HTMLInputElement>(null)
   const mainContentRef = useRef<HTMLElement>(null)
 
+  // Latest-ref to the view-cycle handler (KAMP-560). The IPC subscription below is
+  // registered once, but `cycleView` closes over the current panel list / active
+  // view, so it is reassigned each render (after activateMain is defined). The
+  // no-op default covers renders that early-return before cycleView exists (e.g.
+  // server disconnected); it self-heals once a full render assigns the real one.
+  const cycleViewRef = useRef<(direction: 'next' | 'prev') => void>(() => {})
+
   // Per-view scroll positions — kept current by a scroll listener so we never
   // read a browser-clamped value when the outgoing view's content was taller.
   // Key: active main panel id (built-in view name or extension panel id).
@@ -375,11 +382,6 @@ export default function App(): React.JSX.Element {
           e.preventDefault()
           void prev()
           break
-        case 'l':
-        case 'L':
-          void setActiveView(activeView === 'library' ? 'now-playing' : 'library')
-          setActiveExtPanel(null)
-          break
         case 'q':
         case 'Q':
           // Don't intercept Cmd+Q (macOS quit) or Ctrl+Q.
@@ -413,6 +415,13 @@ export default function App(): React.JSX.Element {
     const cleanup = window.api.onOpenPreferences(openPrefs)
     return cleanup
   }, [openPrefs])
+
+  // Subscribe once to view-cycle events forwarded from the main process; dispatch
+  // through the latest-ref so we always run against the current panel list.
+  useEffect(() => {
+    if (!window.api.onCycleView) return
+    return window.api.onCycleView((direction) => cycleViewRef.current(direction))
+  }, [])
 
   // Discover and load frontend extensions.
   // extState.disabledIds is captured at mount; re-runs if the disabled set changes
@@ -542,32 +551,13 @@ export default function App(): React.JSX.Element {
     el.scrollTop = viewScrollRef.current[activeMainKey] ?? 0
   }, [activeMainKey])
 
-  if (serverStatus === 'disconnected') {
-    return (
-      <>
-        <div className="server-offline">
-          <div className="server-offline-icon">⏻</div>
-          <div className="server-offline-title">kamp server is not running</div>
-          <div className="server-offline-hint">
-            Start it with <code>kamp server</code>
-          </div>
-        </div>
-        {!splashGone && <SplashScreen hiding={splashHiding} slowStart={slowStart} />}
-        <PreferencesDialog
-          extensions={allExtensions}
-          extState={extState}
-          onReviewDenied={handleReviewDenied}
-          onInstalled={refreshExtensions}
-          onUninstalled={reloadAfterUninstall}
-        />
-      </>
-    )
-  }
-
-  const showSetup = onboardingRequired === true && !onboardingComplete
-
   // Panels to show as tabs in the main area nav bar.
   const mainPanels = layout.panelsInSlot('main')
+
+  // The view-cycle ring (KAMP-560) is exactly the rendered top-level tabs: main-slot
+  // panels minus modal views. Downloads (KAMP-585) is an icon, not a tab, so it is
+  // excluded. Single source of truth — used by both the rail render and cycleView.
+  const ringPanels = mainPanels.filter((panel) => panel.id !== 'kamp.downloads')
 
   // Determine whether a given main-slot panel tab is active.
   const isActiveMain = (panel: UnifiedPanel): boolean => {
@@ -597,6 +587,47 @@ export default function App(): React.JSX.Element {
       setActiveExtPanel(panel.id)
     }
   }
+
+  // Advance one step through the ring (KAMP-560). No-op when the current view is not
+  // a ring member (e.g. a modal view like Downloads), matching the tab semantics.
+  const cycleView = (direction: 'next' | 'prev'): void => {
+    const n = ringPanels.length
+    if (n === 0) return
+    const cur = ringPanels.findIndex(isActiveMain)
+    if (cur < 0) return
+    activateMain(ringPanels[(cur + (direction === 'next' ? 1 : -1) + n) % n])
+  }
+  // Keep the latest-ref current so the once-registered cycle-view IPC subscription
+  // always dispatches against the current panel list. Effect form (not a during-
+  // render assignment) so the ref is only written after commit. Defined above the
+  // early return below so this hook keeps a stable order.
+  useEffect(() => {
+    cycleViewRef.current = cycleView
+  })
+
+  if (serverStatus === 'disconnected') {
+    return (
+      <>
+        <div className="server-offline">
+          <div className="server-offline-icon">⏻</div>
+          <div className="server-offline-title">kamp server is not running</div>
+          <div className="server-offline-hint">
+            Start it with <code>kamp server</code>
+          </div>
+        </div>
+        {!splashGone && <SplashScreen hiding={splashHiding} slowStart={slowStart} />}
+        <PreferencesDialog
+          extensions={allExtensions}
+          extState={extState}
+          onReviewDenied={handleReviewDenied}
+          onInstalled={refreshExtensions}
+          onUninstalled={reloadAfterUninstall}
+        />
+      </>
+    )
+  }
+
+  const showSetup = onboardingRequired === true && !onboardingComplete
 
   // Determine what to render in the main content area.
   function renderMainContent(): React.JSX.Element {
@@ -660,17 +691,15 @@ export default function App(): React.JSX.Element {
       <nav className="view-tabs">
         {/* Left group: built-in view tabs (Downloads is now an icon, see right group). */}
         <div className="view-tabs__group view-tabs__group--left">
-          {mainPanels
-            .filter((panel) => panel.id !== 'kamp.downloads')
-            .map((panel) => (
-              <button
-                key={panel.id}
-                className={isActiveMain(panel) && !searchQuery ? 'active' : ''}
-                onClick={() => activateMain(panel)}
-              >
-                {panel.title}
-              </button>
-            ))}
+          {ringPanels.map((panel) => (
+            <button
+              key={panel.id}
+              className={isActiveMain(panel) && !searchQuery ? 'active' : ''}
+              onClick={() => activateMain(panel)}
+            >
+              {panel.title}
+            </button>
+          ))}
         </div>
         <SearchBar ref={searchBarRef} />
         {/* Right group: Downloads icon, status rail, style + preferences buttons. */}

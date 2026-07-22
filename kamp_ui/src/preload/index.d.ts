@@ -9,6 +9,7 @@ declare global {
       appVersion: string
       openDirectory: () => Promise<string | null>
       onOpenPreferences: (callback: () => void) => () => void
+      onCycleView: (callback: (direction: 'next' | 'prev') => void) => () => void
       bandcamp: {
         beginLogin: () => Promise<{ ok: boolean; error?: string }>
         onSyncStatus: (callback: (state: 'idle' | 'syncing') => void) => () => void

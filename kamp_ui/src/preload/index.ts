@@ -44,6 +44,14 @@ const api = {
     // Return a cleanup function so the caller can unsubscribe.
     return () => ipcRenderer.off('open-preferences', handler)
   },
+  // View cycling (KAMP-560): the main process forwards Ctrl+Tab / Ctrl+Shift+Tab
+  // here as a direction so the renderer can advance through the top-level tabs.
+  onCycleView: (callback: (direction: 'next' | 'prev') => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, direction: 'next' | 'prev'): void =>
+      callback(direction)
+    ipcRenderer.on('cycle-view', handler)
+    return () => ipcRenderer.off('cycle-view', handler)
+  },
   bandcamp: {
     /** Open the Bandcamp login BrowserWindow. Resolves when login succeeds or the window is closed. */
     beginLogin: (): Promise<{ ok: boolean; error?: string }> =>

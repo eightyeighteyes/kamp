@@ -77,6 +77,9 @@ type PlayerStore = {
 
   configuredLibraryPath: string | null
   activeView: 'library' | 'now-playing' | 'home' | 'downloads'
+  // Last view active before the current one, used so Esc in Downloads can return
+  // to where the user came from. In-memory only (not persisted to daemon UI state).
+  previousView: 'library' | 'now-playing' | 'home' | 'downloads' | null
   moduleOrder: string[]
   hiddenModules: string[]
   moduleDisplayStyles: Record<string, DisplayStyle>
@@ -410,6 +413,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   peakDb: null,
   configuredLibraryPath: null,
   activeView: 'library',
+  previousView: null,
   moduleOrder: (() => {
     const saved = localStorage.getItem('kamp:module-order')
     return saved
@@ -593,7 +597,10 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   setActiveView: async (view) => {
-    const { collectionPanelVisible, collectionPanelSnapshot } = get()
+    const { collectionPanelVisible, collectionPanelSnapshot, activeView } = get()
+    // Remember where we came from so Esc in Downloads can return there.
+    // Only advance on an actual change, so a no-op re-selection doesn't lose it.
+    if (view !== activeView) set({ previousView: activeView })
     if (view === 'library') {
       // Restore the collection panel to its pre-non-library state.
       const restored = collectionPanelSnapshot ?? collectionPanelVisible

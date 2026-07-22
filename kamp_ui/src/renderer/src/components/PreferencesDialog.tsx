@@ -1003,11 +1003,18 @@ export function PreferencesDialog({
     return () => clearInterval(poll)
   }, [prefsOpen, activeTab, backfillActive, refreshGenreBackfill])
 
-  // Close on Escape.
+  // Close on Escape. stopPropagation so this modal fully owns the Escape key while
+  // open — no global/background handler (e.g. the Downloads Esc-to-leave listener,
+  // KAMP-585) should also fire on the same press. Mirrors the KeyboardShortcutsOverlay
+  // pattern; without it, closePrefs() forces a synchronous store flush that can swap a
+  // background window-listener's closure mid-dispatch, defeating any prefsOpen guard.
   useEffect(() => {
     if (!prefsOpen) return
     const handler = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') closePrefs()
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        closePrefs()
+      }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)

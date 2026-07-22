@@ -41,6 +41,9 @@ export const TOOLTIPS = {
   // Search
   SEARCH_CLEAR: 'Clear search',
 
+  // Downloads
+  DOWNLOADS_VIEW: 'Downloads',
+
   // Track / album favorites
   ALBUM_FAVORITE_ADD: 'Add to favorites',
   ALBUM_FAVORITE_REMOVE: 'Remove from favorites'

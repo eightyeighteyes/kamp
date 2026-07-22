@@ -161,6 +161,30 @@ html[data-platform='win32'] .view-tabs {
   padding-right: 140px;
 }
 
+/* Left/right rail groups flank the search bar. Both flex:1 so the search bar
+   sits centered in the rail's free space (KAMP-585). */
+.view-tabs__group {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+}
+
+.view-tabs__group--left {
+  justify-content: flex-start;
+  gap: 2px;
+}
+
+.view-tabs__group--right {
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+/* The search bar is the centered flex child, so drop its default margin-left:auto
+   (which would otherwise consume all free space and break the centering). */
+.view-tabs > .search-bar {
+  margin-left: 0;
+}
+
 .view-tabs button {
   background: none;
   border: none;
@@ -332,6 +356,19 @@ html[data-platform='win32'] .view-tabs {
 .prefs-btn:hover {
   color: var(--text);
   background: var(--hover);
+}
+
+/* Downloads entry-point icon (KAMP-585): replaces the old Downloads text tab.
+   Uses .prefs-btn as its base; flex-centers the icon and highlights in the
+   accent color while the Downloads view is active. */
+.downloads-btn {
+  display: flex;
+  align-items: center;
+}
+
+.downloads-btn--active,
+.downloads-btn--active:hover {
+  color: var(--accent);
 }
 
 /* App body ----------------------------------------------------------------- */

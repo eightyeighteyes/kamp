@@ -23,6 +23,9 @@ import { ExtensionPermissionPrompt } from './components/ExtensionPermissionPromp
 import { UpdateBanner } from './components/UpdateBanner'
 import { KeyboardShortcutsOverlay } from './components/KeyboardShortcutsOverlay'
 import { StyleRail } from './components/StyleRail'
+import { DownloadArrowIcon } from './components/TransportIcons'
+import { useTooltip } from './hooks/useTooltip'
+import { TOOLTIPS } from './tooltipStrings'
 import { registerBuiltInPanel, usePanelLayout } from './hooks/usePanelLayout'
 import { useExtensionState } from './hooks/useExtensionState'
 import type { UnifiedPanel } from './hooks/usePanelLayout'
@@ -134,6 +137,7 @@ export default function App(): React.JSX.Element {
   // Active extension panel id, or null when a built-in view is showing.
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [activeExtPanel, setActiveExtPanel] = useState<string | null>(null)
+  const tooltip = useTooltip()
   // All discovered extensions (used by PreferencesDialog for the Extensions tab).
   const [allExtensions, setAllExtensions] = useState<ExtensionInfo[]>([])
   // Phase 2 (community) extensions approved and ready to render in sandboxed iframes.
@@ -572,7 +576,6 @@ export default function App(): React.JSX.Element {
     if (panel.kind === 'builtin' && panel.id === 'kamp.library') return activeView === 'library'
     if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing')
       return activeView === 'now-playing'
-    if (panel.kind === 'builtin' && panel.id === 'kamp.downloads') return activeView === 'downloads'
     return false
   }
 
@@ -589,9 +592,6 @@ export default function App(): React.JSX.Element {
       if (selectedArtist !== null || selectedAlbum !== null) selectArtist(null)
     } else if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing') {
       void setActiveView('now-playing')
-      setActiveExtPanel(null)
-    } else if (panel.kind === 'builtin' && panel.id === 'kamp.downloads') {
-      void setActiveView('downloads')
       setActiveExtPanel(null)
     } else if (panel.kind === 'extension') {
       setActiveExtPanel(panel.id)
@@ -632,7 +632,7 @@ export default function App(): React.JSX.Element {
           <NowPlayingView />
         </div>
         <div className={isDownloadsPane ? 'view-pane view-pane--active' : 'view-pane'}>
-          <DownloadsView />
+          <DownloadsView active={isDownloadsPane} />
         </div>
       </>
     )
@@ -658,45 +658,67 @@ export default function App(): React.JSX.Element {
       )}
       {showSetup && <div className="onboarding-titlebar">{onboardingTitle}</div>}
       <nav className="view-tabs">
-        {mainPanels.map((panel) => (
-          <button
-            key={panel.id}
-            className={isActiveMain(panel) && !searchQuery ? 'active' : ''}
-            onClick={() => activateMain(panel)}
-          >
-            {panel.title}
-          </button>
-        ))}
-        <SearchBar ref={searchBarRef} />
-        <div className="status-rail">
-          <PipelineIndicator />
-          <BandcampButton />
+        {/* Left group: built-in view tabs (Downloads is now an icon, see right group). */}
+        <div className="view-tabs__group view-tabs__group--left">
+          {mainPanels
+            .filter((panel) => panel.id !== 'kamp.downloads')
+            .map((panel) => (
+              <button
+                key={panel.id}
+                className={isActiveMain(panel) && !searchQuery ? 'active' : ''}
+                onClick={() => activateMain(panel)}
+              >
+                {panel.title}
+              </button>
+            ))}
         </div>
-        <button
-          className="prefs-btn"
-          onClick={() => toggleStyleRail()}
-          title="Style Settings"
-          aria-label="Style Settings"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 640 640"
-            width="1em"
-            height="1em"
-            fill="currentColor"
-            aria-hidden="true"
+        <SearchBar ref={searchBarRef} />
+        {/* Right group: Downloads icon, status rail, style + preferences buttons. */}
+        <div className="view-tabs__group view-tabs__group--right">
+          <button
+            className={`prefs-btn downloads-btn${
+              activeView === 'downloads' && !searchQuery ? ' downloads-btn--active' : ''
+            }`}
+            onClick={() => {
+              void setSearchQuery('')
+              void setActiveView('downloads')
+              setActiveExtPanel(null)
+            }}
+            aria-label="Downloads"
+            {...tooltip(TOOLTIPS.DOWNLOADS_VIEW)}
           >
-            <path d="M64 112C64 85.5 85.5 64 112 64L208 64C234.5 64 256 85.5 256 112L256 480C256 533 213 576 160 576C107 576 64 533 64 480L64 112zM304 473.6L304 202.1L352.1 154C370.8 135.3 401.2 135.3 420 154L487.9 221.9C506.6 240.6 506.6 271 487.9 289.8L304 473.6zM269.5 576L461.5 384L528.1 384C554.6 384 576.1 405.5 576.1 432L576.1 528C576.1 554.5 554.6 576 528.1 576L269.6 576zM144 128C135.2 128 128 135.2 128 144L128 176C128 184.8 135.2 192 144 192L176 192C184.8 192 192 184.8 192 176L192 144C192 135.2 184.8 128 176 128L144 128zM128 272L128 304C128 312.8 135.2 320 144 320L176 320C184.8 320 192 312.8 192 304L192 272C192 263.2 184.8 256 176 256L144 256C135.2 256 128 263.2 128 272zM160 504C173.3 504 184 493.3 184 480C184 466.7 173.3 456 160 456C146.7 456 136 466.7 136 480C136 493.3 146.7 504 160 504z" />
-          </svg>
-        </button>
-        <button
-          className="prefs-btn"
-          onClick={() => openPrefs()}
-          title="Preferences"
-          aria-label="Preferences"
-        >
-          ⚙
-        </button>
+            <DownloadArrowIcon size={18} />
+          </button>
+          <div className="status-rail">
+            <PipelineIndicator />
+            <BandcampButton />
+          </div>
+          <button
+            className="prefs-btn"
+            onClick={() => toggleStyleRail()}
+            title="Style Settings"
+            aria-label="Style Settings"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 640 640"
+              width="1em"
+              height="1em"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d="M64 112C64 85.5 85.5 64 112 64L208 64C234.5 64 256 85.5 256 112L256 480C256 533 213 576 160 576C107 576 64 533 64 480L64 112zM304 473.6L304 202.1L352.1 154C370.8 135.3 401.2 135.3 420 154L487.9 221.9C506.6 240.6 506.6 271 487.9 289.8L304 473.6zM269.5 576L461.5 384L528.1 384C554.6 384 576.1 405.5 576.1 432L576.1 528C576.1 554.5 554.6 576 528.1 576L269.6 576zM144 128C135.2 128 128 135.2 128 144L128 176C128 184.8 135.2 192 144 192L176 192C184.8 192 192 184.8 192 176L192 144C192 135.2 184.8 128 176 128L144 128zM128 272L128 304C128 312.8 135.2 320 144 320L176 320C184.8 320 192 312.8 192 304L192 272C192 263.2 184.8 256 176 256L144 256C135.2 256 128 263.2 128 272zM160 504C173.3 504 184 493.3 184 480C184 466.7 173.3 456 160 456C146.7 456 136 466.7 136 480C136 493.3 146.7 504 160 504z" />
+            </svg>
+          </button>
+          <button
+            className="prefs-btn"
+            onClick={() => openPrefs()}
+            title="Preferences"
+            aria-label="Preferences"
+          >
+            ⚙
+          </button>
+        </div>
       </nav>
       <StyleRail />
       <div className="app-body">

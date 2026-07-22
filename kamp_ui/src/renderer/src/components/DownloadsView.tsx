@@ -1,4 +1,4 @@
-import React, { useRef } from 'react'
+import React, { useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { DownloadCard } from './DownloadCard'
 import { computeNewOrder } from '../utils/computeNewOrder'
@@ -17,17 +17,41 @@ import { computeNewOrder } from '../utils/computeNewOrder'
  * pointerup. Retry/Cancel are optimistic store actions reconciled by the WS
  * `download.queue` snapshot.
  */
-export function DownloadsView(): React.JSX.Element {
+export function DownloadsView({ active = false }: { active?: boolean }): React.JSX.Element {
   const queue = useStore((s) => s.downloadQueue)
   const configValues = useStore((s) => s.configValues)
   const downloadProgress = useStore((s) => s.downloadProgress)
   const reorderDownloadQueue = useStore((s) => s.reorderDownloadQueue)
   const retryDownload = useStore((s) => s.retryDownload)
   const cancelDownload = useStore((s) => s.cancelDownload)
+  const setActiveView = useStore((s) => s.setActiveView)
+  const prefsOpen = useStore((s) => s.prefsOpen)
 
   // Currently highlighted drop-indicator element (avoids a DOM query on clear).
   const activeDropRef = useRef<HTMLElement | null>(null)
   const queuedSectionRef = useRef<HTMLElement | null>(null)
+
+  // Esc while Downloads is the active view returns to the previous view (KAMP-585).
+  // Scoped to `active` so it never fires when Downloads is mounted-but-hidden, when
+  // an extension panel is showing, or under a search (all fold into `active`).
+  // - prefsOpen is read from a closure-captured selector (in deps), NOT getState():
+  //   the Preferences dialog's own Esc handler synchronously clears prefsOpen before
+  //   the event bubbles to window, so getState() would read the post-close value and
+  //   double-navigate. The Keyboard-Shortcuts overlay needs no guard — it captures
+  //   and stopPropagation()s Escape, so this window listener never sees it.
+  // - previousView is read fresh at fire time (nothing mutates it during the event).
+  useEffect(() => {
+    if (!active) return
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape' || prefsOpen) return
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      const prev = useStore.getState().previousView
+      void setActiveView(prev && prev !== 'downloads' ? prev : 'library')
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [active, prefsOpen, setActiveView])
 
   // "Is any Downloads-capable service connected?" — today that is just Bandcamp.
   // configValues is null until loadConfig() resolves, so `?? false` treats the
@@ -147,8 +171,13 @@ export function DownloadsView(): React.JSX.Element {
     }
 
     // Escape cancels the drag immediately (real DOM listener; no reorder runs).
+    // stopPropagation so a drag-cancel Esc does not also bubble to the window
+    // listener above and navigate away from Downloads (KAMP-585).
     const onEscape = (ev: KeyboardEvent): void => {
-      if (ev.key === 'Escape') cleanup()
+      if (ev.key === 'Escape') {
+        ev.stopPropagation()
+        cleanup()
+      }
     }
 
     document.addEventListener('pointermove', onMove)

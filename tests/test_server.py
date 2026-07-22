@@ -7540,3 +7540,47 @@ class TestGenreManagement:
         assert res.status_code == 200
         mock_index.clear_allowlist_extras.assert_called_once()
         hook.assert_called_once()
+
+
+class TestFetchAlbumGenresEndpoint:
+    """KAMP-605: GET /api/v1/albums/genres/fetch — read-only candidate fetch."""
+
+    def test_returns_candidates(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = [_track(1)]
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            genre_fetch_fn=lambda aa, al: ["Jazz", "Bebop"],
+        )
+        res = TestClient(app).get(
+            "/api/v1/albums/genres/fetch",
+            params={"album_artist": "A", "album": "B"},
+        )
+        assert res.status_code == 200
+        assert res.json() == {"genres": ["Jazz", "Bebop"]}
+
+    def test_404_when_album_has_no_tracks(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.tracks_for_album.return_value = []
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            genre_fetch_fn=lambda aa, al: ["Jazz"],
+        )
+        res = TestClient(app).get(
+            "/api/v1/albums/genres/fetch",
+            params={"album_artist": "A", "album": "B"},
+        )
+        assert res.status_code == 404
+
+    def test_503_when_fetch_fn_not_wired(self, client: TestClient) -> None:
+        res = client.get(
+            "/api/v1/albums/genres/fetch",
+            params={"album_artist": "A", "album": "B"},
+        )
+        assert res.status_code == 503

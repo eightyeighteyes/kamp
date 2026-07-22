@@ -15373,3 +15373,46 @@ class TestKamp552DropColumns:
         index.close()
         assert by_local is not None and by_local.id == tid
         assert by_stream is not None and by_stream.id == tid
+
+
+class TestAlbumGenreRow:
+    """KAMP-605: single-album genre-enrichment row for the per-album Fetch button."""
+
+    def test_returns_row_with_cached_bandcamp_keywords(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        aid = _add_artist(index, "Artist")
+        # The albums.sale_item_id FK points at bandcamp_collection — insert it first.
+        index._conn.execute(
+            "INSERT INTO bandcamp_collection (sale_item_id, keywords)"
+            " VALUES ('S1', '[\"Shoegaze\"]')"
+        )
+        _add_album_with_track(
+            index, "Artist", "Album", aid, "bandcamp://S1/1", sale_item_id="S1"
+        )
+        index._conn.commit()
+        row = index.album_genre_row("Artist", "Album")
+        index.close()
+        assert row is not None
+        assert row["album_artist"] == "Artist"
+        assert row["sale_item_id"] == "S1"
+        assert row["keywords"] == '["Shoegaze"]'
+
+    def test_returns_row_for_enriched_album_no_bandcamp(self, tmp_path: Path) -> None:
+        # No genres_enriched_at filter and no bandcamp row -> keywords None.
+        index = LibraryIndex(tmp_path / "library.db")
+        aid = _add_artist(index, "Artist")
+        album_id = _add_album_with_track(index, "Artist", "Album", aid, "/x/01.mp3")
+        index._conn.execute(
+            "UPDATE albums SET genres_enriched_at = 123 WHERE id = ?", (album_id,)
+        )
+        index._conn.commit()
+        row = index.album_genre_row("Artist", "Album")
+        index.close()
+        assert row is not None
+        assert row["keywords"] is None
+
+    def test_none_for_unknown_album(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        result = index.album_genre_row("Nobody", "Nothing")
+        index.close()
+        assert result is None

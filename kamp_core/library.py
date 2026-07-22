@@ -4024,6 +4024,22 @@ class LibraryIndex:
             ).fetchall()
         ]
 
+    def album_genre_row(self, album_artist: str, album: str) -> dict[str, Any] | None:
+        """The genre-enrichment row for a single album (KAMP-605), regardless of its
+        enriched state — the per-album Fetch button's Bandcamp-keywords source. Same
+        columns as albums_pending_genre_enrichment. Returns None if the album isn't a
+        real (non-virtual) album. LIMIT 1 guards against a duplicate LEFT JOIN row."""
+        r = self._conn.execute(
+            "SELECT a.id, a.album_artist, a.album, a.sale_item_id,"
+            " bc.album_url, bc.keywords"
+            " FROM albums a"
+            " LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id"
+            " WHERE a.album_artist = ? AND a.album = ?"
+            " LIMIT 1",
+            (album_artist, album),
+        ).fetchone()
+        return dict(r) if r else None
+
     def mark_album_genres_enriched(self, album_id: int, ts: float) -> None:
         """Checkpoint an album as processed by the backfill so a restart resumes."""
         self._conn.execute(

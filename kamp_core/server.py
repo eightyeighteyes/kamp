@@ -430,6 +430,10 @@ class MuteRequest(BaseModel):
     muted: bool
 
 
+class GenreFetchOut(BaseModel):
+    genres: list[str]
+
+
 class GenreMergeRequest(BaseModel):
     source: str
     target: str
@@ -1039,6 +1043,7 @@ def create_app(
     auth_token: str | None = None,
     mb_search_fn: Callable[[str, str], list[Any]] | None = None,
     mb_release_fn: Callable[[str], Any] | None = None,
+    genre_fetch_fn: Callable[[str, str], list[str]] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -2710,6 +2715,23 @@ def create_app(
             )
 
         return MusicBrainzLookupOut(candidates=candidates)
+
+    @app.get("/api/v1/albums/genres/fetch", response_model=GenreFetchOut)
+    async def fetch_album_genres(album_artist: str, album: str) -> GenreFetchOut:
+        """Candidate genres for one album from the configured sources (KAMP-605).
+
+        Read-only: returns candidates for the client to merge + PATCH; it never
+        writes DB or files. Runs the (bounded ~8s) Last.fm fetch off the event
+        loop. 404 if the album has no tracks; 503 if the fetch fn wasn't wired.
+        """
+        if genre_fetch_fn is None:
+            raise HTTPException(status_code=503, detail="Genre fetch not available")
+        if not index.tracks_for_album(album_artist, album):
+            raise HTTPException(status_code=404, detail="Album not found")
+        genres = await asyncio.get_event_loop().run_in_executor(
+            None, genre_fetch_fn, album_artist, album
+        )
+        return GenreFetchOut(genres=genres)
 
     @app.get(
         "/api/v1/albums/musicbrainz/release/{mbid}",

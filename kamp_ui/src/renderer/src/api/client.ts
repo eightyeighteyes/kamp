@@ -758,6 +758,16 @@ export const patchAlbumMeta = (
   return patch(`/api/v1/albums/meta?${params}`, opts)
 }
 
+// Candidate genres for one album from the configured sources (KAMP-605). Read-only:
+// the caller merges these into the album's genres and saves via patchAlbumMeta.
+export const fetchAlbumGenres = (
+  albumArtist: string,
+  album: string
+): Promise<{ genres: string[] }> => {
+  const params = new URLSearchParams({ album_artist: albumArtist, album })
+  return get(`/api/v1/albums/genres/fetch?${params}`)
+}
+
 // Every distinct genre in the library (KAMP-586), for the edit-panel autocomplete.
 export async function getGenres(): Promise<string[]> {
   const res = await fetch(`${BASE_URL}/api/v1/genres`, { headers: _authHeaders() })

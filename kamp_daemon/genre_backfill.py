@@ -20,11 +20,17 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 
-from .genre_sources import enrich_album_genres
+from .genre_sources import (
+    GenreQuery,
+    enabled_sources,
+    enrich_album_genres,
+    fetch_all_genres,
+)
 
 if TYPE_CHECKING:
     from kamp_core.library import LibraryIndex
@@ -82,6 +88,32 @@ def _bandcamp_extra_genres(
     if keywords:  # only cache a real result
         index.set_collection_keywords(str(album["sale_item_id"]), keywords)
     return keywords
+
+
+def fetch_album_genre_candidates(
+    index: "LibraryIndex", config: "Config", album_artist: str, album: str
+) -> list[str]:
+    """Candidate genres for one album from the enabled sources — the per-album Fetch
+    button's engine (KAMP-605). READ-ONLY: it queries Last.fm (allowlist-filtered)
+    and, when Bandcamp genres are enabled, the album's CACHED Bandcamp keywords —
+    never a network re-scrape and never a DB/file write (unlike enrich_album_genres,
+    which the caller PATCHes instead). Order-preserving, casefold-deduped."""
+    genres = fetch_all_genres(enabled_sources(config), GenreQuery(album_artist, album))
+    if config.tagging.bandcamp_genres:
+        row = index.album_genre_row(album_artist, album)
+        if row:
+            # session=None keeps _bandcamp_extra_genres cache-only (returns cached
+            # keywords or []; the never-set Event is only defensive — the session=None
+            # short-circuit means it is never read).
+            genres = genres + _bandcamp_extra_genres(
+                index, row, None, threading.Event()
+            )
+    seen: dict[str, str] = {}
+    for name in genres:
+        cf = name.casefold()
+        if cf not in seen:
+            seen[cf] = name
+    return list(seen.values())
 
 
 def run_genre_backfill(

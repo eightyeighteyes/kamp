@@ -25,7 +25,6 @@ export function DownloadsView({ active = false }: { active?: boolean }): React.J
   const retryDownload = useStore((s) => s.retryDownload)
   const cancelDownload = useStore((s) => s.cancelDownload)
   const setActiveView = useStore((s) => s.setActiveView)
-  const prefsOpen = useStore((s) => s.prefsOpen)
 
   // Currently highlighted drop-indicator element (avoids a DOM query on clear).
   const activeDropRef = useRef<HTMLElement | null>(null)
@@ -34,16 +33,21 @@ export function DownloadsView({ active = false }: { active?: boolean }): React.J
   // Esc while Downloads is the active view returns to the previous view (KAMP-585).
   // Scoped to `active` so it never fires when Downloads is mounted-but-hidden, when
   // an extension panel is showing, or under a search (all fold into `active`).
-  // - prefsOpen is read from a closure-captured selector (in deps), NOT getState():
-  //   the Preferences dialog's own Esc handler synchronously clears prefsOpen before
-  //   the event bubbles to window, so getState() would read the post-close value and
-  //   double-navigate. The Keyboard-Shortcuts overlay needs no guard — it captures
-  //   and stopPropagation()s Escape, so this window listener never sees it.
-  // - previousView is read fresh at fire time (nothing mutates it during the event).
+  //
+  // Modal precedence relies on modals OWNING Escape via stopPropagation, not on this
+  // listener guessing modal state: the Preferences dialog and KeyboardShortcutsOverlay
+  // both stopPropagation() their Escape, so this window (bubble) listener never sees a
+  // press meant for them. A closure-based `prefsOpen` guard here is NOT reliable — when
+  // a modal calls its close action, useSyncExternalStore forces a synchronous effect
+  // flush that can swap this listener's closure mid-dispatch (before the event reaches
+  // window), so the guard reads the post-close value. The drag-reorder handler below
+  // likewise stopPropagation()s its Escape so a drag-cancel doesn't also navigate.
+  //
+  // previousView is read fresh at fire time (nothing mutates it during the event).
   useEffect(() => {
     if (!active) return
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape' || prefsOpen) return
+      if (e.key !== 'Escape') return
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
       const prev = useStore.getState().previousView
@@ -51,7 +55,7 @@ export function DownloadsView({ active = false }: { active?: boolean }): React.J
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [active, prefsOpen, setActiveView])
+  }, [active, setActiveView])
 
   // "Is any Downloads-capable service connected?" — today that is just Bandcamp.
   // configValues is null until loadConfig() resolves, so `?? false` treats the

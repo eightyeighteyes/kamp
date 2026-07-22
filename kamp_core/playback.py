@@ -44,11 +44,12 @@ class PlaybackState:
     position: float = 0.0
     duration: float = 0.0
     volume: int = 100
-    # User mute (KAMP-559). Implemented as a `volume`-property gate, NOT mpv's
-    # `mute` property — kamp_fade.lua owns `mute` as its resume gate (KAMP-508) and
-    # clears it on every transport transition. `volume` stays the logical level
-    # while muted; muting only sends `set_property volume 0` to the output.
+    # User mute (KAMP-559). Muting fades the output via the dedicated `kampmute`
+    # afade (see _start_mpv / kamp_fade.lua) and drops the slider (`volume`) to 0;
+    # `pre_mute_volume` remembers the level to restore on unmute. NOT mpv's `mute`
+    # property (owned by the resume gate, KAMP-508) and NOT a volume-property jump.
     muted: bool = False
+    pre_mute_volume: int = 100
     # Wall-clock time of the last time-pos event from mpv. Used by
     # _state_snapshot() to extrapolate position when events stall (e.g.
     # after seeking near EOF of an HTTP stream: mpv drains its audio
@@ -1137,10 +1138,10 @@ class MpvPlaybackEngine:
     def _start_mpv(self) -> None:  # pragma: no cover
         """Launch mpv and connect to its IPC channel.
 
-        Note (KAMP-559): a fresh mpv starts at `volume` 100. There is no mid-session
-        restart today, but if crash-recovery is ever added it must re-apply the mute
-        gate (send `set_property volume 0` when `state.muted`) — otherwise a restart
-        would play at full volume while `state.muted` still reads True.
+        Note (KAMP-559): a fresh mpv starts with both afade filters at unity. There is
+        no mid-session restart today, but if crash-recovery is ever added it must
+        re-apply the mute fade (send `kamp-mute` when `state.muted`) — otherwise a
+        restart would play unmuted while `state.muted`/the slider still read muted.
         """
         # Create the Job Object before Popen so we can assign mpv immediately
         # after it spawns. We rely on nested Jobs (Win8+) rather than
@@ -1203,6 +1204,12 @@ class MpvPlaybackEngine:
                 # script re-arms type/start_time via af-command. afade interpolates the
                 # gain per-sample (curve=hsin raised cosine) -- no zipper. See _FADE_LUA.
                 "--af-append=@kampfade:lavfi=[afade=type=out:curve=hsin:"
+                f"start_time=1000000000:duration={_FADE_SECS}]",
+                # Second, independent afade for user mute (KAMP-559). Kept separate
+                # from @kampfade so mute and pause/resume never fight over one filter;
+                # kamp_fade.lua re-arms it via af-command on kamp-mute/kamp-unmute and
+                # re-applies it after seeks/loads (which reset afade to unity).
+                "--af-append=@kampmute:lavfi=[afade=type=out:curve=hsin:"
                 f"start_time=1000000000:duration={_FADE_SECS}]",
             ],
             stdout=subprocess.PIPE,
@@ -1527,15 +1534,17 @@ class MpvPlaybackEngine:
 
     @volume.setter
     def volume(self, value: int) -> None:
-        # INVARIANT (KAMP-559): mpv's `volume` property is written ONLY here. This
-        # setter always clears `state.muted` first, so any explicit volume change
-        # (e.g. dragging the slider) unmutes. If future code ever sends
-        # `set_property volume` elsewhere while muted, it would un-gate the output
-        # while `state.muted` still reads True — mute would silently break. Route
-        # all volume writes through this setter.
+        # INVARIANT (KAMP-559): mpv's `volume` property is the logical level and is
+        # written ONLY here. Mute does NOT touch it — muting fades via the separate
+        # `kampmute` afade (below), leaving `volume` at the logical level so unmute
+        # can fade back in to it. Dragging the slider unmutes: send a fade-in so the
+        # new level is audible if the kampmute gate was closed.
+        was_muted = self.state.muted
         self.state.volume = max(0, min(100, value))
         self.state.muted = False
         self._send_command("set_property", "volume", self.state.volume)
+        if was_muted:
+            self._send_command("script-message", "kamp-unmute")
 
     @property
     def muted(self) -> bool:
@@ -1543,13 +1552,24 @@ class MpvPlaybackEngine:
 
     @muted.setter
     def muted(self, value: bool) -> None:
-        # Gate the output via the `volume` property, never mpv's `mute` property
-        # (owned by kamp_fade.lua's resume gate — KAMP-508). `state.volume` keeps the
-        # logical level so unmute can restore it; muting drives the output to 0.
-        self.state.muted = bool(value)
-        self._send_command(
-            "set_property", "volume", 0 if self.state.muted else self.state.volume
-        )
+        # KAMP-559: mute is a click-free fade via the dedicated `kampmute` afade
+        # filter (script-message → kamp_fade.lua), NOT mpv's `mute` property (owned
+        # by the resume gate, KAMP-508) and NOT a `volume`-property jump (a stepped
+        # volume ramp is zipper noise, KAMP-508). The slider drops to 0 on mute and
+        # restores the remembered level on unmute; the `volume` property is left at
+        # the logical level throughout so the fade math and unmute restore work.
+        want = bool(value)
+        if want == self.state.muted:
+            return
+        if want:
+            self.state.pre_mute_volume = self.state.volume
+            self.state.volume = 0
+            self.state.muted = True
+            self._send_command("script-message", "kamp-mute")
+        else:
+            self.state.muted = False
+            self.state.volume = self.state.pre_mute_volume
+            self._send_command("script-message", "kamp-unmute")
 
     def shutdown(self) -> None:
         if self._proc is not None:

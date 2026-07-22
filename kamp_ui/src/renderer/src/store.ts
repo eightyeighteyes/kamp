@@ -64,6 +64,9 @@ type LibraryState = {
 
 type PlayerStore = {
   player: PlayerState
+  // Volume to restore when unmuting (KAMP-559). Mirrors the daemon's pre_mute_volume
+  // so the optimistic unmute can restore the slider before the next state broadcast.
+  preMuteVolume: number
   library: LibraryState
   serverStatus: 'connected' | 'reconnecting' | 'disconnected'
   scanStatus: 'idle' | 'scanning' | 'done' | 'error'
@@ -391,6 +394,7 @@ const _ratchetFloor = (prevFloor: number, raw: number): number =>
 
 export const useStore = create<PlayerStore>((set, get) => ({
   player: initialPlayer,
+  preMuteVolume: 100,
   library: {
     albums: [],
     artists: [],
@@ -1351,7 +1355,15 @@ export const useStore = create<PlayerStore>((set, get) => ({
 
   setMuted: async (muted) => {
     await api.setMuted(muted)
-    set((s) => ({ player: { ...s.player, muted } }))
+    // Optimistically mirror the daemon (KAMP-559): mute drops the slider to 0 and
+    // remembers the level; unmute restores it. Keeps the icon + slider instant
+    // rather than waiting for the next state broadcast.
+    set((s) => {
+      if (muted) {
+        return { preMuteVolume: s.player.volume, player: { ...s.player, muted: true, volume: 0 } }
+      }
+      return { player: { ...s.player, muted: false, volume: s.preMuteVolume } }
+    })
   },
 
   setAlbumGroupingActive: (active) => {

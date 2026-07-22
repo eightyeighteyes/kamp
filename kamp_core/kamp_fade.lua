@@ -7,6 +7,7 @@
 -- bare label + inner-name target succeeds. This was the bug behind the "timer, not a
 -- fade" behaviour -- the command silently failed so the gain never moved.
 local LABEL = "kampfade"
+local MUTE_LABEL = "kampmute"  -- KAMP-559: independent afade for user mute
 local TARGET = "afade"
 local DUR = 0.15            -- seconds; must match the filter's duration= in _start_mpv
 local PARKED = "1000000000" -- start_time far in the future => filter passes at unity
@@ -110,9 +111,44 @@ mp.register_script_message("kamp-stop", function()
     end)
 end)
 
+-- User mute (KAMP-559) — a SECOND, independent afade (kampmute) so mute and the
+-- pause/resume fade above never fight over one filter. kamp-mute fades the output to
+-- silence and holds it; kamp-unmute fades it back in. mpv resets afade filters to
+-- unity on every seek/load, so the mute is re-applied on playback-restart while held.
+local user_muted = false
+
+local function mutecmd(command, argument)
+    mp.commandv("af-command", MUTE_LABEL, command, argument, TARGET)
+end
+
+-- Arm the mute filter ("out"/"in"), anchored at the filter head like arm() above so
+-- the fade is audible rather than landing inside already-buffered audio.
+local function mute_arm(direction)
+    local pts = mp.get_property_number("audio-pts", 0) or 0
+    if pts < 0 then pts = 0 end
+    mutecmd("type", direction)
+    mutecmd("start_time", tostring(pts + output_lead()))
+end
+
+mp.register_script_message("kamp-mute", function()
+    user_muted = true
+    mute_arm("out")
+end)
+
+mp.register_script_message("kamp-unmute", function()
+    user_muted = false
+    mute_arm("in")
+end)
+
 -- A fresh load resets the filter to its unity definition anyway; re-park to be explicit
 -- and clear the stopped flag so the next resume fades in normally.
 mp.register_event("file-loaded", function()
     park()
     stopped = false
+end)
+
+-- Seeks and loads reset both afade filters to unity; re-apply the user mute so it
+-- survives them (the pause/resume kampfade re-applies via its own kamp-resume path).
+mp.register_event("playback-restart", function()
+    if user_muted then mute_arm("out") end
 end)

@@ -131,7 +131,7 @@ export function CollectionPanel(): React.JSX.Element {
           <span className="collection-panel-icon">
             <CollectionIcon size={16} />
           </span>
-          <span className="collection-panel-label">Collection</span>
+          <span className="collection-panel-label">collection</span>
         </div>
         <button
           className="collection-close-btn"

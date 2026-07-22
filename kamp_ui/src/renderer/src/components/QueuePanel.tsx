@@ -745,7 +745,7 @@ export function QueuePanel(): React.JSX.Element {
           <span className="queue-panel-icon">
             <QueueIcon size={16} />
           </span>
-          <span className="queue-panel-label">QUEUE</span>
+          <span className="queue-panel-label">queue</span>
           <button
             className={`queue-album-toggle${albumGroupingActive ? ' queue-album-toggle--active' : ''}`}
             onClick={toggleAlbumGrouping}

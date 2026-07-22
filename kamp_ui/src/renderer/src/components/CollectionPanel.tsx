@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { PanelToggleTab } from './PanelToggleTab'
+import { CollectionIcon } from './TransportIcons'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
 import { GenreContextMenu } from './GenreContextMenu'
 import { RemoveGenreModal } from './RemoveGenreModal'
 import { MergeGenreModal } from './MergeGenreModal'
@@ -21,6 +23,7 @@ export function CollectionPanel(): React.JSX.Element {
   const mergeGenre = useStore((s) => s.mergeGenre)
   const renameGenre = useStore((s) => s.renameGenre)
   const toggleCollectionPanel = useStore((s) => s.toggleCollectionPanel)
+  const tooltip = useTooltip()
   // Genre right-click menu + destructive merge/removal confirmations (KAMP-606/607)
   // + inline rename (KAMP-608).
   const [genreMenu, setGenreMenu] = useState<{ x: number; y: number; genre: string } | null>(null)
@@ -123,6 +126,21 @@ export function CollectionPanel(): React.JSX.Element {
       className={`collection-panel${isResizing ? ' collection-panel--resizing' : ''}`}
       style={{ width: panelWidth }}
     >
+      <div className="collection-panel-header">
+        <div className="collection-panel-header-left">
+          <span className="collection-panel-icon">
+            <CollectionIcon size={16} />
+          </span>
+          <span className="collection-panel-label">collection</span>
+        </div>
+        <button
+          className="collection-close-btn"
+          onClick={toggleCollectionPanel}
+          {...tooltip(TOOLTIPS.COLLECTION_CLOSE)}
+        >
+          ✕
+        </button>
+      </div>
       <div className="library-tabs" role="tablist" aria-label="Library filter">
         <button
           id="lib-tab-artists"
@@ -219,8 +237,6 @@ export function CollectionPanel(): React.JSX.Element {
         onMouseDown={handleResizeMouseDown}
         onDoubleClick={handleResizeDoubleClick}
       />
-      {/* Inner-edge toggle: a child of the panel so it tracks the resize edge. */}
-      <PanelToggleTab panel="collection" placement="inner" active onClick={toggleCollectionPanel} />
       {genreMenu && (
         <GenreContextMenu
           x={genreMenu.x}

@@ -48,6 +48,12 @@
   gap: 6px;
 }
 
+.queue-panel-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+
 .queue-panel-label {
   font-size: 11px;
   font-weight: 600;

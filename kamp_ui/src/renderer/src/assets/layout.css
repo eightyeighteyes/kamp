@@ -406,41 +406,17 @@ html[data-platform='win32'] .view-tabs {
   background: var(--surface-hover);
 }
 
-.panel-tab.active {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
+/* Reopen handles rest against the app-body edge while the panel is collapsed. */
 .panel-tab--collection {
+  left: 0;
   border-top-right-radius: 17px;
   border-bottom-right-radius: 17px;
 }
 
 .panel-tab--queue {
+  right: 0;
   border-top-left-radius: 17px;
   border-bottom-left-radius: 17px;
-}
-
-/* Edge placement: the reopen handle, resting against the app-body edge while the
-   panel is collapsed. */
-.panel-tab--edge.panel-tab--collection {
-  left: 0;
-}
-
-.panel-tab--edge.panel-tab--queue {
-  right: 0;
-}
-
-/* Inner placement: a child of the (relatively-positioned) panel, translated fully
-   past the panel's inner edge so it overlaps the library and moves with a resize. */
-.panel-tab--inner.panel-tab--collection {
-  right: 0;
-  transform: translateX(100%);
-}
-
-.panel-tab--inner.panel-tab--queue {
-  left: 0;
-  transform: translateX(-100%);
 }
 
 .main-content {
@@ -503,9 +479,7 @@ html[data-platform='win32'] .view-tabs {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  /* visible (not hidden) so the inner-edge toggle tab can poke over the library
-     while staying a child of the panel — that coupling makes it track resize
-     exactly. The list scrolls via its own overflow. KAMP-612. */
+  /* The list scrolls via its own overflow; the panel itself does not clip. */
   overflow: visible;
 }
 
@@ -526,6 +500,53 @@ html[data-platform='win32'] .view-tabs {
 
 .collection-panel--resizing .collection-list li:hover {
   background: none;
+}
+
+/* Collection panel header: icon + "Collection" label on the left, X close on the
+   right — mirrors the queue panel header (KAMP-616). */
+.collection-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  height: 44px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.collection-panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.collection-panel-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.collection-panel-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+.collection-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.collection-close-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
 }
 
 .panel-header {

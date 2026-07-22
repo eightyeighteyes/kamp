@@ -17,17 +17,10 @@ export function PanelToggleTabs(): React.JSX.Element {
     <>
       {/* Collection panel only exists in the library view. */}
       {activeView === 'library' && !collectionPanelVisible && (
-        <PanelToggleTab
-          panel="collection"
-          placement="edge"
-          active={false}
-          onClick={toggleCollectionPanel}
-        />
+        <PanelToggleTab panel="collection" onClick={toggleCollectionPanel} />
       )}
       {/* Queue is available in every view. */}
-      {!queueVisible && (
-        <PanelToggleTab panel="queue" placement="edge" active={false} onClick={toggleQueuePanel} />
-      )}
+      {!queueVisible && <PanelToggleTab panel="queue" onClick={toggleQueuePanel} />}
     </>
   )
 }

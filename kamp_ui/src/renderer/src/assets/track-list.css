@@ -1155,6 +1155,7 @@
   color: rgba(255, 255, 255, 0.4);
   display: flex;
   align-items: center;
+  gap: 8px;
   padding: 5px 0;
   line-height: 1;
 }
@@ -1171,14 +1172,9 @@
 }
 
 /* Genre Fetch (KAMP-605): pulls candidate genres from the configured sources and
-   merges them into the album's genres. Reuses the mb-pill dots-blink animation. */
-.genre-fetch {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
+   merges them into the album's genres. The button sits next to the GENRE label;
+   the transient status message rides in the value cell after the chips. Reuses the
+   mb-pill dots-blink animation. */
 .genre-fetch-btn {
   background: none;
   border: 1px solid var(--border);

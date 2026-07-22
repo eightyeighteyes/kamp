@@ -266,41 +266,36 @@ export function AlbumMetaPanel({
           )}
           {(albumGenres.length > 0 || editMode) && (
             <div className="album-meta-row">
-              <dt className="album-meta-dt">GENRE</dt>
-              <dd className="album-meta-dd">
+              <dt className="album-meta-dt">
+                GENRE
                 {editMode && onFetchGenres && (
-                  <div className="genre-fetch">
-                    <button
-                      type="button"
-                      className={`genre-fetch-btn${fetchingGenres ? ' genre-fetch-btn--loading' : ''}`}
-                      disabled={fetchingGenres || !genreSourcesEnabled}
-                      onClick={() => void handleFetchGenres()}
-                      {...tooltip(
-                        genreSourcesEnabled
-                          ? 'Fetch genres from your sources'
-                          : 'Enable Last.fm or Bandcamp genres in Preferences'
-                      )}
-                    >
-                      {fetchingGenres ? (
-                        <>
-                          Fetching
-                          <span className="genre-fetch-dots" aria-hidden="true">
-                            <span>.</span>
-                            <span>.</span>
-                            <span>.</span>
-                          </span>
-                        </>
-                      ) : (
-                        'Fetch'
-                      )}
-                    </button>
-                    {fetchMsg && (
-                      <span className="genre-fetch-msg" aria-live="polite">
-                        {fetchMsg}
-                      </span>
+                  <button
+                    type="button"
+                    className={`genre-fetch-btn${fetchingGenres ? ' genre-fetch-btn--loading' : ''}`}
+                    disabled={fetchingGenres || !genreSourcesEnabled}
+                    onClick={() => void handleFetchGenres()}
+                    {...tooltip(
+                      genreSourcesEnabled
+                        ? 'Fetch genres from your sources'
+                        : 'Enable Last.fm or Bandcamp genres in Preferences'
                     )}
-                  </div>
+                  >
+                    {fetchingGenres ? (
+                      <>
+                        Fetching
+                        <span className="genre-fetch-dots" aria-hidden="true">
+                          <span>.</span>
+                          <span>.</span>
+                          <span>.</span>
+                        </span>
+                      </>
+                    ) : (
+                      'Fetch'
+                    )}
+                  </button>
                 )}
+              </dt>
+              <dd className="album-meta-dd">
                 <GenreChipsInput
                   chips={albumGenres}
                   suggestions={genreSuggestions}
@@ -308,6 +303,11 @@ export function AlbumMetaPanel({
                   onCommit={handleSaveGenres}
                   onGenreClick={openGenreFilter}
                 />
+                {fetchMsg && (
+                  <span className="genre-fetch-msg" aria-live="polite">
+                    {fetchMsg}
+                  </span>
+                )}
               </dd>
             </div>
           )}

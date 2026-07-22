@@ -658,7 +658,28 @@ function createWindow(): void {
   // Zoom-in uses a native menu accelerator whose OS-level capture prevents
   // Chromium's built-in Cmd+= from also firing — so no before-input-event
   // handling needed (and adding it would double-step).
-  mainWindow.webContents.on('before-input-event', (_event, input) => {
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    // View cycling (KAMP-560): Ctrl+Tab / Ctrl+Shift+Tab step through the top-level
+    // tabs. Handled here (not in the renderer) because keydown does not cross the
+    // sandboxed-extension iframe boundary, so a renderer listener would miss the
+    // event whenever an extension tab is focused. preventDefault stops the page from
+    // receiving the keydown (so the default Tab focus-traversal is suppressed too).
+    // Ctrl on all platforms — macOS Cmd+Tab is the OS app switcher and unreachable.
+    // Must come BEFORE the zoom early-return below, which rejects Shift.
+    if (
+      input.type === 'keyDown' &&
+      input.code === 'Tab' &&
+      input.control &&
+      !input.alt &&
+      !input.meta
+    ) {
+      event.preventDefault()
+      mainWindow.webContents.send('cycle-view', input.shift ? 'prev' : 'next')
+      return
+    }
+
+    // Zoom-out: 'CommandOrControl+-' doesn't register reliably (Electron parser
+    // ambiguity on '-'), so intercept via physical key code instead.
     if (input.type !== 'keyDown' || input.shift || input.alt) return
     const cmdOrCtrl = process.platform === 'darwin' ? input.meta : input.control
     if (cmdOrCtrl && input.code === 'Minus') {

@@ -27,7 +27,8 @@ const GROUPS: Group[] = [
     label: 'Navigation',
     shortcuts: [
       { keys: [mod, 'K'], description: 'Focus search' },
-      { keys: ['L'], description: 'Library / Now Playing' },
+      // Ctrl (not Cmd) on all platforms — macOS Cmd+Tab is the OS app switcher.
+      { keys: ['Ctrl', 'Tab'], description: 'Cycle views (Shift to reverse)' },
       { keys: ['Q'], description: 'Queue panel' },
       { keys: ['C'], description: 'Collection panel', note: 'Library only' },
       { keys: [mod, ','], description: 'Preferences' }

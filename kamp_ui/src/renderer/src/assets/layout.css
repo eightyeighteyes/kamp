@@ -427,6 +427,13 @@ html[data-platform='win32'] .view-tabs {
   position: relative;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
+  /* KAMP-631: overflow-y:auto promotes this to its own compositor layer. Without
+     an opaque background, its transparent pixels reveal Chromium's compositor
+     base color (= BrowserWindow.backgroundColor, pinned to the default theme's
+     #141414) rather than the themed page bg — a "letterbox" seam on non-default
+     palettes, next to the toolbars/search bar that DO paint var(--bg). Painting
+     the layer itself opaque-themed fixes it independent of the native surface. */
+  background: var(--bg);
 }
 
 /* View panes: always mounted so img elements survive view switches and cached

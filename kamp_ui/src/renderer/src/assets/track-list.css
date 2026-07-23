@@ -947,6 +947,10 @@
   /* Containing block for the bokeh canvas (KAMP-561); clip the canvas blur bleed. */
   position: relative;
   overflow: hidden;
+  /* KAMP-631: the bokeh canvas's filter:blur(28px) promotes a compositor layer;
+     an opaque themed backdrop here keeps its transparent pixels from revealing
+     Chromium's base color (default #141414) as a seam on non-default palettes. */
+  background: var(--bg);
 }
 
 /* Ambient album-color bokeh behind the art (KAMP-561). The blur unifies the orbs

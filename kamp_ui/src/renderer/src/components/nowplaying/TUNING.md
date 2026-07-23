@@ -5,16 +5,16 @@ the top of two files, plus one CSS line. Nothing here needs a rebuild to try —
 Vite hot-reloads edits, so you can slide values with the app running. All knobs
 are at conservative midpoints; this is the map for adjusting the character by eye.
 
-Grouped by what you actually *see*.
+Grouped by what you actually _see_.
 
 ## Color / mood — `palette.ts`
 
-| Knob | Default | Raise it → |
-|------|---------|-----------|
-| `SAT_FLOOR` | 0.45 | More vivid, punchier colors (lower → muted / pastel) |
-| `LIGHT_MIN` / `LIGHT_MAX` | 0.45 / 0.68 | Brighter glow; widen the gap for more tonal variety |
-| `MONO_SAT_THRESHOLD` | 0.12 | More covers judged "grey" and fall back to the theme accent (lower → trusts faint cover colors) |
-| `HUE_BINS` | 16 | Finer hue separation — more distinct swatches from busy covers |
+| Knob                      | Default     | Raise it →                                                                                      |
+| ------------------------- | ----------- | ----------------------------------------------------------------------------------------------- |
+| `SAT_FLOOR`               | 0.45        | More vivid, punchier colors (lower → muted / pastel)                                            |
+| `LIGHT_MIN` / `LIGHT_MAX` | 0.45 / 0.68 | Brighter glow; widen the gap for more tonal variety                                             |
+| `MONO_SAT_THRESHOLD`      | 0.12        | More covers judged "grey" and fall back to the theme accent (lower → trusts faint cover colors) |
+| `HUE_BINS`                | 16          | Finer hue separation — more distinct swatches from busy covers                                  |
 
 ## Softness / blur — `assets/track-list.css`, `.now-playing-bokeh`
 
@@ -23,21 +23,33 @@ Grouped by what you actually *see*.
 
 ## Motion feel — `bokehEngine.ts`
 
-| Knob | Default | Effect |
-|------|---------|--------|
-| `TIERS[*].cross` | 45–150 s | Seconds to cross the screen. **Raise for slower, calmer drift**; lower for livelier. |
-| `CROSSFADE_MS` | 1000 | Track-change recolor duration. Raise for a lazier color morph. |
-| `ax` / `ay` (in `makeOrb`) | 0.05–0.07 | Wobble amplitude — higher = more meandering, less linear travel. |
-| `breathP` | 12–20 s | Breathing period. Depth is set by the `0.08` (scale) and `0.06` (alpha) factors in `draw()`. |
-| `FRAME_MS` | 33 (~30 fps) | Frame cap. Raise (~50 → ~20 fps) for an even lazier, lighter feel. |
+| Knob                       | Default      | Effect                                                                                       |
+| -------------------------- | ------------ | -------------------------------------------------------------------------------------------- |
+| `TIERS[*].cross`           | 45–150 s     | Seconds to cross the screen. **Raise for slower, calmer drift**; lower for livelier.         |
+| `CROSSFADE_MS`             | 1000         | Track-change recolor duration. Raise for a lazier color morph.                               |
+| `ax` / `ay` (in `makeOrb`) | 0.05–0.07    | Wobble amplitude — higher = more meandering, less linear travel.                             |
+| `breathP`                  | 12–20 s      | Breathing period. Depth is set by the `0.08` (scale) and `0.06` (alpha) factors in `draw()`. |
+| `FRAME_MS`                 | 33 (~30 fps) | Frame cap. Raise (~50 → ~20 fps) for an even lazier, lighter feel.                           |
+
+## Cursor parallax — `bokehEngine.ts` (KAMP-626)
+
+As the cursor moves over the Now Playing pane the orb field eases a few pixels
+_opposite_ the cursor, then settles. Subtle and heavily damped by design; off under
+`prefers-reduced-motion` and when the pane is inactive/hidden.
+
+| Knob                    | Default                             | Effect                                                                                                                                                                                                                   |
+| ----------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `TIERS[*].parallax`     | hero 0.010, mid 0.020, accent 0.028 | Per-tier shift amplitude (fraction of the short edge). Raise for a stronger effect. The mapping is intentionally inverted from physical depth — big orbs move least, so the backdrop stays calm while the accents dance. |
+| `PARALLAX_TAU`          | 0.35 s                              | Damping time constant. Higher = slower, heavier follow; lower = snappier.                                                                                                                                                |
+| offset sign in `draw()` | subtract                            | Orbs move opposite the cursor (depth read). Flip to add for a "drag the field" feel.                                                                                                                                     |
 
 ## Density / size / intensity — `bokehEngine.ts`
 
-| Knob | Default | Effect |
-|------|---------|--------|
-| `TIERS[*].size` | hero 0.55–0.75, mid 0.30–0.45, accent 0.12–0.22 | Orb diameter as a fraction of the short screen edge. Bigger hero orbs = more color wash. |
-| `TIERS[*].alpha` | 0.32–0.56 | Per-orb opacity. **Lower the whole set to let the art pop more**; raise for a bolder background. |
-| `ORB_PLAN` | 7 entries | Orb *count* and which palette slot each orb wears. Add/remove rows to change density. |
+| Knob             | Default                                         | Effect                                                                                           |
+| ---------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `TIERS[*].size`  | hero 0.55–0.75, mid 0.30–0.45, accent 0.12–0.22 | Orb diameter as a fraction of the short screen edge. Bigger hero orbs = more color wash.         |
+| `TIERS[*].alpha` | 0.32–0.56                                       | Per-orb opacity. **Lower the whole set to let the art pop more**; raise for a bolder background. |
+| `ORB_PLAN`       | 7 entries                                       | Orb _count_ and which palette slot each orb wears. Add/remove rows to change density.            |
 
 ## Focus on the art (vignette) — `bokehEngine.ts`, `drawVignette()`
 
@@ -63,6 +75,6 @@ Start with three knobs — they change the character the most:
 
 ## Deferred ideas (filed as follow-up tickets)
 
-Cursor parallax, occasional "firefly" motes, a track-change "bloom" pulse, per-theme
-palette tinting, and a dev-only swatch overlay to visualize the extracted palette
-while tuning. See the KAMP tickets linked from KAMP-561.
+Occasional "firefly" motes (KAMP-627), a track-change "bloom" pulse (KAMP-628),
+per-theme palette tinting (KAMP-629), and a dev-only swatch overlay to visualize the
+extracted palette while tuning (KAMP-630). Cursor parallax shipped in KAMP-626 (above).

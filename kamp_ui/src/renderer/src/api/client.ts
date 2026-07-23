@@ -198,8 +198,8 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
   return res.json() as Promise<T>
 }
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, { headers: _authHeaders() })
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, { headers: _authHeaders(), signal })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`)
   return res.json() as Promise<T>
 }
@@ -339,8 +339,12 @@ export type SearchResult = {
   playlists: PlaylistSearchResult[]
 }
 
-export const search = (q: string, sort = 'album_artist'): Promise<SearchResult> =>
-  get(`/api/v1/search?q=${encodeURIComponent(q)}&sort=${encodeURIComponent(sort)}`)
+export const search = (
+  q: string,
+  sort = 'album_artist',
+  signal?: AbortSignal
+): Promise<SearchResult> =>
+  get(`/api/v1/search?q=${encodeURIComponent(q)}&sort=${encodeURIComponent(sort)}`, signal)
 
 export type RepeatMode = 'off' | 'queue' | 'album' | 'single'
 

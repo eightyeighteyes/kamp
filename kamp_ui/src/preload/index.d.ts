@@ -27,7 +27,7 @@ declare global {
       showItemInFolder: (filePath: string) => void
       openPath: (path: string) => void
       openExternal: (url: string) => void
-      setBgColor: (color: string) => void
+      syncThemeChrome: (name: string) => void
     }
     KampAPI: KampAPI
   }

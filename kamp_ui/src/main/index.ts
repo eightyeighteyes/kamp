@@ -17,7 +17,8 @@ import { createInterface } from 'readline'
 import * as http from 'http'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { theme } from '../shared/theme'
+import { theme, themes } from '../shared/theme'
+import type { ThemeName } from '../shared/theme'
 import { discoverExtensions, installExtension, uninstallExtension } from './extensions'
 import { readManifest } from './communityManifest'
 
@@ -982,8 +983,22 @@ app.whenReady().then(async () => {
     void shell.openExternal(url)
   })
 
-  ipcMain.on('kamp:set-bg-color', (_event, color: string) => {
-    BrowserWindow.getAllWindows()[0]?.setBackgroundColor(color)
+  // KAMP-631: sync the native window chrome to the active palette. Deriving
+  // both the background and the Windows titlebar overlay from the shared themes
+  // table here (rather than passing colors in) keeps a single source of truth —
+  // the create-vs-update divergence that left the native bg pinned to the
+  // default '#141414' (the letterbox seam) is exactly what a second copy caused.
+  // Called from both startup (main.tsx) and interactive switches (store.setTheme).
+  ipcMain.on('kamp:sync-theme-chrome', (_event, name: string) => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    const t = themes[name as ThemeName] ?? theme
+    win.setBackgroundColor(t.bg)
+    // setTitleBarOverlay throws on a window created without an overlay (macOS/
+    // Linux have none), so guard to win32 where the window is created with one.
+    if (process.platform === 'win32') {
+      win.setTitleBarOverlay({ color: t.bg, symbolColor: t.text })
+    }
   })
 
   ipcMain.handle('update:dismiss', (_event, version: string) => {

@@ -102,7 +102,10 @@ const api = {
   // KAMP-558: open a folder (e.g. the Music Library) in Finder/Explorer.
   openPath: (path: string): void => ipcRenderer.send('shell:open-path', path),
   openExternal: (url: string): void => ipcRenderer.send('shell:open-external', url),
-  setBgColor: (color: string): void => ipcRenderer.send('kamp:set-bg-color', color)
+  // KAMP-631: sync native window chrome (background + Windows titlebar overlay)
+  // to a theme. The main process derives the colors from the shared themes table
+  // so there is one source of truth; the renderer just names the active theme.
+  syncThemeChrome: (name: string): void => ipcRenderer.send('kamp:sync-theme-chrome', name)
 }
 
 const kampAPI = buildKampAPI()

@@ -14,7 +14,7 @@ const MAX_DPR = 2
 const FRAME_MS = 33 // ~30fps cap — slow drift needs no more
 const CROSSFADE_MS = 1000 // palette recolor duration on track change
 const EDGE_MARGIN = 0.45 // wrap distance beyond [0,1] before respawning an orb
-const PARALLAX_TAU = 0.35 // seconds — heavy exponential damping of cursor parallax
+const PARALLAX_TAU = 0.25 // seconds — heavy exponential damping of cursor parallax
 
 type Tier = 'hero' | 'mid' | 'accent'
 
@@ -53,9 +53,9 @@ const TIERS: Record<
     parallax: number
   }
 > = {
-  hero: { size: [0.55, 0.75], alpha: [0.32, 0.4], cross: [90, 150], parallax: 0.01 },
-  mid: { size: [0.3, 0.45], alpha: [0.4, 0.5], cross: [60, 110], parallax: 0.02 },
-  accent: { size: [0.12, 0.22], alpha: [0.5, 0.56], cross: [45, 70], parallax: 0.028 }
+  hero: { size: [0.55, 0.75], alpha: [0.32, 0.4], cross: [90, 150], parallax: 0.02 },
+  mid: { size: [0.3, 0.45], alpha: [0.4, 0.5], cross: [60, 110], parallax: 0.04 },
+  accent: { size: [0.12, 0.22], alpha: [0.5, 0.56], cross: [45, 70], parallax: 0.056 }
 }
 
 // 7 orbs, most-dominant palette slots to the big hero orbs.

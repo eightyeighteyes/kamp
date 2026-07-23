@@ -3884,6 +3884,72 @@ class TestRenameGenre:
         index.close()
 
 
+class TestAlbumGenreMaps:
+    """LibraryIndex._album_genre_maps() — the KAMP-615 genre-pass optimization.
+
+    Guards both correctness (genres surface on named albums and missing-album
+    entries, NOCASE-ordered, deduplicated) and the two properties that make it
+    fast: genres_by_album is distinct-collapsed (one entry per album+genre, not
+    per track), and genres_by_track covers ONLY missing-album (album='') tracks.
+    """
+
+    def _track(self, tmp_path: Path, name: str, album: str, genres: list[str]) -> Track:
+        t = _sample_track(tmp_path / f"{name}.mp3")
+        t.title = name
+        t.album = album
+        t.album_artist = "AA"
+        t.genres = genres
+        return t
+
+    def test_named_album_genres_are_deduped_and_nocase_sorted(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        # Two tracks in one album share a genre and each add one; the album's
+        # genre list must be the deduped union, sorted case-insensitively.
+        index.upsert_many(
+            [
+                self._track(tmp_path, "t1", "One", ["Rock", "ambient"]),
+                self._track(tmp_path, "t2", "One", ["Rock", "Zeuhl"]),
+            ]
+        )
+        album = next(a for a in index.albums() if a.album == "One")
+        index.close()
+        assert album.genres == ["ambient", "Rock", "Zeuhl"]
+
+    def test_missing_album_track_carries_its_genres(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        t = self._track(tmp_path, "lone", "", ["Jazz", "Blues"])
+        index.upsert_track(t)
+        entry = next(a for a in index.albums() if a.missing_album)
+        index.close()
+        assert entry.genres == ["Blues", "Jazz"]
+
+    def test_genre_maps_scope_row_counts(self, tmp_path: Path) -> None:
+        # Perf-guard: genres_by_album is keyed by album (not track), and
+        # genres_by_track covers only the missing-album track — even though far
+        # more (track, genre) rows exist. This locks in the reason the pass is
+        # fast; a revert to the full-scan/all-tracks form fails here.
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                self._track(tmp_path, "a1", "Alpha", ["Rock", "Pop"]),
+                self._track(tmp_path, "a2", "Alpha", ["Rock", "Pop"]),
+                self._track(tmp_path, "b1", "Beta", ["Jazz"]),
+                self._track(tmp_path, "m1", "", ["Noise", "Drone"]),
+            ]
+        )
+        by_album, by_track = index._album_genre_maps()
+        index.close()
+        # One key per named album; each list is the distinct-collapsed union.
+        alpha_id = next(k for k, v in by_album.items() if set(v) == {"Pop", "Rock"})
+        assert by_album[alpha_id] == ["Pop", "Rock"]  # 2 rows, not 4
+        assert len(by_album) == 2  # Alpha + Beta only; missing album excluded
+        # Only the one missing-album track is present, not all four tracks.
+        assert len(by_track) == 1
+        assert next(iter(by_track.values())) == ["Drone", "Noise"]
+
+
 # ---------------------------------------------------------------------------
 # Sort and record_played
 # ---------------------------------------------------------------------------

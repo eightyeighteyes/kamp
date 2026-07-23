@@ -6864,6 +6864,54 @@ class LibraryIndex:
         if self.on_fields_changed:
             self.on_fields_changed({"album.favorite"})
 
+    def _album_genre_maps(
+        self,
+    ) -> tuple[dict[int, list[str]], dict[int, list[str]]]:
+        """Return (genres_by_album, genres_by_track) for ``albums()`` (KAMP-550).
+
+        Both map to a NOCASE-sorted list of genre names. ``genres.name`` is
+        already the single canonical casing, so each list is duplicate-free.
+
+        Split into two SQL-aggregated passes (KAMP-615) instead of one 78k-row
+        (track x genre) scan + Python dedup, which held the GIL and collapsed
+        under the concurrent startup fan-out (8 concurrent albums() = ~18s):
+
+        - ``genres_by_album`` uses ``SELECT DISTINCT album_id, name`` so SQLite
+          collapses each album's genres to one row per (album, genre); the
+          Python side just appends.
+        - ``genres_by_track`` is fetched ONLY for missing-album tracks
+          (``album = ''``). INVARIANT: it is only ever indexed by an
+          ``albums()`` missing-album ``missing_track_id``, and the main UNION
+          defines those entries as exactly ``WHERE t.album = ''`` — the same
+          predicate — so this restriction is behaviour-preserving. Do not index
+          this map by an arbitrary track id.
+
+        The ``, g.name`` tie-break after ``COLLATE NOCASE`` makes ordering
+        deterministic across SQLite versions (dev 3.51 vs the bundled/CI older
+        build) for any hypothetical case-variant genres.
+        """
+        genres_by_album: dict[int, list[str]] = {}
+        for gr in self._conn.execute(
+            "SELECT DISTINCT t.album_id AS aid, g.name AS name"
+            " FROM track_genres tg"
+            " JOIN genres g ON g.id = tg.genre_id"
+            " JOIN tracks t ON t.id = tg.track_id"
+            " WHERE t.album_id IS NOT NULL"
+            " ORDER BY g.name COLLATE NOCASE, g.name"
+        ).fetchall():
+            genres_by_album.setdefault(gr["aid"], []).append(gr["name"])
+        genres_by_track: dict[int, list[str]] = {}
+        for gr in self._conn.execute(
+            "SELECT t.id AS tid, g.name AS name"
+            " FROM track_genres tg"
+            " JOIN genres g ON g.id = tg.genre_id"
+            " JOIN tracks t ON t.id = tg.track_id"
+            " WHERE t.album = ''"
+            " ORDER BY g.name COLLATE NOCASE, g.name"
+        ).fetchall():
+            genres_by_track.setdefault(gr["tid"], []).append(gr["name"])
+        return genres_by_album, genres_by_track
+
     def albums(
         self, sort: str = "album_artist", sort_dir: str | None = None
     ) -> list[AlbumInfo]:
@@ -6968,26 +7016,8 @@ class LibraryIndex:
             WHERE t.album = ''
             ORDER BY {order_by}
             """).fetchall()  # noqa: S608 — order_by is from a whitelist, not user input
-        # Per-album genre union (KAMP-550), read from the normalized track_genres
-        # in one grouped pass. Keyed both by album_id (named albums) and track_id
-        # (missing-album virtual entries have no albums row), so each entry can
-        # resolve its own. Ordered by NOCASE name so each union comes out sorted;
-        # genres.name is already the single canonical casing, so plain membership
-        # dedup suffices.
-        genres_by_album: dict[int, list[str]] = {}
-        genres_by_track: dict[int, list[str]] = {}
-        for gr in self._conn.execute(
-            "SELECT t.album_id AS aid, t.id AS tid, g.name AS name"
-            " FROM track_genres tg"
-            " JOIN genres g ON g.id = tg.genre_id"
-            " JOIN tracks t ON t.id = tg.track_id"
-            " ORDER BY g.name COLLATE NOCASE"
-        ).fetchall():
-            if gr["aid"] is not None:
-                album_list = genres_by_album.setdefault(gr["aid"], [])
-                if gr["name"] not in album_list:
-                    album_list.append(gr["name"])
-            genres_by_track.setdefault(gr["tid"], []).append(gr["name"])
+        # Per-album genre union (KAMP-550), resolved once for the whole result.
+        genres_by_album, genres_by_track = self._album_genre_maps()
 
         return [
             AlbumInfo(

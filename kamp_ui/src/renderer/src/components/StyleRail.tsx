@@ -11,6 +11,8 @@ export function StyleRail(): React.JSX.Element | null {
   const highlightStyle = useStore((s) => s.highlightStyle)
   const setHighlightEnabled = useStore((s) => s.setHighlightEnabled)
   const setHighlightStyle = useStore((s) => s.setHighlightStyle)
+  const nowPlayingGlowEnabled = useStore((s) => s.nowPlayingGlowEnabled)
+  const setNowPlayingGlowEnabled = useStore((s) => s.setNowPlayingGlowEnabled)
 
   if (!styleRailVisible) return null
 
@@ -38,6 +40,14 @@ export function StyleRail(): React.JSX.Element | null {
           </select>
         </label>
       )}
+      <label className="style-rail-control">
+        <input
+          type="checkbox"
+          checked={nowPlayingGlowEnabled}
+          onChange={(e) => setNowPlayingGlowEnabled(e.target.checked)}
+        />
+        Now Playing glow
+      </label>
     </div>
   )
 }

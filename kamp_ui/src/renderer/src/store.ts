@@ -97,6 +97,8 @@ type PlayerStore = {
   highlightEnabled: boolean
   highlightCutoffSecs: number
   highlightStyle: string
+  // KAMP-561: Now Playing album-color ambient bokeh background.
+  nowPlayingGlowEnabled: boolean
   // KAMP-544: ephemeral, non-persisted "played this session" echo — album key ->
   // epoch-seconds captured when playback started. Masks the latency between
   // hitting play and the server's last_played_at syncing back into the album list
@@ -204,6 +206,7 @@ type PlayerStore = {
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
   setHighlightEnabled: (enabled: boolean) => void
+  setNowPlayingGlowEnabled: (enabled: boolean) => void
   setHighlightStyle: (style: string) => void
   markHighlightPlayed: (album: Album) => void
   setTopAlbumsCount: (n: number) => void
@@ -455,6 +458,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     return saved ? parseInt(saved) : 30
   })(),
   highlightEnabled: localStorage.getItem('kamp:highlight-enabled') !== 'false',
+  nowPlayingGlowEnabled: localStorage.getItem('kamp:nowplaying-glow-enabled') !== 'false',
   highlightCutoffSecs: Date.now() / 1000 - 5 * 86400,
   highlightStyle: localStorage.getItem('kamp:highlight-style') ?? 'shiny',
   playedHighlights: new Map<string, number>(),
@@ -860,6 +864,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setHighlightEnabled: (enabled) => {
     localStorage.setItem('kamp:highlight-enabled', String(enabled))
     set({ highlightEnabled: enabled })
+  },
+
+  setNowPlayingGlowEnabled: (enabled) => {
+    localStorage.setItem('kamp:nowplaying-glow-enabled', String(enabled))
+    set({ nowPlayingGlowEnabled: enabled })
   },
 
   setHighlightStyle: (style) => {

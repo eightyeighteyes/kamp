@@ -45,6 +45,10 @@ export type TraceStyle = 'clean' | 'glowy' | 'trippy'
 export type PrefsTab = 'about' | 'general' | 'tagging' | 'services' | 'extensions'
 
 type LibraryState = {
+  // False until the first loadLibrary() resolves, so AlbumGrid can distinguish
+  // "still loading" from a genuinely empty library and not flash the empty
+  // message during the initial fetch (KAMP-615).
+  loaded: boolean
   albums: Album[]
   artists: string[]
   genres: string[]
@@ -409,6 +413,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   player: initialPlayer,
   preMuteVolume: 100,
   library: {
+    loaded: false,
     albums: [],
     artists: [],
     genres: [],
@@ -1071,6 +1076,11 @@ export const useStore = create<PlayerStore>((set, get) => ({
         return {
           library: {
             ...s.library,
+            // Set only on success — loadLibrary also runs at mount before the
+            // WS connects (that attempt usually fails); flipping loaded on
+            // failure would let the empty message flash. The WS-connect retry
+            // sets it true once the fetch actually resolves (KAMP-615).
+            loaded: true,
             albums,
             artists,
             genres,

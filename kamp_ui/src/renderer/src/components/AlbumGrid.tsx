@@ -20,6 +20,7 @@ const ALBUM_SORT_OPTIONS = [
 
 export function AlbumGrid(): React.JSX.Element {
   const albums = useStore((s) => s.library.albums)
+  const loaded = useStore((s) => s.library.loaded)
   const selectedArtist = useStore((s) => s.library.selectedArtist)
   const selectedGenre = useStore((s) => s.library.selectedGenre)
   const selectArtist = useStore((s) => s.selectArtist)
@@ -86,7 +87,9 @@ export function AlbumGrid(): React.JSX.Element {
   }
 
   const emptyMessage = (): string => {
-    if (albums.length === 0) return 'No albums in library.'
+    // While the first library fetch is pending, albums is [] — show a neutral
+    // loading message instead of the false "empty library" one (KAMP-615).
+    if (albums.length === 0) return loaded ? 'No albums in library.' : 'Loading…'
     if (libraryFilter.length > 0) return 'No albums match the active filter.'
     if (selectedGenre) return 'No albums for this genre.'
     return 'No albums for this artist.'

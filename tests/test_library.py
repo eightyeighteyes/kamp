@@ -3884,6 +3884,160 @@ class TestRenameGenre:
         index.close()
 
 
+class TestAlbumGenreMaps:
+    """LibraryIndex._album_genre_maps() — the KAMP-615 genre-pass optimization.
+
+    Guards both correctness (genres surface on named albums and missing-album
+    entries, NOCASE-ordered, deduplicated) and the two properties that make it
+    fast: genres_by_album is distinct-collapsed (one entry per album+genre, not
+    per track), and genres_by_track covers ONLY missing-album (album='') tracks.
+    """
+
+    def _track(self, tmp_path: Path, name: str, album: str, genres: list[str]) -> Track:
+        t = _sample_track(tmp_path / f"{name}.mp3")
+        t.title = name
+        t.album = album
+        t.album_artist = "AA"
+        t.genres = genres
+        return t
+
+    def test_named_album_genres_are_deduped_and_nocase_sorted(
+        self, tmp_path: Path
+    ) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        # Two tracks in one album share a genre and each add one; the album's
+        # genre list must be the deduped union, sorted case-insensitively.
+        index.upsert_many(
+            [
+                self._track(tmp_path, "t1", "One", ["Rock", "ambient"]),
+                self._track(tmp_path, "t2", "One", ["Rock", "Zeuhl"]),
+            ]
+        )
+        album = next(a for a in index.albums() if a.album == "One")
+        index.close()
+        assert album.genres == ["ambient", "Rock", "Zeuhl"]
+
+    def test_missing_album_track_carries_its_genres(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        t = self._track(tmp_path, "lone", "", ["Jazz", "Blues"])
+        index.upsert_track(t)
+        entry = next(a for a in index.albums() if a.missing_album)
+        index.close()
+        assert entry.genres == ["Blues", "Jazz"]
+
+    def test_genre_maps_scope_row_counts(self, tmp_path: Path) -> None:
+        # Perf-guard: genres_by_album is keyed by album (not track), and
+        # genres_by_track covers only the missing-album track — even though far
+        # more (track, genre) rows exist. This locks in the reason the pass is
+        # fast; a revert to the full-scan/all-tracks form fails here.
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_many(
+            [
+                self._track(tmp_path, "a1", "Alpha", ["Rock", "Pop"]),
+                self._track(tmp_path, "a2", "Alpha", ["Rock", "Pop"]),
+                self._track(tmp_path, "b1", "Beta", ["Jazz"]),
+                self._track(tmp_path, "m1", "", ["Noise", "Drone"]),
+            ]
+        )
+        by_album, by_track = index._album_genre_maps()
+        index.close()
+        # One key per named album; each list is the distinct-collapsed union.
+        alpha_id = next(k for k, v in by_album.items() if set(v) == {"Pop", "Rock"})
+        assert by_album[alpha_id] == ["Pop", "Rock"]  # 2 rows, not 4
+        assert len(by_album) == 2  # Alpha + Beta only; missing album excluded
+        # Only the one missing-album track is present, not all four tracks.
+        assert len(by_track) == 1
+        assert next(iter(by_track.values())) == ["Drone", "Noise"]
+
+
+class TestTopAlbums:
+    """LibraryIndex.top_albums() — the KAMP-615 fast path for the home modules.
+
+    Verifies it returns the same top-N named albums the old
+    ``albums(sort=metric)`` + client filter/slice produced, plus its scoping
+    behaviour (limit, day-window, named-only, genres).
+    """
+
+    def _seed(self, tmp_path: Path) -> LibraryIndex:
+        index = LibraryIndex(tmp_path / "library.db")
+        specs = [
+            ("hot", "Zappa", "Hot Rats", ["Rock"]),
+            ("foley", "Amon Tobin", "Foley Room", ["Electronic"]),
+            ("apos", "Zappa", "Apostrophe", ["Rock", "Comedy"]),
+        ]
+        for name, aa, album, genres in specs:
+            p = tmp_path / f"{name}.mp3"
+            _make_mp3(p, artist=aa, album_artist=aa, album=album, title=name)
+            t = _sample_track(p)
+            t.title, t.album_artist, t.album, t.genres = name, aa, album, genres
+            index.upsert_track(t)
+        return index
+
+    def test_most_played_matches_old_filter_slice(self, tmp_path: Path) -> None:
+        index = self._seed(tmp_path)
+        index.record_played(tmp_path / "apos.mp3")
+        index.record_played(tmp_path / "apos.mp3")  # Apostrophe avg 2.0
+        index.record_played(tmp_path / "hot.mp3")  # Hot Rats avg 1.0
+        old = [
+            (a.album_artist, a.album, a.genres)
+            for a in index.albums(sort="most_played")
+            if a.play_count_avg > 0 and not a.missing_album
+        ]
+        new = [
+            (a.album_artist, a.album, a.genres) for a in index.top_albums("most_played")
+        ]
+        index.close()
+        assert new == old
+        assert new[0][1] == "Apostrophe"  # highest avg first
+        assert new[0][2] == ["Comedy", "Rock"]  # genres carried, NOCASE-sorted
+
+    def test_limit_caps_results(self, tmp_path: Path) -> None:
+        index = self._seed(tmp_path)
+        for name in ("apos", "hot", "foley"):
+            index.record_played(tmp_path / f"{name}.mp3")
+        top1 = index.top_albums("most_played", limit=1)
+        index.close()
+        assert len(top1) == 1
+
+    def test_unplayed_albums_excluded(self, tmp_path: Path) -> None:
+        index = self._seed(tmp_path)
+        index.record_played(tmp_path / "hot.mp3")
+        top = index.top_albums("most_played")
+        index.close()
+        assert [a.album for a in top] == ["Hot Rats"]  # only the played album
+
+    def test_missing_album_track_never_appears(self, tmp_path: Path) -> None:
+        # A played standalone (untagged) track shows in albums() but not here —
+        # these are album modules (documented KAMP-615 scope).
+        index = LibraryIndex(tmp_path / "library.db")
+        p = tmp_path / "lone.mp3"
+        _make_mp3(p, artist="X", album_artist="X", title="Lone")
+        t = _sample_track(p)
+        t.title, t.album = "Lone", ""
+        index.upsert_track(t)
+        index.record_played(p)
+        assert any(a.missing_album for a in index.albums(sort="most_played"))
+        top = index.top_albums("most_played")
+        index.close()
+        assert top == []
+
+    def test_last_played_since_window(self, tmp_path: Path) -> None:
+        index = self._seed(tmp_path)
+        index.record_track_started(tmp_path / "apos.mp3")
+        # since far in the future excludes everything; since 0 includes the play.
+        future = index.top_albums("last_played", since=32503680000.0)  # year 3000
+        recent = index.top_albums("last_played")
+        index.close()
+        assert future == []
+        assert [a.album for a in recent] == ["Apostrophe"]
+
+    def test_unknown_metric_raises(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        with pytest.raises(ValueError, match="unknown top-albums metric"):
+            index.top_albums("bogus")
+        index.close()
+
+
 # ---------------------------------------------------------------------------
 # Sort and record_played
 # ---------------------------------------------------------------------------

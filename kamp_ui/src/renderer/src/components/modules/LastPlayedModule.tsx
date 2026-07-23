@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { getAlbums } from '../../api/client'
+import { getTopAlbums } from '../../api/client'
 import type { Album } from '../../api/client'
 import { useStore } from '../../store'
 import { ShelfView } from './ShelfView'
@@ -82,16 +82,11 @@ export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Eleme
     // Skip until the server is reachable; this effect re-fires when serverStatus
     // transitions to 'connected', so modules populate without a manual reload.
     if (serverStatus !== 'connected') return
-    getAlbums('last_played')
-      .then((all) => {
-        const cutoff = days > 0 ? Date.now() / 1000 - days * 86400 : null
-        const played = all
-          .filter(
-            (a) => a.last_played_at !== null && (cutoff === null || a.last_played_at >= cutoff)
-          )
-          .slice(0, count > 0 ? count : undefined)
-        setAlbums(played)
-      })
+    // KAMP-615: the server ranks, day-windows, and limits (only top-N albums
+    // enriched) instead of us fetching the whole library on every track change.
+    const since = days > 0 ? Date.now() / 1000 - days * 86400 : 0
+    getTopAlbums('last_played', count > 0 ? count : 0, since)
+      .then(setAlbums)
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [count, days, lastPlayedVersion, serverStatus])

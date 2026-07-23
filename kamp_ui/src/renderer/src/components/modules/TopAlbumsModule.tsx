@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { getAlbums } from '../../api/client'
+import { getTopAlbums } from '../../api/client'
 import type { Album } from '../../api/client'
 import { useStore } from '../../store'
 import { ShelfView } from './ShelfView'
@@ -58,13 +58,10 @@ export function TopAlbumsModule({ displayStyle }: ModuleProps): React.JSX.Elemen
 
   useEffect(() => {
     if (serverStatus !== 'connected') return
-    getAlbums('most_played')
-      .then((all) => {
-        const played = all
-          .filter((a) => a.play_count_avg > 0)
-          .slice(0, count > 0 ? count : undefined)
-        setAlbums(played)
-      })
+    // KAMP-615: the server ranks + limits (only top-N albums enriched), instead
+    // of us fetching the whole library and slicing here on every track change.
+    getTopAlbums('most_played', count > 0 ? count : 0)
+      .then(setAlbums)
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [count, currentTrackId, serverStatus])

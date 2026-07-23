@@ -606,6 +606,16 @@ _DEFAULT_SORT_DIR: dict[str, str] = {
     "release_date": "DESC",
 }
 
+# top_albums() metric -> (albums-table column, presence filter) whitelist
+# (KAMP-615). The home "Top Albums" / "Last Played" modules need only the top-N
+# named albums by a metric that's already denormalized on the albums table, so
+# they rank off it directly instead of aggregating the whole library. Values are
+# a fixed whitelist — never interpolate caller input into the SQL.
+_TOP_ALBUM_METRICS: dict[str, tuple[str, str]] = {
+    "most_played": ("play_count_avg", "play_count_avg > 0"),
+    "last_played": ("last_played_at", "last_played_at IS NOT NULL"),
+}
+
 
 def _make_fts_query(q: str) -> str:
     """Convert a plain user query into an FTS5 MATCH expression.
@@ -869,6 +879,58 @@ _ALBUM_SOURCE_SUBQUERY = (
     "  FROM (SELECT " + _EFFECTIVE_SOURCE_EXPR + " AS eff"
     "        FROM tracks t WHERE t.album_id = albums.id) es)"
 )
+
+# The named-album SELECT projection shared by albums() (its first UNION branch)
+# and top_albums() (KAMP-615). Both aggregate the same columns per album over
+# `albums a LEFT JOIN tracks_with_stats t ... LEFT JOIN bandcamp_collection bc`
+# (GROUP BY a.id); keeping the list in one place means a new AlbumInfo field is
+# added once, not at two divergent query sites.
+_NAMED_ALBUM_COLUMNS = f"""
+                a.id                AS album_id,
+                NULL                AS missing_track_id,
+                a.album_artist,
+                a.album,
+                a.release_date,
+                a.source            AS album_source,
+                a.sale_item_id,
+                a.favorite          AS is_favorite,
+                -- "date added" sorts on the latest content-arrival time so a
+                -- pre-order that gained a track re-surfaces (KAMP-544); falls back
+                -- to date_added for albums never bumped.
+                COALESCE(a.last_track_added_at, a.date_added) AS sort_date_added,
+                a.last_played_at    AS sort_last_played,
+                a.play_count_avg    AS sort_play_count_avg,
+                NULLIF(a.release_date, '')  AS sort_release_date,
+                a.art_version,
+                -- has_art: remote-only albums always have CDN art; others use embedded_art.
+                CASE WHEN a.source = 'bandcamp' THEN 1 ELSE a.embedded_art END AS has_art,
+                0                   AS missing_album,
+                ''                  AS file_path,
+                -- track_count: for mixed or local albums count only local tracks
+                -- so the dedup state (local+remote rows coexisting) shows real files.
+                CASE WHEN a.source IN ('mixed', 'local')
+                     THEN COUNT(CASE WHEN {_eff_source("t")} = 'local' THEN 1 END)
+                     ELSE COUNT(t.id)
+                END                 AS track_count,
+                MAX(t.favorite)     AS has_favorite_track,
+                -- in_bandcamp_collection: True only when mode='local' (user downloaded it).
+                CASE WHEN bc.mode = 'local' THEN 1 ELSE 0 END AS in_bc,
+                -- is_preorder: True when the album is a Bandcamp pre-order (KAMP-423).
+                CASE WHEN bc.mode = 'preorder' THEN 1 ELSE 0 END AS is_preorder,
+                -- num_streamable_tracks: 0 => no streamable version (KAMP-527).
+                COALESCE(bc.num_streamable_tracks, 0) AS num_streamable_tracks,
+                -- album_url: Bandcamp page URL for sharing (KAMP-367).
+                COALESCE(bc.album_url, '') AS album_url,
+                -- display overrides for streaming albums (KAMP-467).
+                a.display_album,
+                a.display_album_artist,
+                -- effective album title used for sort-by-album ordering.
+                COALESCE(a.display_album, a.album) AS sort_album"""
+
+_NAMED_ALBUM_FROM = """
+            FROM albums a
+            LEFT JOIN tracks_with_stats t ON t.album_id = a.id
+            LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id"""
 
 
 class LibraryIndex:
@@ -6864,6 +6926,68 @@ class LibraryIndex:
         if self.on_fields_changed:
             self.on_fields_changed({"album.favorite"})
 
+    def _album_genre_maps(
+        self, album_ids: list[int] | None = None
+    ) -> tuple[dict[int, list[str]], dict[int, list[str]]]:
+        """Return (genres_by_album, genres_by_track) for ``albums()`` (KAMP-550).
+
+        *album_ids* (KAMP-615): when given, ``genres_by_album`` is scoped to just
+        those albums (for ``top_albums()``, which returns only named albums), and
+        ``genres_by_track`` comes back empty — the scoped callers have no
+        missing-album entries. ``None`` computes both maps for the whole library.
+
+        Both map to a NOCASE-sorted list of genre names. ``genres.name`` is
+        already the single canonical casing, so each list is duplicate-free.
+
+        Split into two SQL-aggregated passes (KAMP-615) instead of one 78k-row
+        (track x genre) scan + Python dedup, which held the GIL and collapsed
+        under the concurrent startup fan-out (8 concurrent albums() = ~18s):
+
+        - ``genres_by_album`` uses ``SELECT DISTINCT album_id, name`` so SQLite
+          collapses each album's genres to one row per (album, genre); the
+          Python side just appends.
+        - ``genres_by_track`` is fetched ONLY for missing-album tracks
+          (``album = ''``). INVARIANT: it is only ever indexed by an
+          ``albums()`` missing-album ``missing_track_id``, and the main UNION
+          defines those entries as exactly ``WHERE t.album = ''`` — the same
+          predicate — so this restriction is behaviour-preserving. Do not index
+          this map by an arbitrary track id.
+
+        The ``, g.name`` tie-break after ``COLLATE NOCASE`` makes ordering
+        deterministic across SQLite versions (dev 3.51 vs the bundled/CI older
+        build) for any hypothetical case-variant genres.
+        """
+        if album_ids is not None:
+            scope = f" AND t.album_id IN ({','.join('?' * len(album_ids))})"
+            params: tuple[int, ...] = tuple(album_ids)
+        else:
+            scope, params = "", ()
+        genres_by_album: dict[int, list[str]] = {}
+        if album_ids is None or album_ids:
+            for gr in self._conn.execute(
+                "SELECT DISTINCT t.album_id AS aid, g.name AS name"
+                " FROM track_genres tg"
+                " JOIN genres g ON g.id = tg.genre_id"
+                " JOIN tracks t ON t.id = tg.track_id"
+                " WHERE t.album_id IS NOT NULL"
+                + scope
+                + " ORDER BY g.name COLLATE NOCASE, g.name",
+                params,
+            ).fetchall():
+                genres_by_album.setdefault(gr["aid"], []).append(gr["name"])
+        genres_by_track: dict[int, list[str]] = {}
+        if album_ids is None:
+            for gr in self._conn.execute(
+                "SELECT t.id AS tid, g.name AS name"
+                " FROM track_genres tg"
+                " JOIN genres g ON g.id = tg.genre_id"
+                " JOIN tracks t ON t.id = tg.track_id"
+                " WHERE t.album = ''"
+                " ORDER BY g.name COLLATE NOCASE, g.name"
+            ).fetchall():
+                genres_by_track.setdefault(gr["tid"], []).append(gr["name"])
+        return genres_by_album, genres_by_track
+
     def albums(
         self, sort: str = "album_artist", sort_dir: str | None = None
     ) -> list[AlbumInfo]:
@@ -6891,49 +7015,8 @@ class LibraryIndex:
         order_by = clause.format(dir=dir_sql)
         rows = self._conn.execute(f"""
             SELECT
-                a.id                AS album_id,
-                NULL                AS missing_track_id,
-                a.album_artist,
-                a.album,
-                a.release_date,
-                a.source            AS album_source,
-                a.sale_item_id,
-                a.favorite          AS is_favorite,
-                -- "date added" sorts on the latest content-arrival time so a
-                -- pre-order that gained a track re-surfaces (KAMP-544); falls back
-                -- to date_added for albums never bumped.
-                COALESCE(a.last_track_added_at, a.date_added) AS sort_date_added,
-                a.last_played_at    AS sort_last_played,
-                a.play_count_avg    AS sort_play_count_avg,
-                NULLIF(a.release_date, '')  AS sort_release_date,
-                a.art_version,
-                -- has_art: remote-only albums always have CDN art; others use embedded_art.
-                CASE WHEN a.source = 'bandcamp' THEN 1 ELSE a.embedded_art END AS has_art,
-                0                   AS missing_album,
-                ''                  AS file_path,
-                -- track_count: for mixed or local albums count only local tracks
-                -- so the dedup state (local+remote rows coexisting) shows real files.
-                CASE WHEN a.source IN ('mixed', 'local')
-                     THEN COUNT(CASE WHEN {_eff_source("t")} = 'local' THEN 1 END)
-                     ELSE COUNT(t.id)
-                END                 AS track_count,
-                MAX(t.favorite)     AS has_favorite_track,
-                -- in_bandcamp_collection: True only when mode='local' (user downloaded it).
-                CASE WHEN bc.mode = 'local' THEN 1 ELSE 0 END AS in_bc,
-                -- is_preorder: True when the album is a Bandcamp pre-order (KAMP-423).
-                CASE WHEN bc.mode = 'preorder' THEN 1 ELSE 0 END AS is_preorder,
-                -- num_streamable_tracks: 0 => no streamable version (KAMP-527).
-                COALESCE(bc.num_streamable_tracks, 0) AS num_streamable_tracks,
-                -- album_url: Bandcamp page URL for sharing (KAMP-367).
-                COALESCE(bc.album_url, '') AS album_url,
-                -- display overrides for streaming albums (KAMP-467).
-                a.display_album,
-                a.display_album_artist,
-                -- effective album title used for sort-by-album ordering.
-                COALESCE(a.display_album, a.album) AS sort_album
-            FROM albums a
-            LEFT JOIN tracks_with_stats t ON t.album_id = a.id
-            LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id
+                {_NAMED_ALBUM_COLUMNS}
+            {_NAMED_ALBUM_FROM}
             GROUP BY a.id
             UNION ALL
             -- Missing-album tracks: each track with album='' appears as its own
@@ -6968,60 +7051,111 @@ class LibraryIndex:
             WHERE t.album = ''
             ORDER BY {order_by}
             """).fetchall()  # noqa: S608 — order_by is from a whitelist, not user input
-        # Per-album genre union (KAMP-550), read from the normalized track_genres
-        # in one grouped pass. Keyed both by album_id (named albums) and track_id
-        # (missing-album virtual entries have no albums row), so each entry can
-        # resolve its own. Ordered by NOCASE name so each union comes out sorted;
-        # genres.name is already the single canonical casing, so plain membership
-        # dedup suffices.
-        genres_by_album: dict[int, list[str]] = {}
-        genres_by_track: dict[int, list[str]] = {}
-        for gr in self._conn.execute(
-            "SELECT t.album_id AS aid, t.id AS tid, g.name AS name"
-            " FROM track_genres tg"
-            " JOIN genres g ON g.id = tg.genre_id"
-            " JOIN tracks t ON t.id = tg.track_id"
-            " ORDER BY g.name COLLATE NOCASE"
-        ).fetchall():
-            if gr["aid"] is not None:
-                album_list = genres_by_album.setdefault(gr["aid"], [])
-                if gr["name"] not in album_list:
-                    album_list.append(gr["name"])
-            genres_by_track.setdefault(gr["tid"], []).append(gr["name"])
-
+        # Per-album genre union (KAMP-550), resolved once for the whole result.
+        genres_by_album, genres_by_track = self._album_genre_maps()
         return [
-            AlbumInfo(
-                album_id=r["album_id"],
-                missing_track_id=r["missing_track_id"],
-                album_artist=r["album_artist"],
-                album=r["album"],
-                release_date=r["release_date"],
-                track_count=r["track_count"],
-                has_art=bool(r["has_art"]),
-                missing_album=bool(r["missing_album"]),
-                file_path=r["file_path"],
-                art_version=r["art_version"],
-                added_at=r["sort_date_added"],
-                last_played_at=r["sort_last_played"],
-                play_count_avg=r["sort_play_count_avg"] or 0.0,
-                favorite=bool(r["is_favorite"]),
-                has_favorite_track=bool(r["has_favorite_track"]),
-                source=r["album_source"],
-                has_remote_tracks=r["album_source"] != "local",
-                in_bandcamp_collection=bool(r["in_bc"]),
-                is_preorder=bool(r["is_preorder"]),
-                num_streamable_tracks=r["num_streamable_tracks"],
-                album_url=r["album_url"] or "",
-                sale_item_id=r["sale_item_id"],
-                display_album=r["display_album"],
-                display_album_artist=r["display_album_artist"],
-                genres=(
-                    genres_by_track.get(r["missing_track_id"], [])
-                    if r["missing_album"]
-                    else genres_by_album.get(r["album_id"], [])
-                ),
-            )
-            for r in rows
+            self._album_info_from_row(r, genres_by_album, genres_by_track) for r in rows
+        ]
+
+    @staticmethod
+    def _album_info_from_row(
+        r: sqlite3.Row,
+        genres_by_album: dict[int, list[str]],
+        genres_by_track: dict[int, list[str]],
+    ) -> AlbumInfo:
+        """Map one albums()/top_albums() result row to an AlbumInfo.
+
+        The single AlbumInfo construction site (KAMP-550) shared by both queries
+        so a new field can't be added to one and forgotten on the other. Rows
+        from the named branch (missing_album=0) resolve genres by album_id; the
+        missing-album branch resolves by missing_track_id.
+        """
+        return AlbumInfo(
+            album_id=r["album_id"],
+            missing_track_id=r["missing_track_id"],
+            album_artist=r["album_artist"],
+            album=r["album"],
+            release_date=r["release_date"],
+            track_count=r["track_count"],
+            has_art=bool(r["has_art"]),
+            missing_album=bool(r["missing_album"]),
+            file_path=r["file_path"],
+            art_version=r["art_version"],
+            added_at=r["sort_date_added"],
+            last_played_at=r["sort_last_played"],
+            play_count_avg=r["sort_play_count_avg"] or 0.0,
+            favorite=bool(r["is_favorite"]),
+            has_favorite_track=bool(r["has_favorite_track"]),
+            source=r["album_source"],
+            has_remote_tracks=r["album_source"] != "local",
+            in_bandcamp_collection=bool(r["in_bc"]),
+            is_preorder=bool(r["is_preorder"]),
+            num_streamable_tracks=r["num_streamable_tracks"],
+            album_url=r["album_url"] or "",
+            sale_item_id=r["sale_item_id"],
+            display_album=r["display_album"],
+            display_album_artist=r["display_album_artist"],
+            genres=(
+                genres_by_track.get(r["missing_track_id"], [])
+                if r["missing_album"]
+                else genres_by_album.get(r["album_id"], [])
+            ),
+        )
+
+    def top_albums(
+        self, metric: str, limit: int | None = None, since: float | None = None
+    ) -> list[AlbumInfo]:
+        """Return the top named albums by *metric* (KAMP-615).
+
+        *metric* is a key of ``_TOP_ALBUM_METRICS`` (``most_played`` /
+        ``last_played``); anything else raises ``ValueError``. *limit* caps the
+        count (``None`` = all matching). *since* (unix seconds), for
+        ``last_played`` only, restricts to plays at or after that time (the Last
+        Played module's day-window).
+
+        This is the fast path behind the home modules that previously fetched the
+        entire ``albums()`` result and sliced it client-side — repeatedly, on
+        every track change — which forced a whole-library aggregate + genre pass
+        each time. Here the ranking reads the denormalized ``albums`` table
+        directly (no per-track view materialization), then the AlbumInfo columns
+        and genres are computed for ONLY the top-N albums. Unlike ``albums()``
+        this returns named albums only: missing-album (untagged) tracks never
+        appear in these modules.
+        """
+        try:
+            col, presence = _TOP_ALBUM_METRICS[metric]
+        except KeyError:
+            raise ValueError(f"unknown top-albums metric: {metric!r}") from None
+        where = presence
+        params: list[Any] = []
+        if metric == "last_played" and since is not None:
+            where += " AND last_played_at >= ?"
+            params.append(since)
+        # Rank cheaply off the denormalized albums columns. Tie-break matches the
+        # _SORT_CLAUSES secondary key so ordering is identical to albums().
+        sql = (
+            f"SELECT id FROM albums WHERE {where}"  # noqa: S608 - col/where are whitelisted
+            f" ORDER BY {col} DESC, album_artist COLLATE NOCASE"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        ids = [r["id"] for r in self._conn.execute(sql, params).fetchall()]
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT {_NAMED_ALBUM_COLUMNS} {_NAMED_ALBUM_FROM}"  # noqa: S608 - constant projection
+            f" WHERE a.id IN ({placeholders}) GROUP BY a.id",
+            ids,
+        ).fetchall()
+        by_id = {r["album_id"]: r for r in rows}
+        genres_by_album, genres_by_track = self._album_genre_maps(ids)
+        # IN() does not preserve order — re-emit in the ranked id order.
+        return [
+            self._album_info_from_row(by_id[i], genres_by_album, genres_by_track)
+            for i in ids
+            if i in by_id
         ]
 
     def artists(self) -> list[str]:

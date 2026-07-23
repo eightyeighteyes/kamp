@@ -259,6 +259,15 @@ export const getAlbums = (sort = 'album_artist', dir = ''): Promise<Album[]> =>
     `/api/v1/albums?sort=${encodeURIComponent(sort)}${dir ? `&direction=${encodeURIComponent(dir)}` : ''}`
   )
 
+// Top named albums by a denormalized metric (KAMP-615) — powers the Top Albums
+// and Last Played home modules without the whole-library albums() scan.
+// limit=0 means no cap; since (unix seconds, last_played only) applies a day window.
+export const getTopAlbums = (
+  metric: 'most_played' | 'last_played',
+  limit = 0,
+  since = 0
+): Promise<Album[]> => get(`/api/v1/albums/top?metric=${metric}&limit=${limit}&since=${since}`)
+
 // Returns the URL for an album's cover art; load it in an <img> src.
 // The server returns 404 when no art is embedded — handle with onError.
 // Pass trackId for a missing-album card (album tag empty) to resolve the single

@@ -370,6 +370,16 @@ const initialPlayer: PlayerState = {
 const _albumTracksKey = (albumArtist: string, album: string, trackId: number | null): string =>
   trackId != null ? `id:${trackId}` : `${albumArtist}\0${album}`
 
+// KAMP-614: debounce the search request so a burst of keystrokes fires ONE
+// backend call after the user pauses, not one per letter. Each /api/v1/search
+// runs a whole-library album aggregate that collapses under concurrency (8
+// concurrent calls measured at ~21s), so the fan-out — not any single call —
+// was the ~12s bug. The input text still updates synchronously; only the
+// network call is deferred. _searchAbort cancels a superseded in-flight request.
+const SEARCH_DEBOUNCE_MS = 250
+let _searchTimer: ReturnType<typeof setTimeout> | null = null
+let _searchAbort: AbortController | null = null
+
 // KAMP-571: raw aggregate percent for the global download bar — completed items
 // plus the currently-downloading item's byte-fraction, over the batch total.
 // downloadProgress is keyed by sale_item_id (== provider_item_id for bandcamp);
@@ -570,7 +580,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ sortOrder: sort, sortDir: naturalDir })
     await get().loadLibrary()
     const q = get().searchQuery
-    if (q.trim()) await get().setSearchQuery(q)
+    // Re-run the active search under the new sort (debounced, fire-and-forget).
+    if (q.trim()) get().setSearchQuery(q)
     try {
       await api.setSortOrderApi(sort, naturalDir)
     } catch {
@@ -592,21 +603,38 @@ export const useStore = create<PlayerStore>((set, get) => ({
     set({ libraryFilter: filters })
   },
 
-  setSearchQuery: async (q) => {
+  setSearchQuery: (q) => {
+    // Update the text synchronously so the controlled input stays responsive;
+    // the network call is debounced separately (KAMP-614).
     set({ searchQuery: q })
+    // Any pending call is now stale — cancel the timer and abort the in-flight
+    // request regardless of whether the new query is empty or not.
+    if (_searchTimer !== null) {
+      clearTimeout(_searchTimer)
+      _searchTimer = null
+    }
+    _searchAbort?.abort()
+    _searchAbort = null
     if (!q.trim()) {
+      // Empty query clears immediately — no delayed empty search.
       set({ searchResults: null })
       return
     }
-    try {
-      const results = await api.search(q, get().sortOrder)
-      // Only apply if the query hasn't changed since we fired the request.
-      if (get().searchQuery === q) {
-        set({ searchResults: results })
-      }
-    } catch {
-      // Ignore transient errors — stale results are better than a broken UI.
-    }
+    _searchTimer = setTimeout(() => {
+      _searchTimer = null
+      const controller = new AbortController()
+      _searchAbort = controller
+      api
+        .search(q, get().sortOrder, controller.signal)
+        .then((results) => {
+          // Latest-wins: only apply if the query hasn't changed since we fired.
+          if (get().searchQuery === q) set({ searchResults: results })
+        })
+        .catch(() => {
+          // Ignore AbortError (superseded request) and transient errors —
+          // stale results are better than a broken UI.
+        })
+    }, SEARCH_DEBOUNCE_MS)
   },
 
   setActiveView: async (view) => {

@@ -15,6 +15,18 @@ const FRAME_MS = 33 // ~30fps cap — slow drift needs no more
 const CROSSFADE_MS = 1000 // palette recolor duration on track change
 const EDGE_MARGIN = 0.45 // wrap distance beyond [0,1] before respawning an orb
 const PARALLAX_TAU = 0.25 // seconds — heavy exponential damping of cursor parallax
+// Firefly motes (KAMP-627): a rare, single transient spark. Poisson inter-arrival
+// (floor + exponential(mean)) so the cadence never feels scheduled; idle-gated so it
+// only appears in still moments; warm-dim so it reads as atmosphere, not a UI dot.
+const FIREFLY_GAP_FLOOR = 45 // seconds — minimum gap between motes
+const FIREFLY_GAP_MEAN = 110 // seconds — exponential mean added to the floor (avg ~2.5min)
+const FIREFLY_GAP_MAX = 300 // seconds — soft cap on the heavy tail
+const FIREFLY_IDLE = 8 // seconds of no pane pointer activity before a due mote appears
+const FIREFLY_LIFE: [number, number] = [6, 10] // seconds, fade-in -> drift -> fade-out
+const FIREFLY_SIZE: [number, number] = [0.016, 0.024] // core radius, fraction of S
+const FIREFLY_TRAVEL = 0.07 // eased drift distance over life, fraction of S
+const FIREFLY_BOW = 0.012 // perpendicular path bow, fraction of S
+const FIREFLY_ALPHA = 0.6 // peak core alpha (kept modest; the canvas blur softens it)
 
 type Tier = 'hero' | 'mid' | 'accent'
 
@@ -102,6 +114,22 @@ const lerpRgb = (a: RGB, b: RGB, t: number): RGB => ({
   b: Math.round(lerp(a.b, b.b, t))
 })
 
+// A transient firefly mote (KAMP-627). Position is derived from `age` each frame
+// (not integrated), so a stop/resume never desyncs it. Color is snapshotted at spawn.
+interface Firefly {
+  x0: number // spawn position, normalized [0,1]
+  y0: number
+  dirX: number // eased-drift direction (unit), biased away from center
+  dirY: number
+  perpX: number // unit perpendicular to dir, for the path bow
+  perpY: number
+  age: number // seconds since spawn
+  life: number // total seconds
+  size: number // core radius, fraction of S
+  color: RGB
+  breathPhase: number
+}
+
 export class BokehEngine {
   private ctx: CanvasRenderingContext2D | null
   private orbs: Orb[] = ORB_PLAN.map(makeOrb)
@@ -123,6 +151,13 @@ export class BokehEngine {
   private pointerX = 0
   private pointerY = 0
 
+  // Firefly state. `nextFireflyAt` and `lastPointerAt` are in `elapsed` seconds, so
+  // the cadence and idle gate freeze cleanly while the loop is stopped.
+  private firefly: Firefly | null = null
+  private nextFireflyAt = 0 // set in the constructor (needs fireflyGap())
+  private lastPointerAt = 0 // elapsed at the last pane pointer activity
+  private lastFireflyCorner = -1 // avoid spawning in the same corner twice running
+
   private elapsed = 0 // animation clock (seconds), advances only while running
   private rafId: number | null = null
   private lastTs = 0
@@ -137,6 +172,7 @@ export class BokehEngine {
     this.from = initial.colors
     this.to = initial.colors
     this.refreshBg()
+    this.nextFireflyAt = this.fireflyGap()
   }
 
   // Theme --bg for the vignette (all themes are dark; near-black).
@@ -165,6 +201,8 @@ export class BokehEngine {
   setPointer(nx: number, ny: number): void {
     this.pointerTargetX = Math.max(-1, Math.min(1, nx))
     this.pointerTargetY = Math.max(-1, Math.min(1, ny))
+    // Pointer activity resets the firefly idle gate — motes only appear when still.
+    this.lastPointerAt = this.elapsed
   }
 
   // Snap both the target and the eased value back to center. Called on start() so a
@@ -236,6 +274,19 @@ export class BokehEngine {
     const k = 1 - Math.exp(-dt / PARALLAX_TAU)
     this.pointerX += (this.pointerTargetX - this.pointerX) * k
     this.pointerY += (this.pointerTargetY - this.pointerY) * k
+    // Firefly: age the active one; else spawn when due AND the pointer has been idle.
+    if (this.firefly) {
+      this.firefly.age += dt
+      if (this.firefly.age >= this.firefly.life) {
+        this.firefly = null
+        this.nextFireflyAt = this.elapsed + this.fireflyGap()
+      }
+    } else if (
+      this.elapsed >= this.nextFireflyAt &&
+      this.elapsed - this.lastPointerAt >= FIREFLY_IDLE
+    ) {
+      this.spawnFirefly()
+    }
     for (const o of this.orbs) {
       o.bx += o.vx * dt
       o.by += o.vy * dt
@@ -276,6 +327,7 @@ export class BokehEngine {
     }
     ctx.globalCompositeOperation = 'source-over'
     this.drawVignette(ctx, w, h)
+    this.drawFirefly(ctx, w, h, s) // after the vignette so a corner mote still glows
   }
 
   // Darken toward the edges with the theme bg so the corners stay calm and the
@@ -296,6 +348,76 @@ export class BokehEngine {
     const m = /^#?([0-9a-f]{6})$/i.exec(this.bg)
     const n = m ? parseInt(m[1], 16) : 0x141414
     return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
+  }
+
+  // Poisson inter-arrival: a floor plus an exponential draw, so the cadence is
+  // irregular (never a steady beat) with an occasional long dry spell. Soft-capped.
+  private fireflyGap(): number {
+    const u = Math.max(1e-6, Math.random())
+    return Math.min(FIREFLY_GAP_MAX, FIREFLY_GAP_FLOOR - FIREFLY_GAP_MEAN * Math.log(u))
+  }
+
+  private spawnFirefly(): void {
+    const colors = this.currentColors()
+    if (!colors.length) return
+    const src = colors[Math.floor(Math.random() * colors.length)]
+    const color = { ...src } // snapshot so a mid-flight track change never recolors it
+    // Pick a corner, not the same as last time.
+    let corner = Math.floor(Math.random() * 4)
+    if (corner === this.lastFireflyCorner) corner = (corner + 1) % 4
+    this.lastFireflyCorner = corner
+    const left = corner === 0 || corner === 3
+    const top = corner < 2
+    const x0 = left ? rand(0.08, 0.24) : rand(0.76, 0.92)
+    const y0 = top ? rand(0.08, 0.24) : rand(0.76, 0.92)
+    // Drift outward (away from center) so the mote never walks the eye to the art.
+    const outAngle = Math.atan2(y0 < 0.5 ? -1 : 1, x0 < 0.5 ? -1 : 1)
+    const angle = outAngle + rand(-0.6, 0.6)
+    const dirX = Math.cos(angle)
+    const dirY = Math.sin(angle)
+    this.firefly = {
+      x0,
+      y0,
+      dirX,
+      dirY,
+      perpX: -dirY,
+      perpY: dirX,
+      age: 0,
+      life: rand(FIREFLY_LIFE[0], FIREFLY_LIFE[1]),
+      size: rand(FIREFLY_SIZE[0], FIREFLY_SIZE[1]),
+      color,
+      breathPhase: rand(0, Math.PI * 2)
+    }
+  }
+
+  // A single warm mote drawn over the vignette with additive blend. The alpha
+  // envelope (slow emerge, long fade-out, gentle breath) is baked into the gradient
+  // stops — never globalAlpha, which the orb/vignette passes assume stays 1.
+  private drawFirefly(ctx: CanvasRenderingContext2D, w: number, h: number, s: number): void {
+    const f = this.firefly
+    if (!f) return
+    const t = f.age / f.life
+    const fadeIn = smoothstep(Math.min(1, t / 0.3))
+    const fadeOut = smoothstep(Math.min(1, (1 - t) / 0.5))
+    const breath = 1 + 0.15 * Math.sin(t * Math.PI * 3 + f.breathPhase)
+    const env = fadeIn * fadeOut * breath
+    if (env <= 0) return
+    const alpha = FIREFLY_ALPHA * env
+    // Eased outward travel + a perpendicular bow so the path is never ruler-straight.
+    const travel = FIREFLY_TRAVEL * smoothstep(t)
+    const bow = FIREFLY_BOW * Math.sin(t * Math.PI)
+    const x = f.x0 * w + (f.dirX * travel + f.perpX * bow) * s
+    const y = f.y0 * h + (f.dirY * travel + f.perpY * bow) * s
+    const radius = f.size * s
+    const c = f.color
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, radius)
+    grad.addColorStop(0, `rgba(255,246,230,${alpha})`) // warm off-white core
+    grad.addColorStop(0.35, `rgba(${c.r},${c.g},${c.b},${alpha * 0.7})`)
+    grad.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`)
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.fillStyle = grad
+    ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2)
+    ctx.globalCompositeOperation = 'source-over'
   }
 
   // One-shot static paint for the off/reduced-motion path: a soft gradient of the

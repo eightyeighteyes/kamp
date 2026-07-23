@@ -43,6 +43,22 @@ _opposite_ the cursor, then settles. Subtle and heavily damped by design; off un
 | `PARALLAX_TAU`          | 0.35 s                              | Damping time constant. Higher = slower, heavier follow; lower = snappier.                                                                                                                                                |
 | offset sign in `draw()` | subtract                            | Orbs move opposite the cursor (depth read). Flip to add for a "drag the field" feel.                                                                                                                                     |
 
+## Fireflies — `bokehEngine.ts` (KAMP-627)
+
+Very rarely, a single warm mote fades in near a corner, bows outward, breathes, and
+fades. Rare and irregular by design (Poisson timing), only appears when the pointer has
+been still, one at a time; off under `prefers-reduced-motion` and when inactive/hidden.
+
+| Knob                                     | Default      | Effect                                                                                                                                 |
+| ---------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `FIREFLY_GAP_FLOOR` / `FIREFLY_GAP_MEAN` | 45 s / 110 s | Inter-arrival = floor + exponential(mean); avg ~2.5 min. Raise the mean to make it rarer/more special.                                 |
+| `FIREFLY_GAP_MAX`                        | 300 s        | Soft cap on the heavy tail (longest dry spell).                                                                                        |
+| `FIREFLY_IDLE`                           | 8 s          | Pointer-idle required before a _due_ mote appears — keeps it to still moments.                                                         |
+| `FIREFLY_LIFE`                           | 6–10 s       | Total lifetime (slow emerge, long fade-out).                                                                                           |
+| `FIREFLY_ALPHA`                          | 0.6          | Peak core brightness. **Raise if the 28px blur washes it out; lower if it's too loud.** Never let it be the brightest thing on screen. |
+| `FIREFLY_SIZE`                           | 0.016–0.024  | Core radius (fraction of the short edge). Larger survives the blur better.                                                             |
+| `FIREFLY_TRAVEL` / `FIREFLY_BOW`         | 0.07 / 0.012 | Eased outward drift distance and the perpendicular path bow.                                                                           |
+
 ## Density / size / intensity — `bokehEngine.ts`
 
 | Knob             | Default                                         | Effect                                                                                           |

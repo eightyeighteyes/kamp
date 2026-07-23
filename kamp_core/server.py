@@ -1464,6 +1464,25 @@ def create_app(
             for a in index.albums(sort=sort, sort_dir=sort_dir)
         ]
 
+    @app.get("/api/v1/albums/top", response_model=list[AlbumOut])
+    def get_top_albums(metric: str, limit: int = 0, since: float = 0) -> list[AlbumOut]:
+        """Top named albums by a denormalized metric (KAMP-615).
+
+        Powers the Top Albums / Last Played home modules cheaply, without the
+        whole-library aggregate that GET /api/v1/albums runs. ``limit=0`` means
+        no cap; ``since`` (unix seconds, ``last_played`` only) applies the Last
+        Played day-window. An unknown metric is a 422.
+        """
+        try:
+            albums = index.top_albums(
+                metric,
+                limit=limit if limit > 0 else None,
+                since=since if since > 0 else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return [AlbumOut.from_album_info(a) for a in albums]
+
     @app.get("/api/v1/stats", response_model=StatsOut)
     def get_stats(top_tracks: int = 3) -> StatsOut:
         s = index.get_stats(top_tracks_limit=top_tracks)

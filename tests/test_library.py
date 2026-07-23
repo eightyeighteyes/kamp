@@ -3950,6 +3950,94 @@ class TestAlbumGenreMaps:
         assert next(iter(by_track.values())) == ["Drone", "Noise"]
 
 
+class TestTopAlbums:
+    """LibraryIndex.top_albums() — the KAMP-615 fast path for the home modules.
+
+    Verifies it returns the same top-N named albums the old
+    ``albums(sort=metric)`` + client filter/slice produced, plus its scoping
+    behaviour (limit, day-window, named-only, genres).
+    """
+
+    def _seed(self, tmp_path: Path) -> LibraryIndex:
+        index = LibraryIndex(tmp_path / "library.db")
+        specs = [
+            ("hot", "Zappa", "Hot Rats", ["Rock"]),
+            ("foley", "Amon Tobin", "Foley Room", ["Electronic"]),
+            ("apos", "Zappa", "Apostrophe", ["Rock", "Comedy"]),
+        ]
+        for name, aa, album, genres in specs:
+            p = tmp_path / f"{name}.mp3"
+            _make_mp3(p, artist=aa, album_artist=aa, album=album, title=name)
+            t = _sample_track(p)
+            t.title, t.album_artist, t.album, t.genres = name, aa, album, genres
+            index.upsert_track(t)
+        return index
+
+    def test_most_played_matches_old_filter_slice(self, tmp_path: Path) -> None:
+        index = self._seed(tmp_path)
+        index.record_played(tmp_path / "apos.mp3")
+        index.record_played(tmp_path / "apos.mp3")  # Apostrophe avg 2.0
+        index.record_played(tmp_path / "hot.mp3")  # Hot Rats avg 1.0
+        old = [
+            (a.album_artist, a.album, a.genres)
+            for a in index.albums(sort="most_played")
+            if a.play_count_avg > 0 and not a.missing_album
+        ]
+        new = [
+            (a.album_artist, a.album, a.genres) for a in index.top_albums("most_played")
+        ]
+        index.close()
+        assert new == old
+        assert new[0][1] == "Apostrophe"  # highest avg first
+        assert new[0][2] == ["Comedy", "Rock"]  # genres carried, NOCASE-sorted
+
+    def test_limit_caps_results(self, tmp_path: Path) -> None:
+        index = self._seed(tmp_path)
+        for name in ("apos", "hot", "foley"):
+            index.record_played(tmp_path / f"{name}.mp3")
+        top1 = index.top_albums("most_played", limit=1)
+        index.close()
+        assert len(top1) == 1
+
+    def test_unplayed_albums_excluded(self, tmp_path: Path) -> None:
+        index = self._seed(tmp_path)
+        index.record_played(tmp_path / "hot.mp3")
+        top = index.top_albums("most_played")
+        index.close()
+        assert [a.album for a in top] == ["Hot Rats"]  # only the played album
+
+    def test_missing_album_track_never_appears(self, tmp_path: Path) -> None:
+        # A played standalone (untagged) track shows in albums() but not here —
+        # these are album modules (documented KAMP-615 scope).
+        index = LibraryIndex(tmp_path / "library.db")
+        p = tmp_path / "lone.mp3"
+        _make_mp3(p, artist="X", album_artist="X", title="Lone")
+        t = _sample_track(p)
+        t.title, t.album = "Lone", ""
+        index.upsert_track(t)
+        index.record_played(p)
+        assert any(a.missing_album for a in index.albums(sort="most_played"))
+        top = index.top_albums("most_played")
+        index.close()
+        assert top == []
+
+    def test_last_played_since_window(self, tmp_path: Path) -> None:
+        index = self._seed(tmp_path)
+        index.record_track_started(tmp_path / "apos.mp3")
+        # since far in the future excludes everything; since 0 includes the play.
+        future = index.top_albums("last_played", since=32503680000.0)  # year 3000
+        recent = index.top_albums("last_played")
+        index.close()
+        assert future == []
+        assert [a.album for a in recent] == ["Apostrophe"]
+
+    def test_unknown_metric_raises(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        with pytest.raises(ValueError, match="unknown top-albums metric"):
+            index.top_albums("bogus")
+        index.close()
+
+
 # ---------------------------------------------------------------------------
 # Sort and record_played
 # ---------------------------------------------------------------------------

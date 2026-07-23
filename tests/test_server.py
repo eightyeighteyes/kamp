@@ -295,6 +295,38 @@ class TestAlbumsEndpoint:
         album = c.get("/api/v1/albums").json()[0]
         assert album["art_version"] == pytest.approx(1234567.0)
 
+    def test_top_albums_passes_metric_limit_since(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        # KAMP-615: limit=0/since=0 map to None (no cap / no window).
+        mock_index.top_albums.return_value = [_album("Artist", "Record")]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        data = c.get("/api/v1/albums/top?metric=most_played&limit=5").json()
+        assert len(data) == 1 and data[0]["album"] == "Record"
+        mock_index.top_albums.assert_called_once_with(
+            "most_played", limit=5, since=None
+        )
+
+    def test_top_albums_since_forwarded(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.top_albums.return_value = []
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        c.get("/api/v1/albums/top?metric=last_played&since=1000.5")
+        mock_index.top_albums.assert_called_once_with(
+            "last_played", limit=None, since=1000.5
+        )
+
+    def test_top_albums_unknown_metric_is_422(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        mock_index.top_albums.side_effect = ValueError("unknown top-albums metric: 'x'")
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        assert c.get("/api/v1/albums/top?metric=x").status_code == 422
+
     def test_direction_param_forwarded_to_index(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:

@@ -59,6 +59,20 @@ been still, one at a time; off under `prefers-reduced-motion` and when inactive/
 | `FIREFLY_SIZE`                           | 0.016–0.024  | Core radius (fraction of the short edge). Larger survives the blur better.                                                             |
 | `FIREFLY_TRAVEL` / `FIREFLY_BOW`         | 0.07 / 0.012 | Eased outward drift distance and the perpendicular path bow.                                                                           |
 
+## Track-change bloom — `bokehEngine.ts` (KAMP-628)
+
+On each track change the orbs briefly swell (mostly radius) and settle, peaking as the
+new colors are ~half arrived. A soft "inhale," never a flash; off under
+`prefers-reduced-motion` and while inactive/hidden.
+
+| Knob              | Default | Effect                                                                                                             |
+| ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `BLOOM_DURATION`  | 1.5 s   | Total swell lifetime. Kept longer than the 1 s crossfade so the light settles _after_ the colors land.             |
+| `BLOOM_ATTACK`    | 0.3     | Fraction of the duration spent rising (~0.45 s). Lower = snappier onset (risks a "pop"); higher = a slower emerge. |
+| `BLOOM_RADIUS`    | 0.16    | Peak radius boost. **This carries the effect** — radius reads as "inhaling" and never clips.                       |
+| `BLOOM_ALPHA`     | 0.20    | Peak brightness boost. Keep low — brightness spikes read as a flash, especially where orbs overlap.                |
+| `BLOOM_MAX_DELAY` | 0.12 s  | Per-orb onset jitter so the field doesn't bloom in lockstep. 0 = perfectly synchronized.                           |
+
 ## Density / size / intensity — `bokehEngine.ts`
 
 | Knob             | Default                                         | Effect                                                                                           |

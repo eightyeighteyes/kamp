@@ -27,6 +27,15 @@ const FIREFLY_SIZE: [number, number] = [0.08, 0.12] // core radius, fraction of 
 const FIREFLY_TRAVEL = 0.07 // eased drift distance over life, fraction of S
 const FIREFLY_BOW = 0.012 // perpendicular path bow, fraction of S
 const FIREFLY_ALPHA = 0.8 // peak core alpha (kept modest; the canvas blur softens it)
+// Track-change bloom (KAMP-628): a soft swell on each palette change. Radius-led so it
+// reads as the field "inhaling" rather than flashing; the tail outlasts the 1s crossfade
+// so the light settles *after* the new colors land.
+const BLOOM_DURATION = 1.5 // seconds — total bloom lifetime
+const BLOOM_ATTACK = 0.3 // fraction of duration spent rising to peak (~0.45s)
+const BLOOM_MAX_DELAY = 0.12 // seconds — per-orb onset jitter, so the field never blooms in lockstep
+const BLOOM_RADIUS = 0.16 // peak orb-radius boost (fraction of base)
+const BLOOM_ALPHA = 0.2 // peak orb-alpha boost (kept low — brightness spikes read as a flash)
+const BLOOM_DONE = BLOOM_DURATION + BLOOM_MAX_DELAY // sentinel: no bloom active
 
 type Tier = 'hero' | 'mid' | 'accent'
 
@@ -47,6 +56,7 @@ interface Orb {
   baseAlpha: number
   colorIndex: number // stable palette slot (so recolor never flickers)
   parallax: number // cursor-parallax amplitude, fraction of S
+  bloomDelay: number // per-orb bloom onset jitter (seconds), breaks lockstep
 }
 
 const rand = (min: number, max: number): number => min + Math.random() * (max - min)
@@ -102,12 +112,16 @@ function makeOrb(plan: { tier: Tier; colorIndex: number }): Orb {
     breathPhase: rand(0, Math.PI * 2),
     baseAlpha: rand(t.alpha[0], t.alpha[1]),
     colorIndex: plan.colorIndex,
-    parallax: t.parallax
+    parallax: t.parallax,
+    bloomDelay: rand(0, BLOOM_MAX_DELAY)
   }
 }
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
 const smoothstep = (t: number): number => t * t * (3 - 2 * t)
+// Quintic ease with zero acceleration (not just velocity) at the ends — kills the faint
+// onset "snap" that betrays a triggered animation. Used for the bloom envelope.
+const smootherstep = (t: number): number => t * t * t * (t * (t * 6 - 15) + 10)
 const lerpRgb = (a: RGB, b: RGB, t: number): RGB => ({
   r: Math.round(lerp(a.r, b.r, t)),
   g: Math.round(lerp(a.g, b.g, t)),
@@ -158,6 +172,9 @@ export class BokehEngine {
   private lastPointerAt = 0 // elapsed at the last pane pointer activity
   private lastFireflyCorner = -1 // avoid spawning in the same corner twice running
 
+  // Track-change bloom. Seconds since the last palette change; BLOOM_DONE = inactive.
+  private bloomAge = BLOOM_DONE
+
   private elapsed = 0 // animation clock (seconds), advances only while running
   private rafId: number | null = null
   private lastTs = 0
@@ -193,6 +210,9 @@ export class BokehEngine {
     this.from = this.currentColors()
     this.to = next.colors
     this.paletteT = 0
+    // Trigger the bloom. If one is still in flight, re-arm from the peak (not 0) so a
+    // rapid skip re-excites the field smoothly instead of stuttering back through the attack.
+    this.bloomAge = this.bloomAge < BLOOM_DONE ? BLOOM_ATTACK * BLOOM_DURATION : 0
     if (!this.rafId) this.renderStatic() // reduced-motion path repaints on change
   }
 
@@ -239,7 +259,22 @@ export class BokehEngine {
     this.lastTs = 0
     this.lastDraw = 0
     this.resetPointer() // resume centered; no stale offset from a prior activation
+    // Suppress a stale bloom on resume: the palette effect can fire setPalette while the
+    // loop is stopped (it's keyed on the art URL, not visibility), so a track change during
+    // hidden/inactive would otherwise replay a late bloom here. The *crossfade* still replays
+    // (state-convergence — colors must reach their final value), but the bloom is a discrete
+    // "this just happened" event, so it should not fire late.
+    this.bloomAge = BLOOM_DONE
     this.rafId = requestAnimationFrame(this.tick)
+  }
+
+  // Bloom envelope for an orb at `age` seconds into the bloom (its own onset delay already
+  // subtracted): a smootherstep rise to peak, then a longer smootherstep settle. 0 outside.
+  private bloomEnvelope(age: number): number {
+    const x = age / BLOOM_DURATION
+    if (x <= 0 || x >= 1) return 0
+    if (x < BLOOM_ATTACK) return smootherstep(x / BLOOM_ATTACK)
+    return 1 - smootherstep((x - BLOOM_ATTACK) / (1 - BLOOM_ATTACK))
   }
 
   stop(): void {
@@ -270,6 +305,7 @@ export class BokehEngine {
     if (document.hidden) return // belt-and-suspenders; the component also gates
     this.elapsed += dt
     if (this.paletteT < 1) this.paletteT = Math.min(1, this.paletteT + (dt * 1000) / CROSSFADE_MS)
+    this.bloomAge = Math.min(BLOOM_DONE, this.bloomAge + dt)
     // Framerate-independent exponential lag toward the cursor target.
     const k = 1 - Math.exp(-dt / PARALLAX_TAU)
     this.pointerX += (this.pointerTargetX - this.pointerX) * k
@@ -310,13 +346,15 @@ export class BokehEngine {
       const ox = o.ax * (Math.sin(this.elapsed / o.px1) + Math.sin(this.elapsed / o.px2))
       const oy = o.ay * (Math.sin(this.elapsed / o.py1) + Math.sin(this.elapsed / o.py2))
       const breath = Math.sin(this.elapsed / o.breathP + o.breathPhase)
+      // Track-change bloom: a brief per-orb swell (radius-led) on top of the breath.
+      const bloom = this.bloomEnvelope(this.bloomAge - o.bloomDelay)
       // Subtract the eased pointer offset so orbs drift *opposite* the cursor —
       // the "peering through a deeper field" read, not dragging the field along.
       const x = o.bx * w + ox * s - this.pointerX * o.parallax * s
       const y = o.by * h + oy * s - this.pointerY * o.parallax * s
-      const radius = o.sizePct * s * 0.5 * (1 + 0.08 * breath)
+      const radius = o.sizePct * s * 0.5 * (1 + 0.08 * breath + BLOOM_RADIUS * bloom)
       if (radius <= 0) continue
-      const alpha = o.baseAlpha * (1 + 0.06 * breath)
+      const alpha = o.baseAlpha * (1 + 0.06 * breath + BLOOM_ALPHA * bloom)
       const c = colors[o.colorIndex] ?? colors[0]
       const grad = ctx.createRadialGradient(x, y, 0, x, y, radius)
       grad.addColorStop(0, `rgba(${c.r},${c.g},${c.b},${alpha})`)

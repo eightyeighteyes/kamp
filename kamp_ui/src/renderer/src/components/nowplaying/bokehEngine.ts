@@ -14,6 +14,7 @@ const MAX_DPR = 2
 const FRAME_MS = 33 // ~30fps cap — slow drift needs no more
 const CROSSFADE_MS = 1000 // palette recolor duration on track change
 const EDGE_MARGIN = 0.45 // wrap distance beyond [0,1] before respawning an orb
+const PARALLAX_TAU = 0.25 // seconds — heavy exponential damping of cursor parallax
 
 type Tier = 'hero' | 'mid' | 'accent'
 
@@ -33,18 +34,28 @@ interface Orb {
   breathPhase: number
   baseAlpha: number
   colorIndex: number // stable palette slot (so recolor never flickers)
+  parallax: number // cursor-parallax amplitude, fraction of S
 }
 
 const rand = (min: number, max: number): number => min + Math.random() * (max - min)
 
 // Tier -> [count, sizePct range, alpha range, cross-screen seconds range].
+// `parallax` is the per-tier cursor-parallax amplitude. Note the mapping is
+// intentionally *inverted* from physical depth: hero (big) orbs move least and the
+// small accents move most, so the calm backdrop stays still while the sparkle
+// dances. It reads as atmosphere, not a literal 3D depth cue.
 const TIERS: Record<
   Tier,
-  { size: [number, number]; alpha: [number, number]; cross: [number, number] }
+  {
+    size: [number, number]
+    alpha: [number, number]
+    cross: [number, number]
+    parallax: number
+  }
 > = {
-  hero: { size: [0.55, 0.75], alpha: [0.32, 0.4], cross: [90, 150] },
-  mid: { size: [0.3, 0.45], alpha: [0.4, 0.5], cross: [60, 110] },
-  accent: { size: [0.12, 0.22], alpha: [0.5, 0.56], cross: [45, 70] }
+  hero: { size: [0.55, 0.75], alpha: [0.32, 0.4], cross: [90, 150], parallax: 0.02 },
+  mid: { size: [0.3, 0.45], alpha: [0.4, 0.5], cross: [60, 110], parallax: 0.04 },
+  accent: { size: [0.12, 0.22], alpha: [0.5, 0.56], cross: [45, 70], parallax: 0.056 }
 }
 
 // 7 orbs, most-dominant palette slots to the big hero orbs.
@@ -78,7 +89,8 @@ function makeOrb(plan: { tier: Tier; colorIndex: number }): Orb {
     breathP: rand(12, 20),
     breathPhase: rand(0, Math.PI * 2),
     baseAlpha: rand(t.alpha[0], t.alpha[1]),
-    colorIndex: plan.colorIndex
+    colorIndex: plan.colorIndex,
+    parallax: t.parallax
   }
 }
 
@@ -101,6 +113,15 @@ export class BokehEngine {
   private from: RGB[]
   private to: RGB[]
   private paletteT = 1 // 0..1
+
+  // Cursor parallax. Target is set by pointer events (normalized [-1,1], 0 =
+  // pane center); the rendered value eases toward it in advance(). Both start
+  // centered and are reset to center on start() so a resume never inherits a
+  // stale off-center offset.
+  private pointerTargetX = 0
+  private pointerTargetY = 0
+  private pointerX = 0
+  private pointerY = 0
 
   private elapsed = 0 // animation clock (seconds), advances only while running
   private rafId: number | null = null
@@ -139,6 +160,23 @@ export class BokehEngine {
     if (!this.rafId) this.renderStatic() // reduced-motion path repaints on change
   }
 
+  // Set the parallax target from a normalized cursor position (0 = pane center).
+  // Clamped so an out-of-pane coordinate can never push the field past its amplitude.
+  setPointer(nx: number, ny: number): void {
+    this.pointerTargetX = Math.max(-1, Math.min(1, nx))
+    this.pointerTargetY = Math.max(-1, Math.min(1, ny))
+  }
+
+  // Snap both the target and the eased value back to center. Called on start() so a
+  // resume after a stop never inherits a frozen off-center offset (nothing eases it
+  // back while the loop is stopped).
+  private resetPointer(): void {
+    this.pointerTargetX = 0
+    this.pointerTargetY = 0
+    this.pointerX = 0
+    this.pointerY = 0
+  }
+
   // HiDPI + reduced-resolution sizing. Bails when the pane is display:none (0x0).
   resize(): void {
     const rect = this.canvas.getBoundingClientRect()
@@ -162,6 +200,7 @@ export class BokehEngine {
     if (this.rafId != null) return
     this.lastTs = 0
     this.lastDraw = 0
+    this.resetPointer() // resume centered; no stale offset from a prior activation
     this.rafId = requestAnimationFrame(this.tick)
   }
 
@@ -193,6 +232,10 @@ export class BokehEngine {
     if (document.hidden) return // belt-and-suspenders; the component also gates
     this.elapsed += dt
     if (this.paletteT < 1) this.paletteT = Math.min(1, this.paletteT + (dt * 1000) / CROSSFADE_MS)
+    // Framerate-independent exponential lag toward the cursor target.
+    const k = 1 - Math.exp(-dt / PARALLAX_TAU)
+    this.pointerX += (this.pointerTargetX - this.pointerX) * k
+    this.pointerY += (this.pointerTargetY - this.pointerY) * k
     for (const o of this.orbs) {
       o.bx += o.vx * dt
       o.by += o.vy * dt
@@ -216,8 +259,10 @@ export class BokehEngine {
       const ox = o.ax * (Math.sin(this.elapsed / o.px1) + Math.sin(this.elapsed / o.px2))
       const oy = o.ay * (Math.sin(this.elapsed / o.py1) + Math.sin(this.elapsed / o.py2))
       const breath = Math.sin(this.elapsed / o.breathP + o.breathPhase)
-      const x = o.bx * w + ox * s
-      const y = o.by * h + oy * s
+      // Subtract the eased pointer offset so orbs drift *opposite* the cursor —
+      // the "peering through a deeper field" read, not dragging the field along.
+      const x = o.bx * w + ox * s - this.pointerX * o.parallax * s
+      const y = o.by * h + oy * s - this.pointerY * o.parallax * s
       const radius = o.sizePct * s * 0.5 * (1 + 0.08 * breath)
       if (radius <= 0) continue
       const alpha = o.baseAlpha * (1 + 0.06 * breath)

@@ -77,7 +77,28 @@ function BokehCanvas({ active, artUrl }: Props): React.JSX.Element {
     if (shouldAnimate) {
       engine.resize()
       engine.start()
-      return () => engine.stop()
+      // Cursor parallax: drive the eased offset from motion over the pane only
+      // (scoped to .now-playing, not window, so nothing outside it moves the field).
+      // The handlers close over the null-checked local `engine`, so a late event
+      // after teardown is inert. Add + remove are symmetric within this branch.
+      const pane = canvasRef.current?.closest('.now-playing') as HTMLElement | null
+      if (!pane) return () => engine.stop()
+      const onMove = (e: PointerEvent): void => {
+        const rect = pane.getBoundingClientRect()
+        if (rect.width === 0 || rect.height === 0) return
+        engine.setPointer(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          ((e.clientY - rect.top) / rect.height) * 2 - 1
+        )
+      }
+      const onLeave = (): void => engine.setPointer(0, 0)
+      pane.addEventListener('pointermove', onMove, { passive: true })
+      pane.addEventListener('pointerleave', onLeave, { passive: true })
+      return () => {
+        pane.removeEventListener('pointermove', onMove)
+        pane.removeEventListener('pointerleave', onLeave)
+        engine.stop()
+      }
     }
     engine.stop()
     // Reduced-motion (still active) gets a static repaint; inactive/hidden paints

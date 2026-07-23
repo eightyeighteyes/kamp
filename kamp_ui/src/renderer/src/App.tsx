@@ -660,7 +660,7 @@ export default function App(): React.JSX.Element {
           <LibraryView />
         </div>
         <div className={isNowPlayingPane ? 'view-pane view-pane--active' : 'view-pane'}>
-          <NowPlayingView />
+          <NowPlayingView active={isNowPlayingPane} />
         </div>
         <div className={isDownloadsPane ? 'view-pane view-pane--active' : 'view-pane'}>
           <DownloadsView active={isDownloadsPane} />

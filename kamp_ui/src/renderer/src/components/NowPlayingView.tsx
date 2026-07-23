@@ -5,8 +5,9 @@ import { TOOLTIPS } from '../tooltipStrings'
 import { artUrl } from '../api/client'
 import { ContextMenu } from './ContextMenu'
 import { ShareIcon } from './TransportIcons'
+import { BokehBackground } from './nowplaying/BokehBackground'
 
-export function NowPlayingView(): React.JSX.Element {
+export function NowPlayingView({ active = false }: { active?: boolean }): React.JSX.Element {
   const player = useStore((s) => s.player)
   const { current_track } = player
   const [artLoaded, setArtLoaded] = useState(false)
@@ -34,8 +35,15 @@ export function NowPlayingView(): React.JSX.Element {
       )
     : undefined
 
+  const nowPlayingArtUrl = artUrl(
+    currentAlbum?.album_artist ?? current_track.album_artist,
+    currentAlbum?.album ?? current_track.album,
+    { trackId: current_track.album ? null : current_track.id }
+  )
+
   return (
     <div className="now-playing">
+      <BokehBackground active={active} artUrl={nowPlayingArtUrl} />
       <div
         className={`now-playing-art${artLoaded ? ' has-art' : ''}`}
         onContextMenu={(e) => {
@@ -46,13 +54,7 @@ export function NowPlayingView(): React.JSX.Element {
       >
         <span className="now-playing-art-placeholder">♪</span>
         <img
-          src={artUrl(
-            currentAlbum?.album_artist ?? current_track.album_artist,
-            currentAlbum?.album ?? current_track.album,
-            {
-              trackId: current_track.album ? null : current_track.id
-            }
-          )}
+          src={nowPlayingArtUrl}
           onLoad={() => setArtLoaded(true)}
           onError={() => setArtLoaded(false)}
         />

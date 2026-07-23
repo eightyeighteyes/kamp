@@ -1,8 +1,10 @@
 """Last.fm scrobbling integration.
 
 Tracks cumulative listening time per play instance and scrobbles when either
-30 seconds have been listened to, or the track reaches natural end-of-file,
-whichever comes first.
+the Last.fm threshold is crossed (half the track's duration or four minutes,
+whichever comes first; floored at 30s and used as the fallback for
+unknown-duration streams), or the track reaches natural end-of-file, whichever
+comes first.
 
 Threading model
 ---------------
@@ -57,7 +59,19 @@ class _ScrobbleJob:
 LASTFM_API_KEY = "edb4b838db9e37e0433c21761e2f7947"
 LASTFM_API_SECRET = "76d2c23b31352fe60ce8c1e6ba428a46"
 
-_SCROBBLE_THRESHOLD_SECS = 30.0
+# Scrobble timing follows the Last.fm standard (KAMP-619): fire once the listener
+# has heard half the track OR four minutes, whichever comes first, with a 30s
+# minimum. The floor doubles as the fallback for unknown-duration tracks
+# (streams have duration 0), which then keep the historical 30s behavior. We do
+# NOT implement Last.fm's separate "track must be longer than 30s" length
+# exclusion — kamp still scrobbles short tracks at natural EOF (on_track_ended).
+_SCROBBLE_MIN_SECS = 30.0
+_SCROBBLE_CAP_SECS = 240.0
+
+
+def _scrobble_threshold_secs(duration: float) -> float:
+    """Listening seconds required to scrobble a track of *duration* seconds."""
+    return min(max(duration / 2, _SCROBBLE_MIN_SECS), _SCROBBLE_CAP_SECS)
 
 
 def authenticate(username: str, password: str) -> str:
@@ -141,8 +155,9 @@ class Scrobbler:
         """Call at ~1 Hz from the state-saver thread.
 
         Accumulates listening time while *playing* is True and fires the
-        30-second scrobble when the threshold is crossed. Returns immediately;
-        any HTTP call runs on the scrobbler's worker thread.
+        scrobble once *track*'s threshold is crossed (see
+        ``_scrobble_threshold_secs``). Returns immediately; any HTTP call runs
+        on the scrobbler's worker thread.
         """
         now = time.monotonic()
         should_scrobble = False
@@ -157,7 +172,8 @@ class Scrobbler:
             if (
                 track is not None
                 and not self._scrobbled
-                and self._play_listening_secs >= _SCROBBLE_THRESHOLD_SECS
+                and self._play_listening_secs
+                >= _scrobble_threshold_secs(track.duration)
             ):
                 self._scrobbled = True
                 should_scrobble = True

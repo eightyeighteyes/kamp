@@ -25,6 +25,7 @@ def _track(
     album_artist: str = "Artist",
     track_number: int = 1,
     mb_recording_id: str = "",
+    duration: float = 0.0,
 ) -> Track:
     return Track(
         file_path=Path("/music/01.mp3"),
@@ -39,6 +40,7 @@ def _track(
         embedded_art=False,
         mb_release_id="",
         mb_recording_id=mb_recording_id,
+        duration=duration,
     )
 
 
@@ -190,7 +192,12 @@ class TestOnTrackChanged:
 
 
 # ---------------------------------------------------------------------------
-# Scrobbler.tick — 30-second threshold
+# Scrobbler.tick — half-duration-or-4-minutes threshold (KAMP-619)
+#
+# The threshold is min(max(duration / 2, 30), 240): half the track, capped at
+# 4 minutes, floored at 30s. The cases in this class that use the default
+# _track() (duration=0) exercise the unknown-duration fallback, which floors to
+# 30s — i.e. they also pin the pre-KAMP-619 behavior for streams.
 # ---------------------------------------------------------------------------
 
 
@@ -299,6 +306,82 @@ class TestTick:
         s, net = _make_scrobbler()
         self._advance(s, _track(artist="", title="Metronomic Underground"), 35.0)
         net.scrobble.assert_not_called()
+
+    # -- duration-aware threshold (KAMP-619) --------------------------------
+    # _advance(s, t, N) yields N-1 seconds of accumulated listening (the first
+    # tick after on_track_changed does not accumulate), so boundary values below
+    # are chosen with that off-by-one in mind.
+
+    def test_long_track_scrobbles_at_4min_cap_not_half(self) -> None:
+        """A 10-min track (half=300s) is capped at the 240s ceiling."""
+        s, net = _make_scrobbler()
+        # 234s listened < 240 cap → no scrobble (and proves half=300 is not used).
+        self._advance(s, _track(duration=600), 235.0)
+        net.scrobble.assert_not_called()
+        # 244s listened ≥ 240 cap → scrobble.
+        self._advance(s, _track(duration=600), 245.0)
+        net.scrobble.assert_called_once()
+
+    def test_track_scrobbles_at_half_duration(self) -> None:
+        """A 200s track scrobbles at half (100s), between the 30 floor and 240 cap."""
+        s, net = _make_scrobbler()
+        self._advance(s, _track(duration=200), 95.0)  # 94s < 100
+        net.scrobble.assert_not_called()
+        self._advance(s, _track(duration=200), 105.0)  # 104s ≥ 100
+        net.scrobble.assert_called_once()
+
+    def test_cap_boundary_fires_at_exactly_240s(self) -> None:
+        """duration=480 → half==240; the >= check fires at exactly 240s listened."""
+        s, net = _make_scrobbler()
+        self._advance(s, _track(duration=480), 240.0)  # 239s < 240
+        net.scrobble.assert_not_called()
+        self._advance(s, _track(duration=480), 241.0)  # exactly 240s ≥ 240
+        net.scrobble.assert_called_once()
+
+    def test_short_track_floored_at_30s_not_half(self) -> None:
+        """A 50s track (half=25s) is floored to the 30s minimum, not scrobbled at 25s."""
+        s, net = _make_scrobbler()
+        self._advance(s, _track(duration=50), 26.0)  # 25s < 30 floor
+        net.scrobble.assert_not_called()
+        self._advance(s, _track(duration=50), 32.0)  # 31s ≥ 30 floor
+        net.scrobble.assert_called_once()
+
+    def test_unknown_duration_falls_back_to_30s(self) -> None:
+        """duration=0 (streams) floors to 30s — the pre-KAMP-619 behavior, not the 240 cap."""
+        s, net = _make_scrobbler()
+        self._advance(s, _track(duration=0), 29.0)  # 28s < 30
+        net.scrobble.assert_not_called()
+        self._advance(s, _track(duration=0), 31.0)  # 30s ≥ 30
+        net.scrobble.assert_called_once()
+
+    def test_tiny_duration_does_not_scrobble_instantly(self) -> None:
+        """A corrupt 2s duration (half=1s) is floored to 30s, not scrobbled on tick 2."""
+        s, net = _make_scrobbler()
+        self._advance(s, _track(duration=2), 5.0)  # 4s listened
+        net.scrobble.assert_not_called()
+
+    def test_threshold_reads_current_track_duration(self) -> None:
+        """The threshold tracks the current track's duration, not a captured constant."""
+        s, net = _make_scrobbler()
+        # Instance 1: 200s track (threshold 100) crosses at 104s → one scrobble.
+        self._advance(s, _track(duration=200), 105.0)
+        assert net.scrobble.call_count == 1
+        # Instance 2: 600s track (threshold 240). 149s listened is under the new
+        # threshold — if the old 100 were reused this would wrongly fire.
+        self._advance(s, _track(duration=600), 150.0)
+        assert net.scrobble.call_count == 1
+        # Cross the 240 threshold on instance 2.
+        self._advance(s, _track(duration=600), 245.0)
+        assert net.scrobble.call_count == 2
+
+    def test_eof_scrobbles_below_raised_threshold(self) -> None:
+        """A long track played briefly then ended still scrobbles at EOF."""
+        s, net = _make_scrobbler()
+        t = _track(duration=600)  # threshold 240
+        self._advance(s, t, 30.0)  # 29s listened < 240 → tick has not scrobbled
+        net.scrobble.assert_not_called()
+        s.on_track_ended(t)
+        net.scrobble.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

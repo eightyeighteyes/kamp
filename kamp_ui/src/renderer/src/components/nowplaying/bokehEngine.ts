@@ -18,15 +18,15 @@ const PARALLAX_TAU = 0.25 // seconds — heavy exponential damping of cursor par
 // Firefly motes (KAMP-627): a rare, single transient spark. Poisson inter-arrival
 // (floor + exponential(mean)) so the cadence never feels scheduled; idle-gated so it
 // only appears in still moments; warm-dim so it reads as atmosphere, not a UI dot.
-const FIREFLY_GAP_FLOOR = 45 // seconds — minimum gap between motes
-const FIREFLY_GAP_MEAN = 110 // seconds — exponential mean added to the floor (avg ~2.5min)
-const FIREFLY_GAP_MAX = 300 // seconds — soft cap on the heavy tail
+const FIREFLY_GAP_FLOOR = 30 // seconds — minimum gap between motes
+const FIREFLY_GAP_MEAN = 60 // seconds — exponential mean added to the floor (avg ~1min)
+const FIREFLY_GAP_MAX = 120 // seconds — soft cap on the heavy tail
 const FIREFLY_IDLE = 8 // seconds of no pane pointer activity before a due mote appears
-const FIREFLY_LIFE: [number, number] = [6, 10] // seconds, fade-in -> drift -> fade-out
-const FIREFLY_SIZE: [number, number] = [0.016, 0.024] // core radius, fraction of S
+const FIREFLY_LIFE: [number, number] = [10, 15] // seconds, fade-in -> drift -> fade-out
+const FIREFLY_SIZE: [number, number] = [0.08, 0.12] // core radius, fraction of S
 const FIREFLY_TRAVEL = 0.07 // eased drift distance over life, fraction of S
 const FIREFLY_BOW = 0.012 // perpendicular path bow, fraction of S
-const FIREFLY_ALPHA = 0.6 // peak core alpha (kept modest; the canvas blur softens it)
+const FIREFLY_ALPHA = 0.8 // peak core alpha (kept modest; the canvas blur softens it)
 
 type Tier = 'hero' | 'mid' | 'accent'
 

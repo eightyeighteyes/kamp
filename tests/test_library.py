@@ -12246,6 +12246,40 @@ class TestPlaylistTracksCanonicalAlbum:
         assert rows[0]["canonical_album"] is None
 
 
+class TestAlbumIdentityForIds:
+    """KAMP-633: batch canonical album lookup used to stamp TrackOut identity
+    (queue album cards / "Go to Album") without keying on the mutable track tag."""
+
+    def test_returns_canonical_rows_keyed_by_id(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "ecstatic.mp3")
+        t.album_artist = "yasiin bey"
+        t.album = "The Ecstatic (Deluxe)"
+        index.upsert_track(t)
+        # Display rename (KAMP-467): albums.display_album set; albums.album stays.
+        index.update_album_display(
+            "yasiin bey", "The Ecstatic (Deluxe)", "The Ecstatic", None
+        )
+        album_id = index._album_id("yasiin bey", "The Ecstatic (Deluxe)")
+        assert album_id is not None
+
+        result = index.album_identity_for_ids({album_id})
+        index.close()
+
+        assert set(result) == {album_id}
+        row = result[album_id]
+        assert row["album"] == "The Ecstatic (Deluxe)"  # canonical key, not the tag
+        assert row["album_artist"] == "yasiin bey"
+        assert row["display_album"] == "The Ecstatic"
+
+    def test_empty_set_short_circuits(self, tmp_path: Path) -> None:
+        # A bare `IN ()` is a SQLite syntax error; the guard returns {} without
+        # touching the DB (hit by all-untagged track lists).
+        index = LibraryIndex(tmp_path / "library.db")
+        assert index.album_identity_for_ids(set()) == {}
+        index.close()
+
+
 class TestMagicPlaylists:
     def _criteria(self) -> MagicCriteria:
         return MagicCriteria(

@@ -12,6 +12,7 @@ import {
 } from './TransportIcons'
 import type { Track } from '../api/client'
 import { getPlaylistTracks } from '../api/client'
+import { albumForTrackNav } from '../utils/albumFromTrack'
 import { DuplicatePlaylistTrackModal } from './DuplicatePlaylistTrackModal'
 
 interface Props {
@@ -139,29 +140,9 @@ export function QueueContextMenu({
               <button
                 className="track-context-menu-item"
                 onClick={() => {
-                  const found = albums.find(
-                    (a) =>
-                      (a.album === track.album || a.display_album === track.album) &&
-                      (a.album_artist === track.album_artist ||
-                        a.display_album_artist === track.album_artist)
-                  ) ?? {
-                    album_artist: track.album_artist,
-                    album: track.album,
-                    release_date: '',
-                    track_count: 0,
-                    has_art: false,
-                    missing_album: false,
-                    track_id: null,
-                    art_version: null,
-                    added_at: null,
-                    last_played_at: null,
-                    play_count_avg: 0,
-                    favorite: false,
-                    has_favorite_track: false,
-                    source: 'local',
-                    has_remote_tracks: false,
-                    genres: []
-                  }
+                  // KAMP-633: resolve by CANONICAL album identity (album_id), not
+                  // the mutable tag — otherwise a renamed album lands on a blank page.
+                  const found = albumForTrackNav(track, albums)
                   // KAMP-555: dismiss the search overlay so the updated library
                   // view is visible. No-op when search isn't open.
                   void setSearchQuery('')

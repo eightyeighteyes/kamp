@@ -60,6 +60,9 @@ def mock_index() -> MagicMock:
     index = MagicMock()
     index.albums.return_value = []
     index.tracks_for_album.return_value = []
+    # Real dict (not a MagicMock) so TrackOut serializes with null canonical album
+    # identity instead of un-indexable mocks (KAMP-633).
+    index.album_identity_for_ids.return_value = {}
     return index
 
 

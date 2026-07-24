@@ -2791,6 +2791,133 @@ class TestSyncCollectionStream:
         upserted = index.upsert_many.call_args[0][0]
         assert upserted[0].genres == []
 
+    def _genre_track(self, genres: list[str], n: int = 1) -> Any:
+        from pathlib import Path as _Path
+
+        from kamp_core.library import Track
+
+        return Track(
+            file_path=_Path(f"bandcamp://1/{n}"),
+            title=f"T{n}",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2020",
+            track_number=n,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            genres=genres,
+        )
+
+    def test_preorder_resync_preserves_user_genre_edits(self, tmp_path: Path) -> None:
+        # KAMP-604 (headline red-before-green): a pre-order first-indexed with the
+        # toggle on gets its Bandcamp labels as genres; after the user edits those
+        # genres, a later re-sync (still a pre-order, is_new_album False) must NOT
+        # clobber the edit. Real LibraryIndex so upsert_many's empty-incoming skip
+        # is exercised end to end.
+        from kamp_core.library import LibraryIndex
+
+        item = _preorder_item(1)
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        index = LibraryIndex(tmp_path / "lib.db")
+
+        def _sync() -> None:
+            with (
+                patch(
+                    "kamp_daemon.bandcamp._ensure_session",
+                    return_value=_make_session_data(),
+                ),
+                patch(
+                    "kamp_daemon.bandcamp._make_requests_session",
+                    return_value=_make_requests_mock([item]),
+                ),
+                patch(
+                    "kamp_daemon.bandcamp.fetch_album_tracks",
+                    side_effect=lambda *a, **k: [
+                        self._genre_track(["shoegaze", "dream pop"])
+                    ],
+                ),
+            ):
+                sync_collection_stream(
+                    config, watch_folder, index, apply_bandcamp_genres=True
+                )
+
+        # First index (is_new_album True): Bandcamp labels applied.
+        _sync()
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()["id"]
+        assert set(index.genres_for_track(tid)) == {"shoegaze", "dream pop"}
+
+        # User removes a genre.
+        index.apply_genres([tid], ["shoegaze"], mode="replace")
+        assert index.genres_for_track(tid) == ["shoegaze"]
+
+        # Re-sync of the same pre-order must preserve the edit, not revert it.
+        _sync()
+        result = index.genres_for_track(tid)
+        index.close()
+        assert result == ["shoegaze"]
+
+    def test_preorder_resync_strips_bandcamp_genres(self, tmp_path: Path) -> None:
+        # KAMP-604: re-sync of an already-indexed pre-order (is_new_album False)
+        # strips the fetched Bandcamp genres before upsert (so upsert_many's
+        # empty-incoming skip preserves the user's edits) while still refreshing
+        # the keyword cache. This is the (apply=True, is_new=False) strip branch.
+        track = self._genre_track(["shoegaze", "dream pop"])
+        _result, index = self._run(
+            tmp_path,
+            [_item(1)],
+            already_have_tracks=True,
+            fake_tracks=[track],
+            existing_state={"1": "preorder"},
+            apply_bandcamp_genres=True,
+        )
+        index.set_collection_keywords.assert_called_once_with(
+            "1", ["shoegaze", "dream pop"]
+        )
+        assert index.upsert_many.call_args[0][0][0].genres == []
+
+    def test_date_backfill_resync_does_not_reapply_genres(self, tmp_path: Path) -> None:
+        # KAMP-604: the strip generalizes beyond pre-orders — a non-pre-order album
+        # re-fetched only for year-only date backfill (is_new_album False) also
+        # stops re-applying Bandcamp genres, preserving the stored set.
+        track = self._genre_track(["shoegaze"])
+        _result, index = self._run(
+            tmp_path,
+            [_item(1)],
+            already_have_tracks=True,  # existing album -> is_new_album False
+            fake_tracks=[track],  # fetch triggers via needs_backfill (MagicMock)
+            apply_bandcamp_genres=True,
+        )
+        index.upsert_many.assert_called_once()
+        assert index.upsert_many.call_args[0][0][0].genres == []
+
+    def test_graduated_preorder_new_track_lands_genreless(self, tmp_path: Path) -> None:
+        # KAMP-604 Q3 (deliberate): when a re-inspected pre-order gains a newly
+        # released track, is_new_album is album-granular, so ALL fetched tracks
+        # (the pre-existing ones and the new one) are stripped. Album-mates keep
+        # their user-edited genres via the empty-incoming skip; the new track
+        # lands genre-less. Accepted trade-off — the album genre union is
+        # unchanged (union with the empty set is a no-op).
+        tracks = [
+            self._genre_track(["shoegaze"], n=1),
+            self._genre_track(["shoegaze"], n=2),  # the newly-released track
+        ]
+        _result, index = self._run(
+            tmp_path,
+            [_item(1)],
+            already_have_tracks=True,
+            fake_tracks=tracks,
+            existing_state={"1": "preorder"},
+            apply_bandcamp_genres=True,
+        )
+        upserted = index.upsert_many.call_args[0][0]
+        assert [t.genres for t in upserted] == [[], []]
+
     def test_batch_indexed_callback_fires_per_new_batch(self, tmp_path: Path) -> None:
         """batch_indexed_callback fires once per album batch that has new tracks."""
         from kamp_core.library import Track

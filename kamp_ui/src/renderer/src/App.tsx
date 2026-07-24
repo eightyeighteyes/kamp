@@ -366,6 +366,17 @@ export default function App(): React.JSX.Element {
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
 
+      // KAMP-598: these are global shortcuts, not input for the focused control.
+      // A mouse click leaves DOM focus on the clicked element without making it
+      // :focus-visible; the next keypress would promote it and paint a focus
+      // ring. Drop that leftover focus so no ring appears — but only when the
+      // element is NOT already :focus-visible, so a genuine keyboard (Tab) focus
+      // keeps its position and ring.
+      const active = document.activeElement as HTMLElement | null
+      if (active && active !== document.body && !active.matches(':focus-visible')) {
+        active.blur()
+      }
+
       switch (e.key) {
         case '?':
           setShowShortcuts((prev) => !prev)

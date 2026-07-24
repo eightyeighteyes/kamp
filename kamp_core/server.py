@@ -249,9 +249,30 @@ class TrackOut(BaseModel):
     is_available: bool = True
     duration: float = 0.0
     sources: list[SourceOut] = []
+    # KAMP-633: canonical album identity so any TrackOut consumer (queue album
+    # cards, "Go to Album") can resolve art/navigation to the real album after a
+    # rename. IDENTITY CONTRACT (mirrors PlaylistTrackOut): `album_artist`/`album`
+    # above are the track's display-or-tag value (row display only, NEVER album
+    # identity); `canonical_*` (from the albums row via album_id) is the art/nav
+    # key; `display_*` is render-only. All null for untagged (missing-album)
+    # tracks — the UI routes those through the track id path (KAMP-554).
+    album_id: int | None = None
+    canonical_album_artist: str | None = None
+    canonical_album: str | None = None
+    display_album: str | None = None
+    display_album_artist: str | None = None
+    album_art_version: float | None = None
 
     @classmethod
-    def from_track(cls, t: Track, sources: "list[Any] | None" = None) -> "TrackOut":
+    def from_track(
+        cls,
+        t: Track,
+        sources: "list[Any] | None" = None,
+        album: "Any | None" = None,
+    ) -> "TrackOut":
+        # *album* is the canonical albums row (from LibraryIndex.album_identity_for_ids)
+        # for t.album_id, or None when the track is untagged / unresolved. Its
+        # presence stamps the canonical identity fields; absence leaves them None.
         return cls(
             id=t.id,
             title=t.title,
@@ -274,6 +295,14 @@ class TrackOut(BaseModel):
             is_available=t.is_available,
             duration=t.duration,
             sources=[SourceOut.from_row(r) for r in (sources or [])],
+            album_id=(t.album_id or None) if album is not None else None,
+            canonical_album_artist=album["album_artist"] if album is not None else None,
+            canonical_album=album["album"] if album is not None else None,
+            display_album=album["display_album"] if album is not None else None,
+            display_album_artist=(
+                album["display_album_artist"] if album is not None else None
+            ),
+            album_art_version=album["art_version"] if album is not None else None,
         )
 
 
@@ -940,15 +969,31 @@ def _tracks_out(index: LibraryIndex, tracks: "list[Track]") -> list[TrackOut]:
     One sources_for_track_ids call for the whole list (no N+1). Synthetic queue
     restore stubs (id=0) are excluded from the batch and get an empty sources
     list. Use this instead of a bare `[TrackOut.from_track(t) for t in ...]`.
+
+    KAMP-633: canonical album identity is batch-resolved in one query
+    (album_identity_for_ids) so album cards / "Go to Album" don't key on the tag.
     """
     src_map = index.sources_for_track_ids([t.id for t in tracks if t.id])
-    return [TrackOut.from_track(t, src_map.get(t.id, [])) for t in tracks]
+    album_map = index.album_identity_for_ids({t.album_id for t in tracks if t.album_id})
+    return [
+        TrackOut.from_track(t, src_map.get(t.id, []), album_map.get(t.album_id))
+        for t in tracks
+    ]
 
 
 def _track_out(index: LibraryIndex, track: Track) -> TrackOut:
-    """Serialize a single track to TrackOut with its sources (KAMP-537)."""
+    """Serialize a single track to TrackOut with its sources (KAMP-537).
+
+    KAMP-633: also resolves the canonical album row; skips the lookup entirely
+    for untagged tracks (album_id 0) so no needless query fires.
+    """
+    album = (
+        index.album_identity_for_ids({track.album_id}).get(track.album_id)
+        if track.album_id
+        else None
+    )
     return TrackOut.from_track(
-        track, index.sources_for_track_ids([track.id]).get(track.id, [])
+        track, index.sources_for_track_ids([track.id]).get(track.id, []), album
     )
 
 

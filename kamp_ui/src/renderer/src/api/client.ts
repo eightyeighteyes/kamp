@@ -40,6 +40,17 @@ export type Track = {
   // KAMP-552: identity is the canonical `id`; the delivery paths/uris live here
   // (there is no more track-level file_path).
   sources: TrackSource[]
+  // KAMP-633: canonical album identity from the albums row (via album_id). The
+  // sibling `album`/`album_artist` are the track's display-or-tag value — NEVER
+  // use them to key album identity (art/nav); use canonical_* for that and
+  // display_* for rendering. All null for untagged (missing-album) tracks, which
+  // the UI routes through the track id path (KAMP-554).
+  album_id: number | null
+  canonical_album_artist: string | null
+  canonical_album: string | null
+  display_album: string | null
+  display_album_artist: string | null
+  album_art_version: number | null
 }
 
 // The uri a track is reached by: prefer a local file source, else the first
@@ -170,16 +181,8 @@ export type PlaylistTrack = Track & {
   position: number
   last_played: number | null
   date_added: number | null
-  // KAMP-613: canonical album identity from the albums row (via album_id). The
-  // inherited `album`/`album_artist` are the track's mutable TAG — NEVER use them
-  // to key album identity (art/nav); use canonical_* for that and display_* for
-  // rendering. All null for untagged (missing-album) tracks.
-  album_id: number | null
-  canonical_album_artist: string | null
-  canonical_album: string | null
-  display_album: string | null
-  display_album_artist: string | null
-  album_art_version: number | null
+  // Canonical album identity (album_id, canonical_*, display_*, album_art_version)
+  // is inherited from the base Track type (KAMP-633).
 }
 
 // Configurable base URL: defaults to localhost but can be overridden via

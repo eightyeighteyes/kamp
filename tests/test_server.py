@@ -72,6 +72,10 @@ def mock_index() -> MagicMock:
     index.list_all_magic_criteria.return_value = []
     # Default: empty download queue so download.queue snapshots serialize (KAMP-566).
     index.download_queue_items.return_value = []
+    # Default: no canonical album rows so TrackOut serializes with null canonical
+    # identity (KAMP-633). Real dict (not a MagicMock) so `.get()` yields None and
+    # from_track leaves the canonical fields None; tests needing them override.
+    index.album_identity_for_ids.return_value = {}
     return index
 
 
@@ -4621,6 +4625,112 @@ class TestPatchAlbumMetaEndpoint:
         )
         out = TrackOut.from_track(stub)
         assert out.reachable is False
+
+    def _tagged_track(self, album_id: int) -> "Any":
+        from pathlib import Path as _Path
+
+        from kamp_core.library import Track as _Track
+
+        return _Track(
+            file_path=_Path("/m/whales.mp3"),
+            title="Whales",
+            artist="Hail Mary Mallon",
+            album_artist="Hail Mary Mallon",
+            album="Bestiary",  # tag drifted from the canonical albums-row name
+            release_date="",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=True,
+            mb_release_id="",
+            mb_recording_id="",
+            source="local",
+            id=7,
+            album_id=album_id,
+        )
+
+    _CANON_ROW = {
+        "id": 42,
+        "album_artist": "Hail Mary Mallon",
+        "album": "Bestiary (Bonus Track Version)",
+        "display_album": None,
+        "display_album_artist": None,
+        "art_version": 1234.0,
+    }
+
+    def test_tracks_out_stamps_canonical_album_identity(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """KAMP-633: _tracks_out resolves canonical album identity via album_id;
+        the tag `album` is preserved while canonical_* comes from the albums row."""
+        from kamp_core.server import _tracks_out
+
+        mock_index.sources_for_track_ids.return_value = {}
+        mock_index.album_identity_for_ids.return_value = {42: self._CANON_ROW}
+        out = _tracks_out(mock_index, [self._tagged_track(42)])[0]
+
+        assert out.album == "Bestiary"  # tag preserved (row display only)
+        assert out.album_id == 42
+        assert out.canonical_album == "Bestiary (Bonus Track Version)"
+        assert out.canonical_album_artist == "Hail Mary Mallon"
+        assert out.album_art_version == 1234.0
+        mock_index.album_identity_for_ids.assert_called_once_with({42})
+
+    def test_tracks_out_untagged_track_has_null_canonical(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """An untagged track (album_id 0) yields all-null canonical fields and the
+        batch lookup is called with the empty set (its guard short-circuits)."""
+        from kamp_core.server import _tracks_out
+
+        mock_index.sources_for_track_ids.return_value = {}
+        mock_index.album_identity_for_ids.return_value = {}
+        out = _tracks_out(mock_index, [self._tagged_track(0)])[0]
+
+        assert out.album_id is None
+        assert out.canonical_album is None
+        assert out.canonical_album_artist is None
+        assert out.album_art_version is None
+        mock_index.album_identity_for_ids.assert_called_once_with(set())
+
+    def test_track_out_skips_album_lookup_when_untagged(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """_track_out fires no album query for an untagged track (album_id 0)."""
+        from kamp_core.server import _track_out
+
+        mock_index.sources_for_track_ids.return_value = {}
+        out = _track_out(mock_index, self._tagged_track(0))
+
+        assert out.album_id is None
+        assert out.canonical_album is None
+        mock_index.album_identity_for_ids.assert_not_called()
+
+    def test_track_out_resolves_album_lookup_when_tagged(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """_track_out stamps canonical identity from the single-id album lookup."""
+        from kamp_core.server import _track_out
+
+        mock_index.sources_for_track_ids.return_value = {}
+        mock_index.album_identity_for_ids.return_value = {42: self._CANON_ROW}
+        out = _track_out(mock_index, self._tagged_track(42))
+
+        assert out.canonical_album == "Bestiary (Bonus Track Version)"
+        assert out.album_id == 42
+        mock_index.album_identity_for_ids.assert_called_once_with({42})
 
     def test_album_out_includes_source_and_has_remote_tracks(
         self,

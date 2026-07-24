@@ -8,9 +8,47 @@ import { FavoriteIcon, WarnIcon, GoToAlbumIcon, QueueIcon } from './TransportIco
 import type { Track } from '../api/client'
 import { computeNewOrder } from '../utils/computeNewOrder'
 
-type NextUpItem =
-  | { kind: 'track'; track: Track; queueIdx: number }
-  | { kind: 'album'; albumArtist: string; album: string; tracks: Track[]; trackIndices: number[] }
+// KAMP-633: group album runs by CANONICAL album identity (the albums row via
+// album_id), never the mutable track tag — otherwise art/nav resolve to the
+// pre-rename key and break. Untagged tracks (no album_id) never group: keyed on
+// the queue index so they render as individual rows and synthetic queue-restore
+// stubs (id 0) never collide on a shared key.
+function albumRunKey(t: Track, queueIdx: number): string {
+  return t.album_id != null && t.canonical_album != null
+    ? `id:${t.album_id}`
+    : `missing:${queueIdx}`
+}
+
+// Canonical album_artist/album for art + navigation (the albums-row key).
+const canonicalAlbumArtist = (t: Track): string => t.canonical_album_artist ?? t.album_artist
+const canonicalAlbum = (t: Track): string => t.canonical_album ?? t.album
+
+// AlbumRun carries canonical identity (art/nav) plus the display name (render).
+type AlbumRun = {
+  albumArtist: string
+  album: string
+  displayAlbum: string
+  displayAlbumArtist: string
+  artVersion: number | null
+  tracks: Track[]
+  trackIndices: number[]
+}
+
+// Build the album-card fields for a run from its first track: canonical for
+// art/nav, display_* (falling back to canonical) for the visible label.
+function albumRunFrom(track: Track): Omit<AlbumRun, 'tracks' | 'trackIndices'> {
+  const albumArtist = canonicalAlbumArtist(track)
+  const album = canonicalAlbum(track)
+  return {
+    albumArtist,
+    album,
+    displayAlbum: track.display_album ?? album,
+    displayAlbumArtist: track.display_album_artist ?? albumArtist,
+    artVersion: track.album_art_version
+  }
+}
+
+type NextUpItem = { kind: 'track'; track: Track; queueIdx: number } | ({ kind: 'album' } & AlbumRun)
 
 const QUEUE_WIDTH_KEY = 'kamp:queue-width'
 const QUEUE_WIDTH_DEFAULT = 280
@@ -135,34 +173,35 @@ export function QueuePanel(): React.JSX.Element {
   const nextUpItems = useMemo((): NextUpItem[] => {
     if (!albumGroupingActive || position < 0) return []
     const nowPlayingTrack = tracks[position]
-    const straddleKey = nowPlayingTrack
-      ? `${nowPlayingTrack.album_artist}\0${nowPlayingTrack.album}`
-      : ''
+    const straddleKey = nowPlayingTrack ? albumRunKey(nowPlayingTrack, position) : ''
 
     const result: NextUpItem[] = []
-    let run: {
-      key: string
-      albumArtist: string
-      album: string
-      tracks: Track[]
-      trackIndices: number[]
-    } | null = null
+    let run: ({ key: string } & AlbumRun) | null = null
 
     // Flush the open run: a single track renders as a row, two or more as an album card.
     const flush = (): void => {
       if (!run) return
-      if (run.tracks.length < 2) {
-        result.push({ kind: 'track', track: run.tracks[0], queueIdx: run.trackIndices[0] })
+      const r = run
+      if (r.tracks.length < 2) {
+        result.push({ kind: 'track', track: r.tracks[0], queueIdx: r.trackIndices[0] })
       } else {
-        const { albumArtist, album, tracks: t, trackIndices } = run
-        result.push({ kind: 'album', albumArtist, album, tracks: t, trackIndices })
+        result.push({
+          kind: 'album',
+          albumArtist: r.albumArtist,
+          album: r.album,
+          displayAlbum: r.displayAlbum,
+          displayAlbumArtist: r.displayAlbumArtist,
+          artVersion: r.artVersion,
+          tracks: r.tracks,
+          trackIndices: r.trackIndices
+        })
       }
       run = null
     }
 
     for (let i = position + 1; i < tracks.length; i++) {
       const track = tracks[i]
-      const key = `${track.album_artist}\0${track.album}`
+      const key = albumRunKey(track, i)
       // Straddle (now-playing) album tracks always render individually and break any run.
       if (key === straddleKey) {
         flush()
@@ -176,13 +215,7 @@ export function QueuePanel(): React.JSX.Element {
         run.trackIndices.push(i)
       } else {
         flush()
-        run = {
-          key,
-          albumArtist: track.album_artist,
-          album: track.album,
-          tracks: [track],
-          trackIndices: [i]
-        }
+        run = { key, ...albumRunFrom(track), tracks: [track], trackIndices: [i] }
       }
     }
     flush()
@@ -190,33 +223,27 @@ export function QueuePanel(): React.JSX.Element {
   }, [albumGroupingActive, tracks, position])
 
   // Straddle group for the Now Playing album card: contiguous run of tracks around
-  // `position` that share the same album key. Used only in album view.
-  const nowPlayingAlbumCard = useMemo((): {
-    albumArtist: string
-    album: string
-    tracks: Track[]
-    trackIndices: number[]
-  } | null => {
+  // `position` that share the same canonical album key. Used only in album view.
+  const nowPlayingAlbumCard = useMemo((): AlbumRun | null => {
     if (!albumGroupingActive || position < 0) return null
     const nowPlayingTrack = tracks[position]
     if (!nowPlayingTrack) return null
-    const key = `${nowPlayingTrack.album_artist}\0${nowPlayingTrack.album}`
+    // An untagged now-playing track has no canonical album — render it as a row,
+    // not a blank album card with default art (KAMP-633).
+    if (nowPlayingTrack.album_id == null || nowPlayingTrack.canonical_album == null) return null
+    const key = albumRunKey(nowPlayingTrack, position)
 
     let start = position
-    while (start > 0 && `${tracks[start - 1].album_artist}\0${tracks[start - 1].album}` === key) {
+    while (start > 0 && albumRunKey(tracks[start - 1], start - 1) === key) {
       start--
     }
     let end = position
-    while (
-      end + 1 < tracks.length &&
-      `${tracks[end + 1].album_artist}\0${tracks[end + 1].album}` === key
-    ) {
+    while (end + 1 < tracks.length && albumRunKey(tracks[end + 1], end + 1) === key) {
       end++
     }
 
     return {
-      albumArtist: nowPlayingTrack.album_artist,
-      album: nowPlayingTrack.album,
+      ...albumRunFrom(nowPlayingTrack),
       tracks: tracks.slice(start, end + 1),
       trackIndices: Array.from({ length: end - start + 1 }, (_, i) => start + i)
     }
@@ -678,6 +705,9 @@ export function QueuePanel(): React.JSX.Element {
         key={`album:${item.albumArtist}\0${item.album}\0${item.trackIndices[0]}`}
         albumArtist={item.albumArtist}
         album={item.album}
+        displayAlbum={item.displayAlbum}
+        displayAlbumArtist={item.displayAlbumArtist}
+        artVersion={item.artVersion}
         tracks={item.tracks}
         trackIndices={item.trackIndices}
         isDragging={false}
@@ -844,6 +874,9 @@ export function QueuePanel(): React.JSX.Element {
                   key={`now-playing-album:${nowPlayingAlbumCard.albumArtist}\0${nowPlayingAlbumCard.album}`}
                   albumArtist={nowPlayingAlbumCard.albumArtist}
                   album={nowPlayingAlbumCard.album}
+                  displayAlbum={nowPlayingAlbumCard.displayAlbum}
+                  displayAlbumArtist={nowPlayingAlbumCard.displayAlbumArtist}
+                  artVersion={nowPlayingAlbumCard.artVersion}
                   tracks={nowPlayingAlbumCard.tracks}
                   trackIndices={nowPlayingAlbumCard.trackIndices}
                   isDragging={false}

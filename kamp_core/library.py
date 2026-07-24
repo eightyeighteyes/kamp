@@ -7977,6 +7977,28 @@ class LibraryIndex:
             "album_art_version": r["art_version"],
         }
 
+    def album_identity_for_ids(self, album_ids: "set[int]") -> "dict[int, sqlite3.Row]":
+        """Batch-fetch canonical album identity rows keyed by ``albums.id`` (KAMP-633).
+
+        Returns ``{album_id: row}`` where each row carries the canonical
+        ``album_artist``/``album`` (the art/nav identity key, NOT the track's
+        mutable tag), the ``display_*`` overrides, and ``art_version``.  Used by
+        ``_tracks_out``/``_track_out`` (server.py) to stamp canonical album
+        identity onto ``TrackOut`` so the queue cards and "Go to Album" resolve
+        correctly after a rename — mirroring the KAMP-613 playlist join.
+
+        Empty input short-circuits: a bare ``IN ()`` is a SQLite syntax error.
+        """
+        if not album_ids:
+            return {}
+        placeholders = ",".join("?" * len(album_ids))
+        rows = self._conn.execute(
+            "SELECT id, album_artist, album, display_album, display_album_artist,"
+            f" art_version FROM albums WHERE id IN ({placeholders})",
+            list(album_ids),
+        ).fetchall()
+        return {r["id"]: r for r in rows}
+
     def add_track_to_playlist(self, playlist_id: int, file_path: str) -> None:
         """Append a track to the end of a playlist.
 

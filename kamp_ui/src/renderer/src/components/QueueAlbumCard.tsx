@@ -3,8 +3,13 @@ import { artUrl } from '../api/client'
 import type { Track } from '../api/client'
 
 interface QueueAlbumCardProps {
+  // KAMP-633: albumArtist/album are the CANONICAL albums-row key (art + nav);
+  // displayAlbum/displayAlbumArtist are the render-only label (may be renamed).
   albumArtist: string
   album: string
+  displayAlbum: string
+  displayAlbumArtist: string
+  artVersion: number | null
   tracks: Track[]
   trackIndices: number[]
   isDragging: boolean
@@ -21,6 +26,9 @@ interface QueueAlbumCardProps {
 export function QueueAlbumCard({
   albumArtist,
   album,
+  displayAlbum,
+  displayAlbumArtist,
+  artVersion,
   tracks,
   trackIndices,
   isDragging,
@@ -34,7 +42,9 @@ export function QueueAlbumCard({
   const [artLoaded, setArtLoaded] = useState(false)
   const [artError, setArtError] = useState(false)
   const firstTrack = tracks[0]
-  const src = artUrl(albumArtist, album, { trackId: firstTrack?.id ?? null })
+  // Art resolves on the canonical key + version (KAMP-633); the label shows the
+  // display name.
+  const src = artUrl(albumArtist, album, { trackId: firstTrack?.id ?? null, version: artVersion })
 
   return (
     <li
@@ -68,8 +78,8 @@ export function QueueAlbumCard({
         {(!artLoaded || artError) && <span className="queue-album-card-art-placeholder">♪</span>}
       </div>
       <div className="queue-album-card-info">
-        <span className="queue-album-card-name">{album}</span>
-        <span className="queue-album-card-artist">{albumArtist}</span>
+        <span className="queue-album-card-name">{displayAlbum}</span>
+        <span className="queue-album-card-artist">{displayAlbumArtist}</span>
       </div>
       <span className="queue-album-card-count">{tracks.length}</span>
     </li>

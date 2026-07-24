@@ -48,6 +48,7 @@ export function QueueContextMenu({
   const selectAlbum = useStore((s) => s.selectAlbum)
   const selectArtist = useStore((s) => s.selectArtist)
   const setActiveView = useStore((s) => s.setActiveView)
+  const setSearchQuery = useStore((s) => s.setSearchQuery)
   const clearQueue = useStore((s) => s.clearQueue)
   const clearRemainingQueue = useStore((s) => s.clearRemainingQueue)
   const removeFromQueue = useStore((s) => s.removeFromQueue)
@@ -161,6 +162,9 @@ export function QueueContextMenu({
                     has_remote_tracks: false,
                     genres: []
                   }
+                  // KAMP-555: dismiss the search overlay so the updated library
+                  // view is visible. No-op when search isn't open.
+                  void setSearchQuery('')
                   void setActiveView('library')
                   void selectAlbum(found)
                   onClose()
@@ -181,6 +185,7 @@ export function QueueContextMenu({
               <button
                 className="track-context-menu-item"
                 onClick={() => {
+                  void setSearchQuery('') // KAMP-555: dismiss search overlay
                   void setActiveView('library')
                   setCollectionType('albums')
                   selectArtist(track.album_artist)

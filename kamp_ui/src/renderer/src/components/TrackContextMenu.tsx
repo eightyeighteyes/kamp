@@ -55,6 +55,7 @@ export function TrackContextMenu({
   const selectAlbum = useStore((s) => s.selectAlbum)
   const selectArtist = useStore((s) => s.selectArtist)
   const setActiveView = useStore((s) => s.setActiveView)
+  const setSearchQuery = useStore((s) => s.setSearchQuery)
 
   const [duplicateModal, setDuplicateModal] = useState<DuplicateModalState | null>(null)
 
@@ -213,6 +214,10 @@ export function TrackContextMenu({
                     has_remote_tracks: false,
                     genres: []
                   }
+                  // KAMP-555: dismiss the search overlay so the updated library
+                  // view is visible (App renders SearchView whenever searchQuery
+                  // is non-empty). No-op when search isn't open.
+                  void setSearchQuery('')
                   void setActiveView('library')
                   void selectAlbum(found)
                   onClose()
@@ -233,6 +238,7 @@ export function TrackContextMenu({
               <button
                 className="track-context-menu-item"
                 onClick={() => {
+                  void setSearchQuery('') // KAMP-555: dismiss search overlay
                   void setActiveView('library')
                   setCollectionType('albums')
                   selectArtist(track.album_artist)

@@ -198,6 +198,16 @@ export class BokehEngine {
     if (v) this.bg = v
   }
 
+  // Push the themed --bg from React (KAMP-631). refreshBg only runs on
+  // construction/resize, so a palette switch — which changes --bg without
+  // resizing the canvas — would otherwise leave the vignette darkening the
+  // edges with the PREVIOUS theme's bg (a neutral seam on the exposed sides
+  // when the pane is wide). The caller reads --bg post-commit, where the value
+  // is reliable, and re-applies it on every theme change.
+  setBg(v: string): void {
+    if (v) this.bg = v
+  }
+
   private currentColors(): RGB[] {
     if (this.paletteT >= 1) return this.to
     const t = smoothstep(this.paletteT)

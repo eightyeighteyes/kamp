@@ -947,6 +947,10 @@
   /* Containing block for the bokeh canvas (KAMP-561); clip the canvas blur bleed. */
   position: relative;
   overflow: hidden;
+  /* KAMP-631: the bokeh canvas's filter:blur(28px) promotes a compositor layer;
+     an opaque themed backdrop here keeps its transparent pixels from revealing
+     Chromium's base color (default #141414) as a seam on non-default palettes. */
+  background: var(--bg);
 }
 
 /* Ambient album-color bokeh behind the art (KAMP-561). The blur unifies the orbs
@@ -959,6 +963,15 @@
   pointer-events: none;
   z-index: 0;
   filter: blur(28px);
+  /* KAMP-631: filter:blur promotes this canvas to its own compositor layer, and
+     the canvas bitmap is mostly transparent (cleared, with orbs blended over).
+     Without an opaque backing the layer's transparent pixels reveal Chromium's
+     compositor base color (= the default theme's #141414), showing as a neutral
+     seam on non-default palettes. An opaque themed backing behind the bitmap
+     removes it; the orbs still composite over it exactly as before. Confirmed
+     against the parent .now-playing bg not being enough (the promoted layer
+     composites against the base, not the parent paint). */
+  background: var(--bg);
 }
 
 .now-playing-art {

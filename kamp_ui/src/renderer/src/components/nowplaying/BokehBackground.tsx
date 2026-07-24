@@ -17,6 +17,11 @@ function accentHex(): string {
   return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#7c86e1'
 }
 
+// Themed window background, read the same reliable way as accentHex (KAMP-631).
+function bgHex(): string {
+  return getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#141414'
+}
+
 // Inner component: only mounted when the toggle is on, so "off" means zero canvas
 // and zero GPU. All effect hooks live here (always run while mounted).
 function BokehCanvas({ active, artUrl }: Props): React.JSX.Element {
@@ -53,6 +58,15 @@ function BokehCanvas({ active, artUrl }: Props): React.JSX.Element {
       engineRef.current = null
     }
   }, [])
+
+  // KAMP-631: keep the vignette bg in sync with the palette. Runs on mount (so a
+  // fresh non-default palette is correct) and on every theme switch (which the
+  // engine's resize-only refresh would otherwise miss). Reading --bg here, in a
+  // post-commit effect, is the same reliable pattern accentHex uses.
+  const selectedTheme = useStore((s) => s.selectedTheme)
+  useEffect(() => {
+    engineRef.current?.setBg(bgHex())
+  }, [selectedTheme])
 
   // Recompute the palette on each track/art change; crossfade in the engine. Guard
   // against skip races (abort the in-flight fetch, ignore a stale resolution).

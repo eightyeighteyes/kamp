@@ -26,7 +26,7 @@ import type {
   Track
 } from './api/client'
 import type { DisplayStyle } from './components/modules/registry'
-import { themes, applyTheme } from '../../shared/theme'
+import { applyTheme } from '../../shared/theme'
 import type { ThemeName } from '../../shared/theme'
 import type { MagicPlaylistContents, MagicPlaylistSort } from './api/client'
 
@@ -992,7 +992,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   setTheme: (name) => {
     localStorage.setItem('kamp:selected-theme', name)
     applyTheme(name, document.documentElement)
-    window.api.setBgColor(themes[name].bg)
+    window.api.syncThemeChrome(name)
     set({ selectedTheme: name })
   },
 

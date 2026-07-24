@@ -64,6 +64,9 @@
   flex-direction: column;
   overflow-y: auto;
   height: 100%;
+  /* KAMP-631: own scroll container -> own compositor layer; opaque themed bg so
+     its transparent pixels don't reveal Chromium's base color as a seam. */
+  background: var(--bg);
 }
 
 .search-view-toolbar {

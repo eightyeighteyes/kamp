@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { truncateTitle } from '../utils/truncateTitle'
 
 type Props = {
@@ -26,7 +27,12 @@ export function DuplicatePlaylistTrackModal({
 
   const displayName = truncateTitle(playlistName, 40)
 
-  return (
+  // KAMP-547: portal to document.body so the fixed-position backdrop renders at
+  // the viewport, not inside whatever mounts the modal — an album card with a
+  // filter/transform highlight becomes the containing block for position:fixed
+  // and (with the card's overflow:hidden) clips the backdrop, causing a
+  // hover-driven flicker. Mirrors ContextMenu.tsx.
+  return createPortal(
     <div className="modal-backdrop" role="presentation" onClick={onCancel}>
       <div
         className="modal collision-modal"
@@ -56,6 +62,7 @@ export function DuplicatePlaylistTrackModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

@@ -31,6 +31,15 @@ import { useExtensionState } from './hooks/useExtensionState'
 import type { UnifiedPanel } from './hooks/usePanelLayout'
 import type { ExtensionInfo } from '../../shared/kampAPI'
 
+// KAMP-598: track whether focus was last established by the mouse (a click) vs
+// the keyboard (Tab). A mouse click leaves DOM focus on the clicked element
+// without a ring; the global transport shortcuts blur it so no phantom
+// :focus-visible ring appears on the next keypress. We track modality ourselves
+// rather than reading :focus-visible at keydown time — Chromium promotes the
+// element to :focus-visible while processing the keydown, *before* our handler
+// runs, so that check reads true and is unreliable here.
+let _focusFromMouse = false
+
 // ---------------------------------------------------------------------------
 // Register built-in panels before the component mounts.
 // Each call is idempotent — safe across HMR and React StrictMode re-runs.
@@ -341,6 +350,16 @@ export default function App(): React.JSX.Element {
     return disconnect
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // KAMP-598: any pointer press means the focus it establishes is mouse-driven,
+  // so the transport shortcuts should blur it rather than let it grow a ring.
+  useEffect(() => {
+    const onPointerDown = (): void => {
+      _focusFromMouse = true
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => window.removeEventListener('pointerdown', onPointerDown, true)
+  }, [])
+
   // Global keyboard shortcuts
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
@@ -363,8 +382,24 @@ export default function App(): React.JSX.Element {
         return
       }
 
+      // Tab moves focus via the keyboard — from here on, focus is keyboard-driven
+      // and its ring should stay (KAMP-598).
+      if (e.key === 'Tab') {
+        _focusFromMouse = false
+        return
+      }
+
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
+
+      // KAMP-598: these are global shortcuts, not input for the focused control.
+      // If the focused element was focused by a mouse click (not Tab), drop that
+      // leftover focus so the keypress can't promote it to a :focus-visible ring.
+      // Genuine keyboard focus (_focusFromMouse === false) is left alone.
+      if (_focusFromMouse) {
+        const active = document.activeElement as HTMLElement | null
+        if (active && active !== document.body) active.blur()
+      }
 
       switch (e.key) {
         case '?':

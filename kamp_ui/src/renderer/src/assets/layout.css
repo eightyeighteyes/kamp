@@ -660,9 +660,70 @@ html[data-platform='win32'] .view-tabs {
 .track-row:focus-visible,
 .seek-bar:focus-visible,
 .volume-slider:focus-visible,
-.view-tabs button:focus-visible {
+.view-tabs button:focus-visible,
+/* KAMP-598: sweep the focusable controls that had no :focus-visible rule (they
+   showed Chromium's yellow UA ring) onto the accent ring. Extends the existing
+   central allowlist above; purely additive — nothing here overrides an existing
+   ring, a text-input outline:none, or a non-focus (drag / new-arrival) outline.
+   Elements inside overflow/tight containers get an inset offset in the next
+   block so the ring isn't clipped. */
+.library-collection-tab:focus-visible,
+.toolbar-dropdown-trigger:focus-visible,
+.toolbar-dropdown-item:focus-visible,
+.toolbar-dropdown-clear:focus-visible,
+.track-context-menu-item:focus-visible,
+.volume-icon--btn:focus-visible,
+.album-secondary-btn:focus-visible,
+.album-download-btn:focus-visible,
+.meta-field-copy-btn:focus-visible,
+.panel-tab:focus-visible,
+.bandcamp-btn:focus-visible,
+.collection-close-btn:focus-visible,
+.prefs-btn:focus-visible,
+.prefs-link-btn:focus-visible,
+.prefs-select:focus-visible,
+.prefs-ext-remove-confirm:focus-visible,
+.genre-merge-btn:focus-visible,
+.genre-admin-add:focus-visible,
+.modal-btn:focus-visible,
+.mb-modal__btn:focus-visible,
+.mb-modal__nav-btn:focus-visible,
+.mb-modal__close-btn:focus-visible,
+.art-modal__choose-file-btn:focus-visible,
+.art-modal__cov-link:focus-visible,
+.magic-btn:focus-visible,
+.magic-close-btn:focus-visible,
+.magic-add-rule-btn:focus-visible,
+.magic-add-group-btn:focus-visible,
+.magic-remove-btn:focus-visible,
+.magic-select:focus-visible,
+.module-config-field select:focus-visible,
+.base-kamp-add-module:focus-visible,
+.base-kamp-add-module select:focus-visible,
+.base-kamp-remove-btn:focus-visible,
+.style-rail-control select:focus-visible,
+.onboarding-primary-btn:focus-visible,
+.onboarding-skip-btn:focus-visible,
+.setup-change-btn:focus-visible,
+.update-banner-link:focus-visible,
+.update-notes-modal__btn:focus-visible,
+.update-notes-modal__site-link:focus-visible,
+.shortcuts-close-btn:focus-visible,
+.download-card-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* KAMP-598: inset ring for controls inside overflow:hidden / tight containers,
+   where a 2px OUTWARD outline would be clipped (audited cases). */
+.view-mode-btn:focus-visible,
+.hero-art-btn:focus-visible,
+.search-clear:focus-visible,
+.track-title:focus-visible,
+.track-artist:focus-visible,
+.track-album:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Active / press feedback ------------------------------------------------- */

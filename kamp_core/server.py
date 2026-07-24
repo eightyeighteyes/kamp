@@ -3188,10 +3188,18 @@ def create_app(
         # otherwise be dropped from the album cards even though its tracks matched.
         fts_keys = {(t.album_artist.lower(), t.album.lower()) for t in fts_tracks}
         fts_ids = {t.id for t in fts_tracks if not t.album}
+        # KAMP-634: match named albums by canonical album_id (rename-safe) in
+        # ADDITION to the tag key — after an album rename the track tag diverges
+        # from the albums-row key and the tag branch alone drops the card. OR (not
+        # replace) so any matched track lacking album_id (e.g. a remote track)
+        # still resolves its album via the retained tag branch. Missing-album
+        # AlbumInfo entries have album_id 0 (falsy) and fall to the id branch below.
+        fts_album_ids = {t.album_id for t in fts_tracks if t.album_id}
         albums = [
             AlbumOut.from_album_info(a)
             for a in index.albums(sort=sort)
-            if (a.album_artist.lower(), a.album.lower()) in fts_keys
+            if (a.album_id and a.album_id in fts_album_ids)
+            or (a.album_artist.lower(), a.album.lower()) in fts_keys
             or (a.missing_album and a.missing_track_id in fts_ids)
         ]
         albums.sort(key=lambda a: not a.favorite)

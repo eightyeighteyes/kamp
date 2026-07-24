@@ -1830,6 +1830,26 @@ class TestSearchEndpoint:
         assert len(data["albums"]) == 1
         assert data["albums"][0]["album_artist"] == "SUNN O)))"
 
+    def test_renamed_album_matches_by_canonical_album_id(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """KAMP-634: after a rename the matched track's tag ('The Ecstatic')
+        diverges from the album's canonical key ('The Ecstatic (Deluxe)'); the
+        album card still surfaces because the match keys on canonical album_id.
+        The tag branch alone would drop it, and an unrelated album is not pulled in."""
+        t = _track(1, album="The Ecstatic", artist="yasiin bey")
+        t.album_id = 42
+        matched = _album("yasiin bey", "The Ecstatic (Deluxe)")
+        matched.album_id = 42
+        unrelated = _album("Someone Else", "Other Record")
+        unrelated.album_id = 99
+        mock_index.search.return_value = [t]
+        mock_index.albums.return_value = [matched, unrelated]
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        res = TestClient(app).get("/api/v1/search?q=ecstatic")
+        data = res.json()
+        assert [a["album"] for a in data["albums"]] == ["The Ecstatic (Deluxe)"]
+
     def test_albums_deduplicated_when_multiple_tracks_match(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:

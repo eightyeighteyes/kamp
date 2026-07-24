@@ -654,6 +654,10 @@ class Track:
     genres: list[str] = field(default_factory=list, compare=False)
     label: str = field(default="")
     id: int = field(default=0, compare=False)
+    # KAMP-634: canonical album FK (albums.id). Identity lookups should key on this,
+    # never the mutable album/album_artist tag. 0 when unknown (missing-album tracks,
+    # synthetic rows). compare=False: identity is `id`, not this denormalized FK.
+    album_id: int = field(default=0, compare=False)
     date_added: float | None = field(default=None, compare=False)
     last_played: float | None = field(default=None, compare=False)
     favorite: bool = field(default=False, compare=False)
@@ -8605,6 +8609,11 @@ def _row_to_track(row: sqlite3.Row) -> Track:
         embedded_art=bool(row["embedded_art"]),
         mb_release_id=row["mb_release_id"],
         mb_recording_id=row["mb_recording_id"],
+        # KAMP-634: carry the canonical album FK so identity lookups (e.g. search
+        # album matching) never key on the mutable album TAG. Guarded because a
+        # few callers build from partial/synthetic rows without the column; every
+        # row is a sqlite3.Row (row_factory), so .keys() is always valid.
+        album_id=row["album_id"] if "album_id" in row.keys() else 0,
         genre=row["genre"],
         label=row["label"],
         date_added=row["date_added"],

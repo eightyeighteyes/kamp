@@ -3118,6 +3118,15 @@ class TestSearch:
         index.close()
         assert results == []
 
+    def test_search_track_carries_album_id(self, tmp_path: Path) -> None:
+        # KAMP-634: _row_to_track populates the canonical album FK so search album
+        # matching can key on album_id (rename-safe) rather than the mutable tag.
+        index = self._index_with_genres(tmp_path)
+        results = index.search("Blue Train")
+        index.close()
+        assert results
+        assert results[0].album_id > 0
+
     def test_genre_edit_updates_search(self, tmp_path: Path) -> None:
         # apply_genres reindexes FTS so an edit is immediately searchable and the
         # old genre stops matching.

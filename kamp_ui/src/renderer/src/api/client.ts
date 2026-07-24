@@ -170,6 +170,16 @@ export type PlaylistTrack = Track & {
   position: number
   last_played: number | null
   date_added: number | null
+  // KAMP-613: canonical album identity from the albums row (via album_id). The
+  // inherited `album`/`album_artist` are the track's mutable TAG — NEVER use them
+  // to key album identity (art/nav); use canonical_* for that and display_* for
+  // rendering. All null for untagged (missing-album) tracks.
+  album_id: number | null
+  canonical_album_artist: string | null
+  canonical_album: string | null
+  display_album: string | null
+  display_album_artist: string | null
+  album_art_version: number | null
 }
 
 // Configurable base URL: defaults to localhost but can be overridden via

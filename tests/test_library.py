@@ -12150,6 +12150,93 @@ class TestPlaylists:
         assert result is None
 
 
+class TestPlaylistTracksCanonicalAlbum:
+    """KAMP-613: playlist track rows carry canonical album identity (from the
+    albums row via album_id), distinct from the track's mutable album tag, so the
+    UI album view resolves art/navigation to the renamed album."""
+
+    def _index_with_renamed_album(self, tmp_path: Path) -> tuple[LibraryIndex, int]:
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "ecstatic.mp3")
+        t.artist = "yasiin bey"
+        t.album_artist = "yasiin bey"
+        t.album = "The Ecstatic (Deluxe)"
+        index.upsert_track(t)
+        # Display rename (KAMP-467): sets albums.display_album; albums.album stays.
+        index.update_album_display(
+            "yasiin bey", "The Ecstatic (Deluxe)", "The Ecstatic", None
+        )
+        # Simulate the repro's external-retag drift: the track TAG becomes the short
+        # name while the albums row keeps "(Deluxe)" as its canonical key.
+        album_id = index._album_id("yasiin bey", "The Ecstatic (Deluxe)")
+        assert album_id is not None
+        index._conn.execute(
+            "UPDATE tracks SET album = 'The Ecstatic' WHERE album_id = ?", (album_id,)
+        )
+        index._conn.commit()
+        return index, album_id
+
+    def test_static_playlist_track_carries_canonical_identity(
+        self, tmp_path: Path
+    ) -> None:
+        index, album_id = self._index_with_renamed_album(tmp_path)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "ecstatic.mp3"))
+        rows = index.get_playlist_tracks(pl["id"])
+        index.close()
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["album"] == "The Ecstatic"  # tag drifted to the short name
+        assert row["canonical_album"] == "The Ecstatic (Deluxe)"  # albums-row key
+        assert row["canonical_album_artist"] == "yasiin bey"
+        assert row["display_album"] == "The Ecstatic"
+        assert row["album_id"] == album_id  # present, not None
+
+    def test_magic_playlist_track_carries_canonical_identity(
+        self, tmp_path: Path
+    ) -> None:
+        index, album_id = self._index_with_renamed_album(tmp_path)
+        playlist_id = index.create_magic_playlist(
+            "Magic",
+            MagicCriteria(
+                groups=[
+                    Group(
+                        conditions=[
+                            Condition(field="track.artist", op="is", value="yasiin bey")
+                        ],
+                        match="all",
+                        negate=False,
+                    )
+                ],
+                match="all",
+            ),
+        )
+        rows = index.get_magic_playlist_tracks(playlist_id)
+        index.close()
+
+        assert len(rows) == 1
+        assert rows[0]["canonical_album"] == "The Ecstatic (Deluxe)"
+        assert rows[0]["display_album"] == "The Ecstatic"
+        assert rows[0]["album_id"] == album_id
+
+    def test_untagged_track_survives_left_join(self, tmp_path: Path) -> None:
+        # A missing-album (album='') track has no albums row / album_id; the LEFT
+        # JOIN must NOT drop it, and its canonical fields come back null.
+        index = LibraryIndex(tmp_path / "library.db")
+        t = _sample_track(tmp_path / "lone.mp3")
+        t.album = ""
+        index.upsert_track(t)
+        pl = index.create_playlist("Mix")
+        index.add_track_to_playlist(pl["id"], str(tmp_path / "lone.mp3"))
+        rows = index.get_playlist_tracks(pl["id"])
+        index.close()
+
+        assert len(rows) == 1  # survived the LEFT JOIN
+        assert rows[0]["album_id"] is None
+        assert rows[0]["canonical_album"] is None
+
+
 class TestMagicPlaylists:
     def _criteria(self) -> MagicCriteria:
         return MagicCriteria(

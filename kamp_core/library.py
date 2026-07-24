@@ -7909,43 +7909,69 @@ class LibraryIndex:
                    t.release_date, t.track_number, t.disc_number, t.ext, t.embedded_art,
                    t.mb_release_id, t.mb_recording_id, t.genre, t.label,
                    t.favorite, t.play_count, t.last_played, t.date_added,
-                   t.source, t.is_available, t.duration
+                   t.source, t.is_available, t.duration,
+                   -- KAMP-613: canonical album identity from the albums row (keyed on
+                   -- album_id), so the UI can build album cards whose art/nav resolve
+                   -- correctly after a rename — NOT from the track's mutable album tag.
+                   -- LEFT JOIN so untagged tracks (album_id NULL) are not dropped.
+                   t.album_id,
+                   a.album_artist AS canonical_album_artist,
+                   a.album        AS canonical_album,
+                   a.display_album, a.display_album_artist, a.art_version
             FROM playlist_tracks pt
             JOIN tracks_with_stats t ON t.id = pt.track_id
+            LEFT JOIN albums a ON a.id = t.album_id
             WHERE pt.playlist_id = ?
             ORDER BY pt.position ASC
             """,
             (playlist_id,),
         ).fetchall()
-        return [
-            {
-                "playlist_track_id": r["playlist_track_id"],
-                "position": r["position"],
-                "id": r["id"],
-                "file_path": r["file_path"],
-                "title": r["title"],
-                "artist": r["artist"],
-                "album_artist": r["album_artist"],
-                "album": r["album"],
-                "release_date": r["release_date"],
-                "track_number": r["track_number"],
-                "disc_number": r["disc_number"],
-                "ext": r["ext"],
-                "embedded_art": bool(r["embedded_art"]),
-                "mb_release_id": r["mb_release_id"],
-                "mb_recording_id": r["mb_recording_id"],
-                "genre": r["genre"],
-                "label": r["label"],
-                "favorite": bool(r["favorite"]),
-                "play_count": r["play_count"],
-                "last_played": r["last_played"],
-                "date_added": r["date_added"],
-                "source": r["source"],
-                "is_available": bool(r["is_available"]),
-                "duration": r["duration"],
-            }
-            for r in rows
-        ]
+        return [self._playlist_track_row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def _playlist_track_row_to_dict(r: sqlite3.Row) -> dict[str, Any]:
+        """Map a playlist / magic-playlist track row to the PlaylistTrackOut dict.
+
+        Shared by get_playlist_tracks and get_magic_playlist_tracks so the two
+        never drift (KAMP-554 sibling-divergence trap). KAMP-613 identity
+        contract: ``album_artist``/``album`` are the track's mutable TAG — for
+        track-row display only, NEVER album identity; ``canonical_*`` (from the
+        albums row via album_id) is the art/nav key; ``display_*`` is render-only.
+        ``album_id``/``canonical_*`` are NULL for untagged (missing-album) tracks.
+        """
+        return {
+            "playlist_track_id": r["playlist_track_id"],
+            "position": r["position"],
+            "id": r["id"],
+            "file_path": r["file_path"],
+            "title": r["title"],
+            "artist": r["artist"],
+            "album_artist": r["album_artist"],
+            "album": r["album"],
+            "release_date": r["release_date"],
+            "track_number": r["track_number"],
+            "disc_number": r["disc_number"],
+            "ext": r["ext"],
+            "embedded_art": bool(r["embedded_art"]),
+            "mb_release_id": r["mb_release_id"],
+            "mb_recording_id": r["mb_recording_id"],
+            "genre": r["genre"],
+            "label": r["label"],
+            "favorite": bool(r["favorite"]),
+            "play_count": r["play_count"],
+            "last_played": r["last_played"],
+            "date_added": r["date_added"],
+            "source": r["source"],
+            "is_available": bool(r["is_available"]),
+            "duration": r["duration"],
+            # KAMP-613: canonical album identity (album_id -> albums row).
+            "album_id": r["album_id"],
+            "canonical_album_artist": r["canonical_album_artist"],
+            "canonical_album": r["canonical_album"],
+            "display_album": r["display_album"],
+            "display_album_artist": r["display_album_artist"],
+            "album_art_version": r["art_version"],
+        }
 
     def add_track_to_playlist(self, playlist_id: int, file_path: str) -> None:
         """Append a track to the end of a playlist.
@@ -8194,8 +8220,16 @@ class LibraryIndex:
                    tracks.embedded_art, tracks.mb_release_id, tracks.mb_recording_id,
                    tracks.genre, tracks.label, tracks.favorite, tracks.play_count,
                    tracks.last_played, tracks.date_added,
-                   tracks.source, tracks.is_available, tracks.duration
+                   tracks.source, tracks.is_available, tracks.duration,
+                   -- KAMP-613: canonical album identity from the albums row (see
+                   -- _playlist_track_row_to_dict). Aliased `a` so it never collides
+                   -- with the criteria's own optional `albums` join above.
+                   tracks.album_id,
+                   a.album_artist AS canonical_album_artist,
+                   a.album        AS canonical_album,
+                   a.display_album, a.display_album_artist, a.art_version
             FROM tracks_with_stats AS tracks {album_join}
+            LEFT JOIN albums a ON a.id = tracks.album_id
             WHERE {where_fragment} AND tracks.is_available = 1
             ORDER BY tracks.id
         """
@@ -8209,35 +8243,7 @@ class LibraryIndex:
             (len(rows), _t.time(), playlist_id),
         )
         self._conn.commit()
-        return [
-            {
-                "playlist_track_id": None,
-                "position": 0,
-                "id": r["id"],
-                "file_path": r["file_path"],
-                "title": r["title"],
-                "artist": r["artist"],
-                "album_artist": r["album_artist"],
-                "album": r["album"],
-                "release_date": r["release_date"],
-                "track_number": r["track_number"],
-                "disc_number": r["disc_number"],
-                "ext": r["ext"],
-                "embedded_art": bool(r["embedded_art"]),
-                "mb_release_id": r["mb_release_id"],
-                "mb_recording_id": r["mb_recording_id"],
-                "genre": r["genre"],
-                "label": r["label"],
-                "favorite": bool(r["favorite"]),
-                "play_count": r["play_count"],
-                "last_played": r["last_played"],
-                "date_added": r["date_added"],
-                "source": r["source"],
-                "is_available": bool(r["is_available"]),
-                "duration": r["duration"],
-            }
-            for r in rows
-        ]
+        return [self._playlist_track_row_to_dict(r) for r in rows]
 
     def get_playlist_module_content(
         self,

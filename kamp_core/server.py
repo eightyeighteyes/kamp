@@ -791,6 +791,18 @@ class PlaylistTrackOut(BaseModel):
     is_available: bool
     duration: float
     sources: list[SourceOut] = []
+    # KAMP-613: canonical album identity so the playlist album view can resolve
+    # art/navigation to the real album after a rename. IDENTITY CONTRACT:
+    # `album_artist`/`album` above are the track's mutable TAG (row display only,
+    # NEVER album identity); `canonical_*` (from the albums row via album_id) is
+    # the art/nav key; `display_*` is render-only. All null for untagged
+    # (missing-album) tracks — the UI routes those through the track_id path.
+    album_id: int | None = None
+    canonical_album_artist: str | None = None
+    canonical_album: str | None = None
+    display_album: str | None = None
+    display_album_artist: str | None = None
+    album_art_version: float | None = None
 
 
 class CreatePlaylistRequest(BaseModel):

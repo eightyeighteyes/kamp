@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.26.0](https://github.com/eightyeighteyes/kamp/compare/v1.25.1...v1.26.0) (2026-07-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** address missing albums by track_id, drop album-granularity file_path (KAMP-554) ([#639](https://github.com/eightyeighteyes/kamp/issues/639))
+* **library:** drop tracks.file_path + sale_item_id; id-native track API (KAMP-552) ([#638](https://github.com/eightyeighteyes/kamp/issues/638))
+* **library:** drop the duplicated per-source/stat columns from tracks (KAMP-539) ([#636](https://github.com/eightyeighteyes/kamp/issues/636))
+
+### Features
+
+* **api:** address missing albums by track_id, drop album-granularity file_path (KAMP-554) ([#639](https://github.com/eightyeighteyes/kamp/issues/639)) ([f38ff45](https://github.com/eightyeighteyes/kamp/commit/f38ff45960e1961970d6f63a8001f4172155c042))
+* **bandcamp:** apply album tags as genres for streamed albums (KAMP-588) ([#671](https://github.com/eightyeighteyes/kamp/issues/671)) ([3d6cd16](https://github.com/eightyeighteyes/kamp/commit/3d6cd16cbfadbd5159a75357feec366be2f995bf))
+* collapse to canonical track identity — fixes KAMP-532 (KAMP-541) ([#632](https://github.com/eightyeighteyes/kamp/issues/632)) ([0556466](https://github.com/eightyeighteyes/kamp/commit/0556466adde8716ed6d1f6a56095da94edf8e380))
+* **downloads:** 'downloads' view scaffolding — nav, store, WS/REST wiring (KAMP-568) ([#656](https://github.com/eightyeighteyes/kamp/issues/656)) ([ec4b440](https://github.com/eightyeighteyes/kamp/commit/ec4b440e15fce922936d045da421bd2b7a3a9029))
+* **downloads:** background size-backfill for queued downloads (KAMP-574) ([#658](https://github.com/eightyeighteyes/kamp/issues/658)) ([92434e7](https://github.com/eightyeighteyes/kamp/commit/92434e7c475fb92a1d6d5ddc7a9ed9d0fcb1ad56))
+* **downloads:** byte-level progress + structured WebSocket download-state events (KAMP-566) ([#654](https://github.com/eightyeighteyes/kamp/issues/654)) ([bcc01ff](https://github.com/eightyeighteyes/kamp/commit/bcc01ffb39eba06e04a09728ca14fcd8298e4e26))
+* **downloads:** Downloads view visuals — sections, cards, progress bar, empty states (KAMP-569) ([#657](https://github.com/eightyeighteyes/kamp/issues/657)) ([4d3bbbe](https://github.com/eightyeighteyes/kamp/commit/4d3bbbeb8227d6052412a01c671958f4c445ed9f))
+* **downloads:** enqueue-then-process download engine with per-item failure capture (KAMP-565) ([#653](https://github.com/eightyeighteyes/kamp/issues/653)) ([7fb8069](https://github.com/eightyeighteyes/kamp/commit/7fb8069e8655cef3565d85be20a54291e0a6e1bc))
+* **downloads:** persistent download-queue model + state machine (KAMP-564) ([#652](https://github.com/eightyeighteyes/kamp/issues/652)) ([0b5dfdf](https://github.com/eightyeighteyes/kamp/commit/0b5dfdf573baee3c6874382f9bc4e452c4985518))
+* **downloads:** pulsing tag badge on the card during post-download processing (KAMP-562) ([#649](https://github.com/eightyeighteyes/kamp/issues/649)) ([d4561ca](https://github.com/eightyeighteyes/kamp/commit/d4561cac8559bc14b6ec08dea43dcea932d0ce5a))
+* **downloads:** queued reorder (pointer-events drag) + retry + cancel (KAMP-570) ([#659](https://github.com/eightyeighteyes/kamp/issues/659)) ([f5e5ce2](https://github.com/eightyeighteyes/kamp/commit/f5e5ce2a35ca8e387c3f3fbc053e1688858b80ff))
+* **downloads:** REST endpoints for queue list/reorder/retry/cancel (KAMP-567) ([#655](https://github.com/eightyeighteyes/kamp/issues/655)) ([f7026c0](https://github.com/eightyeighteyes/kamp/commit/f7026c0170125f80555d3a435e951f761eb0b291))
+* **downloads:** top-down album-art reveal from byte-progress (KAMP-436) ([#648](https://github.com/eightyeighteyes/kamp/issues/648)) ([a430952](https://github.com/eightyeighteyes/kamp/commit/a4309523ddc304bdca06f0f790ff04e03a885553))
+* **genre:** Last.fm genre enrichment after ingest (KAMP-587) ([#672](https://github.com/eightyeighteyes/kamp/issues/672)) ([3114745](https://github.com/eightyeighteyes/kamp/commit/31147452ff8cd21615ef4c68900edb922927b713))
+* **genre:** multi-value genre model — chips, autocomplete, normalized tables (KAMP-586) ([#667](https://github.com/eightyeighteyes/kamp/issues/667)) ([6d7960b](https://github.com/eightyeighteyes/kamp/commit/6d7960b56609ba92cf5c9e6041f37795d3e7238f))
+* **genres:** library-wide genre backfill with progress + cancel (KAMP-591) ([#673](https://github.com/eightyeighteyes/kamp/issues/673)) ([852f283](https://github.com/eightyeighteyes/kamp/commit/852f2839ab71c22b37d6272f9a6387f1d09b1c28))
+* **genres:** make bandcamp label-as-genre application optional ([#674](https://github.com/eightyeighteyes/kamp/issues/674)) ([92258e2](https://github.com/eightyeighteyes/kamp/commit/92258e23f0a036d785d567c9ed08e8fc959923f7))
+* **library:** add track_sources + track_stats tables (KAMP-535) ([#629](https://github.com/eightyeighteyes/kamp/issues/629)) ([05e6138](https://github.com/eightyeighteyes/kamp/commit/05e61387b93992c18bbe73f2b28eb84140fd2d51))
+* **library:** drop the duplicated per-source/stat columns from tracks (KAMP-539) ([#636](https://github.com/eightyeighteyes/kamp/issues/636)) ([9026b11](https://github.com/eightyeighteyes/kamp/commit/9026b11192eb0b5e5f5fd93852278bb22cbaa8e7))
+* **library:** drop tracks.file_path + sale_item_id; id-native track API (KAMP-552) ([#638](https://github.com/eightyeighteyes/kamp/issues/638)) ([f41aa8f](https://github.com/eightyeighteyes/kamp/commit/f41aa8fb92186fa58f9c7ce390cbdfd43fd21912))
+* **library:** genre filter with Artists|Genres sidebar mini-tabs (KAMP-550) ([#668](https://github.com/eightyeighteyes/kamp/issues/668)) ([6ec42c7](https://github.com/eightyeighteyes/kamp/commit/6ec42c749029c62880d5bb2881b8305336bea203))
+* **library:** populate track_sources/track_stats + dual-write (KAMP-540) ([#631](https://github.com/eightyeighteyes/kamp/issues/631)) ([e9045bf](https://github.com/eightyeighteyes/kamp/commit/e9045bfd25dd81f54bc94baeedb607510e14e829))
+* **library:** re-surface pre-order albums on new tracks/release (KAMP-544) ([#651](https://github.com/eightyeighteyes/kamp/issues/651)) ([e1fbeaa](https://github.com/eightyeighteyes/kamp/commit/e1fbeaaad146aaf53cc13c6076f11bd644943c0f))
+* **prefs:** dedicated Tagging preferences tab; deprecate trust-MB (KAMP-589) ([#670](https://github.com/eightyeighteyes/kamp/issues/670)) ([12179c1](https://github.com/eightyeighteyes/kamp/commit/12179c1f721a58115350fd74a053102d1b9c9892))
+* **search:** full-text search matches genre (KAMP-601) ([#669](https://github.com/eightyeighteyes/kamp/issues/669)) ([06b8641](https://github.com/eightyeighteyes/kamp/commit/06b8641e6c27fe487eb5464762c5e361cf7ba48e))
+* **tagging:** manual MusicBrainz lookup by artist/album with lazy candidate hydration (KAMP-584) ([#663](https://github.com/eightyeighteyes/kamp/issues/663)) ([13e3e9e](https://github.com/eightyeighteyes/kamp/commit/13e3e9e33f0bebfdf8109c4c2c5a21e204219618))
+* **tagging:** per-track artist editing — local tags + streaming display override (KAMP-582) ([#664](https://github.com/eightyeighteyes/kamp/issues/664)) ([0be8a4c](https://github.com/eightyeighteyes/kamp/commit/0be8a4ced72c1b4f19cc5a9de0060ea3ca89d6e3))
+* **tagging:** track artists in the manual MusicBrainz fetch (KAMP-583) ([#665](https://github.com/eightyeighteyes/kamp/issues/665)) ([7646c02](https://github.com/eightyeighteyes/kamp/commit/7646c02eb8a3110fde56762f54fa0bca6f9685f4))
+* **ui:** address tracks by canonical id, not file_path (KAMP-538) ([#635](https://github.com/eightyeighteyes/kamp/issues/635)) ([8e775b1](https://github.com/eightyeighteyes/kamp/commit/8e775b1899fe3ac7ab31166852821a6ad57948da))
+* **ui:** clicking a genre pill navigates to its genre filter (KAMP-611) ([#676](https://github.com/eightyeighteyes/kamp/issues/676)) ([f6519e3](https://github.com/eightyeighteyes/kamp/commit/f6519e30594924d14640e4a7989a5e0cf3b1214e))
+* **ui:** functional pipeline indicator with folder/copy/tag states (KAMP-558) ([#650](https://github.com/eightyeighteyes/kamp/issues/650)) ([d6d20aa](https://github.com/eightyeighteyes/kamp/commit/d6d20aa02561b100a224dced1dca98a0091181a2))
+* **ui:** global download progress bar above transport + error toast (KAMP-571) ([#660](https://github.com/eightyeighteyes/kamp/issues/660)) ([184edff](https://github.com/eightyeighteyes/kamp/commit/184edff44e1b09dd9807b9ede632665935e14121))
+
+
+### Bug Fixes
+
+* **config:** include artwork.save_format in the startup snapshot (KAMP-576) ([#666](https://github.com/eightyeighteyes/kamp/issues/666)) ([eff2b9f](https://github.com/eightyeighteyes/kamp/commit/eff2b9fb47d4965529ab00b841764f17c510b614))
+* **downloads:** align size column across card sections (KAMP-579) ([#662](https://github.com/eightyeighteyes/kamp/issues/662)) ([263db77](https://github.com/eightyeighteyes/kamp/commit/263db7703b0eefe7510aa809f5f50cfca3ac0582))
+* **downloads:** persist redownload_url to end per-item collection re-fetch (KAMP-575) ([#661](https://github.com/eightyeighteyes/kamp/issues/661)) ([869e78c](https://github.com/eightyeighteyes/kamp/commit/869e78cc6ce5717dec113d47f86a4dbfbb1e6cb7))
+* **library:** album source badge shows 'mixed' for mixed albums (KAMP-546) ([#641](https://github.com/eightyeighteyes/kamp/issues/641)) ([0eadae1](https://github.com/eightyeighteyes/kamp/commit/0eadae1210aa00ed11bed0b5ece8277626355bd5))
+* **library:** behavior-neutral read-switch onto track_stats/track_sources (KAMP-542) ([#633](https://github.com/eightyeighteyes/kamp/issues/633)) ([c1276e4](https://github.com/eightyeighteyes/kamp/commit/c1276e450241018bacd58b78a90bb2d58987c9ac))
+* **library:** heal case-variant artist splits + prevent recurrence (KAMP-545) ([#637](https://github.com/eightyeighteyes/kamp/issues/637)) ([d66de32](https://github.com/eightyeighteyes/kamp/commit/d66de323b4e9d911f961698b4178e626c33bb733))
+* **ui:** enlarge some teeny weeny icons ([#681](https://github.com/eightyeighteyes/kamp/issues/681)) ([7663d19](https://github.com/eightyeighteyes/kamp/commit/7663d197575f41ef2fe5e68fe859836fc26f88f7))
+
+
+### Documentation
+
+* **design:** canonical track identity model (KAMP-534) ([#627](https://github.com/eightyeighteyes/kamp/issues/627)) ([dee2d47](https://github.com/eightyeighteyes/kamp/commit/dee2d477387ad8d0f40960172c53f8b7b5e5182e))
+
+
+### Miscellaneous Chores
+
+* force release 1.26.0 (override 2.0.0 major bump) ([#642](https://github.com/eightyeighteyes/kamp/issues/642)) ([d05c741](https://github.com/eightyeighteyes/kamp/commit/d05c74126e2422624ccab3aebfe3cd6964c1a314))
+
 ## [1.25.1](https://github.com/eightyeighteyes/kamp/compare/v1.25.0...v1.25.1) (2026-07-07)
 
 

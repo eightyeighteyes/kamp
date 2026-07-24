@@ -595,10 +595,14 @@ def sync_collection_stream(
                     # All tracks share the album keywords. Cache BEFORE any strip
                     # below so the labels persist even when applying them is off.
                     index.set_collection_keywords(str(sid), tracks[0].genres)
-                    # When applying Bandcamp labels as genres is disabled, drop them
-                    # from the tracks before upsert so they never reach the library
-                    # (the cache above still holds them for a later toggle-on).
-                    if not apply_bandcamp_genres:
+                    # Apply Bandcamp labels as genres ONLY on an album's first index.
+                    # When the toggle is off, or on any later re-sync (pre-order
+                    # re-inspection / date backfill of an album we already have),
+                    # strip them before upsert so upsert_many's empty-incoming skip
+                    # preserves the user's genre edits (KAMP-604). The keyword cache
+                    # above still holds the labels for an explicit re-trigger (the
+                    # KAMP-591 genre backfill) or a later toggle-on.
+                    if not apply_bandcamp_genres or not is_new_album:
                         for _t in tracks:
                             _t.genres = []
                     index.upsert_many(tracks)

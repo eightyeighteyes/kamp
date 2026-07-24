@@ -19,16 +19,25 @@ export function BandcampButton(): React.JSX.Element | null {
     return window.api.bandcamp.onSyncStatus(setSyncState)
   }, [])
 
-  // Close context menu on outside click.
+  // Close context menu on outside click or Escape (KAMP-625: this custom menu
+  // rolled its own dismissal and — unlike the shared ContextMenu — was missing
+  // the Escape key handler).
   useEffect(() => {
     if (!menuOpen) return
-    const handler = (e: MouseEvent): void => {
+    const onMouseDown = (e: MouseEvent): void => {
       if (anchorRef.current && !anchorRef.current.contains(e.target as Node)) {
         setMenuOpen(false)
       }
     }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
   }, [menuOpen])
 
   const connected = configValues?.['bandcamp.connected'] ?? false

@@ -284,21 +284,53 @@ export function PlaylistView(): React.JSX.Element | null {
     )
     const seen = new Map<string, Album>()
     for (const t of displayTracks) {
-      const albumArtist = t.album_artist || t.artist
-      const key = `${albumArtist}::${t.album}`
+      // KAMP-613: key album cards on the CANONICAL album identity (the albums row,
+      // via album_id), never the track's mutable tag — otherwise art/navigation
+      // resolve to the pre-rename key and break (404 art + blank album). Untagged
+      // tracks (no album_id) have no albums row: route each to its own
+      // missing-album card keyed by track id, exactly like the library grid.
+      if (t.album_id == null || t.canonical_album == null) {
+        const key = `id:${t.id}`
+        if (!seen.has(key)) {
+          seen.set(key, {
+            album_artist: t.album_artist || t.artist,
+            album: t.title, // missing-album cards display the track title
+            release_date: t.release_date,
+            track_count: 1,
+            has_art: t.embedded_art || t.source !== 'local',
+            missing_album: true,
+            track_id: t.id,
+            art_version: null,
+            added_at: null,
+            last_played_at: null,
+            play_count_avg: 0,
+            favorite: false,
+            has_favorite_track: t.favorite,
+            source: t.source === 'bandcamp' ? 'bandcamp' : 'local',
+            has_remote_tracks: t.source !== 'local',
+            genres: []
+          })
+        }
+        continue
+      }
+      const albumArtist = t.canonical_album_artist ?? t.album_artist
+      const album = t.canonical_album
+      const key = `${albumArtist}::${album}`
       if (!seen.has(key)) {
         seen.set(key, {
           album_artist: albumArtist,
-          album: t.album,
+          album,
+          // display_* render the (possibly renamed) name; album/album_artist above
+          // stay canonical for art/nav.
+          display_album: t.display_album ?? undefined,
+          display_album_artist: t.display_album_artist ?? undefined,
           release_date: t.release_date,
           track_count: 1,
           // Non-local tracks have server-side art even without embedded art.
           has_art: t.embedded_art || t.source !== 'local',
           missing_album: false,
-          // track_id is the unique key only for missing_album=true cards; this is
-          // a real album synthesised from a playlist track, so leave it null.
           track_id: null,
-          art_version: null,
+          art_version: t.album_art_version,
           added_at: null,
           last_played_at: null,
           play_count_avg: 0,
@@ -327,7 +359,12 @@ export function PlaylistView(): React.JSX.Element | null {
     if (displayMode !== 'albums') return new Map()
     const map = new Map<string, number[]>()
     for (const t of displayTracks) {
-      const key = `${t.album_artist || t.artist}::${t.album}`
+      // Must match the album-card key derived in albumGroups / albumKey (KAMP-613):
+      // canonical identity for real albums, track id for missing-album tracks.
+      const key =
+        t.album_id == null || t.canonical_album == null
+          ? `id:${t.id}`
+          : `${t.canonical_album_artist ?? t.album_artist}::${t.canonical_album}`
       const ids = map.get(key)
       if (ids) {
         ids.push(t.id)
@@ -736,13 +773,16 @@ export function PlaylistView(): React.JSX.Element | null {
       {displayMode === 'albums' ? (
         <div className="track-list-body">
           <div className="album-grid" style={{ padding: 10 }}>
-            {albumGroups.map((a) => (
-              <AlbumCard
-                key={`${a.album_artist}::${a.album}`}
-                album={a}
-                dragTrackIds={albumTrackIds.get(`${a.album_artist}::${a.album}`)}
-              />
-            ))}
+            {albumGroups.map((a) => {
+              // Match the key derived in albumTrackIds (KAMP-613): missing-album
+              // cards key on track id; real albums on canonical artist::album.
+              const albumKey = a.missing_album
+                ? `id:${a.track_id}`
+                : `${a.album_artist}::${a.album}`
+              return (
+                <AlbumCard key={albumKey} album={a} dragTrackIds={albumTrackIds.get(albumKey)} />
+              )
+            })}
           </div>
           {albumGroups.length === 0 && (
             <div className="album-grid-empty">

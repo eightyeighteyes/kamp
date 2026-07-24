@@ -1,4 +1,4 @@
-import React, { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { TooltipContext } from '../hooks/useTooltip'
 
@@ -120,6 +120,32 @@ export function TooltipProvider({ children }: { children: React.ReactNode }): Re
     clearTimeout(showTimerRef.current)
     if (phaseRef.current === 'delay') phaseRef.current = 'hidden'
   }, [])
+
+  // KAMP-625: tear the tooltip down immediately (right-click). Clears ALL three
+  // timers — including a pending `show` (phase 'delay', armed <500ms ago) that
+  // would otherwise pop a tooltip over the just-opened context menu — plus the
+  // aria attribute, phase, and display, mirroring the fade timer's terminal
+  // cleanup. Leaving any timer set would resurrect the tooltip (cf. KAMP-391).
+  const hideNow = useCallback(() => {
+    clearTimeout(showTimerRef.current)
+    clearTimeout(hideTimerRef.current)
+    clearTimeout(fadeTimerRef.current)
+    if (targetRef.current) {
+      targetRef.current.removeAttribute('aria-describedby')
+      targetRef.current = null
+    }
+    phaseRef.current = 'hidden'
+    setDisplay(null)
+  }, [])
+
+  // Dismiss on any right-click so the context menu is never occluded. Capture
+  // phase so a child onContextMenu that stopPropagation()s can't starve us; the
+  // handler only clears tooltip state (never preventDefault/stopPropagation), so
+  // the app's own menu-opening handlers still run in the same event.
+  useEffect(() => {
+    document.addEventListener('contextmenu', hideNow, true)
+    return () => document.removeEventListener('contextmenu', hideNow, true)
+  }, [hideNow])
 
   // Clamp the tooltip horizontally so it never overflows the viewport edges.
   useLayoutEffect(() => {

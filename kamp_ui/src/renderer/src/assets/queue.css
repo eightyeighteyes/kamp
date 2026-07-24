@@ -346,7 +346,12 @@
 /* Right-click context menu on track rows */
 .track-context-menu {
   position: fixed;
-  z-index: 1000;
+  /* KAMP-625: above the tooltip (.kamp-tooltip, 9000) and modals (900-1100) — a
+     context menu is an active interaction and must never be occluded. The
+     tooltip is also dismissed on contextmenu (TooltipProvider), so this is
+     belt-and-suspenders for a tooltip that arms after the menu opens. Caveat:
+     if context-menu items ever gain tooltips, those would render under the menu. */
+  z-index: 9500;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;

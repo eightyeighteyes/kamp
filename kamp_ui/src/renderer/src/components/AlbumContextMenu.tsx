@@ -265,16 +265,21 @@ export function AlbumContextMenu({ x, y, album, onClose }: Props): React.JSX.Ele
             </button>
           )}
           <ContextMenuSubmenu label="Add to Playlist">
-            {playlists.map((pl) => (
-              <button
-                key={pl.id}
-                className="track-context-menu-item"
-                onClick={() => handleAddToPlaylist(pl.id)}
-              >
-                {truncateTitle(pl.title)}
-              </button>
-            ))}
-            {playlists.length > 0 && <div className="track-context-menu-divider" />}
+            {/* KAMP-632: magic (criteria-based) playlists are populated by their
+                criteria, so adding to them is a no-op — exclude them, matching
+                TrackContextMenu. */}
+            {playlists
+              .filter((pl) => !pl.criteria)
+              .map((pl) => (
+                <button
+                  key={pl.id}
+                  className="track-context-menu-item"
+                  onClick={() => handleAddToPlaylist(pl.id)}
+                >
+                  {truncateTitle(pl.title)}
+                </button>
+              ))}
+            {playlists.some((pl) => !pl.criteria) && <div className="track-context-menu-divider" />}
             <button className="track-context-menu-item" onClick={handleNewPlaylist}>
               New Playlist
             </button>

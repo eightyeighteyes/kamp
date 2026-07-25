@@ -508,7 +508,10 @@ export type DownloadItem = {
   queued_at: number
 }
 
-export const getDownloads = (): Promise<{ items: DownloadItem[] }> => get('/api/v1/downloads')
+// paused_until: KAMP-639 rate-limit pause deadline (Unix seconds); absent on an
+// older daemon, 0 when the queue is running.
+export const getDownloads = (): Promise<{ items: DownloadItem[]; paused_until?: number }> =>
+  get('/api/v1/downloads')
 
 export const reorderDownloads = (providerItemIds: string[]): Promise<{ ok: boolean }> =>
   post('/api/v1/downloads/reorder', { provider_item_ids: providerItemIds })
@@ -1007,6 +1010,11 @@ export type PipelineStageMessage = {
 export type DownloadQueueMessage = {
   type: 'download.queue'
   items: DownloadItem[]
+  // KAMP-639: Unix timestamp the queue is paused until while it waits out a
+  // Bandcamp rate limit; 0 (or absent, on an older daemon) when running.
+  // Without this the queue just stops with every row still reading "queued",
+  // which is indistinguishable from a hang.
+  paused_until?: number
 }
 export type ServerMessage =
   | StateMessage
@@ -1048,7 +1056,7 @@ export function connectStateStream(
   onAlbumPipelineStage?: (saleItemId: string | null, stage: string, committed: boolean) => void,
   // KAMP-568: full download-queue snapshot for the Downloads view. Appended last
   // so the existing positional callbacks keep their indices.
-  onDownloadQueue?: (items: DownloadItem[]) => void
+  onDownloadQueue?: (items: DownloadItem[], pausedUntil: number) => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 
@@ -1070,7 +1078,8 @@ export function connectStateStream(
       else if (msg.type === 'magic_playlist.updated') onMagicPlaylistUpdated?.(msg.id)
       else if (msg.type === 'pipeline.stage')
         onAlbumPipelineStage?.(msg.sale_item_id ?? null, msg.stage, msg.committed ?? false)
-      else if (msg.type === 'download.queue') onDownloadQueue?.(msg.items)
+      else if (msg.type === 'download.queue')
+        onDownloadQueue?.(msg.items, msg.paused_until ?? 0)
     } catch {
       // malformed message — ignore
     }

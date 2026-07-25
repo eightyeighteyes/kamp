@@ -1356,6 +1356,34 @@ class TestPaginate:
             )
         assert [r["sale_item_id"] for r in result] == [1, 2, 3, 4, 5, 6]
 
+    def test_page_size_keeps_a_walk_cheap(self) -> None:
+        """KAMP-639: a collection walk's request cost is ceil(size / batch).
+
+        This is the biggest single lever on Bandcamp request volume. At the old
+        batch of 20 an 800-album collection cost ~40 POSTs against the endpoint
+        Bandcamp rate-limits hardest — every single walk. Verified against the
+        live API that count=100 is honoured (returning 100 items and their 100
+        redownload_urls), so guard the constant against drifting back down.
+        """
+        from kamp_daemon.bandcamp import _COLLECTION_PAGE_BATCH
+
+        assert _COLLECTION_PAGE_BATCH >= 100
+        # An 800-album collection must not cost more than 10 requests to walk.
+        assert -(-800 // _COLLECTION_PAGE_BATCH) <= 10
+
+    def test_requests_the_configured_page_size(self) -> None:
+        """The batch constant is what actually goes on the wire as `count`."""
+        session = self._make_post_mock([[_item(1)]])
+        index = MagicMock()
+        with patch("kamp_daemon.bandcamp._COLLECTION_PAGE_BATCH", 100):
+            _paginate(
+                "https://bandcamp.com/fancollection/1/collection_items",
+                123,
+                session,
+                index,
+            )
+        assert session.post.call_args[1]["json"]["count"] == 100
+
     def test_raises_on_session_expired_401(self) -> None:
         session = MagicMock()
         resp = MagicMock()

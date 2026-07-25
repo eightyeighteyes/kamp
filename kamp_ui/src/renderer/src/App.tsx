@@ -340,8 +340,10 @@ export default function App(): React.JSX.Element {
           }
         },
         // KAMP-568: full download-queue snapshot → Downloads-view store slice.
-        (items) => {
-          useStore.getState().setDownloadQueue(items)
+        // pausedUntil (KAMP-639) rides along so a rate-limit wait is visible
+        // rather than looking like a stalled queue.
+        (items, pausedUntil) => {
+          useStore.getState().setDownloadQueue(items, pausedUntil)
         }
       )
     }

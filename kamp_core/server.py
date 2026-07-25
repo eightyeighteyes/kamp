@@ -1228,10 +1228,31 @@ def create_app(
         the album snapshot (see ``download_queue_items``); failed items carry their
         ``error_text``, which is how download errors reach the UI. Called from the
         worker/endpoint threads — ``_broadcast`` is thread-safe.
+
+        ``paused_until`` carries a rate-limit pause (KAMP-639) as a Unix
+        timestamp, 0 when running. Without it the queue simply stops with every
+        row still reading "queued", which is indistinguishable from a hang.
         """
-        _broadcast({"type": "download.queue", "items": index.download_queue_items()})
+        _broadcast(
+            {
+                "type": "download.queue",
+                "items": index.download_queue_items(),
+                "paused_until": _state.get("download_paused_until", 0.0),
+            }
+        )
 
     app.state.notify_download_queue = _notify_download_queue
+
+    def _set_download_pause(until: float) -> None:
+        """Record (and broadcast) that the queue is waiting out a rate limit.
+
+        *until* is a Unix timestamp, or 0 to clear. The download worker owns the
+        sleeping; this only makes it visible.
+        """
+        _state["download_paused_until"] = until
+        _notify_download_queue()
+
+    app.state.set_download_pause = _set_download_pause
 
     def _notify_bandcamp_sync_status(status_msg: str) -> None:
         """Broadcast sync state derived from the syncer's status_callback string.
@@ -3698,9 +3719,14 @@ def create_app(
 
         Items are ordered downloading → queued (by position) → failed, each
         carrying the card fields (status, position, size, error_text, album
-        snapshot). Same shape as the ``download.queue`` WebSocket snapshot.
+        snapshot). Same shape as the ``download.queue`` WebSocket snapshot,
+        including ``paused_until`` (Unix timestamp, 0 when running) so a
+        rate-limit pause is distinguishable from a stalled queue (KAMP-639).
         """
-        return {"items": index.download_queue_items()}
+        return {
+            "items": index.download_queue_items(),
+            "paused_until": _state.get("download_paused_until", 0.0),
+        }
 
     @app.post("/api/v1/downloads/reorder")
     def reorder_downloads(req: ReorderDownloadsRequest) -> dict[str, Any]:

@@ -49,7 +49,16 @@ logger = logging.getLogger(__name__)
 
 _COLLECTION_URL = "https://bandcamp.com/api/fancollection/1/collection_items"
 _HIDDEN_URL = "https://bandcamp.com/api/fancollection/1/hidden_items"
-_COLLECTION_PAGE_BATCH = 20
+# Items per collection-API page. This is the single biggest lever on Bandcamp
+# request volume: a "collection walk" is not one request, it is
+# ceil(collection_size / this) POSTs against the endpoint Bandcamp rate-limits
+# hardest — at 20, an 800-album collection cost ~40 POSTs *per walk*, which is
+# the volume that kept the download queue in 429 (KAMP-639). Verified against
+# the live API that it honours count=20/50/100/200, returning exactly that many
+# items and their matching redownload_urls; 100 keeps responses small enough to
+# stay well inside the proxy relay's body cap and timeout while cutting an
+# 800-album walk from ~40 requests to 8.
+_COLLECTION_PAGE_BATCH = 100
 
 # Realistic browser User-Agent — Bandcamp rejects obvious bot strings.
 _UA = (
@@ -185,8 +194,22 @@ class _ProxySession:
         )
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
+        status = data["status"]
+        if status >= 400:
+            # Log what Bandcamp actually said. A 429 surfaced only as
+            # "Album download failed: HTTP 429" tells us nothing about WHICH
+            # limit was hit or whether a Retry-After was offered, which is how
+            # rate-limit debugging kept turning into guesswork (KAMP-639).
+            logger.warning(
+                "relayed %s %s -> HTTP %d (%s) body=%.300r",
+                method,
+                url,
+                status,
+                data.get("content_type", "?"),
+                data.get("body", ""),
+            )
         return _ProxyResponse(
-            status_code=data["status"],
+            status_code=status,
             text=data["body"],
             content_type=data.get("content_type", "text/html"),
             url=data.get("url"),

@@ -1164,9 +1164,12 @@ def _cmd_daemon(
         # Attempted-id set plus the walk-coalescing window — see PrefetchState.
         # Owned here so it survives across items in a drain.
         _prefetch_state = PrefetchState()
-        # How long to pause the whole drain when Bandcamp rate-limits us. The
-        # queue resumes on its own from here; items stay 'queued' (KAMP-639).
-        _RATE_LIMIT_PAUSE = 300.0
+        # How long to pause the whole drain when Bandcamp rate-limits us, with
+        # escalation: a one-off limit clears in a minute, so waiting five is
+        # indistinguishable from a hang. Repeats back off further. The queue
+        # resumes on its own; items stay 'queued' (KAMP-639).
+        _RATE_LIMIT_PAUSES = (60.0, 120.0, 300.0)
+        _rate_limit_hits = 0
 
         def _prefetch_urls() -> None:
             # Fill any missing redownload_urls with a single collection fetch, so
@@ -1232,18 +1235,28 @@ def _cmd_daemon(
                     is not None
                 ):
                     pass  # drain the whole queue before sleeping again
+                _rate_limit_hits = 0  # a clean drain clears the escalation
             except RateLimited as exc:
                 # KAMP-639: the account is rate-limited, so every remaining item
                 # would fail the same way. Stop the drain and wait it out — the
                 # item is back in 'queued' and resumes from here, no user action.
+                pause = _RATE_LIMIT_PAUSES[
+                    min(_rate_limit_hits, len(_RATE_LIMIT_PAUSES) - 1)
+                ]
+                _rate_limit_hits += 1
                 _logger.warning(
                     "Bandcamp rate-limited (%s) — pausing the download queue for "
                     "%.0fs; it will resume automatically",
                     exc,
-                    _RATE_LIMIT_PAUSE,
+                    pause,
                 )
-                app.state.notify_download_queue()
-                time.sleep(_RATE_LIMIT_PAUSE)
+                # Publish the deadline so the UI can say "resuming in N", not
+                # leave every row reading "queued" while nothing happens.
+                app.state.set_download_pause(time.time() + pause)
+                try:
+                    time.sleep(pause)
+                finally:
+                    app.state.set_download_pause(0.0)
 
     threading.Thread(
         target=_download_worker, daemon=True, name="album-dl-worker"

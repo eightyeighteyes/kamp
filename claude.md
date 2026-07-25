@@ -118,11 +118,17 @@ The only reliable fix for any `bandcamp.com` request in an affected environment 
 ## macOS CFRunLoop constraint
 Any macOS API that dispatches callbacks on the main GCD queue (`dispatch_get_main_queue()`) will not work in the kamp Python server process. The main thread runs asyncio/uvicorn, which does not pump a CFRunLoop. Affected APIs include: `MPRemoteCommandCenter`, `NSDistributedNotificationCenter`, `NSTimer`, and any delegate/target-action pattern that assumes an AppKit main loop. Features requiring these APIs must live in the Electron main process (which has a real CFRunLoop) or in a dedicated helper subprocess.
 
-## Bandcamp CDN downloads (popplers5)
-`popplers5.bandcamp.com` requires valid Bandcamp session cookies to serve a ZIP. Without cookies it returns HTTP 200 with an HTML error page.
+## Bandcamp CDN downloads (popplers5) — KAMP-636
 
-- **Dev mode:** pass the authenticated `requests.Session` directly to `_download_file`. The session carries cookies; `requests` follows any redirect automatically. Do not attempt an "activate then download cookieless" pattern — it is intermittent and unreliable.
-- **Frozen mode:** the `requests.Session` has a PyInstaller OpenSSL fingerprint Cloudflare blocks (see above). Route through Electron's proxy: call `_resolve_cdn_redirect(cdn_url, _ProxySession)` to follow the popplers5 → bcbits.com redirect via `net.fetch`, then download from the bcbits.com pre-signed URL with a plain cookieless `requests.Session` (bcbits.com URLs are time-limited tokens that do not need cookies).
+**The CDN host is not the Cloudflare-protected host.** `popplers5.bandcamp.com` is plain nginx (`Server: nginx`, genuine 404s, no `cf-*` headers) and answers `requests` on every platform, PyInstaller and Windows dev included. Only `bandcamp.com` itself is bot-managed. So the proxy gate above applies to **API/page traffic only** — never extend it to the CDN leg, which cannot round-trip a multi-hundred-MB body through the JSON relay anyway.
+
+What popplers5 *does* require is the Bandcamp session cookies, and it serves the ZIP **directly** — there is no popplers5 → bcbits.com redirect to chase. `_download_item` therefore uses one path on every platform: `_cdn_download_session(session)` returns the dev `requests.Session` as-is, or rebuilds a cookie-bearing plain session from the `_ProxySession`'s stored `session_data`.
+
+Two dead ends, both shipped and both broken — do not retry either:
+- **"Activate, then download cookieless."** An authenticated GET does not entitle a later cookieless GET. It is intermittent at best.
+- **"HEAD through Electron to launder a pre-signed bcbits URL."** popplers5 issues no redirect, so the HEAD returns the input URL unchanged and the cookieless download proceeds against popplers5 — which bounces to bandcamp.com, whose reply to our TLS fingerprint is the Cloudflare challenge page. That page then gets written to disk and fails the ZIP/audio sniff.
+
+**Debugging tell:** a failed download whose recorded `size_bytes` is ~3 KB (3038 at time of writing) *is* the Cloudflare challenge page — the byte count is stable, so compare it against a plain `requests` GET to `https://bandcamp.com/` from the same interpreter. `content-type: text/html; charset=utf-8` is the challenge; popplers5's own error pages are bare `text/html`. That distinction is the fastest way to tell "wrong host answered" from "CDN said no", and `_download_file` now names the post-redirect URL in the error so the hop is visible without reproducing.
 
 ## Diagnosis discipline: ask before assuming
 Before proposing or implementing a fix, verify the actual failure mode from logs or a direct question. In TASK-173 multiple sessions were spent fixing things that were not broken (downloads, onboarding completion, the watch-folder/library wiring) because the diagnosis was assumed rather than confirmed. The cost: rewrites of working components, regressions introduced and then reverted, and a much longer path to the real two-line fix.

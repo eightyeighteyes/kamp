@@ -34,6 +34,7 @@ import sys
 import time
 import urllib.parse
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
 
@@ -1555,11 +1556,35 @@ def get_download_size_bytes(
         return None
 
 
+@dataclass
+class PrefetchState:
+    """Cross-call state for :func:`prefetch_redownload_urls` (KAMP-637/639).
+
+    Owned by the download worker so it survives across items in a drain.
+    """
+
+    #: provider_item_ids already put through a collection walk.
+    attempted: set[str] = field(default_factory=set)
+    #: Monotonic time of the last SUCCESSFUL walk; 0.0 means "never walked".
+    last_walk_at: float = 0.0
+    #: Minimum gap between collection walks. A walk covers the ENTIRE collection,
+    #: so one from moments ago already contains every purchase — walking again
+    #: for an id enqueued since then cannot find anything the last walk missed,
+    #: it can only cost another trip to the endpoint Bandcamp rate-limits
+    #: hardest. Without this, adding albums one at a time from the UI buys a
+    #: full walk per album, which is what put the queue back into 429 even after
+    #: the KAMP-640 auth race was fixed. An id skipped here is not lost: it is
+    #: picked up by a later item's prefetch, and its own download-time fallback
+    #: still resolves it if the drain reaches it first.
+    min_walk_interval: float = 60.0
+
+
 def prefetch_redownload_urls(
     index: "LibraryIndex",
     session: _AnySession,
     *,
-    attempted: set[str] | None = None,
+    state: PrefetchState | None = None,
+    now: Callable[[], float] = time.monotonic,
 ) -> int:
     """Fill missing redownload_urls on queued rows with a SINGLE collection fetch.
 
@@ -1569,13 +1594,19 @@ def prefetch_redownload_urls(
     with it) are left alone, so this is a no-op — and does no network I/O — once
     URLs are populated.
 
-    *attempted* is a caller-owned set of provider_item_ids already put through a
-    collection fetch. Some queued items simply have no redownload_url in the
-    collection, so without this they would stay "missing" forever and buy a fresh
-    fetch of the rate-limited collection endpoint on every item — the same storm
-    in a new costume. Only an id we have never tried justifies another fetch. Ids
-    that have left the queue are dropped from the set, so a re-queued retry is
-    tried afresh.
+    *state* carries the two guards that keep this from becoming a storm of its
+    own now that it runs per item:
+
+    * ``attempted`` — some queued items simply have no redownload_url in the
+      collection, so without this they would stay "missing" forever and buy a
+      fresh walk on every item. Only an id never tried justifies another walk.
+      Ids that have left the queue are dropped, so a re-queued retry is tried
+      afresh.
+    * ``last_walk_at`` / ``min_walk_interval`` — coalesces a burst of newly
+      queued ids into one walk (KAMP-639).
+
+    Passing no *state* keeps the plain "walk whenever anything is missing"
+    behaviour, which is what the one-shot callers want.
 
     Returns the number of rows populated. Best-effort: the caller catches failures;
     a 429 here just leaves rows unfilled so the per-item fallback runs (with the
@@ -1583,20 +1614,23 @@ def prefetch_redownload_urls(
     """
     queued = index.download_redownload_urls()
     missing = {pid for pid, url in queued.items() if not url}
-    if attempted is not None:
-        attempted &= set(queued)  # rows that left the queue may be tried again
-        if not missing - attempted:
+    if state is not None:
+        state.attempted &= set(queued)  # rows that left the queue may be retried
+        if not missing - state.attempted:
+            return 0
+        if state.last_walk_at and now() - state.last_walk_at < state.min_walk_interval:
             return 0
     elif not missing:
         return 0
 
     fan_id, _username = _get_fan_info(session)
     collection = _fetch_collection(fan_id, session, index)
-    if attempted is not None:
-        # Marked only after the fetch succeeds: a 429 is transient, and burning
-        # these ids on a failed attempt would strand them on the slow per-item
-        # path for the rest of the drain.
-        attempted |= missing
+    if state is not None:
+        # Recorded only after the walk succeeds: a 429 is transient, so burning
+        # these ids — or starting the quiet window — on a failed attempt would
+        # strand them on the slow per-item path for the rest of the drain.
+        state.attempted |= missing
+        state.last_walk_at = now()
     n = 0
     for item in collection:
         sid = item.get("sale_item_id")

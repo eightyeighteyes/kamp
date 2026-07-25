@@ -5749,19 +5749,45 @@ class LibraryIndex:
         self._conn.commit()
 
     def mark_download_failed(
-        self, provider_item_id: str, error_text: str, *, provider: str = "bandcamp"
+        self,
+        provider_item_id: str,
+        error_text: str,
+        *,
+        provider: str = "bandcamp",
+        clear_url: bool = True,
     ) -> None:
         """Transition an item to 'failed', recording *error_text* for the card.
 
         Also clears redownload_url (KAMP-575): if the stored link was the cause
         (stale/dead), a subsequent retry finds no URL and re-fetches a fresh one,
         healing the item without any inline stale-vs-ratelimit guesswork.
+
+        Pass ``clear_url=False`` when the failure cannot implicate the link —
+        a rate limit, above all. Discarding a good URL there forced the retry
+        onto the slow per-item collection walk, against the very endpoint that
+        was rate-limiting us (KAMP-639).
+        """
+        sql = (
+            "UPDATE download_queue SET status = 'failed', error_text = ?"
+            + (", redownload_url = NULL" if clear_url else "")
+            + " WHERE provider = ? AND provider_item_id = ?"
+        )
+        self._conn.execute(sql, (error_text, provider, provider_item_id))
+        self._conn.commit()
+
+    def requeue_download(
+        self, provider_item_id: str, *, provider: str = "bandcamp"
+    ) -> None:
+        """Return an in-flight item to 'queued' **in place**, clearing its error.
+
+        Unlike :meth:`retry_download` this keeps the row's position, because the
+        item did nothing wrong — the drain is pausing on an account-wide rate
+        limit and will resume it where it stands (KAMP-639).
         """
         self._conn.execute(
-            "UPDATE download_queue "
-            "SET status = 'failed', error_text = ?, redownload_url = NULL "
+            "UPDATE download_queue SET status = 'queued', error_text = NULL "
             "WHERE provider = ? AND provider_item_id = ?",
-            (error_text, provider, provider_item_id),
+            (provider, provider_item_id),
         )
         self._conn.commit()
 

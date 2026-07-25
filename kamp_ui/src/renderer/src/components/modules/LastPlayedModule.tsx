@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { getAlbums } from '../../api/client'
+import { getTopAlbums } from '../../api/client'
 import type { Album } from '../../api/client'
 import { useStore } from '../../store'
 import { ShelfView } from './ShelfView'
@@ -69,10 +69,11 @@ export function LastPlayedConfig(): React.JSX.Element {
 export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Element {
   const count = useStore((s) => s.lastPlayedCount)
   const days = useStore((s) => s.lastPlayedDays)
-  // Re-fetch whenever the current track changes — the server updates last_played
-  // at EOF before broadcasting track.changed, so the list is already stale by
-  // the time this selector fires.
-  const currentFilePath = useStore((s) => s.player?.current_track?.file_path ?? null)
+  // Re-fetch on track.changed events (covers both normal track transitions and
+  // the 5-second debuff timer firing after a skip). lastPlayedVersion increments
+  // on every track.changed push so this effect re-runs even when currentFilePath
+  // stays the same (e.g. debuff timer fires while the same track is playing).
+  const lastPlayedVersion = useStore((s) => s.lastPlayedVersion)
   const serverStatus = useStore((s) => s.serverStatus)
   const [albums, setAlbums] = useState<Album[]>([])
   const [loading, setLoading] = useState(true)
@@ -81,19 +82,14 @@ export function LastPlayedModule({ displayStyle }: ModuleProps): React.JSX.Eleme
     // Skip until the server is reachable; this effect re-fires when serverStatus
     // transitions to 'connected', so modules populate without a manual reload.
     if (serverStatus !== 'connected') return
-    getAlbums('last_played')
-      .then((all) => {
-        const cutoff = days > 0 ? Date.now() / 1000 - days * 86400 : null
-        const played = all
-          .filter(
-            (a) => a.last_played_at !== null && (cutoff === null || a.last_played_at >= cutoff)
-          )
-          .slice(0, count > 0 ? count : undefined)
-        setAlbums(played)
-      })
+    // KAMP-615: the server ranks, day-windows, and limits (only top-N albums
+    // enriched) instead of us fetching the whole library on every track change.
+    const since = days > 0 ? Date.now() / 1000 - days * 86400 : 0
+    getTopAlbums('last_played', count > 0 ? count : 0, since)
+      .then(setAlbums)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [count, days, currentFilePath, serverStatus])
+  }, [count, days, lastPlayedVersion, serverStatus])
 
   if (loading) {
     return (

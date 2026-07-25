@@ -312,7 +312,8 @@ function TrackLeft({
   // line for 8s if the calendar date has changed since the last session.
   useEffect(() => {
     if (!isPlaying) return
-    const today = new Date().toISOString().slice(0, 10)
+    const _d = new Date()
+    const today = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`
     const stored = localStorage.getItem(LAST_PLAY_DATE_KEY)
     localStorage.setItem(LAST_PLAY_DATE_KEY, today)
     if (stored === today) return
@@ -420,7 +421,7 @@ function TrackLeft({
 type TrackRightProps = {
   position: number
   duration: number
-  year: string
+  release_date: string
   format: string
   isDeadAir?: boolean
   isPaused?: boolean
@@ -429,7 +430,7 @@ type TrackRightProps = {
 function TrackRight({
   position,
   duration,
-  year,
+  release_date,
   format,
   isDeadAir = false,
   isPaused = false
@@ -491,7 +492,7 @@ function TrackRight({
         <span ref={totalColonRef}>:</span>
         {tSs}
       </span>
-      {year && <span className="track-year">{year}</span>}
+      {release_date && <span className="track-year">{release_date}</span>}
       {format && <span className="track-format">{format}</span>}
     </span>
   )
@@ -523,7 +524,7 @@ export function TrackDisplay(): React.JSX.Element {
           <TrackRight
             position={position}
             duration={trackMeta?.duration ?? 0}
-            year={trackMeta?.year ?? ''}
+            release_date={trackMeta?.release_date ?? ''}
             format={trackMeta?.format ?? ''}
             isDeadAir={isDeadAir}
             isPaused={isPaused}

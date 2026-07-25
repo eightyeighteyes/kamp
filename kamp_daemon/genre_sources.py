@@ -1,0 +1,407 @@
+"""Genre sources for the post-ingest enrichment step (KAMP-587).
+
+MusicBrainz gives kamp poor genre data, so ingested albums are enriched with
+genres from additional sources — starting with Last.fm via pylast. Fetching is
+best-effort: it runs asynchronously after ingest (never on the pipeline's
+critical path), is wall-clock bounded (pylast hardcodes a 20s read timeout with
+no override), swallows all network errors, and can never fail an ingest.
+
+Last.fm top-tags are an unbounded, noisy vocabulary, so raw tags are filtered
+through a bundled canonical allowlist (``data/genres.txt``) rather than chased
+with a denylist — the ingest merge is additive, so anything written once is
+sticky. The MusicBrainz-as-a-second-source variant is a deferred fast-follow
+through the same ``GenreSource`` interface.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kamp_core.library import LibraryIndex
+
+    from .config import Config
+
+logger = logging.getLogger(__name__)
+
+# Minimum Last.fm tag weight (0-100) to consider; below this is long-tail noise.
+_MIN_TAG_WEIGHT = 10
+# How many top tags to pull per entity before filtering.
+_TOP_TAGS_LIMIT = 20
+# Per-album wall-clock budget for a source fetch. pylast's read timeout is 20s
+# and cannot be overridden, so bound it ourselves and abandon on expiry.
+_FETCH_TIMEOUT_SECONDS = 8.0
+
+_ALLOWLIST_PATH = Path(__file__).parent / "data" / "genres.txt"
+# casefold -> canonical display name; built lazily, rebuilt when extras change.
+_allowlist: dict[str, str] | None = None
+# User additions to the allow list (KAMP-610), pushed in from the DB overlay by
+# the daemon. Merged on top of the shipped list at load. Guarded, together with
+# the cache, by _allowlist_lock — the HTTP endpoint thread writes while the
+# genre-enrich / backfill threads read.
+_extras: list[str] = []
+_allowlist_lock = threading.Lock()
+
+
+@dataclass
+class GenreQuery:
+    """The album-level identity a source is queried on. Keyed on album-artist
+    (never a track artist) so compilations/various-artists resolve correctly."""
+
+    album_artist: str
+    album: str
+
+
+class GenreSource(ABC):
+    """A best-effort source of canonical genre names for an album."""
+
+    @abstractmethod
+    def fetch(self, query: GenreQuery) -> list[str]:
+        """Return canonical genres for *query*, or [] on any failure."""
+
+
+def _read_default_allowlist() -> dict[str, str]:
+    """Parse the shipped data/genres.txt into casefold -> canonical (KAMP-587)."""
+    out: dict[str, str] = {}
+    try:
+        for line in _ALLOWLIST_PATH.read_text(encoding="utf-8").splitlines():
+            name = line.strip()
+            if name and not name.startswith("#"):
+                out.setdefault(name.casefold(), name)
+    except OSError as exc:
+        # A missing data file (e.g. not staged into the frozen bundle) must not
+        # crash — it degrades to "no genres pass the filter", and the WARN makes
+        # that visible rather than silent.
+        logger.warning("genre allowlist not loaded from %s: %s", _ALLOWLIST_PATH, exc)
+    return out
+
+
+def default_allowlist_names() -> list[str]:
+    """The shipped canonical allow-list names, sorted, extras excluded (KAMP-610)."""
+    return sorted(_read_default_allowlist().values(), key=str.casefold)
+
+
+def set_allowlist_extras(names: list[str]) -> None:
+    """Replace the user allow-list additions and invalidate the cache (KAMP-610).
+
+    Called by the daemon whenever the DB overlay changes (and once at startup).
+    The cache rebuilds lazily on the next canonicalize; the lock makes the swap
+    safe against the enrichment/backfill threads reading concurrently.
+    """
+    global _extras, _allowlist
+    with _allowlist_lock:
+        _extras = list(names)
+        _allowlist = None
+
+
+def _load_allowlist() -> dict[str, str]:
+    global _allowlist
+    with _allowlist_lock:
+        if _allowlist is None:
+            out = _read_default_allowlist()
+            # User extras layer on top; a shipped default's canonical casing wins
+            # on overlap (setdefault keeps the already-present key).
+            for name in _extras:
+                cleaned = name.strip()
+                if cleaned:
+                    out.setdefault(cleaned.casefold(), cleaned)
+            _allowlist = out
+        return _allowlist
+
+
+def canonicalize(tags: list[str]) -> list[str]:
+    """Filter raw tags to the canonical allowlist (case-insensitive), emit the
+    allowlist's canonical casing, order-preserving and de-duplicated."""
+    allow = _load_allowlist()
+    seen: dict[str, str] = {}
+    for tag in tags:
+        cf = tag.strip().casefold()
+        if cf in allow and cf not in seen:
+            seen[cf] = allow[cf]
+    return list(seen.values())
+
+
+def _run_with_timeout(fn: Callable[[], list[str]], timeout: float) -> list[str]:
+    """Run *fn* on a daemon thread with a wall-clock budget; [] on timeout/error.
+    The abandoned thread may keep running a hung network call, but as a daemon it
+    never blocks shutdown and its result is discarded."""
+    result: list[list[str]] = []
+    error: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            result.append(fn())
+        except BaseException as exc:  # noqa: BLE001 — best-effort, swallow all
+            error.append(exc)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        logger.warning("genre fetch exceeded %ss budget; abandoning", timeout)
+        return []
+    if error:
+        logger.warning("genre fetch failed (best-effort): %s", error[0])
+        return []
+    return result[0] if result else []
+
+
+class LastfmGenreSource(GenreSource):
+    """Last.fm genres via pylast, read-only (needs only the app API key). Fetches
+    album then artist top-tags, keeps tags at/above a weight threshold, and
+    filters them to the canonical allowlist."""
+
+    def __init__(self, network: Any = None) -> None:
+        # network is injectable for tests; built lazily from the shared API key.
+        self._network = network
+
+    def _get_network(self) -> Any:
+        if self._network is None:
+            import pylast  # noqa: PLC0415 — heavy import, only when enabled
+
+            from kamp_core.scrobbler import LASTFM_API_KEY  # noqa: PLC0415
+
+            self._network = pylast.LastFMNetwork(api_key=LASTFM_API_KEY)
+        return self._network
+
+    def fetch(self, query: GenreQuery) -> list[str]:
+        raw = _run_with_timeout(lambda: self._fetch_raw(query), _FETCH_TIMEOUT_SECONDS)
+        result = canonicalize(raw)
+        if raw and not result:
+            logger.info(
+                "Last.fm: all %d tag(s) for %r/%r were filtered out by the genre "
+                "allowlist — none matched (extend kamp_daemon/data/genres.txt to keep more)",
+                len(raw),
+                query.album_artist,
+                query.album,
+            )
+        return result
+
+    def _fetch_raw(self, query: GenreQuery) -> list[str]:
+        net = self._get_network()
+        tags: list[str] = []
+        getters: list[Callable[[], list[Any]]] = [
+            lambda: net.get_album(query.album_artist, query.album).get_top_tags(
+                limit=_TOP_TAGS_LIMIT
+            ),
+            lambda: net.get_artist(query.album_artist).get_top_tags(
+                limit=_TOP_TAGS_LIMIT
+            ),
+        ]
+        for label, getter in zip(("album", "artist"), getters):
+            try:
+                for top in getter():
+                    try:
+                        weight = int(top.weight or 0)
+                    except (TypeError, ValueError):
+                        weight = 0
+                    if weight >= _MIN_TAG_WEIGHT:
+                        tags.append(str(top.item.get_name()))
+            except Exception as exc:  # noqa: BLE001 — one getter failing is fine
+                logger.info(
+                    "Last.fm %s tags for %r/%r failed (best-effort): %s",
+                    label,
+                    query.album_artist,
+                    query.album,
+                    exc,
+                )
+        logger.info(
+            "Last.fm: %r by %r → %d raw tag(s) at/above weight %d: %s",
+            query.album,
+            query.album_artist,
+            len(tags),
+            _MIN_TAG_WEIGHT,
+            tags,
+        )
+        return tags
+
+
+def enabled_sources(config: "Config") -> list[GenreSource]:
+    """The genre sources enabled by config. Empty when nothing is on, so the
+    caller can cheaply skip enrichment entirely."""
+    sources: list[GenreSource] = []
+    if config.tagging.lastfm_genres:
+        sources.append(LastfmGenreSource())
+    return sources
+
+
+def fetch_all_genres(sources: list[GenreSource], query: GenreQuery) -> list[str]:
+    """Union the canonical genres from every source, order-preserving, deduped.
+    Each source is already best-effort ([] on failure), so this never raises."""
+    seen: dict[str, str] = {}
+    for source in sources:
+        try:
+            names = source.fetch(query)
+        except Exception as exc:  # noqa: BLE001 — a buggy source can't break enrich
+            logger.warning(
+                "genre source %s failed (best-effort): %s",
+                type(source).__name__,
+                exc,
+            )
+            names = []
+        for name in names:
+            cf = name.casefold()
+            if cf not in seen:
+                seen[cf] = name
+    return list(seen.values())
+
+
+# Serializes genre writes so the 587 ingest-enrichment and the 591 library
+# backfill can never write the same file's tags concurrently (SQLite serializes
+# the DB, but two mutagen save()s on one file can produce a torn tag).
+_ENRICH_LOCK = threading.Lock()
+
+
+def enrich_album_genres(
+    index: "LibraryIndex",
+    track_ids: list[int],
+    config: "Config",
+    *,
+    extra_genres: "Sequence[str]" = (),
+) -> list[str]:
+    """Merge genres into the album containing *track_ids* — DB via
+    ``apply_genres(merge)`` and, for local tracks, the files. The shared
+    enrichment core (KAMP-587; KAMP-591 reuses it library-wide).
+
+    Genres come from the enabled sources (Last.fm, allowlist-filtered) unioned
+    with *extra_genres*. ``extra_genres`` is applied VERBATIM — it is the caller's
+    already-filtered source (KAMP-591 passes Bandcamp keywords, pre-filtered by
+    ``parse_album_keywords``); re-running the Last.fm allowlist would diverge from
+    588 and drop the artist's niche tags. Crucially, extra_genres alone can drive
+    an apply even when Last.fm is off/empty.
+
+    Best-effort and idempotent: returns the genres applied ([] when no track
+    resolves or the union is empty). Files must be written, not just the DB: a
+    local file's re-scan REPLACES its DB genres from the file, so a DB-only
+    addition would be wiped on the next scan.
+    """
+    if not track_ids:
+        return []
+    tracks = [t for t in (index.get_track_by_id(tid) for tid in track_ids) if t]
+    if not tracks:
+        return []
+
+    # album_artist is the album-level artist (not the per-track performer), so
+    # this keys correctly for compilations / various-artists.
+    first = tracks[0]
+    query = GenreQuery(album_artist=first.album_artist, album=first.album)
+    fetched = fetch_all_genres(enabled_sources(config), query)  # allowlist-filtered
+
+    # Union the fetched (Last.fm) + extra (verbatim) genres, order-preserving,
+    # case-insensitively deduped. Gate on the UNION so Bandcamp-only genres apply.
+    seen: dict[str, str] = {}
+    for name in (*fetched, *extra_genres):
+        cf = name.casefold()
+        if name and cf not in seen:
+            seen[cf] = name
+    to_apply = list(seen.values())
+    if not to_apply:
+        logger.info(
+            "genre enrich: %r by %r — no genres applied",
+            query.album,
+            query.album_artist,
+        )
+        return []
+
+    logger.info(
+        "genre enrich: %r by %r → applying %s to %d track(s)",
+        query.album,
+        query.album_artist,
+        to_apply,
+        len(tracks),
+    )
+    from kamp_core.library import write_meta_tags_to_file  # noqa: PLC0415
+
+    with _ENRICH_LOCK:
+        index.apply_genres([t.id for t in tracks], to_apply, mode="merge")
+        for track in tracks:
+            if track.is_remote:
+                continue
+            # Re-read the post-merge canonical set. The DB read exposes it as the
+            # denormalized "; "-joined `genre` string (the `genres` list is a
+            # write-path field, empty on DB read), so split it for the file write.
+            merged = index.get_track_by_id(track.id)
+            if merged is None:
+                continue
+            names = [g.strip() for g in merged.genre.split(";") if g.strip()]
+            try:
+                write_meta_tags_to_file(Path(merged.file_path), genres=names)
+            except Exception as exc:  # noqa: BLE001 — best-effort file write
+                logger.warning(
+                    "genre enrich: file write failed for %s (best-effort): %s",
+                    merged.file_path,
+                    exc,
+                )
+    return to_apply
+
+
+def enrich_new_tracks(
+    index: "LibraryIndex", tracks: list[Any], config: "Config"
+) -> None:
+    """Enrich the albums of newly-scanned LOCAL tracks (KAMP-587 trigger core).
+
+    Called with a scan's ``new_tracks`` after each ingest. Resolves each new
+    album's tracks fresh from the DB (scan-produced Track objects don't carry a
+    DB id), skips remote/streaming albums, and is a cheap no-op when no source is
+    enabled. Synchronous and best-effort; the daemon runs it on a background
+    thread so a slow Last.fm can never stall the scan.
+    """
+    if not enabled_sources(config):
+        logger.info("genre enrich: skipped — no genre source is enabled")
+        return
+    # Unique album keys of the new LOCAL tracks. Their track_ids are resolved from
+    # the DB below — the Track objects a scan yields are read from files and have
+    # id=0, so grouping on track.id would resolve nothing.
+    album_keys = {
+        (track.album_artist, track.album)
+        for track in tracks
+        if not track.is_remote and track.album
+    }
+    if not album_keys:
+        logger.info(
+            "genre enrich: %d new track(s) but none are a local album — "
+            "nothing to enrich",
+            len(tracks),
+        )
+        return
+    logger.info(
+        "genre enrich: enriching %d album(s) from %d new track(s)",
+        len(album_keys),
+        len(tracks),
+    )
+    enrich_albums(index, album_keys, config)
+
+
+def enrich_albums(
+    index: "LibraryIndex",
+    album_keys: "Iterable[tuple[str, str]]",
+    config: "Config",
+) -> None:
+    """Enrich each ``(album_artist, album)`` from the enabled sources (KAMP-618).
+
+    The album-keyed core shared by the local-ingest trigger (``enrich_new_tracks``)
+    and the streaming-add trigger: resolves each album's track ids fresh from the DB
+    and calls ``enrich_album_genres``. Cheap no-op when no source is enabled.
+    Synchronous and best-effort per album; callers run it on a background thread so a
+    slow Last.fm can never stall the sync. Does NOT mark albums enriched — the manual
+    backfill's checkpoint is independent (consistent with local ingest)."""
+    if not enabled_sources(config):
+        return
+    for album_artist, album in album_keys:
+        try:
+            ids = [t.id for t in index.tracks_for_album(album_artist, album)]
+            if ids:
+                enrich_album_genres(index, ids, config)
+        except Exception as exc:  # noqa: BLE001 — one album can't break the rest
+            logger.warning(
+                "genre enrichment failed for %r/%r (best-effort): %s",
+                album_artist,
+                album,
+                exc,
+            )

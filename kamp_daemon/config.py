@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,8 +40,22 @@ class PathsConfig:
 
 @dataclass
 class MusicBrainzConfig:
-    # When False: skip ID3 writes when MB artist/album differs from existing tags.
-    trust_musicbrainz_when_tags_conflict: bool = False
+    # Reserved for future MusicBrainz config. KAMP-589 removed the sole field
+    # (trust-when-tags-conflict); the pipeline now always keeps existing file
+    # tags on conflict. Kept as a namespace to avoid churning its ~8 call sites.
+    pass
+
+
+@dataclass
+class TaggingConfig:
+    # KAMP-587: Last.fm genre enrichment after ingest. Default ON — the feature's
+    # point is that ingested files gain genres; it's best-effort and async, so it
+    # never slows or fails a download. Users can turn it off in Tagging prefs.
+    lastfm_genres: bool = True
+    # KAMP-588: apply the artist-supplied Bandcamp album labels as genre tags.
+    # Default ON. When off, the labels are still cached (so a later toggle-on
+    # applies them without a re-scrape) but never written to the library.
+    bandcamp_genres: bool = True
 
 
 @dataclass
@@ -60,6 +74,7 @@ class LibraryConfig:
 class UiConfig:
     active_view: str = "library"
     sort_order: str = "album_artist"
+    sort_dir: str = "asc"
     queue_panel_open: int = 0
 
 
@@ -73,6 +88,7 @@ class LastfmConfig:
 class BandcampConfig:
     format: str  # e.g. "mp3-v0", "mp3-320", "flac"
     poll_interval_minutes: int  # 0 = manual only
+    collection_mode: str = "download"  # "stream" | "download"
 
 
 def _prompt(label: str, default: str) -> str:
@@ -87,15 +103,18 @@ def _prompt(label: str, default: str) -> str:
 # Default values for all non-path config keys (stored as text in the DB).
 # Last.fm credentials are stored in the OS keychain via the sessions table, not here.
 _CONFIG_DEFAULTS: dict[str, str] = {
-    "musicbrainz.trust-musicbrainz-when-tags-conflict": "false",
     "artwork.min_dimension": "1000",
     "artwork.max_bytes": "1000000",
     "artwork.save_format": "embedded",
+    "tagging.lastfm_genres": "true",
+    "tagging.bandcamp_genres": "true",
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
     "bandcamp.format": "mp3-v0",
     "bandcamp.poll_interval_minutes": "0",
+    "bandcamp.collection_mode": "download",
     "ui.active_view": "home",
     "ui.sort_order": "album_artist",
+    "ui.sort_dir": "asc",
     "ui.queue_panel_open": "0",
 }
 
@@ -104,15 +123,18 @@ _CONFIG_DEFAULTS: dict[str, str] = {
 _CONFIG_KEY_TYPES: dict[str, type] = {
     "paths.watch_folder": str,
     "paths.library": str,
-    "musicbrainz.trust-musicbrainz-when-tags-conflict": bool,
     "artwork.min_dimension": int,
     "artwork.max_bytes": int,
     "artwork.save_format": str,
+    "tagging.lastfm_genres": bool,
+    "tagging.bandcamp_genres": bool,
     "library.path_template": str,
     "bandcamp.format": str,
     "bandcamp.poll_interval_minutes": int,
+    "bandcamp.collection_mode": str,
     "ui.active_view": str,
     "ui.sort_order": str,
+    "ui.sort_dir": str,
     "ui.queue_panel_open": int,
 }
 
@@ -163,6 +185,10 @@ _DEPRECATED_KEY_MESSAGES: dict[str, str] = {
     # Deprecated in TASK-151: Last.fm credentials moved to OS keychain.
     "lastfm.session_key": "Last.fm credentials are managed via the Last.fm connect flow.",
     "lastfm.username": "Last.fm credentials are managed via the Last.fm connect flow.",
+    # Deprecated in KAMP-589: MusicBrainz never overwrites conflicting file tags.
+    "musicbrainz.trust-musicbrainz-when-tags-conflict": (
+        "MusicBrainz no longer overwrites conflicting file tags; this option was removed."
+    ),
 }
 _DEPRECATED_KEYS: frozenset[str] = frozenset(_DEPRECATED_KEY_MESSAGES)
 
@@ -172,8 +198,12 @@ _CONFIG_KEY_CHOICES: dict[str, frozenset[str]] = {
     "bandcamp.format": frozenset(
         {"mp3-v0", "mp3-320", "flac", "aac-hi", "vorbis", "alac", "wav"}
     ),
-    "ui.active_view": frozenset({"library", "now-playing", "home"}),
-    "ui.sort_order": frozenset({"album_artist", "album", "date_added", "last_played"}),
+    "bandcamp.collection_mode": frozenset({"stream", "download"}),
+    "ui.active_view": frozenset({"library", "now-playing", "home", "downloads"}),
+    "ui.sort_order": frozenset(
+        {"album_artist", "album", "date_added", "last_played", "release_date"}
+    ),
+    "ui.sort_dir": frozenset({"asc", "desc"}),
 }
 
 
@@ -183,6 +213,7 @@ class Config:
     musicbrainz: MusicBrainzConfig
     artwork: ArtworkConfig
     library: LibraryConfig
+    tagging: TaggingConfig = field(default_factory=TaggingConfig)
     bandcamp: BandcampConfig | None = None
     lastfm: LastfmConfig | None = None
     ui: UiConfig = None  # type: ignore[assignment]  # set in __post_init__
@@ -279,14 +310,14 @@ class Config:
         def _get(key: str) -> str:
             return settings.get(key, _CONFIG_DEFAULTS.get(key, ""))
 
-        def _bool(key: str) -> bool:
-            return _get(key).lower() == "true"
-
         def _int(key: str) -> int:
             try:
                 return int(_get(key))
             except (ValueError, TypeError):
                 return int(_CONFIG_DEFAULTS[key])
+
+        def _bool(key: str) -> bool:
+            return _get(key).lower() == "true"
 
         lastfm: LastfmConfig | None = None
         _lastfm_session = db.get_session("lastfm")
@@ -305,11 +336,7 @@ class Config:
                 watch_folder=_get_path("paths.watch_folder"),
                 library=_get_path("paths.library"),
             ),
-            musicbrainz=MusicBrainzConfig(
-                trust_musicbrainz_when_tags_conflict=_bool(
-                    "musicbrainz.trust-musicbrainz-when-tags-conflict"
-                ),
-            ),
+            musicbrainz=MusicBrainzConfig(),
             artwork=ArtworkConfig(
                 min_dimension=_int("artwork.min_dimension"),
                 max_bytes=_int("artwork.max_bytes"),
@@ -318,14 +345,20 @@ class Config:
             library=LibraryConfig(
                 path_template=_get("library.path_template"),
             ),
+            tagging=TaggingConfig(
+                lastfm_genres=_bool("tagging.lastfm_genres"),
+                bandcamp_genres=_bool("tagging.bandcamp_genres"),
+            ),
             bandcamp=BandcampConfig(
                 format=_get("bandcamp.format"),
                 poll_interval_minutes=_int("bandcamp.poll_interval_minutes"),
+                collection_mode=_get("bandcamp.collection_mode"),
             ),
             lastfm=lastfm,
             ui=UiConfig(
                 active_view=_get("ui.active_view"),
                 sort_order=_get("ui.sort_order"),
+                sort_dir=_get("ui.sort_dir"),
                 queue_panel_open=_int("ui.queue_panel_open"),
             ),
         )
@@ -378,6 +411,7 @@ def config_set(db: "LibraryIndex", key: str, value: str) -> None:
 
     target_type = _CONFIG_KEY_TYPES[key]
     if target_type == bool:
+        # Re-added in KAMP-587 for tagging.lastfm_genres (589 removed the last one).
         if value.lower() not in ("true", "false"):
             raise ValueError(f"Key {key!r} requires true or false, got {value!r}")
         db_value = value.lower()

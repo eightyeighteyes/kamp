@@ -25,6 +25,7 @@ to obtain the direct download URL without any JavaScript execution.
 
 from __future__ import annotations
 
+import email.utils
 import html as html_lib
 import json
 import logging
@@ -41,7 +42,7 @@ import requests as _requests
 from .config import BandcampConfig, token_path
 
 if TYPE_CHECKING:
-    from kamp_core.library import LibraryIndex
+    from kamp_core.library import LibraryIndex, Track
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,19 @@ class NeedsLoginError(Exception):
     """
 
 
+def _parse_purchased(s: str | None) -> float | None:
+    """Parse a Bandcamp 'purchased' GMT string to a Unix timestamp.
+
+    Returns None on any parse failure so callers fall back to time.time().
+    """
+    if not s:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(s).timestamp()
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
@@ -224,13 +238,12 @@ class NeedsLoginError(Exception):
 
 def mark_collection_synced(
     bc_config: BandcampConfig,
-    state_file: Path,
     index: "LibraryIndex",
 ) -> int:
     """Record every item in the Bandcamp collection as already downloaded.
 
-    Fetches the full collection and writes all sale_item_ids to *state_file*
-    without downloading anything.  Returns the number of items marked.
+    Writes all sale_item_ids to bandcamp_collection with mode='local' and
+    synced_at=now without downloading anything.  Returns the number of new items marked.
     """
     session_data = _ensure_session(bc_config, index)
     session = _make_requests_session(session_data)
@@ -240,15 +253,25 @@ def mark_collection_synced(
     _store_username_in_session(username, session_data, index)
     collection = _fetch_collection(fan_id, session, index)
 
-    state = _load_state(state_file)
+    state = index.get_collection_state()
     newly_marked = 0
+    now = time.time()
     for item in collection:
         key = str(item["sale_item_id"])
         if key not in state:
-            state[key] = time.time()
             newly_marked += 1
+        index.upsert_collection_item(
+            key,
+            mode="local",
+            item_type=str(item.get("sale_item_type", "p")),
+            band_name=str(item.get("band_name", "")),
+            item_title=str(item.get("item_title", "")),
+            album_url=str(item.get("item_url", "")),
+            tralbum_id=str(item.get("tralbum_id", "")),
+            synced_at=now,
+            added_at=0,
+        )
 
-    _save_state(state_file, state)
     logger.info(
         "Marked %d item(s) as synced (%d already recorded). "
         "Future `sync` runs will only download new purchases.",
@@ -261,12 +284,14 @@ def mark_collection_synced(
 def sync_new_purchases(
     bc_config: BandcampConfig,
     watch_dir: Path,
-    state_file: Path,
     index: "LibraryIndex",
     status_callback: Callable[[str], None] | None = None,
 ) -> list[Path]:
-    """Download any purchases not yet recorded in *state_file* to *watch_dir*.
+    """Download any purchases not yet recorded in bandcamp_collection to *watch_dir*.
 
+    An item is considered new if it has no row in bandcamp_collection, or its
+    row has mode != 'local' (e.g. 'preorder' that has since become available).
+    Items with mode='remote' are skipped (stream-only, not downloaded).
     Returns a list of paths to the downloaded ZIP files.
     """
     session_data = _ensure_session(bc_config, index)
@@ -277,10 +302,39 @@ def sync_new_purchases(
     _store_username_in_session(username, session_data, index)
     logger.info("Fetched fan_id=%s for user %r", fan_id, username)
 
-    state = _load_state(state_file)
+    state = index.get_collection_state()
+    # Stored num_streamable_tracks for albums currently in preorder state, used to
+    # detect when new tracks have been released without re-downloading unnecessarily.
+    streamable_counts = index.get_collection_streamable_counts()
     collection = _fetch_collection(fan_id, session, index)
 
-    new_items = [item for item in collection if str(item["sale_item_id"]) not in state]
+    new_items = [
+        item
+        for item in collection
+        if state.get(str(item["sale_item_id"])) != "local"
+        and state.get(str(item["sale_item_id"])) != "remote"
+    ]
+
+    # Refresh metadata (band_name, album_url, tralbum_id) for all fetched items,
+    # not just new ones.  Existing rows may have been created before KAMP-382
+    # started populating these fields; synced_at is preserved via COALESCE.
+    for item in collection:
+        sid = item.get("sale_item_id")
+        if sid is None:
+            continue
+        key = str(sid)
+        if key in state and key not in {str(i["sale_item_id"]) for i in new_items}:
+            index.upsert_collection_item(
+                key,
+                mode=state[key],
+                item_type=str(item.get("sale_item_type", "p")),
+                band_name=str(item.get("band_name", "")),
+                item_title=str(item.get("item_title", "")),
+                album_url=str(item.get("item_url", "")),
+                tralbum_id=str(item.get("tralbum_id", "")),
+                synced_at=None,  # COALESCE preserves existing synced_at
+                added_at=_parse_purchased(item.get("purchased")),
+            )
 
     if not new_items:
         logger.info("No new purchases to download.")
@@ -291,39 +345,417 @@ def sync_new_purchases(
     watch_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded: list[Path] = []
-    for i, item in enumerate(new_items):
+    enqueued = 0  # regular purchases handed to the persistent download queue
+    download_index = 0  # throttle counter for inline preorder download-page requests
+    for item in new_items:
+        sid = str(item.get("sale_item_id", ""))
+        band_name = str(item.get("band_name", ""))
+        item_title = str(item.get("item_title", ""))
+        album_url = str(item.get("item_url", ""))
+        is_preorder = bool(item.get("is_preorder"))
+        api_streamable = int(item.get("num_streamable_tracks") or 0)
+        stored_streamable = streamable_counts.get(sid, 0)
+
         if not item.get("redownload_url"):
+            # No download URL at all — genuine edge case (not a normal pre-order).
+            # Log a warning; nothing to download or index.
             logger.warning(
                 "No redownload_url for %r by %r (sale_item_id=%s) — skipping.",
-                item.get("item_title"),
-                item.get("band_name"),
-                item.get("sale_item_id"),
+                item_title,
+                band_name,
+                sid,
             )
             continue
-        # Throttle download-page requests to avoid Bandcamp 429 rate limiting.
-        # Each iteration GETs a signed download page before hitting the CDN;
-        # back-to-back requests across a large collection trigger the rate limit.
-        if i > 0:
-            time.sleep(1)
+
+        if (
+            is_preorder
+            and state.get(sid) == "preorder"
+            and api_streamable <= stored_streamable
+        ):
+            # Pre-order re-sync with no new tracks — skip download, just refresh metadata.
+            logger.debug(
+                "Pre-order %r by %r unchanged (num_streamable_tracks=%d) — skipping re-download.",
+                item_title,
+                band_name,
+                api_streamable,
+            )
+            index.upsert_collection_item(
+                sid,
+                mode="preorder",
+                item_type=str(item.get("sale_item_type", "p")),
+                band_name=band_name,
+                item_title=item_title,
+                album_url=album_url,
+                tralbum_id=str(item.get("tralbum_id", "")),
+                synced_at=None,
+                added_at=_parse_purchased(item.get("purchased")),
+                num_streamable_tracks=api_streamable,
+            )
+            continue
+
         try:
-            if status_callback:
-                status_callback(
-                    f"{item.get('item_title', '?')} by {item.get('band_name', '?')}"
+            if is_preorder:
+                # Pre-order with newly-released tracks: download inline and keep
+                # 'preorder' mode. Kept off the persistent queue (KAMP-565) so the
+                # KAMP-544 resurface bookkeeping — mode preservation and the
+                # num_streamable_tracks watermark — stays exactly as-is; the generic
+                # queue path (download_single_album) would flip it to 'local'.
+                if download_index > 0:
+                    time.sleep(1)  # throttle download-page requests vs 429s
+                download_index += 1
+                if status_callback:
+                    status_callback(f"{item_title} by {band_name}")
+                path = _download_item(item, bc_config, watch_dir, session)
+                downloaded.append(path)
+                index.upsert_collection_item(
+                    sid,
+                    mode="preorder",
+                    item_type=str(item.get("sale_item_type", "p")),
+                    band_name=band_name,
+                    item_title=item_title,
+                    album_url=album_url,
+                    tralbum_id=str(item.get("tralbum_id", "")),
+                    synced_at=time.time(),
+                    added_at=_parse_purchased(item.get("purchased")),
+                    num_streamable_tracks=api_streamable,
                 )
-            path = _download_item(item, bc_config, watch_dir, session)
-            downloaded.append(path)
-            state[str(item["sale_item_id"])] = time.time()
-            _save_state(state_file, state)
-            logger.info("Downloaded: %s", path.name)
+                # KAMP-523: hand the download's identity to the ingest pipeline.
+                index.add_pending_ingest(
+                    str(path), str(sid), str(item.get("tralbum_id", ""))
+                )
+                logger.info(
+                    "Downloaded pre-order: %s (streamable_tracks=%d)",
+                    path.name,
+                    api_streamable,
+                )
+            else:
+                # Regular new purchase: enqueue for the persistent download queue
+                # (KAMP-565). Record the collection row as 'remote' (owned, not yet
+                # local) so a re-sync skips it while queued and the worker's
+                # download_single_album can flip it to 'local' after downloading.
+                index.upsert_collection_item(
+                    sid,
+                    mode="remote",
+                    item_type=str(item.get("sale_item_type", "p")),
+                    band_name=band_name,
+                    item_title=item_title,
+                    album_url=album_url,
+                    tralbum_id=str(item.get("tralbum_id", "")),
+                    synced_at=time.time(),
+                    added_at=_parse_purchased(item.get("purchased")),
+                    num_streamable_tracks=api_streamable,
+                )
+                index.enqueue_download(
+                    sid,
+                    album_name=item_title,
+                    album_artist=band_name,
+                    artwork_ref=str(item.get("item_art_url", "") or ""),
+                    # KAMP-575: persist the download-page link (already embedded in
+                    # this collection item) so the worker needn't re-fetch the whole
+                    # collection per item at download time.
+                    redownload_url=item.get("redownload_url"),
+                )
+                enqueued += 1
+                if status_callback:
+                    status_callback(f"Queued {item_title} by {band_name}")
+                logger.info("Queued for download: %r by %r", item_title, band_name)
         except Exception as exc:
             logger.error(
-                "Failed to download %r by %r: %s",
-                item.get("item_title"),
-                item.get("band_name"),
+                "Failed to handle %r by %r: %s",
+                item_title,
+                band_name,
                 exc,
             )
 
+    if enqueued:
+        logger.info("Enqueued %d new purchase(s) for download.", enqueued)
     return downloaded
+
+
+def sync_collection_stream(
+    bc_config: BandcampConfig,
+    watch_dir: Path,
+    index: "LibraryIndex",
+    status_callback: Callable[[str], None] | None = None,
+    art_cache_dir: Path | None = None,
+    batch_indexed_callback: Callable[[], None] | None = None,
+    apply_bandcamp_genres: bool = True,
+) -> tuple[int, int, list[tuple[str, str]]]:
+    """Index all Bandcamp purchases as remote rows — no ZIP download.
+
+    For each album, upserts a bandcamp_collection row and fetches the album
+    page to create individual track records in the tracks table.  Albums that
+    already have tracks in the DB are skipped (their collection row is still
+    refreshed) so that incremental syncs remain fast.
+
+    When *art_cache_dir* is provided, album art is prefetched and written to
+    ``art_cache_dir/<cache_key>.jpg`` at sync time so the album grid never
+    makes on-demand art requests.  The cache key matches the server endpoint's
+    key (tralbum_id when available, else sid_<sale_item_id>).  Art fetch
+    failures are best-effort — a warning is logged and sync continues.
+
+    Returns (album_count, track_count, new_album_keys), where new_album_keys are the
+    (album_artist, album) tuples of albums indexed for the first time this run
+    (KAMP-618: the set to auto-enrich with Last.fm genres).
+    """
+    session_data = _ensure_session(bc_config, index)
+    session = _make_requests_session(session_data)
+    fan_id, username = _get_fan_info(session)
+    if not username:
+        username = _username_from_logout_cookie(session_data.get("cookies", []))
+    _store_username_in_session(username, session_data, index)
+    logger.info("Fetched fan_id=%s for user %r", fan_id, username)
+
+    collection = _fetch_collection(fan_id, session, index)
+    # Load existing state so we never overwrite a locally-downloaded album
+    # (mode='local') with mode='remote'.  Local albums were processed by the
+    # download pipeline and already have their tracks in the tracks table.
+    existing_state = index.get_collection_state()
+    album_count = 0
+    track_count = 0
+    # (album_artist, album) of albums newly indexed this run — the streaming-add
+    # Last.fm genre-enrichment set (KAMP-618).
+    new_album_keys: list[tuple[str, str]] = []
+    fetch_index = 0  # throttle counter for album-page requests
+    for item in collection:
+        sid = item.get("sale_item_id")
+        if sid is None:
+            continue
+
+        # Skip albums the user already has locally — do not demote to remote.
+        if existing_state.get(str(sid)) == "local":
+            continue
+
+        band_name = str(item.get("band_name", ""))
+        item_title = str(item.get("item_title", ""))
+        album_url = str(item.get("item_url", ""))
+        current_mode = existing_state.get(str(sid))
+        is_preorder_already = current_mode == "preorder"
+        # Use is_preorder from the API as the authoritative signal when available.
+        api_says_preorder = bool(item.get("is_preorder"))
+
+        if status_callback:
+            status_callback(f"{item_title} by {band_name}")
+
+        # Preserve 'preorder' mode; also respect API's is_preorder on first sync.
+        upsert_mode = (
+            "preorder" if (is_preorder_already or api_says_preorder) else "remote"
+        )
+        index.upsert_collection_item(
+            str(sid),
+            mode=upsert_mode,
+            item_type=str(item.get("sale_item_type", "p")),
+            band_name=band_name,
+            item_title=item_title,
+            album_url=album_url,
+            tralbum_id=str(item.get("tralbum_id", "")),
+            synced_at=time.time(),
+            added_at=_parse_purchased(item.get("purchased")),
+        )
+        album_count += 1
+
+        # Correct date_added for existing remote tracks so the purchase date —
+        # not the sync timestamp — drives the new-arrival highlight.
+        purchased_ts = _parse_purchased(item.get("purchased"))
+        if purchased_ts is not None:
+            index.update_remote_track_date_added(str(sid), purchased_ts)
+
+        # Fetch track metadata for new albums, pre-order albums, or albums whose
+        # remote tracks still carry year-only release_date strings (backfill for
+        # tracks indexed before KAMP-513).  Pre-orders are always re-inspected so
+        # newly released tracks and full-release transitions are caught.
+        needs_backfill = index.has_remote_tracks_needing_date_backfill(str(sid))
+        # KAMP-618: a truly new album (no prior remote tracks) is a candidate for
+        # auto Last.fm genre enrichment; pre-order/backfill re-inspections of existing
+        # albums are not (they're already in the library).
+        is_new_album = not index.has_remote_album_tracks(str(sid))
+        if album_url and (
+            is_preorder_already or api_says_preorder or is_new_album or needs_backfill
+        ):
+            if fetch_index > 0:
+                time.sleep(0.5)
+            fetch_index += 1
+            # KAMP-544: snapshot how many streamable tracks this album has BEFORE
+            # the re-sync. If it rises, a pre-order gained a newly-released track
+            # (incremental release or full graduation) and the album should jump
+            # back to the top of "date added" with the new-arrival highlight.
+            available_before = index.count_available_remote_tracks(str(sid))
+            try:
+                tracks = fetch_album_tracks(
+                    album_url,
+                    int(sid),
+                    band_name,
+                    item_title,
+                    session,
+                    date_added=purchased_ts,
+                )
+                if tracks:
+                    # KAMP-588: cache the album's Bandcamp tags so a later download
+                    # can stamp them into the files (and KAMP-591 has a fast path).
+                    # All tracks share the album keywords. Cache BEFORE any strip
+                    # below so the labels persist even when applying them is off.
+                    index.set_collection_keywords(str(sid), tracks[0].genres)
+                    # Apply Bandcamp labels as genres ONLY on an album's first index.
+                    # When the toggle is off, or on any later re-sync (pre-order
+                    # re-inspection / date backfill of an album we already have),
+                    # strip them before upsert so upsert_many's empty-incoming skip
+                    # preserves the user's genre edits (KAMP-604). The keyword cache
+                    # above still holds the labels for an explicit re-trigger (the
+                    # KAMP-591 genre backfill) or a later toggle-on.
+                    if not apply_bandcamp_genres or not is_new_album:
+                        for _t in tracks:
+                            _t.genres = []
+                    index.upsert_many(tracks)
+                    track_count += len(tracks)
+                    if is_new_album:
+                        new_album_keys.append((band_name, item_title))
+                    logger.debug(
+                        "Indexed %d track(s) for %r by %r",
+                        len(tracks),
+                        item_title,
+                        band_name,
+                    )
+                    if batch_indexed_callback:
+                        batch_indexed_callback()
+                    # Update pre-order mode based on current track availability.
+                    has_unavailable = any(not t.is_available for t in tracks)
+                    if has_unavailable:
+                        index.set_collection_item_mode(str(sid), "preorder")
+                    elif is_preorder_already:
+                        # All tracks are now released — graduate to normal remote.
+                        index.set_collection_item_mode(str(sid), "remote")
+                    # KAMP-544: re-surface the album when it gained streamable
+                    # tracks. The `available_before > 0` guard skips the first-ever
+                    # index of an album (0 -> N) — that album is already new by its
+                    # date_added; only a *subsequent* increase is a re-arrival.
+                    available_after = index.count_available_remote_tracks(str(sid))
+                    if available_before > 0 and available_after > available_before:
+                        index.bump_album_new_content(str(sid), time.time())
+            except Exception as exc:
+                logger.warning(
+                    "fetch_album_tracks: skipping tracks for %r by %r (%s): %s",
+                    item_title,
+                    band_name,
+                    album_url,
+                    exc,
+                )
+
+        # Prefetch art into the local cache so the album grid renders without
+        # on-demand Bandcamp requests.  Cache key matches the server endpoint.
+        if album_url and art_cache_dir is not None:
+            tralbum = str(item.get("tralbum_id", ""))
+            cache_key = tralbum if tralbum else f"sid_{sid}"
+            cache_path = art_cache_dir / f"{cache_key}.jpg"
+            if not cache_path.exists():
+                if fetch_index > 0:
+                    time.sleep(0.5)
+                fetch_index += 1
+                try:
+                    data = fetch_album_art_bytes(album_url, session_data)
+                    if data:
+                        art_cache_dir.mkdir(parents=True, exist_ok=True)
+                        cache_path.write_bytes(data)
+                except Exception as exc:
+                    logger.warning(
+                        "art prefetch failed for %r by %r: %s",
+                        item_title,
+                        band_name,
+                        exc,
+                    )
+
+    logger.info(
+        "Stream sync complete: %d album(s), %d track(s) indexed as remote.",
+        album_count,
+        track_count,
+    )
+    return album_count, track_count, new_album_keys
+
+
+def download_single_album(
+    bc_config: BandcampConfig,
+    watch_dir: Path,
+    index: "LibraryIndex",
+    sale_item_id: str,
+    status_callback: Callable[[str], None] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> Path:
+    """Download one Bandcamp purchase to *watch_dir* by its *sale_item_id*.
+
+    Authenticates, resolves the signed download URL for this specific item,
+    downloads the ZIP, updates bandcamp_collection.mode to 'local', and sets
+    tracks.source to 'local' on the existing remote track rows.
+
+    Returns the path to the downloaded ZIP.  Raises ``BandcampAPIError`` if
+    the item is not found in the collection or cannot be downloaded.
+    """
+    if status_callback:
+        status_callback(f"Downloading album {sale_item_id}…")
+
+    session_data = _ensure_session(bc_config, index)
+    session = _make_requests_session(session_data)
+
+    # KAMP-575 fast path: if the queue row carries the download-page link captured
+    # at enqueue time, reuse it and skip the collection fetch entirely (the per-item
+    # re-fetch was the 429 storm). No _get_fan_info either — that call hits
+    # collection_summary, which we no longer need. The item dict is reconstructed
+    # from local DB: band_name/item_title from the row's album snapshot (stored
+    # verbatim at enqueue), tralbum_id from the collection ledger. On any failure
+    # the item is marked failed (which NULLs the stored URL), so a retry re-fetches.
+    queue_row = index.get_download_item(sale_item_id)
+    stored_url = queue_row.get("redownload_url") if queue_row else None
+    item: dict[str, Any] | None = None
+
+    if stored_url:
+        ledger = index.get_collection_item(sale_item_id) or {}
+        item = {
+            "sale_item_id": int(sale_item_id),
+            "redownload_url": stored_url,
+            "band_name": (queue_row or {}).get("album_artist")
+            or ledger.get("band_name")
+            or "Unknown Artist",
+            "item_title": (queue_row or {}).get("album_name")
+            or ledger.get("item_title")
+            or "Unknown Album",
+            "tralbum_id": ledger.get("tralbum_id", ""),
+        }
+    else:
+        # Fallback (no stored URL — e.g. a REST-enqueued item, or a healed retry).
+        # Use the same collection API path that sync_new_purchases uses.
+        # _fetch_collection paginates the full collection and embeds redownload_url
+        # (from each page's redownload_urls dict) directly into every item dict.
+        # _get_download_links (HTML scrape) only shows recent purchases on the
+        # profile page and misses items outside the visible scroll window.
+        fan_id, _ = _get_fan_info(session)
+        if status_callback:
+            status_callback(f"Fetching collection for {sale_item_id}…")
+        collection = _fetch_collection(fan_id, session, index)
+
+        target_id = int(sale_item_id)
+        item = next((i for i in collection if i.get("sale_item_id") == target_id), None)
+        if item is None or not item.get("redownload_url"):
+            raise BandcampAPIError(
+                f"No download link found for sale_item_id={sale_item_id} "
+                f"(item not in collection or redownload_url missing)"
+            )
+
+    if status_callback:
+        status_callback(f"Downloading album {sale_item_id}…")
+
+    watch_dir.mkdir(parents=True, exist_ok=True)
+    dest = _download_item(item, bc_config, watch_dir, session, on_progress=on_progress)
+
+    # Mark the collection item as locally downloaded. The remote track rows
+    # (bandcamp:// file_path) are left in place — a library rescan triggered
+    # by the file watcher will add local tracks, and the albums/tracks queries
+    # deduplicate by preferring non-bandcamp:// records when both exist.
+    index.set_collection_item_mode(sale_item_id, "local")
+    # KAMP-523: record the download → pipeline provenance handoff (see
+    # sync_new_purchases for the rationale).
+    index.add_pending_ingest(str(dest), sale_item_id, str(item.get("tralbum_id", "")))
+
+    if status_callback:
+        status_callback("")
+    return dest
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +991,13 @@ def _extract_pagedata(html: str, url: str) -> dict[str, Any]:
 def _fetch_collection(
     fan_id: int, session: _AnySession, index: "LibraryIndex"
 ) -> list[dict[str, Any]]:
-    """Fetch all collection items (visible + hidden), deduplicated by sale_item_id."""
+    """Fetch all collection items (visible + hidden), deduplicated by sale_item_id.
+
+    A second pass deduplicates by (band_name, item_title): when the same album
+    appears under two sale_item_ids (e.g. item_type=p for the purchase and
+    item_type=c for a pre-order/compilation entry), the p-typed entry is kept
+    and the c-typed entry is dropped to prevent duplicate tracks in the DB.
+    """
     seen: set[int] = set()
     items: list[dict[str, Any]] = []
     for endpoint in (_COLLECTION_URL, _HIDDEN_URL):
@@ -568,7 +1006,22 @@ def _fetch_collection(
             if item_id not in seen:
                 seen.add(item_id)
                 items.append(item)
-    return items
+
+    # Drop c-typed items that have a p-typed counterpart with the same (band, title).
+    # This prevents duplicate tracks when Bandcamp returns the same album under two
+    # sale_item_ids (one per item_type).  Two p-typed items with the same title are
+    # kept as-is (they may be distinct editions or repurchases).
+    p_titles: set[tuple[str, str]] = {
+        (str(i.get("band_name", "")), str(i.get("item_title", "")))
+        for i in items
+        if i.get("sale_item_type") == "p"
+    }
+    return [
+        i
+        for i in items
+        if i.get("sale_item_type") != "c"
+        or (str(i.get("band_name", "")), str(i.get("item_title", ""))) not in p_titles
+    ]
 
 
 def _paginate(
@@ -666,6 +1119,292 @@ def _get_download_links(
 
 
 # ---------------------------------------------------------------------------
+# Stream URL resolution
+# ---------------------------------------------------------------------------
+
+
+def fetch_stream_url(
+    album_url: str,
+    track_number: int,
+    session: "_AnySession",
+) -> tuple[str, float]:
+    """Fetch the streaming URL for *track_number* from a Bandcamp album page.
+
+    Scrapes the ``data-tralbum`` JSON attribute embedded in the album page HTML.
+    Returns ``(stream_url, expires_at)`` where ``expires_at`` is
+    ``time.time() + 86400`` (Bandcamp stream URLs are valid for ~24 hours).
+
+    Raises ``BandcampAPIError`` if the page cannot be parsed or the track is
+    not found.
+    """
+    resp = session.get(album_url, timeout=30)
+    resp.raise_for_status()
+    html = resp.text
+
+    match = re.search(r'data-tralbum="([^"]+)"', html)
+    if not match:
+        raise BandcampAPIError(
+            f"fetch_stream_url: no data-tralbum found in {album_url}"
+        )
+
+    tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
+    tracks: list[dict[str, Any]] = tralbum.get("trackinfo") or []
+
+    # A standalone single-track page exposes its lone track with track_num=None;
+    # it is indexed as #1 by fetch_album_tracks, so match it the same way here
+    # (KAMP-526).  The is_single guard keeps multi-track album track 1 unaffected.
+    is_single = tralbum.get("item_type") == "track"
+
+    for t in tracks:
+        page_track_num = t.get("track_num") or (1 if is_single else None)
+        if page_track_num == track_number:
+            files: dict[str, Any] = t.get("file") or {}
+            url = files.get("mp3-v0") or files.get("mp3-128")
+            if not url:
+                raise BandcampAPIError(
+                    f"fetch_stream_url: no mp3 stream URL for track {track_number} "
+                    f"in {album_url}"
+                )
+            # ts= in the signed CDN URL is the creation timestamp; the token
+            # is hmac(ts + path + secret) so ts cannot be changed independently.
+            # Bandcamp rejects the URL once ts is older than ~24 hours, so the
+            # true expiry is ts + 86400.  Using the URL-embedded ts is more
+            # accurate than time.time() because it reflects when Bandcamp
+            # actually signed the URL, not when we fetched the page.
+            try:
+                _qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                _ts = _qs.get("ts")
+                expires_at = float(_ts[0]) + 86400 if _ts else time.time() + 86400
+            except Exception:
+                expires_at = time.time() + 86400
+            return url, expires_at
+
+    raise BandcampAPIError(
+        f"fetch_stream_url: track_num={track_number} not found in {album_url} "
+        f"(tracks present: {[t.get('track_num') for t in tracks]})"
+    )
+
+
+# Bandcamp tags that describe the format/medium rather than a genre — dropped so
+# they don't pollute the genre list (KAMP-588). Location tags (cities/countries)
+# are an unbounded set and are left in; the user prunes them via the KAMP-586
+# chips editor. Compared case-folded.
+_KEYWORD_FORMAT_DENYLIST = frozenset(
+    {
+        "vinyl",
+        "vinyl lp",
+        "cassette",
+        "tape",
+        "cd",
+        "compact disc",
+        "digital",
+        "download",
+        "lp",
+        "ep",
+        "7 inch",
+        "10 inch",
+        "12 inch",
+        "merch",
+    }
+)
+
+
+def parse_album_keywords(html: str) -> list[str]:
+    """Extract artist-supplied Bandcamp tags from an album page as genre names.
+
+    Multi-source, most genre-precise first (KAMP-588): the ``<a class="tag">``
+    links are the artist's own tags with no artist/album-name pollution; the
+    ld+json ``keywords`` field is a robust fallback if the markup changes.
+    HTML-unescaped, stripped, case-insensitively de-duplicated, order-preserving;
+    format/medium words (see denylist) are dropped. Returns ``[]`` when nothing
+    is found — callers WARN if a real page yielded none so a Cloudflare challenge
+    page or a markup change can't ship the feature silently dead.
+    """
+    raw: list[str] = []
+
+    # 1. <a class="tag" href="/tag/...">text</a> — tolerant of attribute order.
+    raw.extend(
+        re.findall(r'<a\b[^>]*\bclass="tag"[^>]*>([^<]+)</a>', html, re.IGNORECASE)
+    )
+
+    # 2. Fallback: the ld+json MusicAlbum "keywords" (list or comma string).
+    if not raw:
+        for m in re.finditer(
+            r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
+            html,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            try:
+                data = json.loads(m.group(1))
+            except (ValueError, TypeError):
+                continue
+            kw = data.get("keywords") if isinstance(data, dict) else None
+            if isinstance(kw, str):
+                raw.extend(kw.split(","))
+            elif isinstance(kw, list):
+                raw.extend(str(k) for k in kw)
+            if raw:
+                break
+
+    seen: dict[str, str] = {}
+    for token in raw:
+        name = html_lib.unescape(token).strip()
+        if name and name.casefold() not in _KEYWORD_FORMAT_DENYLIST:
+            seen.setdefault(name.casefold(), name)
+    return list(seen.values())
+
+
+def fetch_album_tracks(
+    album_url: str,
+    sale_item_id: int,
+    band_name: str,
+    item_title: str,
+    session: "_AnySession",
+    date_added: float | None = None,
+) -> "list[Track]":
+    """Fetch track metadata from a Bandcamp album page without downloading CDN URLs.
+
+    Returns a list of Track objects (source='bandcamp', no stream_url) ready to
+    upsert into the tracks table.  CDN stream URLs are fetched on demand at
+    play time by _resolve_playback().
+
+    Raises BandcampAPIError if the page cannot be parsed.
+    """
+    from kamp_core.library import Track
+
+    resp = session.get(album_url, timeout=30)
+    resp.raise_for_status()
+
+    match = re.search(r'data-tralbum="([^"]+)"', resp.text)
+    if not match:
+        raise BandcampAPIError(f"fetch_album_tracks: no data-tralbum in {album_url}")
+
+    tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
+    trackinfo: list[dict[str, Any]] = tralbum.get("trackinfo") or []
+
+    # Standalone single-track purchases (item_type='track') expose their lone
+    # track with track_num=None and carry the release date under current rather
+    # than album_release_date.  Normalise both so the track is indexed as #1 and
+    # dated correctly instead of being silently dropped (KAMP-526).
+    is_single_track = tralbum.get("item_type") == "track"
+
+    # Parse the release date string (e.g. "01 Jan 2020 00:00:00 GMT") to ISO form.
+    raw_release_date = str(
+        tralbum.get("album_release_date")
+        or (tralbum.get("current") or {}).get("release_date")
+        or ""
+    )
+    parsed_date = email.utils.parsedate(raw_release_date)
+    if parsed_date:
+        release_date_iso = time.strftime("%Y-%m-%d", parsed_date)
+    else:
+        year_match = re.search(r"\b(19|20)\d{2}\b", raw_release_date)
+        release_date_iso = year_match.group(0) if year_match else ""
+
+    # KAMP-588: artist-supplied Bandcamp tags → genres, from the page HTML already
+    # fetched. WARN when a fetched page yields none so a markup change or a
+    # Cloudflare challenge page can't ship the feature silently dead — most
+    # Bandcamp albums are tagged.
+    keywords = parse_album_keywords(resp.text)
+    if not keywords:
+        logger.warning("fetch_album_tracks: no Bandcamp tags parsed for %s", album_url)
+
+    result: list[Track] = []
+    for t in trackinfo:
+        track_num = t.get("track_num") or (1 if is_single_track else None)
+        if not track_num:
+            continue
+        # Per-track artist field is set on compilations/splits; fall back to band_name.
+        artist = t.get("artist") or band_name
+        # file=null (or absent) means the track hasn't been released yet (pre-order).
+        is_available = bool(t.get("file"))
+        result.append(
+            Track(
+                file_path=Path(f"bandcamp://{sale_item_id}/{track_num}"),
+                title=t.get("title") or "",
+                artist=artist,
+                album_artist=band_name,
+                album=item_title,
+                release_date=release_date_iso,
+                track_number=int(track_num),
+                disc_number=1,
+                ext="mp3",
+                embedded_art=False,
+                mb_release_id="",
+                mb_recording_id="",
+                source="bandcamp",
+                date_added=date_added if date_added is not None else time.time(),
+                is_available=is_available,
+                duration=float(t.get("duration") or 0.0),
+                genres=list(keywords),
+            )
+        )
+    return result
+
+
+def refresh_stream_url(
+    album_url: str, track_number: int, session_data: dict[str, Any]
+) -> tuple[str, float] | None:
+    """Fetch a fresh CDN stream URL for *track_number* on *album_url*.
+
+    Proxy-aware (Cloudflare-safe on PyInstaller/Windows). Returns None on any
+    failure so callers can fall back gracefully without raising.
+    """
+    try:
+        session = _make_requests_session(session_data)
+        return fetch_stream_url(album_url, track_number, session)
+    except Exception as exc:
+        logger.warning(
+            "refresh_stream_url: failed for track %d on %s — %s",
+            track_number,
+            album_url,
+            exc,
+        )
+        return None
+
+
+def check_stream_url(url: str) -> int:
+    """HEAD request to verify a Bandcamp CDN stream URL is still live.
+
+    Returns the HTTP status code (200, 403, 410, …) or 0 on network/DNS
+    failure.  CDN stream URLs carry all authentication in the signed query
+    parameters, so no session cookies are required here.  Returns quickly
+    (5 s timeout) so it can be called on the playback code path.
+    """
+    try:
+        resp = _requests.head(url, timeout=5, allow_redirects=False)
+        return resp.status_code
+    except _requests.RequestException:
+        return 0
+
+
+def fetch_album_art_bytes(album_url: str, session_data: dict[str, Any]) -> bytes | None:
+    """Download album art JPEG for *album_url*, authenticated via *session_data*.
+
+    Returns raw JPEG bytes, or None if art cannot be found or fetched.
+    The album page fetch is proxy-aware (Cloudflare-safe on PyInstaller/Windows).
+    The CDN image download uses a plain unauthenticated session — f4.bcbits.com
+    serves art publicly with no cookies required.
+    """
+    try:
+        session = _make_requests_session(session_data)
+        resp = session.get(album_url, timeout=30)
+        resp.raise_for_status()
+        match = re.search(r'data-tralbum="([^"]+)"', resp.text)
+        if not match:
+            return None
+        tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
+        art_id = tralbum.get("art_id")
+        if not art_id:
+            return None
+        cdn_url = f"https://f4.bcbits.com/img/a{art_id}_0.jpg"
+        cdn_resp = _requests.get(cdn_url, timeout=30)
+        cdn_resp.raise_for_status()
+        return cdn_resp.content
+    except Exception:
+        return None
+
+
 # Download
 # ---------------------------------------------------------------------------
 
@@ -715,6 +1454,141 @@ def _get_cdn_url(redownload_url: str, fmt: str, session: _AnySession) -> str:
     return cdn_url
 
 
+# Decimal-unit multipliers for Bandcamp's `size_mb` strings (KAMP-563: Bandcamp
+# reports decimal MB, e.g. "81.2MB"). Matches the UI's formatBytes (also decimal).
+_SIZE_UNIT_BYTES = {
+    "KB": 1_000,
+    "MB": 1_000_000,
+    "GB": 1_000_000_000,
+    "TB": 1_000_000_000_000,
+}
+
+
+def _parse_size_mb(value: str | None) -> int | None:
+    """Parse a Bandcamp download-page size string ("81.2MB", "259MB", "1.2GB")
+    into a byte count, or None when absent/unparseable. A bare number is treated
+    as MB (the field's default unit)."""
+    if not value:
+        return None
+    m = re.match(r"\s*([\d.]+)\s*(KB|MB|GB|TB)?\s*$", str(value), re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        num = float(m.group(1))
+    except ValueError:
+        return None
+    unit = (m.group(2) or "MB").upper()
+    return int(num * _SIZE_UNIT_BYTES[unit])
+
+
+def get_download_size_bytes(
+    redownload_url: str, fmt: str, session: _AnySession
+) -> int | None:
+    """Return the download size in bytes for *fmt* from the item's download page.
+
+    Reads ``download_items[0].downloads[<fmt>].size_mb`` from the same pagedata
+    blob :func:`_get_cdn_url` uses (KAMP-563/574). Best-effort: returns None on
+    any failure (item not ready, format absent, network/parse error) rather than
+    raising, so a background backfill can just skip it and move on.
+    """
+    try:
+        resp = session.get(redownload_url, timeout=30)
+        resp.raise_for_status()
+        blob = _extract_pagedata(resp.text, redownload_url)
+        items: list[dict[str, Any]] = (
+            blob.get("download_items") or blob.get("digital_items") or []
+        )
+        if not items:
+            return None
+        downloads: dict[str, Any] = items[0].get("downloads") or {}
+        fmt_data = downloads.get(fmt)
+        if not isinstance(fmt_data, dict):
+            return None
+        return _parse_size_mb(fmt_data.get("size_mb"))
+    except Exception:
+        return None
+
+
+def prefetch_redownload_urls(index: "LibraryIndex", session: _AnySession) -> int:
+    """Fill missing redownload_urls on queued rows with a SINGLE collection fetch.
+
+    The download worker calls this once per drain (KAMP-575) so it can then download
+    every item via the fast path — no per-item collection re-fetch, which was the
+    429 storm. Rows that already have a URL (freshly enqueued with it) are left
+    alone, so this is a no-op (and does no network I/O) once URLs are populated.
+
+    Returns the number of rows populated. Best-effort: the caller catches failures;
+    a 429 here just leaves rows unfilled so the per-item fallback runs (with the
+    size-backfill paused, it has room). Never raises for a "nothing to do" case.
+    """
+    missing = {pid for pid, url in index.download_redownload_urls().items() if not url}
+    if not missing:
+        return 0
+
+    fan_id, _username = _get_fan_info(session)
+    collection = _fetch_collection(fan_id, session, index)
+    n = 0
+    for item in collection:
+        sid = item.get("sale_item_id")
+        url = item.get("redownload_url")
+        if sid is not None and url and str(sid) in missing:
+            index.set_download_redownload_url(str(sid), url)
+            n += 1
+    return n
+
+
+def backfill_download_sizes(
+    index: "LibraryIndex",
+    fmt: str,
+    session: _AnySession,
+    *,
+    on_updated: Callable[[str], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    throttle: float = 1.0,
+) -> int:
+    """Fill an estimated File Size on queued download-queue items (KAMP-574).
+
+    For each 'queued' item lacking a size, fetch the download page's ``size_mb``
+    for *fmt* and store it as an estimate (``is_estimate=True``). The exact
+    Content-Length written when the item starts downloading later overrides it.
+
+    Uses only each item's stored ``redownload_url`` (KAMP-575) — it NEVER fetches
+    the collection here. The collection endpoint is the rate-limited one; the
+    per-item download PAGE this hits is not, so this can run alongside downloads
+    without competing them into 429s. Items still lacking a stored URL are skipped
+    and picked up on a later cycle once the download worker's per-drain prefetch
+    fills them in. Requests are throttled (``throttle`` seconds between page
+    fetches). *on_updated* fires with the provider_item_id after each successful
+    size write (used to re-broadcast the queue snapshot). Returns the number of
+    items sized; unresolved items keep a NULL size and retry next cycle.
+    """
+    pids = index.queued_downloads_missing_size()
+    if not pids:
+        return 0
+
+    url_by_sid: dict[str, str] = {
+        pid: url for pid, url in index.download_redownload_urls().items() if url
+    }
+
+    sized = 0
+    fetched = 0
+    for pid in pids:
+        redownload_url = url_by_sid.get(pid)
+        if not redownload_url:
+            continue  # no stored URL yet → skip (the prefetch will fill it in)
+        if fetched > 0:
+            sleep(throttle)  # rate-limit download-page requests
+        fetched += 1
+        size = get_download_size_bytes(redownload_url, fmt, session)
+        if size is None:
+            continue
+        index.set_download_size(pid, size, is_estimate=True)
+        sized += 1
+        if on_updated is not None:
+            on_updated(pid)
+    return sized
+
+
 def _resolve_cdn_redirect(cdn_url: str, session: _AnySession) -> str:
     """Authenticate the popplers5 CDN URL so that a subsequent cookieless download works.
 
@@ -749,6 +1623,7 @@ def _download_item(
     bc_config: BandcampConfig,
     watch_dir: Path,
     session: _AnySession,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> Path:
     band_name: str = item.get("band_name", "Unknown Artist")
     item_title: str = item.get("item_title", "Unknown Album")
@@ -762,7 +1637,10 @@ def _download_item(
         )
 
     safe_name = re.sub(r'[<>:"/\\|?*]', "_", f"{band_name} - {item_title}")
-    dest = watch_dir / f"{safe_name}.zip"
+    # No extension yet: full-album purchases download as .zip, standalone
+    # single-track purchases as a bare audio file.  _download_file sniffs the
+    # payload and appends the correct extension (KAMP-526).
+    dest_base = watch_dir / safe_name
 
     logger.info("Downloading %r by %r…", item_title, band_name)
     cdn_url = _get_cdn_url(redownload_url, bc_config.format, session)
@@ -771,31 +1649,96 @@ def _download_item(
         # Dev mode: the requests.Session carries Bandcamp cookies.
         # popplers5 requires cookies to serve the ZIP; pass the authenticated
         # session directly so requests follows any redirect automatically.
-        _download_file(cdn_url, dest, session)
-    else:
-        # Frozen mode: Electron's net.fetch carries cookies and follows the
-        # popplers5 → bcbits.com redirect via the proxy HEAD call.
-        # Download from bcbits.com directly — its pre-signed URLs need no cookies.
-        final_url = _resolve_cdn_redirect(cdn_url, session)
-        dl_session = _requests.Session()
-        dl_session.headers["User-Agent"] = _UA
-        _download_file(final_url, dest, dl_session)
-    return dest
+        return _download_file(
+            cdn_url, dest_base, session, bc_config.format, on_progress=on_progress
+        )
+    # Frozen mode: Electron's net.fetch carries cookies and follows the
+    # popplers5 → bcbits.com redirect via the proxy HEAD call.
+    # Download from bcbits.com directly — its pre-signed URLs need no cookies.
+    final_url = _resolve_cdn_redirect(cdn_url, session)
+    dl_session = _requests.Session()
+    dl_session.headers["User-Agent"] = _UA
+    return _download_file(
+        final_url, dest_base, dl_session, bc_config.format, on_progress=on_progress
+    )
+
+
+# Content-Type → file extension for bare audio downloads (single tracks).
+_AUDIO_CONTENT_TYPE_EXT = {
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/flac": ".flac",
+    "audio/x-flac": ".flac",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/aac": ".m4a",
+    "audio/ogg": ".ogg",
+    "audio/vorbis": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+}
+
+# Configured download format → file extension, used as a fallback when the
+# Content-Type header is missing or unrecognised.
+_FORMAT_EXT = {
+    "mp3-v0": ".mp3",
+    "mp3-320": ".mp3",
+    "flac": ".flac",
+    "aac-hi": ".m4a",
+    "alac": ".m4a",
+    "vorbis": ".ogg",
+    "wav": ".wav",
+}
+
+
+def _audio_extension(content_type: str, fmt: str) -> str:
+    """Pick the file extension for a bare-audio download from its Content-Type,
+    falling back to the configured format, then to ``.mp3``."""
+    ct = content_type.split(";")[0].strip().lower()
+    return _AUDIO_CONTENT_TYPE_EXT.get(ct) or _FORMAT_EXT.get(fmt) or ".mp3"
+
+
+# Minimum wall-clock gap between byte-progress callbacks, so a fast download
+# doesn't flood the WebSocket with a callback per 1 MB chunk (KAMP-436).
+_PROGRESS_MIN_INTERVAL = 0.5
+
+
+def _parse_content_length(value: str | None) -> int | None:
+    """Return a positive int Content-Length, or None when absent/unparseable.
+
+    The CDN/bcbits streaming leg may omit Content-Length; without a known
+    total the download percentage is unknowable and progress is suppressed.
+    """
+    if not value:
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
 
 def _download_file(
     cdn_url: str,
-    dest: Path,
+    dest_base: Path,
     session: _requests.Session,
-) -> None:
-    """Stream *cdn_url* to *dest*, following redirects.
+    fmt: str,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> Path:
+    """Stream *cdn_url* to a file under *dest_base*, following redirects.
+
+    Full-album purchases arrive as a ZIP; standalone single-track purchases are
+    served as a bare audio file (KAMP-526).  The payload type is detected from
+    the magic bytes and Content-Type, and the file is saved with the matching
+    extension (``.zip`` for albums, ``.mp3``/``.flac``/… for single tracks) so
+    the watch-folder pipeline ingests it correctly.  Returns the final path.
 
     Downloads to a ``*.part`` sibling first, then renames atomically on
     completion.  This keeps the watch-folder watcher from picking up the
     file mid-download — ``.part`` is not a watched extension, so only the
     finished file triggers the ingest pipeline.
     """
-    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp = dest_base.with_name(dest_base.name + ".part")
     try:
         with session.get(
             cdn_url, stream=True, timeout=300, allow_redirects=True
@@ -808,22 +1751,57 @@ def _download_file(
                 content_type,
                 cdn_url,
             )
+            # KAMP-436/566: report byte-progress as (downloaded, total) so the
+            # album card can reveal its art bottom-up and the Downloads view can
+            # show exact sizes. Only possible when the server declares a total;
+            # throttled by wall-clock time so we emit ~2/s, not per chunk.
+            total = _parse_content_length(resp.headers.get("Content-Length"))
+            written = 0
+            last_emit = time.monotonic()
+            last_written = -1
             with open(tmp, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=1024 * 1024):
                     fh.write(chunk)
+                    if on_progress is None or not total:
+                        continue
+                    written += len(chunk)
+                    now = time.monotonic()
+                    if now - last_emit >= _PROGRESS_MIN_INTERVAL:
+                        on_progress(written, total)
+                        last_written = written
+                        last_emit = now
+            # Always land on a definitive (total, total) once the bytes are all
+            # written, even if the last in-loop emit was throttled short of it.
+            if on_progress is not None and total and last_written != total:
+                on_progress(total, total)
 
-        # Guard against CDN returning an HTML error page with HTTP 200.
-        # ZIP files always start with the PK local-file magic (0x50 0x4B 0x03 0x04).
         with open(tmp, "rb") as fh:
             magic = fh.read(4)
-        if not magic.startswith(b"PK"):
+        ct = content_type.split(";")[0].strip().lower()
+        if magic.startswith(b"PK"):
+            # ZIP local-file magic (0x50 0x4B 0x03 0x04) — a full-album download.
+            final = dest_base.with_name(dest_base.name + ".zip")
+        elif (
+            ct.startswith("audio/")
+            or magic[:3] == b"ID3"
+            or magic[:4] == b"fLaC"
+            or magic[:1] == b"\xff"
+        ):
+            # Bare audio file — a standalone single-track purchase.
+            final = dest_base.with_name(
+                dest_base.name + _audio_extension(content_type, fmt)
+            )
+        else:
+            # Neither ZIP nor audio: the CDN served an HTML error page with
+            # HTTP 200 (e.g. missing cookies on popplers5).
             raise BandcampAPIError(
-                f"CDN response is not a ZIP file "
+                f"CDN response is neither a ZIP nor audio "
                 f"(first-bytes={magic!r}, content-type={content_type!r}) — "
                 f"url={cdn_url}"
             )
 
-        tmp.rename(dest)
+        tmp.rename(final)
+        return final
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -832,18 +1810,3 @@ def _download_file(
 # ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
-
-
-def _load_state(state_file: Path) -> dict[str, float]:
-    if not state_file.exists():
-        return {}
-    try:
-        return dict(json.loads(state_file.read_text()))
-    except Exception:
-        logger.warning("Could not read state file %s — starting fresh.", state_file)
-        return {}
-
-
-def _save_state(state_file: Path, state: dict[str, float]) -> None:
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps(state, indent=2))

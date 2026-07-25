@@ -25,8 +25,8 @@ def _make_mp3(path: Path, **tags: str) -> None:
         t["TPE2"] = id3.TPE2(encoding=3, text=tags["album_artist"])
     if "album" in tags:
         t["TALB"] = id3.TALB(encoding=3, text=tags["album"])
-    if "year" in tags:
-        t["TDRC"] = id3.TDRC(encoding=3, text=tags["year"])
+    if "release_date" in tags:
+        t["TDRC"] = id3.TDRC(encoding=3, text=tags["release_date"])
     if "track" in tags:
         t["TRCK"] = id3.TRCK(encoding=3, text=tags["track"])
     if "title" in tags:
@@ -45,7 +45,7 @@ class TestDestination:
             mp3,
             album_artist="Aesop Rock",
             album="Bazooka Tooth",
-            year="2003",
+            release_date="2003",
             track="1",
             title="N.Y. Electric / Hunter Interlude",
         )
@@ -64,7 +64,7 @@ class TestDestination:
             mp3,
             album_artist="Artist",
             album="Album: The Sequel",
-            year="2020",
+            release_date="2020",
             track="1",
             title="Track?",
         )
@@ -110,8 +110,8 @@ class TestM4ADestination:
             t4["aART"] = [tags["album_artist"]]
         if "album" in tags:
             t4["\xa9alb"] = [tags["album"]]
-        if "year" in tags:
-            t4["\xa9day"] = [tags["year"]]
+        if "release_date" in tags:
+            t4["\xa9day"] = [tags["release_date"]]
         if "track" in tags:
             t4["trkn"] = [(tags["track"], 0)]
         if "disc" in tags:
@@ -132,7 +132,7 @@ class TestM4ADestination:
                 artist="Artist",
                 album_artist="Album Artist",
                 album="My Album",
-                year="2021",
+                release_date="2021",
                 track=3,
                 disc=1,
                 title="My Track",
@@ -185,8 +185,8 @@ class TestFlacDestination:
             vorbis["ALBUMARTIST"] = [tags["album_artist"]]
         if "album" in tags:
             vorbis["ALBUM"] = [tags["album"]]
-        if "year" in tags:
-            vorbis["DATE"] = [tags["year"]]
+        if "release_date" in tags:
+            vorbis["DATE"] = [tags["release_date"]]
         if "track" in tags:
             vorbis["TRACKNUMBER"] = [tags["track"]]
         if "disc" in tags:
@@ -207,7 +207,7 @@ class TestFlacDestination:
                 artist="Artist",
                 album_artist="Album Artist",
                 album="My Album",
-                year="2021",
+                release_date="2021",
                 track="3",
                 disc="1",
                 title="My Track",
@@ -229,7 +229,7 @@ class TestFlacDestination:
             return_value=self._mock_flac(
                 album_artist="Band",
                 album="Record",
-                year="2019",
+                release_date="2019",
                 track="5/12",
                 title="Fifth",
             ),
@@ -280,8 +280,8 @@ class TestOggDestination:
             vorbis["ALBUMARTIST"] = [tags["album_artist"]]
         if "album" in tags:
             vorbis["ALBUM"] = [tags["album"]]
-        if "year" in tags:
-            vorbis["DATE"] = [tags["year"]]
+        if "release_date" in tags:
+            vorbis["DATE"] = [tags["release_date"]]
         if "track" in tags:
             vorbis["TRACKNUMBER"] = [tags["track"]]
         if "disc" in tags:
@@ -302,7 +302,7 @@ class TestOggDestination:
                 artist="Artist",
                 album_artist="Album Artist",
                 album="My Album",
-                year="2021",
+                release_date="2021",
                 track="3",
                 disc="1",
                 title="My Track",
@@ -324,7 +324,7 @@ class TestOggDestination:
             return_value=self._mock_ogg(
                 album_artist="Band",
                 album="Record",
-                year="2019",
+                release_date="2019",
                 track="5/12",
                 title="Fifth",
             ),
@@ -378,7 +378,7 @@ class TestMoveToLibrary:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2021",
+            release_date="2021",
             track="1",
             title="Song",
         )
@@ -400,7 +400,7 @@ class TestMoveToLibrary:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2021",
+            release_date="2021",
             track="1",
             title="Song",
         )
@@ -417,7 +417,7 @@ class TestMoveToLibrary:
             mp3,
             album_artist="Artist",
             album="Album",
-            year="2021",
+            release_date="2021",
             track="1",
             title="Song",
         )

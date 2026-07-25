@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { getAlbums } from '../../api/client'
+import { getTopAlbums } from '../../api/client'
 import type { Album } from '../../api/client'
 import { useStore } from '../../store'
 import { ShelfView } from './ShelfView'
@@ -51,23 +51,20 @@ export function TopAlbumsConfig(): React.JSX.Element {
 export function TopAlbumsModule({ displayStyle }: ModuleProps): React.JSX.Element {
   const count = useStore((s) => s.topAlbumsCount)
   // Re-fetch when the current track changes — play_count updates at EOF.
-  const currentFilePath = useStore((s) => s.player?.current_track?.file_path ?? null)
+  const currentTrackId = useStore((s) => s.player?.current_track?.id ?? null)
   const serverStatus = useStore((s) => s.serverStatus)
   const [albums, setAlbums] = useState<Album[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (serverStatus !== 'connected') return
-    getAlbums('most_played')
-      .then((all) => {
-        const played = all
-          .filter((a) => a.play_count_avg > 0)
-          .slice(0, count > 0 ? count : undefined)
-        setAlbums(played)
-      })
+    // KAMP-615: the server ranks + limits (only top-N albums enriched), instead
+    // of us fetching the whole library and slicing here on every track change.
+    getTopAlbums('most_played', count > 0 ? count : 0)
+      .then(setAlbums)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [count, currentFilePath, serverStatus])
+  }, [count, currentTrackId, serverStatus])
 
   if (loading) {
     return (
@@ -83,6 +80,10 @@ export function TopAlbumsModule({ displayStyle }: ModuleProps): React.JSX.Elemen
     return <div className="module-empty">No albums played yet.</div>
   }
 
-  if (displayStyle === 'list') return <ListView albums={albums} />
-  return displayStyle === 'grid' ? <GridView albums={albums} /> : <ShelfView albums={albums} />
+  if (displayStyle === 'list') return <ListView albums={albums} showPlayCount />
+  return displayStyle === 'grid' ? (
+    <GridView albums={albums} showPlayCount />
+  ) : (
+    <ShelfView albums={albums} showPlayCount />
+  )
 }

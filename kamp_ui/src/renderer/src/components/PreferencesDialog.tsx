@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
+import type { PrefsTab } from '../store'
 import type { ExtensionInfo, ExtensionSettingSchema } from '../../../shared/kampAPI'
 import type { ExtensionStateHook } from '../hooks/useExtensionState'
 import { useExtensionInstall } from '../hooks/useExtensionInstall'
 import { connectLastfm, disconnectLastfm, disconnectBandcamp } from '../api/client'
+import { DiscordIcon } from './TransportIcons'
+import { GenreManagementSection } from './GenreManagementSection'
 
 // Keys whose values must be integers — sent as strings over the wire but
 // stored as numbers in the config.
@@ -171,13 +174,15 @@ function SelectRow({
   configKey,
   options,
   initialValue,
-  onSave
+  onSave,
+  hint
 }: {
   label: string
   configKey: string
   options: string[]
   initialValue: string
   onSave: (key: string, value: string) => Promise<void>
+  hint?: string
 }): React.JSX.Element {
   const [localValue, setLocalValue] = useState(initialValue || options[0])
   const [saved, setSaved] = useState(false)
@@ -215,6 +220,7 @@ function SelectRow({
           </option>
         ))}
       </select>
+      {hint && <p className="prefs-hint">{hint}</p>}
       {error && (
         <p className="prefs-hint" style={{ color: 'var(--error)' }}>
           {error}
@@ -664,11 +670,13 @@ function ExtensionsPanel({
 function BandcampSection({
   isConnected,
   connectedUsername,
+  collectionMode,
   onConnected,
   onDisconnected
 }: {
   isConnected: boolean
   connectedUsername: string | null
+  collectionMode: string
   onConnected: () => void
   onDisconnected: () => void
 }): React.JSX.Element {
@@ -763,7 +771,9 @@ function BandcampSection({
       {isConnected && (
         <div className="prefs-row">
           <div className="prefs-row-header">
-            <span className="prefs-label">Re-download</span>
+            <span className="prefs-label">
+              {collectionMode === 'stream' ? 'Re-sync' : 'Re-download'}
+            </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <button
@@ -771,9 +781,17 @@ function BandcampSection({
               onClick={() => void handleSyncAll()}
               disabled={syncAllBusy}
             >
-              {syncAllBusy ? 'Starting…' : 'Re-download all purchases'}
+              {syncAllBusy
+                ? 'Starting…'
+                : collectionMode === 'stream'
+                  ? 'Re-sync purchase list'
+                  : 'Re-download all purchases'}
             </button>
-            <span className="prefs-hint">Clears sync history and re-downloads everything.</span>
+            <span className="prefs-hint">
+              {collectionMode === 'stream'
+                ? 'Re-indexes your entire purchase list as remote tracks.'
+                : 'Clears sync history and re-downloads everything.'}
+            </span>
           </div>
         </div>
       )}
@@ -923,15 +941,12 @@ export function PreferencesDialog({
   const scanLibrary = useStore((s) => s.scanLibrary)
   const scanStatus = useStore((s) => s.scanStatus)
   const scanProgress = useStore((s) => s.scanProgress)
+  const genreBackfill = useStore((s) => s.genreBackfill)
+  const startGenreBackfill = useStore((s) => s.startGenreBackfill)
+  const cancelGenreBackfill = useStore((s) => s.cancelGenreBackfill)
+  const refreshGenreBackfill = useStore((s) => s.refreshGenreBackfill)
   const prefsInitialTab = useStore((s) => s.prefsInitialTab)
-  const highlightEnabled = useStore((s) => s.highlightEnabled)
-  const highlightStyle = useStore((s) => s.highlightStyle)
-  const setHighlightEnabled = useStore((s) => s.setHighlightEnabled)
-  const setHighlightStyle = useStore((s) => s.setHighlightStyle)
-
-  const [activeTab, setActiveTab] = useState<'general' | 'services' | 'extensions'>(
-    () => prefsInitialTab
-  )
+  const [activeTab, setActiveTab] = useState<PrefsTab>(() => prefsInitialTab)
 
   // Sync the active tab whenever the dialog opens, so callers can direct to a
   // specific tab (e.g. "Bandcamp options…" → services) on each open.
@@ -975,11 +990,30 @@ export function PreferencesDialog({
     }
   }, [prefsOpen, configValues, loadConfig])
 
-  // Close on Escape.
+  // KAMP-591: while the Tagging tab is open, resync genre-backfill progress and
+  // poll (~1 Hz) as long as a run is active. The interval is bounded by the tab
+  // being visible, so a multi-hour run never polls after prefs is closed.
+  const backfillActive = genreBackfill?.active ?? false
+  useEffect(() => {
+    if (!prefsOpen || activeTab !== 'tagging') return
+    void refreshGenreBackfill()
+    if (!backfillActive) return
+    const poll = setInterval(() => void refreshGenreBackfill(), 1000)
+    return () => clearInterval(poll)
+  }, [prefsOpen, activeTab, backfillActive, refreshGenreBackfill])
+
+  // Close on Escape. stopPropagation so this modal fully owns the Escape key while
+  // open — no global/background handler (e.g. the Downloads Esc-to-leave listener,
+  // KAMP-585) should also fire on the same press. Mirrors the KeyboardShortcutsOverlay
+  // pattern; without it, closePrefs() forces a synchronous store flush that can swap a
+  // background window-listener's closure mid-dispatch, defeating any prefsOpen guard.
   useEffect(() => {
     if (!prefsOpen) return
     const handler = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') closePrefs()
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        closePrefs()
+      }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
@@ -987,11 +1021,12 @@ export function PreferencesDialog({
 
   if (!prefsOpen) return null
 
-  // Show a loading placeholder while config is being fetched (General/Services tabs).
+  // Show a loading placeholder while config is being fetched (config-backed tabs).
   const configLoading =
-    configValues === null && (activeTab === 'general' || activeTab === 'services')
+    configValues === null &&
+    (activeTab === 'general' || activeTab === 'tagging' || activeTab === 'services')
 
-  const hasBandcamp = configValues !== null && configValues['bandcamp.format'] !== null
+  const hasBandcamp = configValues !== null
 
   const str = (key: keyof NonNullable<typeof configValues>): string => {
     if (!configValues) return ''
@@ -1024,14 +1059,6 @@ export function PreferencesDialog({
     await handleSave(key, value)
   }
 
-  const handleHighlightSave = async (key: string, value: string): Promise<void> => {
-    if (key === 'highlight.enabled') {
-      setHighlightEnabled(value === 'true')
-    } else if (key === 'highlight.style') {
-      setHighlightStyle(value)
-    }
-  }
-
   return (
     <div className="prefs-overlay" onClick={(e) => e.target === e.currentTarget && closePrefs()}>
       <div className="prefs-dialog" role="dialog" aria-modal="true" aria-label="Preferences">
@@ -1047,11 +1074,27 @@ export function PreferencesDialog({
         <div className="prefs-tabs" role="tablist">
           <button
             role="tab"
+            aria-selected={activeTab === 'about'}
+            className={`prefs-tab${activeTab === 'about' ? ' prefs-tab--active' : ''}`}
+            onClick={() => setActiveTab('about')}
+          >
+            About
+          </button>
+          <button
+            role="tab"
             aria-selected={activeTab === 'general'}
             className={`prefs-tab${activeTab === 'general' ? ' prefs-tab--active' : ''}`}
             onClick={() => setActiveTab('general')}
           >
             General
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab === 'tagging'}
+            className={`prefs-tab${activeTab === 'tagging' ? ' prefs-tab--active' : ''}`}
+            onClick={() => setActiveTab('tagging')}
+          >
+            Tagging
           </button>
           <button
             role="tab"
@@ -1073,6 +1116,33 @@ export function PreferencesDialog({
 
         {/* Scrollable body — content swaps per tab */}
         <div className="prefs-body" role="tabpanel">
+          {activeTab === 'about' && (
+            <>
+              {/* IDENTITY */}
+              <div className="prefs-section">
+                <div className="prefs-section-label">Kamp</div>
+                <p className="prefs-hint">Version {window.api.appVersion}</p>
+              </div>
+
+              {/* COMMUNITY */}
+              <div className="prefs-section">
+                <div className="prefs-section-label">Community</div>
+                <div className="prefs-row">
+                  <button
+                    className="prefs-choose-btn"
+                    onClick={() => window.api.openExternal(DISCORD_INVITE_URL)}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <DiscordIcon size={16} />
+                      Join Discord
+                    </span>
+                  </button>
+                  <p className="prefs-hint">Give feedback and connect with other Kamp users.</p>
+                </div>
+              </div>
+            </>
+          )}
+
           {activeTab === 'general' && (
             <>
               {configLoading ? null : (
@@ -1134,33 +1204,16 @@ export function PreferencesDialog({
                       hint="{album_artist}  {year}  {album}  {track}  {title}  {ext}"
                       onSave={handleSave}
                     />
-                    <BoolRow
-                      label="Highlight new arrivals in the library"
-                      configKey="highlight.enabled"
-                      initialValue={highlightEnabled}
-                      onSave={handleHighlightSave}
-                    />
-                    {highlightEnabled && (
-                      <>
-                        <SelectRow
-                          label="Highlight style"
-                          configKey="highlight.style"
-                          options={[
-                            'shiny',
-                            'newmoji',
-                            'vaporwave',
-                            'proud',
-                            'pressed',
-                            'boring',
-                            'static'
-                          ]}
-                          initialValue={highlightStyle}
-                          onSave={handleHighlightSave}
-                        />
-                      </>
-                    )}
                   </div>
+                </>
+              )}
+            </>
+          )}
 
+          {activeTab === 'tagging' && (
+            <>
+              {configLoading ? null : (
+                <>
                   {/* ARTWORK */}
                   <div className="prefs-section">
                     <div className="prefs-section-label">Artwork</div>
@@ -1189,19 +1242,83 @@ export function PreferencesDialog({
                     />
                   </div>
 
-                  {/* ABOUT */}
+                  {/* GENRES */}
                   <div className="prefs-section">
-                    <div className="prefs-section-label">About</div>
+                    <div className="prefs-section-label">Genres</div>
+                    <BoolRow
+                      label="Fetch genres from Last.fm"
+                      configKey="tagging.lastfm_genres"
+                      hint="After a download, kamp adds genres from Last.fm (canonical genres only). Best-effort — it runs in the background and never slows a download."
+                      initialValue={configValues?.['tagging.lastfm_genres'] ?? true}
+                      onSave={handleSave}
+                    />
+                    <BoolRow
+                      label="Use bandcamp album labels as genres"
+                      configKey="tagging.bandcamp_genres"
+                      hint="Use artist supplied labels on bandcamp items as additional genre tags."
+                      initialValue={configValues?.['tagging.bandcamp_genres'] ?? true}
+                      onSave={handleSave}
+                    />
                     <div className="prefs-row">
-                      <button
-                        className="prefs-choose-btn"
-                        onClick={() => window.api.openExternal(DISCORD_INVITE_URL)}
-                      >
-                        Join Discord
-                      </button>
-                      <p className="prefs-hint">Give feedback and connect with other Kamp users.</p>
+                      <div className="prefs-row-header">
+                        <span className="prefs-label">Update library genres</span>
+                      </div>
+                      {backfillActive ? (
+                        <div className="prefs-scan-status">
+                          <span className="prefs-scan-scanning">
+                            {genreBackfill && genreBackfill.total > 0
+                              ? `Updating genres… ${genreBackfill.done} / ${genreBackfill.total} albums`
+                              : 'Starting…'}
+                          </span>
+                          {genreBackfill && genreBackfill.total > 0 && (
+                            <div className="prefs-scan-progress">
+                              <div
+                                className="prefs-scan-progress-fill"
+                                style={{
+                                  width: `${(genreBackfill.done / genreBackfill.total) * 100}%`
+                                }}
+                              />
+                            </div>
+                          )}
+                          <button
+                            className="prefs-choose-btn"
+                            onClick={() => void cancelGenreBackfill()}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          className="prefs-choose-btn"
+                          onClick={() => void startGenreBackfill()}
+                        >
+                          Update Library Genres
+                        </button>
+                      )}
+                      {!backfillActive && genreBackfill?.state === 'done' && (
+                        <p className="prefs-hint">
+                          Genre update complete{' '}
+                          {genreBackfill.total > 0 ? `(${genreBackfill.total} albums)` : ''}.
+                        </p>
+                      )}
+                      {!backfillActive && genreBackfill?.state === 'cancelled' && (
+                        <p className="prefs-hint">Genre update cancelled.</p>
+                      )}
+                      {!backfillActive && genreBackfill?.state === 'error' && (
+                        <p className="prefs-hint" style={{ color: 'var(--error)' }}>
+                          Genre update failed — check the server logs.
+                        </p>
+                      )}
+                      {!backfillActive && !genreBackfill && (
+                        <p className="prefs-hint">
+                          Re-fetch genres for every album from Last.fm (and re-scrape original tags
+                          for older Bandcamp albums). Runs in the background; existing genres are
+                          kept and only added to.
+                        </p>
+                      )}
                     </div>
                   </div>
+                  <GenreManagementSection />
                 </>
               )}
             </>
@@ -1215,13 +1332,30 @@ export function PreferencesDialog({
                   {hasBandcamp && (
                     <div className="prefs-section">
                       <div className="prefs-section-label">Bandcamp</div>
-                      <SelectRow
-                        label="Download format"
-                        configKey="bandcamp.format"
-                        options={BANDCAMP_FORMATS}
-                        initialValue={str('bandcamp.format')}
-                        onSave={handleSave}
+                      <BandcampSection
+                        isConnected={configValues?.['bandcamp.connected'] ?? false}
+                        connectedUsername={configValues?.['bandcamp.username'] ?? null}
+                        collectionMode={str('bandcamp.collection_mode')}
+                        onConnected={() => void loadConfig()}
+                        onDisconnected={() => void loadConfig()}
                       />
+                      <SelectRow
+                        label="Collection mode"
+                        configKey="bandcamp.collection_mode"
+                        options={['stream', 'download']}
+                        initialValue={str('bandcamp.collection_mode')}
+                        onSave={handleSave}
+                        hint="Applies to new purchases synced going forward. Existing downloads remain in your library."
+                      />
+                      {str('bandcamp.collection_mode') !== 'stream' && (
+                        <SelectRow
+                          label="Download format"
+                          configKey="bandcamp.format"
+                          options={BANDCAMP_FORMATS}
+                          initialValue={str('bandcamp.format')}
+                          onSave={handleSave}
+                        />
+                      )}
                       <InputRow
                         label="Poll interval"
                         configKey="bandcamp.poll_interval_minutes"
@@ -1230,12 +1364,6 @@ export function PreferencesDialog({
                         initialValue={str('bandcamp.poll_interval_minutes')}
                         hint="0 = manual only"
                         onSave={handleSave}
-                      />
-                      <BandcampSection
-                        isConnected={configValues?.['bandcamp.connected'] ?? false}
-                        connectedUsername={configValues?.['bandcamp.username'] ?? null}
-                        onConnected={() => void loadConfig()}
-                        onDisconnected={() => void loadConfig()}
                       />
                     </div>
                   )}
@@ -1246,20 +1374,6 @@ export function PreferencesDialog({
                     onConnected={() => void loadConfig()}
                     onDisconnected={() => void loadConfig()}
                   />
-
-                  {/* MUSICBRAINZ */}
-                  <div className="prefs-section">
-                    <div className="prefs-section-label">MusicBrainz</div>
-                    <BoolRow
-                      label="Trust MusicBrainz when tags conflict"
-                      configKey="musicbrainz.trust-musicbrainz-when-tags-conflict"
-                      hint="When off, if MusicBrainz returns a different artist or album than the file's existing tags, the ID3 tags are left unchanged and only artwork is updated."
-                      initialValue={
-                        configValues?.['musicbrainz.trust-musicbrainz-when-tags-conflict'] ?? true
-                      }
-                      onSave={handleSave}
-                    />
-                  </div>
                 </>
               )}
             </>
@@ -1276,6 +1390,9 @@ export function PreferencesDialog({
             />
           )}
         </div>
+
+        {/* Status rail */}
+        <div className="prefs-status-rail">v{window.api.appVersion}</div>
       </div>
     </div>
   )

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from kamp_core.library import Track
+from kamp_core import playback as playback_module
 from kamp_core.playback import (
     MpvPlaybackEngine,
     PlaybackQueue,
@@ -30,13 +31,53 @@ def _track(n: int) -> Track:
         artist="Artist",
         album_artist="Artist",
         album="Album",
-        year="2024",
+        release_date="2024",
         track_number=n,
         disc_number=1,
         ext="mp3",
         embedded_art=False,
         mb_release_id="",
         mb_recording_id="",
+        id=n + 1,  # distinct track id (queue persists by id, KAMP-536)
+    )
+
+
+def _track_for(n: int, artist: str, album: str) -> Track:
+    return Track(
+        file_path=Path(f"/music/{artist}/{album}/{n:02d}.mp3"),
+        title=f"Track {n}",
+        artist=artist,
+        album_artist=artist,
+        album=album,
+        release_date="2024",
+        track_number=n,
+        disc_number=1,
+        ext="mp3",
+        embedded_art=False,
+        mb_release_id="",
+        mb_recording_id="",
+    )
+
+
+def _remote_track(sale_id: str = "123456", track_num: int = 1) -> Track:
+    """Remote Bandcamp track — file_path is a bandcamp:// URI."""
+    return Track(
+        file_path=Path(f"bandcamp://{sale_id}/{track_num}"),
+        title=f"Remote Track {track_num}",
+        artist="Remote Artist",
+        album_artist="Remote Artist",
+        album="Remote Album",
+        release_date="2025",
+        track_number=track_num,
+        disc_number=1,
+        ext="mp3",
+        embedded_art=False,
+        mb_release_id="",
+        mb_recording_id="",
+        source="bandcamp",
+        stream_url="https://cdn.bcbits.com/stream/track.mp3",
+        stream_url_expires_at=9999999999.0,
+        id=900 + track_num,  # distinct track id (queue persists by id, KAMP-536)
     )
 
 
@@ -78,7 +119,7 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        q.set_repeat(True)
+        q.set_repeat_mode("queue")
         q.next()
         q.next()
         assert q.next() == tracks[0]
@@ -103,7 +144,7 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        q.set_repeat(True)
+        q.set_repeat_mode("queue")
         q.next()
         q.next()  # now at last track
         assert q.peek_next() == tracks[0]
@@ -127,8 +168,107 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        q.set_repeat(True)
+        q.set_repeat_mode("queue")
         assert q.prev() == tracks[2]
+
+    # ------------------------------------------------------------------
+    # single mode
+    # ------------------------------------------------------------------
+
+    def test_single_mode_next_loops_current_track(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.set_repeat_mode("single")
+        assert q.next() == tracks[0]
+        assert q.next() == tracks[0]
+
+    def test_single_mode_peek_next_returns_current(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.set_repeat_mode("single")
+        assert q.peek_next() == tracks[0]
+        assert q.current() == tracks[0]  # position unchanged
+
+    def test_single_mode_prev_navigates_backward(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.next()  # advance to tracks[1]
+        q.set_repeat_mode("single")
+        assert q.prev() == tracks[0]
+
+    def test_single_mode_prev_at_start_returns_none(self) -> None:
+        q = PlaybackQueue()
+        q.load([_track(i) for i in range(3)])
+        q.set_repeat_mode("single")
+        assert q.prev() is None
+
+    # ------------------------------------------------------------------
+    # album mode
+    # ------------------------------------------------------------------
+
+    def test_album_mode_next_wraps_within_album_at_end(self) -> None:
+        """After last track of album A, next() wraps to first track of album A."""
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(3)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(2)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_repeat_mode("album")
+        q.next()
+        q.next()  # now at tracks[2], last of AlbumA
+        assert q.next() == tracks[0]  # wraps to first of AlbumA
+
+    def test_album_mode_next_does_not_cross_to_next_album(self) -> None:
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(2)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(2)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_repeat_mode("album")
+        q.next()  # at tracks[1], last of AlbumA
+        assert q.next() == tracks[0]  # wraps within AlbumA, not to AlbumB
+
+    def test_album_mode_prev_wraps_to_end_of_album(self) -> None:
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(3)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(2)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_repeat_mode("album")
+        assert q.prev() == tracks[2]  # at start of AlbumA, wraps to last of AlbumA
+
+    def test_album_mode_solo_album_wraps_on_next(self) -> None:
+        tracks = [_track_for(i, "Artist", "Album") for i in range(3)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_repeat_mode("album")
+        q.next()
+        q.next()  # at last track
+        assert q.next() == tracks[0]
+
+    def test_album_mode_second_album_wraps_within_itself(self) -> None:
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(2)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(3)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.skip_to(2)  # jump to first track of AlbumB
+        q.set_repeat_mode("album")
+        q.next()
+        q.next()  # at last track of AlbumB
+        assert q.next() == tracks[2]  # wraps to first of AlbumB, not AlbumA
+
+    def test_album_mode_peek_next_wraps_without_advancing(self) -> None:
+        tracks = [_track_for(i, "Artist", "Album") for i in range(2)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.next()  # at last track
+        q.set_repeat_mode("album")
+        assert q.peek_next() == tracks[0]
+        assert q.current() == tracks[1]  # position unchanged
 
     def test_skip_to_valid_position(self) -> None:
         q = PlaybackQueue()
@@ -223,7 +363,7 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        q.update_favorite(tracks[1].file_path, True)
+        q.update_favorite(tracks[1].id, True)
         assert q._tracks[0].favorite is False
         assert q._tracks[1].favorite is True
         assert q._tracks[2].favorite is False
@@ -232,7 +372,7 @@ class TestPlaybackQueue:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(2)]
         q.load(tracks)
-        q.update_favorite(Path("/nonexistent.mp3"), True)  # should not raise
+        q.update_favorite(999999, True)  # unknown id — should not raise
         assert all(not t.favorite for t in q._tracks)
 
     def test_update_track_path_patches_matching_track(self) -> None:
@@ -356,58 +496,165 @@ class TestPlaybackQueue:
         assert tracks == []
         assert pos == -1
 
-    def test_get_state_returns_paths_in_playback_order(self) -> None:
+    def test_get_state_returns_original_ids_and_order(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
         q.load(tracks)
-        paths, pos, shuffle, repeat = q.get_state()
-        assert paths == [t.file_path for t in tracks]
+        ids, order, pos, shuffle, repeat = q.get_state()
+        assert ids == [t.id for t in tracks]
+        assert order == [0, 1, 2]
         assert pos == 0
         assert shuffle is False
-        assert repeat is False
+        assert repeat == "off"
 
-    def test_get_state_bakes_in_shuffle_order(self) -> None:
+    def test_get_state_with_shuffle_returns_original_ids(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(5)]
         q.load(tracks)
         q.set_shuffle(True)
-        paths, pos, shuffle, repeat = q.get_state()
-        # All paths present, shuffle flag set, current track first
-        assert set(paths) == {t.file_path for t in tracks}
-        assert paths[0] == tracks[0].file_path  # current anchored at pos 0
+        ids, order, pos, shuffle, repeat = q.get_state()
+        # ids must be in ORIGINAL load order, not shuffled
+        assert ids == [t.id for t in tracks]
+        # order[0] must be the original index of the currently playing track (0)
+        assert order[0] == 0
+        assert set(order) == {0, 1, 2, 3, 4}
         assert shuffle is True
         assert pos == 0
 
     def test_get_state_empty_queue(self) -> None:
         q = PlaybackQueue()
-        paths, pos, shuffle, repeat = q.get_state()
-        assert paths == []
+        ids, order, pos, shuffle, repeat = q.get_state()
+        assert ids == []
+        assert order == []
         assert pos == -1
+
+    def test_get_state_remote_track_returns_id(self) -> None:
+        """Remote tracks persist by track id like any other (KAMP-536)."""
+        q = PlaybackQueue()
+        remote = _remote_track(sale_id="999", track_num=3)
+        q.load([remote])
+        ids, _, _, _, _ = q.get_state()
+        assert ids == [remote.id]
+
+    def test_update_favorite_matches_by_id_not_uri(self) -> None:
+        """KAMP-538/532: a queued track is favorited by its canonical id, so the
+        match holds even when the queued track's delivery uri differs from the
+        favorited row's preferred source (e.g. a stream queued before its album was
+        downloaded, whose preferred source has since flipped to the local file).
+
+        Regression: matching by uri (`_canonical_track_uri(id)` vs the queued
+        `bandcamp://` uri) missed this, so the 4 Hz player-state poll reverted the
+        UI's optimistic favorite to False — self-healing only on a queue reload.
+        """
+        q = PlaybackQueue()
+        # Queued as the stream (bandcamp:// uri); the favorite arrives by id only.
+        streamed = _remote_track()  # id=901, file_path=bandcamp://123456/1
+        q.load([streamed])
+        q.update_favorite(streamed.id, True)
+        assert q._tracks[0].favorite is True
 
     def test_restore_sets_all_fields(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
-        q.restore(tracks, pos=2, shuffle=True, repeat=True)
+        q.restore(tracks, order=[2, 0, 1], pos=0, shuffle=True, repeat="queue")
         assert q.current() == tracks[2]
-        paths, pos, shuffle, repeat = q.get_state()
-        assert pos == 2
+        _ids, order, pos, shuffle, repeat = q.get_state()
+        assert pos == 0
         assert shuffle is True
-        assert repeat is True
+        assert repeat == "queue"
 
     def test_restore_empty_list(self) -> None:
         q = PlaybackQueue()
-        q.restore([], pos=0, shuffle=False, repeat=False)
+        q.restore([], order=[], pos=0, shuffle=False, repeat="off")
         assert q.current() is None
-        paths, pos, shuffle, repeat = q.get_state()
-        assert paths == []
+        ids, order, pos, shuffle, repeat = q.get_state()
+        assert ids == []
+        assert order == []
         assert pos == -1
 
     def test_restore_then_next(self) -> None:
         q = PlaybackQueue()
         tracks = [_track(i) for i in range(3)]
-        q.restore(tracks, pos=0, shuffle=False, repeat=False)
+        q.restore(tracks, order=[0, 1, 2], pos=0, shuffle=False, repeat="off")
         nxt = q.next()
         assert nxt == tracks[1]
+
+    def test_original_order_preserved_after_restore_and_unshuffle(self) -> None:
+        # Regression: get_state/restore round-trip must preserve original order so
+        # toggling shuffle off returns to the real original queue, not the shuffled one.
+        tracks = [_track(i) for i in range(7)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_shuffle(True)
+        # Advance a couple positions so current track is not the first original track.
+        q.next()
+        q.next()
+        before_toggle = q.current()
+
+        # Simulate save/restore (what happens across a quit/restart): the queue
+        # persists track ids, and the daemon resolves each id back to a Track.
+        ids, order, pos, shuffle, repeat = q.get_state()
+        q2 = PlaybackQueue()
+        resolved = [next(t for t in tracks if t.id == i) for i in ids]
+        q2.restore(resolved, order=order, pos=pos, shuffle=shuffle, repeat=repeat)
+
+        assert q2.current() == before_toggle
+
+    def test_restore_with_unreachable_stub_preserves_queue_length(self) -> None:
+        """Stub tracks (reachable=False) survive restore and appear in the queue."""
+        stub = Track(
+            file_path=Path("bandcamp://777/1"),
+            title="777/1",
+            artist="",
+            album_artist="",
+            album="",
+            release_date="",
+            track_number=0,
+            disc_number=0,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            reachable=False,
+        )
+        local = _track(2)
+        q = PlaybackQueue()
+        q.restore([stub, local], order=[0, 1], pos=0, shuffle=False, repeat="off")
+
+        tracks, pos = q.queue_tracks()
+        assert len(tracks) == 2
+        assert tracks[0].reachable is False
+        assert tracks[1].reachable is True
+
+    def test_next_advances_past_unreachable_stubs(self) -> None:
+        """Simulates the _on_track_end skip loop: advancing past reachable=False tracks."""
+        stub = Track(
+            file_path=Path("bandcamp://777/1"),
+            title="777/1",
+            artist="",
+            album_artist="",
+            album="",
+            release_date="",
+            track_number=0,
+            disc_number=0,
+            ext="",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            reachable=False,
+        )
+        local = _track(2)
+        q = PlaybackQueue()
+        q.restore([stub, local], order=[0, 1], pos=0, shuffle=False, repeat="off")
+
+        # Simulate the _on_track_end loop: skip unreachable tracks.
+        track = q.next()
+        while track is not None and not track.reachable:
+            track = q.next()
+
+        assert track is local
 
     # ------------------------------------------------------------------
     # add_to_queue
@@ -537,6 +784,50 @@ class TestPlaybackQueue:
             q.move(0, 10)
 
     # ------------------------------------------------------------------
+    # reorder
+    # ------------------------------------------------------------------
+
+    def test_reorder_applies_permutation(self) -> None:
+        # Ticket example: [a,b,c,d,e,f,g], selection [2,4,6] dropped at 0 → [c,e,g,a,b,d,f]
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(7)]
+        q.load(ts)
+        q.reorder([2, 4, 6, 0, 1, 3, 5])
+        tracks, _ = q.queue_tracks()
+        assert tracks == [ts[2], ts[4], ts[6], ts[0], ts[1], ts[3], ts[5]]
+
+    def test_reorder_adjusts_pos_to_follow_current(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(4)]
+        q.load(ts)
+        q.next()  # pos=1, current=ts[1]
+        q.reorder([3, 2, 1, 0])  # reverse
+        _, pos = q.queue_tracks()
+        assert pos == 2  # ts[1] is now at display index 2
+
+    def test_reorder_noop_with_identity_permutation(self) -> None:
+        q = PlaybackQueue()
+        ts = [_track(i) for i in range(3)]
+        q.load(ts)
+        q.next()
+        q.reorder([0, 1, 2])
+        tracks, pos = q.queue_tracks()
+        assert tracks == ts
+        assert pos == 1
+
+    def test_reorder_raises_on_invalid_permutation(self) -> None:
+        q = PlaybackQueue()
+        q.load([_track(i) for i in range(3)])
+        with pytest.raises(ValueError):
+            q.reorder([0, 1, 5])  # index 5 out of range
+
+    def test_reorder_raises_on_duplicate_indices(self) -> None:
+        q = PlaybackQueue()
+        q.load([_track(i) for i in range(3)])
+        with pytest.raises(ValueError):
+            q.reorder([0, 0, 2])  # duplicate
+
+    # ------------------------------------------------------------------
     # insert_at
     # ------------------------------------------------------------------
 
@@ -639,6 +930,108 @@ class TestPlaybackQueue:
         _, pos = q.queue_tracks()
         assert pos == 4  # shifted forward by 2
 
+    # ------------------------------------------------------------------
+    # remove_at
+    # ------------------------------------------------------------------
+
+    def test_remove_at_removes_single_unplayed_track(self) -> None:
+        # T0 T1 T2* T3 T4 — playing T2, remove T3
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=2)
+        q.remove_at([3])
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 4
+        assert ordered[pos] == tracks[2]
+        assert tracks[3] not in ordered
+        assert tracks[4] in ordered
+
+    def test_remove_at_removes_multiple_unplayed_tracks(self) -> None:
+        # T0 T1 T2* T3 T4 T5 — playing T2, remove T3 and T5
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(6)]
+        q.load(tracks, start_index=2)
+        q.remove_at([3, 5])
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 4
+        assert ordered[pos] == tracks[2]
+        assert tracks[3] not in ordered
+        assert tracks[4] in ordered
+        assert tracks[5] not in ordered
+
+    def test_remove_at_ignores_current_track_index(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(4)]
+        q.load(tracks, start_index=1)  # pos=1
+        q.remove_at([1])  # attempt to remove current — no-op
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 4
+        assert ordered[pos] == tracks[1]
+
+    def test_remove_at_ignores_past_track_indices(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=2)  # pos=2; T0 and T1 are past
+        q.remove_at([0, 1])
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 5  # nothing removed
+
+    def test_remove_at_mixed_removes_only_future_tracks(self) -> None:
+        # Selection spans past, current, and future; only future are removed
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(6)]
+        q.load(tracks, start_index=2)  # T0 T1 past, T2 current, T3 T4 T5 future
+        q.remove_at([0, 1, 2, 3, 4])  # 0/1/2 ignored; 3 and 4 removed
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 4  # T0 T1 T2 T5 remain
+        assert ordered[pos] == tracks[2]
+        assert tracks[3] not in ordered
+        assert tracks[4] not in ordered
+        assert tracks[5] in ordered
+
+    def test_remove_at_out_of_range_index_is_ignored(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks, start_index=0)
+        q.remove_at([99, -1])
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 3
+
+    def test_remove_at_empty_list_is_noop(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(3)]
+        q.load(tracks)
+        q.remove_at([])
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 3
+
+    def test_remove_at_does_not_adjust_pos(self) -> None:
+        # Removing tracks after current must not change _pos
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=2)
+        q.remove_at([3, 4])
+        _, pos = q.queue_tracks()
+        assert pos == 2  # current track is still at display index 2
+
+    def test_remove_at_all_future_tracks(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(4)]
+        q.load(tracks, start_index=1)
+        q.remove_at([2, 3])
+        ordered, pos = q.queue_tracks()
+        assert len(ordered) == 2  # past + current only
+        assert ordered[pos] == tracks[1]
+        assert q.next() is None
+
+    def test_remove_at_preserves_shuffle_flag(self) -> None:
+        q = PlaybackQueue()
+        tracks = [_track(i) for i in range(5)]
+        q.load(tracks, start_index=0)
+        q.set_shuffle(True)
+        q.remove_at([len(q.queue_tracks()[0]) - 1])  # remove last in display order
+        assert q.shuffle is True
+
 
 # ---------------------------------------------------------------------------
 # IPC transport (Unix socket / Windows named pipe)
@@ -734,6 +1127,271 @@ class TestIPCTransport:
 
 
 # ---------------------------------------------------------------------------
+# Shuffle artist-diversity algorithm
+# ---------------------------------------------------------------------------
+
+
+class TestShuffleArtistDiversity:
+    """Tests for the artist-diversity constraint in _shuffled_order."""
+
+    def test_no_consecutive_same_artist_when_avoidable(self) -> None:
+        # 3 tracks by artist A, 3 by artist B — never need consecutive same artist
+        tracks = [_track_for(i, "A", "AlbumA") for i in range(3)] + [
+            _track_for(i, "B", "AlbumB") for i in range(3)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        for _ in range(50):
+            q.set_shuffle(False)
+            q.set_shuffle(True)
+            ordered, pos = q.queue_tracks()
+            for prev, nxt in zip(ordered, ordered[1:]):
+                assert (
+                    prev.artist != nxt.artist
+                ), f"consecutive same artist after shuffle: {[t.artist for t in ordered]}"
+
+    def test_fallback_to_different_album_when_all_same_artist(self) -> None:
+        # 1 artist, 2 albums with equal track counts (5 each). With equal
+        # counts the greedy diff-album fallback can always alternate — the
+        # last-resort branch never fires and all consecutive pairs must have
+        # different albums.
+        tracks = [_track_for(i, "X", "AlbumA") for i in range(5)] + [
+            _track_for(i, "X", "AlbumB") for i in range(5)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        for _ in range(50):
+            q.set_shuffle(False)
+            q.set_shuffle(True)
+            ordered, _ = q.queue_tracks()
+            # All consecutive pairs share the same artist (single artist queue);
+            # every pair must therefore come from different albums.
+            for prev, nxt in zip(ordered, ordered[1:]):
+                assert (
+                    prev.album != nxt.album
+                ), f"same artist+album consecutive: {[(t.artist, t.album) for t in ordered]}"
+
+    def test_last_resort_same_artist_and_album_no_crash(self) -> None:
+        # All same artist + same album — must complete without error
+        tracks = [_track_for(i, "Z", "AlbumZ") for i in range(5)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_shuffle(True)
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 5
+        assert {t.file_path for t in ordered} == {t.file_path for t in tracks}
+
+    def test_anchor_neg_one_with_tracks_no_crash(self) -> None:
+        # Queue exhausted (_pos==-1) then shuffle toggled — must not crash
+        tracks = [_track_for(i, "A", "Album") for i in range(3)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        # Exhaust the queue
+        while q.next() is not None:
+            pass
+        assert q.current() is None
+        q.set_shuffle(True)  # should not raise
+        # After set_shuffle with pos==-1, anchor_idx==-1; all tracks remain
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 3
+
+    def test_all_tracks_visited_exactly_once_after_diversity_shuffle(self) -> None:
+        tracks = (
+            [_track_for(i, "A", "AlbumA") for i in range(5)]
+            + [_track_for(i, "B", "AlbumB") for i in range(5)]
+            + [_track_for(i, "C", "AlbumC") for i in range(5)]
+            + [_track_for(i, "D", "AlbumD") for i in range(5)]
+        )
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_shuffle(True)
+        seen = set()
+        current = q.current()
+        assert current is not None
+        seen.add(current.file_path)
+        for _ in range(19):
+            nxt = q.next()
+            assert nxt is not None
+            seen.add(nxt.file_path)
+        assert len(seen) == 20
+
+    def test_anchor_track_stays_current_after_shuffle_when_advanced(self) -> None:
+        tracks = [_track_for(i, "A", "AlbumA") for i in range(5)] + [
+            _track_for(i, "B", "AlbumB") for i in range(5)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        # Advance to position 4
+        for _ in range(4):
+            q.next()
+        before = q.current()
+        q.set_shuffle(True)
+        assert q.current() == before
+
+    def test_shuffle_and_repeat_properties(self) -> None:
+        q = PlaybackQueue()
+        assert q.shuffle is False
+        assert q.repeat == "off"
+        q.set_shuffle(True)
+        assert q.shuffle is True
+        q.set_repeat_mode("queue")
+        assert q.repeat == "queue"
+        q.set_shuffle(False)
+        assert q.shuffle is False
+
+
+# ---------------------------------------------------------------------------
+# Album shuffle
+# ---------------------------------------------------------------------------
+
+
+class TestAlbumShuffleOrder:
+    """Tests for _album_shuffled_order via set_shuffle(album_mode=True)."""
+
+    def _load_multi_album(self) -> tuple[PlaybackQueue, list]:
+        """3-track Album A, 2-track Album B, 1-track Album C — 3 artists."""
+        tracks = (
+            [_track_for(i, "ArtistA", "AlbumA") for i in range(3)]
+            + [_track_for(i, "ArtistB", "AlbumB") for i in range(2)]
+            + [_track_for(i, "ArtistC", "AlbumC") for i in range(1)]
+        )
+        q = PlaybackQueue()
+        q.load(tracks)
+        return q, tracks
+
+    def test_album_runs_kept_intact(self) -> None:
+        # All tracks of each album must appear consecutively in the shuffled order.
+        q, tracks = self._load_multi_album()
+        for _ in range(30):
+            q.set_shuffle(False)
+            q.set_shuffle(True, album_mode=True)
+            ordered, _ = q.queue_tracks()
+            seen_albums: list[str] = []
+            for t in ordered:
+                if not seen_albums or seen_albums[-1] != t.album:
+                    seen_albums.append(t.album)
+            # No album should appear more than once in the album sequence
+            assert len(seen_albums) == len(
+                set(seen_albums)
+            ), f"album run broken: {[t.album for t in ordered]}"
+
+    def test_all_tracks_appear_exactly_once(self) -> None:
+        q, tracks = self._load_multi_album()
+        q.set_shuffle(True, album_mode=True)
+        ordered, _ = q.queue_tracks()
+        assert sorted(t.title for t in ordered) == sorted(t.title for t in tracks)
+
+    def test_current_track_is_first(self) -> None:
+        q, tracks = self._load_multi_album()
+        first = q.current()
+        q.set_shuffle(True, album_mode=True)
+        assert q.current() == first
+
+    def test_artist_diversity_at_album_level(self) -> None:
+        # 2 albums by ArtistA, 2 albums by ArtistB — never need consecutive same artist.
+        tracks = (
+            [_track_for(i, "ArtistA", "AlbumA1") for i in range(2)]
+            + [_track_for(i, "ArtistB", "AlbumB1") for i in range(2)]
+            + [_track_for(i, "ArtistA", "AlbumA2") for i in range(2)]
+            + [_track_for(i, "ArtistB", "AlbumB2") for i in range(2)]
+        )
+        q = PlaybackQueue()
+        q.load(tracks)
+        for _ in range(50):
+            q.set_shuffle(False)
+            q.set_shuffle(True, album_mode=True)
+            ordered, _ = q.queue_tracks()
+            # Extract album sequence (deduplicated consecutive)
+            album_seq = []
+            for t in ordered:
+                if not album_seq or album_seq[-1] != (t.album_artist, t.album):
+                    album_seq.append((t.album_artist, t.album))
+            for (a1, _), (a2, _) in zip(album_seq, album_seq[1:]):
+                assert (
+                    a1 != a2
+                ), f"consecutive same artist albums after shuffle: {album_seq}"
+
+    def test_single_album_queue(self) -> None:
+        # One album only — should not raise; all tracks in original order after anchor.
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(4)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.set_shuffle(True, album_mode=True)
+        ordered, _ = q.queue_tracks()
+        assert len(ordered) == 4
+        assert ordered[0] == tracks[0]  # anchor first
+        # Rest of album follows anchor in original order
+        assert ordered[1:] == [tracks[1], tracks[2], tracks[3]]
+
+    def test_mid_album_anchor(self) -> None:
+        # Straddled album is exempt: tracks[0] stays in history, anchor and
+        # rest of its album stay in place, other albums shuffle after.
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(3)] + [
+            _track_for(i, "ArtistB", "AlbumB") for i in range(2)
+        ]
+        q = PlaybackQueue()
+        q.load(tracks)
+        q.next()  # advance to AlbumA track 1, _pos = 1
+        assert q.current() == tracks[1]
+        q.set_shuffle(True, album_mode=True)
+        ordered, pos = q.queue_tracks()
+        # _pos is preserved
+        assert pos == 1
+        assert q.current() == tracks[1]
+        # Pre-anchor history stays at position 0
+        assert ordered[0] == tracks[0]
+        # Anchor and rest of its album stay at positions 1-2
+        assert ordered[1] == tracks[1]
+        assert ordered[2] == tracks[2]
+        # AlbumB shuffled in after
+        assert len(ordered) == 5
+        assert {t.album for t in ordered[3:]} == {"AlbumB"}
+
+    def test_straddled_album_exempt_pos_preserved(self) -> None:
+        # Scenario from KAMP-499: A-1..A-4 in history, A-5 now playing (pos=4),
+        # A-6..A-10 in next up. Albums B and C are complete in next up.
+        # After album shuffle, Now Playing stays at queue position 5 (index 4).
+        tracks = (
+            [_track_for(i, "ArtistA", "AlbumA") for i in range(10)]
+            + [_track_for(i, "ArtistB", "AlbumB") for i in range(3)]
+            + [_track_for(i, "ArtistC", "AlbumC") for i in range(3)]
+        )
+        q = PlaybackQueue()
+        q.load(tracks)
+        for _ in range(4):
+            q.next()  # advance to tracks[4] (A-5), _pos = 4
+        assert q.current() == tracks[4]
+        q.set_shuffle(True, album_mode=True)
+        ordered, pos = q.queue_tracks()
+        # _pos preserved — Now Playing is still at index 4
+        assert pos == 4
+        assert q.current() == tracks[4]
+        # History (A-1..A-4) unchanged at positions 0-3
+        assert ordered[:4] == tracks[:4]
+        # Straddled album continues: A-5..A-10 at positions 4-9
+        assert ordered[4:10] == tracks[4:10]
+        # Albums B and C shuffled in after
+        assert len(ordered) == 16
+        assert {t.album for t in ordered[10:]} == {"AlbumB", "AlbumC"}
+
+    def test_album_mode_false_unchanged(self) -> None:
+        # album_mode=False (default) must behave exactly as before: tracks shuffled individually.
+        tracks = [_track_for(i, "ArtistA", "AlbumA") for i in range(10)]
+        q = PlaybackQueue()
+        q.load(tracks)
+        for _ in range(20):
+            q.set_shuffle(False)
+            q.set_shuffle(True, album_mode=False)
+            ordered, _ = q.queue_tracks()
+            assert len(ordered) == 10
+
+    def test_no_tracks_album_mode_no_raise(self) -> None:
+        q = PlaybackQueue()
+        q.set_shuffle(True, album_mode=True)
+        assert q.current() is None
+
+
+# ---------------------------------------------------------------------------
 # MpvPlaybackEngine
 # ---------------------------------------------------------------------------
 
@@ -761,15 +1419,33 @@ class TestMpvPlaybackEngine:
         engine.play(Path("/music/01.mp3"))
         send.assert_any_call("set_property", "pause", False)
 
-    def test_pause_sets_pause_true(self) -> None:
+    def test_pause_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.pause()
-        send.assert_called_once_with("set_property", "pause", True)
+        send.assert_called_once_with("script-message", "kamp-pause")
 
-    def test_resume_sets_pause_false(self) -> None:
+    def test_resume_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.resume()
-        send.assert_called_once_with("set_property", "pause", False)
+        send.assert_called_once_with("script-message", "kamp-resume")
+
+    def test_fade_lua_drives_afade_filter_not_volume(self) -> None:
+        # The fade must be a per-sample afade gain stage driven by af-command, NOT a
+        # volume-property ramp. Ramping the volume property steps the gain per audio
+        # frame (zipper noise) and stranded the volume at silence on rapid pause/resume.
+        # This guards against regressing to that approach.
+        lua = playback_module._FADE_SCRIPT.read_text()
+        assert "af-command" in lua
+        # The af-command must address the filter by its BARE label and route to the
+        # inner ffmpeg instance name; "@kampfade"/"all" silently fail (verified against
+        # mpv 0.41 / ffmpeg 8.1) and were the cause of the "timer, not a fade" bug.
+        assert 'LABEL = "kampfade"' in lua
+        assert 'TARGET = "afade"' in lua
+        assert "audio-pts" in lua
+        # afade is re-armed by rewriting start_time, never by setting the volume property.
+        assert "start_time" in lua
+        assert 'set_property_number("volume"' not in lua
+        assert 'set_property("volume"' not in lua
 
     def test_seek_sends_seek_command(self) -> None:
         engine, send = _make_engine()
@@ -847,17 +1523,94 @@ class TestMpvPlaybackEngine:
         engine.volume = 75
         send.assert_called_once_with("set_property", "volume", 75)
 
-    def test_stop_pauses_and_seeks_to_start(self) -> None:
+    def test_mute_fades_out_and_drops_slider_to_zero(self) -> None:
+        # KAMP-559: muting fades via the kampmute afade (script-message) and drops the
+        # slider to 0, remembering the level to restore. The `volume` property (logical
+        # level) is left untouched so unmute can fade back in to it.
+        engine, send = _make_engine()
+        engine.volume = 70
+        send.reset_mock()
+        engine.muted = True
+        assert engine.muted is True
+        assert engine.state.volume == 0
+        assert engine.state.pre_mute_volume == 70
+        send.assert_called_once_with("script-message", "kamp-mute")
+
+    def test_unmute_fades_in_and_restores_slider(self) -> None:
+        engine, send = _make_engine()
+        engine.volume = 70
+        engine.muted = True
+        send.reset_mock()
+        engine.muted = False
+        assert engine.muted is False
+        assert engine.state.volume == 70
+        send.assert_called_once_with("script-message", "kamp-unmute")
+
+    def test_mute_toggle_is_idempotent(self) -> None:
+        # Re-asserting the same mute state does nothing (endpoint sends absolute state).
+        engine, send = _make_engine()
+        engine.volume = 70
+        engine.muted = True
+        send.reset_mock()
+        engine.muted = True
+        send.assert_not_called()
+        assert engine.state.volume == 0
+
+    def test_mute_when_volume_zero_keeps_slider_zero(self) -> None:
+        # KAMP-559: muting/unmuting at volume 0 leaves the slider at 0.
+        engine, _ = _make_engine()
+        engine.volume = 0
+        engine.muted = True
+        assert engine.state.volume == 0
+        engine.muted = False
+        assert engine.state.volume == 0
+
+    def test_dragging_volume_while_muted_unmutes_and_fades_in(self) -> None:
+        engine, send = _make_engine()
+        engine.muted = True  # default volume 100 -> muted, slider 0, pre_mute 100
+        send.reset_mock()
+        engine.volume = 50
+        assert engine.muted is False
+        assert engine.state.volume == 50
+        send.assert_any_call("set_property", "volume", 50)
+        send.assert_any_call("script-message", "kamp-unmute")
+
+    def test_mute_never_writes_volume_property(self) -> None:
+        # KAMP-559: mute must fade via the afade, never a volume-property jump
+        # (zipper noise, KAMP-508) — and never mpv's `mute` property (resume gate).
+        engine, send = _make_engine()
+        engine.volume = 70
+        send.reset_mock()
+        engine.muted = True
+        engine.muted = False
+        for call in send.call_args_list:
+            assert call.args[:2] != ("set_property", "volume")
+            assert call.args[:2] != ("set_property", "mute")
+
+    def test_stop_sends_script_message(self) -> None:
         engine, send = _make_engine()
         engine.stop()
-        send.assert_any_call("set_property", "pause", True)
-        send.assert_any_call("seek", 0, "absolute")
+        send.assert_called_once_with("script-message", "kamp-stop")
 
     def test_load_paused_loads_and_pauses(self) -> None:
         engine, send = _make_engine()
         engine.load_paused(Path("/music/track.mp3"))
         send.assert_any_call("loadfile", str(Path("/music/track.mp3")), "replace")
         send.assert_any_call("set_property", "pause", True)
+
+    def test_load_paused_pause_set_before_loadfile(self) -> None:
+        # pause is sent before loadfile so mpv inherits the paused state on load.
+        # pause=yes in the loadfile options arg defers network connections for remote
+        # URLs (leaving duration=0 and the play button dead); pre-setting the property
+        # allows mpv to buffer normally while still starting paused.
+        engine, send = _make_engine()
+        engine.load_paused("https://cdn.bandcamp.com/stream/track.mp3")
+        calls = [c[0] for c in send.call_args_list]
+        pause_indices = [
+            i for i, c in enumerate(calls) if c == ("set_property", "pause", True)
+        ]
+        loadfile_idx = next(i for i, c in enumerate(calls) if c[0] == "loadfile")
+        assert pause_indices[0] < loadfile_idx
 
     def test_load_paused_sets_pending_seek_when_position_nonzero(self) -> None:
         engine, _ = _make_engine()
@@ -917,6 +1670,67 @@ class TestMpvPlaybackEngine:
 
     def test_on_track_end_not_called_for_stop_reason(self) -> None:
         """User-initiated stops should not trigger the end-of-track callback."""
+        engine, _ = _make_engine()
+        callback = MagicMock()
+        engine.on_track_end = callback
+
+        engine._handle_event({"event": "end-file", "reason": "stop"})
+
+        callback.assert_not_called()
+
+    def test_end_file_error_advances_queue(self) -> None:
+        """reason=error (e.g. expired CDN URL) must advance the queue."""
+        engine, _ = _make_engine()
+        callback = MagicMock()
+        engine.on_track_end = callback
+
+        engine._handle_event({"event": "end-file", "reason": "error"})
+
+        callback.assert_called_once_with(False)
+
+    def test_end_file_error_logs_file_error_and_uri(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """file_error and current URI are included in the warning log."""
+        engine, _ = _make_engine()
+        engine._current_uri = "https://t4.bcbits.com/stream/abc.mp3?ts=9999"
+        engine.on_track_end = MagicMock()
+
+        with caplog.at_level(logging.WARNING, logger="kamp_core.playback"):
+            engine._handle_event(
+                {
+                    "event": "end-file",
+                    "reason": "error",
+                    "file_error": "Failed to open stream",
+                }
+            )
+
+        combined = " ".join(r.getMessage() for r in caplog.records)
+        assert "Failed to open stream" in combined
+        assert "https://t4.bcbits.com/stream/abc.mp3" in combined
+
+    def test_end_file_network_advances_queue(self) -> None:
+        """reason=network (dropped connection) must advance the queue."""
+        engine, _ = _make_engine()
+        callback = MagicMock()
+        engine.on_track_end = callback
+
+        engine._handle_event({"event": "end-file", "reason": "network"})
+
+        callback.assert_called_once_with(False)
+
+    def test_end_file_redirect_advances_queue(self) -> None:
+        """reason=redirect must advance the queue."""
+        engine, _ = _make_engine()
+        callback = MagicMock()
+        engine.on_track_end = callback
+
+        engine._handle_event({"event": "end-file", "reason": "redirect"})
+
+        callback.assert_called_once_with(False)
+
+    def test_end_file_stop_does_not_advance_queue(self) -> None:
+        """reason=stop is intentional (loadfile replace / stop command) — no advance."""
         engine, _ = _make_engine()
         callback = MagicMock()
         engine.on_track_end = callback
@@ -1226,6 +2040,60 @@ class TestMpvPlaybackEngine:
         assert engine._lookahead_path is None
 
     # ------------------------------------------------------------------
+    # position_updated_at — KAMP-392 seek-freeze fix
+    # ------------------------------------------------------------------
+
+    def test_time_pos_event_updates_position_updated_at(self) -> None:
+        """Every time-pos event must refresh position_updated_at so the
+        _state_snapshot() interpolation threshold resets while mpv is emitting
+        normally."""
+        engine, _ = _make_engine()
+        before = engine.state.position_updated_at
+        engine._handle_event(
+            {"event": "property-change", "name": "time-pos", "data": 42.0}
+        )
+        assert engine.state.position_updated_at >= before
+        assert engine.state.position == pytest.approx(42.0)
+
+    def test_play_resets_position_updated_at(self) -> None:
+        """play() must reset position_updated_at so a stale timestamp from the
+        previous track's event-stall does not immediately extrapolate the new
+        track's position past 0."""
+        engine, _ = _make_engine()
+        engine.state.position_updated_at = 0.0  # simulate very stale
+        engine.play(Path("/music/01.mp3"))
+        import time
+
+        assert engine.state.position_updated_at >= time.time() - 1.0
+
+    def test_load_paused_resets_position_updated_at(self) -> None:
+        engine, _ = _make_engine()
+        engine.state.position_updated_at = 0.0
+        engine.load_paused(Path("/music/01.mp3"))
+        import time
+
+        assert engine.state.position_updated_at >= time.time() - 1.0
+
+    def test_file_loaded_resets_position_updated_at(self) -> None:
+        engine, _ = _make_engine()
+        engine.state.position_updated_at = 0.0
+        engine._handle_event({"event": "file-loaded"})
+        import time
+
+        assert engine.state.position_updated_at >= time.time() - 1.0
+
+    def test_eof_gapless_transition_resets_position_updated_at(self) -> None:
+        """When a gapless transition fires (had_lookahead=True), position_updated_at
+        must be reset so the new track's bar doesn't immediately jump forward."""
+        engine, _ = _make_engine()
+        engine.preload_next(_track(2))
+        engine.state.position_updated_at = 0.0  # simulate stale
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        import time
+
+        assert engine.state.position_updated_at >= time.time() - 1.0
+
+    # ------------------------------------------------------------------
     # preload_next near-end guard
     # ------------------------------------------------------------------
 
@@ -1272,6 +2140,32 @@ class TestMpvPlaybackEngine:
         engine.state.position = 0.0
         engine.preload_next(_track(2))
         send.assert_called_once_with("loadfile", str(_track(2).file_path), "append")
+
+    def test_preload_next_skips_remote_track_ipc(self) -> None:
+        """preload_next must not send any IPC command for a remote next-track —
+        the bandcamp: URI cannot be opened by mpv.  CDN URL resolution happens
+        asynchronously via preload_next_url()."""
+        engine, send = _make_engine()
+        engine.preload_next(_remote_track())
+        send.assert_not_called()
+        assert engine._lookahead_path is None
+
+    def test_preload_next_local_to_local_unchanged(self) -> None:
+        """Local→local preload is unaffected by the remote-skip guard."""
+        engine, send = _make_engine()
+        local = _track(2)
+        engine.preload_next(local)
+        send.assert_called_once_with("loadfile", str(local.file_path), "append")
+        assert engine._lookahead_path == local.file_path
+
+    def test_preload_next_remote_to_local_preloads(self) -> None:
+        """remote→local transition: local next-track IS still preloaded."""
+        engine, send = _make_engine()
+        local = _track(3)
+        # Current track is remote (simulated via engine state, not enforced here);
+        # what matters is that the NEXT track is local.
+        engine.preload_next(local)
+        send.assert_called_once_with("loadfile", str(local.file_path), "append")
 
     def test_file_loaded_resets_state_so_lookahead_re_arms_after_gapless(
         self,
@@ -1363,6 +2257,171 @@ class TestMpvPlaybackEngine:
         engine.on_track_end = lambda _: observed.append(engine.has_lookahead)
         engine._handle_event({"event": "end-file", "reason": "eof"})
         assert observed == [False]
+
+    # ------------------------------------------------------------------
+    # preload_next_url / remote-track gapless lookahead
+    # ------------------------------------------------------------------
+
+    def test_preload_next_registers_lookahead_id_for_remote_track(self) -> None:
+        """preload_next with a remote next-track eagerly sets _lookahead_id so
+        preload_next_url() can validate its result, but does NOT send any IPC
+        command (URL resolution happens asynchronously)."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        send.assert_not_called()
+        assert engine._lookahead_path is None
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id == remote.id
+
+    def test_preload_next_replaces_url_lookahead_when_switching_to_local(self) -> None:
+        """Switching the lookahead from a remote track (URL-based) to a local
+        track (path-based) must evict the old URL from mpv's slot-1."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        local = _track(3)
+
+        # Wire URL-based lookahead for the remote track.
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/a.mp3", remote.id)
+        send.reset_mock()
+
+        # Queue changes: next track is now local.  Old URL must be removed.
+        engine.preload_next(local)
+        assert send.call_args_list == [
+            call("playlist-remove", 1),
+            call("loadfile", str(local.file_path), "append"),
+        ]
+        assert engine._lookahead_url is None
+        assert engine._lookahead_path == local.file_path
+
+    def test_preload_next_clears_url_lookahead_when_queue_exhausted(self) -> None:
+        """preload_next(None) must evict a URL-based lookahead when the queue
+        runs out of tracks."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/a.mp3", remote.id)
+        send.reset_mock()
+
+        engine.preload_next(None)
+        send.assert_called_once_with("playlist-remove", 1)
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id is None
+
+    def test_preload_next_url_sends_loadfile_append(self) -> None:
+        """preload_next_url must call loadfile append with the CDN URL."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        send.reset_mock()
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        send.assert_called_once_with(
+            "loadfile", "https://cdn.example.com/track.mp3", "append"
+        )
+
+    def test_preload_next_url_sets_lookahead_url(self) -> None:
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        assert engine._lookahead_url == "https://cdn.example.com/track.mp3"
+
+    def test_has_lookahead_true_after_preload_next_url(self) -> None:
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        assert engine.has_lookahead is True
+
+    def test_preload_next_url_ignored_when_track_id_mismatch(self) -> None:
+        """Stale pre-fetch results (track changed after fetch started) are silently
+        discarded based on the registered _lookahead_id."""
+        engine, send = _make_engine()
+        engine._lookahead_id = 99  # registered for track 99
+        engine.preload_next_url("https://cdn.example.com/stale.mp3", 77)  # wrong id
+        send.assert_not_called()
+        assert engine._lookahead_url is None
+
+    def test_preload_next_url_skips_append_within_guard_window(self) -> None:
+        """URL pre-fetch arriving within the gapless danger window must not be
+        appended — mpv would trigger an immediate EOF transition."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.state.duration = 180.0
+        engine.state.position = 172.0  # 8 s from end
+        send.reset_mock()
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        send.assert_not_called()
+        assert engine._lookahead_url is None
+
+    def test_preload_next_url_is_noop_for_same_url(self) -> None:
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        url = "https://cdn.example.com/track.mp3"
+        engine.preload_next_url(url, remote.id)
+        send.reset_mock()
+        engine.preload_next_url(url, remote.id)
+        send.assert_not_called()
+
+    def test_seek_into_guard_window_removes_url_lookahead(self) -> None:
+        """seek() must remove a URL-based lookahead when the target is within
+        the gapless guard window, just as it does for path-based lookaheads."""
+        engine, send = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        engine.state.duration = 180.0
+        engine.state.position = 60.0
+        send.reset_mock()
+        engine.seek(172.0)  # within guard window
+        assert engine._lookahead_url is None
+        assert engine._lookahead_path is None
+        assert engine._lookahead_id is None
+        assert send.call_args_list[0] == call("playlist-remove", 1)
+
+    def test_end_file_clears_url_lookahead(self) -> None:
+        """end-file/eof must clear _lookahead_url so has_lookahead reads False."""
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id is None
+        assert engine.has_lookahead is False
+
+    def test_end_file_had_lookahead_true_for_url_lookahead(self) -> None:
+        """Gapless transition via URL-based lookahead: on_track_end receives
+        had_lookahead=True so the queue advances without an extra engine.play()."""
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        observed: list[bool] = []
+        engine.on_track_end = lambda had_lookahead: observed.append(had_lookahead)
+        engine._handle_event({"event": "end-file", "reason": "eof"})
+        assert observed == [True]
+
+    def test_play_clears_url_lookahead(self) -> None:
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        engine.play(Path("/music/01.mp3"))
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id is None
+
+    def test_load_paused_clears_url_lookahead(self) -> None:
+        engine, _ = _make_engine()
+        remote = _remote_track()
+        engine.preload_next(remote)
+        engine.preload_next_url("https://cdn.example.com/track.mp3", remote.id)
+        engine.load_paused(Path("/music/01.mp3"))
+        assert engine._lookahead_url is None
+        assert engine._lookahead_id is None
 
     def test_handle_event_pause_with_non_bool_data_is_ignored(self) -> None:
         engine, _ = _make_engine()

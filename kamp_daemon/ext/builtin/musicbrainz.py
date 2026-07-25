@@ -92,7 +92,7 @@ def _apply_release(original: TrackMetadata, release: ReleaseInfo) -> TrackMetada
         artist=release.artist,
         album=release.title,
         album_artist=release.album_artist,
-        year=release.year,
+        release_date=release.release_date,
         track_number=track_info.number if track_info else original.track_number,
         mbid=track_info.recording_mbid if track_info else "",
         release_mbid=release.mbid,

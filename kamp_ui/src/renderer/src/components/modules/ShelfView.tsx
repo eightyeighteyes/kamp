@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import type { Album } from '../../api/client'
 import { AlbumCard } from '../AlbumCard'
 import { useStore } from '../../store'
@@ -6,16 +6,76 @@ import { useStore } from '../../store'
 interface ShelfViewProps {
   albums: Album[]
   scrollToPlaying?: boolean
+  showPlayCount?: boolean
 }
 
 const SCROLL_PX = 500
+// Mirror the next/prev debuff timer on the server: wait this long after a
+// track change before auto-scrolling, so rapid skipping doesn't thrash the
+// shelf position.
+const SCROLL_DEBOUNCE_MS = 5000
 
-export function ShelfView({ albums, scrollToPlaying = false }: ShelfViewProps): React.JSX.Element {
+export function ShelfView({
+  albums,
+  scrollToPlaying = false,
+  showPlayCount = false
+}: ShelfViewProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const hasMounted = useRef(false)
   const currentTrack = useStore((s) => s.player.current_track)
   // undefined = not yet initialized (skip scroll on first load)
   const prevFirstAddedAt = useRef<number | null | undefined>(undefined)
+  // Always-fresh albums snapshot read by the scroll timer callback without
+  // making albums a dependency of the scroll effect.
+  const albumsRef = useRef(albums)
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Whether the shelf can actually scroll in each direction. Both start false
+  // so no arrow flashes before the first measurement (which the ResizeObserver
+  // fires after layout). Arrows are only rendered when the corresponding
+  // direction has somewhere to scroll to.
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+
+  useEffect(() => {
+    albumsRef.current = albums
+  }, [albums])
+
+  // Measure scroll position and toggle arrow visibility. Wired to the shelf's
+  // scroll event, a ResizeObserver (window widen/narrow — the repro path), and
+  // the albums list changing.
+  useEffect(() => {
+    const shelf = scrollRef.current
+    if (!shelf) return
+
+    const computeScrollState = (): void => {
+      const { scrollLeft, clientWidth, scrollWidth } = shelf
+      // 40px buffer: the shelf's scroll-padding/first-child margin means its
+      // resting leftmost position is a few px off zero, so scrollLeft rarely
+      // settles at exactly 0. Treat anything within 40px of the start as
+      // "leftmost" rather than fighting the CSS geometry.
+      setCanScrollLeft(scrollLeft > 40)
+      // 1px tolerance: scrollLeft + clientWidth can differ from scrollWidth by
+      // a fractional pixel on high-DPI displays even when fully scrolled.
+      setCanScrollRight(scrollLeft + clientWidth < scrollWidth - 1)
+    }
+
+    computeScrollState()
+    shelf.addEventListener('scroll', computeScrollState, { passive: true })
+    const observer = new ResizeObserver(computeScrollState)
+    observer.observe(shelf)
+    return () => {
+      shelf.removeEventListener('scroll', computeScrollState)
+      observer.disconnect()
+    }
+  }, [albums])
+
+  // Cancel any pending scroll timer on unmount.
+  useEffect(
+    () => () => {
+      if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current)
+    },
+    []
+  )
 
   useEffect(() => {
     const firstAddedAt = albums[0]?.added_at ?? null
@@ -38,62 +98,82 @@ export function ShelfView({ albums, scrollToPlaying = false }: ShelfViewProps): 
   useEffect(() => {
     const shelf = scrollRef.current
     if (!shelf || !scrollToPlaying) return
-    const behavior: ScrollBehavior = hasMounted.current ? 'smooth' : 'instant'
-    hasMounted.current = true
+
+    // Cancel any scroll queued by the previous track.
+    if (scrollTimerRef.current) {
+      clearTimeout(scrollTimerRef.current)
+      scrollTimerRef.current = null
+    }
+
+    // Helper: find current track in the freshest albums snapshot and scroll.
+    const doScroll = (behavior: ScrollBehavior): void => {
+      const s = scrollRef.current
+      if (!s || !currentTrack) return
+      const idx = albumsRef.current.findIndex((a) =>
+        a.missing_album
+          ? a.track_id != null && a.track_id === currentTrack.id
+          : a.album === currentTrack.album && a.album_artist === currentTrack.album_artist
+      )
+      if (idx === -1) return
+      // Matches the CSS layout: padding-left(12) + first-child margin(5) + idx*(card(180)+gap(15)) - scroll-padding(5)
+      s.scrollTo({ left: 12 + idx * 195, behavior })
+    }
+
+    if (!hasMounted.current) {
+      // First render: position instantly so the shelf opens in the right place.
+      hasMounted.current = true
+      doScroll('instant')
+      return
+    }
 
     if (!currentTrack) {
-      shelf.scrollTo({ left: 0, behavior })
+      shelf.scrollTo({ left: 0, behavior: 'smooth' })
       return
     }
 
-    const idx = albums.findIndex((a) =>
-      a.missing_album
-        ? a.file_path === currentTrack.file_path
-        : a.album === currentTrack.album && a.album_artist === currentTrack.album_artist
-    )
-
-    if (idx === -1) {
-      shelf.scrollTo({ left: 0, behavior })
-      return
-    }
-
-    // Matches the CSS layout: padding-left(12) + first-child margin(5) + idx*(card(180)+gap(15)) - scroll-padding(5)
-    shelf.scrollTo({ left: 12 + idx * 195, behavior })
+    // Debounce subsequent track changes so rapid next/prev pressing doesn't
+    // thrash the shelf. After SCROLL_DEBOUNCE_MS of stable playback, scroll
+    // to wherever the album landed in the freshest list.
+    scrollTimerRef.current = setTimeout(() => {
+      scrollTimerRef.current = null
+      doScroll('smooth')
+    }, SCROLL_DEBOUNCE_MS)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    currentTrack?.album_artist,
-    currentTrack?.album,
-    currentTrack?.file_path,
-    albums,
-    scrollToPlaying
-  ])
+  }, [currentTrack?.album_artist, currentTrack?.album, currentTrack?.id, scrollToPlaying])
 
   return (
     <div className="module-shelf-wrapper">
-      <button
-        className="module-shelf-arrow module-shelf-arrow--left"
-        onClick={() => scroll('left')}
-        aria-label="Scroll left"
-        tabIndex={-1}
-      >
-        ‹
-      </button>
+      {canScrollLeft && (
+        <button
+          className="module-shelf-arrow module-shelf-arrow--left"
+          onClick={() => scroll('left')}
+          aria-label="Scroll left"
+          tabIndex={-1}
+        >
+          ‹
+        </button>
+      )}
       <div className="module-shelf" ref={scrollRef} role="region" aria-label="Album shelf">
         {albums.map((album) => (
           <AlbumCard
-            key={album.missing_album ? album.file_path : `${album.album_artist}\0${album.album}`}
+            key={
+              album.missing_album ? `id:${album.track_id}` : `${album.album_artist}\0${album.album}`
+            }
             album={album}
+            showPlayCount={showPlayCount}
           />
         ))}
       </div>
-      <button
-        className="module-shelf-arrow module-shelf-arrow--right"
-        onClick={() => scroll('right')}
-        aria-label="Scroll right"
-        tabIndex={-1}
-      >
-        ›
-      </button>
+      {canScrollRight && (
+        <button
+          className="module-shelf-arrow module-shelf-arrow--right"
+          onClick={() => scroll('right')}
+          aria-label="Scroll right"
+          tabIndex={-1}
+        >
+          ›
+        </button>
+      )}
     </div>
   )
 }

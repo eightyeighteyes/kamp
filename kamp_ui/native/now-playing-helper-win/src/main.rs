@@ -1,3 +1,8 @@
+// Build as a Windows GUI-subsystem binary so spawning the helper from Electron
+// never flashes a console window. stdio still works through the pipes Electron
+// supplies via STARTUPINFO inheritance (KAMP-430).
+#![windows_subsystem = "windows"]
+
 // now-playing-helper (Windows): SMTC bridge for Kamp.
 //
 // Owns Windows SystemMediaTransportControls so the OS routes media keys to

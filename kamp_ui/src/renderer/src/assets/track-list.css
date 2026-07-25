@@ -17,11 +17,13 @@
 }
 
 /* Hero: full-width art. No overflow clipping — the image intentionally
-   bleeds past the hero boundary into the track list zone. */
+   bleeds past the hero boundary into the track list zone.
+   Height driven by --hero-height-pct (set inline from TrackList state);
+   no CSS transition — height changes during live drag or instant reset. */
 .track-list-hero {
   position: relative;
   flex-shrink: 0;
-  height: 45vh;
+  height: calc(var(--hero-height-pct, 45) * 1vh);
   background: linear-gradient(160deg, var(--surface) 0%, var(--bg) 100%);
 }
 
@@ -35,7 +37,7 @@
   width: 100%;
   height: 150%;
   object-fit: cover;
-  object-position: center top;
+  object-position: center 0%;
   display: block;
   opacity: 0;
   transition: opacity 0.3s;
@@ -46,9 +48,11 @@
 }
 
 /* Overlay is a sibling of the hero (not inside it) so the gradient spans
-   the hero + part of the track list. Uses literal #141414 (= --bg) because
-   CSS gradient interpolates custom properties through transparent-black,
-   causing a gray band artifact. */
+   the hero + part of the track list. Stop positions scale with the hero via
+   --hero-height-pct so the same opacity profile lands at the hero boundary
+   regardless of resize position. color-mix() with transparent avoids the
+   gray-band artifact that CSS custom property interpolation causes in gradients
+   (browsers would otherwise interpolate through transparent-black). */
 .track-list-hero-overlay {
   position: absolute;
   top: 0;
@@ -60,12 +64,55 @@
   background: linear-gradient(
     to bottom,
     transparent 0%,
-    transparent 15%,
-    rgba(20, 20, 20, 0.45) 45%,
-    rgba(20, 20, 20, 0.8) 63%,
-    rgba(20, 20, 20, 0.95) 75%,
-    #141414 85%
+    transparent calc(var(--hero-height-pct, 45) / 45 * 15%),
+    color-mix(in srgb, var(--bg) 45%, transparent) calc(var(--hero-height-pct, 45) / 45 * 45%),
+    color-mix(in srgb, var(--bg) 80%, transparent) calc(var(--hero-height-pct, 45) / 45 * 63%),
+    color-mix(in srgb, var(--bg) 95%, transparent) calc(var(--hero-height-pct, 45) / 45 * 75%),
+    var(--bg) calc(var(--hero-height-pct, 45) / 45 * 85%)
   );
+}
+
+/* Hidden native file input for playlist art upload */
+.art-upload-input {
+  display: none;
+}
+
+/* "Change art" button sits at the top-right of the hero.
+   Bottom is occupied by .track-list-identity (margin-top: -48px overlap). */
+.hero-art-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: rgba(20, 20, 20, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.15s,
+    color 0.15s;
+}
+
+.track-list-hero:hover .hero-art-btn {
+  opacity: 1;
+}
+
+.hero-art-btn:hover {
+  color: var(--text);
+  background: rgba(20, 20, 20, 0.85);
+}
+
+/* Art pan gesture cursors */
+.track-list-view--edit .track-list-hero.has-art {
+  cursor: grab;
+}
+
+.track-list-view--art-panning .track-list-hero {
+  cursor: grabbing;
 }
 
 /* Breadcrumb floats over the hero */
@@ -121,6 +168,24 @@
   color: #ffffff;
 }
 
+/* Pre-order badge inline with album title (KAMP-423) */
+.album-preorder-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(124, 134, 225, 0.25);
+  color: #7c86e1;
+  vertical-align: middle;
+  pointer-events: none;
+  border: 1px solid rgba(124, 134, 225, 0.4);
+}
+
 /* Edit / Done toggle — separate pill, absolutely positioned at the right of
    the hero row. Ghost in resting state; filled accent chip when active. */
 .breadcrumb-edit-btn {
@@ -131,7 +196,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(10, 10, 10, 0.70);
+  background: rgba(10, 10, 10, 0.7);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -210,13 +275,25 @@
   opacity: 0;
 }
 
-.mb-pill__dots span:nth-child(1) { animation-delay: 0s; }
-.mb-pill__dots span:nth-child(2) { animation-delay: 0.2s; }
-.mb-pill__dots span:nth-child(3) { animation-delay: 0.4s; }
+.mb-pill__dots span:nth-child(1) {
+  animation-delay: 0s;
+}
+.mb-pill__dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.mb-pill__dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
 
 @keyframes mb-dot-blink {
-  0%, 80%, 100% { opacity: 0; }
-  40%            { opacity: 1; }
+  0%,
+  80%,
+  100% {
+    opacity: 0;
+  }
+  40% {
+    opacity: 1;
+  }
 }
 
 /* Progress bar — fills from left to ~90% over the estimated lookup duration */
@@ -231,15 +308,24 @@
 }
 
 @keyframes mb-progress-fill {
-  from { width: 0; }
-  to   { width: 90%; }
+  from {
+    width: 0;
+  }
+  to {
+    width: 90%;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mb-pill__dots span { animation: none; opacity: 1; }
-  .mb-pill__progress  { animation: none; width: 30%; }
+  .mb-pill__dots span {
+    animation: none;
+    opacity: 1;
+  }
+  .mb-pill__progress {
+    animation: none;
+    width: 30%;
+  }
 }
-
 
 /* Visually hidden, readable by screen readers */
 .sr-only {
@@ -287,6 +373,7 @@
 }
 
 .track-list-identity-text {
+  flex: 1;
   min-width: 0;
 }
 
@@ -350,7 +437,7 @@
 
 /* Base reset: strip OS chrome, inherit all typography from the surrounding
    heading/text so the input is visually indistinguishable from the label
-   except for the dashed border affordance. */
+   except hover/focus borders. */
 .editable-album-field {
   display: block;
   width: 100%;
@@ -358,12 +445,10 @@
   appearance: none;
   -webkit-appearance: none;
   background: transparent;
-  /* 1px dashed = resting affordance per design spec */
-  border: 1px dashed rgba(255, 255, 255, 0.22);
+  border: none;
   border-radius: 3px;
   outline: none;
   font-family: inherit;
-  font-size: inherit;
   font-weight: inherit;
   color: inherit;
   line-height: inherit;
@@ -381,8 +466,7 @@
 }
 
 .editable-album-field:hover {
-  border-color: rgba(255, 255, 255, 0.45);
-  border-style: solid;
+  border: 1px solid rgba(255, 255, 255, 0.45);
 }
 
 .editable-album-field:focus {
@@ -410,10 +494,19 @@
 }
 
 @keyframes album-field-shake {
-  0%, 100% { transform: translateX(0); }
-  20%       { transform: translateX(-5px); }
-  60%       { transform: translateX(5px); }
-  80%       { transform: translateX(-3px); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-5px);
+  }
+  60% {
+    transform: translateX(5px);
+  }
+  80% {
+    transform: translateX(-3px);
+  }
 }
 
 .editable-album-field.shake {
@@ -487,7 +580,9 @@
   padding: 3px 8px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.1s, border-color 0.1s;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
 }
 
 .album-rename-toast-undo:hover {
@@ -508,8 +603,12 @@
 }
 
 @keyframes toast-bar-shrink {
-  from { width: 100%; }
-  to   { width: 0%; }
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
 }
 
 .play-all-btn {
@@ -549,12 +648,71 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.1s, background 0.1s;
+  transition:
+    color 0.1s,
+    background 0.1s;
 }
 
 .album-secondary-btn:hover {
   color: var(--accent);
   background: var(--surface-hover);
+}
+
+.album-controls-group {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-shrink: 0;
+}
+
+.streaming-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  color: #7c86e1;
+}
+
+.album-download-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    color 0.1s,
+    background 0.1s;
+}
+
+.album-download-btn:hover {
+  color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.album-download-btn--downloading {
+  color: var(--accent);
+  cursor: default;
+  animation: album-download-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes album-download-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .track-list-divider {
@@ -571,7 +729,7 @@
 
 .track-row {
   display: grid;
-  grid-template-columns: 12px 32px 1fr auto;
+  grid-template-columns: 12px 32px 1fr auto auto;
   align-items: center;
   gap: 12px;
   padding: 8px 6px;
@@ -587,6 +745,14 @@
   color: var(--accent);
 }
 
+.track-row.drag-over {
+  border-top: 2px solid var(--accent);
+}
+
+.track-row.selected {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .track-row-fav {
   display: flex;
   align-items: center;
@@ -594,10 +760,30 @@
   color: var(--accent);
 }
 
+.track-row-fav-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.track-row:hover .track-row-fav-btn,
+.track-row-fav-btn.active {
+  opacity: 1;
+}
+
 .track-row-num {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
   font-size: 11px;
   color: var(--text-dim);
-  text-align: right;
   font-variant-numeric: tabular-nums;
   min-width: 24px;
 }
@@ -619,7 +805,7 @@
   appearance: none;
   -webkit-appearance: none;
   background: transparent;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 3px;
   outline: none;
   font-family: inherit;
@@ -636,8 +822,12 @@
     box-shadow 150ms ease;
 }
 
+.track-row-title--input:hover {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
 .track-row-title--input:focus {
-  border-color: var(--accent);
+  border: 1px solid var(--accent);
   box-shadow: 0 0 0 2px var(--accent-dim);
   background: var(--surface-hover);
 }
@@ -681,6 +871,70 @@
   max-width: 160px;
 }
 
+.track-row-duration {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 36px;
+  text-align: right;
+}
+
+.track-row-cloud {
+  display: inline-flex;
+  align-items: center;
+  color: #7c86e1;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.track-row-title-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Allow the input's border to extend past the cell edge in edit mode.
+   Text clipping in static mode is handled by .track-row-title itself. */
+.track-list-view--edit .track-row-title-cell {
+  overflow: visible;
+}
+
+.track-row-offline-icon {
+  display: inline-flex;
+  align-items: center;
+  color: #e0a020;
+  flex-shrink: 0;
+}
+
+.track-row--offline .track-row-num,
+.track-row--offline .track-row-artist {
+  opacity: 0.42;
+}
+
+.track-row--offline .track-row-title {
+  font-style: italic;
+  opacity: 0.42;
+}
+
+/* Pre-order unavailable tracks (KAMP-423) ---------------------------------- */
+
+.track-row--preorder-unavailable {
+  cursor: not-allowed;
+}
+
+.track-row--preorder-unavailable .track-row-num,
+.track-row--preorder-unavailable .track-row-artist {
+  opacity: 0.35;
+}
+
+.track-row--preorder-unavailable .track-row-title {
+  font-style: italic;
+  opacity: 0.35;
+}
+
 /* Now Playing view --------------------------------------------------------- */
 
 .now-playing {
@@ -690,9 +944,40 @@
   gap: 16px;
   height: 100%;
   padding: 16px;
+  /* Containing block for the bokeh canvas (KAMP-561); clip the canvas blur bleed. */
+  position: relative;
+  overflow: hidden;
+  /* KAMP-631: the bokeh canvas's filter:blur(28px) promotes a compositor layer;
+     an opaque themed backdrop here keeps its transparent pixels from revealing
+     Chromium's base color (default #141414) as a seam on non-default palettes. */
+  background: var(--bg);
+}
+
+/* Ambient album-color bokeh behind the art (KAMP-561). The blur unifies the orbs
+   into one dreamy focal plane and hides the reduced-resolution backing store. */
+.now-playing-bokeh {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(28px);
+  /* KAMP-631: filter:blur promotes this canvas to its own compositor layer, and
+     the canvas bitmap is mostly transparent (cleared, with orbs blended over).
+     Without an opaque backing the layer's transparent pixels reveal Chromium's
+     compositor base color (= the default theme's #141414), showing as a neutral
+     seam on non-default palettes. An opaque themed backing behind the bitmap
+     removes it; the orbs still composite over it exactly as before. Confirmed
+     against the parent .now-playing bg not being enough (the promoted layer
+     composites against the base, not the parent paint). */
+  background: var(--bg);
 }
 
 .now-playing-art {
+  /* z-index lifts the art above the positioned bokeh canvas (which paints above
+     static content). */
+  z-index: 1;
   position: relative;
   /* Grow to fill available height, stay square, never exceed container width */
   flex: 1;
@@ -733,6 +1018,9 @@
   gap: 4px;
   width: 100%;
   flex-shrink: 0;
+  /* Lift above the bokeh canvas (KAMP-561). */
+  position: relative;
+  z-index: 1;
 }
 
 .now-playing-title {
@@ -799,13 +1087,18 @@
 .track-row-title--editable {
   display: flex;
   align-items: center;
+  flex: 1;
   min-width: 0;
+  /* .track-row-title sets overflow: hidden for static ellipsis clipping;
+     cancel it here so the input's margin: 0 -4px border isn't clipped. */
+  overflow: visible;
 }
 
 /* Liner Notes panel ------------------------------------------------------- */
 
 /* Full-width toggle row between the divider and the track list.
-   Styled like a section seam — low visual weight, clearly interactive. */
+   Doubles as a vertical resize handle for the hero — heavier border-top
+   and ns-resize cursor signal the drag affordance. */
 .album-meta-toggle {
   display: flex;
   align-items: center;
@@ -815,12 +1108,26 @@
   padding: 7px 20px;
   background: none;
   border: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 2px solid rgba(255, 255, 255, 0.15);
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  cursor: pointer;
+  cursor: ns-resize;
   color: var(--text-dim);
   position: relative;
-  z-index: 2;
+  /* Must be above .track-list-body (z-index: 2) so the embedded toolbar's
+     dropdown popover isn't clipped by the sibling that follows in the DOM. */
+  z-index: 20;
+}
+
+.track-list-view--resizing {
+  user-select: none;
+}
+
+.track-list-view--resizing .track-row:hover {
+  background: none;
+}
+
+.track-list-view--resizing .album-meta-toggle:hover {
+  background: none;
 }
 
 .album-meta-toggle:hover {
@@ -882,6 +1189,7 @@
   color: rgba(255, 255, 255, 0.4);
   display: flex;
   align-items: center;
+  gap: 8px;
   padding: 5px 0;
   line-height: 1;
 }
@@ -895,6 +1203,54 @@
   padding: 5px 0;
   margin: 0;
   min-width: 0;
+}
+
+/* Genre Fetch (KAMP-605): pulls candidate genres from the configured sources and
+   merges them into the album's genres. The button sits next to the GENRE label;
+   the transient status message rides in the value cell after the chips. Reuses the
+   mb-pill dots-blink animation. */
+.genre-fetch-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.genre-fetch-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.genre-fetch-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.genre-fetch-dots {
+  display: inline-flex;
+  gap: 1px;
+  margin-left: 1px;
+}
+
+.genre-fetch-dots span {
+  animation: mb-dot-blink 1.2s ease-in-out infinite;
+  opacity: 0;
+}
+.genre-fetch-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.genre-fetch-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+.genre-fetch-msg {
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
 /* Read-only and mixed values are dimmed */
@@ -918,7 +1274,6 @@
   -webkit-appearance: none;
   background: transparent;
   border: none;
-  border-bottom: 1px dashed rgba(255, 255, 255, 0.25);
   border-radius: 0;
   outline: none;
   font-family: inherit;
@@ -929,7 +1284,9 @@
   padding: 1px 0;
   width: 100%;
   min-width: 0;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 .meta-field-input:hover {
@@ -943,6 +1300,117 @@
   padding-bottom: 0;
 }
 
+/* Multi-value genre chips + autocomplete (KAMP-586) */
+.genre-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.genre-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--accent-dim);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* KAMP-611: read-only chip that navigates to the genre filter. Button reset so
+   it reads as a chip, plus a hover/focus affordance signalling it's actionable. */
+.genre-chip--clickable {
+  font: inherit;
+  font-size: 11px;
+  color: inherit;
+  cursor: pointer;
+}
+
+.genre-chip--clickable:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.genre-chip--clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.genre-chip-remove {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 1px;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.genre-chip-remove:hover {
+  opacity: 1;
+}
+
+.genre-chips-input-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 80px;
+}
+
+.genre-chips-input {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  padding: 1px 0;
+  width: 100%;
+  min-width: 0;
+}
+
+.genre-autocomplete {
+  /* Portaled to document.body (see GenreChipsInput) so surrounding track rows
+     cannot clip or paint over it; positioned inline from the input's rect. */
+  position: fixed;
+  z-index: 1100;
+  min-width: 140px;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface-raised, #22242b);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.genre-autocomplete-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.genre-autocomplete-item:hover,
+.genre-autocomplete-item.active {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.08));
+}
+
 /* Copy-to-clipboard button for read-only fields (e.g. MusicBrainz ID) */
 .meta-field-copy-btn {
   background: none;
@@ -953,7 +1421,9 @@
   padding: 2px 4px;
   border-radius: 3px;
   opacity: 0;
-  transition: opacity 0.1s, color 0.1s;
+  transition:
+    opacity 0.1s,
+    color 0.1s;
   flex-shrink: 0;
 }
 
@@ -970,4 +1440,33 @@
   .meta-field-input {
     transition: none;
   }
+}
+
+@keyframes row-flash {
+  0% {
+    background: var(--accent-dim);
+  }
+  25% {
+    background: var(--accent-dim);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.track-row--new-flash {
+  animation: row-flash 2s ease-out;
+}
+
+@keyframes count-tick {
+  from {
+    color: var(--accent);
+  }
+  to {
+    color: inherit;
+  }
+}
+
+.track-count-tick {
+  animation: count-tick 300ms ease-out;
 }

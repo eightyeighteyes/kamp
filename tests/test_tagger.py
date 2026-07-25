@@ -12,8 +12,11 @@ import pytest
 from kamp_daemon.ext.types import TrackMetadata
 from kamp_daemon.tagger import (
     ReleaseInfo,
+    ReleaseNotFoundError,
     TaggingError,
     TrackInfo,
+    _BASE_INCLUDES,
+    _DETAIL_INCLUDES,
     _lookup_release_by_acoustid,
     _lookup_release_by_recordings,
     _parse_release,
@@ -27,12 +30,15 @@ from kamp_daemon.tagger import (
     _write_tags,
     configure_musicbrainz,
     is_tagged,
-    lookup_releases_from_tracks,
+    lookup_release_by_mbid,
     read_release_mbids,
     read_track_metadata_from_file,
+    search_release_candidates,
     tag_directory,
+    write_sale_item_id,
     write_tags_from_track_metadata,
 )
+from kamp_core.library import _read_mp3_tags
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -190,12 +196,12 @@ class TestTagDirectory:
         assert release.mbid == "abc-123"
         assert release.release_group_mbid == "rg-456"
         assert release.title == "Great Album"
-        assert release.year == "2020"
+        assert release.release_date == "2020-04-01"
 
         tags = id3.ID3(str(mp3))
         assert str(tags["TALB"]) == "Great Album"
         assert str(tags["TPE1"]) == "Cool Artist"
-        assert str(tags["TDRC"]) == "2020"
+        assert str(tags["TDRC"]) == "2020-04-01"
         assert str(tags["TXXX:MusicBrainz Album Id"]) == "abc-123"
         # Extended tags
         assert str(tags["TSOP"]) == "Artist, Cool"
@@ -468,6 +474,135 @@ class TestParseReleaseMultiArtist:
         assert release.album_artist == "Ali & Charif Megarbane"
 
 
+# ---------------------------------------------------------------------------
+# Per-track artist credit (KAMP-583)
+# ---------------------------------------------------------------------------
+
+# A compilation: the release is credited to "Various Artists" while each track
+# carries its own artist-credit. Deliberately NOT SAMPLE_RELEASE_DETAIL — that
+# fixture is shared by ~24 tests that assert TrackInfo equality, and giving its
+# tracks an artist credit would flip TrackInfo.artist non-empty for all of them.
+COMPILATION_RELEASE_DETAIL: dict[str, Any] = {
+    "release": {
+        "id": "comp-1",
+        "title": "A Compilation",
+        "date": "1999-01-01",
+        "artist-credit": [{"name": "Various Artists"}],
+        "release-group": {"id": "rg-comp", "primary-type": "Album"},
+        "medium-list": [
+            {
+                "position": "1",
+                "track-list": [
+                    # Track-level credit: what is printed on THIS release.
+                    {
+                        "number": "1",
+                        "position": "1",
+                        "artist-credit": [{"name": "First Act"}],
+                        "recording": {"id": "rec-1", "title": "First Track"},
+                    },
+                    # Multi-artist credit with a joinphrase.
+                    {
+                        "number": "2",
+                        "position": "2",
+                        "artist-credit": [
+                            {"name": "Ali"},
+                            " & ",
+                            {"name": "Charif Megarbane"},
+                        ],
+                        "recording": {"id": "rec-2", "title": "Second Track"},
+                    },
+                    # No `name` key — only the nested artist.name (the shape the
+                    # existing SAMPLE_RELEASE fixture uses).
+                    {
+                        "number": "3",
+                        "position": "3",
+                        "artist-credit": [{"artist": {"name": "Nested Only"}}],
+                        "recording": {"id": "rec-3", "title": "Third Track"},
+                    },
+                    # No artist credit at all → empty, never a crash.
+                    {
+                        "number": "4",
+                        "position": "4",
+                        "recording": {"id": "rec-4", "title": "Fourth Track"},
+                    },
+                ],
+            }
+        ],
+    }
+}
+
+
+class TestParseReleaseTrackArtist:
+    def _tracks(self) -> dict[str, TrackInfo]:
+        return _parse_release(COMPILATION_RELEASE_DETAIL["release"]).tracks
+
+    def test_track_level_credit_is_parsed(self) -> None:
+        assert self._tracks()["1-1"].artist == "First Act"
+
+    def test_multi_artist_joinphrase_is_flattened(self) -> None:
+        assert self._tracks()["1-2"].artist == "Ali & Charif Megarbane"
+
+    def test_credit_without_name_key_uses_nested_artist_name(self) -> None:
+        assert self._tracks()["1-3"].artist == "Nested Only"
+
+    def test_missing_credit_is_empty_string(self) -> None:
+        assert self._tracks()["1-4"].artist == ""
+
+    def test_trailing_joinphrase_is_stripped(self) -> None:
+        """A dangling joinphrase (MB emits e.g. 'A feat. ') must not leave
+        trailing whitespace on the artist string."""
+        raw = {
+            "id": "r1",
+            "title": "T",
+            "artist-credit": [{"name": "AA"}],
+            "medium-list": [
+                {
+                    "position": "1",
+                    "track-list": [
+                        {
+                            "number": "1",
+                            "position": "1",
+                            "artist-credit": [{"name": "Solo Act"}, " & "],
+                            "recording": {"id": "rec-1", "title": "T1"},
+                        }
+                    ],
+                }
+            ],
+        }
+        assert _parse_release(raw).tracks["1-1"].artist == "Solo Act &"
+
+    def test_album_artist_parse_is_unaffected(self) -> None:
+        """Track credits must not disturb the release-level artist parse."""
+        release = _parse_release(COMPILATION_RELEASE_DETAIL["release"])
+        assert release.album_artist == "Various Artists"
+
+    def test_release_without_track_credits_leaves_artist_empty(self) -> None:
+        """Releases fetched without the artist-credits include (the pipeline
+        paths) parse fine and simply carry no track artist."""
+        release = _parse_release(SAMPLE_RELEASE_DETAIL["release"])
+        assert all(t.artist == "" for t in release.tracks.values())
+
+
+class TestMusicBrainzIncludes:
+    def test_detail_includes_request_artist_credits(self) -> None:
+        """The manual-modal hydration path must ask MB for artist credits, or
+        every track artist silently comes back empty."""
+        assert "artist-credits" in _DETAIL_INCLUDES
+        for inc in _BASE_INCLUDES:
+            assert inc in _DETAIL_INCLUDES
+
+    def test_base_includes_omit_artist_credits(self) -> None:
+        """The pipeline paths don't use track artists — keep their payloads lean."""
+        assert "artist-credits" not in _BASE_INCLUDES
+
+    def test_lookup_release_by_mbid_uses_detail_includes(self) -> None:
+        with patch(
+            "musicbrainzngs.get_release_by_id", return_value=COMPILATION_RELEASE_DETAIL
+        ) as mock_get:
+            lookup_release_by_mbid("comp-1")
+        assert mock_get.call_args.kwargs["includes"] == _DETAIL_INCLUDES
+
+
 class TestEditionSuffixRetry:
     def test_retries_with_cleaned_album_name(self, tmp_path: Path) -> None:
         """First search with "(Deluxe Edition)" returns nothing; retry with stripped
@@ -550,7 +685,7 @@ class TestWriteM4aTags:
             title="Full Album",
             artist="Full Artist",
             album_artist="Full Album Artist",
-            year="2023",
+            release_date="2023",
             tracks={
                 "1-1": TrackInfo(
                     number=1,
@@ -623,7 +758,7 @@ class TestWriteM4aTags:
             title="Minimal Album",
             artist="Min Artist",
             album_artist="Min Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
         )
         with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
@@ -662,7 +797,7 @@ class TestTagDirectoryM4a:
         assert release.mbid == "abc-123"
         assert initial_tags["\xa9ART"] == ["Cool Artist"]
         assert initial_tags["\xa9alb"] == ["Great Album"]
-        assert initial_tags["\xa9day"] == ["2020"]
+        assert initial_tags["\xa9day"] == ["2020-04-01"]
         assert "----:com.apple.iTunes:MusicBrainz Album Id" in initial_tags
         mock_mp4.save.assert_called()
 
@@ -762,7 +897,7 @@ class TestWriteTagsEdgeCases:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={"1-1": TrackInfo(number=1, disc=1, title="Track One")},
         )
 
@@ -987,7 +1122,7 @@ class TestTagDirectoryFlac:
         assert release.mbid == "abc-123"
         assert initial_tags["ARTIST"] == ["Cool Artist"]
         assert initial_tags["ALBUM"] == ["Great Album"]
-        assert initial_tags["DATE"] == ["2020"]
+        assert initial_tags["DATE"] == ["2020-04-01"]
         assert initial_tags["MUSICBRAINZ_ALBUMID"] == ["abc-123"]
         assert initial_tags["MUSICBRAINZ_RELEASEGROUPID"] == ["rg-456"]
         # ORIGINALYEAR is the year-only companion to ORIGINALDATE
@@ -1045,7 +1180,7 @@ class TestTagDirectoryFlac:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
         )
 
@@ -1071,7 +1206,7 @@ class TestTagDirectoryFlac:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
             # all optional fields left at defaults (empty strings / empty lists)
         )
@@ -1119,7 +1254,7 @@ class TestTagDirectoryFlac:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
         )
         track = TrackInfo(number=1, disc=1, title="Track One", recording_mbid="")
@@ -1239,7 +1374,7 @@ class TestTagDirectoryOgg:
         assert release.mbid == "abc-123"
         assert initial_tags["ARTIST"] == ["Cool Artist"]
         assert initial_tags["ALBUM"] == ["Great Album"]
-        assert initial_tags["DATE"] == ["2020"]
+        assert initial_tags["DATE"] == ["2020-04-01"]
         assert initial_tags["MUSICBRAINZ_ALBUMID"] == ["abc-123"]
         assert initial_tags["MUSICBRAINZ_RELEASEGROUPID"] == ["rg-456"]
         assert initial_tags["ORIGINALDATE"] == ["2020-04-01"]
@@ -1291,7 +1426,7 @@ class TestTagDirectoryOgg:
             title="Album",
             artist="Artist",
             album_artist="Artist",
-            year="2020",
+            release_date="2020",
             tracks={},
         )
 
@@ -1676,7 +1811,7 @@ class TestReadTrackMetadataFromFile:
         assert tm.album_artist == "Album Artist"
         assert tm.album == "Album"
         assert tm.title == "Track Title"
-        assert tm.year == "2021"
+        assert tm.release_date == "2021"
         assert tm.track_number == 3
 
     def test_mp3_missing_title_returns_empty(self, tmp_path: Path) -> None:
@@ -1720,7 +1855,7 @@ class TestReadTrackMetadataFromFile:
         assert tm.album_artist == "M4A Album Artist"
         assert tm.album == "M4A Album"
         assert tm.title == "M4A Title"
-        assert tm.year == "2022"
+        assert tm.release_date == "2022"
         assert tm.track_number == 2
 
     def test_m4a_no_tags_returns_empty(self, tmp_path: Path) -> None:
@@ -1752,7 +1887,7 @@ class TestReadTrackMetadataFromFile:
         assert tm.artist == "FLAC Artist"
         assert tm.album == "FLAC Album"
         assert tm.title == "FLAC Title"
-        assert tm.year == "2019"
+        assert tm.release_date == "2019"
         assert tm.track_number == 4
 
     def test_ogg_reads_tags(self, tmp_path: Path) -> None:
@@ -1867,7 +2002,7 @@ def _make_track(**kwargs: object) -> TrackMetadata:
         artist="Artist",
         album="Album",
         album_artist="Artist",
-        year="2023",
+        release_date="2023",
         track_number=1,
         mbid="rec-mbid",
         release_mbid="rel-mbid",
@@ -1897,7 +2032,9 @@ class TestWriteTagsFromTrackMetadata:
         mp3 = tmp_path / "01.mp3"
         mp3.write_bytes(b"\xff\xfb" * 64)
         id3.ID3().save(str(mp3))
-        write_tags_from_track_metadata(mp3, _make_track(year=""), total_tracks=1)
+        write_tags_from_track_metadata(
+            mp3, _make_track(release_date=""), total_tracks=1
+        )
         tags = id3.ID3(str(mp3))
         assert "TDRC" not in tags
 
@@ -2021,7 +2158,9 @@ class TestWriteTagsFromTrackMetadata:
         m4a.write_bytes(b"\x00" * 32)
         mock_audio = MagicMock()
         mock_audio.tags = {}
-        track = _make_track(mbid="", release_mbid="", release_group_mbid="", year="")
+        track = _make_track(
+            mbid="", release_mbid="", release_group_mbid="", release_date=""
+        )
         with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_audio):
             write_tags_from_track_metadata(m4a, track, total_tracks=4)
 
@@ -2052,7 +2191,9 @@ class TestWriteTagsFromTrackMetadata:
         flac.write_bytes(b"\x00" * 32)
         mock_audio = MagicMock()
         mock_audio.tags = {}
-        track = _make_track(mbid="", release_mbid="", release_group_mbid="", year="")
+        track = _make_track(
+            mbid="", release_mbid="", release_group_mbid="", release_date=""
+        )
         with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
             write_tags_from_track_metadata(flac, track, total_tracks=3)
 
@@ -2065,7 +2206,9 @@ class TestWriteTagsFromTrackMetadata:
         ogg.write_bytes(b"OggS")
         mock_audio = MagicMock()
         mock_audio.tags = {}
-        track = _make_track(mbid="", release_mbid="", release_group_mbid="", year="")
+        track = _make_track(
+            mbid="", release_mbid="", release_group_mbid="", release_date=""
+        )
         with patch(
             "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
         ):
@@ -2076,79 +2219,271 @@ class TestWriteTagsFromTrackMetadata:
 
 
 # ---------------------------------------------------------------------------
-# lookup_releases_from_tracks (KAMP-230)
+# search_release_candidates / lookup_release_by_mbid (KAMP-584)
 # ---------------------------------------------------------------------------
 
-RECORDING_HIT: dict[str, Any] = {
-    "recording-list": [
+# Shaped like real ws/2 *search* results: medium-list carries counts, never
+# track listings; label-info/date/release-group are per-release optional.
+SEARCH_RESULT_SHALLOW: dict[str, Any] = {
+    "release-list": [
         {
-            "id": "rec-1",
-            "title": "First Track",
-            "release-list": [{"id": "abc-123"}, {"id": "other-123"}],
-        }
+            "id": "new-100",
+            "title": "Great Album",
+            "date": "2021-05-01",
+            "ext:score": "100",
+            "artist-credit": [
+                {
+                    "name": "Cool Artist",
+                    "artist": {
+                        "id": "am-1",
+                        "name": "Cool Artist",
+                        "sort-name": "Artist, Cool",
+                    },
+                }
+            ],
+            "release-group": {"id": "rg-1", "primary-type": "Album"},
+            "label-info-list": [
+                {"label": {"name": "Reissue Label"}, "catalog-number": "RL-2"}
+            ],
+            "medium-list": [{"format": "CD", "track-count": 10}],
+        },
+        {
+            "id": "old-100",
+            "title": "Great Album",
+            "date": "1999-01-01",
+            "ext:score": "100",
+            "artist-credit": [
+                {"name": "Cool Artist", "artist": {"name": "Cool Artist"}}
+            ],
+            "release-group": {"id": "rg-1", "primary-type": "Album"},
+            "medium-list": [{"format": "CD", "track-count": 10}],
+        },
+        {
+            # Minimal entry: no date, artist-credit, release-group, or label-info.
+            "id": "minimal-90",
+            "title": "Great Album",
+            "ext:score": "90",
+        },
     ]
 }
 
 
-class TestLookupReleasesFromTracks:
-    def test_raises_on_empty_input(self) -> None:
-        with pytest.raises(TaggingError, match="No tracks provided"):
-            lookup_releases_from_tracks([])
-
-    def test_happy_path_tier1_vote(self) -> None:
-        """Tier-1 path: recording votes resolve to a release."""
-        tracks = [("Cool Artist", "First Track", "Great Album")]
-        empty_releases: dict[str, Any] = {"release-list": []}
-        with patch("musicbrainzngs.search_recordings", return_value=RECORDING_HIT):
-            with patch("musicbrainzngs.search_releases", return_value=empty_releases):
-                with patch(
-                    "musicbrainzngs.get_release_by_id",
-                    return_value=SAMPLE_RELEASE_DETAIL,
-                ):
-                    releases = lookup_releases_from_tracks(tracks)
-
-        assert len(releases) >= 1
-        assert releases[0].mbid == "abc-123"
-        assert releases[0].title == "Great Album"
-
-    def test_falls_back_to_tier2_when_no_votes(self) -> None:
-        """When no recording results, falls back to album-level search."""
-        tracks = [("Cool Artist", "First Track", "Great Album")]
-        empty_recordings: dict[str, Any] = {"recording-list": []}
-        with patch("musicbrainzngs.search_recordings", return_value=empty_recordings):
-            with patch("musicbrainzngs.search_releases", return_value=SAMPLE_RELEASE):
-                with patch(
-                    "musicbrainzngs.get_release_by_id",
-                    return_value=SAMPLE_RELEASE_DETAIL,
-                ):
-                    releases = lookup_releases_from_tracks(tracks)
-
-        assert len(releases) >= 1
-        assert releases[0].mbid == "abc-123"
-
-    def test_raises_when_all_paths_fail(self) -> None:
-        """Raises TaggingError when both tier-1 and tier-2 find nothing."""
-        tracks = [("Unknown", "???", "???")]
-        empty_recordings: dict[str, Any] = {"recording-list": []}
-        empty_releases: dict[str, Any] = {"release-list": []}
-        with patch("musicbrainzngs.search_recordings", return_value=empty_recordings):
-            with patch("musicbrainzngs.search_releases", return_value=empty_releases):
-                with pytest.raises(TaggingError, match="No MusicBrainz results"):
-                    lookup_releases_from_tracks(tracks)
-
-    def test_skips_tracks_without_title(self) -> None:
-        """Tracks with empty title strings do not make recording API calls."""
-        tracks = [("Artist", "", "Album"), ("Artist", "Real Title", "Album")]
-        empty_releases: dict[str, Any] = {"release-list": []}
+class TestSearchReleaseCandidates:
+    def test_single_search_call_no_hydration(self) -> None:
+        """One search_releases call; get_release_by_id is never invoked."""
         with patch(
-            "musicbrainzngs.search_recordings", return_value=RECORDING_HIT
-        ) as mock_rec:
-            with patch("musicbrainzngs.search_releases", return_value=empty_releases):
-                with patch(
-                    "musicbrainzngs.get_release_by_id",
-                    return_value=SAMPLE_RELEASE_DETAIL,
-                ):
-                    lookup_releases_from_tracks(tracks)
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ) as mock_search:
+            with patch("musicbrainzngs.get_release_by_id") as mock_get:
+                candidates = search_release_candidates("Cool Artist", "Great Album")
 
-        # Only one call — the empty-title track is skipped.
-        assert mock_rec.call_count == 1
+        assert mock_search.call_count == 1
+        mock_get.assert_not_called()
+        assert len(candidates) == 3
+        assert all(c.tracks == {} for c in candidates)
+
+    def test_score_primary_date_tiebreak_ordering(self) -> None:
+        """Relevance score wins; earliest date breaks ties among equal scores."""
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ):
+            candidates = search_release_candidates("Cool Artist", "Great Album")
+
+        assert [c.mbid for c in candidates] == ["old-100", "new-100", "minimal-90"]
+
+    def test_default_limit_is_ten(self) -> None:
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ) as mock_search:
+            search_release_candidates("Cool Artist", "Great Album")
+
+        assert mock_search.call_args.kwargs["limit"] == 10
+
+    def test_custom_limit_forwarded(self) -> None:
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ) as mock_search:
+            search_release_candidates("Cool Artist", "Great Album", limit=3)
+
+        assert mock_search.call_args.kwargs["limit"] == 3
+
+    def test_optional_fields_default_empty(self) -> None:
+        """Per-release optional MB search fields parse to empty defaults."""
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ):
+            candidates = search_release_candidates("Cool Artist", "Great Album")
+
+        minimal = candidates[-1]
+        assert minimal.mbid == "minimal-90"
+        assert minimal.release_date == ""
+        assert minimal.label == ""
+        assert minimal.release_type == ""
+        assert minimal.album_artist == ""
+
+    def test_parsed_shallow_fields(self) -> None:
+        """Fields present in search results land on the candidate."""
+        with patch(
+            "musicbrainzngs.search_releases", return_value=SEARCH_RESULT_SHALLOW
+        ):
+            candidates = search_release_candidates("Cool Artist", "Great Album")
+
+        newest = next(c for c in candidates if c.mbid == "new-100")
+        assert newest.title == "Great Album"
+        assert newest.album_artist == "Cool Artist"
+        assert newest.release_date == "2021-05-01"
+        assert newest.label == "Reissue Label"
+        assert newest.release_type == "Album"
+
+    def test_edition_suffix_retry(self) -> None:
+        """Empty first search retries with the edition suffix stripped."""
+        empty: dict[str, Any] = {"release-list": []}
+        with patch(
+            "musicbrainzngs.search_releases",
+            side_effect=[empty, SEARCH_RESULT_SHALLOW],
+        ) as mock_search:
+            candidates = search_release_candidates(
+                "Cool Artist", "Great Album (Super Deluxe Edition)"
+            )
+
+        assert len(candidates) == 3
+        assert mock_search.call_count == 2
+        assert mock_search.call_args.kwargs["release"] == "Great Album"
+
+    def test_returns_empty_list_when_nothing_found(self) -> None:
+        empty: dict[str, Any] = {"release-list": []}
+        with patch("musicbrainzngs.search_releases", return_value=empty):
+            assert search_release_candidates("Unknown", "???") == []
+
+    def test_skips_unparseable_candidate(self) -> None:
+        """A candidate the parser rejects is skipped, not fatal."""
+        broken: dict[str, Any] = {
+            "release-list": [
+                {"title": "No Id Here", "ext:score": "100"},  # missing "id"
+                dict(SEARCH_RESULT_SHALLOW["release-list"][2]),
+            ]
+        }
+        with patch("musicbrainzngs.search_releases", return_value=broken):
+            candidates = search_release_candidates("Cool Artist", "Great Album")
+
+        assert [c.mbid for c in candidates] == ["minimal-90"]
+
+
+class TestLookupReleaseByMbid:
+    def test_returns_parsed_release_with_tracks(self) -> None:
+        with patch(
+            "musicbrainzngs.get_release_by_id", return_value=SAMPLE_RELEASE_DETAIL
+        ):
+            release = lookup_release_by_mbid("abc-123")
+
+        assert release.mbid == "abc-123"
+        assert len(release.tracks) == 2
+
+    def test_merged_mbid_returns_canonical_id(self) -> None:
+        """A merged MBID resolves to the merge target; callers get the new id."""
+        with patch(
+            "musicbrainzngs.get_release_by_id", return_value=SAMPLE_RELEASE_DETAIL
+        ):
+            release = lookup_release_by_mbid("merged-away-mbid")
+
+        assert release.mbid == "abc-123"
+
+    def test_fails_fast_on_404(self) -> None:
+        """HTTP 404 raises ReleaseNotFoundError immediately — no retry backoff."""
+        not_found = musicbrainzngs.ResponseError(cause=MagicMock(code=404))
+        with patch(
+            "musicbrainzngs.get_release_by_id", side_effect=not_found
+        ) as mock_get:
+            with patch("kamp_daemon.tagger.time.sleep") as mock_sleep:
+                with pytest.raises(ReleaseNotFoundError):
+                    lookup_release_by_mbid("gone-mbid")
+
+        assert mock_get.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_release_not_found_is_a_tagging_error(self) -> None:
+        """Existing except TaggingError handlers keep working."""
+        assert issubclass(ReleaseNotFoundError, TaggingError)
+
+    def test_retries_on_transient_error(self) -> None:
+        """Non-404 web service errors still ride the retry backoff."""
+        call_count = 0
+
+        def flaky(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise musicbrainzngs.WebServiceError("503")
+            return SAMPLE_RELEASE_DETAIL
+
+        with patch("musicbrainzngs.get_release_by_id", side_effect=flaky):
+            with patch("kamp_daemon.tagger.time.sleep"):
+                release = lookup_release_by_mbid("abc-123")
+
+        assert call_count == 3
+        assert release.mbid == "abc-123"
+
+
+# ---------------------------------------------------------------------------
+# KAMP-523: provenance tag (write_sale_item_id)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSaleItemId:
+    def test_mp3_roundtrip_through_scanner(self, tmp_path: Path) -> None:
+        # End-to-end proof: what the tagger stamps is what the scanner reads back
+        # into Track.sale_item_id and uses to link by identity.
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        write_sale_item_id(mp3, "389857692")
+        assert _read_mp3_tags(mp3).sale_item_id == "389857692"
+
+    def test_empty_id_is_noop(self, tmp_path: Path) -> None:
+        mp3 = tmp_path / "01.mp3"
+        _make_mp3(mp3)
+        write_sale_item_id(mp3, "")
+        assert _read_mp3_tags(mp3).sale_item_id == ""
+
+    def test_m4a_sets_freeform_key(self, tmp_path: Path) -> None:
+        m4a = tmp_path / "01.m4a"
+        _make_m4a(m4a)
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = {}
+        with patch("kamp_daemon.tagger.mutagen.mp4.MP4", return_value=mock_mp4):
+            write_sale_item_id(m4a, "S1")
+        stored = mock_mp4.tags["----:com.apple.iTunes:KAMP_SALE_ITEM_ID"][0]
+        assert bytes(stored) == b"S1"
+        mock_mp4.save.assert_called_once()
+
+    def test_flac_sets_vorbis_key(self, tmp_path: Path) -> None:
+        flac = tmp_path / "01.flac"
+        flac.write_bytes(b"fLaC")
+        mock_audio = MagicMock()
+        mock_audio.tags = {}
+        with patch("kamp_daemon.tagger.mutagen.flac.FLAC", return_value=mock_audio):
+            write_sale_item_id(flac, "S2")
+        assert mock_audio.tags["KAMP_SALE_ITEM_ID"] == ["S2"]
+        mock_audio.save.assert_called_once()
+
+    def test_ogg_sets_vorbis_key(self, tmp_path: Path) -> None:
+        ogg = tmp_path / "01.ogg"
+        ogg.write_bytes(b"OggS")
+        mock_audio = MagicMock()
+        mock_audio.tags = None  # exercise the add_tags() branch
+
+        def _add_tags() -> None:
+            mock_audio.tags = {}
+
+        mock_audio.add_tags.side_effect = _add_tags
+        with patch(
+            "kamp_daemon.tagger.mutagen.oggvorbis.OggVorbis", return_value=mock_audio
+        ):
+            write_sale_item_id(ogg, "S3")
+        assert mock_audio.tags["KAMP_SALE_ITEM_ID"] == ["S3"]
+        mock_audio.add_tags.assert_called_once()
+
+    def test_unsupported_format_warns(self, tmp_path: Path) -> None:
+        wav = tmp_path / "01.wav"
+        wav.write_bytes(b"RIFF")
+        # Should not raise — just logs a warning.
+        write_sale_item_id(wav, "S4")

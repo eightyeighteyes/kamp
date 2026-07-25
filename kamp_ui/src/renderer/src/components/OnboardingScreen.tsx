@@ -125,17 +125,24 @@ interface Props {
 export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JSX.Element {
   const scanStatus = useStore((s) => s.scanStatus)
   const scanProgress = useStore((s) => s.scanProgress)
+  const albums = useStore((s) => s.library.albums)
+  const configValues = useStore((s) => s.configValues)
   const setLibraryPath = useStore((s) => s.setLibraryPath)
   const scanLibrary = useStore((s) => s.scanLibrary)
   const setWatchFolderPath = useStore((s) => s.setWatchFolderPath)
   const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
   const loadConfig = useStore((s) => s.loadConfig)
+  const setConfigValue = useStore((s) => s.setConfigValue)
+
+  const isBandcampStreamMode =
+    configValues?.['bandcamp.connected'] === true &&
+    configValues?.['bandcamp.collection_mode'] === 'stream'
 
   const [step, setStep] = useState<OnboardingStep>('welcome')
   const [vinylPhase, setVinylPhase] = useState<VinylPhase>('rising')
   const [cardError, setCardError] = useState<string | null>(null)
   const [bandcampBusy, setBandcampBusy] = useState(false)
-  const [bandcampDownloadAll, setBandcampDownloadAll] = useState(false)
+  const [collectionMode, setCollectionMode] = useState<'stream' | 'download'>('stream')
   const [lastfmUsername, setLastfmUsername] = useState('')
   const [lastfmPassword, setLastfmPassword] = useState('')
   const [lastfmBusy, setLastfmBusy] = useState(false)
@@ -177,10 +184,16 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
   // When scan completes: sink the vinyl; if past all cards, finish onboarding.
   // onComplete is accessed via ref so this effect never needs it as a dep,
   // preventing re-renders from recreating the closure and cancelling the timeout.
+  // In Bandcamp stream mode, the almost-done step waits for the first album to
+  // appear before exiting — avoids handing the user a blank library while
+  // sync_collection_stream continues in the background.
   useEffect(() => {
     if (scanStatus !== 'done' || scanDoneRef.current) return
-    scanDoneRef.current = true
     if (step === 'almost-done') {
+      // In stream mode, hold until the first library.changed broadcast delivers content.
+      // scanDoneRef is NOT set here so this effect re-runs when albums.length changes.
+      if (isBandcampStreamMode && albums.length === 0) return
+      scanDoneRef.current = true
       // Snap rotating strings to "All set!" immediately (deferred to avoid sync setState in effect).
       setTimeout(() => setShowAllSet(true), 0)
       // After the 500ms hold, sink the vinyl; then wait for sink + art-preload buffer.
@@ -190,9 +203,10 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
         setTimeout(() => onCompleteRef.current(), 1600)
       }, 500)
     } else {
+      scanDoneRef.current = true
       setTimeout(() => setVinylPhase('sinking'), 0)
     }
-  }, [scanStatus, step])
+  }, [scanStatus, step, isBandcampStreamMode, albums.length])
 
   // Keep refs so the rotation interval can read the latest values without
   // needing them as dependencies (which would restart the interval on every poll tick).
@@ -290,11 +304,13 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
     setBandcampBusy(true)
     setCardError(null)
     try {
+      await setConfigValue('bandcamp.collection_mode', collectionMode)
       const result = await window.api.bandcamp.beginLogin()
       if (result.ok) {
         await loadConfig()
-        if (bandcampDownloadAll) {
-          window.api.bandcamp.triggerSyncAll().catch(console.error)
+        if (collectionMode === 'stream') {
+          await setConfigValue('bandcamp.poll_interval_minutes', '15')
+          window.api.bandcamp.triggerSync().catch(console.error)
         }
         changeStep('lastfm')
       } else {
@@ -347,28 +363,30 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
 
         {step === 'library' && (
           <div className="onboarding-library">
-            <div className="onboarding-heading">Let&apos;s set up your library</div>
+            <div className="onboarding-heading">let&apos;s set up your library</div>
             <button className="onboarding-primary-btn" onClick={handleChooseLibrary}>
-              Choose Library Folder
+              choose library folder
             </button>
+            <p className="onboarding-card-body">
+              <strong>kamp</strong> will scan any files in this folder and add them to its library.
+              if you use kamp to download music, it will end up here.
+            </p>
             {cardError && <div className="onboarding-error">{cardError}</div>}
           </div>
         )}
 
         {(step === 'watch-folder' || step === 'bandcamp' || step === 'lastfm') && (
           <div className="onboarding-card">
-            <div className="onboarding-card-heading">While we&apos;re waiting&hellip;</div>
+            <div className="onboarding-card-heading">while we&apos;re waiting&hellip;</div>
 
             {step === 'watch-folder' && (
               <>
                 <button className="onboarding-primary-btn" onClick={handleChooseWatchFolder}>
-                  Choose Watch Folder
+                  choose watch folder
                 </button>
                 <p className="onboarding-card-body">
                   <strong>kamp</strong> will keep an eye on your watch folder to auto-tag and add
                   files to your library.
-                  <br />
-                  This is also where Kamp will download new files, if you sign into Bandcamp.
                 </p>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
               </>
@@ -376,28 +394,37 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
 
             {step === 'bandcamp' && (
               <>
+                <div className="onboarding-mode-selector">
+                  <button
+                    type="button"
+                    className={`onboarding-mode-btn${collectionMode === 'stream' ? ' onboarding-mode-btn--active' : ''}`}
+                    onClick={() => setCollectionMode('stream')}
+                  >
+                    stream
+                  </button>
+                  <button
+                    type="button"
+                    className={`onboarding-mode-btn${collectionMode === 'download' ? ' onboarding-mode-btn--active' : ''}`}
+                    onClick={() => setCollectionMode('download')}
+                  >
+                    download
+                  </button>
+                </div>
+                <p className="onboarding-card-body">
+                  {collectionMode === 'stream'
+                    ? 'you are a busy music fan with a solid network connection. stream your bandcamp purchases, no downloads needed. albums can be downloaded individually for offline listening.'
+                    : 'you are a connoisseur and curator with a big hard drive. purchases are downloaded to your library folder for offline playback.'}
+                </p>
                 <button
                   className="onboarding-primary-btn"
                   onClick={handleBandcampLogin}
                   disabled={bandcampBusy}
                 >
-                  {bandcampBusy ? 'Logging in…' : 'Log in to Bandcamp'}
+                  {bandcampBusy ? 'logging in…' : 'log in to bandcamp'}
                 </button>
-                <p className="onboarding-card-body">
-                  If you have a Bandcamp account, <strong>kamp</strong> can download your purchases
-                  and put them into your library
-                </p>
-                <label className="onboarding-toggle">
-                  <input
-                    type="checkbox"
-                    checked={bandcampDownloadAll}
-                    onChange={(e) => setBandcampDownloadAll(e.target.checked)}
-                  />
-                  Download all my existing purchases
-                </label>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
                 <button className="onboarding-skip-btn" onClick={() => changeStep('lastfm')}>
-                  Skip
+                  skip
                 </button>
               </>
             )}
@@ -407,7 +434,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 <input
                   className="prefs-input"
                   type="text"
-                  placeholder="Last.fm username"
+                  placeholder="last.fm username"
                   value={lastfmUsername}
                   autoComplete="username"
                   onChange={(e) => setLastfmUsername(e.target.value)}
@@ -416,7 +443,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 <input
                   className="prefs-input"
                   type="password"
-                  placeholder="Password"
+                  placeholder="password"
                   value={lastfmPassword}
                   autoComplete="current-password"
                   onChange={(e) => setLastfmPassword(e.target.value)}
@@ -427,14 +454,15 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                   onClick={handleLastfmLogin}
                   disabled={lastfmBusy}
                 >
-                  {lastfmBusy ? 'Connecting…' : 'Connect Last.fm'}
+                  {lastfmBusy ? 'connecting…' : 'Connect Last.fm'}
                 </button>
                 <p className="onboarding-card-body">
-                  Connect your <strong>Last.fm</strong> account to save your listening history.
+                  connect your <strong>last.fm</strong> account to save and share your listening
+                  history.
                 </p>
                 {cardError && <div className="onboarding-error">{cardError}</div>}
                 <button className="onboarding-skip-btn" onClick={advancePastCards}>
-                  Skip
+                  skip
                 </button>
               </>
             )}
@@ -501,7 +529,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 fontSize="31"
                 fontWeight="700"
                 letterSpacing="8"
-                fontFamily="'DM Sans', sans-serif"
+                fontFamily="inherit"
               >
                 KAMP
               </text>
@@ -513,7 +541,7 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
                 fill="#1c1a16"
                 fontSize="17"
                 letterSpacing="5"
-                fontFamily="'DM Sans', sans-serif"
+                fontFamily="inherit"
               >
                 HI · FI
               </text>

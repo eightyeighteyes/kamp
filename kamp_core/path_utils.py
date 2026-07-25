@@ -24,17 +24,21 @@ def make_path_vars(
     artist: str,
     album_artist: str,
     album: str,
-    year: str,
+    release_date: str,
     track: int,
     disc: int,
     title: str,
     ext: str,
 ) -> dict[str, object]:
+    # Derive year-only prefix for templates using {year}; keeps existing
+    # configs working after KAMP-513 renamed the field to release_date.
+    year = (release_date[:4] if release_date else "") or "0000"
     return {
         "artist": artist or "Unknown Artist",
         "album_artist": album_artist or artist or "Unknown Artist",
         "album": album or "Unknown Album",
-        "year": year or "0000",
+        "year": year,
+        "release_date": release_date or "0000",
         "track": track,
         "disc": disc,
         "title": title or "Unknown Title",

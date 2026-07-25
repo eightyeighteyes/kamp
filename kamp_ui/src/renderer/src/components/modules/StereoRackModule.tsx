@@ -120,7 +120,7 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
     return {
       artist: t.artist || t.album_artist,
       title: t.title,
-      year: t.year,
+      release_date: t.release_date,
       format: t.ext.replace(/^\./, '').toUpperCase(),
       duration: player.duration
     }

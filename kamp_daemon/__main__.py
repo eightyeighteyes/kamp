@@ -1,8 +1,8 @@
 """Entry point for the kamp daemon.
 
 Excluded from coverage (see pyproject.toml [tool.coverage.run] omit list) because
-this module is pure CLI/daemon lifecycle glue: argparse dispatch, launchctl subprocess
-calls, and signal handlers. Meaningfully unit-testing it would require spawning
+this module is pure CLI/daemon lifecycle glue: argparse dispatch and signal handlers.
+Meaningfully unit-testing it would require spawning
 subprocesses or mocking the entire OS-level daemon lifecycle, with little marginal
 value over the integration tests already covering the underlying modules (Watcher,
 Syncer, Config, etc.).
@@ -17,11 +17,9 @@ import importlib.metadata
 import logging
 import os
 import platform
-import re
 import secrets
 import shutil
 import signal
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -39,7 +37,6 @@ from .daemon_core import DaemonCore, _PID_PATH
 
 # Stable Homebrew binary locations (Apple Silicon, then Intel). Checked in order
 # before falling back to PATH, to avoid pyenv shims shadowing the Homebrew install.
-_HOMEBREW_KAMP_PATHS = ["/opt/homebrew/bin/kamp", "/usr/local/bin/kamp"]
 _HOMEBREW_MPV_PATHS = ["/opt/homebrew/bin/mpv", "/usr/local/bin/mpv"]
 
 # Common Windows mpv install locations. Checked in order when the daemon is
@@ -52,10 +49,6 @@ _WIN_MPV_PATHS = [
     r"C:\ProgramData\chocolatey\bin\mpv.exe",
     r"C:\Program Files\mpv\mpv.exe",
 ]
-
-_SERVICE_LABEL = "com.kamp"
-_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{_SERVICE_LABEL}.plist"
-_LOG_PATH = _state_dir() / "daemon.log"
 
 # pyproject.toml lives one level above the package directory and is the canonical
 # version source kept up to date by release-please.  Prefer it over
@@ -160,18 +153,6 @@ def main() -> None:
         ),
     )
 
-    # service subcommands (macOS launchd)
-    install_parser = subparsers.add_parser(
-        "install-service",
-        help="Register kamp as a launchd user agent (macOS). Starts at login, runs in background.",
-    )
-    subparsers.add_parser(
-        "uninstall-service",
-        help="Remove the launchd user agent registration.",
-    )
-    subparsers.add_parser("stop", help="Stop the kamp service.")
-    subparsers.add_parser("play", help="Start the kamp service.")
-    subparsers.add_parser("status", help="Show whether kamp is running.")
     subparsers.add_parser(
         "logout",
         help="Delete saved Bandcamp session and sync state, requiring re-authentication on the next sync.",
@@ -276,22 +257,6 @@ def main() -> None:
 
     # Default to daemon when no subcommand given
     command = args.command or "daemon"
-
-    if command == "install-service":
-        _cmd_install_service(args.config)
-        return
-    if command == "uninstall-service":
-        _cmd_uninstall_service()
-        return
-    if command == "stop":
-        _cmd_stop()
-        return
-    if command == "play":
-        _cmd_play()
-        return
-    if command == "status":
-        _cmd_status()
-        return
 
     # rollback bypasses the daemon lifecycle — it only needs the library DB.
     if command == "rollback":
@@ -555,21 +520,63 @@ def _cmd_sync(config: Config, download_all: bool = False) -> None:
         syncer.sync_once()
 
 
+def _build_config_values(
+    config: Config,
+    bc_session: dict[str, object] | None,
+    bc_ever_connected: bool,
+) -> dict[str, object]:
+    """Build the config snapshot GET /api/v1/config serves to the UI (KAMP-576).
+
+    Kept as a module-level pure function, not an inline dict, so a test can
+    assert every settable non-``ui.`` key is present: this dict silently
+    drifted from the ``_CONFIG_KEY_TYPES`` allowlist and dropped
+    ``artwork.save_format``, so a disabled "embed art" toggle read as enabled
+    again after restart. ``ui.*`` keys are intentionally absent — they ship via
+    the separate ``/api/v1/ui-state`` endpoint.
+    """
+    bc_username: str | None = bc_session.get("username") if bc_session else None  # type: ignore[assignment]
+    return {
+        "paths.watch_folder": (
+            str(config.paths.watch_folder) if config.paths.watch_folder else None
+        ),
+        "paths.library": str(config.paths.library) if config.paths.library else None,
+        "artwork.min_dimension": config.artwork.min_dimension,
+        "artwork.max_bytes": config.artwork.max_bytes,
+        "artwork.save_format": config.artwork.save_format,
+        "tagging.lastfm_genres": config.tagging.lastfm_genres,
+        "tagging.bandcamp_genres": config.tagging.bandcamp_genres,
+        "library.path_template": config.library.path_template,
+        "bandcamp.connected": bc_session is not None,
+        "bandcamp.username": bc_username,
+        "bandcamp.ever_connected": bc_ever_connected,
+        "bandcamp.format": config.bandcamp.format if config.bandcamp else None,
+        "bandcamp.poll_interval_minutes": (
+            config.bandcamp.poll_interval_minutes if config.bandcamp else None
+        ),
+        "bandcamp.collection_mode": (
+            config.bandcamp.collection_mode if config.bandcamp else None
+        ),
+        "lastfm.username": config.lastfm.username if config.lastfm else None,
+    }
+
+
 def _cmd_daemon(
     config: Config,
     host: str = "127.0.0.1",
     port: int = 47483,
     library_path: Path | None = None,
 ) -> None:
+    import queue as _queue_mod
     import threading
+
     import uvicorn
 
-    from kamp_core.library import LibraryIndex
+    from kamp_core.library import LibraryIndex, Track
     from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
     from kamp_core.scrobbler import Scrobbler, authenticate as _lastfm_authenticate
-    from kamp_core.server import create_app
+    from kamp_core.server import create_app, resolve_playback_uri
     from kamp_daemon.config import config_set as _config_set
-    from kamp_daemon.tagger import lookup_releases_from_tracks
+    from kamp_daemon.tagger import lookup_release_by_mbid, search_release_candidates
 
     _logger = logging.getLogger(__name__)
     pkg_version = _get_version()
@@ -600,6 +607,13 @@ def _cmd_daemon(
 
     index = LibraryIndex(db_path)
 
+    # KAMP-523: clear any download → ingest provenance rows whose artifact no
+    # longer exists (crash/restart between download and ingest), so a stale row
+    # can never be replayed against an unrelated file at the same path.
+    _swept = index.sweep_orphan_pending_ingest()
+    if _swept:
+        _logger.info("Cleared %d orphaned pending-ingest row(s) at startup", _swept)
+
     # Migrate legacy bandcamp_session.json → sessions DB table (one-time).
     # After migration the file is deleted so subsequent starts skip this block.
     _legacy_session = _state_dir() / "bandcamp_session.json"
@@ -616,8 +630,8 @@ def _cmd_daemon(
         except Exception as _exc:
             _logger.warning("Failed to migrate bandcamp_session.json: %s", _exc)
 
-    # Resolve the full mpv path before creating the engine so launchd-managed
-    # instances (which run with a minimal PATH) can find the Homebrew binary.
+    # Resolve the full mpv path before creating the engine so the Electron-spawned
+    # daemon (which may run with a stale PATH) can find the Homebrew binary.
     engine = MpvPlaybackEngine(mpv_bin=_resolve_mpv_binary())
     queue: PlaybackQueue = PlaybackQueue()
 
@@ -628,31 +642,84 @@ def _cmd_daemon(
     saved_queue = index.load_queue_state()
     saved_player = index.load_player_state()
     if saved_queue and saved_player:
-        saved_paths, q_pos, q_shuffle, q_repeat = saved_queue
+        saved_entries, q_order, q_pos, q_shuffle, q_repeat = saved_queue
         _, saved_position = saved_player
-        # Resolve paths → Track objects; silently drop tracks removed from library.
-        resolved = []
-        missing_before = 0
-        for i, p in enumerate(saved_paths):
+
+        # Resolve original-order entries → Track objects (KAMP-536 queue-by-id).
+        # Entries are track ids; a DB last written by an older build yields legacy
+        # path strings, resolved by path. Remote tracks missing from the DB (e.g.
+        # a legacy bandcamp: path after a DB wipe) are kept as minimal stub Tracks
+        # with reachable=False so they remain visible in the queue UI rather than
+        # silently disappearing. Ids/local paths not found (deleted) are dropped.
+        # Build a mapping old_index → new_index so the playback permutation
+        # (q_order) can be remapped to the compacted resolved list.
+        def _resolve_saved_entry(entry: "int | str") -> "Track | None":
+            if isinstance(entry, int):
+                return index.get_track_by_id(entry)
+            p = str(entry)
             t = index.get_track_by_path(p)
+            if t is None and p.startswith("bandcamp:"):
+                t = Track(
+                    file_path=Path(p),
+                    title=p.split("/")[-1] or p,
+                    artist="",
+                    album_artist="",
+                    album="",
+                    release_date="",
+                    track_number=0,
+                    disc_number=0,
+                    ext="",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    source="bandcamp",
+                    reachable=False,
+                )
+            return t
+
+        resolved: list[Any] = []
+        old_to_new: dict[int, int] = {}
+        for i, entry in enumerate(saved_entries):
+            t = _resolve_saved_entry(entry)
             if t is not None:
+                old_to_new[i] = len(resolved)
                 resolved.append(t)
-            elif i <= q_pos:
-                # Track was before or at the current position — shift pos back.
-                missing_before += 1
-        restored_pos = max(0, q_pos - missing_before)
+        # Remap the playback order, dropping references to deleted local tracks.
+        new_order = [old_to_new[idx] for idx in q_order if idx in old_to_new]
+        # Find the new position of the current track; fall back to 0.
+        restored_pos = 0
+        if q_pos >= 0 and q_pos < len(q_order):
+            current_orig = q_order[q_pos]
+            if current_orig in old_to_new:
+                new_current = old_to_new[current_orig]
+                try:
+                    restored_pos = new_order.index(new_current)
+                except ValueError:
+                    restored_pos = 0
         if resolved:
-            queue.restore(resolved, restored_pos, q_shuffle, q_repeat)
+            queue.restore(
+                resolved,
+                order=new_order,
+                pos=restored_pos,
+                shuffle=q_shuffle,
+                repeat=q_repeat,
+            )
             current = queue.current()
             if current:
-                engine.load_paused(current.file_path, saved_position)
+                # Use playback_uri (stream_url if available) so remote tracks
+                # get a CDN URL rather than the raw bandcamp: scheme URI.
+                engine.load_paused(current.playback_uri, saved_position)
     elif saved_player:
         # Fallback: no queue state — restore single track (pre-TASK-47 behaviour).
-        saved_path, saved_position = saved_player
-        track = index.get_track_by_path(saved_path)
+        saved_ref, saved_position = saved_player
+        track = (
+            index.get_track_by_id(int(saved_ref))
+            if saved_ref.lstrip("-").isdigit()
+            else index.get_track_by_path(saved_ref)
+        )
         if track:
             queue.load([track], 0)
-            engine.load_paused(track.file_path, saved_position)
+            engine.load_paused(track.playback_uri, saved_position)
 
     # Now Playing (MPNowPlayingInfoCenter) is owned by the Electron
     # now-playing-helper subprocess, which also handles MPRemoteCommandCenter
@@ -668,13 +735,25 @@ def _cmd_daemon(
     def _on_track_end(had_lookahead: bool) -> None:
         finished = queue.current()
         track = queue.next()
-        # Record natural EOF so last_played sort stays accurate.
         if finished is not None:
             index.record_played(finished.file_path)
+        # Skip over unreachable stub tracks (remote tracks missing from the DB).
+        # Keep advancing until we find a playable track or exhaust the queue.
+        while track is not None and not track.reachable:
+            track = queue.next()
         if track:
+            # Write last_played for the incoming track before the notification
+            # chain fires so LastPlayedModule sees it on its next re-fetch.
+            index.record_track_started(track.file_path)
             if not had_lookahead:
                 # No gapless transition was queued — start the next track manually.
-                engine.play(track.file_path)
+                # resolve_playback_uri refreshes expired CDN stream URLs for remote
+                # tracks so mpv receives a real HTTPS URL, not a raw bandcamp: URI.
+                engine.play(
+                    resolve_playback_uri(
+                        track, index, _refresh_stream_url, _check_stream_url
+                    )
+                )
             # If had_lookahead: mpv already transitioned gaplessly.  file-loaded
             # will fire shortly and preload_next will queue the new next track.
         else:
@@ -689,10 +768,27 @@ def _cmd_daemon(
 
     engine.on_track_end = _on_track_end
 
+    def _prefetch_remote_lookahead(nxt: Track) -> None:
+        """Resolve a CDN URL for *nxt* and wire it into mpv's slot-1 lookahead.
+
+        Runs on a daemon thread so the HTTP request (album page scrape) does not
+        block the mpv reader thread.  preload_next_url() rejects stale results
+        automatically if the queue has changed by the time the fetch completes.
+        """
+        url = resolve_playback_uri(nxt, index, _refresh_stream_url, _check_stream_url)
+        if url.startswith("https://"):
+            engine.preload_next_url(url, nxt.id)
+
     def _on_file_loaded() -> None:
         # Prime or refresh the gapless lookahead whenever a new file starts.
-        # Now Playing updates are driven by Electron WebSocket subscription.
-        engine.preload_next(queue.peek_next())
+        # For remote tracks, spawn a thread to resolve the CDN URL so the HTTP
+        # request doesn't block the mpv reader thread.
+        nxt = queue.peek_next()
+        engine.preload_next(nxt)
+        if nxt is not None and nxt.is_remote:
+            threading.Thread(
+                target=_prefetch_remote_lookahead, args=(nxt,), daemon=True
+            ).start()
 
     engine.on_file_loaded = _on_file_loaded
 
@@ -727,6 +823,20 @@ def _cmd_daemon(
     engine.on_file_loaded = _on_file_loaded_scrobble
 
     # Persist current track and position every 5 s so restarts can resume.
+    # Four single-element lists share elapsed-time state between _state_saver
+    # and the shutdown flush below.  Lists are the idiomatic way to share
+    # mutable scalars across nested function scopes without nonlocal in Python.
+    _et_path: list[str | None] = [None]  # file_path string of track in progress
+    _et_acc: list[float] = [0.0]  # seconds accumulated for current track
+    _et_prev_pos: list[float] = [0.0]  # engine position at last tick
+    _et_playing: list[bool] = [False]  # playing state at last tick
+
+    def _flush_elapsed() -> None:
+        """Write _et_acc to DB and reset the accumulator (keep path/pos)."""
+        if _et_path[0] and _et_acc[0] > 0:
+            index.record_play_time(Path(_et_path[0]), _et_acc[0])
+            _et_acc[0] = 0.0
+
     def _state_saver() -> None:
         import time
 
@@ -734,13 +844,38 @@ def _cmd_daemon(
         while True:
             time.sleep(1)
             current = queue.current()
+            pos = engine.state.position
+            playing = engine.state.playing
             if _scrobbler_ref[0] is not None:
-                _scrobbler_ref[0].tick(current, engine.state.playing)
+                _scrobbler_ref[0].tick(current, playing)
             if current:
+                path = str(current.file_path)
+                if path == _et_path[0]:
+                    delta = pos - _et_prev_pos[0]
+                    if 0 < delta <= 2.0:  # cap: > 2 s in 1 s tick = seek
+                        _et_acc[0] += delta
+                    # Flush when playback pauses or stops mid-track so the time
+                    # is recorded immediately rather than waiting for a track switch.
+                    if _et_playing[0] and not playing:
+                        _flush_elapsed()
+                else:
+                    # Track switch — flush accumulated time for the previous track.
+                    _flush_elapsed()
+                    _et_path[0] = path
+                    _et_acc[0] = 0.0
+                    _et_prev_pos[0] = pos or 0.0
+                _et_prev_pos[0] = pos
+                _et_playing[0] = playing
                 if tick % 5 == 0:
-                    index.save_player_state(current.file_path, engine.state.position)
-                    q_paths, q_pos, q_shuffle, q_repeat = queue.get_state()
-                    index.save_queue_state(q_paths, q_pos, q_shuffle, q_repeat)
+                    index.save_player_state(current.id, engine.state.position)
+                    q_ids, q_order, q_pos, q_shuffle, q_repeat = queue.get_state()
+                    index.save_queue_state(q_ids, q_order, q_pos, q_shuffle, q_repeat)
+            elif _et_path[0] is not None:
+                # Queue became empty — flush any accumulated time.
+                _flush_elapsed()
+                _et_path[0] = None
+                _et_prev_pos[0] = 0.0
+                _et_playing[0] = False
             tick += 1
 
     threading.Thread(target=_state_saver, daemon=True, name="state-saver").start()
@@ -789,6 +924,7 @@ def _cmd_daemon(
     def _on_bandcamp_login_complete(payload: dict[str, object]) -> None:
         session_data: dict[str, Any] = dict(payload)
         index.set_session("bandcamp", session_data)
+        index.set_setting("bandcamp.ever_connected", "true")
         _logger.info("Bandcamp session saved from Electron login flow.")
         # Extract username immediately so the UI can show "Connected as {username}".
         # Primary source: the logout cookie (URL-encoded JSON, always present after
@@ -848,26 +984,59 @@ def _cmd_daemon(
             _logger.exception("Unhandled error during Bandcamp sync-all")
             app.state.notify_bandcamp_sync_status("")  # back to idle
 
+    # --- KAMP-591: library-wide genre backfill ("Update Library Genres") ---
+    _genre_backfill_cancel = threading.Event()
+    _genre_backfill_lock = threading.Lock()
+    _genre_backfill_running = [False]  # boxed for the closure
+
+    def _on_genre_backfill_start() -> None:
+        with _genre_backfill_lock:
+            if _genre_backfill_running[0]:
+                return  # already running — reject the concurrent start
+            _genre_backfill_running[0] = True
+        _genre_backfill_cancel.clear()
+        try:
+            from .genre_backfill import run_genre_backfill
+
+            cfg = Config.load(index)
+            # Best-effort proxy-aware Bandcamp session (None when not logged in →
+            # the per-album re-scrape is skipped and Last.fm still runs).
+            session = None
+            session_data = index.get_session("bandcamp")
+            if session_data:
+                try:
+                    from .bandcamp import _make_requests_session
+
+                    session = _make_requests_session(session_data)
+                except Exception:
+                    _logger.exception(
+                        "genre backfill: could not build a Bandcamp session"
+                    )
+            # A completed library (nothing pending) means the user wants a fresh
+            # re-run; a partial state (crash/cancel) resumes the remainder instead.
+            if not index.albums_pending_genre_enrichment():
+                index.clear_genre_enrichment_marks()
+            run_genre_backfill(
+                index,
+                cfg,
+                session,
+                app.state.notify_genre_backfill_progress,
+                _genre_backfill_cancel,
+            )
+        except Exception:
+            _logger.exception("Unhandled error in genre backfill")
+            app.state.notify_genre_backfill_progress(0, 0, "error")
+        finally:
+            with _genre_backfill_lock:
+                _genre_backfill_running[0] = False
+
+    def _on_genre_backfill_cancel() -> None:
+        _genre_backfill_cancel.set()
+
     # Bandcamp username comes only from the session (set after Electron login flow).
     _bc_session = index.get_session("bandcamp")
-    _bc_username: str | None = _bc_session.get("username") if _bc_session else None
-    _config_values: dict[str, object] = {
-        "paths.watch_folder": (
-            str(config.paths.watch_folder) if config.paths.watch_folder else None
-        ),
-        "paths.library": str(config.paths.library) if config.paths.library else None,
-        "musicbrainz.trust-musicbrainz-when-tags-conflict": config.musicbrainz.trust_musicbrainz_when_tags_conflict,
-        "artwork.min_dimension": config.artwork.min_dimension,
-        "artwork.max_bytes": config.artwork.max_bytes,
-        "library.path_template": config.library.path_template,
-        "bandcamp.connected": _bc_session is not None,
-        "bandcamp.username": _bc_username,
-        "bandcamp.format": config.bandcamp.format if config.bandcamp else None,
-        "bandcamp.poll_interval_minutes": (
-            config.bandcamp.poll_interval_minutes if config.bandcamp else None
-        ),
-        "lastfm.username": config.lastfm.username if config.lastfm else None,
-    }
+    _bc_ever_connected = index.get_setting("bandcamp.ever_connected") == "true"
+    _config_values = _build_config_values(config, _bc_session, _bc_ever_connected)
 
     # Generate a fresh shared-secret token on every daemon start.  Electron
     # re-reads the file on reconnect so there is no persistent state to sync.
@@ -881,6 +1050,39 @@ def _cmd_daemon(
     # lists so endpoints can call syncer methods without forward-reference issues.
     _sync_trigger_ref: list[Any] = [None]
     _sync_all_trigger_ref: list[Any] = [None]
+    _album_download_trigger_ref: list[Any] = [None]
+    _dl_queue: _queue_mod.Queue[str] = _queue_mod.Queue()
+
+    def _refresh_stream_url(album_url: str, track_num: int) -> tuple[str, float] | None:
+        """Fetch a fresh CDN URL for a remote track before mpv plays it."""
+        session_data = index.get_session("bandcamp")
+        if not session_data:
+            return None
+        from kamp_daemon.bandcamp import refresh_stream_url as _bandcamp_refresh
+
+        return _bandcamp_refresh(album_url, track_num, session_data)
+
+    from kamp_daemon.bandcamp import check_stream_url as _check_stream_url
+
+    # KAMP-610: bridge the DB allow-list overlay into the genre_sources module
+    # cache. On any change (and once at startup) push the current extras and
+    # invalidate the cache so future enrichment sees them.
+    from kamp_daemon import genre_sources as _genre_sources
+
+    def _on_allowlist_changed() -> None:
+        _genre_sources.set_allowlist_extras(index.list_allowlist_extras())
+
+    _on_allowlist_changed()  # warm the cache with any persisted extras at startup
+
+    def _genre_fetch_fn(album_artist: str, album: str) -> list[str]:
+        # Per-album Fetch button (KAMP-605): read-only candidate fetch. Fresh config
+        # per call so runtime source toggles + allowlist changes are picked up (same
+        # as _on_genre_backfill_start).
+        from .genre_backfill import fetch_album_genre_candidates
+
+        return fetch_album_genre_candidates(
+            index, Config.load(index), album_artist, album
+        )
 
     app = create_app(
         index=index,
@@ -890,6 +1092,7 @@ def _cmd_daemon(
         on_library_path_set=_on_library_path_set,
         ui_active_view=config.ui.active_view,
         ui_sort_order=config.ui.sort_order,
+        ui_sort_dir=config.ui.sort_dir,
         ui_queue_panel_open=config.ui.queue_panel_open,
         on_ui_state_set=_on_ui_state_set,
         config_values=_config_values,
@@ -901,10 +1104,147 @@ def _cmd_daemon(
         on_bandcamp_disconnect=_on_bandcamp_disconnect,
         on_bandcamp_sync_trigger=_on_bandcamp_sync_trigger,
         on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,
+        on_genre_backfill_start=_on_genre_backfill_start,
+        on_genre_backfill_cancel=_on_genre_backfill_cancel,
+        on_allowlist_changed=_on_allowlist_changed,
+        get_default_allowlist=_genre_sources.default_allowlist_names,
+        dl_queue=_dl_queue,
+        art_cache_dir=_state_dir() / "art_cache",
+        refresh_stream_url=_refresh_stream_url,
+        check_stream_url=_check_stream_url,
         dev_mode=bool(os.environ.get("KAMP_DEV")),
         auth_token=_auth_token,
-        mb_lookup_fn=lookup_releases_from_tracks,
+        mb_search_fn=search_release_candidates,
+        mb_release_fn=lookup_release_by_mbid,
+        genre_fetch_fn=_genre_fetch_fn,
     )
+
+    # ---------------------------------------------------------------------------
+    # Single-consumer album download worker (KAMP-408; queue engine KAMP-565)
+    # ---------------------------------------------------------------------------
+    # Drains the persistent download_queue one item at a time in `position` order,
+    # driving each through the state machine (downloading → done, or failed +
+    # continue) via process_next_download.  Serializing avoids Bandcamp 429s;
+    # rate-limited requests retry with 5 s → 10 s → 20 s back-off.  `_dl_queue` is
+    # now only a wake signal — endpoints and completed syncs put a sentinel to
+    # nudge the worker; ordering lives in the DB, not the in-memory queue.
+
+    def _download_worker() -> None:
+        from .bandcamp import _make_requests_session, prefetch_redownload_urls
+        from .syncer import process_next_download
+
+        def _on_state(provider_item_id: str, state: str) -> None:
+            app.state.notify_album_download_status(provider_item_id, state)
+            # Structured queue snapshot for the Downloads view on every transition
+            # (KAMP-566) — carries failed items' error_text back to the UI.
+            app.state.notify_download_queue()
+            if state == "done":
+                app.state.notify_library_changed()
+
+        def _wait_for_work() -> None:
+            # Block until an enqueue/sync puts a wake sentinel, with a short
+            # fallback timeout so downloads enqueued by the background poll-sync
+            # (which doesn't signal us directly) are still picked up promptly.
+            try:
+                _dl_queue.get(timeout=5.0)
+            except _queue_mod.Empty:
+                pass
+
+        def _prefetch_urls() -> None:
+            # One collection fetch per drain to fill any missing redownload_urls, so
+            # every item downloads via the fast path (no per-item collection re-fetch
+            # — the 429 storm). This also populates URLs the size-backfill needs, so
+            # it too avoids the collection endpoint. Best-effort: a failure just
+            # leaves the per-item fallback to resolve URLs.
+            try:
+                session_data = index.get_session("bandcamp")
+                if session_data:
+                    n = prefetch_redownload_urls(
+                        index, _make_requests_session(session_data)
+                    )
+                    if n:
+                        _logger.info("Prefetched %d download URL(s) for the queue", n)
+            except Exception:
+                _logger.warning(
+                    "Download URL prefetch failed; falling back to per-item resolution",
+                    exc_info=True,
+                )
+
+        # A download left 'downloading' by a crash would stall (next_queued_download
+        # only returns 'queued'); re-queue it so this run resumes it first.
+        n_reset = index.reset_downloading_to_queued()
+        if n_reset:
+            _logger.info("Re-queued %d interrupted download(s) after restart", n_reset)
+
+        while True:
+            if _album_download_trigger_ref[0] is None:
+                _wait_for_work()  # trigger not wired yet (startup race)
+                continue
+            if index.next_queued_download() is None:
+                _wait_for_work()
+                continue
+            # Draining: fill any missing URLs once for the whole batch, then drain
+            # via the fast path (no per-item collection re-fetch).
+            _prefetch_urls()
+            while (
+                process_next_download(
+                    index, _album_download_trigger_ref[0], on_state=_on_state
+                )
+                is not None
+            ):
+                pass  # drain the whole queue before sleeping again
+
+    threading.Thread(
+        target=_download_worker, daemon=True, name="album-dl-worker"
+    ).start()
+
+    # ---------------------------------------------------------------------------
+    # Download size backfill (KAMP-574)
+    # ---------------------------------------------------------------------------
+    # Queued items have no File Size until they download (Content-Length). This
+    # background poll fills an *estimate* from each item's download-page size_mb,
+    # throttled, and re-broadcasts the queue snapshot so the Downloads-view cards
+    # update. Best-effort: it only touches the network when queued items lack a
+    # size and a Bandcamp session exists, and never crashes the daemon.
+    _SIZE_BACKFILL_INTERVAL = 8.0  # seconds between poll cycles
+    _SIZE_BACKFILL_MAX_BACKOFF = 300.0  # cap the 429 back-off at 5 minutes
+
+    def _size_backfill_worker() -> None:
+        import time as _t
+
+        from .bandcamp import _make_requests_session, backfill_download_sizes
+
+        backoff = _SIZE_BACKFILL_INTERVAL
+        while True:
+            try:
+                session_data = index.get_session("bandcamp")
+                if session_data and index.queued_downloads_missing_size():
+                    bc = Config.load(index).bandcamp
+                    if bc is not None:
+                        backfill_download_sizes(
+                            index,
+                            bc.format,
+                            _make_requests_session(session_data),
+                            on_updated=lambda _pid: app.state.notify_download_queue(),
+                        )
+                backoff = _SIZE_BACKFILL_INTERVAL  # success → reset the back-off
+                _t.sleep(_SIZE_BACKFILL_INTERVAL)
+            except Exception as exc:
+                # A 429 means we're rate-limited; exponentially back off instead of
+                # hammering every 8s (which poisoned the budget and spammed the log).
+                if "429" in str(exc):
+                    backoff = min(backoff * 2, _SIZE_BACKFILL_MAX_BACKOFF)
+                    _logger.warning(
+                        "Download size backfill rate-limited; backing off %.0fs",
+                        backoff,
+                    )
+                else:
+                    _logger.exception("Download size backfill cycle failed")
+                _t.sleep(backoff)
+
+    threading.Thread(
+        target=_size_backfill_worker, daemon=True, name="download-size-backfill"
+    ).start()
 
     # Wrap the existing on_track_end callback to also push track.changed events.
     # Done here (after app creation) so app.state is guaranteed to be available.
@@ -990,6 +1330,25 @@ def _cmd_daemon(
                     )
             except Exception:
                 _logger.exception("Error invoking extensions after library scan")
+
+            # KAMP-587: enrich the new tracks' genres from external sources
+            # (Last.fm) off the scan thread so a slow/hung fetch can never stall
+            # it. enrich_new_tracks no-ops when the toggle is off (checked inside
+            # the thread via a fresh config load). Best-effort throughout.
+            if result.new_tracks:
+                _new_tracks = result.new_tracks
+
+                def _enrich() -> None:
+                    from .genre_sources import enrich_new_tracks
+
+                    try:
+                        enrich_new_tracks(index, _new_tracks, Config.load(index))
+                    except Exception:
+                        _logger.exception("Error enriching genres after scan")
+
+                threading.Thread(
+                    target=_enrich, daemon=True, name="genre-enrich"
+                ).start()
         finally:
             # Bump the server's library version so connected WebSocket clients
             # receive a "library.changed" push and reload the album list.
@@ -1082,8 +1441,46 @@ def _cmd_daemon(
     # has the callback set.
     _sync_trigger_ref[0] = core.syncer.sync_once
     _sync_all_trigger_ref[0] = core.syncer.sync_all_purchases
+    _album_download_trigger_ref[0] = core.syncer.download_album
 
     core.syncer.status_callback = app.state.notify_bandcamp_sync_status
+    # KAMP-436/566: per-album byte-progress, distinct from the global
+    # status_callback. Persist the exact Content-Length to the queue row once per
+    # item (size_is_estimate=0, overriding any pre-download estimate) and broadcast
+    # the progress, then let the syncer forward each (downloaded, total) tick.
+    _download_sizes_seen: dict[str, int] = {}
+
+    def _on_download_progress(pid: str, downloaded: int, total: int) -> None:
+        if total and _download_sizes_seen.get(pid) != total:
+            index.set_download_size(pid, total, is_estimate=False)
+            _download_sizes_seen[pid] = total
+            # Re-broadcast the queue snapshot once the exact size is known so the
+            # Downloads-view card shows the File Size (the snapshot is otherwise
+            # only pushed on state transitions, before Content-Length arrives).
+            app.state.notify_download_queue()
+        app.state.notify_album_download_progress(pid, downloaded, total)
+
+    core.syncer.progress_callback = _on_download_progress
+    core.syncer.on_tracks_indexed = app.state.notify_library_changed
+
+    def _on_stream_albums_added(album_keys: list[tuple[str, str]]) -> None:
+        # KAMP-618: auto-enrich newly-added streaming albums with Last.fm genres on a
+        # background thread (best-effort) so a slow Last.fm never stalls the sync's UI
+        # refresh. Only when a Last.fm source is enabled — Bandcamp keywords were
+        # already applied inline during sync. enrich_albums is scoped to just these
+        # albums (NOT the whole pending set) and does not touch the manual backfill.
+        cfg = Config.load(index)
+        if not _genre_sources.enabled_sources(cfg):
+            return
+
+        def _run() -> None:
+            from .genre_sources import enrich_albums
+
+            enrich_albums(index, album_keys, cfg)
+
+        threading.Thread(target=_run, daemon=True, name="stream-genre-enrich").start()
+
+    core.syncer.on_stream_albums_added = _on_stream_albums_added
     core.watcher.stage_callback = app.state.notify_pipeline_stage
 
     # After each album finishes processing, run a library rescan directly on a
@@ -1127,6 +1524,8 @@ def _cmd_daemon(
     if _scrobbler_ref[0] is not None:
         _scrobbler_ref[0].shutdown(timeout=2.0)
     engine.shutdown()
+    # Flush any accumulated artist play time before closing the DB.
+    _flush_elapsed()
     index.close()
 
 
@@ -1146,248 +1545,33 @@ def _cmd_daemon_signal(sig: int, action: str) -> None:
     print(f"Daemon pipeline {action}d.")
 
 
-def _launchd_domain() -> str:
-    """Return the launchd domain for the current user's GUI session (macOS).
-
-    bootstrap/bootout require an explicit domain; gui/<uid> is the correct
-    target for user agents in ~/Library/LaunchAgents.
-    """
-    return f"gui/{os.getuid()}"
-
-
-def _launchctl_list() -> subprocess.CompletedProcess[str]:
-    """Run `launchctl list <label>` and return the result."""
-    return subprocess.run(
-        ["launchctl", "list", _SERVICE_LABEL],
-        capture_output=True,
-        text=True,
-    )
-
-
-# Matches simple scalar entries in launchctl list output, e.g.:
-#     "PID" = 12345;
-#     "LastExitStatus" = 256;
-#     "Label" = "com.kamp";
-# Skips complex values (arrays, nested dicts) that span multiple lines.
-_LAUNCHCTL_ENTRY_RE = re.compile(r'^\s*"(\w+)"\s*=\s*(?:"([^"]*)"|([\w./\-]+));\s*$')
-
-
-def _parse_launchctl_info(output: str) -> dict[str, str]:
-    """Extract scalar key/value pairs from launchctl dict output."""
-    info: dict[str, str] = {}
-    for line in output.splitlines():
-        m = _LAUNCHCTL_ENTRY_RE.match(line)
-        if m:
-            # group(2) is a quoted string value; group(3) is an unquoted value
-            info[m.group(1)] = m.group(2) if m.group(2) is not None else m.group(3)
-    return info
-
-
-def _service_registered() -> bool:
-    """Return True if kamp is registered in the launchd namespace.
-
-    A non-zero exit from `launchctl list` means the label is unknown to launchd.
-    Zero exit means the service is registered (running or stopped).
-    """
-    return _launchctl_list().returncode == 0
-
-
-def _service_pid() -> int | None:
-    """Return the PID of the running kamp service, or None if not running.
-
-    Queries launchctl for the service label. A positive PID means the process is
-    alive; absent or 0 means the service is registered but not currently running.
-    """
-    result = _launchctl_list()
-    if result.returncode != 0:
-        return None
-    info = _parse_launchctl_info(result.stdout)
-    pid_str = info.get("PID", "")
-    if not pid_str.isdigit():
-        return None
-    pid = int(pid_str)
-    return pid if pid > 0 else None
-
-
-def _cmd_stop() -> None:
-    if not _PLIST_PATH.exists():
-        print("kamp is not installed as a service. Run kamp install-service first.")
-        return
-    if _service_pid() is None:
-        print("kamp is already stopped.")
-        return
-    # bootout stops and unregisters the service; use check=False so a
-    # non-zero exit (e.g. already unloaded) doesn't raise.
-    subprocess.run(
-        ["launchctl", "bootout", _launchd_domain(), str(_PLIST_PATH)], check=False
-    )
-    print("kamp stopped.")
-
-
-def _cmd_play() -> None:
-    if not _PLIST_PATH.exists():
-        print("kamp is not installed as a service. Run kamp install-service first.")
-        return
-    if _service_pid() is not None:
-        print("kamp is already running.")
-        return
-    if _service_registered():
-        # Registered but not running (PID = "-"): bootstrap would fail with EIO
-        # because the label is already in launchd's namespace. Use kickstart instead.
-        subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{_SERVICE_LABEL}"],
-            check=True,
-        )
-    else:
-        # Not registered at all: bootstrap from the plist.
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(_PLIST_PATH)], check=True
-        )
-    print("kamp started.")
-
-
-def _cmd_status() -> None:
-    if not _PLIST_PATH.exists():
-        print("kamp is not installed as a service.")
-        return
-    pid = _service_pid()
-    if pid is None:
-        result = _launchctl_list()
-        if result.returncode == 0:
-            # Registered but not running — surface the last exit code so the
-            # user can tell whether it crashed or was cleanly stopped.
-            info = _parse_launchctl_info(result.stdout)
-            last_exit = info.get("LastExitStatus", "0")
-            if last_exit != "0":
-                print(f"kamp is not running (crashed, last exit: {last_exit})")
-                print(f"  Logs → {_LOG_PATH}")
-                return
-        print("kamp is not running.")
-        return
-    ps = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "etime="],
-        capture_output=True,
-        text=True,
-    )
-    uptime = ps.stdout.strip() if ps.returncode == 0 else "unknown"
-    print(f"kamp is running (pid {pid}, uptime {uptime})")
-
-
-def _resolve_kamp_binary() -> str:
-    """Return the path to the kamp binary to embed in the launchd plist.
-
-    Prefers the Homebrew-managed binary over pyenv shims. Pyenv shims depend on
-    a specific Python environment; launchd runs with a minimal PATH/env, so shims
-    often fail to locate their backing interpreter or site-packages at runtime.
-    """
-    # Ask Homebrew for the canonical prefix — most reliable when brew is available.
-    try:
-        result = subprocess.run(
-            ["brew", "--prefix", "kamp"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        candidate = Path(result.stdout.strip()) / "bin" / "kamp"
-        if candidate.exists():
-            return str(candidate)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-
-    # Well-known Homebrew prefix locations (Apple Silicon / Intel).
-    for path in _HOMEBREW_KAMP_PATHS:
-        if Path(path).exists():
-            return path
-
-    # Fall back to PATH search, but warn loudly if it resolves to a pyenv shim.
-    found = shutil.which("kamp")
-    if found and ".pyenv/shims" in found:
-        print(
-            f"Warning: 'kamp' resolved to a pyenv shim ({found}).\n"
-            "The launchd service may fail after a Python environment change.\n"
-            "Fix: pip uninstall kamp && pyenv rehash, then re-run install-service."
-        )
-    return found or sys.argv[0]
-
-
 def _resolve_mpv_binary() -> str:
     """Return the absolute path to the mpv binary.
 
-    The .app bundle sets KAMP_MPV_BIN to the bundled binary path; check that
-    first. For launchd (macOS minimal PATH) or an Electron-spawned daemon on
-    Windows (stale parent-shell PATH), fall back to platform-typical install
-    locations before relying on PATH.
+    Electron sets KAMP_MPV_BIN to the bundled binary path before spawning the
+    daemon; trust it unconditionally when present. Skipping the existence check
+    means a bad path surfaces as FileNotFoundError: '/full/path/to/mpv' rather
+    than silently falling through to the bare 'mpv' string.
+
+    Without KAMP_MPV_BIN (e.g. a frozen bundle started outside Electron), infer
+    the path from sys._MEIPASS: kamp/_internal/ → ../../ → mpv[.exe]. Fall back
+    to platform-typical install locations, then PATH.
     """
     env_path = os.environ.get("KAMP_MPV_BIN")
-    if env_path and Path(env_path).exists():
+    if env_path:
         return env_path
+    # Frozen bundle without KAMP_MPV_BIN: infer from _internal/ layout.
+    # Contents/Resources/kamp/_internal/ → ../../ → Contents/Resources/mpv
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        name = Path("mpv", "mpv.exe") if sys.platform == "win32" else Path("mpv")
+        bundled = Path(sys._MEIPASS).parent.parent / name
+        if bundled.exists():
+            return str(bundled)
     fallback_paths = _WIN_MPV_PATHS if sys.platform == "win32" else _HOMEBREW_MPV_PATHS
     for path in fallback_paths:
         if Path(path).exists():
             return path
     return shutil.which("mpv") or "mpv"
-
-
-def _cmd_install_service(config_path: Path) -> None:
-    from kamp_core.library import LibraryIndex
-
-    db = LibraryIndex(_state_dir() / "library.db")
-    try:
-        settings = db.get_all_settings()
-        if not settings and sys.stdin.isatty():
-            Config.first_run_setup(db)
-    finally:
-        db.close()
-    exec_path = _resolve_kamp_binary()
-    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>             <string>{_SERVICE_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{exec_path}</string>
-        <string>--config</string>
-        <string>{config_path}</string>
-        <string>daemon</string>
-    </array>
-    <key>RunAtLoad</key>         <true/>
-    <key>KeepAlive</key>         <true/>
-    <key>StandardOutPath</key>   <string>{_LOG_PATH}</string>
-    <key>StandardErrorPath</key> <string>{_LOG_PATH}</string>
-</dict>
-</plist>"""
-    _PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PLIST_PATH.write_text(plist)
-    # Bootout any stale registration before bootstrapping — launchctl returns
-    # error 5 (ENXIO) if the label is already registered, even with a new plist.
-    if _service_registered():
-        subprocess.run(
-            ["launchctl", "bootout", _launchd_domain(), str(_PLIST_PATH)], check=False
-        )
-    subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(_PLIST_PATH)], check=True
-    )
-    print("kamp installed and started.")
-    print(f"  Logs → {_LOG_PATH}")
-    print("\nUseful commands:")
-    print("  kamp stop             # pause the service")
-    print("  kamp play             # resume the service")
-    print("  kamp status           # check if it's running")
-    print("  kamp uninstall-service  # remove it permanently")
-
-
-def _cmd_uninstall_service() -> None:
-    if not _PLIST_PATH.exists():
-        print("Service is not installed.")
-        return
-    subprocess.run(
-        ["launchctl", "bootout", _launchd_domain(), str(_PLIST_PATH)], check=False
-    )
-    _PLIST_PATH.unlink()
-    print("Service removed.")
 
 
 if __name__ == "__main__":

@@ -89,6 +89,18 @@ datas = [
     # pyproject.toml is used by _get_version() as the canonical version source;
     # include it so the frozen app reports the correct version string.
     ("pyproject.toml", "."),
+    # kamp_fade.lua drives click-free pause/stop/resume fades inside mpv's event
+    # loop; playback.py loads it via --script=Path(__file__).parent/"kamp_fade.lua".
+    # collect_submodules only gathers .py modules, so this non-Python sibling must
+    # be staged explicitly into kamp_core/ — without it the frozen app passes mpv
+    # a nonexistent --script path, the script silently never loads, and the
+    # script-message-driven transport controls become no-ops (KAMP-519).
+    ("kamp_core/kamp_fade.lua", "kamp_core"),
+    # genres.txt is the canonical genre allowlist for KAMP-587 Last.fm enrichment;
+    # genre_sources.py loads it via Path(__file__).parent/"data"/"genres.txt".
+    # collect_submodules gathers only .py, so this non-Python sibling must be
+    # staged explicitly, or the filter silently drops every tag in the frozen app.
+    ("kamp_daemon/data/genres.txt", "kamp_daemon/data"),
 ]
 
 a = Analysis(
@@ -116,7 +128,15 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,  # server process — no GUI window
+    # console=False builds kamp.exe as a Windows GUI-subsystem binary so no
+    # console window is allocated when Electron spawns it, and — critically —
+    # so the multiprocessing.spawn workers used during sync (which re-launch
+    # this same binary, see kamp_daemon/syncer.py and pipeline.py) do not
+    # flash a console per worker. CPython's popen_spawn_win32 does not pass
+    # CREATE_NO_WINDOW; the only reliable suppression is at the PE subsystem
+    # level (KAMP-430). On macOS/Linux this flag has no effect.
+    # stdio still works via inherited pipe handles set by the parent.
+    console=False,
 )
 
 coll = COLLECT(

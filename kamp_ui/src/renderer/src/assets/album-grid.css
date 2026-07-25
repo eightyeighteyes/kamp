@@ -1,3 +1,59 @@
+/* Library view wrapper ----------------------------------------------------- */
+
+.library-view {
+  display: flex;
+  flex-direction: column;
+  /* No fixed height — lets .library-view grow with its content so that
+     position:sticky on .library-collection-selector works for the full
+     scroll extent. The track-list context restores height:100% via
+     layout.css so the hero fills the viewport there. */
+  --selector-h: 29px;
+}
+
+/* Collection-type selector (Albums | Playlists) ---------------------------- */
+
+.library-collection-selector {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  /* Bleed past .main-content's 16px padding (album-grid context) or
+     .library-view's 16px padding (track-list context) so the bar and
+     its border-bottom extend edge-to-edge. Tab content is re-inset
+     by the matching padding: 0 16px below. */
+  margin: 0 -16px;
+  padding: 0 16px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 11;
+}
+
+.library-collection-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  padding: 8px 12px 6px;
+  text-transform: uppercase;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.library-collection-tab:hover {
+  color: var(--text);
+}
+
+.library-collection-tab--active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
 /* Album grid --------------------------------------------------------------- */
 
 .album-grid-container {
@@ -7,50 +63,154 @@
 }
 
 .album-grid-toolbar {
+  position: sticky;
+  top: var(--selector-h, 0px);
+  z-index: 10;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px 4px;
+  gap: 8px;
+  padding: 6px 16px;
+  /* Bleed past .main-content's left/right padding to cover the full width.
+     Top padding is removed by layout.css when the album grid is active. */
+  margin: 0 -16px 0;
 }
 
-.sort-control {
+/* When embedded inside the resize handle (.album-meta-toggle), the toolbar
+   shares the same horizontal band as the drag zone. It is transparent so the
+   playlist hero gradient bleeds through, and non-sticky since it lives above
+   the scrollable track list. The drag handle's cursor and border are kept. */
+.album-grid-toolbar--embedded {
+  position: static;
+  background: transparent;
+  border-bottom: none;
+  margin: 0;
+  flex: 1;
+  cursor: default;
+}
+
+/* Breadcrumb sits below the toolbar rail (no hero image to overlay).
+   Double-class selector outranks .breadcrumb { position: absolute } from track-list.css. */
+.album-grid-breadcrumb.breadcrumb {
+  position: static;
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 0;
+}
+
+/* Shared toolbar dropdown styles ------------------------------------------- */
+
+.sort-anchor,
+.filter-anchor {
+  position: relative;
+}
+
+.toolbar-dropdown-trigger {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+  white-space: nowrap;
+}
+
+.toolbar-dropdown-trigger:hover {
+  background: var(--surface-hover);
+}
+
+.toolbar-dropdown-trigger.has-active {
+  border-color: var(--accent-dim);
+}
+
+/* Direction toggle sits immediately after the sort dropdown. */
+.sort-dir-btn {
+  padding: 3px 6px;
+  font-size: 13px;
+  min-width: 26px;
+  justify-content: center;
+}
+
+.toolbar-dropdown-badge {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.dropdown-chevron {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.toolbar-dropdown-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  min-width: 160px;
+  padding: 4px;
+  z-index: 50;
+  white-space: nowrap;
+}
+
+.toolbar-dropdown-item {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
-}
-
-.sort-label {
-  color: var(--text-dim);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-right: 2px;
-}
-
-.sort-btn {
   background: none;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 4px;
   color: var(--text-dim);
   cursor: pointer;
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 5px 10px;
+  width: 100%;
+  text-align: left;
   transition:
     background 0.1s,
     color 0.1s;
 }
 
-.sort-btn:hover {
+.toolbar-dropdown-item:hover {
   background: var(--surface-hover);
   color: var(--text);
 }
 
-.sort-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+.toolbar-dropdown-item.active {
+  color: var(--accent);
 }
+
+.toolbar-dropdown-item.toolbar-dropdown-clear {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.toolbar-dropdown-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.dropdown-check {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: 10px;
+}
+
+/* Album grid --------------------------------------------------------------- */
 
 .album-grid {
   display: grid;
@@ -62,4 +222,107 @@
   color: var(--text-dim);
   padding: 40px;
   text-align: center;
+}
+
+/* Playlist type filter (KAMP-463) ------------------------------------------ */
+
+.playlist-type-filter {
+  display: flex;
+  gap: 2px;
+}
+
+.playlist-type-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+  transition:
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
+}
+
+.playlist-type-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.playlist-type-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Playlist CTA buttons (KAMP-463) ------------------------------------------ */
+
+.playlist-cta-group {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.playlist-cta-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+  transition:
+    background 0.1s,
+    color 0.1s,
+    border-color 0.1s;
+}
+
+.playlist-cta-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.playlist-cta-btn--magic {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.playlist-cta-btn--magic:hover {
+  background: var(--accent-dim);
+}
+
+.view-mode-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-right: 8px;
+}
+
+.view-mode-btn {
+  background: none;
+  border: none;
+  padding: 4px 8px;
+  cursor: pointer;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+}
+
+.view-mode-btn + .view-mode-btn {
+  border-left: 1px solid var(--border);
+}
+
+.view-mode-btn--active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.view-mode-btn:hover:not(.view-mode-btn--active) {
+  color: var(--text);
+  background: var(--surface-hover);
 }

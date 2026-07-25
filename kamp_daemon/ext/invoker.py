@@ -61,7 +61,7 @@ def _track_to_metadata(track: Track) -> TrackMetadata:
         artist=track.artist,
         album=track.album,
         album_artist=track.album_artist,
-        year=track.year,
+        release_date=track.release_date,
         track_number=track.track_number,
         mbid=track.mb_recording_id,
         release_mbid=track.mb_release_id,

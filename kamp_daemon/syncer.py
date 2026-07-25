@@ -7,11 +7,15 @@ import logging.handlers
 import multiprocessing
 import queue
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import BandcampConfig, Config, _state_dir
+
+if TYPE_CHECKING:
+    from kamp_core.library import LibraryIndex
 
 
 class NeedsLoginError(Exception):
@@ -34,8 +38,8 @@ logger = logging.getLogger(__name__)
 def _sync_worker(
     bc_config: BandcampConfig,
     watch_dir: Path,
-    state_file: Path,
     db_path: Path,
+    notify_q: Any,
     status_q: Any,
     log_q: Any,
     result_q: Any,
@@ -51,18 +55,36 @@ def _sync_worker(
     try:
         from kamp_core.library import LibraryIndex
 
-        from .bandcamp import sync_new_purchases
-
         index = LibraryIndex(db_path)
         try:
-            paths = sync_new_purchases(
-                bc_config=bc_config,
-                watch_dir=watch_dir,
-                state_file=state_file,
-                index=index,
-                status_callback=lambda msg: status_q.put(msg),
-            )
-            result_q.put(("ok", paths))
+            if bc_config.collection_mode == "stream":
+                from .bandcamp import sync_collection_stream
+                from .config import Config
+
+                # Read the "apply Bandcamp labels as genres" toggle from the DB
+                # (subprocess: no inherited config) so a disabled toggle stops the
+                # labels reaching the library while sync still caches them.
+                apply_bc_genres = Config.load(index).tagging.bandcamp_genres
+                album_count, track_count, new_album_keys = sync_collection_stream(
+                    bc_config=bc_config,
+                    watch_dir=watch_dir,
+                    index=index,
+                    status_callback=lambda msg: status_q.put(msg),
+                    art_cache_dir=_state_dir() / "art_cache",
+                    batch_indexed_callback=lambda: notify_q.put(True),
+                    apply_bandcamp_genres=apply_bc_genres,
+                )
+                result_q.put(("ok_stream", (album_count, track_count, new_album_keys)))
+            else:
+                from .bandcamp import sync_new_purchases
+
+                paths = sync_new_purchases(
+                    bc_config=bc_config,
+                    watch_dir=watch_dir,
+                    index=index,
+                    status_callback=lambda msg: status_q.put(msg),
+                )
+                result_q.put(("ok", paths))
         finally:
             index.close()
     except Exception as exc:  # noqa: BLE001
@@ -78,9 +100,53 @@ def _sync_worker(
         _root.removeHandler(handler)
 
 
+def _download_album_worker(
+    bc_config: BandcampConfig,
+    watch_dir: Path,
+    db_path: Path,
+    sale_item_id: str,
+    status_q: Any,
+    log_q: Any,
+    result_q: Any,
+) -> None:
+    """Entry point for the single-album download subprocess."""
+    _root = logging.getLogger()
+    _root.setLevel(logging.DEBUG)
+    handler = logging.handlers.QueueHandler(log_q)
+    _root.addHandler(handler)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    try:
+        from kamp_core.library import LibraryIndex
+
+        from .bandcamp import download_single_album
+
+        index = LibraryIndex(db_path)
+        try:
+            dest = download_single_album(
+                bc_config=bc_config,
+                watch_dir=watch_dir,
+                index=index,
+                sale_item_id=sale_item_id,
+                status_callback=lambda msg: status_q.put(msg),
+                # KAMP-436/566: byte-progress rides the same queue with a
+                # "progress:<downloaded>:<total>" prefix so the parent can demux it
+                # to progress_callback(sale_item_id, downloaded, total).
+                on_progress=lambda dl, tot: status_q.put(f"progress:{dl}:{tot}"),
+            )
+            result_q.put(("ok", str(dest)))
+        finally:
+            index.close()
+    except Exception as exc:  # noqa: BLE001
+        if type(exc).__name__ == "NeedsLoginError":
+            result_q.put(("needs_login", str(exc)))
+        else:
+            result_q.put(("error", str(exc)))
+    finally:
+        _root.removeHandler(handler)
+
+
 def _mark_synced_worker(
     bc_config: BandcampConfig,
-    state_file: Path,
     db_path: Path,
     status_q: Any,
     log_q: Any,
@@ -100,9 +166,7 @@ def _mark_synced_worker(
 
         index = LibraryIndex(db_path)
         try:
-            mark_collection_synced(
-                bc_config=bc_config, state_file=state_file, index=index
-            )
+            mark_collection_synced(bc_config=bc_config, index=index)
             result_q.put(("ok", None))
         finally:
             index.close()
@@ -148,6 +212,69 @@ def _replay_log_queue(log_q: Any) -> None:
             break
 
 
+def process_next_download(
+    index: "LibraryIndex",
+    download_fn: Callable[[str], Any],
+    *,
+    provider: str = "bandcamp",
+    on_state: Callable[[str, str], None] | None = None,
+    retry_delays: Sequence[int] = (5, 10, 20),
+    sleep: Callable[[float], None] = time.sleep,
+) -> str | None:
+    """Process the next queued download through the persistent state machine.
+
+    The enqueue-then-process-in-order engine (KAMP-565). Pops the lowest-position
+    'queued' item, marks it 'downloading', runs *download_fn* (the per-item
+    downloader, e.g. ``Syncer.download_album``) with 429 back-off, then either
+    removes it on success ('done' has no row state) or leaves it 'failed' with its
+    error text. **A failed item never aborts the batch** — the failure is captured
+    and the function returns normally so the caller can pull the next item.
+
+    *on_state* (if given) is called ``(provider_item_id, state)`` on each
+    transition ('downloading' | 'done' | 'failed') for WebSocket broadcast.
+
+    Returns the processed provider_item_id, or None when the queue is empty.
+    """
+    pid = index.next_queued_download(provider=provider)
+    if pid is None:
+        return None
+
+    index.mark_downloading(pid, provider=provider)
+    if on_state is not None:
+        on_state(pid, "downloading")
+
+    # 429 back-off: retry the whole item after a delay; the trailing None is the
+    # final attempt with no further retry. Non-429 errors fail immediately.
+    for delay in list(retry_delays) + [None]:
+        try:
+            download_fn(pid)
+        except NeedsLoginError:
+            logger.warning("Download: no valid session for %s", pid)
+            index.mark_download_failed(pid, "Login required", provider=provider)
+            if on_state is not None:
+                on_state(pid, "failed")
+            return pid
+        except Exception as exc:
+            if "429" in str(exc) and delay is not None:
+                logger.warning(
+                    "Download rate-limited for %s; retrying in %ds", pid, delay
+                )
+                sleep(delay)
+                continue
+            logger.exception("Download failed for %s", pid)
+            index.mark_download_failed(pid, str(exc)[:200], provider=provider)
+            if on_state is not None:
+                on_state(pid, "failed")
+            return pid
+        else:
+            index.mark_download_done(pid, provider=provider)
+            if on_state is not None:
+                on_state(pid, "done")
+            return pid
+
+    return pid  # pragma: no cover - loop always returns inside
+
+
 class Syncer:
     """Run Bandcamp collection sync on a configurable interval.
 
@@ -160,7 +287,19 @@ class Syncer:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self.status_callback: Callable[[str], None] | None = None
+        # KAMP-436/566: per-album byte-progress (sale_item_id, downloaded_bytes,
+        # total_bytes), addressed by sale_item_id. Distinct from status_callback,
+        # which drives the global menu-bar sync indicator and carries no identity.
+        self.progress_callback: Callable[[str, int, int], None] | None = None
         self.error_callback: Callable[[str, str, str], None] | None = None
+        self.on_tracks_indexed: Callable[[], None] | None = None
+        # KAMP-618: fired ONCE at the end of a stream sync with the (album_artist,
+        # album) keys of albums indexed for the first time this run, so the daemon
+        # can auto-enrich them with Last.fm genres. Distinct from on_tracks_indexed
+        # (a per-batch UI ping that can fire mid-sync).
+        self.on_stream_albums_added: Callable[[list[tuple[str, str]]], None] | None = (
+            None
+        )
 
     # ------------------------------------------------------------------
     # Public interface
@@ -249,14 +388,26 @@ class Syncer:
             logger.warning("No [bandcamp] section in config — nothing to sync.")
             return
 
-        state_file = _state_dir() / "bandcamp_state.json"
+        db_path = _state_dir() / "library.db"
 
-        if not skip_auto_mark and not state_file.exists():
-            logger.info(
-                "No sync state found — marking existing collection as already synced "
-                "before first download.  Use --download-all to re-download everything."
-            )
-            self.mark_synced()
+        if not skip_auto_mark and bc.collection_mode != "stream":
+            # First-run detection for download mode: if bandcamp_collection has
+            # no rows, mark the entire existing collection as synced before
+            # downloading to avoid re-downloading a library the user already has.
+            # Skipped in stream mode (stream sync indexes everything as remote
+            # directly; auto-mark would incorrectly set items to mode='local').
+            # Use --download-all (skip_auto_mark=True) to bypass.
+            from kamp_core.library import LibraryIndex as _LI
+
+            _idx = _LI(db_path)
+            _is_first_run = not _idx.get_collection_state()
+            _idx.close()
+            if _is_first_run:
+                logger.info(
+                    "No sync state found — marking existing collection as already synced "
+                    "before first download.  Use --download-all to re-download everything."
+                )
+                self.mark_synced()
 
         logger.info("Starting Bandcamp sync…")
         # Signal "sync in progress" immediately — the subprocess spends most
@@ -266,10 +417,10 @@ class Syncer:
         if self.status_callback is not None:
             self.status_callback("Syncing\u2026")
 
-        db_path = _state_dir() / "library.db"
+        notify_q: Any = multiprocessing.get_context("spawn").Queue()
         proc, status_q, log_q, result_q = _spawn_worker(
             _sync_worker,
-            (bc, self._config.paths.watch_folder, state_file, db_path),
+            (bc, self._config.paths.watch_folder, db_path, notify_q),
         )
 
         # Drain both queues while the subprocess runs.  log_q MUST be drained
@@ -284,6 +435,13 @@ class Syncer:
             except queue.Empty:
                 pass
             _replay_log_queue(log_q)
+            while True:
+                try:
+                    notify_q.get_nowait()
+                    if self.on_tracks_indexed is not None:
+                        self.on_tracks_indexed()
+                except queue.Empty:
+                    break
 
         # Drain any messages that arrived just before the process exited.
         while True:
@@ -291,6 +449,13 @@ class Syncer:
                 msg = status_q.get_nowait()
                 if self.status_callback is not None:
                     self.status_callback(msg)
+            except queue.Empty:
+                break
+        while True:
+            try:
+                notify_q.get_nowait()
+                if self.on_tracks_indexed is not None:
+                    self.on_tracks_indexed()
             except queue.Empty:
                 break
 
@@ -310,25 +475,137 @@ class Syncer:
         if status == "error":
             raise RuntimeError(f"Bandcamp sync failed: {value}")
 
-        paths = value or []
-        if paths:
-            logger.info(
-                "Sync complete: %d file(s) downloaded to watch folder.", len(paths)
-            )
+        if status == "ok_stream":
+            album_count, track_count, new_album_keys = value
+            if track_count:
+                logger.info(
+                    "Sync complete: %d album(s), %d track(s) indexed as remote.",
+                    album_count,
+                    track_count,
+                )
+                if self.on_tracks_indexed is not None:
+                    self.on_tracks_indexed()
+            else:
+                logger.info(
+                    "Sync complete: %d album(s) already up to date.", album_count
+                )
+            # Fire ONCE, after the subprocess has fully completed, with the newly
+            # indexed albums (KAMP-618). on_tracks_indexed above can fire per-batch
+            # mid-sync, so it is the wrong hook for a one-shot enrichment trigger.
+            if new_album_keys and self.on_stream_albums_added is not None:
+                self.on_stream_albums_added(new_album_keys)
         else:
-            logger.info("Sync complete: nothing new.")
+            paths = value or []
+            if paths:
+                logger.info(
+                    "Sync complete: %d file(s) downloaded to watch folder.", len(paths)
+                )
+            else:
+                logger.info("Sync complete: nothing new.")
         # Clear the status display in the menu bar (applies to both automatic
         # and manual syncs — an empty string signals "no active sync").
         if self.status_callback is not None:
             self.status_callback("")
 
     def sync_all_purchases(self) -> None:
-        """Clear the sync-state file and re-download the entire Bandcamp collection."""
-        state_file = _state_dir() / "bandcamp_state.json"
-        if state_file.exists():
-            state_file.unlink()
-            logger.info("Bandcamp sync-all: cleared state file.")
+        """Re-sync or re-download the entire Bandcamp collection.
+
+        In stream mode: re-indexes all purchases as remote (no state reset needed;
+        stream sync is unconditional).  In download mode: resets sync state so the
+        next sync re-downloads everything.
+        """
+        bc = self._config.bandcamp
+        if bc and bc.collection_mode == "stream":
+            logger.info(
+                "Bandcamp re-sync (stream): re-indexing all purchases as remote."
+            )
+            self.sync_once(skip_auto_mark=True)
+            return
+
+        from kamp_core.library import LibraryIndex as _LI
+
+        db_path = _state_dir() / "library.db"
+        idx = _LI(db_path)
+        try:
+            idx.reset_collection_sync_state()
+        finally:
+            idx.close()
+        logger.info("Bandcamp sync-all: reset collection sync state.")
         self.sync_once(skip_auto_mark=True)
+
+    def _dispatch_download_msg(self, msg: str, sale_item_id: str) -> None:
+        """Route a status_q message from the download subprocess.
+
+        Byte-progress arrives as ``"progress:<downloaded>:<total>"`` and is demuxed
+        to ``progress_callback(sale_item_id, downloaded, total)``; a malformed
+        payload is ignored. Every other message is a human-readable status string
+        for the global sync indicator (KAMP-436/566).
+        """
+        if msg.startswith("progress:"):
+            if self.progress_callback is not None:
+                parts = msg[len("progress:") :].split(":")
+                try:
+                    downloaded, total = int(parts[0]), int(parts[1])
+                except (ValueError, IndexError):
+                    return
+                self.progress_callback(sale_item_id, downloaded, total)
+            return
+        if self.status_callback is not None:
+            self.status_callback(msg)
+
+    def download_album(self, sale_item_id: str) -> str:
+        """Download a single Bandcamp album by its sale_item_id.
+
+        Runs in an isolated subprocess.  Returns the path to the downloaded
+        ZIP on success.  Raises ``RuntimeError`` or ``NeedsLoginError`` on
+        failure.
+        """
+        bc = self._config.bandcamp
+        if bc is None:
+            raise RuntimeError("No [bandcamp] section in config — cannot download.")
+
+        db_path = _state_dir() / "library.db"
+
+        if self.status_callback is not None:
+            self.status_callback(f"Downloading {sale_item_id}…")
+
+        proc, status_q, log_q, result_q = _spawn_worker(
+            _download_album_worker,
+            (bc, self._config.paths.watch_folder, db_path, sale_item_id),
+        )
+
+        while proc.is_alive():  # pragma: no cover
+            try:
+                msg = status_q.get(timeout=0.1)
+                self._dispatch_download_msg(msg, sale_item_id)
+            except queue.Empty:
+                pass
+            _replay_log_queue(log_q)
+
+        while True:
+            try:
+                msg = status_q.get_nowait()
+                self._dispatch_download_msg(msg, sale_item_id)
+            except queue.Empty:
+                break
+
+        proc.join(timeout=10)
+        _replay_log_queue(log_q)
+
+        if self.status_callback is not None:
+            self.status_callback("")
+
+        try:
+            status, value = result_q.get_nowait()
+        except queue.Empty:  # pragma: no cover
+            raise RuntimeError("Download subprocess exited without returning a result")
+
+        if status == "needs_login":
+            raise NeedsLoginError(value)
+        if status == "error":
+            raise RuntimeError(f"Album download failed: {value}")
+
+        return str(value)  # path to the downloaded ZIP
 
     def mark_synced(self) -> None:
         """Mark the entire collection as already downloaded without fetching anything."""
@@ -336,12 +613,11 @@ class Syncer:
         if bc is None:
             logger.warning("No [bandcamp] section in config — nothing to mark.")
             return
-        state_file = _state_dir() / "bandcamp_state.json"
         db_path = _state_dir() / "library.db"
 
         proc, _status_q, log_q, result_q = _spawn_worker(
             _mark_synced_worker,
-            (bc, state_file, db_path),
+            (bc, db_path),
         )
 
         # Drain log_q while the subprocess runs — same pattern as sync_once().
@@ -397,19 +673,18 @@ class Syncer:
 
 
 def logout() -> None:
-    """Clear the Bandcamp session from DB and delete the sync-state file.
+    """Clear the Bandcamp session from the DB, preserving the collection ledger.
 
-    After logout the next sync will re-authenticate interactively and
-    re-examine the full collection.  Both the DB session row and the
-    sync-state file are removed together — a session without state (or
-    vice versa) would leave the system in an inconsistent half-logged-in
-    state.
+    Only the session is cleared. The bandcamp_collection table is the file→purchase
+    provenance map (which local files came from which sale_item_id, KAMP-528), so
+    wiping it on every logout needlessly destroys that mapping — and, with the FK
+    from provenanced albums/tracks, the bare DELETE would raise. The next sync after
+    re-authentication reconciles the ledger instead of rebuilding it from scratch.
     """
     from kamp_core.library import LibraryIndex
 
     state = _state_dir()
     db_path = state / "library.db"
-    state_file = state / "bandcamp_state.json"
 
     if db_path.exists():
         index = LibraryIndex(db_path)
@@ -417,10 +692,18 @@ def logout() -> None:
             index.clear_session("bandcamp")
         finally:
             index.close()
-        logger.info("Bandcamp logout: session cleared.")
+        logger.info("Bandcamp logout: session cleared; collection ledger preserved.")
 
-    # Remove legacy session file if it still exists (e.g. migration failed).
+    import shutil
+
+    art_cache = state / "art_cache"
+    if art_cache.exists():
+        shutil.rmtree(art_cache)
+        logger.info("Bandcamp logout: art cache cleared.")
+
+    # Remove legacy files left over from pre-v19 installs.
     session_file = state / "bandcamp_session.json"
+    state_file = state / "bandcamp_state.json"
     removed: list[str] = []
     for f in (session_file, state_file):
         if f.exists():
@@ -428,6 +711,4 @@ def logout() -> None:
             removed.append(f.name)
 
     if removed:
-        logger.info("Bandcamp logout: removed %s.", ", ".join(removed))
-    else:
-        logger.info("Bandcamp logout: no state files found.")
+        logger.info("Bandcamp logout: removed legacy files %s.", ", ".join(removed))

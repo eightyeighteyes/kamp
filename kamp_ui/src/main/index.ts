@@ -17,7 +17,8 @@ import { createInterface } from 'readline'
 import * as http from 'http'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { theme } from '../shared/theme'
+import { theme, themes } from '../shared/theme'
+import type { ThemeName } from '../shared/theme'
 import { discoverExtensions, installExtension, uninstallExtension } from './extensions'
 import { readManifest } from './communityManifest'
 
@@ -125,7 +126,7 @@ function startNowPlayingHelper(): void {
     console.warn('[kamp] now-playing-helper binary not found — media keys disabled')
     return
   }
-  _helper = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] })
+  _helper = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   // Tee the helper's stderr to a per-launch log file so packaged installs
   // (no visible stderr) remain debuggable. Truncate on every spawn.
   try {
@@ -215,9 +216,14 @@ function findKampInvocation(): KampInvocation | null {
   // file instead.
   const venvRoot = resolve(app.getAppPath(), '../.venv')
   if (isWindows) {
+    // pythonw.exe is the no-console variant shipped with every CPython install
+    // on Windows. Prefer it over python.exe so the daemon never allocates a
+    // console window in dev mode (windowsHide:true is belt-and-suspenders).
+    const pyw = join(venvRoot, 'Scripts', 'pythonw.exe')
     const py = join(venvRoot, 'Scripts', 'python.exe')
     const script = join(venvRoot, 'Scripts', 'kamp')
-    if (existsSync(py) && existsSync(script)) return { command: py, args: [script] }
+    const pythonExe = existsSync(pyw) ? pyw : py
+    if (existsSync(pythonExe) && existsSync(script)) return { command: pythonExe, args: [script] }
   } else {
     const bin = join(venvRoot, 'bin', 'kamp')
     if (existsSync(bin)) return { command: bin, args: [] }
@@ -262,15 +268,20 @@ async function startServer(): Promise<void> {
     : undefined
 
   // detached: true puts the daemon in its own process group so that
-  // stopServer() can kill the group (daemon + mpv) all at once.
+  // stopServer() can kill the group (daemon + mpv) all at once on POSIX.
+  // Windows uses taskkill /T for tree kill and does not need detached; in
+  // fact CreateProcess silently ignores CREATE_NO_WINDOW (windowsHide) when
+  // combined with DETACHED_PROCESS, which would let kamp.exe's console
+  // window flash on launch (KAMP-430).
   const spawnEnv: NodeJS.ProcessEnv = { ...process.env }
   if (mpvBin) spawnEnv['KAMP_MPV_BIN'] = mpvBin
   // Tell the daemon it's running in dev mode so it allows the Vite dev server
   // origin (http://localhost:5173) in CORS — the renderer loads from there.
   if (is.dev) spawnEnv['KAMP_DEV'] = '1'
   serverProcess = spawn(invocation.command, [...invocation.args, 'daemon'], {
-    detached: true,
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
     env: spawnEnv
   })
 
@@ -293,7 +304,8 @@ function stopServer(): void {
         // equivalent). Synchronous because process.on('exit') is one of the
         // call sites and won't run async work.
         execFileSync('taskkill', ['/PID', String(serverProcess.pid), '/T', '/F'], {
-          stdio: 'ignore'
+          stdio: 'ignore',
+          windowsHide: true
         })
       } else {
         // Negative PID kills the entire process group (daemon + children).
@@ -553,15 +565,41 @@ function buildAppMenu(): void {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' }
+        // Dev tools are only useful during development — hide them in the packaged app.
+        ...(!app.isPackaged
+          ? [
+              { role: 'reload' as const },
+              { role: 'forceReload' as const },
+              { role: 'toggleDevTools' as const },
+              { type: 'separator' as const }
+            ]
+          : []),
+        { role: 'resetZoom' as const, accelerator: 'CommandOrControl+0' },
+        // Custom click handler (not role) so the [-3, +3] clamp applies. The
+        // native accelerator is kept without registerAccelerator:false so macOS
+        // captures Cmd+= at the menu level, which prevents Chromium's built-in
+        // zoom shortcut from also firing and double-stepping.
+        {
+          label: 'Zoom In',
+          accelerator: 'CommandOrControl+=',
+          click: (_, win) => {
+            const bw = win as BrowserWindow | undefined
+            if (bw) bw.webContents.setZoomLevel(Math.min(3, bw.webContents.getZoomLevel() + 1))
+          }
+        },
+        // Zoom-out keyboard shortcut is handled via before-input-event (see
+        // createWindow) because 'CommandOrControl+-' doesn't parse reliably.
+        {
+          label: 'Zoom Out',
+          accelerator: 'CommandOrControl+-',
+          registerAccelerator: false,
+          click: (_, win) => {
+            const bw = win as BrowserWindow | undefined
+            if (bw) bw.webContents.setZoomLevel(Math.max(-3, bw.webContents.getZoomLevel() - 1))
+          }
+        },
+        { type: 'separator' as const },
+        { role: 'togglefullscreen' as const }
       ]
     },
     {
@@ -614,6 +652,40 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  // Zoom-out: 'CommandOrControl+-' doesn't register reliably (Electron parser
+  // ambiguity on '-'), so intercept via physical key code instead.
+  // Zoom-in uses a native menu accelerator whose OS-level capture prevents
+  // Chromium's built-in Cmd+= from also firing — so no before-input-event
+  // handling needed (and adding it would double-step).
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    // View cycling (KAMP-560): Ctrl+Tab / Ctrl+Shift+Tab step through the top-level
+    // tabs. Handled here (not in the renderer) because keydown does not cross the
+    // sandboxed-extension iframe boundary, so a renderer listener would miss the
+    // event whenever an extension tab is focused. preventDefault stops the page from
+    // receiving the keydown (so the default Tab focus-traversal is suppressed too).
+    // Ctrl on all platforms — macOS Cmd+Tab is the OS app switcher and unreachable.
+    // Must come BEFORE the zoom early-return below, which rejects Shift.
+    if (
+      input.type === 'keyDown' &&
+      input.code === 'Tab' &&
+      input.control &&
+      !input.alt &&
+      !input.meta
+    ) {
+      event.preventDefault()
+      mainWindow.webContents.send('cycle-view', input.shift ? 'prev' : 'next')
+      return
+    }
+
+    // Zoom-out: 'CommandOrControl+-' doesn't register reliably (Electron parser
+    // ambiguity on '-'), so intercept via physical key code instead.
+    if (input.type !== 'keyDown' || input.shift || input.alt) return
+    const cmdOrCtrl = process.platform === 'darwin' ? input.meta : input.control
+    if (cmdOrCtrl && input.code === 'Minus') {
+      mainWindow.webContents.setZoomLevel(Math.max(-3, mainWindow.webContents.getZoomLevel() - 1))
+    }
   })
 
   // HMR for renderer base on electron-vite cli.
@@ -897,8 +969,36 @@ app.whenReady().then(async () => {
     shell.showItemInFolder(filePath)
   })
 
+  // KAMP-558: open a folder (the Music Library) in Finder/Explorer. shell.openPath
+  // reports failure via a resolved non-empty string (never throws), so surface it
+  // in the log rather than failing silently when the folder is missing/renamed.
+  ipcMain.on('shell:open-path', (_event, path: string) => {
+    if (!path) return
+    void shell.openPath(path).then((err) => {
+      if (err) console.error(`[kamp] shell.openPath(${path}) failed: ${err}`)
+    })
+  })
+
   ipcMain.on('shell:open-external', (_event, url: string) => {
     void shell.openExternal(url)
+  })
+
+  // KAMP-631: sync the native window chrome to the active palette. Deriving
+  // both the background and the Windows titlebar overlay from the shared themes
+  // table here (rather than passing colors in) keeps a single source of truth —
+  // the create-vs-update divergence that left the native bg pinned to the
+  // default '#141414' (the letterbox seam) is exactly what a second copy caused.
+  // Called from both startup (main.tsx) and interactive switches (store.setTheme).
+  ipcMain.on('kamp:sync-theme-chrome', (_event, name: string) => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    const t = themes[name as ThemeName] ?? theme
+    win.setBackgroundColor(t.bg)
+    // setTitleBarOverlay throws on a window created without an overlay (macOS/
+    // Linux have none), so guard to win32 where the window is created with one.
+    if (process.platform === 'win32') {
+      win.setTitleBarOverlay({ color: t.bg, symbolColor: t.text })
+    }
   })
 
   ipcMain.handle('update:dismiss', (_event, version: string) => {

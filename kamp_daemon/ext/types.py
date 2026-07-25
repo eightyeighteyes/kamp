@@ -22,7 +22,7 @@ class TrackMetadata:
     artist: str
     album: str
     album_artist: str
-    year: str
+    release_date: str
     track_number: int
     mbid: str  # MusicBrainz recording MBID (per-track; used by update_metadata)
     release_mbid: str = (

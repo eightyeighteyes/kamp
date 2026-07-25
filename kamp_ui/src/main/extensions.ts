@@ -150,7 +150,7 @@ function runNpm(args: string[]): Promise<void> {
     // In the packaged app: invoke the bundled node binary running npm-cli.js.
     // In dev: fall back to the system npm on PATH.
     const [cmd, cmdArgs] = bundled ? [bundled[0], [bundled[1], ...args]] : ['npm', args]
-    execFile(cmd, cmdArgs, { timeout: 60_000 }, (err) => {
+    execFile(cmd, cmdArgs, { timeout: 60_000, windowsHide: true }, (err) => {
       if (err) reject(err)
       else resolve()
     })

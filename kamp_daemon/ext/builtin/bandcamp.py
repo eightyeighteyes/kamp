@@ -119,6 +119,11 @@ class KampBandcampSyncer(BaseSyncer):
         assert self._inner is not None, "call _configure() before sync_all_purchases()"
         self._inner.sync_all_purchases()
 
+    def download_album(self, sale_item_id: str) -> str:
+        """Download a single Bandcamp album to the watch folder."""
+        assert self._inner is not None, "call _configure() before download_album()"
+        return self._inner.download_album(sale_item_id)
+
     # ------------------------------------------------------------------
     # Internal daemon API (not part of BaseSyncer)
     # ------------------------------------------------------------------
@@ -159,3 +164,53 @@ class KampBandcampSyncer(BaseSyncer):
             self._inner is not None
         ), "call _configure() before setting error_callback"
         self._inner.error_callback = cb
+
+    @property
+    def on_tracks_indexed(self) -> Callable[[], None] | None:
+        """Callback fired after stream sync indexes new remote tracks."""
+        if self._inner is None:
+            return None
+        return self._inner.on_tracks_indexed
+
+    @on_tracks_indexed.setter
+    def on_tracks_indexed(self, cb: Callable[[], None] | None) -> None:
+        assert (
+            self._inner is not None
+        ), "call _configure() before setting on_tracks_indexed"
+        self._inner.on_tracks_indexed = cb
+
+    @property
+    def on_stream_albums_added(
+        self,
+    ) -> Callable[[list[tuple[str, str]]], None] | None:
+        """Callback fired once per stream sync with newly-indexed album keys (KAMP-618)."""
+        if self._inner is None:
+            return None
+        return self._inner.on_stream_albums_added
+
+    @on_stream_albums_added.setter
+    def on_stream_albums_added(
+        self, cb: Callable[[list[tuple[str, str]]], None] | None
+    ) -> None:
+        assert (
+            self._inner is not None
+        ), "call _configure() before setting on_stream_albums_added"
+        self._inner.on_stream_albums_added = cb
+
+    @property
+    def progress_callback(self) -> Callable[[str, int, int], None] | None:
+        """Per-album byte-progress callback (sale_item_id, downloaded_bytes,
+        total_bytes) (KAMP-436/566)."""
+        if self._inner is None:
+            return None
+        return self._inner.progress_callback
+
+    @progress_callback.setter
+    def progress_callback(self, cb: Callable[[str, int, int], None] | None) -> None:
+        # Without this setter the assignment lands on the wrapper instead of the
+        # inner Syncer that actually runs download_album, so progress is never
+        # forwarded — the exact bug behind KAMP-436 showing no reveal.
+        assert (
+            self._inner is not None
+        ), "call _configure() before setting progress_callback"
+        self._inner.progress_callback = cb

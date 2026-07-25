@@ -1,76 +1,15 @@
 import React, { useState } from 'react'
 import { useStore } from '../store'
-import { artUrl } from '../api/client'
-import type { Album, Track } from '../api/client'
+import type { Album, PlaylistSearchResult, Track } from '../api/client'
 import { SortControl } from './SortControl'
-import { AlbumContextMenu } from './AlbumContextMenu'
+import { SourceControl } from './SourceControl'
+import { FilterControl } from './FilterControl'
+import { AlbumCard } from './AlbumCard'
+import { PlaylistCard } from './PlaylistCard'
 import { TrackContextMenu } from './TrackContextMenu'
 import { FavoriteIcon } from './TransportIcons'
 
-type AlbumMenu = { x: number; y: number; album: Album }
 type TrackMenu = { x: number; y: number; track: Track }
-
-function SearchAlbumCard({
-  album,
-  onContextMenu
-}: {
-  album: Album
-  onContextMenu: (e: React.MouseEvent, album: Album) => void
-}): React.JSX.Element {
-  const selectAlbum = useStore((s) => s.selectAlbum)
-  const setSearchQuery = useStore((s) => s.setSearchQuery)
-  const setActiveView = useStore((s) => s.setActiveView)
-  const [artLoaded, setArtLoaded] = useState(false)
-
-  const handleClick = (): void => {
-    void setActiveView('library')
-    void selectAlbum(album)
-    void setSearchQuery('')
-  }
-
-  return (
-    <div
-      className="search-album-card"
-      tabIndex={0}
-      draggable
-      onClick={handleClick}
-      onKeyDown={(e) => e.key === 'Enter' && handleClick()}
-      onContextMenu={(e) => onContextMenu(e, album)}
-      onDragStart={(e) => {
-        e.dataTransfer.setData(
-          'text/kamp-album',
-          JSON.stringify({
-            album_artist: album.album_artist,
-            album: album.album,
-            file_path: album.file_path
-          })
-        )
-        e.dataTransfer.effectAllowed = 'copy'
-      }}
-    >
-      <div className={`search-album-art${artLoaded ? ' has-art' : ''}`}>
-        {album.has_art && (
-          <img
-            src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)}
-            alt=""
-            onLoad={() => setArtLoaded(true)}
-            onError={() => setArtLoaded(false)}
-          />
-        )}
-      </div>
-      <div className="search-album-info">
-        <div className="search-album-title">{album.album}</div>
-        <div className="search-album-artist">{album.album_artist}</div>
-        <div className="search-album-year">{album.year}</div>
-        {album.favorite && (
-          <div className="album-fav-badge">
-            <FavoriteIcon active size={14} />
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
 
 function SearchTrackRow({
   track,
@@ -81,15 +20,16 @@ function SearchTrackRow({
 }): React.JSX.Element {
   const playTrack = useStore((s) => s.playTrack)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
+  const setFavorite = useStore((s) => s.setFavorite)
 
   const handleClick = (): void => {
-    // Pass file_path for tracks with no album so the server can look them up
-    // by path rather than by the empty album key.
+    // A track with no album is a missing-album card: address it by its canonical
+    // id so the server resolves it directly, not by the empty album key (KAMP-554).
     void playTrack(
       track.album_artist,
       track.album,
       track.track_number - 1,
-      track.album ? '' : track.file_path
+      track.album ? null : track.id
     )
     void setSearchQuery('')
   }
@@ -103,12 +43,22 @@ function SearchTrackRow({
       onKeyDown={(e) => e.key === 'Enter' && handleClick()}
       onContextMenu={(e) => onContextMenu(e, track)}
       onDragStart={(e) => {
-        e.dataTransfer.setData('text/kamp-track-path', track.file_path)
+        e.dataTransfer.setData('text/kamp-track-id', String(track.id))
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >
       <span className="search-track-fav">
-        {track.favorite && <FavoriteIcon active size={10} />}
+        <button
+          className={`search-track-fav-btn${track.favorite ? ' active' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            void setFavorite(track, !track.favorite)
+          }}
+          aria-label={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
+          aria-pressed={track.favorite}
+        >
+          <FavoriteIcon active={track.favorite} size={10} />
+        </button>
       </span>
       <span className="search-track-title">{track.title}</span>
       <span className="search-track-meta">
@@ -118,72 +68,163 @@ function SearchTrackRow({
   )
 }
 
+const SEARCH_SORT_OPTIONS = [
+  { key: 'album_artist', label: 'Artist' },
+  { key: 'album', label: 'Album' },
+  { key: 'date_added', label: 'Date Added' },
+  { key: 'last_played', label: 'Last Played' },
+  { key: 'most_played', label: 'Most Played' },
+  { key: 'release_date', label: 'Release Date' }
+]
+
 export function SearchView(): React.JSX.Element {
   const results = useStore((s) => s.searchResults)
   const query = useStore((s) => s.searchQuery)
+  const setSearchQuery = useStore((s) => s.setSearchQuery)
+  const libraryFilter = useStore((s) => s.libraryFilter)
+  const allAlbums = useStore((s) => s.library.albums)
+  const sortOrder = useStore((s) => s.sortOrder)
+  const sortDir = useStore((s) => s.sortDir)
+  const setSortOrder = useStore((s) => s.setSortOrder)
+  const setSortDir = useStore((s) => s.setSortDir)
 
-  const [albumMenu, setAlbumMenu] = useState<AlbumMenu | null>(null)
   const [trackMenu, setTrackMenu] = useState<TrackMenu | null>(null)
 
-  if (!results) {
-    return <div className="search-empty">Searching…</div>
-  }
+  const QUALITATIVE_FILTERS = ['favorite_album', 'has_favorite_track', 'unplayed', 'top_albums']
+  const hasQualitativeFilter = QUALITATIVE_FILTERS.some((f) => libraryFilter.includes(f))
 
-  const hasAlbums = results.albums.length > 0
-  const hasTracks = results.tracks.length > 0
+  const top100Keys =
+    libraryFilter.includes('top_albums') && allAlbums.length > 0
+      ? new Set(
+          [...allAlbums]
+            .sort((a, b) => b.play_count_avg - a.play_count_avg)
+            .slice(0, 100)
+            .map((a) => `${a.album_artist}\0${a.album}`)
+        )
+      : null
 
-  if (!hasAlbums && !hasTracks) {
-    return <div className="search-empty">No results for &ldquo;{query}&rdquo;</div>
+  const rawAlbums = results?.albums ?? []
+  let visibleAlbums = rawAlbums
+  if (hasQualitativeFilter) {
+    visibleAlbums = visibleAlbums.filter(
+      (a) =>
+        (libraryFilter.includes('favorite_album') && a.favorite) ||
+        (libraryFilter.includes('has_favorite_track') && a.has_favorite_track) ||
+        (libraryFilter.includes('unplayed') && a.last_played_at === null) ||
+        (libraryFilter.includes('top_albums') && top100Keys!.has(`${a.album_artist}\0${a.album}`))
+    )
   }
+  // Source filters are AND-type: they narrow the result set independently.
+  if (libraryFilter.includes('remote_only'))
+    visibleAlbums = visibleAlbums.filter((a) => a.source !== 'local')
+  if (libraryFilter.includes('local_only'))
+    visibleAlbums = visibleAlbums.filter((a) => a.source === 'local')
+
+  const albumMap = new Map<string, Album>()
+  allAlbums.forEach((a) => albumMap.set(`${a.album_artist}\0${a.album}`, a))
+
+  const rawTracks = results?.tracks ?? []
+  let visibleTracks = rawTracks
+  if (hasQualitativeFilter) {
+    visibleTracks = visibleTracks.filter((t) => {
+      const key = `${t.album_artist}\0${t.album}`
+      const album = t.album ? albumMap.get(key) : undefined
+      return (
+        (libraryFilter.includes('favorite_album') && album?.favorite === true) ||
+        (libraryFilter.includes('has_favorite_track') && t.favorite) ||
+        (libraryFilter.includes('unplayed') && t.play_count === 0) ||
+        (libraryFilter.includes('top_albums') && album !== undefined && top100Keys!.has(key))
+      )
+    })
+  }
+  // Source filters are AND-type: they narrow the result set independently.
+  if (libraryFilter.includes('remote_only'))
+    visibleTracks = visibleTracks.filter((t) => t.source !== 'local')
+  if (libraryFilter.includes('local_only'))
+    visibleTracks = visibleTracks.filter((t) => t.source === 'local')
+
+  const rawPlaylists: PlaylistSearchResult[] = results?.playlists ?? []
+  let visiblePlaylists = rawPlaylists
+  if (hasQualitativeFilter) {
+    visiblePlaylists = visiblePlaylists.filter(
+      (pl) =>
+        (libraryFilter.includes('favorite_album') && pl.favorite) ||
+        (libraryFilter.includes('unplayed') && pl.last_played_at === null)
+    )
+  }
+  if (libraryFilter.includes('remote_only'))
+    visiblePlaylists = visiblePlaylists.filter((pl) => pl.source !== 'local')
+  if (libraryFilter.includes('local_only'))
+    visiblePlaylists = visiblePlaylists.filter((pl) => pl.source === 'local')
 
   return (
     <div className="search-view">
-      {hasAlbums && <SortControl />}
-      {hasAlbums && (
-        <section className="search-section">
-          <h2 className="search-section-title">Albums</h2>
-          <div className="search-album-grid">
-            {results.albums.map((album) => (
-              <SearchAlbumCard
-                key={`${album.album_artist}\0${album.album}`}
-                album={album}
-                onContextMenu={(e, a) => {
-                  e.preventDefault()
-                  setTrackMenu(null)
-                  setAlbumMenu({ x: e.clientX, y: e.clientY, album: a })
-                }}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-      {hasTracks && (
-        <section className="search-section">
-          <h2 className="search-section-title">Tracks</h2>
-          <div className="search-track-list">
-            {results.tracks.map((track) => (
-              <SearchTrackRow
-                key={track.id}
-                track={track}
-                onContextMenu={(e, t) => {
-                  e.preventDefault()
-                  setAlbumMenu(null)
-                  setTrackMenu({ x: e.clientX, y: e.clientY, track: t })
-                }}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {albumMenu && (
-        <AlbumContextMenu
-          x={albumMenu.x}
-          y={albumMenu.y}
-          album={albumMenu.album}
-          onClose={() => setAlbumMenu(null)}
+      <div className="search-view-toolbar">
+        <SortControl
+          value={sortOrder}
+          options={SEARCH_SORT_OPTIONS}
+          dir={sortDir}
+          onChange={(key) => void setSortOrder(key as typeof sortOrder)}
+          onDirChange={(d) => void setSortDir(d)}
         />
-      )}
+        <SourceControl />
+        <FilterControl />
+      </div>
+      <div className="search-view-content">
+        {!results ? (
+          <div className="search-empty">Searching…</div>
+        ) : !visibleAlbums.length && !visibleTracks.length && !visiblePlaylists.length ? (
+          <div className="search-empty">No results for &ldquo;{query}&rdquo;</div>
+        ) : (
+          <>
+            {visibleAlbums.length > 0 && (
+              <section className="search-section">
+                <h2 className="search-section-title">Albums</h2>
+                <div className="search-album-grid">
+                  {visibleAlbums.map((album) => (
+                    <AlbumCard
+                      key={`${album.album_artist}\0${album.album}`}
+                      album={album}
+                      onAfterSelect={() => void setSearchQuery('')}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+            {visiblePlaylists.length > 0 && (
+              <section className="search-section">
+                <h2 className="search-section-title">Playlists</h2>
+                <div className="search-album-grid">
+                  {visiblePlaylists.map((pl) => (
+                    <PlaylistCard
+                      key={pl.id}
+                      playlist={pl}
+                      onAfterSelect={() => void setSearchQuery('')}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+            {visibleTracks.length > 0 && (
+              <section className="search-section">
+                <h2 className="search-section-title">Tracks</h2>
+                <div className="search-track-list">
+                  {visibleTracks.map((track) => (
+                    <SearchTrackRow
+                      key={track.id}
+                      track={track}
+                      onContextMenu={(e, t) => {
+                        e.preventDefault()
+                        setTrackMenu({ x: e.clientX, y: e.clientY, track: t })
+                      }}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
+        )}
+      </div>
 
       {trackMenu && (
         <TrackContextMenu

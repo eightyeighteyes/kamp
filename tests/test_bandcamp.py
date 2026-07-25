@@ -19,21 +19,31 @@ from kamp_daemon.bandcamp import (
     _ProxyResponse,
     _download_file,
     _download_item,
+    _parse_content_length,
+    _parse_size_mb,
     _ensure_session,
     _extract_pagedata,
     _fetch_collection,
     _get_cdn_url,
     _get_download_links,
     _get_fan_info,
-    _load_state,
     _make_requests_session,
     _paginate,
     _resolve_cdn_redirect,
-    _save_state,
     _session_from_cookie_file,
     _username_from_logout_cookie,
     _validate_session,
+    backfill_download_sizes,
+    download_single_album,
+    fetch_album_art_bytes,
+    fetch_album_tracks,
+    fetch_stream_url,
+    get_download_size_bytes,
     mark_collection_synced,
+    parse_album_keywords,
+    prefetch_redownload_urls,
+    refresh_stream_url,
+    sync_collection_stream,
     sync_new_purchases,
 )
 from kamp_daemon.config import BandcampConfig
@@ -78,13 +88,52 @@ def _item(
     sale_item_id: int,
     band: str = "Band",
     title: str = "Album",
+    item_url: str = "",
+    tralbum_id: int = 0,
+    purchased: str = "01 Jan 2024 00:00:00 GMT",
 ) -> dict[str, Any]:
     return {
         "sale_item_type": "p",
         "sale_item_id": sale_item_id,
         "band_name": band,
         "item_title": title,
+        "item_url": item_url
+        or f"https://{band.lower().replace(' ', '')}.bandcamp.com/album/{title.lower().replace(' ', '-')}",
+        "tralbum_id": tralbum_id or sale_item_id * 10,
+        "purchased": purchased,
     }
+
+
+def _stream_album_page_html(
+    tracks: list[dict[str, Any]] | None = None,
+    release_date: str | None = "01 Jan 2020 00:00:00 GMT",
+    item_type: str | None = None,
+    current: dict[str, Any] | None = None,
+) -> str:
+    """Build fake album page HTML with data-tralbum for fetch_album_tracks tests.
+
+    ``item_type='track'`` plus ``current`` model a standalone single-track page,
+    where ``trackinfo`` carries one entry with ``track_num=None`` and the release
+    date lives in ``current.release_date`` rather than ``album_release_date``.
+    """
+    import html as _html
+    import json as _json
+
+    if tracks is None:
+        tracks = [
+            {"title": f"Track {i}", "track_num": i, "artist": None, "duration": 200.0}
+            for i in range(1, 4)
+        ]
+    tralbum: dict[str, Any] = {
+        "trackinfo": tracks,
+        "album_release_date": release_date,
+    }
+    if item_type is not None:
+        tralbum["item_type"] = item_type
+    if current is not None:
+        tralbum["current"] = current
+    encoded = _html.escape(_json.dumps(tralbum), quote=True)
+    return f'<html><body data-tralbum="{encoded}"></body></html>'
 
 
 def _collection_page_html(items: list[dict[str, Any]]) -> str:
@@ -208,18 +257,8 @@ def _make_requests_mock(
 
 
 class TestState:
-    def test_load_missing_returns_empty(self, tmp_path: Path) -> None:
-        assert _load_state(tmp_path / "nonexistent.json") == {}
-
-    def test_round_trip(self, tmp_path: Path) -> None:
-        f = tmp_path / "state.json"
-        _save_state(f, {"123": 1234567890.0})
-        assert _load_state(f) == {"123": 1234567890.0}
-
-    def test_corrupted_file_returns_empty(self, tmp_path: Path) -> None:
-        f = tmp_path / "state.json"
-        f.write_text("not json")
-        assert _load_state(f) == {}
+    """Placeholder — _load_state/_save_state removed in KAMP-381.
+    Collection state tests are in test_library.py::TestBandcampCollection."""
 
 
 # ---------------------------------------------------------------------------
@@ -491,16 +530,16 @@ class TestSyncNewPurchases:
         self,
         tmp_path: Path,
         items: list[dict[str, Any]],
-        state: dict[str, float] | None = None,
-    ) -> list[Path]:
+        known_ids: list[str] | None = None,
+    ) -> tuple[list[Path], MagicMock]:
         watch_folder = tmp_path / "watch"
-        state_file = tmp_path / "state.json"
-        if state:
-            _save_state(state_file, state)
-
         config = _bc_config(tmp_path)
         mock_session = _make_requests_mock(items)
         index = MagicMock()
+        # get_collection_state returns {sale_item_id: mode}; known IDs are 'local'.
+        index.get_collection_state.return_value = {
+            k: "local" for k in (known_ids or [])
+        }
 
         def fake_download(
             item: dict[str, Any],
@@ -523,65 +562,49 @@ class TestSyncNewPurchases:
             ),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            return sync_new_purchases(config, watch_folder, state_file, index)
+            return sync_new_purchases(config, watch_folder, index), index
 
-    def test_downloads_new_items(self, tmp_path: Path) -> None:
+    def test_enqueues_new_items(self, tmp_path: Path) -> None:
+        # Regular purchases are enqueued for the persistent queue (KAMP-565),
+        # not downloaded inline — so nothing is downloaded synchronously.
         items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
-        paths = self._run(tmp_path, items)
-        assert len(paths) == 2
-        assert all(p.suffix == ".zip" for p in paths)
-        assert all(p.exists() for p in paths)
+        paths, index = self._run(tmp_path, items)
+        assert paths == []
+        assert index.enqueue_download.call_count == 2
+        enqueued_ids = {c.args[0] for c in index.enqueue_download.call_args_list}
+        assert enqueued_ids == {"1", "2"}
 
     def test_skips_known_items(self, tmp_path: Path) -> None:
         items = [_item(1), _item(2)]
-        existing_state = {"1": time.time(), "2": time.time()}
-        paths = self._run(tmp_path, items, state=existing_state)
+        paths, index = self._run(tmp_path, items, known_ids=["1", "2"])
         assert paths == []
+        index.enqueue_download.assert_not_called()
 
-    def test_downloads_only_new_items(self, tmp_path: Path) -> None:
+    def test_enqueues_only_new_items(self, tmp_path: Path) -> None:
         items = [_item(1), _item(2), _item(3)]
-        existing_state = {"1": time.time()}
-        paths = self._run(tmp_path, items, state=existing_state)
-        assert len(paths) == 2
+        paths, index = self._run(tmp_path, items, known_ids=["1"])
+        assert paths == []
+        assert index.enqueue_download.call_count == 2
 
-    def test_state_updated_after_download(self, tmp_path: Path) -> None:
-        state_file = tmp_path / "state.json"
-        watch_folder = tmp_path / "watch"
-        config = _bc_config(tmp_path)
-        items = [_item(99)]
-        mock_session = _make_requests_mock(items)
-        index = MagicMock()
-
-        def fake_download(
-            item: dict[str, Any],
-            bc_config: BandcampConfig,
-            watch_dir: Path,
-            session: Any,
-        ) -> Path:
-            watch_dir.mkdir(parents=True, exist_ok=True)
-            path = watch_dir / f"{item['sale_item_id']}.zip"
-            path.write_bytes(b"fake")
-            return path
-
-        with (
-            patch(
-                "kamp_daemon.bandcamp._ensure_session",
-                return_value=_make_session_data(),
-            ),
-            patch(
-                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
-            ),
-            patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
-        ):
-            sync_new_purchases(config, watch_folder, state_file, index)
-
-        assert "99" in _load_state(state_file)
+    def test_state_updated_after_enqueue(self, tmp_path: Path) -> None:
+        # A regular new purchase is recorded 'remote' (owned, not yet local) and
+        # enqueued with its album snapshot; the worker flips it to 'local' later.
+        items = [_item(99, "Band X", "Rec Y")]
+        paths, index = self._run(tmp_path, items)
+        assert paths == []
+        index.upsert_collection_item.assert_called_once()
+        call = index.upsert_collection_item.call_args
+        assert call.args[0] == "99"
+        assert call.kwargs["mode"] == "remote"
+        index.enqueue_download.assert_called_once()
+        eq = index.enqueue_download.call_args
+        assert eq.args[0] == "99"
+        assert eq.kwargs["album_name"] == "Rec Y"
+        assert eq.kwargs["album_artist"] == "Band X"
 
     def test_state_persists_across_calls(self, tmp_path: Path) -> None:
-        state_file = tmp_path / "state.json"
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
-        index = MagicMock()
         call_num = 0
 
         def fake_download(
@@ -597,6 +620,9 @@ class TestSyncNewPurchases:
             path.write_bytes(b"fake")
             return path
 
+        # First call: item 42 is new — gets downloaded.
+        index1 = MagicMock()
+        index1.get_collection_state.return_value = {}
         mock1 = _make_requests_mock([_item(42)])
         with (
             patch(
@@ -606,8 +632,11 @@ class TestSyncNewPurchases:
             patch("kamp_daemon.bandcamp._make_requests_session", return_value=mock1),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            sync_new_purchases(config, watch_folder, state_file, index)
+            sync_new_purchases(config, watch_folder, index1)
 
+        # Second call: item 42 is already local — nothing downloaded.
+        index2 = MagicMock()
+        index2.get_collection_state.return_value = {"42": "local"}
         mock2 = _make_requests_mock([_item(42)])
         with (
             patch(
@@ -617,33 +646,31 @@ class TestSyncNewPurchases:
             patch("kamp_daemon.bandcamp._make_requests_session", return_value=mock2),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            paths = sync_new_purchases(config, watch_folder, state_file, index)
+            paths = sync_new_purchases(config, watch_folder, index2)
 
         assert paths == []
 
-    def test_skips_failed_download_continues_others(self, tmp_path: Path) -> None:
+    def test_one_item_failing_does_not_abort_enqueue_of_others(
+        self, tmp_path: Path
+    ) -> None:
+        # A per-item error during discovery/enqueue must not stop the rest of the
+        # batch (the loop's try/except). Make the first enqueue raise; the second
+        # item must still be enqueued.
         watch_folder = tmp_path / "watch"
-        state_file = tmp_path / "state.json"
         config = _bc_config(tmp_path)
         items = [_item(1), _item(2)]
         mock_session = _make_requests_mock(items)
         index = MagicMock()
+        index.get_collection_state.return_value = {}
         call_num = 0
 
-        def fake_download(
-            item: dict[str, Any],
-            bc_config: BandcampConfig,
-            watch_dir: Path,
-            session: Any,
-        ) -> Path:
+        def flaky_enqueue(provider_item_id: str, **_kw: Any) -> None:
             nonlocal call_num
             call_num += 1
             if call_num == 1:
-                raise BandcampAPIError("simulated failure")
-            watch_dir.mkdir(parents=True, exist_ok=True)
-            path = watch_dir / f"{item['sale_item_id']}.zip"
-            path.write_bytes(b"fake")
-            return path
+                raise RuntimeError("simulated enqueue failure")
+
+        index.enqueue_download.side_effect = flaky_enqueue
 
         with (
             patch(
@@ -653,16 +680,15 @@ class TestSyncNewPurchases:
             patch(
                 "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
             ),
-            patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            paths = sync_new_purchases(config, watch_folder, state_file, index)
+            paths = sync_new_purchases(config, watch_folder, index)
 
-        assert len(paths) == 1
+        assert paths == []  # regular purchases are enqueued, not downloaded
+        assert index.enqueue_download.call_count == 2  # both attempted despite one fail
 
     def test_warns_when_item_missing_from_redownload_urls(self, tmp_path: Path) -> None:
         """Items absent from the API redownload_urls dict are warned and skipped."""
         watch_folder = tmp_path / "watch"
-        state_file = tmp_path / "state.json"
         config = _bc_config(tmp_path)
         items = [_item(1), _item(2)]
 
@@ -703,6 +729,7 @@ class TestSyncNewPurchases:
             return path
 
         index = MagicMock()
+        index.get_collection_state.return_value = {}
         with (
             patch(
                 "kamp_daemon.bandcamp._ensure_session",
@@ -713,9 +740,317 @@ class TestSyncNewPurchases:
             ),
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
-            paths = sync_new_purchases(config, watch_folder, state_file, index)
+            paths = sync_new_purchases(config, watch_folder, index)
 
-        assert len(paths) == 1  # only item 2 downloaded
+        assert paths == []  # item 1 skipped (no url), item 2 enqueued (not downloaded)
+        index.enqueue_download.assert_called_once()
+        assert index.enqueue_download.call_args.args[0] == "2"
+
+    def test_refreshes_metadata_for_existing_items(self, tmp_path: Path) -> None:
+        """Existing items get band_name/album_url/tralbum_id refreshed even if not downloaded."""
+        items = [
+            _item(
+                1,
+                "The Artist",
+                "The Album",
+                item_url="https://theartist.bandcamp.com/album/the-album",
+                tralbum_id=42,
+            )
+        ]
+        paths, _ = self._run(tmp_path, items, known_ids=["1"])
+
+        # No downloads — item was already known.
+        assert paths == []
+
+        # upsert_collection_item should have been called once for the metadata refresh.
+        index = MagicMock()
+        index.get_collection_state.return_value = {"1": "local"}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+        ):
+            sync_new_purchases(_bc_config(tmp_path), tmp_path / "watch", index)
+
+        index.upsert_collection_item.assert_called_once()
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        assert call_kwargs["band_name"] == "The Artist"
+        assert (
+            call_kwargs["album_url"] == "https://theartist.bandcamp.com/album/the-album"
+        )
+        assert call_kwargs["tralbum_id"] == "42"
+        assert call_kwargs["synced_at"] is None  # preserved via COALESCE
+
+    def test_passes_purchased_as_added_at_on_download(self, tmp_path: Path) -> None:
+        """Downloaded items get added_at set to the parsed purchase timestamp."""
+        purchased_str = "15 Mar 2025 10:00:00 GMT"
+        items = [_item(1, purchased=purchased_str)]
+        watch_folder = tmp_path / "watch"
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+
+        zip_path = watch_folder / "1.zip"
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        zip_path.write_bytes(b"PK\x03\x04")
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._download_item",
+                return_value=zip_path,
+            ),
+        ):
+            sync_new_purchases(_bc_config(tmp_path), watch_folder, index)
+
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        expected = _parse_purchased(purchased_str)
+        assert call_kwargs["added_at"] == expected
+        assert call_kwargs["added_at"] is not None
+
+    def test_passes_purchased_as_added_at_on_refresh(self, tmp_path: Path) -> None:
+        """Existing items refreshed during sync get added_at from the purchase date."""
+        purchased_str = "20 Feb 2023 12:00:00 GMT"
+        items = [_item(1, purchased=purchased_str)]
+        index = MagicMock()
+        index.get_collection_state.return_value = {"1": "local"}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+        ):
+            sync_new_purchases(_bc_config(tmp_path), tmp_path / "watch", index)
+
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        assert call_kwargs["added_at"] == _parse_purchased(purchased_str)
+
+
+def _preorder_item(
+    sale_item_id: int,
+    band: str = "Band",
+    title: str = "Album",
+    num_streamable_tracks: int = 2,
+    with_redownload_url: bool = True,
+) -> dict[str, Any]:
+    """Build a collection item with is_preorder=True."""
+    item = _item(sale_item_id, band, title)
+    item["is_preorder"] = True
+    item["num_streamable_tracks"] = num_streamable_tracks
+    if with_redownload_url:
+        item["redownload_url"] = (
+            f"https://bandcamp.com/download?sitem_id={sale_item_id}&sig=fake"
+        )
+    return item
+
+
+class TestSyncNewPurchasesPreorder:
+    """Pre-order handling in sync_new_purchases (KAMP-424).
+
+    Bandcamp returns is_preorder=True on collection items whose release
+    is not yet complete. The downloaded ZIP contains only the currently
+    available tracks. kamp stores these as mode='preorder' and re-downloads
+    when num_streamable_tracks increases or is_preorder flips to False.
+    """
+
+    def _run(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+        existing_state: dict[str, str] | None = None,
+        existing_streamable_counts: dict[str, int] | None = None,
+        fake_download: Any = None,
+    ) -> "MagicMock":
+        watch_folder = tmp_path / "watch"
+
+        def _default_download(
+            item: Any, bc_config: Any, watch_dir: Any, session: Any
+        ) -> Any:
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            p = watch_dir / f"{item['sale_item_id']}.zip"
+            p.write_bytes(b"zip")
+            return p
+
+        index = MagicMock()
+        index.get_collection_state.return_value = existing_state or {}
+        index.get_collection_streamable_counts.return_value = (
+            existing_streamable_counts or {}
+        )
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._download_item",
+                side_effect=fake_download or _default_download,
+            ),
+        ):
+            sync_new_purchases(_bc_config(tmp_path), watch_folder, index)
+
+        return index
+
+    def test_preorder_is_downloaded_and_set_to_preorder_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """is_preorder=True items are downloaded and stored as mode='preorder'."""
+        items = [_preorder_item(1, num_streamable_tracks=2)]
+        index = self._run(tmp_path, items)
+
+        assert (tmp_path / "watch" / "1.zip").exists()
+        calls = index.upsert_collection_item.call_args_list
+        preorder_calls = [c for c in calls if c[1].get("mode") == "preorder"]
+        assert len(preorder_calls) == 1
+        assert preorder_calls[0][0][0] == "1"
+
+    def test_preorder_stores_num_streamable_tracks(self, tmp_path: Path) -> None:
+        """num_streamable_tracks from the API is persisted after download."""
+        items = [_preorder_item(1, num_streamable_tracks=3)]
+        index = self._run(tmp_path, items)
+
+        calls = index.upsert_collection_item.call_args_list
+        preorder_call = next(c for c in calls if c[1].get("mode") == "preorder")
+        assert preorder_call[1].get("num_streamable_tracks") == 3
+
+    def test_preorder_skips_redownload_when_count_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        """No re-download when is_preorder=True and num_streamable_tracks unchanged."""
+        items = [_preorder_item(1, num_streamable_tracks=2)]
+        mock_dl = MagicMock(return_value=tmp_path / "1.zip")
+        self._run(
+            tmp_path,
+            items,
+            existing_state={"1": "preorder"},
+            existing_streamable_counts={"1": 2},  # same as API
+            fake_download=mock_dl,
+        )
+
+        mock_dl.assert_not_called()
+
+    def test_preorder_redownloads_when_count_increases(self, tmp_path: Path) -> None:
+        """Re-downloads when num_streamable_tracks in API > stored value."""
+
+        def fake_dl(item: Any, bc_config: Any, watch_dir: Any, session: Any) -> Any:
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            p = watch_dir / f"{item['sale_item_id']}.zip"
+            p.write_bytes(b"zip")
+            return p
+
+        items = [_preorder_item(1, num_streamable_tracks=4)]
+        self._run(
+            tmp_path,
+            items,
+            existing_state={"1": "preorder"},
+            existing_streamable_counts={"1": 2},  # API says 4, stored was 2
+            fake_download=fake_dl,
+        )
+
+        assert (tmp_path / "watch" / "1.zip").exists()
+
+    def test_released_preorder_is_enqueued_not_downloaded_inline(
+        self, tmp_path: Path
+    ) -> None:
+        """When is_preorder flips to False the item is a regular purchase: it is
+        enqueued (recorded 'remote' pre-download) and the worker later flips it to
+        'local' — no inline download in the sync pass (KAMP-565)."""
+        item = _item(1, "Band", "Released Album")
+        item["is_preorder"] = False
+        item["num_streamable_tracks"] = 10
+        item["redownload_url"] = "https://bandcamp.com/download?sitem_id=1&sig=fake"
+
+        def fake_dl(i: Any, bc_config: Any, watch_dir: Any, session: Any) -> Any:
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            p = watch_dir / f"{i['sale_item_id']}.zip"
+            p.write_bytes(b"zip")
+            return p
+
+        index = self._run(
+            tmp_path,
+            [item],
+            existing_state={"1": "preorder"},
+            existing_streamable_counts={"1": 5},
+            fake_download=fake_dl,
+        )
+
+        assert not (tmp_path / "watch" / "1.zip").exists()  # not downloaded inline
+        index.enqueue_download.assert_called_once()
+        assert index.enqueue_download.call_args.args[0] == "1"
+        calls = index.upsert_collection_item.call_args_list
+        assert [c for c in calls if c[1].get("mode") == "remote"]  # recorded remote
+
+    def test_no_redownload_url_falls_back_to_warning(self, tmp_path: Path) -> None:
+        """Items with no redownload_url at all get a warning (genuine edge case)."""
+        item = _item(1)
+        item["is_preorder"] = True
+        item["num_streamable_tracks"] = 0
+        # Remove any redownload_url that _make_requests_mock injected
+        item.pop("redownload_url", None)
+
+        mock_dl = MagicMock()
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.get_collection_streamable_counts.return_value = {}
+
+        session = MagicMock()
+        collection_resp = MagicMock()
+        collection_resp.json.return_value = _collection_response(
+            [item], redownload_urls={}
+        )
+        collection_resp.raise_for_status = MagicMock()
+        hidden_resp = MagicMock()
+        hidden_resp.json.return_value = _collection_response([])
+        hidden_resp.raise_for_status = MagicMock()
+        fan_page = MagicMock()
+        fan_page.text = _collection_page_html([item])
+
+        def _side(url: str, **_kw: Any) -> MagicMock:
+            if "collection_items" in url:
+                return collection_resp
+            if "hidden_items" in url:
+                return hidden_resp
+            return fan_page
+
+        session.get.side_effect = _side
+        session.post.side_effect = _side
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch("kamp_daemon.bandcamp._make_requests_session", return_value=session),
+            patch("kamp_daemon.bandcamp._download_item", mock_dl),
+        ):
+            sync_new_purchases(_bc_config(tmp_path), tmp_path / "watch", index)
+
+        mock_dl.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -725,11 +1060,11 @@ class TestSyncNewPurchases:
 
 class TestMarkCollectionSynced:
     def test_marks_all_items_without_downloading(self, tmp_path: Path) -> None:
-        state_file = tmp_path / "state.json"
         config = _bc_config(tmp_path)
         items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
         mock_session = _make_requests_mock(items)
         index = MagicMock()
+        index.get_collection_state.return_value = {}
 
         with (
             patch(
@@ -740,21 +1075,18 @@ class TestMarkCollectionSynced:
                 "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
             ),
         ):
-            count = mark_collection_synced(config, state_file, index)
+            count = mark_collection_synced(config, index)
 
         assert count == 2
-        state = _load_state(state_file)
-        assert "1" in state
-        assert "2" in state
+        assert index.upsert_collection_item.call_count == 2
         assert not any(tmp_path.rglob("*.zip"))
 
     def test_skips_already_recorded_items(self, tmp_path: Path) -> None:
-        state_file = tmp_path / "state.json"
-        _save_state(state_file, {"1": 0.0})
         config = _bc_config(tmp_path)
         items = [_item(1), _item(2)]
         mock_session = _make_requests_mock(items)
         index = MagicMock()
+        index.get_collection_state.return_value = {"1": "local"}
 
         with (
             patch(
@@ -765,18 +1097,20 @@ class TestMarkCollectionSynced:
                 "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
             ),
         ):
-            count = mark_collection_synced(config, state_file, index)
+            count = mark_collection_synced(config, index)
 
         assert count == 1
-        assert "2" in _load_state(state_file)
+        # upsert called for both (to keep metadata current), but only 1 was newly marked
+        assert index.upsert_collection_item.call_count == 2
 
     def test_subsequent_sync_downloads_nothing(self, tmp_path: Path) -> None:
-        state_file = tmp_path / "state.json"
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         items = [_item(1), _item(2)]
-        index = MagicMock()
 
+        # mark_collection_synced: both items become 'local'
+        index1 = MagicMock()
+        index1.get_collection_state.return_value = {}
         mock1 = _make_requests_mock(items)
         with (
             patch(
@@ -785,8 +1119,11 @@ class TestMarkCollectionSynced:
             ),
             patch("kamp_daemon.bandcamp._make_requests_session", return_value=mock1),
         ):
-            mark_collection_synced(config, state_file, index)
+            mark_collection_synced(config, index1)
 
+        # sync_new_purchases: state shows both already local → nothing downloaded
+        index2 = MagicMock()
+        index2.get_collection_state.return_value = {"1": "local", "2": "local"}
         mock2 = _make_requests_mock(items)
         with (
             patch(
@@ -796,7 +1133,7 @@ class TestMarkCollectionSynced:
             patch("kamp_daemon.bandcamp._make_requests_session", return_value=mock2),
             patch("kamp_daemon.bandcamp._download_item"),
         ):
-            paths = sync_new_purchases(config, watch_folder, state_file, index)
+            paths = sync_new_purchases(config, watch_folder, index2)
 
         assert paths == []
 
@@ -812,9 +1149,7 @@ class TestNeedsLoginError:
         index = MagicMock()
         index.get_session.return_value = None
         with pytest.raises(NeedsLoginError):
-            sync_new_purchases(
-                config, tmp_path / "watch", tmp_path / "state.json", index
-            )
+            sync_new_purchases(config, tmp_path / "watch", index)
 
     def test_raised_when_session_expired(self, tmp_path: Path) -> None:
         config = _bc_config(tmp_path)
@@ -825,9 +1160,7 @@ class TestNeedsLoginError:
         index = MagicMock()
         index.get_session.return_value = expired_data
         with pytest.raises(NeedsLoginError):
-            sync_new_purchases(
-                config, tmp_path / "watch", tmp_path / "state.json", index
-            )
+            sync_new_purchases(config, tmp_path / "watch", index)
 
 
 # ---------------------------------------------------------------------------
@@ -1127,8 +1460,8 @@ class TestPaginate:
 class TestFetchCollection:
     def test_deduplicates_items_across_collection_and_hidden(self) -> None:
         """Items appearing in both collection and hidden endpoints are returned once."""
-        shared = _item(99)
-        unique_hidden = _item(100)
+        shared = _item(99, title="Album A")
+        unique_hidden = _item(100, title="Album B")
 
         session = MagicMock()
 
@@ -1151,6 +1484,25 @@ class TestFetchCollection:
         ids = [r["sale_item_id"] for r in result]
         assert ids.count(99) == 1
         assert 100 in ids
+
+    def test_deduplicates_p_and_c_same_title(self) -> None:
+        """When two items share (band_name, item_title), the p-typed entry wins."""
+        p_item = _item(293211292, band="Derya Yıldırım", title="Dost 1 & 2")
+        c_item = {
+            **_item(626315711, band="Derya Yıldırım", title="Dost 1 & 2"),
+            "sale_item_type": "c",
+        }
+
+        session = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {"items": [p_item, c_item], "last_token": ""}
+        session.post.return_value = resp
+
+        result = _fetch_collection(12345, session, MagicMock())
+        ids = [r["sale_item_id"] for r in result]
+        assert ids == [293211292]
 
 
 # ---------------------------------------------------------------------------
@@ -1180,9 +1532,8 @@ class TestDownloadItem:
             with patch("kamp_daemon.bandcamp._resolve_cdn_redirect") as mock_resolve:
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: (
-                        calls.append((url, sess)),
-                        dest.write_bytes(b"fake"),
+                    side_effect=lambda url, dest, sess, fmt, on_progress=None: (
+                        calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
                     ),
                 ):
                     _download_item(
@@ -1210,9 +1561,8 @@ class TestDownloadItem:
             ) as mock_resolve:
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: (
-                        calls.append((url, sess)),
-                        dest.write_bytes(b"fake"),
+                    side_effect=lambda url, dest, sess, fmt, on_progress=None: (
+                        calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
                     ),
                 ):
                     _download_item(
@@ -1259,7 +1609,9 @@ class TestDownloadItem:
             ):
                 with patch(
                     "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess: dest.write_bytes(b"x"),
+                    side_effect=lambda url, dest, sess, fmt, on_progress=None: dest.with_name(
+                        dest.name + ".zip"
+                    ),
                 ):
                     path = _download_item(
                         item, _bc_config(tmp_path), watch_folder, MagicMock()
@@ -1270,6 +1622,25 @@ class TestDownloadItem:
 
 _ZIP_MAGIC = b"PK\x03\x04"
 _FAKE_ZIP = _ZIP_MAGIC + b"\x00" * 20
+
+
+class TestParseContentLength:
+    """KAMP-436: only a positive, parseable Content-Length yields a total."""
+
+    def test_valid_positive(self) -> None:
+        assert _parse_content_length("1024") == 1024
+
+    def test_none(self) -> None:
+        assert _parse_content_length(None) is None
+
+    def test_empty_string(self) -> None:
+        assert _parse_content_length("") is None
+
+    def test_unparseable(self) -> None:
+        assert _parse_content_length("not-a-number") is None
+
+    def test_zero_is_none(self) -> None:
+        assert _parse_content_length("0") is None
 
 
 class TestDownloadFile:
@@ -1285,13 +1656,16 @@ class TestDownloadFile:
         return resp
 
     def test_writes_chunked_response_to_dest(self, tmp_path: Path) -> None:
-        dest = tmp_path / "album.zip"
+        dest_base = tmp_path / "album"
         session = MagicMock()
         session.get.return_value = self._make_resp([_FAKE_ZIP])
 
-        _download_file("https://cdn.example.com/f.zip", dest, session)
+        final = _download_file(
+            "https://cdn.example.com/f.zip", dest_base, session, "mp3-v0"
+        )
 
-        assert dest.read_bytes() == _FAKE_ZIP
+        assert final == tmp_path / "album.zip"
+        assert final.read_bytes() == _FAKE_ZIP
         session.get.assert_called_once_with(
             "https://cdn.example.com/f.zip",
             stream=True,
@@ -1301,18 +1675,52 @@ class TestDownloadFile:
 
     def test_renames_from_part_file(self, tmp_path: Path) -> None:
         """Download writes to .part first, then renames — no partial file visible."""
-        dest = tmp_path / "album.zip"
+        dest_base = tmp_path / "album"
         session = MagicMock()
         session.get.return_value = self._make_resp([_FAKE_ZIP])
 
-        _download_file("https://cdn.example.com/f.zip", dest, session)
+        _download_file("https://cdn.example.com/f.zip", dest_base, session, "mp3-v0")
 
-        assert dest.exists()
-        assert not (tmp_path / "album.zip.part").exists()
+        assert (tmp_path / "album.zip").exists()
+        assert not (tmp_path / "album.part").exists()
+
+    def test_single_track_saved_as_audio_file(self, tmp_path: Path) -> None:
+        """A bare audio response (single-track purchase) is saved with an audio
+        extension, not .zip (KAMP-526)."""
+        dest_base = tmp_path / "Ohm Foam - Gush"
+        session = MagicMock()
+        session.get.return_value = self._make_resp(
+            [b"ID3\x03\x00\x00\x00" + b"\x00" * 16], content_type="audio/mpeg"
+        )
+
+        final = _download_file(
+            "https://cdn.example.com/track?enc=mp3-v0", dest_base, session, "mp3-v0"
+        )
+
+        assert final == tmp_path / "Ohm Foam - Gush.mp3"
+        assert final.exists()
+        assert not (tmp_path / "Ohm Foam - Gush.part").exists()
+
+    def test_single_track_extension_from_format_when_content_type_generic(
+        self, tmp_path: Path
+    ) -> None:
+        """When the audio Content-Type is unrecognised, the configured format
+        drives the extension (KAMP-526)."""
+        dest_base = tmp_path / "Artist - Song"
+        session = MagicMock()
+        session.get.return_value = self._make_resp(
+            [b"fLaC\x00\x00\x00\x22"], content_type="application/octet-stream"
+        )
+
+        final = _download_file(
+            "https://cdn.example.com/track?enc=flac", dest_base, session, "flac"
+        )
+
+        assert final == tmp_path / "Artist - Song.flac"
 
     def test_cleans_up_part_file_on_error(self, tmp_path: Path) -> None:
         """On download failure the .part file is removed."""
-        dest = tmp_path / "album.zip"
+        dest_base = tmp_path / "album"
         resp = MagicMock()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
@@ -1322,25 +1730,110 @@ class TestDownloadFile:
         session.get.return_value = resp
 
         with pytest.raises(RuntimeError):
-            _download_file("https://cdn.example.com/f.zip", dest, session)
+            _download_file(
+                "https://cdn.example.com/f.zip", dest_base, session, "mp3-v0"
+            )
 
-        assert not dest.exists()
-        assert not (tmp_path / "album.zip.part").exists()
+        assert not (tmp_path / "album.zip").exists()
+        assert not (tmp_path / "album.part").exists()
 
-    def test_raises_when_cdn_returns_non_zip(self, tmp_path: Path) -> None:
-        """Non-ZIP CDN response (e.g. HTML error page) raises BandcampAPIError."""
-        dest = tmp_path / "album.zip"
+    def test_raises_when_cdn_returns_neither_zip_nor_audio(
+        self, tmp_path: Path
+    ) -> None:
+        """An HTML error page (neither ZIP nor audio) raises BandcampAPIError."""
+        dest_base = tmp_path / "album"
         html_body = b"<html>Error: access denied</html>"
         session = MagicMock()
         session.get.return_value = self._make_resp(
             [html_body], content_type="text/html"
         )
 
-        with pytest.raises(BandcampAPIError, match="not a ZIP"):
-            _download_file("https://cdn.example.com/f.zip", dest, session)
+        with pytest.raises(BandcampAPIError, match="neither a ZIP nor audio"):
+            _download_file(
+                "https://cdn.example.com/f.zip", dest_base, session, "mp3-v0"
+            )
 
-        assert not dest.exists()
-        assert not (tmp_path / "album.zip.part").exists()
+        assert not (tmp_path / "album.zip").exists()
+        assert not (tmp_path / "album.part").exists()
+
+    # -- byte-progress reporting (KAMP-436) ---------------------------------
+
+    def _make_resp_with_length(
+        self, chunks: list[bytes], total: int, content_type: str = "application/zip"
+    ) -> MagicMock:
+        resp = self._make_resp(chunks, content_type=content_type)
+        resp.headers = {"Content-Type": content_type, "Content-Length": str(total)}
+        return resp
+
+    def test_reports_progress_when_content_length_present(self, tmp_path: Path) -> None:
+        """With a Content-Length header, on_progress fires with non-decreasing
+        (downloaded, total) byte pairs terminating at (total, total) (KAMP-436/566)."""
+        from itertools import count
+
+        dest_base = tmp_path / "album"
+        chunks = [_ZIP_MAGIC + b"\x00" * 21] + [b"\x00" * 25] * 3  # 4 x 25 = 100 bytes
+        total = sum(len(c) for c in chunks)
+        session = MagicMock()
+        session.get.return_value = self._make_resp_with_length(chunks, total)
+
+        progress: list[tuple[int, int]] = []
+        # Advance monotonic time past the throttle interval on every chunk so
+        # each step is emitted, letting us assert the full progression.
+        with patch(
+            "kamp_daemon.bandcamp.time.monotonic", side_effect=count(1000.0, 1.0)
+        ):
+            _download_file(
+                "https://cdn.example.com/f.zip",
+                dest_base,
+                session,
+                "mp3-v0",
+                on_progress=lambda dl, tot: progress.append((dl, tot)),
+            )
+
+        assert progress, "expected at least one progress callback"
+        assert progress[-1] == (total, total)
+        assert all(0 <= dl <= total and tot == total for dl, tot in progress)
+        assert [dl for dl, _ in progress] == sorted(dl for dl, _ in progress)
+
+    def test_no_progress_when_content_length_absent(self, tmp_path: Path) -> None:
+        """Without Content-Length the total is unknowable, so on_progress is
+        never called and the UI keeps its indeterminate pulse (KAMP-436)."""
+        dest_base = tmp_path / "album"
+        session = MagicMock()
+        session.get.return_value = self._make_resp([_FAKE_ZIP])  # no Content-Length
+
+        progress: list[tuple[int, int]] = []
+        _download_file(
+            "https://cdn.example.com/f.zip",
+            dest_base,
+            session,
+            "mp3-v0",
+            on_progress=lambda dl, tot: progress.append((dl, tot)),
+        )
+
+        assert progress == []
+
+    def test_progress_throttled_but_final_always_emitted(self, tmp_path: Path) -> None:
+        """Rapid chunks within the throttle window are coalesced, but a terminal
+        (total, total) is always delivered (KAMP-436/566)."""
+        dest_base = tmp_path / "album"
+        chunks = [_ZIP_MAGIC + b"\x00" * 21] + [b"\x00" * 25] * 3
+        total = sum(len(c) for c in chunks)
+        session = MagicMock()
+        session.get.return_value = self._make_resp_with_length(chunks, total)
+
+        progress: list[tuple[int, int]] = []
+        # Time never advances → every intermediate emit is throttled away.
+        with patch("kamp_daemon.bandcamp.time.monotonic", side_effect=lambda: 1000.0):
+            _download_file(
+                "https://cdn.example.com/f.zip",
+                dest_base,
+                session,
+                "mp3-v0",
+                on_progress=lambda dl, tot: progress.append((dl, tot)),
+            )
+
+        assert progress == [(total, total)]
 
 
 # ---------------------------------------------------------------------------
@@ -1350,12 +1843,12 @@ class TestDownloadFile:
 
 class TestSyncStatusCallback:
     def test_status_callback_called_per_item(self, tmp_path: Path) -> None:
-        state_file = tmp_path / "state.json"
         watch_folder = tmp_path / "watch"
         config = _bc_config(tmp_path)
         items = [_item(1, "Band A", "Album A"), _item(2, "Band B", "Album B")]
         mock_session = _make_requests_mock(items)
         index = MagicMock()
+        index.get_collection_state.return_value = {}
 
         statuses: list[str] = []
 
@@ -1381,7 +1874,7 @@ class TestSyncStatusCallback:
             patch("kamp_daemon.bandcamp._download_item", side_effect=fake_download),
         ):
             sync_new_purchases(
-                config, watch_folder, state_file, index, status_callback=statuses.append
+                config, watch_folder, index, status_callback=statuses.append
             )
 
         assert len(statuses) == 2
@@ -1684,3 +2177,1911 @@ class TestResolveCdnRedirect:
         result = _resolve_cdn_redirect(self._popplers_url, sess)
 
         assert result == self._popplers_url
+
+
+# ---------------------------------------------------------------------------
+# fetch_stream_url
+# ---------------------------------------------------------------------------
+
+
+def _album_page_html(tracks: list[dict], item_type: str | None = None) -> str:
+    """Build fake Bandcamp album page HTML with data-tralbum attribute.
+
+    Pass ``item_type='track'`` to model a standalone single-track page, whose
+    lone ``trackinfo`` entry carries ``track_num=None``.
+    """
+    import html as html_lib
+    import json
+
+    tralbum: dict[str, Any] = {"trackinfo": tracks}
+    if item_type is not None:
+        tralbum["item_type"] = item_type
+    encoded = html_lib.escape(json.dumps(tralbum))
+    return f'<html><body><div data-tralbum="{encoded}"></div></body></html>'
+
+
+class TestFetchStreamUrl:
+    _album_url = "https://artist.bandcamp.com/album/my-album"
+
+    def test_returns_stream_url_for_track(self) -> None:
+        track_data = [
+            {"track_num": 1, "file": {"mp3-128": "https://cdn.example.com/1.mp3"}},
+            {"track_num": 2, "file": {"mp3-128": "https://cdn.example.com/2.mp3"}},
+        ]
+        html = _album_page_html(track_data)
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        url, expires_at = fetch_stream_url(self._album_url, 2, sess)
+
+        assert url == "https://cdn.example.com/2.mp3"
+        import time
+
+        assert expires_at > time.time() + 86000
+
+    def test_falls_back_to_mp3_v0(self) -> None:
+        track_data = [
+            {"track_num": 1, "file": {"mp3-v0": "https://cdn.example.com/v0.mp3"}},
+        ]
+        html = _album_page_html(track_data)
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        url, _ = fetch_stream_url(self._album_url, 1, sess)
+
+        assert url == "https://cdn.example.com/v0.mp3"
+
+    def test_prefers_mp3_v0_when_both_available(self) -> None:
+        track_data = [
+            {
+                "track_num": 1,
+                "file": {
+                    "mp3-128": "https://cdn.example.com/128.mp3",
+                    "mp3-v0": "https://cdn.example.com/v0.mp3",
+                },
+            },
+        ]
+        html = _album_page_html(track_data)
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        url, _ = fetch_stream_url(self._album_url, 1, sess)
+
+        assert url == "https://cdn.example.com/v0.mp3"
+
+    def test_raises_when_no_data_tralbum(self) -> None:
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(
+            status_code=200, text="<html>no data here</html>"
+        )
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        with pytest.raises(BandcampAPIError, match="no data-tralbum"):
+            fetch_stream_url(self._album_url, 1, sess)
+
+    def test_raises_when_track_not_found(self) -> None:
+        track_data = [
+            {"track_num": 1, "file": {"mp3-128": "https://cdn.example.com/1.mp3"}}
+        ]
+        html = _album_page_html(track_data)
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        with pytest.raises(BandcampAPIError, match="track_num=99 not found"):
+            fetch_stream_url(self._album_url, 99, sess)
+
+    def test_resolves_single_track_page_with_null_track_num(self) -> None:
+        """A standalone /track/ page's lone entry has track_num=None; playing the
+        track (indexed as number 1) must still resolve its CDN URL (KAMP-526)."""
+        track_data = [
+            {"track_num": None, "file": {"mp3-v0": "https://cdn.example.com/gush.mp3"}}
+        ]
+        html = _album_page_html(track_data, item_type="track")
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        url, _ = fetch_stream_url("https://ohmfoam.bandcamp.com/track/gush", 1, sess)
+
+        assert url == "https://cdn.example.com/gush.mp3"
+
+    def test_uses_ts_plus_24h_as_expires_at(self) -> None:
+        """ts= is the URL creation time; expiry is ts + 86400 (Bandcamp's ~24h window)."""
+        creation_ts = int(time.time())
+        stream_url = f"https://t4.bcbits.com/stream/abc/mp3-v0/123?p=1&ts={creation_ts}&token={creation_ts}_abc"
+        track_data = [
+            {"track_num": 1, "file": {"mp3-v0": stream_url}},
+        ]
+        html = _album_page_html(track_data)
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        _, expires_at = fetch_stream_url(self._album_url, 1, sess)
+
+        assert expires_at == creation_ts + 86400
+
+    def test_falls_back_to_24h_when_ts_param_absent(self) -> None:
+        """URLs without a ts= param default to +24h expiry."""
+        track_data = [
+            {"track_num": 1, "file": {"mp3-v0": "https://cdn.example.com/1.mp3"}},
+        ]
+        html = _album_page_html(track_data)
+        sess = MagicMock()
+        sess.get.return_value = MagicMock(status_code=200, text=html)
+        sess.get.return_value.raise_for_status = MagicMock()
+
+        _, expires_at = fetch_stream_url(self._album_url, 1, sess)
+
+        assert expires_at > time.time() + 86000
+
+
+class TestMarkCollectionSyncedStoresAlbumUrl:
+    """mark_collection_synced now passes album_url and tralbum_id from the API response."""
+
+    def test_mark_collection_synced_stores_album_url(self, tmp_path: Path) -> None:
+        config = _bc_config(tmp_path)
+        items = [
+            _item(
+                1,
+                "Artist",
+                "Album",
+                item_url="https://artist.bandcamp.com/album/album",
+                tralbum_id=100,
+            )
+        ]
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+        ):
+            mark_collection_synced(config, index)
+
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        assert call_kwargs["album_url"] == "https://artist.bandcamp.com/album/album"
+
+
+# ---------------------------------------------------------------------------
+# _parse_purchased
+# ---------------------------------------------------------------------------
+
+
+class TestParsePurchased:
+    def test_parses_gmt_string(self) -> None:
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        ts = _parse_purchased("01 Jan 2024 00:00:00 GMT")
+        assert ts is not None
+        assert abs(ts - 1704067200.0) < 2  # 2024-01-01 UTC
+
+    def test_returns_none_for_none(self) -> None:
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        assert _parse_purchased(None) is None
+
+    def test_returns_none_for_garbage(self) -> None:
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        assert _parse_purchased("not a date") is None
+
+
+# ---------------------------------------------------------------------------
+# mark_collection_synced — added_at suppression
+# ---------------------------------------------------------------------------
+
+
+class TestMarkCollectionSyncedAddedAt:
+    """mark_collection_synced must pass added_at=0 so items never appear as new arrivals."""
+
+    def test_passes_added_at_zero(self, tmp_path: Path) -> None:
+        config = _bc_config(tmp_path)
+        items = [_item(1, purchased="01 Jan 2024 00:00:00 GMT")]
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+        ):
+            mark_collection_synced(config, index)
+
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        assert call_kwargs["added_at"] == 0
+
+
+# ---------------------------------------------------------------------------
+# fetch_album_art_bytes
+# ---------------------------------------------------------------------------
+
+
+def _tralbum_html(art_id: int) -> str:
+    payload = html_lib.escape(json.dumps({"id": 99, "art_id": art_id, "tracks": []}))
+    return f'<html><div data-tralbum="{payload}"></div></html>'
+
+
+class TestFetchAlbumArtBytes:
+    """fetch_album_art_bytes downloads and returns raw JPEG art bytes."""
+
+    _SESSION_DATA: dict[str, Any] = {"cookies": []}
+
+    def test_returns_jpeg_on_success(self) -> None:
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 20
+        album_page = MagicMock()
+        album_page.raise_for_status = MagicMock()
+        album_page.text = _tralbum_html(art_id=42424242)
+
+        cdn_resp = MagicMock()
+        cdn_resp.raise_for_status = MagicMock()
+        cdn_resp.content = jpeg
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session"
+            ) as mock_session_builder,
+            patch("kamp_daemon.bandcamp._requests.get", return_value=cdn_resp),
+        ):
+            mock_session = MagicMock()
+            mock_session.get.return_value = album_page
+            mock_session_builder.return_value = mock_session
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result == jpeg
+        mock_session.get.assert_called_once_with(
+            "https://artist.bandcamp.com/album/foo", timeout=30
+        )
+
+    def test_returns_none_on_missing_data_tralbum(self) -> None:
+        page = MagicMock()
+        page.raise_for_status = MagicMock()
+        page.text = "<html>no tralbum here</html>"
+
+        with patch("kamp_daemon.bandcamp._make_requests_session") as mock_sb:
+            mock_sess = MagicMock()
+            mock_sess.get.return_value = page
+            mock_sb.return_value = mock_sess
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result is None
+
+    def test_returns_none_on_missing_art_id(self) -> None:
+        payload = html_lib.escape(json.dumps({"id": 99, "tracks": []}))
+        html = f'<html><div data-tralbum="{payload}"></div></html>'
+        page = MagicMock()
+        page.raise_for_status = MagicMock()
+        page.text = html
+
+        with patch("kamp_daemon.bandcamp._make_requests_session") as mock_sb:
+            mock_sess = MagicMock()
+            mock_sess.get.return_value = page
+            mock_sb.return_value = mock_sess
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result is None
+
+    def test_returns_none_on_http_error(self) -> None:
+        import requests as _req
+
+        with patch("kamp_daemon.bandcamp._make_requests_session") as mock_sb:
+            mock_sess = MagicMock()
+            mock_sess.get.side_effect = _req.HTTPError("500 Server Error")
+            mock_sb.return_value = mock_sess
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result is None
+
+    def test_cdn_url_uses_art_id_from_tralbum(self) -> None:
+        jpeg = b"\xff\xd8\xff"
+        page = MagicMock()
+        page.raise_for_status = MagicMock()
+        page.text = _tralbum_html(art_id=777888999)
+
+        cdn_resp = MagicMock()
+        cdn_resp.raise_for_status = MagicMock()
+        cdn_resp.content = jpeg
+
+        with (
+            patch("kamp_daemon.bandcamp._make_requests_session") as mock_sb,
+            patch(
+                "kamp_daemon.bandcamp._requests.get", return_value=cdn_resp
+            ) as mock_get,
+        ):
+            mock_sess = MagicMock()
+            mock_sess.get.return_value = page
+            mock_sb.return_value = mock_sess
+
+            result = fetch_album_art_bytes(
+                "https://artist.bandcamp.com/album/foo", self._SESSION_DATA
+            )
+
+        assert result == jpeg
+        # Verify CDN URL is constructed from art_id (not tralbum id=99).
+        mock_get.assert_called_once_with(
+            "https://f4.bcbits.com/img/a777888999_0.jpg", timeout=30
+        )
+
+
+# ---------------------------------------------------------------------------
+# refresh_stream_url
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshStreamUrl:
+    _album_url = "https://artist.bandcamp.com/album/my-album"
+    _session_data: dict = {"cookies": []}
+
+    def test_returns_tuple_on_success(self) -> None:
+        """Returns (url, expires_at) when fetch_stream_url succeeds."""
+        expected = ("https://cdn.bcbits.com/stream/track.mp3", 9999999.0)
+        with (
+            patch("kamp_daemon.bandcamp._make_requests_session"),
+            patch(
+                "kamp_daemon.bandcamp.fetch_stream_url", return_value=expected
+            ) as mock_fetch,
+        ):
+            result = refresh_stream_url(self._album_url, 3, self._session_data)
+
+        assert result == expected
+        mock_fetch.assert_called_once()
+
+    def test_returns_none_on_exception(self) -> None:
+        """Returns None (never raises) when fetch_stream_url raises."""
+        with (
+            patch("kamp_daemon.bandcamp._make_requests_session"),
+            patch(
+                "kamp_daemon.bandcamp.fetch_stream_url",
+                side_effect=BandcampAPIError("not found"),
+            ),
+        ):
+            result = refresh_stream_url(self._album_url, 99, self._session_data)
+
+        assert result is None
+
+
+class TestSyncCollectionStream:
+    """Tests for sync_collection_stream — album-level collection indexing."""
+
+    def _run(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+        *,
+        already_have_tracks: bool = True,
+        fake_tracks: list[Any] | None = None,
+        existing_state: dict[str, str] | None = None,
+        apply_bandcamp_genres: bool = True,
+    ) -> tuple[tuple[int, int], MagicMock]:
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = existing_state or {}
+        # By default pretend tracks already exist so fetch_album_tracks is skipped.
+        index.has_remote_album_tracks.return_value = already_have_tracks
+
+        fake_tracks = fake_tracks or []
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=fake_tracks),
+        ):
+            result = sync_collection_stream(
+                config,
+                watch_folder,
+                index,
+                apply_bandcamp_genres=apply_bandcamp_genres,
+            )
+
+        return result, index
+
+    def test_upserts_all_items_as_remote(self, tmp_path: Path) -> None:
+        items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
+        (album_count, _track_count, _keys), index = self._run(tmp_path, items)
+        assert album_count == 2
+        calls = index.upsert_collection_item.call_args_list
+        assert len(calls) == 2
+        assert all(c[1]["mode"] == "remote" for c in calls)
+
+    def test_returns_album_count(self, tmp_path: Path) -> None:
+        items = [_item(10), _item(20), _item(30)]
+        (album_count, _, _), _ = self._run(tmp_path, items)
+        assert album_count == 3
+
+    def test_fetches_tracks_for_new_albums(self, tmp_path: Path) -> None:
+        """Albums not yet in tracks table trigger a fetch_album_tracks call."""
+        from kamp_core.library import Track
+        from pathlib import Path as _Path
+
+        fake_track = Track(
+            file_path=_Path("bandcamp://1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        items = [_item(1)]
+        (album_count, track_count, new_keys), index = self._run(
+            tmp_path, items, already_have_tracks=False, fake_tracks=[fake_track]
+        )
+        assert album_count == 1
+        assert track_count == 1
+        index.upsert_many.assert_called_once()
+        # KAMP-618: a first-time-indexed album is reported (by its collection
+        # band_name/item_title) for genre enrichment.
+        assert new_keys == [("Band", "Album")]
+
+    def test_skips_track_fetch_for_existing_albums(self, tmp_path: Path) -> None:
+        """Albums already in tracks table do not trigger fetch_album_tracks."""
+        items = [_item(1), _item(2)]
+        (_counts, _, _), index = self._run(tmp_path, items, already_have_tracks=True)
+        index.upsert_many.assert_not_called()
+
+    def test_re_upserts_already_remote_item(self, tmp_path: Path) -> None:
+        """Idempotent: collection row is always refreshed even if tracks exist."""
+        items = [_item(99)]
+        (_counts, _, _), index = self._run(tmp_path, items, already_have_tracks=True)
+        index.upsert_collection_item.assert_called_once()
+        assert index.upsert_collection_item.call_args[1]["mode"] == "remote"
+
+    def test_skips_local_mode_items(self, tmp_path: Path) -> None:
+        """Items already mode='local' are not overwritten with mode='remote'."""
+        items = [
+            _item(1, "Downloaded Band", "Downloaded Album"),
+            _item(2, "New Band", "New Album"),
+        ]
+        # Item 1 was already downloaded; item 2 is new.
+        (album_count, _, _), index = self._run(
+            tmp_path,
+            items,
+            existing_state={"1": "local"},
+        )
+        assert album_count == 1  # only the new item counted
+        calls = index.upsert_collection_item.call_args_list
+        assert len(calls) == 1
+        assert calls[0][0][0] == "2"  # only item 2 upserted
+
+    def test_no_files_downloaded(self, tmp_path: Path) -> None:
+        """Stream sync must not touch the watch folder."""
+        items = [_item(5), _item(6)]
+        self._run(tmp_path, items)
+        assert not (tmp_path / "watch").exists()
+
+    def test_warns_and_continues_on_fetch_error(self, tmp_path: Path) -> None:
+        """A failed fetch_album_tracks is logged as a warning; other albums continue."""
+        items = [_item(1), _item(2)]
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.return_value = False
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_tracks",
+                side_effect=BandcampAPIError("rate limited"),
+            ),
+        ):
+            album_count, track_count, _keys = sync_collection_stream(
+                config, watch_folder, index
+            )
+
+        assert album_count == 2  # both albums counted in bandcamp_collection
+        assert track_count == 0  # no tracks indexed (fetch failed)
+
+    def test_caches_album_keywords_after_indexing(self, tmp_path: Path) -> None:
+        # KAMP-588: after a streamed album is indexed, its Bandcamp tags (carried
+        # on the tracks' genres) are cached on the collection row for downloads.
+        from pathlib import Path as _Path
+
+        from kamp_core.library import Track
+
+        track = Track(
+            file_path=_Path("bandcamp://1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            genres=["shoegaze", "dream pop"],
+        )
+        _result, index = self._run(
+            tmp_path, [_item(1)], already_have_tracks=False, fake_tracks=[track]
+        )
+        index.set_collection_keywords.assert_called_once_with(
+            "1", ["shoegaze", "dream pop"]
+        )
+        # apply_bandcamp_genres defaults True — the tracks keep their genres.
+        upserted = index.upsert_many.call_args[0][0]
+        assert upserted[0].genres == ["shoegaze", "dream pop"]
+
+    def test_disabled_bandcamp_genres_caches_but_strips_from_tracks(
+        self, tmp_path: Path
+    ) -> None:
+        # With the toggle off, the labels are still cached on the collection row,
+        # but stripped from the tracks so they never reach the library.
+        from pathlib import Path as _Path
+
+        from kamp_core.library import Track
+
+        track = Track(
+            file_path=_Path("bandcamp://1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2020",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            genres=["shoegaze", "dream pop"],
+        )
+        _result, index = self._run(
+            tmp_path,
+            [_item(1)],
+            already_have_tracks=False,
+            fake_tracks=[track],
+            apply_bandcamp_genres=False,
+        )
+        # Cache still holds the labels...
+        index.set_collection_keywords.assert_called_once_with(
+            "1", ["shoegaze", "dream pop"]
+        )
+        # ...but the upserted track has no genres.
+        upserted = index.upsert_many.call_args[0][0]
+        assert upserted[0].genres == []
+
+    def _genre_track(self, genres: list[str], n: int = 1) -> Any:
+        from pathlib import Path as _Path
+
+        from kamp_core.library import Track
+
+        return Track(
+            file_path=_Path(f"bandcamp://1/{n}"),
+            title=f"T{n}",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2020",
+            track_number=n,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+            genres=genres,
+        )
+
+    def test_preorder_resync_preserves_user_genre_edits(self, tmp_path: Path) -> None:
+        # KAMP-604 (headline red-before-green): a pre-order first-indexed with the
+        # toggle on gets its Bandcamp labels as genres; after the user edits those
+        # genres, a later re-sync (still a pre-order, is_new_album False) must NOT
+        # clobber the edit. Real LibraryIndex so upsert_many's empty-incoming skip
+        # is exercised end to end.
+        from kamp_core.library import LibraryIndex
+
+        item = _preorder_item(1)
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        index = LibraryIndex(tmp_path / "lib.db")
+
+        def _sync() -> None:
+            with (
+                patch(
+                    "kamp_daemon.bandcamp._ensure_session",
+                    return_value=_make_session_data(),
+                ),
+                patch(
+                    "kamp_daemon.bandcamp._make_requests_session",
+                    return_value=_make_requests_mock([item]),
+                ),
+                patch(
+                    "kamp_daemon.bandcamp.fetch_album_tracks",
+                    side_effect=lambda *a, **k: [
+                        self._genre_track(["shoegaze", "dream pop"])
+                    ],
+                ),
+            ):
+                sync_collection_stream(
+                    config, watch_folder, index, apply_bandcamp_genres=True
+                )
+
+        # First index (is_new_album True): Bandcamp labels applied.
+        _sync()
+        tid = index._conn.execute("SELECT id FROM tracks").fetchone()["id"]
+        assert set(index.genres_for_track(tid)) == {"shoegaze", "dream pop"}
+
+        # User removes a genre.
+        index.apply_genres([tid], ["shoegaze"], mode="replace")
+        assert index.genres_for_track(tid) == ["shoegaze"]
+
+        # Re-sync of the same pre-order must preserve the edit, not revert it.
+        _sync()
+        result = index.genres_for_track(tid)
+        index.close()
+        assert result == ["shoegaze"]
+
+    def test_preorder_resync_strips_bandcamp_genres(self, tmp_path: Path) -> None:
+        # KAMP-604: re-sync of an already-indexed pre-order (is_new_album False)
+        # strips the fetched Bandcamp genres before upsert (so upsert_many's
+        # empty-incoming skip preserves the user's edits) while still refreshing
+        # the keyword cache. This is the (apply=True, is_new=False) strip branch.
+        track = self._genre_track(["shoegaze", "dream pop"])
+        _result, index = self._run(
+            tmp_path,
+            [_item(1)],
+            already_have_tracks=True,
+            fake_tracks=[track],
+            existing_state={"1": "preorder"},
+            apply_bandcamp_genres=True,
+        )
+        index.set_collection_keywords.assert_called_once_with(
+            "1", ["shoegaze", "dream pop"]
+        )
+        assert index.upsert_many.call_args[0][0][0].genres == []
+
+    def test_date_backfill_resync_does_not_reapply_genres(self, tmp_path: Path) -> None:
+        # KAMP-604: the strip generalizes beyond pre-orders — a non-pre-order album
+        # re-fetched only for year-only date backfill (is_new_album False) also
+        # stops re-applying Bandcamp genres, preserving the stored set.
+        track = self._genre_track(["shoegaze"])
+        _result, index = self._run(
+            tmp_path,
+            [_item(1)],
+            already_have_tracks=True,  # existing album -> is_new_album False
+            fake_tracks=[track],  # fetch triggers via needs_backfill (MagicMock)
+            apply_bandcamp_genres=True,
+        )
+        index.upsert_many.assert_called_once()
+        assert index.upsert_many.call_args[0][0][0].genres == []
+
+    def test_graduated_preorder_new_track_lands_genreless(self, tmp_path: Path) -> None:
+        # KAMP-604 Q3 (deliberate): when a re-inspected pre-order gains a newly
+        # released track, is_new_album is album-granular, so ALL fetched tracks
+        # (the pre-existing ones and the new one) are stripped. Album-mates keep
+        # their user-edited genres via the empty-incoming skip; the new track
+        # lands genre-less. Accepted trade-off — the album genre union is
+        # unchanged (union with the empty set is a no-op).
+        tracks = [
+            self._genre_track(["shoegaze"], n=1),
+            self._genre_track(["shoegaze"], n=2),  # the newly-released track
+        ]
+        _result, index = self._run(
+            tmp_path,
+            [_item(1)],
+            already_have_tracks=True,
+            fake_tracks=tracks,
+            existing_state={"1": "preorder"},
+            apply_bandcamp_genres=True,
+        )
+        upserted = index.upsert_many.call_args[0][0]
+        assert [t.genres for t in upserted] == [[], []]
+
+    def test_batch_indexed_callback_fires_per_new_batch(self, tmp_path: Path) -> None:
+        """batch_indexed_callback fires once per album batch that has new tracks."""
+        from kamp_core.library import Track
+        from pathlib import Path as _Path
+
+        def _fake_track(n: int) -> Track:
+            return Track(
+                file_path=_Path(f"bandcamp://1/{n}"),
+                title=f"Track {n}",
+                artist="A",
+                album_artist="A",
+                album="Album",
+                release_date="2020",
+                track_number=n,
+                disc_number=1,
+                ext="mp3",
+                embedded_art=False,
+                mb_release_id="",
+                mb_recording_id="",
+                source="bandcamp",
+            )
+
+        items = [_item(1), _item(2), _item(3)]
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.return_value = False
+
+        fired: list[bool] = []
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_tracks",
+                side_effect=[
+                    [_fake_track(1)],
+                    [_fake_track(2)],
+                    [_fake_track(3)],
+                ],
+            ),
+        ):
+            sync_collection_stream(
+                config,
+                watch_folder,
+                index,
+                batch_indexed_callback=lambda: fired.append(True),
+            )
+
+        assert len(fired) == 3  # one call per album with new tracks
+
+    def test_batch_indexed_callback_not_called_when_no_new_tracks(
+        self, tmp_path: Path
+    ) -> None:
+        """batch_indexed_callback is not called when albums already have tracks."""
+        items = [_item(1), _item(2)]
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        # Tracks already exist — fetch_album_tracks path is skipped entirely.
+        index.has_remote_album_tracks.return_value = True
+
+        fired: list[bool] = []
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[]),
+        ):
+            sync_collection_stream(
+                config,
+                watch_folder,
+                index,
+                batch_indexed_callback=lambda: fired.append(True),
+            )
+
+        assert fired == []
+
+    def test_passes_purchased_as_added_at(self, tmp_path: Path) -> None:
+        """sync_collection_stream passes the parsed purchase date as added_at."""
+        purchased_str = "10 Jun 2023 08:00:00 GMT"
+        items = [_item(1, purchased=purchased_str)]
+        _result, index = self._run(tmp_path, items)
+
+        call_kwargs = index.upsert_collection_item.call_args[1]
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        assert call_kwargs["added_at"] == _parse_purchased(purchased_str)
+        assert call_kwargs["added_at"] is not None
+
+    def test_calls_update_remote_track_date_added(self, tmp_path: Path) -> None:
+        """sync_collection_stream corrects existing remote tracks' date_added."""
+        purchased_str = "10 Jun 2023 08:00:00 GMT"
+        items = [_item(1, purchased=purchased_str)]
+        _result, index = self._run(tmp_path, items)
+
+        from kamp_daemon.bandcamp import _parse_purchased
+
+        index.update_remote_track_date_added.assert_called_once_with(
+            "1", _parse_purchased(purchased_str)
+        )
+
+    def test_skips_update_when_purchased_missing(self, tmp_path: Path) -> None:
+        """Items without a purchased field don't call update_remote_track_date_added."""
+        item = _item(1)
+        item.pop("purchased")
+        _result, index = self._run(tmp_path, [item])
+
+        index.update_remote_track_date_added.assert_not_called()
+
+    def _run_with_counts(
+        self, tmp_path: Path, item: dict[str, Any], counts: list[int]
+    ) -> MagicMock:
+        """Run a stream sync for one item, stubbing the available-track counts.
+
+        *counts* is [before, after] returned by count_available_remote_tracks
+        (called once before the fetch and once after the upsert).
+        """
+        from kamp_core.library import Track
+        from pathlib import Path as _Path
+
+        fake_track = Track(
+            file_path=_Path("bandcamp://1/1"),
+            title="T",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2026",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock([item])
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.return_value = False  # force the fetch branch
+        index.count_available_remote_tracks.side_effect = counts
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[fake_track]),
+        ):
+            sync_collection_stream(config, watch_folder, index)
+        return index
+
+    def test_bumps_new_content_when_available_count_increases(
+        self, tmp_path: Path
+    ) -> None:
+        """An album that gained a streamable track is re-surfaced (KAMP-544)."""
+        index = self._run_with_counts(tmp_path, _item(1), counts=[1, 2])
+        index.bump_album_new_content.assert_called_once()
+        sid, ts = index.bump_album_new_content.call_args[0]
+        assert sid == "1"
+        assert isinstance(ts, float)
+
+    def test_no_bump_when_available_count_unchanged(self, tmp_path: Path) -> None:
+        """A re-sync that adds no new streamable track does not bump (KAMP-544)."""
+        index = self._run_with_counts(tmp_path, _item(1), counts=[2, 2])
+        index.bump_album_new_content.assert_not_called()
+
+    def test_no_bump_on_first_index_when_before_zero(self, tmp_path: Path) -> None:
+        """The first index of an album (0 -> N available) does not bump (KAMP-544).
+
+        A brand-new album is already 'new' by its date_added; only a *subsequent*
+        increase counts as a re-arrival, so the before>0 guard skips this case.
+        """
+        index = self._run_with_counts(tmp_path, _item(1), counts=[0, 3])
+        index.bump_album_new_content.assert_not_called()
+
+
+class TestStreamSyncArtPrefetch:
+    """Art prefetch behaviour in sync_collection_stream."""
+
+    def _run_with_art(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+        art_cache_dir: Path | None,
+        mock_art: bytes | None = b"\xff\xd8\xff" * 10,
+    ) -> MagicMock:
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.return_value = True
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[]),
+            patch(
+                "kamp_daemon.bandcamp.fetch_album_art_bytes", return_value=mock_art
+            ) as mock_fetch_art,
+        ):
+            sync_collection_stream(
+                config, watch_folder, index, art_cache_dir=art_cache_dir
+            )
+            return mock_fetch_art
+
+    def test_art_prefetch_writes_cache(self, tmp_path: Path) -> None:
+        """When art_cache_dir is provided and no cache file exists, art is fetched and written."""
+        art_cache = tmp_path / "art_cache"
+        items = [_item(1, tralbum_id=10)]
+        mock_fetch = self._run_with_art(tmp_path, items, art_cache_dir=art_cache)
+        mock_fetch.assert_called_once()
+        assert (art_cache / "10.jpg").exists()
+
+    def test_art_prefetch_skips_cached(self, tmp_path: Path) -> None:
+        """Albums whose cache file already exists do not trigger a fetch."""
+        art_cache = tmp_path / "art_cache"
+        art_cache.mkdir()
+        (art_cache / "10.jpg").write_bytes(b"\xff\xd8\xff")
+        items = [_item(1, tralbum_id=10)]
+        mock_fetch = self._run_with_art(tmp_path, items, art_cache_dir=art_cache)
+        mock_fetch.assert_not_called()
+
+    def test_art_prefetch_tolerates_failure(self, tmp_path: Path) -> None:
+        """A None return from fetch_album_art_bytes does not raise; sync completes normally."""
+        art_cache = tmp_path / "art_cache"
+        items = [_item(1, tralbum_id=10), _item(2, tralbum_id=20)]
+        mock_fetch = self._run_with_art(
+            tmp_path, items, art_cache_dir=art_cache, mock_art=None
+        )
+        # Both albums attempted; neither succeeded; no files written; no exception.
+        assert mock_fetch.call_count == 2
+        assert not any(art_cache.glob("*.jpg")) if art_cache.exists() else True
+
+    def test_art_prefetch_skipped_without_cache_dir(self, tmp_path: Path) -> None:
+        """When art_cache_dir is None (default), fetch_album_art_bytes is never called."""
+        items = [_item(1), _item(2)]
+        mock_fetch = self._run_with_art(tmp_path, items, art_cache_dir=None)
+        mock_fetch.assert_not_called()
+
+    def test_art_cache_key_uses_sid_fallback(self, tmp_path: Path) -> None:
+        """When tralbum_id is empty the cache key falls back to sid_<sale_item_id>."""
+        art_cache = tmp_path / "art_cache"
+        # Empty tralbum_id (as stored in DB when absent) triggers the fallback.
+        item = {
+            "sale_item_type": "p",
+            "sale_item_id": 7,
+            "band_name": "Band",
+            "item_title": "Album",
+            "item_url": "https://band.bandcamp.com/album/album",
+            "tralbum_id": "",
+        }
+        self._run_with_art(tmp_path, [item], art_cache_dir=art_cache)
+        assert (art_cache / "sid_7.jpg").exists()
+
+
+class TestFetchAlbumTracks:
+    """Tests for fetch_album_tracks — parses data-tralbum into Track objects."""
+
+    def _make_session(self, html: str) -> MagicMock:
+        session = MagicMock()
+        resp = MagicMock()
+        resp.text = html
+        resp.raise_for_status = MagicMock()
+        session.get.return_value = resp
+        return session
+
+    def test_returns_tracks_for_each_trackinfo_entry(self) -> None:
+        tracks = [
+            {"title": "Song One", "track_num": 1, "artist": None, "duration": 200.0},
+            {"title": "Song Two", "track_num": 2, "artist": None, "duration": 180.0},
+        ]
+        html = _stream_album_page_html(tracks=tracks)
+        session = self._make_session(html)
+
+        result = fetch_album_tracks(
+            "https://band.bandcamp.com/album/x", 12345, "Band", "Album", session
+        )
+
+        assert len(result) == 2
+        assert result[0].title == "Song One"
+        assert result[0].track_number == 1
+        assert result[0].duration == 200.0
+        assert result[1].title == "Song Two"
+        assert result[1].track_number == 2
+        assert result[1].duration == 180.0
+
+    def test_source_is_bandcamp(self) -> None:
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert all(t.source == "bandcamp" for t in result)
+
+    def test_sets_genres_from_bandcamp_tags(self) -> None:
+        # KAMP-588: artist tags in the page HTML become Track.genres (format words
+        # dropped); applied to every track on the album.
+        html = _stream_album_page_html(
+            tracks=[{"title": "T", "track_num": 1, "artist": None, "duration": 100.0}]
+        ).replace(
+            "</body>",
+            '<a class="tag" href="/tag/shoegaze">shoegaze</a>'
+            '<a class="tag" href="/tag/vinyl">vinyl</a></body>',
+        )
+        result = fetch_album_tracks(
+            "https://b.bandcamp.com/album/x", 1, "B", "A", self._make_session(html)
+        )
+        assert result[0].genres == ["shoegaze"]  # vinyl dropped
+
+    def test_no_tags_leaves_genres_empty(self) -> None:
+        result = fetch_album_tracks(
+            "https://b.bandcamp.com/album/x",
+            1,
+            "B",
+            "A",
+            self._make_session(_stream_album_page_html()),
+        )
+        assert all(t.genres == [] for t in result)
+
+    def test_no_stream_url(self) -> None:
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert all(t.stream_url is None for t in result)
+
+    def test_date_added_defaults_to_current_time(self) -> None:
+        """Without an explicit date_added, tracks default to the current time."""
+        before = time.time()
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        after = time.time()
+        assert all(t.date_added is not None for t in result)
+        assert all(before <= t.date_added <= after for t in result)  # type: ignore[operator]
+
+    def test_date_added_uses_provided_value(self) -> None:
+        """A caller-supplied date_added is used verbatim on every track."""
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y",
+            1,
+            "B",
+            "A",
+            self._make_session(html),
+            date_added=12345.0,
+        )
+        assert all(t.date_added == 12345.0 for t in result)
+
+    def test_file_path_contains_sale_item_id_and_track_num(self) -> None:
+        tracks = [{"title": "T", "track_num": 3, "artist": None}]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 999, "B", "A", self._make_session(html)
+        )
+        assert len(result) == 1
+        assert "999" in str(result[0].file_path)
+        assert "3" in str(result[0].file_path)
+
+    def test_iso_date_parsed_from_release_date(self) -> None:
+        html = _stream_album_page_html(release_date="15 Mar 2018 00:00:00 GMT")
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert all(t.release_date == "2018-03-15" for t in result)
+
+    def test_per_track_artist_used_when_present(self) -> None:
+        tracks = [{"title": "T", "track_num": 1, "artist": "Guest Artist"}]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "Band", "A", self._make_session(html)
+        )
+        assert result[0].artist == "Guest Artist"
+        assert result[0].album_artist == "Band"
+
+    def test_falls_back_to_band_name_when_no_per_track_artist(self) -> None:
+        tracks = [{"title": "T", "track_num": 1, "artist": None}]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "Band", "A", self._make_session(html)
+        )
+        assert result[0].artist == "Band"
+
+    def test_raises_on_missing_data_tralbum(self) -> None:
+        session = self._make_session("<html><body>no tralbum here</body></html>")
+        with pytest.raises(BandcampAPIError, match="no data-tralbum"):
+            fetch_album_tracks("https://x.bandcamp.com/album/y", 1, "B", "A", session)
+
+    def test_skips_tracks_without_track_num(self) -> None:
+        tracks = [
+            {"title": "Good", "track_num": 1, "artist": None},
+            {"title": "Hidden", "track_num": None, "artist": None},
+        ]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert len(result) == 1
+        assert result[0].title == "Good"
+
+    def test_single_track_page_indexes_one_track_as_number_1(self) -> None:
+        """A standalone /track/ page (item_type='track') has one trackinfo entry
+        with track_num=None; it must be indexed as track_number 1, not skipped
+        (KAMP-526)."""
+        tracks = [
+            {
+                "title": "Gush",
+                "track_num": None,
+                "artist": None,
+                "duration": 410.9,
+                "file": {"mp3-128": "https://cdn.example.com/gush.mp3"},
+            }
+        ]
+        html = _stream_album_page_html(
+            tracks=tracks,
+            release_date=None,
+            item_type="track",
+            current={"release_date": "29 Jun 2026 00:00:00 GMT"},
+        )
+        result = fetch_album_tracks(
+            "https://ohmfoam.bandcamp.com/track/gush",
+            390616303,
+            "Ohm Foam",
+            "Gush",
+            self._make_session(html),
+        )
+        assert len(result) == 1
+        assert result[0].title == "Gush"
+        assert result[0].track_number == 1
+        # Virtual path carries sale_item_id and the normalised track number.
+        # Path renders bandcamp://.../1 with backslashes on Windows, which
+        # resolve_playback_uri also normalises before parsing — do the same here.
+        normalised_fp = str(result[0].file_path).replace("\\", "/")
+        assert "390616303" in normalised_fp
+        assert normalised_fp.endswith("/1")
+        assert result[0].is_available is True
+
+    def test_single_track_release_date_falls_back_to_current(self) -> None:
+        """When album_release_date is absent, the date comes from
+        current.release_date (KAMP-526)."""
+        tracks = [
+            {"title": "Gush", "track_num": None, "artist": None, "file": {"x": "y"}}
+        ]
+        html = _stream_album_page_html(
+            tracks=tracks,
+            release_date=None,
+            item_type="track",
+            current={"release_date": "29 Jun 2026 00:00:00 GMT"},
+        )
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/track/gush",
+            1,
+            "B",
+            "Gush",
+            self._make_session(html),
+        )
+        assert result[0].release_date == "2026-06-29"
+
+    def test_is_available_true_when_file_present(self) -> None:
+        """Tracks with a file entry are marked available (KAMP-423)."""
+        tracks = [
+            {
+                "title": "Released",
+                "track_num": 1,
+                "artist": None,
+                "file": {"mp3-128": "https://cdn.example.com/track1.mp3"},
+            }
+        ]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert len(result) == 1
+        assert result[0].is_available is True
+
+    def test_is_available_false_when_file_is_null(self) -> None:
+        """Tracks with file=null (unreleased pre-order tracks) are unavailable (KAMP-423)."""
+        tracks = [
+            {
+                "title": "Released",
+                "track_num": 1,
+                "artist": None,
+                "file": {"mp3-128": "https://cdn.example.com/t1.mp3"},
+            },
+            {"title": "Unreleased", "track_num": 2, "artist": None, "file": None},
+        ]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert len(result) == 2
+        assert result[0].is_available is True
+        assert result[1].is_available is False
+
+    def test_is_available_false_when_file_absent(self) -> None:
+        """Tracks with no file key at all are also unavailable (KAMP-423)."""
+        tracks = [{"title": "Unreleased", "track_num": 1, "artist": None}]
+        html = _stream_album_page_html(tracks=tracks)
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        assert result[0].is_available is False
+
+    def test_all_available_when_no_file_key_by_default(self) -> None:
+        """The default _stream_album_page_html fixture omits 'file'; confirm False."""
+        html = _stream_album_page_html()
+        result = fetch_album_tracks(
+            "https://x.bandcamp.com/album/y", 1, "B", "A", self._make_session(html)
+        )
+        # Default fixture tracks have no 'file' key → all unavailable
+        assert all(t.is_available is False for t in result)
+
+
+class TestSyncCollectionStreamPreorder:
+    """Pre-order-aware sync behaviour in sync_collection_stream (KAMP-423)."""
+
+    def _make_track(
+        self, sale_item_id: str, track_num: int, available: bool = True
+    ) -> "Track":
+        from kamp_core.library import Track
+        from pathlib import Path as _Path
+
+        t = Track(
+            file_path=_Path(f"bandcamp://{sale_item_id}/{track_num}"),
+            title=f"Track {track_num}",
+            artist="A",
+            album_artist="A",
+            album="Album",
+            release_date="2020",
+            track_number=track_num,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+            source="bandcamp",
+        )
+        t.is_available = available
+        return t
+
+    def _run(
+        self,
+        tmp_path: Path,
+        items: list[dict[str, Any]],
+        fake_tracks: list[Any],
+        existing_state: dict[str, str] | None = None,
+        has_remote_tracks: bool = False,
+    ) -> "MagicMock":
+        watch_folder = tmp_path / "watch"
+        config = _bc_config(tmp_path)
+        mock_session = _make_requests_mock(items)
+        index = MagicMock()
+        index.get_collection_state.return_value = existing_state or {}
+        index.has_remote_album_tracks.return_value = has_remote_tracks
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=mock_session
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=fake_tracks),
+        ):
+            sync_collection_stream(config, watch_folder, index)
+
+        return index
+
+    def test_sets_preorder_mode_when_unavailable_tracks_present(
+        self, tmp_path: Path
+    ) -> None:
+        """When fetched tracks include unavailable ones, mode is set to 'preorder'."""
+        items = [_item(1)]
+        tracks = [
+            self._make_track("1", 1, available=True),
+            self._make_track("1", 2, available=False),
+        ]
+        index = self._run(tmp_path, items, tracks, has_remote_tracks=False)
+
+        index.set_collection_item_mode.assert_called_once_with("1", "preorder")
+
+    def test_does_not_call_set_mode_when_all_tracks_available_and_not_preorder(
+        self, tmp_path: Path
+    ) -> None:
+        """Fully available albums (not previously preorder) leave mode unchanged."""
+        items = [_item(1)]
+        tracks = [self._make_track("1", 1, available=True)]
+        index = self._run(tmp_path, items, tracks, has_remote_tracks=False)
+
+        index.set_collection_item_mode.assert_not_called()
+
+    def test_reverts_to_remote_when_all_tracks_become_available(
+        self, tmp_path: Path
+    ) -> None:
+        """A previously-preorder album whose tracks are all now available reverts to 'remote'."""
+        items = [_item(1)]
+        tracks = [
+            self._make_track("1", 1, available=True),
+            self._make_track("1", 2, available=True),
+        ]
+        index = self._run(
+            tmp_path,
+            items,
+            tracks,
+            existing_state={"1": "preorder"},
+            has_remote_tracks=True,
+        )
+
+        index.set_collection_item_mode.assert_called_once_with("1", "remote")
+
+    def test_preorder_album_bypasses_has_remote_tracks_short_circuit(
+        self, tmp_path: Path
+    ) -> None:
+        """Pre-order albums are always re-fetched even if tracks already exist in DB."""
+        items = [_item(1)]
+        tracks = [self._make_track("1", 1, available=False)]
+        index = self._run(
+            tmp_path,
+            items,
+            tracks,
+            existing_state={"1": "preorder"},
+            has_remote_tracks=True,  # would normally skip fetch
+        )
+
+        index.upsert_many.assert_called_once()
+
+    def test_non_preorder_album_still_skips_when_tracks_exist(
+        self, tmp_path: Path
+    ) -> None:
+        """Regular remote albums with existing tracks are still short-circuited."""
+        items = [_item(1)]
+        index = self._run(
+            tmp_path,
+            items,
+            fake_tracks=[],
+            existing_state={"1": "remote"},
+            has_remote_tracks=True,
+        )
+
+        index.upsert_many.assert_not_called()
+
+    def test_upsert_collection_item_preserves_preorder_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """When existing mode is 'preorder', upsert_collection_item is called with mode='preorder'
+        (not 'remote') so the mode survives the initial upsert before track re-inspection.
+        """
+        items = [_item(1)]
+        tracks = [self._make_track("1", 1, available=False)]
+        index = self._run(
+            tmp_path,
+            items,
+            tracks,
+            existing_state={"1": "preorder"},
+            has_remote_tracks=True,
+        )
+
+        upsert_calls = index.upsert_collection_item.call_args_list
+        assert len(upsert_calls) == 1
+        assert upsert_calls[0][1]["mode"] == "preorder"
+
+
+class TestDownloadSingleAlbum:
+    """Tests for download_single_album()."""
+
+    def _collection_item(
+        self, sale_item_id: str = "42", with_url: bool = True
+    ) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "sale_item_id": int(sale_item_id),
+            "sale_item_type": "p",
+            "band_name": "Test Band",
+            "item_title": "Test Album",
+        }
+        if with_url:
+            item["redownload_url"] = f"https://bandcamp.com/download?id={sale_item_id}"
+        return item
+
+    def _run(
+        self,
+        tmp_path: Path,
+        sale_item_id: str = "42",
+        collection: list[dict[str, Any]] | None = None,
+    ) -> Path:
+        config = _bc_config(tmp_path)
+        watch_folder = tmp_path / "watch"
+        index = MagicMock()
+        # No stored redownload_url → exercise the fallback (collection re-fetch)
+        # path. The fast path is covered separately (KAMP-575).
+        index.get_download_item.return_value = None
+
+        def fake_download_item(
+            item: dict,
+            bc_config: object,
+            watch_dir: Path,
+            session: object,
+            on_progress: object = None,
+        ) -> Path:
+            watch_dir.mkdir(parents=True, exist_ok=True)
+            dest = watch_dir / f"{item['sale_item_id']}.zip"
+            dest.write_bytes(b"zip")
+            return dest
+
+        fake_collection = (
+            collection
+            if collection is not None
+            else [self._collection_item(sale_item_id)]
+        )
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=MagicMock()
+            ),
+            patch("kamp_daemon.bandcamp._get_fan_info", return_value=(123, "testuser")),
+            patch(
+                "kamp_daemon.bandcamp._fetch_collection", return_value=fake_collection
+            ),
+            patch(
+                "kamp_daemon.bandcamp._download_item", side_effect=fake_download_item
+            ),
+        ):
+            return download_single_album(config, watch_folder, index, sale_item_id)
+
+    def test_downloads_zip_to_watch_folder(self, tmp_path: Path) -> None:
+        dest = self._run(tmp_path)
+        assert dest.exists()
+        assert dest.suffix == ".zip"
+
+    def test_updates_collection_mode_and_track_source(self, tmp_path: Path) -> None:
+        config = _bc_config(tmp_path)
+        index = MagicMock()
+        index.get_download_item.return_value = None  # fallback path
+        fake_collection = [self._collection_item("42")]
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=MagicMock()
+            ),
+            patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "user")),
+            patch(
+                "kamp_daemon.bandcamp._fetch_collection", return_value=fake_collection
+            ),
+            patch(
+                "kamp_daemon.bandcamp._download_item", return_value=tmp_path / "a.zip"
+            ),
+        ):
+            download_single_album(config, tmp_path / "watch", index, "42")
+
+        index.set_collection_item_mode.assert_called_once_with("42", "local")
+        index.set_track_source_for_item.assert_not_called()
+
+    def test_raises_when_item_not_in_collection(self, tmp_path: Path) -> None:
+        with pytest.raises(BandcampAPIError, match="No download link"):
+            self._run(tmp_path, collection=[])
+
+    def test_raises_when_redownload_url_missing(self, tmp_path: Path) -> None:
+        with pytest.raises(BandcampAPIError, match="No download link"):
+            self._run(
+                tmp_path, collection=[self._collection_item("42", with_url=False)]
+            )
+
+    def test_fast_path_uses_stored_url_without_collection_fetch(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-575: a queue row with a stored redownload_url downloads WITHOUT any
+        collection fetch or fan-info call — reconstructing the item from local DB.
+        This is the regression fix: no per-item collection re-fetch → no 429 storm.
+        """
+        config = _bc_config(tmp_path)
+        index = MagicMock()
+        index.get_download_item.return_value = {
+            "redownload_url": "https://bandcamp.com/download?id=42&sig=xyz",
+            "album_artist": "Test Band",
+            "album_name": "Test Album",
+        }
+        index.get_collection_item.return_value = {"tralbum_id": "tr-99"}
+
+        captured: dict[str, Any] = {}
+
+        def fake_download_item(item: dict, *_a: object, **_k: object) -> Path:
+            captured.update(item)
+            dest = tmp_path / "42.zip"
+            dest.write_bytes(b"zip")
+            return dest
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=MagicMock()
+            ),
+            patch("kamp_daemon.bandcamp._get_fan_info") as fan,
+            patch("kamp_daemon.bandcamp._fetch_collection") as fetch,
+            patch(
+                "kamp_daemon.bandcamp._download_item", side_effect=fake_download_item
+            ),
+        ):
+            dest = download_single_album(config, tmp_path / "watch", index, "42")
+
+        assert dest.exists()
+        fetch.assert_not_called()  # the whole point: no collection walk
+        fan.assert_not_called()  # nor a collection_summary hit
+        # Item reconstructed from local DB: URL + band/title from the row, tralbum
+        # from the ledger.
+        assert (
+            captured["redownload_url"] == "https://bandcamp.com/download?id=42&sig=xyz"
+        )
+        assert captured["band_name"] == "Test Band"
+        assert captured["item_title"] == "Test Album"
+        index.set_collection_item_mode.assert_called_once_with("42", "local")
+        index.add_pending_ingest.assert_called_once_with(str(dest), "42", "tr-99")
+
+    def test_no_stored_url_falls_back_to_collection_fetch(self, tmp_path: Path) -> None:
+        """No stored redownload_url → the collection is fetched to resolve it."""
+        config = _bc_config(tmp_path)
+        index = MagicMock()
+        index.get_download_item.return_value = {"redownload_url": None}
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session", return_value=MagicMock()
+            ),
+            patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u")) as fan,
+            patch(
+                "kamp_daemon.bandcamp._fetch_collection",
+                return_value=[self._collection_item("42")],
+            ) as fetch,
+            patch(
+                "kamp_daemon.bandcamp._download_item", return_value=tmp_path / "a.zip"
+            ),
+        ):
+            download_single_album(config, tmp_path / "watch", index, "42")
+
+        fetch.assert_called_once()  # fell back to the collection re-fetch
+        fan.assert_called_once()
+
+
+class TestParseSizeMb:
+    """_parse_size_mb: Bandcamp download-page size string → bytes (KAMP-574)."""
+
+    def test_mb_with_decimal(self) -> None:
+        assert _parse_size_mb("81.2MB") == 81_200_000
+
+    def test_mb_whole(self) -> None:
+        assert _parse_size_mb("259MB") == 259_000_000
+
+    def test_gb(self) -> None:
+        assert _parse_size_mb("1.2GB") == 1_200_000_000
+
+    def test_bare_number_is_mb(self) -> None:
+        assert _parse_size_mb("57") == 57_000_000
+
+    def test_whitespace_and_case(self) -> None:
+        assert _parse_size_mb("  92.5 mb ") == 92_500_000
+
+    def test_none_and_garbage(self) -> None:
+        assert _parse_size_mb(None) is None
+        assert _parse_size_mb("") is None
+        assert _parse_size_mb("unknown") is None
+
+
+class TestGetDownloadSizeBytes:
+    """get_download_size_bytes: read size_mb from the download page (KAMP-574)."""
+
+    def _session(self, blob: dict[str, Any]) -> MagicMock:
+        session = MagicMock()
+        resp = MagicMock()
+        resp.text = _make_pagedata_html(blob)
+        resp.raise_for_status = MagicMock()
+        session.get.return_value = resp
+        return session
+
+    def test_returns_bytes_for_format(self) -> None:
+        blob = {
+            "download_items": [
+                {"downloads": {"flac": {"url": "x", "size_mb": "252.2MB"}}}
+            ]
+        }
+        assert (
+            get_download_size_bytes(
+                "https://bc/download?x", "flac", self._session(blob)
+            )
+            == 252_200_000
+        )
+
+    def test_none_when_format_absent(self) -> None:
+        blob = {"download_items": [{"downloads": {"mp3-v0": {"size_mb": "81MB"}}}]}
+        assert (
+            get_download_size_bytes(
+                "https://bc/download?x", "flac", self._session(blob)
+            )
+            is None
+        )
+
+    def test_none_when_no_downloads(self) -> None:
+        blob = {"download_items": [{"downloads": {}}]}
+        assert (
+            get_download_size_bytes(
+                "https://bc/download?x", "flac", self._session(blob)
+            )
+            is None
+        )
+
+    def test_none_on_network_error(self) -> None:
+        session = MagicMock()
+        session.get.side_effect = RuntimeError("boom")
+        assert get_download_size_bytes("https://bc/download?x", "flac", session) is None
+
+
+class TestPrefetchRedownloadUrls:
+    """prefetch_redownload_urls: fill missing queue URLs with one fetch (KAMP-575)."""
+
+    def test_populates_missing_urls_with_one_fetch(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"111": None, "222": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            return_value=[
+                {"sale_item_id": 111, "redownload_url": "https://dl/111"},
+                {"sale_item_id": 222, "redownload_url": "https://dl/222"},
+            ],
+        )
+        n = prefetch_redownload_urls(index, MagicMock())
+        assert n == 2
+        fetch.assert_called_once()  # ONE collection fetch for the whole batch
+        index.set_download_redownload_url.assert_any_call("111", "https://dl/111")
+        index.set_download_redownload_url.assert_any_call("222", "https://dl/222")
+
+    def test_noop_when_no_missing_urls(self, mocker: MockerFixture) -> None:
+        """All queued rows already have URLs → no network I/O, nothing written."""
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"111": "https://dl/111"}
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
+        n = prefetch_redownload_urls(index, MagicMock())
+        assert n == 0
+        fetch.assert_not_called()
+        index.set_download_redownload_url.assert_not_called()
+
+    def test_skips_items_not_in_collection(self, mocker: MockerFixture) -> None:
+        """A queued id absent from the collection is left unfilled (per-item
+        fallback will resolve it)."""
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"111": None, "999": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            return_value=[{"sale_item_id": 111, "redownload_url": "https://dl/111"}],
+        )
+        n = prefetch_redownload_urls(index, MagicMock())
+        assert n == 1
+        index.set_download_redownload_url.assert_called_once_with(
+            "111", "https://dl/111"
+        )
+
+
+class TestBackfillDownloadSizes:
+    """backfill_download_sizes: estimate File Size on queued items (KAMP-574)."""
+
+    def test_sizes_queued_items_as_estimates(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = ["a", "b"]
+        index.download_redownload_urls.return_value = {
+            "a": "https://bc/download?sid=a",
+            "b": "https://bc/download?sid=b",
+        }
+        mocker.patch(
+            "kamp_daemon.bandcamp.get_download_size_bytes",
+            side_effect=[81_000_000, 252_000_000],
+        )
+        updated: list[str] = []
+        slept: list[float] = []
+
+        n = backfill_download_sizes(
+            index,
+            "flac",
+            MagicMock(),
+            on_updated=updated.append,
+            sleep=slept.append,
+        )
+
+        assert n == 2
+        index.set_download_size.assert_any_call("a", 81_000_000, is_estimate=True)
+        index.set_download_size.assert_any_call("b", 252_000_000, is_estimate=True)
+        assert updated == ["a", "b"]
+        assert slept == [1.0]  # throttle between the two fetches (not before the first)
+
+    def test_skips_items_without_resolvable_size(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = ["a", "b"]
+        index.download_redownload_urls.return_value = {
+            "a": "https://bc/download?sid=a",
+            "b": "https://bc/download?sid=b",
+        }
+        # 'a' has no size_mb (None); 'b' resolves.
+        mocker.patch(
+            "kamp_daemon.bandcamp.get_download_size_bytes",
+            side_effect=[None, 100_000_000],
+        )
+        n = backfill_download_sizes(index, "flac", MagicMock(), sleep=lambda _s: None)
+        assert n == 1
+        index.set_download_size.assert_called_once_with(
+            "b", 100_000_000, is_estimate=True
+        )
+
+    def test_noop_when_nothing_queued(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = []
+        size = mocker.patch("kamp_daemon.bandcamp.get_download_size_bytes")
+        n = backfill_download_sizes(index, "flac", MagicMock())
+        assert n == 0
+        size.assert_not_called()  # nothing to size
+        index.set_download_size.assert_not_called()
+
+    def test_skips_item_without_stored_url(self, mocker: MockerFixture) -> None:
+        """An item without a stored URL is skipped — the backfill NEVER fetches the
+        collection to resolve it (the prefetch fills it in on a later cycle)."""
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = ["a", "nourl"]
+        index.download_redownload_urls.return_value = {"a": "https://bc/download?sid=a"}
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
+        fan = mocker.patch("kamp_daemon.bandcamp._get_fan_info")
+        mocker.patch(
+            "kamp_daemon.bandcamp.get_download_size_bytes", return_value=50_000_000
+        )
+        n = backfill_download_sizes(index, "flac", MagicMock(), sleep=lambda _s: None)
+        assert n == 1
+        index.set_download_size.assert_called_once_with(
+            "a", 50_000_000, is_estimate=True
+        )
+        fetch.assert_not_called()  # never touches the rate-limited collection endpoint
+        fan.assert_not_called()
+
+    def test_never_fetches_collection(self, mocker: MockerFixture) -> None:
+        """KAMP-575: the backfill sizes items via stored URLs only and never hits
+        the collection endpoint (which is what tripped the 429s)."""
+        index = MagicMock()
+        index.queued_downloads_missing_size.return_value = ["a", "b"]
+        index.download_redownload_urls.return_value = {
+            "a": "https://bc/download?sid=a",
+            "b": "https://bc/download?sid=b",
+        }
+        fan = mocker.patch("kamp_daemon.bandcamp._get_fan_info")
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection")
+        mocker.patch(
+            "kamp_daemon.bandcamp.get_download_size_bytes",
+            side_effect=[81_000_000, 252_000_000],
+        )
+        n = backfill_download_sizes(index, "flac", MagicMock(), sleep=lambda _s: None)
+        assert n == 2
+        fetch.assert_not_called()
+        fan.assert_not_called()
+
+
+class TestParseAlbumKeywords:
+    """Bandcamp album-page tag extraction → genre names (KAMP-588)."""
+
+    def test_extracts_tag_links(self) -> None:
+        html = (
+            '<div class="tralbum-tags">'
+            '<a class="tag" href="/tag/shoegaze">shoegaze</a>'
+            '<a class="tag" href="/tag/dream-pop">dream pop</a>'
+            "</div>"
+        )
+        assert parse_album_keywords(html) == ["shoegaze", "dream pop"]
+
+    def test_tolerates_attribute_order(self) -> None:
+        # href before class, extra attributes.
+        html = '<a href="/tag/noise" data-x="1" class="tag" rel="tag">noise</a>'
+        assert parse_album_keywords(html) == ["noise"]
+
+    def test_unescapes_entities(self) -> None:
+        html = '<a class="tag" href="/tag/drum-bass">drum &amp; bass</a>'
+        assert parse_album_keywords(html) == ["drum & bass"]
+
+    def test_case_insensitive_dedupe_order_preserving(self) -> None:
+        html = (
+            '<a class="tag" href="/tag/techno">Techno</a>'
+            '<a class="tag" href="/tag/house">house</a>'
+            '<a class="tag" href="/tag/techno">techno</a>'
+        )
+        # first-seen casing wins; order preserved; no duplicate.
+        assert parse_album_keywords(html) == ["Techno", "house"]
+
+    def test_drops_format_words(self) -> None:
+        html = (
+            '<a class="tag" href="/tag/ambient">ambient</a>'
+            '<a class="tag" href="/tag/vinyl">vinyl</a>'
+            '<a class="tag" href="/tag/cassette">Cassette</a>'
+        )
+        assert parse_album_keywords(html) == ["ambient"]
+
+    def test_keeps_location_tags(self) -> None:
+        # Locations are unbounded — left in for the user to prune.
+        html = (
+            '<a class="tag" href="/tag/post-punk">post-punk</a>'
+            '<a class="tag" href="/tag/seattle">seattle</a>'
+        )
+        assert parse_album_keywords(html) == ["post-punk", "seattle"]
+
+    def test_ldjson_fallback_when_no_tag_links(self) -> None:
+        html = (
+            '<script type="application/ld+json">'
+            '{"@type": "MusicAlbum", "keywords": ["jazz", "fusion"]}'
+            "</script>"
+        )
+        assert parse_album_keywords(html) == ["jazz", "fusion"]
+
+    def test_ldjson_comma_string_keywords(self) -> None:
+        html = (
+            '<script type="application/ld+json">'
+            '{"keywords": "jazz, fusion, vinyl"}'
+            "</script>"
+        )
+        # comma-split, format word dropped.
+        assert parse_album_keywords(html) == ["jazz", "fusion"]
+
+    def test_tag_links_preferred_over_ldjson(self) -> None:
+        html = (
+            '<a class="tag" href="/tag/metal">metal</a>'
+            '<script type="application/ld+json">{"keywords": ["pop"]}</script>'
+        )
+        assert parse_album_keywords(html) == ["metal"]
+
+    def test_empty_when_no_tags(self) -> None:
+        assert parse_album_keywords("<html><body>no tags here</body></html>") == []

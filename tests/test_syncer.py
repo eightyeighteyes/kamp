@@ -16,7 +16,13 @@ from kamp_daemon.config import (
     MusicBrainzConfig,
     PathsConfig,
 )
-from kamp_daemon.syncer import NeedsLoginError, Syncer, logout
+from kamp_core.library import LibraryIndex
+from kamp_daemon.syncer import (
+    NeedsLoginError,
+    Syncer,
+    logout,
+    process_next_download,
+)
 
 
 def _make_config(tmp_path: Path, poll_interval: int = 0) -> Config:
@@ -69,6 +75,20 @@ def _inline_worker(target: Any, args: tuple[Any, ...]) -> tuple[Any, Any, Any, A
     result_q: _queue_module.Queue[Any] = _queue_module.Queue()
     target(*args, status_q, log_q, result_q)
     return _FakeProc(), status_q, log_q, result_q
+
+
+def _seed_collection_db(tmp_path: Path) -> None:
+    """Pre-populate bandcamp_collection so sync_once() skips first-run auto-mark.
+
+    sync_once() checks whether the collection table is empty to determine if
+    this is a first run.  Insert a dummy row so the table is non-empty and
+    auto-mark is skipped.  Call this before patching _state_dir.
+    """
+    from kamp_core.library import LibraryIndex
+
+    idx = LibraryIndex(tmp_path / "library.db")
+    idx.upsert_collection_item("_seed", mode="local")
+    idx.close()
 
 
 def _noop_worker(target: Any, args: tuple[Any, ...]) -> tuple[Any, Any, Any, Any]:
@@ -136,7 +156,7 @@ class TestSyncOnce:
 
     def test_logs_downloaded_count(self, tmp_path: Path) -> None:
         """sync_once() reports the number of downloaded files."""
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         fake_paths = [tmp_path / "a.mp3", tmp_path / "b.mp3"]
         with patch("kamp_daemon.bandcamp.sync_new_purchases", return_value=fake_paths):
             with patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker):
@@ -146,7 +166,7 @@ class TestSyncOnce:
 
     def test_logs_nothing_new(self, tmp_path: Path) -> None:
         """sync_once() handles an empty result without error."""
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         with patch("kamp_daemon.bandcamp.sync_new_purchases", return_value=[]):
             with patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker):
                 with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
@@ -159,9 +179,8 @@ class TestReload:
         """reload() replaces the stored config."""
         syncer = Syncer(_make_config(tmp_path, poll_interval=0))
         new_config = _make_config(tmp_path, poll_interval=0)
-        new_config.musicbrainz.trust_musicbrainz_when_tags_conflict = False
         syncer.reload(new_config)
-        assert syncer._config.musicbrainz.trust_musicbrainz_when_tags_conflict is False
+        assert syncer._config is new_config
 
     def test_reload_changed_interval_no_existing_thread(self, tmp_path: Path) -> None:
         """reload() with interval change when no thread was running starts one."""
@@ -267,7 +286,7 @@ class TestStatusCallback:
             result_q.put(("ok", []))
             return _FakeProc(), status_q, log_q, result_q
 
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         with patch(
             "kamp_daemon.syncer._spawn_worker", side_effect=_worker_with_two_messages
         ):
@@ -284,6 +303,50 @@ class TestStatusCallback:
             "Downloading: Album B",
             "",
         ]
+
+
+class TestDispatchDownloadMsg:
+    """KAMP-436: byte-progress from the download subprocess is demuxed away from
+    the global status_callback and onto the per-album progress_callback."""
+
+    def test_progress_message_routes_to_progress_callback(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        progress: list[tuple[str, int, int]] = []
+        status: list[str] = []
+        syncer.progress_callback = lambda sid, dl, tot: progress.append((sid, dl, tot))
+        syncer.status_callback = status.append
+
+        syncer._dispatch_download_msg("progress:420:1000", "12345")
+
+        assert progress == [("12345", 420, 1000)]
+        assert status == []  # must NOT leak to the global sync indicator
+
+    def test_status_message_routes_to_status_callback(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        progress: list[tuple[str, int, int]] = []
+        status: list[str] = []
+        syncer.progress_callback = lambda sid, dl, tot: progress.append((sid, dl, tot))
+        syncer.status_callback = status.append
+
+        syncer._dispatch_download_msg("Downloading album 12345…", "12345")
+
+        assert status == ["Downloading album 12345…"]
+        assert progress == []
+
+    def test_malformed_progress_is_ignored(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        progress: list[tuple[str, int, int]] = []
+        syncer.progress_callback = lambda sid, dl, tot: progress.append((sid, dl, tot))
+
+        syncer._dispatch_download_msg("progress:notanint:1000", "12345")  # bad field
+        syncer._dispatch_download_msg("progress:500", "12345")  # missing total
+
+        assert progress == []
+
+    def test_progress_without_callback_is_safe(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        # progress_callback unset (None) — must not raise.
+        syncer._dispatch_download_msg("progress:50:100", "12345")
 
 
 class TestLazyImport:
@@ -303,7 +366,7 @@ class TestLazyImport:
         """
         import sys
 
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         sys.modules.pop("kamp_daemon.bandcamp", None)
         syncer = Syncer(_make_config(tmp_path))
         with patch("kamp_daemon.syncer._spawn_worker", side_effect=_noop_worker):
@@ -315,7 +378,7 @@ class TestLazyImport:
 class TestWorkerExceptions:
     def test_sync_worker_exception_propagates(self, tmp_path: Path) -> None:
         """Exceptions raised inside the sync worker are re-raised by sync_once()."""
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         with patch(
             "kamp_daemon.bandcamp.sync_new_purchases",
             side_effect=RuntimeError("network failure"),
@@ -346,7 +409,7 @@ class TestWorkerExceptions:
 
         _FakeNeedsLogin.__name__ = "NeedsLoginError"
 
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         with patch(
             "kamp_daemon.bandcamp.sync_new_purchases",
             side_effect=_FakeNeedsLogin("no session"),
@@ -366,7 +429,7 @@ class TestWorkerExceptions:
         _FakeNeedsLogin.__name__ = "NeedsLoginError"
 
         statuses: list[str] = []
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         with patch(
             "kamp_daemon.bandcamp.sync_new_purchases",
             side_effect=_FakeNeedsLogin("no session"),
@@ -395,7 +458,7 @@ class TestWorkerExceptions:
             result_q.put(("needs_login", "no session"))
             return _FakeProc(), status_q, log_q, result_q
 
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         with patch(
             "kamp_daemon.syncer._spawn_worker",
             side_effect=_needs_login_worker,
@@ -425,7 +488,7 @@ class TestWorkerExceptions:
             result_q.put(("error", "boom"))
             return _FakeProc(), status_q, log_q, result_q
 
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         with patch(
             "kamp_daemon.syncer._spawn_worker",
             side_effect=_failing_then_stopping_worker,
@@ -468,7 +531,7 @@ class TestLogReplay:
             result_q.put(("ok", []))
             return _FakeProc(), status_q, log_q, result_q
 
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         handler = logging.handlers.MemoryHandler(
             capacity=100, flushLevel=logging.CRITICAL
         )
@@ -512,9 +575,9 @@ class TestAutoMarkOnFirstSync:
         # mark-synced worker runs first, then sync worker
         assert call_order == ["_mark_synced_worker", "_sync_worker"]
 
-    def test_no_auto_mark_when_state_file_exists(self, tmp_path: Path) -> None:
-        """sync_once() skips auto-mark when the state file already exists."""
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+    def test_no_auto_mark_when_collection_db_populated(self, tmp_path: Path) -> None:
+        """sync_once() skips auto-mark when bandcamp_collection already has rows."""
+        _seed_collection_db(tmp_path)
         call_order: list[str] = []
 
         def _recording_noop_worker(
@@ -579,10 +642,16 @@ class TestMarkSynced:
 
 
 class TestSyncAllPurchases:
-    def test_clears_state_file_before_sync(self, tmp_path: Path) -> None:
-        """sync_all_purchases() deletes the state file and runs sync with skip_auto_mark."""
-        state_file = tmp_path / "bandcamp_state.json"
-        state_file.write_text('{"12345": 1234567890}')
+    def test_resets_collection_sync_state_before_sync(self, tmp_path: Path) -> None:
+        """sync_all_purchases() nulls synced_at for all rows and runs sync with skip_auto_mark."""
+        from kamp_core.library import LibraryIndex
+
+        # Pre-populate DB with a synced row.
+        db_path = tmp_path / "library.db"
+        idx = LibraryIndex(db_path)
+        idx.upsert_collection_item("12345", mode="local", synced_at=1234567890.0)
+        idx.close()
+
         call_order: list[str] = []
 
         def _recording_noop_worker(
@@ -602,7 +671,13 @@ class TestSyncAllPurchases:
                 syncer = Syncer(_make_config(tmp_path))
                 syncer.sync_all_purchases()
 
-        assert not state_file.exists()
+        # synced_at should be NULL after reset so next sync treats items as new.
+        idx2 = LibraryIndex(db_path)
+        row = idx2._conn.execute(
+            "SELECT synced_at FROM bandcamp_collection WHERE sale_item_id = '12345'"
+        ).fetchone()
+        idx2.close()
+        assert row["synced_at"] is None
         # skip_auto_mark=True means no mark-synced worker runs first
         assert call_order == ["_sync_worker"]
 
@@ -625,8 +700,15 @@ class TestSyncAllPurchases:
 
 
 class TestLogout:
-    def test_clears_db_session_and_state_file(self, tmp_path: Path) -> None:
-        """logout() clears the DB session row and removes the state file."""
+    def test_clears_session_but_preserves_collection_ledger(
+        self, tmp_path: Path
+    ) -> None:
+        """logout() clears the session row but PRESERVES bandcamp_collection.
+
+        The ledger is the file→purchase provenance map (KAMP-528); wiping it on
+        every logout needlessly destroys that mapping. Only the session is cleared;
+        the next sync reconciles the ledger.
+        """
         from kamp_core.library import LibraryIndex
 
         db_path = tmp_path / "library.db"
@@ -635,13 +717,13 @@ class TestLogout:
             index.set_session(
                 "bandcamp", {"cookies": [{"name": "js_logged_in", "value": "1"}]}
             )
-            (tmp_path / "bandcamp_state.json").write_text("{}")
+            index.upsert_collection_item("999", mode="local")
 
             with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
                 logout()
 
             assert index.get_session("bandcamp") is None
-            assert not (tmp_path / "bandcamp_state.json").exists()
+            assert index.get_collection_state() == {"999": "local"}
         finally:
             index.close()
 
@@ -659,7 +741,411 @@ class TestLogout:
 
     def test_removes_state_file_without_db(self, tmp_path: Path) -> None:
         """logout() removes bandcamp_state.json even when library.db is absent."""
-        (tmp_path / "bandcamp_state.json").write_text("{}")
+        _seed_collection_db(tmp_path)
         with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
             logout()
         assert not (tmp_path / "bandcamp_state.json").exists()
+
+    def test_clears_art_cache_directory(self, tmp_path: Path) -> None:
+        """logout() removes the art_cache directory if it exists."""
+        art_cache = tmp_path / "art_cache"
+        art_cache.mkdir()
+        (art_cache / "12345.jpg").write_bytes(b"\xff\xd8\xff")
+        with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+            logout()
+        assert not art_cache.exists()
+
+    def test_noop_when_art_cache_absent(self, tmp_path: Path) -> None:
+        """logout() does not raise when art_cache does not exist."""
+        with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+            logout()  # art_cache dir is absent — must not raise
+
+
+class TestStreamMode:
+    def _make_stream_config(self, tmp_path: Path, poll_interval: int = 0) -> Config:
+        return Config(
+            paths=PathsConfig(
+                watch_folder=tmp_path / "watch", library=tmp_path / "library"
+            ),
+            musicbrainz=MusicBrainzConfig(),
+            artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
+            library=LibraryConfig(
+                path_template="{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}"
+            ),
+            bandcamp=BandcampConfig(
+                format="mp3-v0",
+                poll_interval_minutes=poll_interval,
+                collection_mode="stream",
+            ),
+        )
+
+    def test_sync_once_stream_mode_skips_auto_mark(self, tmp_path: Path) -> None:
+        """sync_once() in stream mode does not call mark_synced() on first run."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(2, 10, [])
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+            patch.object(syncer, "mark_synced") as mock_mark,
+        ):
+            syncer.sync_once()
+        mock_mark.assert_not_called()
+
+    def test_sync_all_purchases_stream_mode_skips_state_reset(
+        self, tmp_path: Path
+    ) -> None:
+        """sync_all_purchases() in stream mode does not reset the collection state."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(0, 0, [])
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            from kamp_core.library import LibraryIndex as _LI
+
+            with patch.object(_LI, "reset_collection_sync_state") as mock_reset:
+                syncer.sync_all_purchases()
+        mock_reset.assert_not_called()
+
+    def test_sync_once_stream_mode_uses_stream_worker(self, tmp_path: Path) -> None:
+        """sync_once() in stream mode calls sync_collection_stream, not sync_new_purchases."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(3, 15, [])
+            ) as mock_stream,
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+        mock_stream.assert_called_once()
+
+    def test_sync_once_stream_logs_track_count(self, tmp_path: Path) -> None:
+        """sync_once() in stream mode logs album and track counts when tracks indexed."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(5, 42, [])
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+            patch("kamp_daemon.syncer.logger") as mock_log,
+        ):
+            syncer.sync_once()
+        info_msgs = " ".join(str(c) for c in mock_log.info.call_args_list)
+        assert "42" in info_msgs
+
+    def test_on_tracks_indexed_called_when_tracks_written(self, tmp_path: Path) -> None:
+        """on_tracks_indexed fires when stream sync indexes new tracks."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        fired: list[bool] = []
+        syncer.on_tracks_indexed = lambda: fired.append(True)
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(5, 42, [])
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+        assert fired == [True]
+
+    def test_on_tracks_indexed_fires_per_batch_via_notify_q(
+        self, tmp_path: Path
+    ) -> None:
+        """on_tracks_indexed fires once per album batch during streaming (via notify_q).
+
+        Simulates sync_collection_stream invoking batch_indexed_callback twice
+        (two album batches) plus the belt-and-suspenders final call at ok_stream.
+        """
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        fired: list[bool] = []
+        syncer.on_tracks_indexed = lambda: fired.append(True)
+
+        def _stream_with_two_batches(
+            bc_config: object,
+            watch_dir: object,
+            index: object,
+            status_callback: object = None,
+            art_cache_dir: object = None,
+            batch_indexed_callback: object = None,
+            apply_bandcamp_genres: bool = True,
+        ) -> tuple[int, int, list[tuple[str, str]]]:
+            if batch_indexed_callback is not None:
+                batch_indexed_callback()
+                batch_indexed_callback()
+            return (2, 4, [])
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream",
+                side_effect=_stream_with_two_batches,
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+
+        # 2 per-batch calls via notify_q + 1 belt-and-suspenders final call = 3
+        assert len(fired) == 3
+
+    def test_on_tracks_indexed_not_called_when_no_new_tracks(
+        self, tmp_path: Path
+    ) -> None:
+        """on_tracks_indexed does not fire when track_count == 0."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        fired: list[bool] = []
+        syncer.on_tracks_indexed = lambda: fired.append(True)
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(636, 0, [])
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+        assert fired == []
+
+    def test_on_stream_albums_added_fires_with_new_keys(self, tmp_path: Path) -> None:
+        """KAMP-618: on_stream_albums_added fires once with the newly-indexed keys."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        got: list[list[tuple[str, str]]] = []
+        syncer.on_stream_albums_added = lambda keys: got.append(keys)
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream",
+                return_value=(1, 3, [("Slowdive", "Souvlaki")]),
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+        assert got == [[("Slowdive", "Souvlaki")]]
+
+    def test_on_stream_albums_added_not_fired_when_no_new_albums(
+        self, tmp_path: Path
+    ) -> None:
+        """No new albums this run -> the enrichment trigger stays silent."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        got: list[list[tuple[str, str]]] = []
+        syncer.on_stream_albums_added = lambda keys: got.append(keys)
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(2, 5, [])
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            syncer.sync_once()
+        assert got == []
+
+    def test_sync_once_stream_logs_up_to_date_when_no_new_tracks(
+        self, tmp_path: Path
+    ) -> None:
+        """sync_once() in stream mode logs 'up to date' when track_count == 0."""
+        syncer = Syncer(self._make_stream_config(tmp_path))
+        with (
+            patch(
+                "kamp_daemon.bandcamp.sync_collection_stream", return_value=(636, 0, [])
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+            patch("kamp_daemon.syncer.logger") as mock_log,
+        ):
+            syncer.sync_once()
+        info_msgs = " ".join(str(c) for c in mock_log.info.call_args_list)
+        assert "up to date" in info_msgs
+
+
+class TestDownloadAlbum:
+    """Tests for Syncer.download_album()."""
+
+    def test_raises_when_no_bandcamp(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config_no_bandcamp(tmp_path))
+        with pytest.raises(RuntimeError, match="No \\[bandcamp\\]"):
+            syncer.download_album("42")
+
+    def test_returns_dest_path_on_success(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+        expected = str(tmp_path / "watch" / "album.zip")
+
+        def _fake_download(
+            bc_config: object,
+            watch_dir: object,
+            index: object,
+            sale_item_id: str,
+            status_callback: object,
+            on_progress: object = None,
+        ) -> str:
+            return expected
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp.download_single_album", side_effect=_fake_download
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+        ):
+            result = syncer.download_album("42")
+        assert result == expected
+
+    def test_raises_needs_login_error(self, tmp_path: Path) -> None:
+        from kamp_daemon.bandcamp import NeedsLoginError as BcNeedsLogin
+
+        syncer = Syncer(_make_config(tmp_path))
+
+        def _needs_login(*_a: object, **_kw: object) -> None:
+            raise BcNeedsLogin("no session")
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp.download_single_album", side_effect=_needs_login
+            ),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+            pytest.raises(NeedsLoginError),
+        ):
+            syncer.download_album("42")
+
+    def test_raises_runtime_error_on_failure(self, tmp_path: Path) -> None:
+        syncer = Syncer(_make_config(tmp_path))
+
+        def _fail(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("CDN error")
+
+        with (
+            patch("kamp_daemon.bandcamp.download_single_album", side_effect=_fail),
+            patch("kamp_daemon.syncer._spawn_worker", side_effect=_inline_worker),
+            patch("kamp_daemon.syncer._state_dir", return_value=tmp_path),
+            pytest.raises(RuntimeError, match="Album download failed"),
+        ):
+            syncer.download_album("42")
+
+
+class TestProcessNextDownload:
+    """process_next_download: the enqueue-then-process-in-order engine (KAMP-565)."""
+
+    @staticmethod
+    def _states(index: LibraryIndex) -> list[tuple[str, str]]:
+        return [
+            (r["provider_item_id"], r["status"]) for r in index.download_queue_items()
+        ]
+
+    def test_returns_none_when_queue_empty(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        assert process_next_download(index, lambda pid: None) is None
+        index.close()
+
+    def test_success_removes_item_and_reports_states(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        states: list[tuple[str, str]] = []
+        pid = process_next_download(
+            index, lambda pid: None, on_state=lambda p, s: states.append((p, s))
+        )
+        assert pid == "a"
+        assert index.download_queue_items() == []  # done → row deleted
+        assert states == [("a", "downloading"), ("a", "done")]
+        index.close()
+
+    def test_processes_in_position_order(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b", "c"):
+            index.enqueue_download(sid)
+        processed = [process_next_download(index, lambda pid: None) for _ in range(3)]
+        assert processed == ["a", "b", "c"]
+        assert process_next_download(index, lambda pid: None) is None
+        index.close()
+
+    def test_failure_is_captured_and_batch_continues(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b"):
+            index.enqueue_download(sid)
+
+        def _dl(pid: str) -> None:
+            if pid == "a":
+                raise RuntimeError("CDN exploded")
+
+        states: list[tuple[str, str]] = []
+        # 'a' fails but does not raise out; it is left 'failed' with error text.
+        first = process_next_download(
+            index, _dl, on_state=lambda p, s: states.append((p, s))
+        )
+        assert first == "a"
+        assert index.download_queue_items()[-1]["status"] == "failed"
+        assert "CDN exploded" in index.download_queue_items()[-1]["error_text"]
+        assert states == [("a", "downloading"), ("a", "failed")]
+        # Processing continues: 'b' is next and succeeds.
+        second = process_next_download(index, _dl)
+        assert second == "b"
+        assert self._states(index) == [("a", "failed")]
+        index.close()
+
+    def test_needs_login_marks_failed(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+
+        def _dl(pid: str) -> None:
+            raise NeedsLoginError("no session")
+
+        states: list[tuple[str, str]] = []
+        pid = process_next_download(
+            index, _dl, on_state=lambda p, s: states.append((p, s))
+        )
+        assert pid == "a"
+        item = index.download_queue_items()[0]
+        assert item["status"] == "failed"
+        assert item["error_text"] == "Login required"
+        assert states == [("a", "downloading"), ("a", "failed")]
+        index.close()
+
+    def test_429_retries_then_succeeds(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        attempts = {"n": 0}
+        slept: list[float] = []
+
+        def _dl(pid: str) -> None:
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise RuntimeError("HTTP 429 Too Many Requests")
+
+        pid = process_next_download(
+            index, _dl, retry_delays=(5, 10, 20), sleep=slept.append
+        )
+        assert pid == "a"
+        assert attempts["n"] == 3  # failed twice, succeeded on the third
+        assert slept == [5, 10]  # backed off before each retry
+        assert index.download_queue_items() == []  # ultimately done
+        index.close()
+
+    def test_429_exhausted_marks_failed(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+
+        def _dl(pid: str) -> None:
+            raise RuntimeError("HTTP 429 Too Many Requests")
+
+        pid = process_next_download(
+            index, _dl, retry_delays=(1, 1), sleep=lambda _s: None
+        )
+        assert pid == "a"
+        assert index.download_queue_items()[0]["status"] == "failed"
+        index.close()
+
+    def test_non_429_error_does_not_retry(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        attempts = {"n": 0}
+
+        def _dl(pid: str) -> None:
+            attempts["n"] += 1
+            raise RuntimeError("permanent boom")
+
+        process_next_download(index, _dl, sleep=lambda _s: None)
+        assert attempts["n"] == 1  # no retry for non-429 errors
+        index.close()

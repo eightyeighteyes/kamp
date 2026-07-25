@@ -1204,18 +1204,38 @@ class TestLibraryHandler:
         mock_schedule.assert_not_called()
 
     def test_debounces_rapid_events(self, tmp_path: Path) -> None:
-        """Multiple rapid events collapse into a single scan call."""
+        """Multiple rapid events collapse into a single scan call.
+
+        Uses a non-firing Timer stub so the test does not depend on
+        thread-scheduling latency. The last scheduled callback is
+        invoked directly after all events are sent.
+        """
         on_scan = MagicMock()
         handler = _make_library_handler(tmp_path, on_scan)
         lib = tmp_path / "library"
 
-        with patch("kamp_daemon.watcher._SETTLE_SECONDS", 0.05):
+        # Capture the most-recently scheduled callback without starting any
+        # threads.  Each new event cancels the previous stub (no-op here)
+        # and records a fresh callback, so only the last one survives.
+        last_callback: list = []
+
+        class _StubTimer:
+            def __init__(self, *args: object) -> None:
+                self._func = args[1]
+
+            def start(self) -> None:
+                last_callback[:] = [self._func]
+
+            def cancel(self) -> None:
+                pass  # No thread to stop
+
+        with patch("kamp_daemon.watcher.threading.Timer", _StubTimer):
             for i in range(5):
                 handler.on_created(FileCreatedEvent(str(lib / f"track{i}.mp3")))
-            import time
 
-            time.sleep(0.2)
-
+        on_scan.assert_not_called()
+        assert last_callback, "no timer was scheduled"
+        last_callback[0]()  # Fire the debounce manually
         on_scan.assert_called_once()
 
     def test_batch_cap_fires_immediately_after_max_settle(self, tmp_path: Path) -> None:

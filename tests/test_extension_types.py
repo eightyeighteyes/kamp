@@ -17,7 +17,7 @@ def test_track_metadata_fields() -> None:
         artist="Lil Wayne",
         album="Tha Carter III",
         album_artist="Lil Wayne",
-        year="2008",
+        release_date="2008",
         track_number=1,
         mbid="abc-123",
     )
@@ -25,7 +25,7 @@ def test_track_metadata_fields() -> None:
     assert t.artist == "Lil Wayne"
     assert t.album == "Tha Carter III"
     assert t.album_artist == "Lil Wayne"
-    assert t.year == "2008"
+    assert t.release_date == "2008"
     assert t.track_number == 1
     assert t.mbid == "abc-123"
 
@@ -60,7 +60,7 @@ def test_track_metadata_pickle_roundtrip() -> None:
         artist="Kendrick Lamar",
         album="To Pimp a Butterfly",
         album_artist="Kendrick Lamar",
-        year="2015",
+        release_date="2015",
         track_number=7,
         mbid="deadbeef",
     )

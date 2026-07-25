@@ -2,19 +2,26 @@ import type React from 'react'
 import { NewArrivalsModule, NewArrivalsConfig } from './NewArrivalsModule'
 import { LastPlayedModule, LastPlayedConfig } from './LastPlayedModule'
 import { TopAlbumsModule, TopAlbumsConfig } from './TopAlbumsModule'
+import { TopTracksModule, TopTracksConfig } from './TopTracksModule'
+import { TopArtistsModule, TopArtistsConfig } from './TopArtistsModule'
 import { StereoRackModule, StereoRackConfig } from './StereoRackModule'
+import { MagicPlaylistModule, MagicPlaylistConfig, MagicPlaylistTitle } from './MagicPlaylistModule'
+import { FavoritePlaylistsModule, FavoritePlaylistsConfig } from './FavoritePlaylistsModule'
+import { StatsModule, StatsConfig } from './StatsModule'
 
 export type DisplayStyle = 'shelf' | 'grid' | 'list'
 
 export interface ModuleProps {
   displayStyle: DisplayStyle
+  moduleId?: string
 }
 
 export interface ModuleRegistration {
   id: string
   title: string
   component: React.ComponentType<ModuleProps>
-  configComponent?: React.ComponentType
+  configComponent?: React.ComponentType<{ moduleId?: string }>
+  titleComponent?: React.ComponentType<{ moduleId: string }>
 }
 
 export const MODULE_REGISTRY: ModuleRegistration[] = [
@@ -37,11 +44,70 @@ export const MODULE_REGISTRY: ModuleRegistration[] = [
     configComponent: TopAlbumsConfig
   },
   {
+    id: 'kamp.top-tracks',
+    title: 'Top Tracks',
+    component: TopTracksModule,
+    configComponent: TopTracksConfig
+  },
+  {
+    id: 'kamp.top-artists',
+    title: 'Top Artists',
+    component: TopArtistsModule,
+    configComponent: TopArtistsConfig
+  },
+  {
     // defaultVisible: false — not in the default moduleOrder, so it appears in
     // the "add module" list rather than the active Home view on first launch.
     id: 'kamp.stereo-rack',
     title: 'Stereo Rack',
     component: StereoRackModule,
     configComponent: StereoRackConfig
+  },
+  {
+    id: 'kamp.favorite-playlists',
+    title: 'Favorite Playlists',
+    component: FavoritePlaylistsModule,
+    configComponent: FavoritePlaylistsConfig
+  },
+  {
+    id: 'kamp.stats',
+    title: 'Stats',
+    component: StatsModule,
+    configComponent: StatsConfig
+  },
+  {
+    id: 'kamp.magic-playlist-1',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
+  },
+  {
+    id: 'kamp.magic-playlist-2',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
+  },
+  {
+    id: 'kamp.magic-playlist-3',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
+  },
+  {
+    id: 'kamp.magic-playlist-4',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
+  },
+  {
+    id: 'kamp.magic-playlist-5',
+    title: 'Magic Playlist',
+    component: MagicPlaylistModule,
+    configComponent: MagicPlaylistConfig,
+    titleComponent: MagicPlaylistTitle
   }
 ]

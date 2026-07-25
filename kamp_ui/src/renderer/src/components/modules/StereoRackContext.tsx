@@ -10,7 +10,7 @@ import type { MutableRefObject } from 'react'
 export type TrackMeta = {
   artist: string
   title: string
-  year: string
+  release_date: string
   format: string
   duration: number
 }

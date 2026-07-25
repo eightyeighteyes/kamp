@@ -70,7 +70,8 @@ pacman -S --needed --noconfirm \
     mingw-w64-x86_64-pkgconf \
     mingw-w64-x86_64-ffmpeg \
     mingw-w64-x86_64-libass \
-    mingw-w64-x86_64-libplacebo
+    mingw-w64-x86_64-libplacebo \
+    mingw-w64-x86_64-luajit
 '@
 
 Write-Host "==> Cloning mpv $MpvTag"
@@ -79,9 +80,9 @@ Invoke-Msys "rm -rf $mpvSrcUnix && git clone --depth=1 --branch $MpvTag https://
 
 # Audio-only meson configuration. Windows-only differences from the macOS
 # build: no coreaudio, no avfoundation; WASAPI is built-in (auto-enabled when
-# building on win32 -- no flag needed). All video/scripting/optical-disc
-# features are disabled the same way as on macOS, plus the Windows-specific
-# video output and hwaccel backends (d3d11, direct3d/D3D9, gl/gl-win32/
+# building on win32 -- no flag needed). All video/optical-disc features are
+# disabled the same way as on macOS, plus the Windows-specific video output
+# and hwaccel backends (d3d11, direct3d/D3D9, gl/gl-win32/
 # gl-dxinterop, vaapi/vaapi-win32, vdpau, egl-angle, caca, d3d-hwaccel/
 # d3d9-hwaccel) which would otherwise auto-enable and pull video/vaapi.c
 # via video/out/d3d11/context.h -- triggering a DXGI_DEBUG_D3D11 redefinition
@@ -96,7 +97,7 @@ meson setup build \
     -Dbuildtype=release \
     -Dvapoursynth=disabled \
     -Djavascript=disabled \
-    -Dlua=disabled \
+    -Dlua=enabled \
     -Dlibbluray=disabled \
     -Ddvdnav=disabled \
     -Dcdda=disabled \
@@ -132,12 +133,25 @@ meson setup build \
 Write-Host "==> Building mpv (ninja)"
 Invoke-Msys "export PATH=/mingw64/bin:`$PATH && cd $mpvSrcUnix && ninja -C build"
 
-# Copy the built executable. mpv's meson build emits 'mpv.exe' on Windows.
+# Copy the built executable. mpv's meson build emits TWO front-ends on Windows:
+#   mpv.exe -- GUI subsystem (no console); what the daemon spawns headlessly.
+#   mpv.com -- console subsystem; the only variant that writes --version etc.
+#              to a stream the parent process can capture.
+# We ship/spawn mpv.exe, but stage mpv.com too so the smoke test below can read
+# the version banner -- mpv.exe (GUI subsystem) emits nothing to stdout/stderr,
+# so `mpv.exe --version` always captures empty, which silently defeated the
+# Lua-feature assertion even after a 2>&1 merge.
 $mpvExeWin = Join-Path $msys2 "tmp\mpv-src\build\mpv.exe"
 if (-not (Test-Path $mpvExeWin)) {
     throw "Expected build artifact $mpvExeWin not found after ninja"
 }
 Copy-Item -Force $mpvExeWin (Join-Path $out "mpv.exe")
+
+$mpvComWin = Join-Path $msys2 "tmp\mpv-src\build\mpv.com"
+if (-not (Test-Path $mpvComWin)) {
+    throw "Expected build artifact $mpvComWin not found after ninja"
+}
+Copy-Item -Force $mpvComWin (Join-Path $out "mpv.com")
 
 # Walk mpv.exe's import table via ldd (the MSYS2 analog of macOS otool -L)
 # and copy every transitive dep that lives under /mingw64/bin into the same
@@ -166,16 +180,38 @@ foreach ($line in $lddRaw) {
 Write-Host "-> Copied $($copiedDlls.Count) mingw DLLs alongside mpv.exe"
 $copiedDlls | Sort-Object | ForEach-Object { Write-Host "    $_" }
 
+# luajit (mingw-w64-x86_64-luajit) ships as lua51.dll; mpv links it dynamically
+# so the generic ldd walk above should have carried it. Fail loud if it didn't:
+# without it the kamp_fade.lua script never loads and pause/stop/resume become
+# silent no-ops (KAMP-519) -- a regression that is invisible until you press a
+# transport button in the packaged app.
+if (-not ($copiedDlls -contains "lua51.dll")) {
+    throw "lua51.dll was not bundled -- luajit missing from mpv.exe import table. Lua scripting (kamp_fade.lua) would not load; pause/stop/resume would be no-ops (KAMP-519)."
+}
+
 # Smoke test: a sibling-DLL layout problem would surface here as a
 # 0xc0000135 ("DLL not found") exit code. This is the Windows analog of
-# the macOS Homebrew-leak audit.
-Write-Host "==> Smoke-testing mpv.exe --version from staged directory"
+# the macOS Homebrew-leak audit. Run mpv.com (console subsystem) so the
+# version banner is captured into the CI log for diagnostics; mpv.exe (GUI
+# subsystem) emits nothing. Both front-ends load the identical sibling-DLL
+# set, so either validates the staged layout via its exit code.
+#
+# NOTE: do NOT try to assert Lua here by grepping --version. `mpv --version`
+# only prints mpv/libplacebo/FFmpeg version banners -- it does not enumerate
+# scripting backends (lua/javascript), so there is no "lua" line to match on
+# any platform. The authoritative Lua-enabled assertion is the lua51.dll
+# import-table check above: mpv links lua51.dll only when built -Dlua=enabled,
+# and nothing else in the bundle pulls it in, so its presence is proof and a
+# -Dlua regression fails that check (not the user).
+Write-Host "==> Smoke-testing mpv.com --version from staged directory"
 Push-Location $out
 try {
-    & .\mpv.exe --version | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" }
+    $versionOut = & .\mpv.com --version 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "mpv.exe --version exited with code $LASTEXITCODE -- check that all transitive DLLs were copied"
+        throw "mpv.com --version exited with code $LASTEXITCODE -- check that all transitive DLLs were copied"
     }
+    $versionOut | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" }
+    Write-Host "-> mpv.com runs from the staged directory (all sibling DLLs resolved)"
 }
 finally {
     Pop-Location

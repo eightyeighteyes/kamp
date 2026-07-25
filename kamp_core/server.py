@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import queue as _queue
 import re
 import sys
 import threading as _threading
@@ -22,7 +23,7 @@ import uuid as _uuid
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 from fastapi import (
@@ -40,12 +41,190 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-from kamp_core.library import LibraryIndex, LibraryScanner, Track, extract_art
+from kamp_core.library import (
+    AlbumInfo,
+    ArtistInfo,
+    LibraryIndex,
+    LibraryScanner,
+    LibraryStats,
+    MagicCriteria,
+    NoStreamableVersionError,
+    Track,
+    _canonical_track_uri,
+    extract_art,
+)
 from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
+
+# ---------------------------------------------------------------------------
+# Playback URI resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_playback_uri(
+    track: Track,
+    index: LibraryIndex,
+    refresh_stream_url: Callable[[str, int], tuple[str, float] | None] | None,
+    check_stream_url: Callable[[str], int] | None = None,
+) -> str:
+    """Return the URL or path string to pass to mpv for *track*.
+
+    For local tracks returns str(track.file_path).  For remote tracks:
+    1. Proactively refreshes the cached CDN URL if it is near/past expiry.
+    2. Makes a HEAD request to validate the URL before handing it to mpv.
+       If the CDN returns a 4xx (e.g. 410 Gone for an invalidated session
+       token), forces a fresh refresh so mpv always receives a live URL.
+
+    A brief validation delay is far better than silently skipping a track.
+    """
+    # Resolve the preferred delivery via track_sources (KAMP-541): a collapsed
+    # track has both a file and a stream source, and the preferred-source rule
+    # picks the local file when present/available and falls through to the stream
+    # otherwise. On the pre-collapse DB each track has exactly one source, so this
+    # is behaviour-neutral. A track with no source row (pre-KAMP-540 / a synthetic
+    # queue-restore stub) falls back to the legacy Track columns.
+    _src = index.preferred_source(track.id) if track.id else None
+    _cached_url: str | None
+    _cached_expires: float | None
+    _source_id: int | None
+    if _src is not None:
+        _kind = str(_src["kind"])
+        _src_uri = str(_src["uri"])
+        _cached_url = _src["stream_url"]
+        _cached_expires = _src["stream_url_expires_at"]
+        _source_id = int(_src["id"])
+    else:
+        _kind = "stream" if track.is_remote else "file"
+        _src_uri = str(track.file_path)
+        _cached_url = track.stream_url
+        _cached_expires = track.stream_url_expires_at
+        _source_id = None
+
+    if _kind == "file":
+        return _src_uri
+
+    import time as _t
+
+    _now = _t.time()
+
+    # Parse bandcamp://sale_id/track_num from the source uri — needed by both the
+    # proactive-expiry path and the HEAD-triggered forced-refresh path.
+    # Path() mutates the URI differently per platform (POSIX collapses //,
+    # Windows converts to \\), so split on the scheme literal instead.
+    _after_scheme = _src_uri.split("bandcamp:", 1)
+    _canonical_fp: str | None = None
+    _album_url: str = ""
+    _track_num: int = 0
+    if len(_after_scheme) == 2:
+        _rest = _after_scheme[1].lstrip("/\\").replace("\\", "/")
+        _canonical_fp = "bandcamp://" + _rest
+        _parts = _rest.split("/", 1)
+        if len(_parts) == 2:
+            _sale_item_id, _track_num_str = _parts
+            try:
+                _track_num = int(_track_num_str)
+            except ValueError:
+                pass
+            _item = index.get_collection_item(_sale_item_id)
+            _album_url = (_item or {}).get("album_url", "")
+
+    def _do_refresh(reason: str) -> str | None:
+        """Fetch a fresh CDN URL and persist it; return the URL or None."""
+        if not _album_url or refresh_stream_url is None or _canonical_fp is None:
+            if not _album_url and _canonical_fp:
+                logger.warning(
+                    "resolve_playback_uri: no album_url for %s — cannot "
+                    "refresh stream URL; run kamp sync to populate.",
+                    _canonical_fp,
+                )
+            return None
+        logger.info(
+            "resolve_playback_uri: refreshing stream URL for %s (%s)",
+            _canonical_fp,
+            reason,
+        )
+        result = refresh_stream_url(_album_url, _track_num)
+        if result is not None:
+            new_url, expires_at = result
+            # Persist onto the source row when we resolved one, else the legacy
+            # tracks column (pre-KAMP-540 fallback).
+            if _source_id is not None:
+                index.update_stream_url_for_source(_source_id, new_url, expires_at)
+            else:
+                index.update_stream_url(_canonical_fp, new_url, expires_at)
+            logger.info(
+                "resolve_playback_uri: stream URL refreshed for %s "
+                "(new expires_at=%.0f)",
+                _canonical_fp,
+                expires_at,
+            )
+            return new_url
+        logger.warning(
+            "resolve_playback_uri: refresh failed for %s",
+            _canonical_fp,
+        )
+        return None
+
+    # Step 1 — proactive refresh when the cached URL is near or past expiry.
+    url = _cached_url or _src_uri
+    needs_refresh = _cached_expires is None or _cached_expires < _now + 60
+    if needs_refresh:
+        refreshed = _do_refresh(f"expires_at={_cached_expires}")
+        if refreshed is not None:
+            url = refreshed
+    else:
+        logger.debug(
+            "resolve_playback_uri: cached stream URL for %s (expires in %.0fs)",
+            _canonical_fp or _src_uri,
+            (_cached_expires or 0) - _now,
+        )
+
+    # Step 2 — HEAD request to verify the URL is live before handing to mpv.
+    # A 4xx from the CDN means the signed token was invalidated (e.g. 410 Gone
+    # when Bandcamp's session key rotates); force a fresh refresh in that case.
+    # This adds a round-trip but prevents silent track-skipping on stale tokens.
+    if url.startswith("https://") and check_stream_url is not None:
+        status = check_stream_url(url)
+        if 400 <= status < 500:
+            logger.warning(
+                "resolve_playback_uri: HEAD returned %d for %s — "
+                "forcing refresh before playback",
+                status,
+                _canonical_fp,
+            )
+            refreshed = _do_refresh(f"HEAD {status}")
+            if refreshed is not None:
+                url = refreshed
+
+    return url
+
 
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
+
+
+class SourceOut(BaseModel):
+    """One delivery of a track (KAMP-537), for display only — local/stream badge,
+    offline state, remove-download affordance. Ordered preferred-first. NOT the
+    client's playability signal: playback is server-resolved and a legacy row can
+    be playable with an empty sources list, so TrackOut.is_available/duration
+    (the preferred source) remain authoritative."""
+
+    kind: str  # 'file' | 'stream'
+    provider: str
+    uri: str
+    is_available: bool
+    duration: float
+
+    @classmethod
+    def from_row(cls, row: Any) -> "SourceOut":
+        return cls(
+            kind=row["kind"],
+            provider=row["provider"] or "",
+            uri=row["uri"],
+            is_available=bool(row["is_available"]),
+            duration=float(row["duration"] or 0.0),
+        )
 
 
 class TrackOut(BaseModel):
@@ -54,10 +233,9 @@ class TrackOut(BaseModel):
     artist: str
     album_artist: str
     album: str
-    year: str
+    release_date: str
     track_number: int
     disc_number: int
-    file_path: str
     ext: str
     embedded_art: bool
     mb_release_id: str
@@ -66,19 +244,44 @@ class TrackOut(BaseModel):
     label: str
     favorite: bool
     play_count: int
+    source: str
+    reachable: bool = True
+    is_available: bool = True
+    duration: float = 0.0
+    sources: list[SourceOut] = []
+    # KAMP-633: canonical album identity so any TrackOut consumer (queue album
+    # cards, "Go to Album") can resolve art/navigation to the real album after a
+    # rename. IDENTITY CONTRACT (mirrors PlaylistTrackOut): `album_artist`/`album`
+    # above are the track's display-or-tag value (row display only, NEVER album
+    # identity); `canonical_*` (from the albums row via album_id) is the art/nav
+    # key; `display_*` is render-only. All null for untagged (missing-album)
+    # tracks — the UI routes those through the track id path (KAMP-554).
+    album_id: int | None = None
+    canonical_album_artist: str | None = None
+    canonical_album: str | None = None
+    display_album: str | None = None
+    display_album_artist: str | None = None
+    album_art_version: float | None = None
 
     @classmethod
-    def from_track(cls, t: Track) -> "TrackOut":
+    def from_track(
+        cls,
+        t: Track,
+        sources: "list[Any] | None" = None,
+        album: "Any | None" = None,
+    ) -> "TrackOut":
+        # *album* is the canonical albums row (from LibraryIndex.album_identity_for_ids)
+        # for t.album_id, or None when the track is untagged / unresolved. Its
+        # presence stamps the canonical identity fields; absence leaves them None.
         return cls(
             id=t.id,
             title=t.title,
             artist=t.artist,
             album_artist=t.album_artist,
             album=t.album,
-            year=t.year,
+            release_date=t.release_date,
             track_number=t.track_number,
             disc_number=t.disc_number,
-            file_path=str(t.file_path),
             ext=t.ext,
             embedded_art=t.embedded_art,
             mb_release_id=t.mb_release_id,
@@ -87,19 +290,69 @@ class TrackOut(BaseModel):
             label=t.label,
             favorite=t.favorite,
             play_count=t.play_count,
+            source=t.source,
+            reachable=t.reachable,
+            is_available=t.is_available,
+            duration=t.duration,
+            sources=[SourceOut.from_row(r) for r in (sources or [])],
+            album_id=(t.album_id or None) if album is not None else None,
+            canonical_album_artist=album["album_artist"] if album is not None else None,
+            canonical_album=album["album"] if album is not None else None,
+            display_album=album["display_album"] if album is not None else None,
+            display_album_artist=(
+                album["display_album_artist"] if album is not None else None
+            ),
+            album_art_version=album["art_version"] if album is not None else None,
+        )
+
+
+class ArtistOut(BaseModel):
+    name: str
+    play_time: float  # total elapsed playback seconds
+    top_album: str | None
+
+    @classmethod
+    def from_artist(cls, a: ArtistInfo) -> "ArtistOut":
+        return cls(name=a.name, play_time=a.play_time, top_album=a.top_album)
+
+
+class StatsOut(BaseModel):
+    track_count: int
+    album_count: int
+    artist_count: int
+    total_play_seconds: float
+    total_track_plays: int
+    albums_played: int
+    top_artist_name: str | None
+    top_artist_seconds: float | None
+    top_tracks: list[TrackOut]
+
+    @classmethod
+    def from_stats(cls, s: LibraryStats, top_tracks_out: list[TrackOut]) -> "StatsOut":
+        return cls(
+            track_count=s.track_count,
+            album_count=s.album_count,
+            artist_count=s.artist_count,
+            total_play_seconds=s.total_play_seconds,
+            total_track_plays=s.total_track_plays,
+            albums_played=s.albums_played,
+            top_artist_name=s.top_artist_name,
+            top_artist_seconds=s.top_artist_seconds,
+            top_tracks=top_tracks_out,
         )
 
 
 class AlbumOut(BaseModel):
     album_artist: str
     album: str
-    year: str
+    release_date: str
     track_count: int
     has_art: bool
     missing_album: bool = False
-    # Non-empty only when missing_album=True; used as the unique lookup key
-    # instead of (album_artist, album) for tracks without an album tag.
-    file_path: str = ""
+    # KAMP-554: a missing-album card is always exactly one track (album tag empty);
+    # its canonical id is the stable lookup key instead of (album_artist, album).
+    # None for real albums.
+    track_id: int | None = None
     # MAX(file_mtime) across the album's tracks — appended to art URLs as ?v=
     # so the browser caches images by URL and only re-fetches when files change.
     art_version: float | None = None
@@ -111,6 +364,56 @@ class AlbumOut(BaseModel):
     play_count_avg: float = 0.0
     # True when the user has favorited this album (KAMP-293).
     favorite: bool = False
+    # True when any track in this album is individually favorited (KAMP-294).
+    has_favorite_track: bool = False
+    # 'local' | 'bandcamp' | 'mixed' — derived from constituent track sources.
+    source: str = "local"
+    # True when any track in this album has source != 'local'.
+    has_remote_tracks: bool = False
+    # Bandcamp sale_item_id parsed from constituent track file paths; None for local albums.
+    sale_item_id: str | None = None
+    # True when the album is a Bandcamp pre-order (some tracks not yet released).
+    is_preorder: bool = False
+    # Streamable-track count Bandcamp reports; 0 => no streamable version, so the
+    # UI hides "Remove download" (KAMP-527). Snapshot; the server re-verifies.
+    num_streamable_tracks: int = 0
+    # Bandcamp album page URL — non-empty for Bandcamp albums (KAMP-367).
+    album_url: str = ""
+    # User-set display overrides for streaming albums (KAMP-467). None means no override.
+    display_album: str | None = None
+    display_album_artist: str | None = None
+    # DISTINCT union of the album's track genres (KAMP-550); backs the library
+    # genre filter. Canonical names, sorted NOCASE.
+    genres: list[str] = []
+
+    @classmethod
+    def from_album_info(cls, a: "AlbumInfo") -> "AlbumOut":
+        """Build from an AlbumInfo. The single mapping so a new field can't be
+        dropped at a subset of the (many) construction sites (KAMP-550/554)."""
+        return cls(
+            album_artist=a.album_artist,
+            album=a.album,
+            release_date=a.release_date,
+            track_count=a.track_count,
+            has_art=a.has_art,
+            missing_album=a.missing_album,
+            track_id=a.missing_track_id,
+            art_version=a.art_version,
+            added_at=a.added_at,
+            last_played_at=a.last_played_at,
+            play_count_avg=a.play_count_avg,
+            favorite=a.favorite,
+            has_favorite_track=a.has_favorite_track,
+            source=a.source,
+            has_remote_tracks=a.has_remote_tracks,
+            sale_item_id=a.sale_item_id,
+            is_preorder=a.is_preorder,
+            num_streamable_tracks=a.num_streamable_tracks,
+            album_url=a.album_url,
+            display_album=a.display_album,
+            display_album_artist=a.display_album_artist,
+            genres=a.genres,
+        )
 
 
 class PlayerStateOut(BaseModel):
@@ -118,15 +421,30 @@ class PlayerStateOut(BaseModel):
     position: float
     duration: float
     volume: int
+    muted: bool = False
     current_track: TrackOut | None
     next_track: TrackOut | None = None
+    buffering: bool = False
 
 
 class PlayRequest(BaseModel):
     album_artist: str
     album: str
     track_index: int = 0
-    file_path: str = ""  # non-empty for missing-album tracks
+    # KAMP-554: a missing-album track is addressed by its canonical id; real albums
+    # leave id=None and resolve by (album_artist, album).
+    id: int | None = None
+
+
+class PlayPlaylistRequest(BaseModel):
+    playlist_id: int
+    start_index: int = 0
+
+
+class PlayFilesRequest(BaseModel):
+    start_index: int = 0
+    # KAMP-552: canonical ids only.
+    ids: list[int] = []
 
 
 class SeekRequest(BaseModel):
@@ -137,12 +455,35 @@ class VolumeRequest(BaseModel):
     volume: int
 
 
+class MuteRequest(BaseModel):
+    muted: bool
+
+
+class GenreFetchOut(BaseModel):
+    genres: list[str]
+
+
+class GenreMergeRequest(BaseModel):
+    source: str
+    target: str
+
+
+class GenreRenameRequest(BaseModel):
+    old: str
+    new: str
+
+
+class AllowlistAddRequest(BaseModel):
+    name: str
+
+
 class ShuffleRequest(BaseModel):
     shuffle: bool
+    album_shuffle: bool = False
 
 
 class RepeatRequest(BaseModel):
-    repeat: bool
+    mode: Literal["off", "queue", "album", "single"]
 
 
 class ScanResult(BaseModel):
@@ -195,8 +536,8 @@ _FORBIDDEN_LIBRARY_ROOTS: frozenset[Path] = frozenset(
 
 
 class FavoriteRequest(BaseModel):
-    file_path: str
     favorite: bool
+    id: int  # KAMP-552: tracks are addressed by canonical id only
 
 
 class AlbumFavoriteRequest(BaseModel):
@@ -205,18 +546,27 @@ class AlbumFavoriteRequest(BaseModel):
     favorite: bool
 
 
+class ReorderDownloadsRequest(BaseModel):
+    # KAMP-567: the desired order of the currently-'queued' items (a permutation);
+    # the downloading item is fixed at the top and is not included.
+    provider_item_ids: list[str]
+
+
 class SearchOut(BaseModel):
     albums: list[AlbumOut]
     tracks: list[TrackOut]
+    playlists: list[PlaylistSearchOut] = []
 
 
 class QueueOut(BaseModel):
     tracks: list[TrackOut]
     position: int  # index of the currently playing track; -1 if empty
+    shuffle: bool
+    repeat: str
 
 
 class AddToQueueRequest(BaseModel):
-    file_path: str
+    id: int  # KAMP-552: tracks are addressed by canonical id only
 
 
 class MoveQueueRequest(BaseModel):
@@ -224,22 +574,32 @@ class MoveQueueRequest(BaseModel):
     to_index: int
 
 
+class ReorderQueueRequest(BaseModel):
+    order: list[int]
+
+
 class InsertQueueRequest(BaseModel):
-    file_path: str
     index: int
+    id: int  # KAMP-552: tracks are addressed by canonical id only
 
 
 class AlbumQueueRequest(BaseModel):
     album_artist: str
     album: str
-    file_path: str = ""  # non-empty for missing-album tracks
+    # KAMP-554: missing-album track id; real albums leave id=None.
+    id: int | None = None
 
 
 class InsertAlbumQueueRequest(BaseModel):
     album_artist: str
     album: str
     index: int
-    file_path: str = ""  # non-empty for missing-album tracks
+    # KAMP-554: missing-album track id; real albums leave id=None.
+    id: int | None = None
+
+
+class RemoveFromQueueRequest(BaseModel):
+    indices: list[int]
 
 
 class SkipToRequest(BaseModel):
@@ -310,10 +670,40 @@ class AlbumTagsOut(BaseModel):
     failed: list[AlbumTagsTrackResult]
 
 
+class TrackDisplayRequest(BaseModel):
+    """Display-only overrides for a streaming track (KAMP-467, artist KAMP-582).
+
+    Partial-update semantics: only fields present in the request body are
+    written (checked via model_fields_set); an explicit null/empty clears
+    that field's override.
+    """
+
+    display_title: str | None = None
+    display_artist: str | None = None
+
+
+class TrackArtistRequest(BaseModel):
+    """Canonical per-track artist edit for a local track (KAMP-582)."""
+
+    artist: str
+
+
+class AlbumDisplayRequest(BaseModel):
+    """Display-only overrides for a streaming album's title and artist (KAMP-467)."""
+
+    album_artist: str
+    album: str
+    display_album: str | None = None
+    display_album_artist: str | None = None
+
+
 class AlbumMetaRequest(BaseModel):
     genre: str | None = None
+    # Multi-value genre (KAMP-586): the album's full genre set, applied to every
+    # track (replace). Supersedes the scalar `genre` when present.
+    genres: list[str] | None = None
     label: str | None = None
-    year: str | None = None
+    release_date: str | None = None
     mb_release_id: str | None = None
 
 
@@ -326,6 +716,9 @@ class MusicBrainzTrackOut(BaseModel):
     disc_number: int
     title: str
     recording_mbid: str
+    # Credited track artist (KAMP-583). Empty unless the release was hydrated
+    # via lookup_release_by_mbid, which is the only path that requests it.
+    artist: str = ""
 
 
 class MusicBrainzReleaseOut(BaseModel):
@@ -333,15 +726,30 @@ class MusicBrainzReleaseOut(BaseModel):
     release_group_mbid: str
     title: str
     album_artist: str
-    year: str
+    release_date: str
     label: str
     release_type: str
     tracks: list[MusicBrainzTrackOut]
 
 
+class MusicBrainzCandidateOut(BaseModel):
+    # Shallow by design: no tracks field, so "not yet hydrated" can never be
+    # confused with "hydrated, zero matching tracks" (KAMP-584). The UI
+    # hydrates a candidate on demand via /albums/musicbrainz/release/{mbid}.
+    mbid: str
+    release_group_mbid: str
+    title: str
+    album_artist: str
+    release_date: str
+    label: str
+    release_type: str
+    is_current: bool = False
+
+
 class MusicBrainzLookupOut(BaseModel):
-    # Ranked best-first. KAMP-230 always uses candidates[0]; KAMP-231 adds a picker.
-    candidates: list[MusicBrainzReleaseOut]
+    # Ranked best-first; candidates[0] is the album's current release when
+    # its stored mb_release_id still resolves (is_current=True).
+    candidates: list[MusicBrainzCandidateOut]
 
 
 class ItunesCandidateOut(BaseModel):
@@ -372,6 +780,88 @@ class BandcampProxyFetchResult(BaseModel):
     url: str | None = None
 
 
+class PlaylistOut(BaseModel):
+    id: int
+    title: str
+    favorite: bool
+    track_count: int
+    created_at: float
+    updated_at: float
+    last_played_at: float | None = None
+    criteria: dict[str, Any] | None = None
+
+
+class PlaylistSearchOut(PlaylistOut):
+    source: str = "local"
+
+
+class PlaylistTrackOut(BaseModel):
+    playlist_track_id: int | None
+    position: int
+    id: int
+    title: str
+    artist: str
+    album_artist: str
+    album: str
+    release_date: str
+    track_number: int
+    disc_number: int
+    ext: str
+    embedded_art: bool
+    mb_release_id: str
+    mb_recording_id: str
+    genre: str
+    label: str
+    favorite: bool
+    play_count: int
+    last_played: float | None = None
+    date_added: float | None = None
+    source: str
+    is_available: bool
+    duration: float
+    sources: list[SourceOut] = []
+    # KAMP-613: canonical album identity so the playlist album view can resolve
+    # art/navigation to the real album after a rename. IDENTITY CONTRACT:
+    # `album_artist`/`album` above are the track's mutable TAG (row display only,
+    # NEVER album identity); `canonical_*` (from the albums row via album_id) is
+    # the art/nav key; `display_*` is render-only. All null for untagged
+    # (missing-album) tracks — the UI routes those through the track_id path.
+    album_id: int | None = None
+    canonical_album_artist: str | None = None
+    canonical_album: str | None = None
+    display_album: str | None = None
+    display_album_artist: str | None = None
+    album_art_version: float | None = None
+
+
+class CreatePlaylistRequest(BaseModel):
+    title: str
+    criteria: dict[str, Any] | None = None
+
+
+class PatchPlaylistRequest(BaseModel):
+    title: str | None = None
+    favorite: bool | None = None
+
+
+class UpdateCriteriaRequest(BaseModel):
+    criteria: dict[str, Any]
+
+
+class CriteriaPreviewRequest(BaseModel):
+    criteria: dict[str, Any]
+
+
+class AddTrackToPlaylistRequest(BaseModel):
+    album_artist: str | None = None
+    album: str | None = None
+    id: int | None = None  # KAMP-552: single track by canonical id
+
+
+class ReorderPlaylistRequest(BaseModel):
+    track_ids: list[int]
+
+
 # ---------------------------------------------------------------------------
 # Bandcamp proxy URL allowlist
 # ---------------------------------------------------------------------------
@@ -384,11 +874,38 @@ _ALLOWED_PROXY_HOSTS: frozenset[str] = frozenset(
     {"bandcamp.com", "f4.bcbits.com", "t4.bcbits.com"}
 )
 
+# SVG template for playlist placeholder art (KAMP-441).
+# __TITLE__ is substituted with the (possibly-truncated) playlist title at request time.
+_PLAYLIST_ART_TEMPLATE = """\
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <rect width="200" height="200" fill="#141414"/>
+  <circle cx="100" cy="100" r="86" fill="#1c1a16" stroke="#c4aa78" stroke-width="1.5"/>
+  <circle cx="100" cy="100" r="78" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="70" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="62" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="54" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="46" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="38" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="32" fill="none" stroke="#2a2620" stroke-width="0.8"/>
+  <circle cx="100" cy="100" r="26" fill="#bf7a20"/>
+  <circle cx="100" cy="100" r="26" fill="none" stroke="#8a5515" stroke-width="1"/>
+  <circle cx="100" cy="100" r="22.5" fill="none" stroke="#8a5515" stroke-width="0.6" stroke-dasharray="2.5 2"/>
+  <!-- Title sits above the spindle hole (hole top y≈96.5); baseline at y=95 clears the hole -->
+  <text x="100" y="95" text-anchor="middle" fill="#1c1a16"
+        font-size="5.5" font-weight="700" letter-spacing="0.5"
+        font-family="sans-serif">__TITLE__</text>
+  <circle cx="100" cy="100" r="3.5" fill="#141414"/>
+</svg>"""
+
 
 # OS metadata filenames that macOS (and Windows) drop into every directory.
 # These make rmdir() fail even on "empty" folders, so we remove them first.
 _OS_METADATA_NAMES: frozenset[str] = frozenset(
     {".DS_Store", "Thumbs.db", "desktop.ini", ".Spotlight-V100", ".Trashes"}
+)
+
+_COVER_ART_EXTENSIONS: frozenset[str] = frozenset(
+    {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
 )
 
 
@@ -409,17 +926,75 @@ def _scrub_os_metadata(directory: Path) -> None:
         pass
 
 
-def _validate_library_path(file_path: str, library_path: Path | None) -> Path:
-    """Resolve *file_path* and verify it lies within *library_path*.
+def _scrub_cover_art(directory: Path) -> None:
+    """Remove image files and macOS resource forks from *directory*.
 
-    Raises HTTP 400 when a library_path is configured and the resolved path
-    falls outside it — preventing path-traversal attacks from reaching any
-    future code that uses the caller-supplied path directly.
+    Called before rmdir() on an album directory being vacated by
+    remove_download, so cover.jpg and similar bundled artwork files don't
+    prevent cleanup.  Only touches the top level — does not recurse.
     """
-    p = Path(file_path).resolve()
-    if library_path is not None and not p.is_relative_to(library_path.resolve()):
-        raise HTTPException(status_code=400, detail="Path outside library directory")
-    return p
+    try:
+        for entry in directory.iterdir():
+            if entry.is_file() and (
+                entry.suffix.lower() in _COVER_ART_EXTENSIONS
+                or entry.name.startswith("._")
+            ):
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _dedupe_casefold(names: list[str]) -> list[str]:
+    """Order-preserving case-insensitive dedupe (KAMP-607).
+
+    Used to collapse a merged-away source into an existing target before writing
+    the file tag, so a track that had both source and target doesn't get the
+    survivor written twice.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        if name.casefold() not in seen:
+            seen.add(name.casefold())
+            out.append(name)
+    return out
+
+
+def _tracks_out(index: LibraryIndex, tracks: "list[Track]") -> list[TrackOut]:
+    """Serialize a list of tracks to TrackOut with sources batch-fetched (KAMP-537).
+
+    One sources_for_track_ids call for the whole list (no N+1). Synthetic queue
+    restore stubs (id=0) are excluded from the batch and get an empty sources
+    list. Use this instead of a bare `[TrackOut.from_track(t) for t in ...]`.
+
+    KAMP-633: canonical album identity is batch-resolved in one query
+    (album_identity_for_ids) so album cards / "Go to Album" don't key on the tag.
+    """
+    src_map = index.sources_for_track_ids([t.id for t in tracks if t.id])
+    album_map = index.album_identity_for_ids({t.album_id for t in tracks if t.album_id})
+    return [
+        TrackOut.from_track(t, src_map.get(t.id, []), album_map.get(t.album_id))
+        for t in tracks
+    ]
+
+
+def _track_out(index: LibraryIndex, track: Track) -> TrackOut:
+    """Serialize a single track to TrackOut with its sources (KAMP-537).
+
+    KAMP-633: also resolves the canonical album row; skips the lookup entirely
+    for untagged tracks (album_id 0) so no needless query fires.
+    """
+    album = (
+        index.album_identity_for_ids({track.album_id}).get(track.album_id)
+        if track.album_id
+        else None
+    )
+    return TrackOut.from_track(
+        track, index.sources_for_track_ids([track.id]).get(track.id, []), album
+    )
 
 
 def _validate_proxy_url(url: str) -> str:
@@ -430,6 +1005,61 @@ def _validate_proxy_url(url: str) -> str:
             status_code=422, detail=f"Proxy URL host not allowed: {host}"
         )
     return url
+
+
+def _materialize_stream_tracks_or_422(
+    index: LibraryIndex,
+    item: dict[str, Any],
+    get_bandcamp_session: "Callable[[], dict[str, Any] | None] | None",
+) -> None:
+    """Fetch + upsert bandcamp:// stream rows for a download-mode album (KAMP-527).
+
+    Called from the DELETE-download endpoint before any deletion so a downloaded
+    album gains the streamable representation it never had. Any failure — no
+    session, no album_url, network/parse error, or an empty result (Bandcamp has
+    no streamable version) — raises HTTP 422 so the caller deletes nothing. The
+    underlying upsert carries its own rollback discipline.
+    """
+    album_url = item.get("album_url") or ""
+    sale_item_id = str(item.get("sale_item_id") or "")
+    session_data = get_bandcamp_session() if get_bandcamp_session else None
+    if not session_data or not album_url:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Log in to Bandcamp to revert this download — a streamable "
+                "version must be fetched before the local files are removed."
+            ),
+        )
+    from kamp_daemon.bandcamp import (  # noqa: PLC0415
+        _make_requests_session,
+        fetch_album_tracks,
+    )
+
+    try:
+        session = _make_requests_session(session_data)
+        tracks = fetch_album_tracks(
+            album_url,
+            int(sale_item_id),
+            item.get("band_name") or "",
+            item.get("item_title") or "",
+            session,
+        )
+    except Exception as exc:  # network, parse, or auth failure
+        raise HTTPException(
+            status_code=422,
+            detail="Could not fetch the streamable version from Bandcamp.",
+        ) from exc
+
+    if not tracks:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No streamable version available for this album. Removing the "
+                "download would remove it from your library, so it was kept."
+            ),
+        )
+    index.materialize_stream_tracks(sale_item_id, tracks)
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +1076,7 @@ def create_app(
     on_library_path_set: Callable[[Path], None] | None = None,
     ui_active_view: str = "library",
     ui_sort_order: str = "album_artist",
+    ui_sort_dir: str = "asc",
     ui_queue_panel_open: int = 0,
     on_ui_state_set: Callable[[str, str], None] | None = None,
     config_values: dict[str, Any] | None = None,
@@ -457,9 +1088,19 @@ def create_app(
     on_bandcamp_disconnect: Callable[[], None] | None = None,
     on_bandcamp_sync_trigger: Callable[[], None] | None = None,
     on_bandcamp_sync_all_trigger: Callable[[], None] | None = None,
+    on_genre_backfill_start: Callable[[], None] | None = None,
+    on_genre_backfill_cancel: Callable[[], None] | None = None,
+    on_allowlist_changed: Callable[[], None] | None = None,
+    get_default_allowlist: Callable[[], list[str]] | None = None,
+    dl_queue: _queue.Queue[str] | None = None,
+    refresh_stream_url: Callable[[str, int], tuple[str, float] | None] | None = None,
+    check_stream_url: Callable[[str], int] | None = None,
+    art_cache_dir: Path | None = None,
     dev_mode: bool = False,
     auth_token: str | None = None,
-    mb_lookup_fn: Callable[..., Any] | None = None,
+    mb_search_fn: Callable[[str, str], list[Any]] | None = None,
+    mb_release_fn: Callable[[str], Any] | None = None,
+    genre_fetch_fn: Callable[[str, str], list[str]] | None = None,
 ) -> FastAPI:
     """Return a configured FastAPI application.
 
@@ -485,14 +1126,21 @@ def create_app(
             "num_albums": 0,
             "num_artists": 0,
         },
+        # genre_backfill (KAMP-591): written by the backfill worker thread, read by
+        # GET /api/v1/genres/backfill/progress (reconnecting clients) + pushed live
+        # over the "genre_backfill.progress" WebSocket event. state ∈ idle/running/
+        # done/cancelled.
+        "genre_backfill": {"active": False, "done": 0, "total": 0, "state": "idle"},
         "ui_active_view": ui_active_view,
         "ui_sort_order": ui_sort_order,
+        "ui_sort_dir": ui_sort_dir,
         "ui_queue_panel_open": ui_queue_panel_open,
         "library_version": 0,
         "config": dict(config_values) if config_values is not None else {},
         # Pending proxy-fetch requests from the Python daemon subprocess.
         # id → {"id", "url", "method", "headers", "body", "event", "result"}
         "bandcamp_proxy_requests": {},
+        "buffering": False,
     }
 
     # Proxy-fetch events that were broadcast but had no WS client connected to
@@ -526,7 +1174,64 @@ def create_app(
 
     def _notify_play_state_changed() -> None:
         """Broadcast a play_state.changed push event to all connected WebSocket clients."""
+        # Only clear buffering when mpv reports it is actively playing. During a
+        # playing→playing track switch, mpv briefly sets pause=True as the old
+        # file ends; clearing on that transition would kill the indicator before
+        # the new file loads. Clearing on playing=True is redundant (file-loaded
+        # already cleared it) but harmless.
+        if engine.state.playing:
+            _state["buffering"] = False
         _broadcast({"type": "play_state.changed", **_state_snapshot().model_dump()})
+
+    def _notify_album_download_status(sale_item_id: str, state: str) -> None:
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": sale_item_id,
+                "state": state,
+            }
+        )
+
+    app.state.notify_album_download_status = _notify_album_download_status
+
+    def _notify_album_download_progress(
+        sale_item_id: str, downloaded_bytes: int, total_bytes: int
+    ) -> None:
+        """Broadcast byte-level download progress for a single album (KAMP-436/566).
+
+        Rides the same ``bandcamp.album-download`` event as the coarse state
+        transitions. Carries a ``progress`` percentage (0–100) — kept for the
+        KAMP-436 bottom-up album-art reveal — plus the raw ``downloaded_bytes`` /
+        ``total_bytes`` for the Downloads view. Called from the syncer's download
+        thread — ``_broadcast`` is thread-safe.
+        """
+        pct = min(100, downloaded_bytes * 100 // total_bytes) if total_bytes else 0
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": sale_item_id,
+                "state": "downloading",
+                "progress": pct,
+                "downloaded_bytes": downloaded_bytes,
+                "total_bytes": total_bytes,
+            }
+        )
+
+    app.state.notify_album_download_progress = _notify_album_download_progress
+
+    def _notify_download_queue() -> None:
+        """Broadcast a structured snapshot of the whole download queue (KAMP-566).
+
+        Emitted on every queue transition (enqueue / downloading / done / failed /
+        retry) so the Downloads view can render the Now Downloading / Queued /
+        Failed sections. Each item carries status, position, size, error text and
+        the album snapshot (see ``download_queue_items``); failed items carry their
+        ``error_text``, which is how download errors reach the UI. Called from the
+        worker/endpoint threads — ``_broadcast`` is thread-safe.
+        """
+        _broadcast({"type": "download.queue", "items": index.download_queue_items()})
+
+    app.state.notify_download_queue = _notify_download_queue
 
     def _notify_bandcamp_sync_status(status_msg: str) -> None:
         """Broadcast sync state derived from the syncer's status_callback string.
@@ -537,14 +1242,35 @@ def create_app(
         state = "idle" if not status_msg else "syncing"
         _broadcast({"type": "bandcamp.sync-status", "state": state})
 
-    def _notify_pipeline_stage(stage: str) -> None:
+    def _notify_pipeline_stage(
+        stage: str,
+        sale_item_id: str | None = None,
+        committed: bool = False,
+        album: str = "",
+    ) -> None:
         """Broadcast the current pipeline stage to all connected WebSocket clients.
 
         stage is "" when idle, or a human-readable label ("Extracting", "Tagging",
         "Updating artwork", "Moving") while work is in progress.
+
+        KAMP-562: *sale_item_id* identifies the album being processed (None for
+        non-download drops) so a per-album card can show a tagging badge; the
+        global pipeline indicator ignores it and reads only ``stage``.
+        *committed* is True on the terminal "" reset only when the item reached
+        the library, letting the UI tell success (rescan coming) from quarantine.
+        KAMP-558: *album* is a human-readable album label ("" before extraction)
+        so the pipeline indicator can show "Copying {album}…" / "Tagging {album}…".
         Called from the watcher thread — _broadcast is thread-safe.
         """
-        _broadcast({"type": "pipeline.stage", "stage": stage})
+        _broadcast(
+            {
+                "type": "pipeline.stage",
+                "stage": stage,
+                "sale_item_id": sale_item_id,
+                "committed": committed,
+                "album": album,
+            }
+        )
 
     def _notify_audio_level(
         left_db: float, right_db: float, crest_db: float, peak_db: float
@@ -572,6 +1298,28 @@ def create_app(
     app.state.notify_bandcamp_sync_status = _notify_bandcamp_sync_status
     app.state.notify_pipeline_stage = _notify_pipeline_stage
 
+    def _notify_genre_backfill_progress(done: int, total: int, state: str) -> None:
+        """Update the genre-backfill snapshot (for GET on reconnect) and push it
+        live to WebSocket clients (KAMP-591)."""
+        active = state == "running"
+        _state["genre_backfill"] = {
+            "active": active,
+            "done": done,
+            "total": total,
+            "state": state,
+        }
+        _broadcast(
+            {
+                "type": "genre_backfill.progress",
+                "active": active,
+                "done": done,
+                "total": total,
+                "state": state,
+            }
+        )
+
+    app.state.notify_genre_backfill_progress = _notify_genre_backfill_progress
+
     def _notify_deferred_op_completed(track_id: int, op_id: int) -> None:
         # Refresh the in-memory queue so the renamed track shows the new path/title
         # immediately; loadQueue() called by the frontend on library.changed will
@@ -594,10 +1342,105 @@ def create_app(
     # Signature: (pairs: list[tuple[Path, Path]]) -> None
     app.state.on_album_tracks_moved = None
 
+    # Pending debuff timer for last_played writes on skip endpoints (next/prev/skip-to).
+    # Stored as a mutable cell so endpoint closures can replace it without nonlocal.
+    _last_played_timer: list[_threading.Timer | None] = [None]
+
+    def _record_track_started_immediate(fp: Path) -> None:
+        """Write last_played now and cancel any pending debuff timer."""
+        if _last_played_timer[0] is not None:
+            _last_played_timer[0].cancel()
+            _last_played_timer[0] = None
+        index.record_track_started(fp)
+
+    def _record_track_started_debounced(fp: Path) -> None:
+        """Start a 5-second debuff timer; cancel any previous one first.
+
+        Used by next/prev/skip-to so rapidly-skipped tracks don't appear in
+        Last Played.  The timer fires _notify_track_changed() so the UI
+        re-fetches albums and picks up the newly-written last_played value.
+        """
+        if _last_played_timer[0] is not None:
+            _last_played_timer[0].cancel()
+
+        def _fire(file_path: Path = fp) -> None:
+            index.record_track_started(file_path)
+            _notify_track_changed()
+            _last_played_timer[0] = None
+
+        t = _threading.Timer(5.0, _fire)
+        _last_played_timer[0] = t
+        t.start()
+
+    def _resolve_playback(track: "Track") -> str:
+        if track.is_remote:
+            _state["buffering"] = True
+            _broadcast({"type": "player.state", **_state_snapshot().model_dump()})
+        try:
+            return resolve_playback_uri(
+                track, index, refresh_stream_url, check_stream_url
+            )
+        except Exception:
+            _state["buffering"] = False
+            raise
+
     # Wire play-state change callback directly — the engine fires it from its
     # background reader thread whenever mpv's pause property flips.
     engine.on_play_state_changed = _notify_play_state_changed
     engine.on_audio_level = _notify_audio_level
+
+    # Outermost on_file_loaded wrapper: clear buffering the moment mpv opens
+    # the new file. Wraps the __main__.py chain (gapless preload + scrobble)
+    # which is already assigned before create_app is called.
+    _outer_on_file_loaded = engine.on_file_loaded
+
+    def _on_file_loaded_clear_buffering() -> None:
+        _state["buffering"] = False
+        _broadcast({"type": "player.state", **_state_snapshot().model_dump()})
+        if _outer_on_file_loaded is not None:
+            _outer_on_file_loaded()
+
+    engine.on_file_loaded = _on_file_loaded_clear_buffering
+
+    # Magic playlist field_index: maps field name → set of playlist IDs whose
+    # criteria reference that field.  Rebuilt at startup and after CRUD ops.
+    field_index: dict[str, set[int]] = {}
+    # Per-playlist timestamp of last broadcast (for ≤1 event/second debounce).
+    _last_magic_broadcast: dict[int, float] = {}
+
+    def _rebuild_field_index() -> None:
+        new_index: dict[str, set[int]] = {}
+        for playlist_id, mc in index.list_all_magic_criteria():
+            for group in mc.groups:
+                for cond in group.conditions:
+                    new_index.setdefault(cond.field, set()).add(playlist_id)
+        field_index.clear()
+        field_index.update(new_index)
+
+    def _on_fields_changed(fields: set[str]) -> None:
+        """Broadcast magic_playlist.updated for each playlist affected by *fields*.
+
+        Called from LibraryIndex mutation methods (which run on various threads).
+        _broadcast is thread-safe. Debounce suppresses duplicate events within 1s.
+        """
+        affected: set[int] = set()
+        for f in fields:
+            affected |= field_index.get(f, set())
+        if not affected:
+            return
+        import time as _t  # noqa: PLC0415
+
+        now = _t.time()
+        for pid in affected:
+            if now - _last_magic_broadcast.get(pid, 0.0) < 1.0:
+                continue
+            _last_magic_broadcast[pid] = now
+            _broadcast({"type": "magic_playlist.updated", "id": pid})
+
+    index.on_fields_changed = _on_fields_changed
+    _rebuild_field_index()
+    app.state.field_index = field_index
+    app.state.on_fields_changed = _on_fields_changed
 
     # Auth middleware must be defined before add_middleware(CORSMiddleware) so
     # CORS ends up as the outermost wrapper (handles OPTIONS preflight first).
@@ -630,21 +1473,39 @@ def create_app(
         CORSMiddleware,
         allow_origins=_allowed_origins,
         allow_origin_regex=_allowed_origin_regex,
-        allow_methods=["GET", "POST", "DELETE", "PATCH"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         # X-Kamp-Token must be listed so CORS preflight allows it.
         allow_headers=["Content-Type", "X-Kamp-Token"],
     )
 
     def _state_snapshot() -> PlayerStateOut:
+        import time as _t
+
         current = queue.current()
         nxt = queue.peek_next()
+        pos = engine.state.position
+        # When mpv stops emitting time-pos events (e.g. after seeking near EOF
+        # of an HTTP stream where the demuxer is at EOF but audio drains from
+        # the hardware buffer), extrapolate position from wall-clock time so the
+        # progress bar advances smoothly instead of freezing.
+        if (
+            engine.state.playing
+            and engine.state.duration > 0
+            and _t.time() - engine.state.position_updated_at > 0.3
+        ):
+            pos = min(
+                pos + (_t.time() - engine.state.position_updated_at),
+                engine.state.duration,
+            )
         return PlayerStateOut(
             playing=engine.state.playing,
-            position=engine.state.position,
+            position=pos,
             duration=engine.state.duration,
             volume=engine.state.volume,
-            current_track=TrackOut.from_track(current) if current else None,
-            next_track=TrackOut.from_track(nxt) if nxt else None,
+            muted=engine.state.muted,
+            current_track=_track_out(index, current) if current else None,
+            next_track=_track_out(index, nxt) if nxt else None,
+            buffering=_state["buffering"],
         )
 
     # -----------------------------------------------------------------------
@@ -652,44 +1513,265 @@ def create_app(
     # -----------------------------------------------------------------------
 
     @app.get("/api/v1/albums", response_model=list[AlbumOut])
-    def get_albums(sort: str = "album_artist") -> list[AlbumOut]:
+    def get_albums(sort: str = "album_artist", direction: str = "") -> list[AlbumOut]:
+        # direction="" means use the natural per-key default (historical behaviour).
+        sort_dir = direction if direction in ("asc", "desc") else None
         return [
-            AlbumOut(
-                album_artist=a.album_artist,
-                album=a.album,
-                year=a.year,
-                track_count=a.track_count,
-                has_art=a.has_art,
-                missing_album=a.missing_album,
-                file_path=a.file_path,
-                art_version=a.art_version,
-                added_at=a.added_at,
-                last_played_at=a.last_played_at,
-                play_count_avg=a.play_count_avg,
-                favorite=a.favorite,
-            )
-            for a in index.albums(sort=sort)
+            AlbumOut.from_album_info(a)
+            for a in index.albums(sort=sort, sort_dir=sort_dir)
         ]
+
+    @app.get("/api/v1/albums/top", response_model=list[AlbumOut])
+    def get_top_albums(metric: str, limit: int = 0, since: float = 0) -> list[AlbumOut]:
+        """Top named albums by a denormalized metric (KAMP-615).
+
+        Powers the Top Albums / Last Played home modules cheaply, without the
+        whole-library aggregate that GET /api/v1/albums runs. ``limit=0`` means
+        no cap; ``since`` (unix seconds, ``last_played`` only) applies the Last
+        Played day-window. An unknown metric is a 422.
+        """
+        try:
+            albums = index.top_albums(
+                metric,
+                limit=limit if limit > 0 else None,
+                since=since if since > 0 else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return [AlbumOut.from_album_info(a) for a in albums]
+
+    @app.get("/api/v1/stats", response_model=StatsOut)
+    def get_stats(top_tracks: int = 3) -> StatsOut:
+        s = index.get_stats(top_tracks_limit=top_tracks)
+        return StatsOut.from_stats(s, _tracks_out(index, s.top_tracks))
+
+    @app.get("/api/v1/artists/top", response_model=list[ArtistOut])
+    def get_top_artists(limit: int = 10) -> list[ArtistOut]:
+        return [ArtistOut.from_artist(a) for a in index.top_artists(limit)]
 
     @app.get("/api/v1/artists", response_model=list[str])
     def get_artists() -> list[str]:
         return index.artists()
 
+    @app.get("/api/v1/genres", response_model=list[str])
+    def get_genres() -> list[str]:
+        """Every distinct genre in the library (KAMP-586), for autocomplete."""
+        return index.all_genres()
+
+    @app.delete("/api/v1/genres")
+    def delete_genre(name: str) -> dict[str, Any]:
+        """Remove a genre from every tagged track and the DB (KAMP-606).
+
+        Strips the genre from each track's audio-file tag (skipping remote-only
+        tracks, which have no local file) and then from the database, deleting
+        the vocabulary entry. File writes happen BEFORE the DB mutation so a
+        mid-way failure leaves the DB intact for the next scan to reconcile —
+        mirroring patch_album_meta. `name` is a query param, not a path segment,
+        because genre names can contain '/'.
+        """
+        from kamp_core.library import write_meta_tags_to_file
+
+        name = name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Genre name required")
+        # A running backfill writes genres off-thread; a concurrent removal could
+        # race it (re-adding the vocab row or a track link). Refuse until it ends.
+        if _state["genre_backfill"]["active"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Genre backfill in progress; try again once it finishes",
+            )
+
+        tracks = index.tracks_for_genre(name)
+        for track in tracks:
+            if track.is_remote:
+                continue
+            remaining = [
+                g
+                for g in index.genres_for_track(track.id)
+                if g.casefold() != name.casefold()
+            ]
+            try:
+                write_meta_tags_to_file(track.file_path, genres=remaining)
+            except Exception as exc:
+                logger.exception(
+                    "genre tag write failed for track %d (%s)",
+                    track.id,
+                    track.file_path,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to write tags to {track.file_path}: {exc}",
+                ) from exc
+
+        updated = index.remove_genre(name)
+        _notify_library_changed()
+        return {"ok": True, "tracks_updated": updated}
+
+    @app.get("/api/v1/genres/merges")
+    def get_genre_merges() -> list[dict[str, str]]:
+        """All active genre merges as {source, target} (KAMP-607)."""
+        return index.list_genre_merges()
+
+    @app.delete("/api/v1/genres/merge")
+    def delete_genre_merge(source: str) -> dict[str, Any]:
+        """Delete a genre merge rule (KAMP-610).
+
+        Future-only: inbound *source* tags stop mapping to the target, but tracks
+        already retagged under the rule keep the target. Query param, not path —
+        genre names can contain '/'.
+        """
+        index.remove_genre_merge(source)
+        _notify_library_changed()
+        return {"ok": True}
+
+    @app.post("/api/v1/genres/merge")
+    def merge_genres(req: GenreMergeRequest) -> dict[str, Any]:
+        """Merge one genre into another (KAMP-607).
+
+        Retroactively retags every track carrying the source to the target (file
+        tags first, skipping remote-only tracks, then the DB) and records the
+        source->target rule so all future inbound genres map through it. Rejects
+        chains and self-merges. Files-first ordering + 409-during-backfill mirror
+        the remove-genre endpoint.
+        """
+        from kamp_core.library import write_meta_tags_to_file
+
+        source = req.source.strip()
+        target = req.target.strip()
+        if _state["genre_backfill"]["active"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Genre backfill in progress; try again once it finishes",
+            )
+        # Validate BEFORE touching any files so a rejected merge writes nothing.
+        try:
+            index.validate_genre_merge(source, target)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        for track in index.tracks_for_genre(source):
+            if track.is_remote:
+                continue
+            mapped = _dedupe_casefold(
+                [
+                    target if g.casefold() == source.casefold() else g
+                    for g in index.genres_for_track(track.id)
+                ]
+            )
+            try:
+                write_meta_tags_to_file(track.file_path, genres=mapped)
+            except Exception as exc:
+                logger.exception(
+                    "genre tag write failed for track %d (%s)",
+                    track.id,
+                    track.file_path,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to write tags to {track.file_path}: {exc}",
+                ) from exc
+
+        updated = index.create_genre_merge(source, target)
+        _notify_library_changed()
+        return {"ok": True, "tracks_updated": updated}
+
+    @app.post("/api/v1/genres/rename")
+    def rename_genre(req: GenreRenameRequest) -> dict[str, Any]:
+        """Rename a genre, applied to every tagged track (KAMP-608).
+
+        Rewrites each non-remote track's audio-file tag (old -> new) then renames
+        the genre in the DB; renaming onto an existing genre folds the two (one
+        time). Files-first ordering + 409-during-backfill mirror the other genre
+        mutation endpoints.
+        """
+        from kamp_core.library import write_meta_tags_to_file
+
+        old = req.old.strip()
+        new = req.new.strip()
+        if _state["genre_backfill"]["active"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Genre backfill in progress; try again once it finishes",
+            )
+        # Validate BEFORE touching any files so a rejected rename writes nothing.
+        try:
+            index.validate_genre_rename(old, new)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        for track in index.tracks_for_genre(old):
+            if track.is_remote:
+                continue
+            mapped = _dedupe_casefold(
+                [
+                    new if g.casefold() == old.casefold() else g
+                    for g in index.genres_for_track(track.id)
+                ]
+            )
+            try:
+                write_meta_tags_to_file(track.file_path, genres=mapped)
+            except Exception as exc:
+                logger.exception(
+                    "genre tag write failed for track %d (%s)",
+                    track.id,
+                    track.file_path,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to write tags to {track.file_path}: {exc}",
+                ) from exc
+
+        updated = index.rename_genre(old, new)
+        _notify_library_changed()
+        return {"ok": True, "tracks_updated": updated}
+
+    @app.get("/api/v1/genres/allowlist")
+    def get_genre_allowlist() -> dict[str, list[str]]:
+        """The user's allow-list additions + the shipped defaults (KAMP-610).
+
+        `defaults` is the read-only shipped list (for the optional full-list view);
+        it comes from a daemon-supplied callable so kamp_core never imports the
+        daemon-side genre_sources module.
+        """
+        defaults = get_default_allowlist() if get_default_allowlist is not None else []
+        return {"extras": index.list_allowlist_extras(), "defaults": defaults}
+
+    @app.post("/api/v1/genres/allowlist")
+    def add_genre_allowlist(req: AllowlistAddRequest) -> dict[str, Any]:
+        """Add a user entry to the genre allow list (KAMP-610)."""
+        try:
+            index.add_allowlist_entry(req.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if on_allowlist_changed is not None:
+            on_allowlist_changed()
+        return {"ok": True, "extras": index.list_allowlist_extras()}
+
+    @app.post("/api/v1/genres/allowlist/revert")
+    def revert_genre_allowlist() -> dict[str, Any]:
+        """Revert the allow list to the shipped default (drop all extras). KAMP-610."""
+        index.clear_allowlist_extras()
+        if on_allowlist_changed is not None:
+            on_allowlist_changed()
+        return {"ok": True}
+
+    @app.get("/api/v1/tracks/top", response_model=list[TrackOut])
+    def get_top_tracks(limit: int = 10) -> list[TrackOut]:
+        return _tracks_out(index, index.top_tracks(limit))
+
     @app.get("/api/v1/tracks", response_model=list[TrackOut])
     def get_tracks(
-        album_artist: str, album: str, file_path: str = ""
+        album_artist: str, album: str, track_id: int | None = None
     ) -> list[TrackOut]:
         # Query parameters instead of path segments — artist/album names may
         # contain slashes (e.g. "AC/DC") which would break URL path routing.
-        # file_path is used for missing-album tracks where (album_artist, album)
-        # is not a unique key; when present it takes precedence.
-        if file_path:
-            p = _validate_library_path(file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
-            return [TrackOut.from_track(track)] if track else []
-        return [
-            TrackOut.from_track(t) for t in index.tracks_for_album(album_artist, album)
-        ]
+        # track_id addresses a missing-album track (album tag empty) where
+        # (album_artist, album) is not a unique key; when present it takes precedence.
+        if track_id is not None:
+            track = index.get_track_by_id(track_id)
+            return [_track_out(index, track)] if track else []
+        return _tracks_out(index, index.tracks_for_album(album_artist, album))
 
     @app.patch("/api/v1/tracks/{track_id}/tags")
     def patch_track_tags(track_id: int, req: "TrackTagsRequest") -> Any:
@@ -728,7 +1810,7 @@ def create_app(
             artist=track.artist,
             album_artist=track.album_artist,
             album=track.album,
-            year=track.year,
+            release_date=track.release_date,
             track=track.track_number,
             disc=track.disc_number,
             title=req.title,
@@ -753,15 +1835,22 @@ def create_app(
         if (current and current.id == track_id) or (
             lookahead and lookahead.id == track_id
         ):
-            payload = _json.dumps(
-                {
-                    "old_path": str(old_path),
-                    "new_path": str(new_path),
-                    "title": req.title,
-                    "is_case_only": is_case_only,
-                }
-            )
-            op_id = index.queue_deferred_op("track_retag", track_id, payload)
+            data: dict[str, Any] = {
+                "old_path": str(old_path),
+                "new_path": str(new_path),
+                "title": req.title,
+                "is_case_only": is_case_only,
+            }
+            # deferred_ops is UNIQUE(track_id) with replace-on-insert, so a
+            # fresh payload would silently drop a pending artist write (the
+            # artist endpoint merges the other direction — keep it symmetric,
+            # KAMP-583).
+            pending = index.pending_deferred_ops_for_track(track_id)
+            if pending:
+                prior = _json.loads(pending[0].payload_json)
+                if prior.get("artist"):
+                    data["artist"] = prior["artist"]
+            op_id = index.queue_deferred_op("track_retag", track_id, _json.dumps(data))
             return JSONResponse(
                 status_code=202, content={"deferred": True, "op_id": op_id}
             )
@@ -773,7 +1862,7 @@ def create_app(
             queue.update_track_path(old_path, old_path, req.title)
             _notify_library_changed()
             updated = index.get_track_by_id(track_id)
-            return TrackOut.from_track(updated)  # type: ignore[arg-type]
+            return _track_out(index, updated)  # type: ignore[arg-type]
 
         # is_case_only was computed before the lock check so it is available
         # for both the deferred-op payload and the immediate rename path.
@@ -822,7 +1911,7 @@ def create_app(
 
         _notify_library_changed()
         updated = index.get_track_by_id(track_id)
-        return TrackOut.from_track(updated)  # type: ignore[arg-type]
+        return _track_out(index, updated)  # type: ignore[arg-type]
 
     @app.patch("/api/v1/tracks/{track_id}/meta")
     def patch_track_meta(track_id: int, req: "TrackMetaRequest") -> "TrackOut":
@@ -852,7 +1941,78 @@ def create_app(
 
         updated = index.update_track_mb_recording_id(track_id, req.mb_recording_id)
         _notify_library_changed()
-        return TrackOut.from_track(updated)  # type: ignore[arg-type]
+        return _track_out(index, updated)  # type: ignore[arg-type]
+
+    @app.patch("/api/v1/tracks/{track_id}/artist")
+    def patch_track_artist(track_id: int, req: "TrackArtistRequest") -> Any:
+        """Edit a local track's artist tag (KAMP-582). Tag-only — no rename.
+
+        Artist is not part of the default path template, so unlike title edits
+        no file move (and no collision handling) is needed. With a custom
+        {artist} template the path drifts until the next title/album edit
+        reconciles it — accepted trade-off. Streaming tracks use the display
+        override (PATCH /display) instead: 400 here.
+
+        If the track is currently playing or in the gapless-lookahead slot the
+        DB (and thus the UI) updates immediately but the file write is
+        deferred until the lock releases — a mutagen tag resize on a playing
+        file shifts audio offsets under mpv's open handle (KAMP-309).
+        """
+        from fastapi.responses import JSONResponse
+
+        from kamp_core.library import write_artist_to_file
+
+        track = index.get_track_by_id(track_id)
+        if track is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        if track.is_remote:
+            raise HTTPException(
+                status_code=400,
+                detail="Streaming tracks use the display override endpoint",
+            )
+
+        current = queue.current()
+        lookahead = queue.peek_next()
+        if (current and current.id == track_id) or (
+            lookahead and lookahead.id == track_id
+        ):
+            # deferred_ops is UNIQUE(track_id) with replace-on-insert: merge
+            # into a pending rename op rather than clobbering it.
+            pending = index.pending_deferred_ops_for_track(track_id)
+            if pending:
+                data = _json.loads(pending[0].payload_json)
+                data["artist"] = req.artist
+                op_id = index.queue_deferred_op(
+                    pending[0].op_type, track_id, _json.dumps(data)
+                )
+            else:
+                op_id = index.queue_deferred_op(
+                    "track_artist_retag", track_id, _json.dumps({"artist": req.artist})
+                )
+            updated = index.update_track_artist(track_id, req.artist)
+            if updated is not None:
+                queue.update_track_by_id(track_id, updated)
+            _notify_library_changed()
+            return JSONResponse(
+                status_code=202, content={"deferred": True, "op_id": op_id}
+            )
+
+        try:
+            write_artist_to_file(track.file_path, req.artist)
+        except Exception as exc:
+            logger.exception(
+                "artist tag write failed for track %d (%s)", track.id, track.file_path
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to write artist to {track.file_path}: {exc}",
+            ) from exc
+
+        updated = index.update_track_artist(track_id, req.artist)
+        if updated is not None:
+            queue.update_track_by_id(track_id, updated)
+        _notify_library_changed()
+        return _track_out(index, updated)  # type: ignore[arg-type]
 
     @app.get("/api/v1/deferred-ops")
     def get_deferred_ops() -> list[dict[str, Any]]:
@@ -861,14 +2021,19 @@ def create_app(
 
     @app.post("/api/v1/tracks/favorite")
     def set_track_favorite(req: FavoriteRequest) -> dict[str, Any]:
-        p = _validate_library_path(req.file_path, _state["library_path"])
-        track = index.get_track_by_path(p)
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
-        index.set_favorite(p, req.favorite)
+        # Feed the resolved track's canonical uri to the (still file_path-keyed)
+        # stat/queue writers; KAMP-539 makes these id-native (KAMP-537).
+        key = _canonical_track_uri(track.file_path)
+        index.set_favorite(key, req.favorite)
         # Keep the in-memory queue in sync so the next player-state snapshot
-        # reflects the new favorite value without requiring a queue reload.
-        queue.update_favorite(p, req.favorite)
+        # reflects the new favorite value without requiring a queue reload. Keyed
+        # on the canonical id (KAMP-538/532): the queued track's delivery uri may
+        # have diverged from `key` (post-download preferred-source flip), which a
+        # uri match would miss, reverting the UI on the next 4 Hz state poll.
+        queue.update_favorite(track.id, req.favorite)
         return {"ok": True}
 
     @app.post("/api/v1/albums/favorite")
@@ -893,6 +2058,7 @@ def create_app(
         """
         import os
         import shutil
+        import sqlite3
         import time as _t
 
         from kamp_core.library import write_album_tags_to_file
@@ -910,6 +2076,17 @@ def create_app(
         if new_album == album and new_album_artist == album_artist:
             raise HTTPException(status_code=400, detail="No changes requested")
 
+        # Pre-flight: reject before any file or DB mutation if the target name
+        # already exists as a different album (e.g. a streaming-only entry).
+        # This prevents file operations from running when the DB write would
+        # fail anyway, and ensures the check fires before any transaction opens.
+        current_id = index._album_id(album_artist, album)
+        target_id = index._album_id(new_album_artist, new_album)
+        if target_id is not None and target_id != current_id:
+            raise HTTPException(
+                status_code=409, detail="Album name already exists in library"
+            )
+
         lib_path: Path | None = _state["library_path"]
         if lib_path is None:
             raise HTTPException(status_code=503, detail="Library path not configured")
@@ -926,7 +2103,7 @@ def create_app(
                 artist=track.artist,
                 album_artist=new_album_artist,
                 album=new_album,
-                year=track.year,
+                release_date=track.release_date,
                 track=track.track_number,
                 disc=track.disc_number,
                 title=track.title,
@@ -1026,7 +2203,7 @@ def create_app(
                     )
                     updated = index.get_track_by_id(track.id)
                     if updated is not None:
-                        moved.append(TrackOut.from_track(updated))
+                        moved.append(_track_out(index, updated))
                 except Exception as exc:
                     logger.exception("tag write failed for %s", old_path)
                     failed.append(
@@ -1038,13 +2215,19 @@ def create_app(
                         )
                     )
             if db_pairs:
-                index.rename_album_tracks_bulk(
-                    db_pairs,
-                    new_album,
-                    new_album_artist,
-                    new_mtime,
-                    old_album_artist=album_artist,
-                )
+                try:
+                    index.rename_album_tracks_bulk(
+                        db_pairs,
+                        new_album,
+                        new_album_artist,
+                        new_mtime,
+                        old_album_artist=album_artist,
+                    )
+                except sqlite3.IntegrityError:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Album name already exists in library",
+                    )
 
         elif not new_album_dir.exists():
             # Happy path: target directory does not exist — atomic directory rename.
@@ -1121,7 +2304,7 @@ def create_app(
                         )
                         updated = index.get_track_by_id(track.id)
                         if updated is not None:
-                            moved.append(TrackOut.from_track(updated))
+                            moved.append(_track_out(index, updated))
                     except Exception as exc:
                         logger.exception("album per-file move failed for %s", old_path)
                         failed.append(
@@ -1133,13 +2316,19 @@ def create_app(
                             )
                         )
                 if db_pairs:
-                    index.rename_album_tracks_bulk(
-                        db_pairs,
-                        new_album,
-                        new_album_artist,
-                        new_mtime,
-                        old_album_artist=album_artist,
-                    )
+                    try:
+                        index.rename_album_tracks_bulk(
+                            db_pairs,
+                            new_album,
+                            new_album_artist,
+                            new_mtime,
+                            old_album_artist=album_artist,
+                        )
+                    except sqlite3.IntegrityError:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Album name already exists in library",
+                        )
             else:
                 old_artist_dir = old_album_dir.parent
                 new_artist_dir = new_album_dir.parent
@@ -1227,15 +2416,21 @@ def create_app(
                     if tag_write_ok:
                         updated = index.get_track_by_id(track.id)
                         if updated is not None:
-                            moved.append(TrackOut.from_track(updated))
+                            moved.append(_track_out(index, updated))
 
-                index.rename_album_tracks_bulk(
-                    db_pairs,
-                    new_album,
-                    new_album_artist,
-                    new_mtime,
-                    old_album_artist=album_artist,
-                )
+                try:
+                    index.rename_album_tracks_bulk(
+                        db_pairs,
+                        new_album,
+                        new_album_artist,
+                        new_mtime,
+                        old_album_artist=album_artist,
+                    )
+                except sqlite3.IntegrityError:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Album name already exists in library",
+                    )
 
                 # Album-level rename: clean up old artist dir if now empty.
                 # (Artist-level rename already removed it by renaming the dir itself.)
@@ -1321,7 +2516,7 @@ def create_app(
                     )
                     updated = index.get_track_by_id(track.id)
                     if updated is not None:
-                        moved.append(TrackOut.from_track(updated))
+                        moved.append(_track_out(index, updated))
                 except Exception as exc:
                     logger.exception(
                         "album merge failed for track %d (%s)", track.id, old_path
@@ -1335,13 +2530,19 @@ def create_app(
                         )
                     )
             if db_pairs:
-                index.rename_album_tracks_bulk(
-                    db_pairs,
-                    new_album,
-                    new_album_artist,
-                    new_mtime,
-                    old_album_artist=album_artist,
-                )
+                try:
+                    index.rename_album_tracks_bulk(
+                        db_pairs,
+                        new_album,
+                        new_album_artist,
+                        new_mtime,
+                        old_album_artist=album_artist,
+                    )
+                except sqlite3.IntegrityError:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Album name already exists in library",
+                    )
             # Remove old album dir if all files were moved out.
             _scrub_os_metadata(old_album_dir)
             try:
@@ -1366,11 +2567,58 @@ def create_app(
             moved=moved, deferred=deferred, skipped=skipped, failed=failed
         )
 
+    @app.patch("/api/v1/tracks/{track_id}/display", response_model=TrackOut)
+    def patch_track_display(track_id: int, req: "TrackDisplayRequest") -> TrackOut:
+        """Set (or clear) display overrides for a streaming track (KAMP-467/582).
+
+        Writes only to the DB — no file operations are performed. Partial
+        update: a field absent from the body is left untouched, so a
+        display_artist edit cannot clear a display_title override (or vice
+        versa); an explicit null or empty string clears that field.
+        Returns 404 if the track is not found, 400 for an empty body.
+        """
+        track = index.get_track_by_id(track_id)
+        if track is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        fields = req.model_fields_set
+        if not fields:
+            raise HTTPException(status_code=400, detail="No changes requested")
+        updated: Track | None = track
+        if "display_title" in fields:
+            updated = index.update_track_display_title(track_id, req.display_title)
+        if "display_artist" in fields:
+            updated = index.update_track_display_artist(track_id, req.display_artist)
+        # Patch the in-memory queue so Now Playing / SMTC / the scrobbler see
+        # the override without a restart.
+        if updated is not None:
+            queue.update_track_by_id(track_id, updated)
+        _notify_library_changed()
+        return _track_out(index, updated)  # type: ignore[arg-type]
+
+    @app.patch("/api/v1/albums/display", response_model=AlbumOut)
+    def patch_album_display(req: "AlbumDisplayRequest") -> AlbumOut:
+        """Set (or clear) display overrides for a streaming album (KAMP-467).
+
+        Writes only to the DB — no file operations are performed.
+        Passing null or empty string for a field clears that override.
+        Returns 404 if the album is not found.
+        """
+        result = index.update_album_display(
+            req.album_artist,
+            req.album,
+            req.display_album,
+            req.display_album_artist,
+        )
+        if result is None:
+            raise HTTPException(status_code=404, detail="Album not found")
+        _notify_library_changed()
+        return AlbumOut.from_album_info(result)
+
     @app.patch("/api/v1/albums/meta")
     def patch_album_meta(
         album_artist: str, album: str, req: "AlbumMetaRequest"
     ) -> "AlbumMetaOut":
-        """Write genre, label, and/or year to every track in an album.
+        """Write genre, label, and/or release_date to every track in an album.
 
         Tag-only: no files are moved or renamed.  Only the fields present in
         the request body are written; omitted fields are left unchanged.
@@ -1383,19 +2631,34 @@ def create_app(
 
         if (
             req.genre is None
+            and req.genres is None
             and req.label is None
-            and req.year is None
+            and req.release_date is None
             and req.mb_release_id is None
         ):
             raise HTTPException(status_code=400, detail="No changes requested")
 
+        # Genre (multi-value, KAMP-586) goes through the shared apply_genres DB
+        # service; the scalar `genre` is bridged for older callers. File writes
+        # stay in this one is_remote-guarded loop so genre and label/date/mbid
+        # are written in a single pass (apply_genres is DB-only).
+        genre_list: list[str] | None
+        if req.genres is not None:
+            genre_list = req.genres
+        elif req.genre is not None:
+            genre_list = [req.genre] if req.genre.strip() else []
+        else:
+            genre_list = None
+
         for track in tracks:
+            if track.is_remote:
+                continue
             try:
                 write_meta_tags_to_file(
                     track.file_path,
-                    genre=req.genre,
+                    genres=genre_list,
                     label=req.label,
-                    year=req.year,
+                    release_date=req.release_date,
                     mb_release_id=req.mb_release_id,
                 )
             except Exception as exc:
@@ -1407,32 +2670,75 @@ def create_app(
                     detail=f"Failed to write tags to {track.file_path}: {exc}",
                 ) from exc
 
-        updated = index.update_album_meta(
+        # Genre → normalized tables (all tracks, local + remote); label/date/mbid
+        # → the scalar path. update_album_meta must not also write genre or it
+        # would clobber the normalized rollup with a flat string.
+        if genre_list is not None:
+            index.apply_genres([t.id for t in tracks], genre_list, mode="replace")
+        index.update_album_meta(
             album_artist,
             album,
-            genre=req.genre,
             label=req.label,
-            year=req.year,
+            release_date=req.release_date,
             mb_release_id=req.mb_release_id,
         )
         _notify_library_changed()
-        return AlbumMetaOut(tracks=[TrackOut.from_track(t) for t in updated])
+        updated = index.tracks_for_album(album_artist, album)
+        return AlbumMetaOut(tracks=_tracks_out(index, updated))
+
+    _MAX_LOOKUP_CANDIDATES = 10
+
+    def _to_candidate_out(r: Any, is_current: bool = False) -> MusicBrainzCandidateOut:
+        return MusicBrainzCandidateOut(
+            mbid=r.mbid,
+            release_group_mbid=r.release_group_mbid,
+            title=r.title,
+            album_artist=r.album_artist,
+            release_date=r.release_date,
+            label=r.label,
+            release_type=r.release_type,
+            is_current=is_current,
+        )
+
+    def _to_release_out(r: Any) -> MusicBrainzReleaseOut:
+        sorted_tracks = sorted(r.tracks.values(), key=lambda t: (t.disc, t.number))
+        return MusicBrainzReleaseOut(
+            mbid=r.mbid,
+            release_group_mbid=r.release_group_mbid,
+            title=r.title,
+            album_artist=r.album_artist,
+            release_date=r.release_date,
+            label=r.label,
+            release_type=r.release_type,
+            tracks=[
+                MusicBrainzTrackOut(
+                    track_number=t.number,
+                    disc_number=t.disc,
+                    title=t.title,
+                    recording_mbid=t.recording_mbid,
+                    artist=t.artist,
+                )
+                for t in sorted_tracks
+            ],
+        )
 
     @app.get("/api/v1/albums/musicbrainz", response_model=MusicBrainzLookupOut)
     async def get_album_musicbrainz(
         album_artist: str, album: str
     ) -> MusicBrainzLookupOut:
-        """Fetch ranked MusicBrainz release candidates for an album.
+        """Fetch shallow MusicBrainz release candidates for an album (KAMP-584).
 
-        Uses the same tier-1 (per-track recording votes) + tier-2 (album-level
-        search) strategy as the import pipeline.  Returns up to 5 candidates
-        sorted best-first.  The frontend uses candidates[0] for KAMP-230;
-        KAMP-231 will add a picker that steps through the full list.
+        One album-level search (no per-track calls, no per-candidate
+        hydration) so the lookup stays interactive.  If the album already has
+        a stored mb_release_id that still resolves, that release is pinned
+        first with is_current=True; a dead stored id degrades to search-only.
+        Candidates carry no track lists — the UI hydrates the viewed
+        candidate via GET /api/v1/albums/musicbrainz/release/{mbid}.
 
         Returns 404 if no tracks are found or if MusicBrainz has no match.
-        Returns 503 if mb_lookup_fn was not wired up at server construction.
+        Returns 503 if mb_search_fn was not wired up at server construction.
         """
-        if mb_lookup_fn is None:
+        if mb_search_fn is None:
             raise HTTPException(
                 status_code=503, detail="MusicBrainz lookup not available"
             )
@@ -1441,40 +2747,94 @@ def create_app(
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
 
-        tuples = [(t.artist, t.title, t.album) for t in tracks]
-        try:
-            from kamp_daemon.tagger import TaggingError
+        stored_mbid = next((t.mb_release_id for t in tracks if t.mb_release_id), "")
 
-            releases = await asyncio.get_event_loop().run_in_executor(
-                None, mb_lookup_fn, tuples
+        def _do_lookup() -> tuple[Any | None, list[Any]]:
+            pinned = None
+            if stored_mbid and mb_release_fn is not None:
+                try:
+                    pinned = mb_release_fn(stored_mbid)
+                except Exception:
+                    # Deleted/merged-away id — the search results still stand.
+                    logger.info(
+                        "Stored MB release id %s no longer resolves; "
+                        "falling back to search only",
+                        stored_mbid,
+                    )
+            return pinned, mb_search_fn(album_artist, album)
+
+        try:
+            pinned, results = await asyncio.get_event_loop().run_in_executor(
+                None, _do_lookup
             )
         except Exception as exc:
-            # TaggingError and network failures both surface as 404 with the
-            # human-readable message so the frontend can show "No match found".
+            # Network failures surface as 404 with the human-readable message
+            # so the frontend can show "No match found".
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        def _to_release_out(r: Any) -> MusicBrainzReleaseOut:
-            sorted_tracks = sorted(r.tracks.values(), key=lambda t: (t.disc, t.number))
-            return MusicBrainzReleaseOut(
-                mbid=r.mbid,
-                release_group_mbid=r.release_group_mbid,
-                title=r.title,
-                album_artist=r.album_artist,
-                year=r.year,
-                label=r.label,
-                release_type=r.release_type,
-                tracks=[
-                    MusicBrainzTrackOut(
-                        track_number=t.number,
-                        disc_number=t.disc,
-                        title=t.title,
-                        recording_mbid=t.recording_mbid,
-                    )
-                    for t in sorted_tracks
-                ],
+        candidates: list[MusicBrainzCandidateOut] = []
+        if pinned is not None:
+            candidates.append(_to_candidate_out(pinned, is_current=True))
+            # Dedupe on the id MB actually returned — a merged stored id
+            # resolves to the target release, whose id may differ.
+            results = [r for r in results if r.mbid != pinned.mbid]
+        candidates.extend(_to_candidate_out(r) for r in results)
+        candidates = candidates[:_MAX_LOOKUP_CANDIDATES]
+
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No MusicBrainz results for artist={album_artist!r} "
+                    f"album={album!r}"
+                ),
             )
 
-        return MusicBrainzLookupOut(candidates=[_to_release_out(r) for r in releases])
+        return MusicBrainzLookupOut(candidates=candidates)
+
+    @app.get("/api/v1/albums/genres/fetch", response_model=GenreFetchOut)
+    async def fetch_album_genres(album_artist: str, album: str) -> GenreFetchOut:
+        """Candidate genres for one album from the configured sources (KAMP-605).
+
+        Read-only: returns candidates for the client to merge + PATCH; it never
+        writes DB or files. Runs the (bounded ~8s) Last.fm fetch off the event
+        loop. 404 if the album has no tracks; 503 if the fetch fn wasn't wired.
+        """
+        if genre_fetch_fn is None:
+            raise HTTPException(status_code=503, detail="Genre fetch not available")
+        if not index.tracks_for_album(album_artist, album):
+            raise HTTPException(status_code=404, detail="Album not found")
+        genres = await asyncio.get_event_loop().run_in_executor(
+            None, genre_fetch_fn, album_artist, album
+        )
+        return GenreFetchOut(genres=genres)
+
+    @app.get(
+        "/api/v1/albums/musicbrainz/release/{mbid}",
+        response_model=MusicBrainzReleaseOut,
+    )
+    async def get_musicbrainz_release(mbid: str) -> MusicBrainzReleaseOut:
+        """Hydrate one MusicBrainz release (full detail incl. track list).
+
+        Serves the modal's on-demand candidate hydration (KAMP-584).  The
+        returned mbid may differ from the requested one when MB has merged
+        the release — callers should use the returned id.
+
+        Returns 404 for unknown/unparseable releases; 503 if unwired.
+        """
+        if mb_release_fn is None:
+            raise HTTPException(
+                status_code=503, detail="MusicBrainz lookup not available"
+            )
+
+        try:
+            release = await asyncio.get_event_loop().run_in_executor(
+                None, mb_release_fn, mbid
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        return _to_release_out(release)
 
     @app.get("/api/v1/albums/art/search", response_model=ItunesSearchOut)
     async def search_album_art(album_artist: str, album: str) -> ItunesSearchOut:
@@ -1590,20 +2950,26 @@ def create_app(
             status = 422 if "below minimum" in msg else 502
             raise HTTPException(status_code=status, detail=msg) from exc
 
+        local_tracks = [t for t in tracks if not t.is_remote]
+        if not local_tracks:
+            raise HTTPException(
+                status_code=400, detail="Cannot embed art in remote-only album"
+            )
+
         if save_format == "cover-file":
-            album_dir = tracks[0].file_path.parent
+            album_dir = local_tracks[0].file_path.parent
             try:
                 await asyncio.get_event_loop().run_in_executor(
                     None, write_cover_file, image_bytes, "image/jpeg", album_dir
                 )
                 index.mark_album_art_embedded(
-                    body.album_artist, body.album, [t.file_path for t in tracks]
+                    body.album_artist, body.album, [t.file_path for t in local_tracks]
                 )
             except Exception:
                 logger.exception("Failed to write cover file to %s", album_dir)
         else:
             successful_paths: list[Path] = []
-            for track in tracks:
+            for track in local_tracks:
                 try:
                     await asyncio.get_event_loop().run_in_executor(
                         None, _embed, track.file_path, image_bytes
@@ -1622,20 +2988,7 @@ def create_app(
         albums = index.albums()
         for a in albums:
             if a.album_artist == body.album_artist and a.album == body.album:
-                return AlbumOut(
-                    album_artist=a.album_artist,
-                    album=a.album,
-                    year=a.year,
-                    track_count=a.track_count,
-                    has_art=a.has_art,
-                    missing_album=a.missing_album,
-                    file_path=a.file_path,
-                    art_version=a.art_version,
-                    added_at=a.added_at,
-                    last_played_at=a.last_played_at,
-                    play_count_avg=a.play_count_avg,
-                    favorite=a.favorite,
-                )
+                return AlbumOut.from_album_info(a)
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
     @app.post("/api/v1/albums/art/apply-local", response_model=AlbumOut)
@@ -1707,20 +3060,26 @@ def create_app(
             image_bytes = _compress_to_max_bytes(img, min_dim, max_b)
             cover_mime = "image/jpeg"  # _compress_to_max_bytes always outputs JPEG
 
+        local_tracks = [t for t in tracks if not t.is_remote]
+        if not local_tracks:
+            raise HTTPException(
+                status_code=400, detail="Cannot embed art in remote-only album"
+            )
+
         if save_format == "cover-file":
-            album_dir = tracks[0].file_path.parent
+            album_dir = local_tracks[0].file_path.parent
             try:
                 await asyncio.get_event_loop().run_in_executor(
                     None, write_cover_file, image_bytes, cover_mime, album_dir
                 )
                 index.mark_album_art_embedded(
-                    album_artist, album, [t.file_path for t in tracks]
+                    album_artist, album, [t.file_path for t in local_tracks]
                 )
             except Exception:
                 logger.exception("Failed to write cover file to %s", album_dir)
         else:
             successful_paths: list[Path] = []
-            for track in tracks:
+            for track in local_tracks:
                 try:
                     await asyncio.get_event_loop().run_in_executor(
                         None, _embed, track.file_path, image_bytes
@@ -1737,35 +3096,14 @@ def create_app(
         albums = index.albums()
         for a in albums:
             if a.album_artist == album_artist and a.album == album:
-                return AlbumOut(
-                    album_artist=a.album_artist,
-                    album=a.album,
-                    year=a.year,
-                    track_count=a.track_count,
-                    has_art=a.has_art,
-                    missing_album=a.missing_album,
-                    file_path=a.file_path,
-                    art_version=a.art_version,
-                    added_at=a.added_at,
-                    last_played_at=a.last_played_at,
-                    play_count_avg=a.play_count_avg,
-                    favorite=a.favorite,
-                )
+                return AlbumOut.from_album_info(a)
         raise HTTPException(status_code=404, detail="Album not found after apply")
 
     @app.get("/api/v1/album-art")
     def get_album_art(
-        album_artist: str, album: str, file_path: str = "", v: str = ""
+        album_artist: str, album: str, track_id: int | None = None, v: str = ""
     ) -> Response:
         from kamp_daemon.artwork import read_cover_file  # noqa: PLC0415
-
-        # file_path overrides (album_artist, album) for missing-album tracks.
-        if file_path:
-            p = _validate_library_path(file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
-            tracks = [track] if track else []
-        else:
-            tracks = index.tracks_for_album(album_artist, album)
 
         config: dict[str, Any] = _state.get("config") or {}
         save_format: str = config.get("artwork.save_format", "embedded")
@@ -1774,8 +3112,61 @@ def create_app(
         # so the response is safe to cache indefinitely.
         cache_control = "public, max-age=31536000, immutable" if v else "no-store"
 
+        def _remote_art_response(fp: str, _cache_ctrl: str) -> Response:
+            if art_cache_dir is None or get_bandcamp_session is None:
+                raise HTTPException(status_code=404, detail="No art found")
+            # Strip scheme; handle both 'bandcamp://...' and 'bandcamp:/...'
+            # (Path() on POSIX normalises double-slash to single-slash).
+            sale_item_id = (
+                fp.split("bandcamp:", 1)[1]
+                .lstrip("/\\")
+                .replace("\\", "/")
+                .split("/")[0]
+            )
+            item = index.get_collection_item(sale_item_id)
+            if not item or not item.get("album_url"):
+                raise HTTPException(status_code=404, detail="No art found")
+            # Use tralbum_id as the cache key when available (stable content
+            # identity); fall back to sale_item_id so multiple remote albums
+            # never share a single ".jpg" file when tralbum_id is empty.
+            cache_key: str = item.get("tralbum_id") or f"sid_{sale_item_id}"
+            remote_cache_ctrl = "public, max-age=31536000, immutable"
+            cache_path = art_cache_dir / f"{cache_key}.jpg"
+            if cache_path.exists():
+                return Response(
+                    content=cache_path.read_bytes(),
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": remote_cache_ctrl},
+                )
+            session_data = get_bandcamp_session()
+            if not session_data:
+                raise HTTPException(status_code=404, detail="No art found")
+            from kamp_daemon.bandcamp import fetch_album_art_bytes  # noqa: PLC0415
+
+            data = fetch_album_art_bytes(item["album_url"], session_data)
+            if not data:
+                raise HTTPException(status_code=404, detail="No art found")
+            art_cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(data)
+            return Response(
+                content=data,
+                media_type="image/jpeg",
+                headers={"Cache-Control": remote_cache_ctrl},
+            )
+
+        # track_id addresses a single missing-album track (album tag empty), where
+        # (album_artist, album) is not unique. Remote (bandcamp:) tracks resolved
+        # this way fall through to the remote-proxy tail below via their derived uri.
+        if track_id is not None:
+            track = index.get_track_by_id(track_id)
+            tracks = [track] if track else []
+        else:
+            tracks = index.tracks_for_album(album_artist, album)
+
         def _embedded_response() -> Response | None:
             for track in tracks:
+                if track.is_remote:
+                    continue  # remote tracks have no local file to extract art from
                 if track.embedded_art:
                     result = extract_art(track.file_path)
                     if result:
@@ -1788,9 +3179,10 @@ def create_app(
             return None
 
         def _cover_file_response() -> Response | None:
-            if not tracks:
+            local_tracks = [t for t in tracks if not t.is_remote]
+            if not local_tracks:
                 return None
-            result = read_cover_file(tracks[0].file_path.parent)
+            result = read_cover_file(local_tracks[0].file_path.parent)
             if result:
                 data, mime = result
                 return Response(
@@ -1807,6 +3199,25 @@ def create_app(
 
         if resp is not None:
             return resp
+
+        # Local art not found — if any resolved track is remote, try the proxy
+        # cache, parsing the sale_item_id from that track's derived bandcamp: uri.
+        # This covers both a remote missing-album card (resolved by track_id above)
+        # and a normal remote album (resolved by album key).
+        remote_tracks = [t for t in tracks if t.is_remote]
+        if remote_tracks:
+            return _remote_art_response(str(remote_tracks[0].file_path), cache_control)
+
+        # Final fallback: if this album is (or was) in the Bandcamp collection,
+        # serve cached CDN art. Covers two cases:
+        #   1. Post-download, pre-art-embed: local tracks present but no embedded art yet.
+        #   2. Permanently: local album from Bandcamp that was never art-embedded.
+        bc_item = index.get_collection_item_by_album(album_artist, album)
+        if bc_item:
+            return _remote_art_response(
+                f"bandcamp://{bc_item['sale_item_id']}/0", cache_control
+            )
+
         raise HTTPException(status_code=404, detail="No art found")
 
     @app.get("/api/v1/search", response_model=SearchOut)
@@ -1815,30 +3226,44 @@ def create_app(
         # Collect the set of (album_artist, album) keys that appear in FTS results,
         # then filter the pre-sorted album list so the response respects sort order.
         # Missing-album tracks have album="" in the DB, so also match them by
-        # file_path since their AlbumInfo.album is the display title, not "".
-        fts_keys = {(t.album_artist, t.album) for t in fts_tracks}
-        fts_paths = {str(t.file_path) for t in fts_tracks if not t.album}
+        # canonical id since their AlbumInfo.album is the display title, not "".
+        # Keys are lower-cased so the match honours the NOCASE collation on
+        # albums.album_artist/album (KAMP-545): an album row whose casing diverges
+        # from its tracks' casing (e.g. row "SUNN O)))" vs tracks "Sunn O)))") would
+        # otherwise be dropped from the album cards even though its tracks matched.
+        fts_keys = {(t.album_artist.lower(), t.album.lower()) for t in fts_tracks}
+        fts_ids = {t.id for t in fts_tracks if not t.album}
+        # KAMP-634: match named albums by canonical album_id (rename-safe) in
+        # ADDITION to the tag key — after an album rename the track tag diverges
+        # from the albums-row key and the tag branch alone drops the card. OR (not
+        # replace) so any matched track lacking album_id (e.g. a remote track)
+        # still resolves its album via the retained tag branch. Missing-album
+        # AlbumInfo entries have album_id 0 (falsy) and fall to the id branch below.
+        fts_album_ids = {t.album_id for t in fts_tracks if t.album_id}
         albums = [
-            AlbumOut(
-                album_artist=a.album_artist,
-                album=a.album,
-                year=a.year,
-                track_count=a.track_count,
-                has_art=a.has_art,
-                missing_album=a.missing_album,
-                file_path=a.file_path,
-                art_version=a.art_version,
-                added_at=a.added_at,
-                play_count_avg=a.play_count_avg,
-                favorite=a.favorite,
-            )
+            AlbumOut.from_album_info(a)
             for a in index.albums(sort=sort)
-            if (a.album_artist, a.album) in fts_keys
-            or (a.missing_album and a.file_path in fts_paths)
+            if (a.album_id and a.album_id in fts_album_ids)
+            or (a.album_artist.lower(), a.album.lower()) in fts_keys
+            or (a.missing_album and a.missing_track_id in fts_ids)
         ]
         albums.sort(key=lambda a: not a.favorite)
+
+        # Merge playlist-name matches with playlists containing matched tracks,
+        # deduplicating by id so a playlist that matches both facets appears once.
+        name_playlists = index.search_playlists(q)
+        track_playlists = index.playlists_for_tracks([t.id for t in fts_tracks])
+        seen_ids: set[int] = set()
+        playlists: list[PlaylistSearchOut] = []
+        for raw in name_playlists + track_playlists:
+            if raw["id"] not in seen_ids:
+                seen_ids.add(raw["id"])
+                playlists.append(PlaylistSearchOut(**raw))
+
         return SearchOut(
-            albums=albums, tracks=[TrackOut.from_track(t) for t in fts_tracks]
+            albums=albums,
+            tracks=_tracks_out(index, fts_tracks),
+            playlists=playlists,
         )
 
     @app.post("/api/v1/library/scan", response_model=ScanResult)
@@ -1956,13 +3381,14 @@ def create_app(
         return {
             "active_view": _state["ui_active_view"],
             "sort_order": _state["ui_sort_order"],
+            "sort_dir": _state["ui_sort_dir"],
             "queue_panel_open": bool(_state["ui_queue_panel_open"]),
         }
 
     @app.post("/api/v1/ui/active-view")
     def set_active_view(req: dict[str, Any]) -> dict[str, Any]:
         view = req.get("view", "library")
-        if view not in ("library", "now-playing", "home"):
+        if view not in ("library", "now-playing", "home", "downloads"):
             raise HTTPException(status_code=422, detail="Invalid view")
         _state["ui_active_view"] = view
         if on_ui_state_set is not None:
@@ -1970,7 +3396,7 @@ def create_app(
         return {"ok": True}
 
     _VALID_SORT_ORDERS = frozenset(
-        {"album_artist", "album", "date_added", "last_played"}
+        {"album_artist", "album", "date_added", "last_played", "release_date"}
     )
 
     @app.post("/api/v1/ui/sort-order")
@@ -1981,6 +3407,11 @@ def create_app(
         _state["ui_sort_order"] = sort
         if on_ui_state_set is not None:
             on_ui_state_set("ui.sort_order", sort)
+        sort_dir = req.get("sort_dir", "")
+        if sort_dir in ("asc", "desc"):
+            _state["ui_sort_dir"] = sort_dir
+            if on_ui_state_set is not None:
+                on_ui_state_set("ui.sort_dir", sort_dir)
         return {"ok": True}
 
     @app.post("/api/v1/ui/queue-panel")
@@ -2005,8 +3436,9 @@ def create_app(
     _INT_CONFIG_KEYS = frozenset(
         {"artwork.min_dimension", "artwork.max_bytes", "bandcamp.poll_interval_minutes"}
     )
-    # Boolean config keys — stored as Python bool so JSON serialises as true/false.
-    _BOOL_CONFIG_KEYS = frozenset({"musicbrainz.trust-musicbrainz-when-tags-conflict"})
+    # Boolean config keys — stored as Python bool so GET returns true/false, not a
+    # string (KAMP-587 re-added this after 589 dropped the last bool key).
+    _BOOL_CONFIG_KEYS = frozenset({"tagging.lastfm_genres", "tagging.bandcamp_genres"})
 
     @app.patch("/api/v1/config")
     def patch_config(req: ConfigPatchRequest) -> dict[str, Any]:
@@ -2096,6 +3528,7 @@ def create_app(
             if session:
                 _state["config"]["bandcamp.connected"] = True
                 _state["config"]["bandcamp.username"] = session.get("username")
+                _state["config"]["bandcamp.ever_connected"] = True
         _broadcast({"type": "bandcamp.login-complete"})
         return {"ok": True}
 
@@ -2176,6 +3609,270 @@ def create_app(
         ).start()
         return {"ok": True}
 
+    @app.post("/api/v1/genres/backfill")
+    def start_genre_backfill() -> dict[str, Any]:
+        """Start the library-wide genre backfill in the background (KAMP-591).
+
+        Returns immediately; progress arrives via ``genre_backfill.progress``
+        WebSocket events (and GET …/progress for reconnecting clients). Rejects a
+        concurrent start — the run can last hours.
+        """
+        import threading
+
+        if on_genre_backfill_start is None:
+            raise HTTPException(status_code=503, detail="Genre backfill not configured")
+        if _state["genre_backfill"]["active"]:
+            return {"ok": True, "started": False}  # already running
+        threading.Thread(
+            target=on_genre_backfill_start, daemon=True, name="genre-backfill"
+        ).start()
+        return {"ok": True, "started": True}
+
+    @app.post("/api/v1/genres/backfill/cancel")
+    def cancel_genre_backfill() -> dict[str, Any]:
+        if on_genre_backfill_cancel is not None:
+            on_genre_backfill_cancel()
+        return {"ok": True}
+
+    @app.get("/api/v1/genres/backfill/progress")
+    def get_genre_backfill_progress() -> dict[str, Any]:
+        return cast(dict[str, Any], _state["genre_backfill"])
+
+    @app.post("/api/v1/bandcamp/collection/{sale_item_id}/download")
+    def download_collection_item(sale_item_id: str) -> dict[str, Any]:
+        """Enqueue a Bandcamp album for serialized download.
+
+        Adds the item to the persistent download_queue table and the in-memory
+        dl_queue so the single-consumer worker thread in __main__ processes it.
+        Broadcasts 'queued' immediately; the worker broadcasts 'downloading' when
+        it begins and 'done'/'error' on completion.
+
+        Returns 404 if the item is not in the collection.
+        Returns 503 if the download queue is not configured.
+        """
+        item = index.get_collection_item(sale_item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Collection item not found")
+        if dl_queue is None:
+            raise HTTPException(status_code=503, detail="Album download not configured")
+
+        # Mark the collection item as targeted for local download so in_bandcamp_collection
+        # becomes true immediately (used by the art endpoint fallback and album display).
+        # set_track_source_for_item is NOT called here — changing source prematurely breaks
+        # the has_art=true shortcut for purely-remote albums and causes art to disappear.
+        index.set_collection_item_mode(sale_item_id, "local")
+
+        # Persist first so a restart can replay the queue even if the process
+        # dies before the worker picks up the in-memory item. The album snapshot
+        # lets the Downloads-view card render without a join (KAMP-564).
+        index.enqueue_download(
+            sale_item_id,
+            album_name=item.get("item_title") or None,
+            album_artist=item.get("band_name") or None,
+            # KAMP-575: the ledger row rarely carries a live redownload_url, so this
+            # is usually None → the download worker falls back to a one-off
+            # collection re-fetch for this single item (no batch storm).
+            redownload_url=item.get("redownload_url") or None,
+        )
+        dl_queue.put(sale_item_id)  # wake the worker
+
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": sale_item_id,
+                "state": "queued",
+            }
+        )
+        _notify_download_queue()  # structured snapshot for the Downloads view
+        return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # Download-queue management (KAMP-567) — provider-neutral REST surface
+    # over the KAMP-564 state machine. Every mutation broadcasts the KAMP-566
+    # download.queue snapshot so connected clients converge.
+    # ------------------------------------------------------------------
+
+    @app.get("/api/v1/downloads")
+    def list_downloads() -> dict[str, Any]:
+        """Return the full download queue in display order (KAMP-567).
+
+        Items are ordered downloading → queued (by position) → failed, each
+        carrying the card fields (status, position, size, error_text, album
+        snapshot). Same shape as the ``download.queue`` WebSocket snapshot.
+        """
+        return {"items": index.download_queue_items()}
+
+    @app.post("/api/v1/downloads/reorder")
+    def reorder_downloads(req: ReorderDownloadsRequest) -> dict[str, Any]:
+        """Reorder the queued items (KAMP-567).
+
+        The body must list exactly the currently-'queued' provider_item_ids in the
+        desired order; the downloading item is fixed at the top and excluded.
+        Returns 400 if the list is not that exact set (e.g. a stale UI reorder).
+        """
+        try:
+            index.reorder_download_queue(req.provider_item_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _notify_download_queue()
+        return {"ok": True}
+
+    @app.post("/api/v1/downloads/{provider_item_id}/retry")
+    def retry_download_item(provider_item_id: str) -> dict[str, Any]:
+        """Retry a failed download: re-queue it at the END of the queue (KAMP-567).
+
+        Returns 503 if the download queue is not configured.
+        """
+        if dl_queue is None:
+            raise HTTPException(status_code=503, detail="Album download not configured")
+
+        index.retry_download(provider_item_id)
+        dl_queue.put(provider_item_id)  # wake the worker
+
+        # Per-item event keeps the library-grid card in sync (queued decoration).
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": provider_item_id,
+                "state": "queued",
+            }
+        )
+        _notify_download_queue()
+        return {"ok": True}
+
+    @app.delete("/api/v1/downloads/{provider_item_id}")
+    def cancel_download_item(provider_item_id: str) -> dict[str, Any]:
+        """Cancel a queued or failed item — remove it from the queue (KAMP-567).
+
+        Distinct from ``DELETE /api/v1/bandcamp/collection/{id}/download``, which
+        reverts a completed download back to streaming.
+        """
+        index.cancel_download(provider_item_id)
+        # 'removed' clears the library-grid card's queued/failed decoration.
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": provider_item_id,
+                "state": "removed",
+            }
+        )
+        _notify_download_queue()
+        return {"ok": True}
+
+    @app.delete("/api/v1/bandcamp/collection/{sale_item_id}/download")
+    def remove_downloaded_item(sale_item_id: str) -> dict[str, Any]:
+        """Revert a downloaded Bandcamp album back to streaming state.
+
+        Deletes the local files, removes local track rows from the DB (streaming
+        rows are preserved and become the primary tracks again), and sets
+        bandcamp_collection.mode back to 'remote'.
+
+        Returns 404 if the item is not in the collection.
+        Returns 409 if a track from this album is currently playing.
+        Returns 422 if no streamable version can be produced (logged out,
+        network/parse failure, or no streamable tracks) — in which case nothing
+        is deleted.
+        """
+        item = index.get_collection_item(sale_item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Collection item not found")
+
+        local_tracks = index.local_tracks_for_sale_item_id(sale_item_id)
+
+        def _is_track_locked(tid: int) -> bool:
+            c = queue.current()
+            la = queue.peek_next()
+            return (c is not None and c.id == tid) or (la is not None and la.id == tid)
+
+        locked = [t for t in local_tracks if _is_track_locked(t.id)]
+        if locked and engine.state.playing:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A track in this album is currently playing. "
+                    "Stop playback before removing the download."
+                ),
+            )
+
+        # KAMP-527: download-mode albums have no bandcamp:// stream rows to fall
+        # back to. Materialize them on demand (a network call) BEFORE the queue
+        # swap and delete — this is why the daemon-side endpoint owns it rather
+        # than the pure LibraryIndex method. If we cannot (logged out, fetch
+        # fails, or Bandcamp has no streamable version), abort with 422 and
+        # delete nothing; remove_download's own per-track guard is the final
+        # safety net that still refuses to strand any local track.
+        # KAMP-541: a downloaded track keeps its stream as a track_sources row, so
+        # "has a stream to fall back to" is a source check. When some track lacks
+        # one (download-mode album never streamed), materialize the stream sources
+        # on demand (a network call) before removing; if that fails, abort with 422.
+        if not index.all_downloads_streamable(sale_item_id):
+            _materialize_stream_tracks_or_422(index, item, get_bandcamp_session)
+
+        # No queue swap needed (KAMP-541 + queue-by-id): the canonical track
+        # survives the removal — its file source is dropped and it reverts to its
+        # stream source with the SAME track id — so the id-keyed queue entries
+        # stay valid across a restart.
+
+        if locked:
+            # Current track's file is loaded in mpv — unload it so the handle
+            # is released before we delete the file from disk.
+            engine.unload()
+
+        try:
+            file_paths = index.remove_download(sale_item_id)
+        except NoStreamableVersionError as exc:
+            # The per-track guard refused: at least one local track has no stream
+            # counterpart (e.g. a multi-disc download). Nothing was deleted.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No streamable version available for this album. Removing the "
+                    "download would remove it from your library, so it was kept."
+                ),
+            ) from exc
+
+        for fp in file_paths:
+            try:
+                fp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        lib_path: Path | None = _state["library_path"]
+        # Album-level dirs (directly contained the track files): scrub OS
+        # metadata and cover-art images before attempting rmdir.
+        album_dirs: set[Path] = {fp.parent for fp in file_paths}
+        for d in album_dirs:
+            if lib_path is not None and d == lib_path:
+                continue
+            _scrub_os_metadata(d)
+            _scrub_cover_art(d)
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        # Parent (artist-level) dirs: only scrub OS metadata — cover art
+        # doesn't live here, and rmdir fails safely if other albums remain.
+        parent_dirs: set[Path] = {
+            fp.parent.parent for fp in file_paths if fp.parent.parent != fp.parent
+        }
+        for d in parent_dirs:
+            if lib_path is not None and d == lib_path:
+                continue
+            _scrub_os_metadata(d)
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+
+        _broadcast(
+            {
+                "type": "bandcamp.album-download",
+                "sale_item_id": sale_item_id,
+                "state": "removed",
+            }
+        )
+        return {"ok": True}
+
     # -----------------------------------------------------------------------
     # Player
     # -----------------------------------------------------------------------
@@ -2187,7 +3884,12 @@ def create_app(
     @app.get("/api/v1/player/queue", response_model=QueueOut)
     def get_queue() -> QueueOut:
         tracks, pos = queue.queue_tracks()
-        return QueueOut(tracks=[TrackOut.from_track(t) for t in tracks], position=pos)
+        return QueueOut(
+            tracks=_tracks_out(index, tracks),
+            position=pos,
+            shuffle=queue.shuffle,
+            repeat=queue.repeat,
+        )
 
     def _drain_unlocked(old_current: Any, old_lookahead: Any) -> None:
         """Fire async drains for tracks that are no longer locked after a skip."""
@@ -2205,18 +3907,82 @@ def create_app(
     def play(req: PlayRequest) -> dict[str, Any]:
         old_current = queue.current()
         old_lookahead = queue.peek_next()
-        if req.file_path:
-            p = _validate_library_path(req.file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
+        if req.id is not None:  # KAMP-554: missing-album track addressed by id
+            track = index.get_track_by_id(req.id)
             tracks = [track] if track else []
         else:
-            tracks = index.tracks_for_album(req.album_artist, req.album)
+            all_tracks = index.tracks_for_album(req.album_artist, req.album)
+            # Map start_index from the full list to the available subset before filtering.
+            requested = (
+                all_tracks[req.track_index]
+                if req.track_index < len(all_tracks)
+                else None
+            )
+            tracks = [t for t in all_tracks if t.is_available]
+            if requested and requested.is_available:
+                req = PlayRequest(
+                    album_artist=req.album_artist,
+                    album=req.album,
+                    track_index=next(
+                        (i for i, t in enumerate(tracks) if t.id == requested.id),
+                        0,
+                    ),
+                )
+            else:
+                req = PlayRequest(
+                    album_artist=req.album_artist,
+                    album=req.album,
+                    track_index=0,
+                )
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.load(tracks, start_index=req.track_index)
         current = queue.current()
         if current:
-            engine.play(current.file_path)
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
+        _notify_track_changed()
+        _drain_unlocked(old_current, old_lookahead)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/play-playlist")
+    def play_playlist(req: PlayPlaylistRequest) -> dict[str, Any]:
+        if index.get_playlist(req.playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        tracks = index.tracks_for_playlist(req.playlist_id)
+        if not tracks:
+            return {"ok": True}
+        old_current = queue.current()
+        old_lookahead = queue.peek_next()
+        start = max(0, min(req.start_index, len(tracks) - 1))
+        queue.load(tracks, start_index=start)
+        index.record_playlist_played(req.playlist_id)
+        current = queue.current()
+        if current:
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
+        _notify_track_changed()
+        _drain_unlocked(old_current, old_lookahead)
+        return {"ok": True}
+
+    @app.post("/api/v1/player/play-files")
+    def play_files(req: PlayFilesRequest) -> dict[str, Any]:
+        """Replace the queue with an explicit ordered list of track ids.
+
+        Used when the client holds an ordered list (e.g. a sorted playlist
+        view) that differs from the stored playlist order. KAMP-552: id-native.
+        """
+        tracks = [t for i in req.ids if (t := index.get_track_by_id(i)) is not None]
+        if not tracks:
+            return {"ok": True}
+        old_current = queue.current()
+        old_lookahead = queue.peek_next()
+        start = max(0, min(req.start_index, len(tracks) - 1))
+        queue.load(tracks, start_index=start)
+        current = queue.current()
+        if current:
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
         _notify_track_changed()
         _drain_unlocked(old_current, old_lookahead)
         return {"ok": True}
@@ -2233,6 +3999,7 @@ def create_app(
 
     @app.post("/api/v1/player/stop")
     def stop() -> dict[str, Any]:
+        _state["buffering"] = False
         engine.stop()
         _notify_track_changed()
         return {"ok": True}
@@ -2247,13 +4014,19 @@ def create_app(
         engine.volume = req.volume
         return {"ok": True}
 
+    @app.post("/api/v1/player/mute")
+    def set_mute(req: MuteRequest) -> dict[str, Any]:
+        engine.muted = req.muted
+        return {"ok": True}
+
     @app.post("/api/v1/player/next")
     def next_track() -> dict[str, Any]:
         old_current = queue.current()
         old_lookahead = queue.peek_next()
         track = queue.next()
         if track:
-            engine.play(track.file_path)
+            engine.play(_resolve_playback(track))
+            _record_track_started_debounced(track.file_path)
         else:
             engine.stop()
         _notify_track_changed()
@@ -2266,7 +4039,8 @@ def create_app(
         old_lookahead = queue.peek_next()
         track = queue.prev()
         if track:
-            engine.play(track.file_path)
+            engine.play(_resolve_playback(track))
+            _record_track_started_debounced(track.file_path)
         _notify_track_changed()
         _drain_unlocked(old_current, old_lookahead)
         return {"ok": True}
@@ -2290,23 +4064,24 @@ def create_app(
         track = queue.skip_to(req.position)
         if track:
             engine.play(
-                track.file_path
-            )  # play() resets lookahead; file-loaded re-primes it
+                _resolve_playback(track)
+            )  # resets lookahead; file-loaded re-primes it
+            _record_track_started_debounced(track.file_path)
         _notify_track_changed()
         _drain_unlocked(old_current, old_lookahead)
         return {"ok": True}
 
     @app.post("/api/v1/player/queue/add")
     def queue_add(req: AddToQueueRequest) -> dict[str, Any]:
-        p = _validate_library_path(req.file_path, _state["library_path"])
-        track = index.get_track_by_path(p)
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         was_stopped = queue.current() is None
         queue.add_to_queue(track)
         current = queue.current()
         if was_stopped and current is not None:
-            engine.play(current.file_path)
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
             _notify_track_changed()
         else:
             engine.preload_next(queue.peek_next())
@@ -2314,15 +4089,15 @@ def create_app(
 
     @app.post("/api/v1/player/queue/play-next")
     def queue_play_next(req: AddToQueueRequest) -> dict[str, Any]:
-        p = _validate_library_path(req.file_path, _state["library_path"])
-        track = index.get_track_by_path(p)
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         was_stopped = queue.current() is None
         queue.play_next(track)
         current = queue.current()
         if was_stopped and current is not None:
-            engine.play(current.file_path)
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
             _notify_track_changed()
         else:
             engine.preload_next(queue.peek_next())
@@ -2330,8 +4105,7 @@ def create_app(
 
     @app.post("/api/v1/player/queue/insert")
     def queue_insert(req: InsertQueueRequest) -> dict[str, Any]:
-        p = _validate_library_path(req.file_path, _state["library_path"])
-        track = index.get_track_by_path(p)
+        track = index.get_track_by_id(req.id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
         queue.insert_at(track, req.index)
@@ -2340,19 +4114,23 @@ def create_app(
 
     @app.post("/api/v1/player/queue/add-album")
     def queue_add_album(req: AlbumQueueRequest) -> dict[str, Any]:
-        if req.file_path:
-            p = _validate_library_path(req.file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
+        if req.id is not None:  # KAMP-554: missing-album track addressed by id
+            track = index.get_track_by_id(req.id)
             tracks = [track] if track else []
         else:
-            tracks = index.tracks_for_album(req.album_artist, req.album)
+            tracks = [
+                t
+                for t in index.tracks_for_album(req.album_artist, req.album)
+                if t.is_available
+            ]
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         was_stopped = queue.current() is None
         queue.add_album_to_queue(tracks)
         current = queue.current()
         if was_stopped and current is not None:
-            engine.play(current.file_path)
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
             _notify_track_changed()
         else:
             engine.preload_next(queue.peek_next())
@@ -2360,19 +4138,23 @@ def create_app(
 
     @app.post("/api/v1/player/queue/play-album-next")
     def queue_play_album_next(req: AlbumQueueRequest) -> dict[str, Any]:
-        if req.file_path:
-            p = _validate_library_path(req.file_path, _state["library_path"])
-            track = index.get_track_by_path(p)
+        if req.id is not None:  # KAMP-554: missing-album track addressed by id
+            track = index.get_track_by_id(req.id)
             tracks = [track] if track else []
         else:
-            tracks = index.tracks_for_album(req.album_artist, req.album)
+            tracks = [
+                t
+                for t in index.tracks_for_album(req.album_artist, req.album)
+                if t.is_available
+            ]
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         was_stopped = queue.current() is None
         queue.play_album_next(tracks)
         current = queue.current()
         if was_stopped and current is not None:
-            engine.play(current.file_path)
+            engine.play(_resolve_playback(current))
+            _record_track_started_immediate(current.file_path)
             _notify_track_changed()
         else:
             engine.preload_next(queue.peek_next())
@@ -2380,11 +4162,15 @@ def create_app(
 
     @app.post("/api/v1/player/queue/insert-album")
     def queue_insert_album(req: InsertAlbumQueueRequest) -> dict[str, Any]:
-        if req.file_path:
-            track = index.get_track_by_path(Path(req.file_path))
+        if req.id is not None:  # KAMP-554: missing-album track addressed by id
+            track = index.get_track_by_id(req.id)
             tracks = [track] if track else []
         else:
-            tracks = index.tracks_for_album(req.album_artist, req.album)
+            tracks = [
+                t
+                for t in index.tracks_for_album(req.album_artist, req.album)
+                if t.is_available
+            ]
         if not tracks:
             raise HTTPException(status_code=404, detail="Album not found")
         queue.insert_album_at(tracks, req.index)
@@ -2400,15 +4186,30 @@ def create_app(
         engine.preload_next(queue.peek_next())
         return {"ok": True}
 
+    @app.post("/api/v1/player/queue/reorder")
+    def queue_reorder(req: ReorderQueueRequest) -> dict[str, Any]:
+        try:
+            queue.reorder(req.order)
+        except (IndexError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        engine.preload_next(queue.peek_next())
+        return {"ok": True}
+
+    @app.post("/api/v1/player/queue/remove")
+    def queue_remove(req: RemoveFromQueueRequest) -> dict[str, Any]:
+        queue.remove_at(req.indices)
+        engine.preload_next(queue.peek_next())
+        return {"ok": True}
+
     @app.post("/api/v1/player/shuffle")
     def set_shuffle(req: ShuffleRequest) -> dict[str, Any]:
-        queue.set_shuffle(req.shuffle)
+        queue.set_shuffle(req.shuffle, album_mode=req.album_shuffle)
         engine.preload_next(queue.peek_next())
         return {"ok": True}
 
     @app.post("/api/v1/player/repeat")
     def set_repeat(req: RepeatRequest) -> dict[str, Any]:
-        queue.set_repeat(req.repeat)
+        queue.set_repeat_mode(req.mode)
         engine.preload_next(queue.peek_next())
         return {"ok": True}
 
@@ -2509,6 +4310,235 @@ def create_app(
         _pending_proxy_fetches.pop(req.id, None)
         entry["event"].set()
         return {"ok": True}
+
+    # -----------------------------------------------------------------------
+    # Playlists (KAMP-441, KAMP-461)
+    # -----------------------------------------------------------------------
+
+    def _enrich_playlist(pl: dict[str, Any]) -> dict[str, Any]:
+        """Add 'criteria' key to a playlist dict (None for static playlists)."""
+        mc = index.get_magic_playlist_criteria(pl["id"])
+        pl["criteria"] = mc.to_dict() if mc is not None else None
+        return pl
+
+    @app.post("/api/v1/playlists", response_model=PlaylistOut, status_code=201)
+    def create_playlist(req: CreatePlaylistRequest) -> dict[str, Any]:
+        if req.criteria is not None:
+            try:
+                mc = MagicCriteria.from_dict(req.criteria)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            new_id = index.create_magic_playlist(req.title, mc)
+            pl = index.get_playlist(new_id)
+            assert pl is not None
+            _rebuild_field_index()
+        else:
+            pl = index.create_playlist(req.title)
+        return _enrich_playlist(pl)
+
+    @app.get("/api/v1/playlists", response_model=list[PlaylistOut])
+    def list_playlists(type: str | None = None) -> list[dict[str, Any]]:
+        playlists = index.get_playlists()
+        result: list[dict[str, Any]] = []
+        for pl in playlists:
+            _enrich_playlist(pl)
+            if type == "simple" and pl["criteria"] is not None:
+                continue
+            result.append(pl)
+        return result
+
+    @app.get("/api/v1/playlists/{playlist_id}", response_model=PlaylistOut)
+    def get_playlist(playlist_id: int) -> dict[str, Any]:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        return _enrich_playlist(pl)
+
+    @app.patch("/api/v1/playlists/{playlist_id}", response_model=PlaylistOut)
+    def patch_playlist(playlist_id: int, req: PatchPlaylistRequest) -> dict[str, Any]:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        if req.title is not None:
+            index.rename_playlist(playlist_id, req.title)
+        if req.favorite is not None:
+            index.set_playlist_favorite(playlist_id, req.favorite)
+        updated = index.get_playlist(playlist_id)
+        assert updated is not None
+        return _enrich_playlist(updated)
+
+    @app.delete("/api/v1/playlists/{playlist_id}", status_code=204)
+    def delete_playlist(playlist_id: int) -> Response:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        index.delete_playlist(playlist_id)
+        _rebuild_field_index()
+        return Response(status_code=204)
+
+    @app.post("/api/v1/playlists/{playlist_id}/played", status_code=204)
+    def record_playlist_played(playlist_id: int) -> Response:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        index.record_playlist_played(playlist_id)
+        return Response(status_code=204)
+
+    @app.get("/api/v1/playlists/{playlist_id}/module-content")
+    def get_playlist_module_content(
+        playlist_id: int,
+        contents: str = "albums",
+        sort: str = "random",
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        return index.get_playlist_module_content(playlist_id, contents, sort, limit)
+
+    @app.get(
+        "/api/v1/playlists/{playlist_id}/tracks", response_model=list[PlaylistTrackOut]
+    )
+    def get_playlist_tracks(playlist_id: int) -> list[dict[str, Any]]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        if index.get_magic_playlist_criteria(playlist_id) is not None:
+            rows = index.get_magic_playlist_tracks(playlist_id)
+        else:
+            rows = index.get_playlist_tracks(playlist_id)
+        # These rows are hand-rolled dicts (not via TrackOut.from_track), so attach
+        # sources here in the response layer (KAMP-537).
+        src_map = index.sources_for_track_ids([r["id"] for r in rows if r.get("id")])
+        for r in rows:
+            r["sources"] = [
+                SourceOut.from_row(s).model_dump() for s in src_map.get(r["id"], [])
+            ]
+        return rows
+
+    @app.put("/api/v1/playlists/{playlist_id}/criteria", response_model=PlaylistOut)
+    def update_playlist_criteria(
+        playlist_id: int, req: UpdateCriteriaRequest
+    ) -> dict[str, Any]:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        try:
+            mc = MagicCriteria.from_dict(req.criteria)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            index.update_magic_playlist_criteria(playlist_id, mc)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _rebuild_field_index()
+        updated = index.get_playlist(playlist_id)
+        assert updated is not None
+        return _enrich_playlist(updated)
+
+    @app.get("/api/v1/playlists/{playlist_id}/criteria")
+    def get_playlist_criteria(playlist_id: int) -> dict[str, Any]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        mc = index.get_magic_playlist_criteria(playlist_id)
+        return {"criteria": mc.to_dict() if mc is not None else None}
+
+    @app.post("/api/v1/criteria/preview")
+    def preview_criteria(req: CriteriaPreviewRequest) -> dict[str, Any]:
+        try:
+            mc = MagicCriteria.from_dict(req.criteria)
+            return {"count": index.count_magic_criteria(mc)}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/v1/playlists/{playlist_id}/tracks")
+    def add_to_playlist(
+        playlist_id: int, req: AddTrackToPlaylistRequest
+    ) -> dict[str, Any]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        if req.id is not None:  # KAMP-552: single track by canonical id
+            track = index.get_track_by_id(req.id)
+            if track is None:
+                raise HTTPException(status_code=404, detail="Track not found")
+            index.add_track_to_playlist(
+                playlist_id, _canonical_track_uri(track.file_path)
+            )
+        elif req.album_artist is not None and req.album is not None:
+            tracks = index.tracks_for_album(req.album_artist, req.album)
+            for t in tracks:
+                index.add_track_to_playlist(playlist_id, str(t.file_path))
+        else:
+            raise HTTPException(
+                status_code=400, detail="Provide id or album_artist+album"
+            )
+        return {"ok": True}
+
+    @app.delete(
+        "/api/v1/playlists/{playlist_id}/tracks/{playlist_track_id}", status_code=204
+    )
+    def remove_from_playlist(playlist_id: int, playlist_track_id: int) -> Response:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        index.remove_track_from_playlist(playlist_id, playlist_track_id)
+        return Response(status_code=204)
+
+    @app.put("/api/v1/playlists/{playlist_id}/order")
+    def reorder_playlist(
+        playlist_id: int, req: ReorderPlaylistRequest
+    ) -> dict[str, Any]:
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        try:
+            index.reorder_playlist_tracks(playlist_id, req.track_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True}
+
+    @app.get("/api/v1/playlists/{playlist_id}/art")
+    def playlist_art(playlist_id: int) -> Response:
+        pl = index.get_playlist(playlist_id)
+        if pl is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+        cover = index.get_playlist_cover(playlist_id)
+        if cover is not None:
+            return Response(content=cover, media_type="image/jpeg")
+        title = pl["title"]
+        display = title if len(title) <= 12 else title[:11] + "…"
+        svg = _PLAYLIST_ART_TEMPLATE.replace("__TITLE__", display)
+        return Response(content=svg, media_type="image/svg+xml")
+
+    @app.post("/api/v1/playlists/{playlist_id}/art", response_model=PlaylistOut)
+    async def set_playlist_art(
+        playlist_id: int,
+        file: UploadFile = File(...),
+    ) -> PlaylistOut:
+        """Upload a local image file and store it as cover art for the playlist.
+
+        Returns 404 if the playlist does not exist.
+        Returns 422 if the uploaded file is not a valid image.
+        Returns the updated PlaylistOut on success.
+        """
+        from kamp_daemon.artwork import (
+            ArtworkError,
+            validate_image_bytes,
+        )  # noqa: PLC0415
+
+        content_type = file.content_type or ""
+        if not content_type.startswith("image/"):
+            raise HTTPException(
+                status_code=422, detail="Uploaded file must be an image"
+            )
+
+        image_data = await file.read()
+
+        try:
+            validate_image_bytes(image_data)
+        except ArtworkError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if index.get_playlist(playlist_id) is None:
+            raise HTTPException(status_code=404, detail="Playlist not found")
+
+        updated = index.set_playlist_cover(playlist_id, image_data)
+        return PlaylistOut(**_enrich_playlist(updated))  # type: ignore[arg-type]
 
     # -----------------------------------------------------------------------
     # WebSocket: player state stream

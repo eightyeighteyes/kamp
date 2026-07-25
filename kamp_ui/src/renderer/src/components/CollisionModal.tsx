@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react'
+import { createPortal } from 'react-dom'
 
 type Props = {
   targetPath: string
@@ -24,7 +25,11 @@ export function CollisionModal({
 
   const filename = targetPath.split(/[/\\]/).pop() ?? targetPath
 
-  return (
+  // KAMP-547: portal to document.body so the fixed-position backdrop renders at
+  // the viewport regardless of a transformed/filtered ancestor establishing a
+  // containing block for position:fixed. Mirrors ContextMenu.tsx / the duplicate
+  // modal fix.
+  return createPortal(
     // Click-away backdrop = implicit Cancel.
     <div className="modal-backdrop" role="presentation" onClick={onCancel}>
       <div
@@ -53,6 +58,7 @@ export function CollisionModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

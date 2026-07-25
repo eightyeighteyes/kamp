@@ -188,6 +188,30 @@ class TestKampBandcampSyncer:
         syncer.error_callback = cb
         assert syncer._inner.error_callback is cb
 
+    def test_progress_callback_getter_delegates(self) -> None:
+        """progress_callback getter returns the inner syncer's value (KAMP-436)."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer._inner.progress_callback = cb
+        assert syncer.progress_callback is cb
+
+    def test_progress_callback_setter_delegates(self) -> None:
+        """progress_callback setter writes THROUGH to the inner syncer (KAMP-436).
+
+        Regression: without the setter the assignment landed on the wrapper and
+        the inner Syncer (which runs download_album) never forwarded progress, so
+        the album card showed no reveal.
+        """
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer.progress_callback = cb
+        assert syncer._inner.progress_callback is cb
+
+    def test_progress_callback_none_before_configure(self) -> None:
+        """progress_callback returns None when _inner has not been configured."""
+        syncer = KampBandcampSyncer(_ctx())
+        assert syncer.progress_callback is None
+
     def test_status_callback_none_before_configure(self) -> None:
         """status_callback returns None when _inner has not been configured."""
         syncer = KampBandcampSyncer(_ctx())
@@ -198,6 +222,45 @@ class TestKampBandcampSyncer:
         syncer = KampBandcampSyncer(_ctx())
         assert syncer.error_callback is None
 
+    def test_on_tracks_indexed_getter_delegates(self) -> None:
+        """on_tracks_indexed getter returns the inner syncer's value."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer._inner.on_tracks_indexed = cb
+        assert syncer.on_tracks_indexed is cb
+
+    def test_on_tracks_indexed_setter_delegates(self) -> None:
+        """on_tracks_indexed setter writes through to the inner syncer."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer.on_tracks_indexed = cb
+        assert syncer._inner.on_tracks_indexed is cb
+
+    def test_on_tracks_indexed_none_before_configure(self) -> None:
+        """on_tracks_indexed returns None when _inner has not been configured."""
+        syncer = KampBandcampSyncer(_ctx())
+        assert syncer.on_tracks_indexed is None
+
+    def test_on_stream_albums_added_getter_delegates(self) -> None:
+        """on_stream_albums_added getter returns the inner syncer's value (KAMP-618)."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer._inner.on_stream_albums_added = cb
+        assert syncer.on_stream_albums_added is cb
+
+    def test_on_stream_albums_added_setter_delegates(self) -> None:
+        """on_stream_albums_added setter writes THROUGH to the inner syncer (KAMP-436
+        wrapper lesson) — otherwise the auto genre-enrich trigger would dead-end."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer.on_stream_albums_added = cb
+        assert syncer._inner.on_stream_albums_added is cb
+
+    def test_on_stream_albums_added_none_before_configure(self) -> None:
+        """on_stream_albums_added returns None when _inner has not been configured."""
+        syncer = KampBandcampSyncer(_ctx())
+        assert syncer.on_stream_albums_added is None
+
     def test_methods_assert_before_configure(self) -> None:
         """Calling lifecycle methods before _configure() raises AssertionError."""
         syncer = KampBandcampSyncer(_ctx())
@@ -205,3 +268,17 @@ class TestKampBandcampSyncer:
             syncer.start()
         with pytest.raises(AssertionError):
             syncer.stop()
+
+    def test_download_album_delegates_to_inner(self) -> None:
+        """download_album() delegates to the inner syncer."""
+        syncer = _make_syncer()
+        syncer._inner.download_album = MagicMock(return_value="/watch/album.zip")
+        result = syncer.download_album("42")
+        syncer._inner.download_album.assert_called_once_with("42")
+        assert result == "/watch/album.zip"
+
+    def test_download_album_asserts_before_configure(self) -> None:
+        """download_album() raises AssertionError when _inner not configured."""
+        syncer = KampBandcampSyncer(_ctx())
+        with pytest.raises(AssertionError):
+            syncer.download_album("42")

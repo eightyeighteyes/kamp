@@ -118,7 +118,9 @@ export type PlayerState = {
   position: number
   duration: number
   volume: number
+  muted?: boolean
   current_track: Track | null
+  buffering?: boolean
 }
 
 /** The full shape of window.KampAPI. */

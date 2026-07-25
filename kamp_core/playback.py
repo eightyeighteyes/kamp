@@ -24,11 +24,13 @@ from abc import ABC, abstractmethod
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from kamp_core.library import Track
 
 logger = logging.getLogger(__name__)
+
+RepeatMode = Literal["off", "queue", "album", "single"]
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +44,17 @@ class PlaybackState:
     position: float = 0.0
     duration: float = 0.0
     volume: int = 100
+    # User mute (KAMP-559). Muting fades the output via the dedicated `kampmute`
+    # afade (see _start_mpv / kamp_fade.lua) and drops the slider (`volume`) to 0;
+    # `pre_mute_volume` remembers the level to restore on unmute. NOT mpv's `mute`
+    # property (owned by the resume gate, KAMP-508) and NOT a volume-property jump.
+    muted: bool = False
+    pre_mute_volume: int = 100
+    # Wall-clock time of the last time-pos event from mpv. Used by
+    # _state_snapshot() to extrapolate position when events stall (e.g.
+    # after seeking near EOF of an HTTP stream: mpv drains its audio
+    # buffer while the demuxer is already at EOF and stops emitting events).
+    position_updated_at: float = field(default_factory=time.time, compare=False)
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +70,7 @@ class PlaybackQueue:
         self._order: list[int] = []  # indices into _tracks
         self._pos: int = -1  # current position in _order
         self._shuffle: bool = False
-        self._repeat: bool = False
+        self._repeat_mode: RepeatMode = "off"
 
     def load(self, tracks: list[Track], start_index: int = 0) -> None:
         """Replace the queue with *tracks* and jump to *start_index*."""
@@ -69,14 +82,21 @@ class PlaybackQueue:
         else:
             self._pos = start_index if tracks else -1
 
-    def update_favorite(self, file_path: Path, favorite: bool) -> None:
-        """Update the favorite flag on any queued tracks matching *file_path*.
+    def update_favorite(self, track_id: int, favorite: bool) -> None:
+        """Update the favorite flag on any queued track with the canonical *track_id*.
 
-        Called after a favorite is toggled so that the next player-state
-        snapshot reflects the new value without requiring a queue reload.
+        Called after a favorite is toggled so that the next player-state snapshot
+        reflects the new value without requiring a queue reload. Matched by
+        canonical id (KAMP-538/532), not file_path: a queued track's delivery uri
+        can diverge from the favorited row's preferred source — e.g. a stream
+        queued before its album was downloaded, whose preferred source has since
+        flipped to the local file — while the canonical id stays stable. Matching
+        by uri missed that case, so the 4 Hz player-state poll kept overwriting the
+        UI's optimistic patch with a stale favorite=False (self-healing only on
+        restart, when the queue reloads from the DB).
         """
         for t in self._tracks:
-            if t.file_path == file_path:
+            if t.id == track_id:
                 t.favorite = favorite
 
     def update_track_path(self, old_path: Path, new_path: Path, new_title: str) -> None:
@@ -127,12 +147,54 @@ class PlaybackQueue:
             return None
         return self._tracks[self._order[self._pos]]
 
+    def _album_run_bounds(self) -> tuple[int, int]:
+        """Return (start, end) positions in _order of the current album's contiguous run.
+
+        Walks outward from _pos while consecutive tracks share the same
+        (album_artist, album) key.  In album-shuffle mode the queue already
+        groups albums contiguously, so this reliably identifies the full album
+        window.  In regular shuffle the run may be as short as one track;
+        album repeat degrades to near-single behaviour, which is acceptable.
+        """
+        if self._pos < 0 or not self._order:
+            return 0, max(0, len(self._order) - 1)
+        current = self._tracks[self._order[self._pos]]
+        key = (current.album_artist, current.album)
+        start = self._pos
+        while start > 0:
+            prev_key = (
+                self._tracks[self._order[start - 1]].album_artist,
+                self._tracks[self._order[start - 1]].album,
+            )
+            if prev_key != key:
+                break
+            start -= 1
+        end = self._pos
+        while end < len(self._order) - 1:
+            next_key = (
+                self._tracks[self._order[end + 1]].album_artist,
+                self._tracks[self._order[end + 1]].album,
+            )
+            if next_key != key:
+                break
+            end += 1
+        return start, end
+
     def next(self) -> Track | None:
         if not self._tracks:
             return None
+        if self._repeat_mode == "single":
+            return self.current()
+        if self._repeat_mode == "album":
+            album_start, album_end = self._album_run_bounds()
+            next_pos = self._pos + 1
+            if next_pos > album_end:
+                next_pos = album_start
+            self._pos = next_pos
+            return self.current()
         next_pos = self._pos + 1
         if next_pos >= len(self._order):
-            if self._repeat:
+            if self._repeat_mode == "queue":
                 next_pos = 0
             else:
                 self._pos = -1
@@ -144,9 +206,17 @@ class PlaybackQueue:
         """Return the next track without advancing the position."""
         if not self._tracks:
             return None
+        if self._repeat_mode == "single":
+            return self.current()
+        if self._repeat_mode == "album":
+            album_start, album_end = self._album_run_bounds()
+            next_pos = self._pos + 1
+            if next_pos > album_end:
+                next_pos = album_start
+            return self._tracks[self._order[next_pos]]
         next_pos = self._pos + 1
         if next_pos >= len(self._order):
-            if self._repeat:
+            if self._repeat_mode == "queue":
                 next_pos = 0
             else:
                 return None
@@ -155,9 +225,17 @@ class PlaybackQueue:
     def prev(self) -> Track | None:
         if not self._tracks:
             return None
+        if self._repeat_mode == "album":
+            album_start, album_end = self._album_run_bounds()
+            prev_pos = self._pos - 1
+            if prev_pos < album_start:
+                prev_pos = album_end
+            self._pos = prev_pos
+            return self.current()
         prev_pos = self._pos - 1
         if prev_pos < 0:
-            if self._repeat:
+            # single mode: user navigates backward normally (only next() loops)
+            if self._repeat_mode == "queue":
                 prev_pos = len(self._order) - 1
             else:
                 return None
@@ -203,7 +281,7 @@ class PlaybackQueue:
         # Clamp _pos in case it pointed past the new end.
         self._pos = min(self._pos, len(self._order) - 1)
 
-    def set_shuffle(self, shuffle: bool) -> None:
+    def set_shuffle(self, shuffle: bool, album_mode: bool = False) -> None:
         if shuffle == self._shuffle:
             return
         self._shuffle = shuffle
@@ -211,15 +289,20 @@ class PlaybackQueue:
             return
         current_track_idx = self._order[self._pos] if self._pos >= 0 else -1
         if shuffle:
-            self._shuffled_order(current_track_idx)
-            self._pos = 0
+            if album_mode and current_track_idx >= 0:
+                # _album_shuffled_order preserves _pos — the straddled album
+                # stays in place and only complete Next Up albums are shuffled.
+                self._album_shuffled_order(current_track_idx)
+            else:
+                self._shuffled_order(current_track_idx)
+                self._pos = 0
         else:
             # Restore original order; keep current track as reference point
             self._order = list(range(len(self._tracks)))
             self._pos = current_track_idx if current_track_idx >= 0 else 0
 
-    def set_repeat(self, repeat: bool) -> None:
-        self._repeat = repeat
+    def set_repeat_mode(self, mode: RepeatMode) -> None:
+        self._repeat_mode = mode
 
     def queue_tracks(self) -> tuple[list[Track], int]:
         """Return (tracks_in_playback_order, pos) for API serialisation.
@@ -230,28 +313,54 @@ class PlaybackQueue:
         """
         return [self._tracks[i] for i in self._order], self._pos
 
-    def get_state(self) -> tuple[list[Path], int, bool, bool]:
-        """Return (tracks_in_playback_order, pos, shuffle, repeat) for persistence.
+    def get_state(self) -> tuple[list[int], list[int], int, bool, str]:
+        """Return (original_ids, order, pos, shuffle, repeat_mode) for persistence.
 
-        Tracks are returned in the current playback order so the shuffle
-        sequence can be faithfully restored without re-shuffling.
+        *original_ids* is _tracks in load order (track ids); *order* is the
+        index permutation (_order) so the shuffled sequence can be faithfully
+        restored and toggling shuffle off recovers the true original order.
+        Persisting track ids rather than paths (KAMP-536) keeps the queue stable
+        across the canonical-track refactor: the later collapse repoints the
+        saved queue with a plain id update instead of rewriting path strings.
         """
-        ordered_paths = [self._tracks[i].file_path for i in self._order]
-        return ordered_paths, self._pos, self._shuffle, self._repeat
+
+        original_ids = [t.id for t in self._tracks]
+        return (
+            original_ids,
+            list(self._order),
+            self._pos,
+            self._shuffle,
+            self._repeat_mode,
+        )
+
+    @property
+    def shuffle(self) -> bool:
+        return self._shuffle
+
+    @property
+    def repeat(self) -> str:
+        return self._repeat_mode
 
     def restore(
-        self, tracks: list[Track], pos: int, shuffle: bool, repeat: bool
+        self,
+        tracks: list[Track],
+        order: list[int],
+        pos: int,
+        shuffle: bool,
+        repeat: str,
     ) -> None:
         """Restore queue from persisted state.
 
-        *tracks* must already be in playback order (as returned by get_state).
-        The order is taken as-is so shuffle sequences survive restarts.
+        *tracks* are in their original load order; *order* is the index
+        permutation that was active when the state was saved (may be shuffled).
+        An empty *order* is treated as natural order [0, 1, …, n-1].
         """
         self._tracks = list(tracks)
-        self._order = list(range(len(tracks)))
+        self._order = list(order) if order else list(range(len(tracks)))
         self._pos = pos if tracks else -1
         self._shuffle = shuffle
-        self._repeat = repeat
+        _valid: tuple[RepeatMode, ...] = ("off", "queue", "album", "single")
+        self._repeat_mode = repeat if repeat in _valid else "off"
 
     def add_to_queue(self, track: Track) -> None:
         """Append *track* to the end of the queue."""
@@ -359,11 +468,148 @@ class PlaybackQueue:
         elif to_idx <= self._pos < from_idx:
             self._pos += 1
 
+    def reorder(self, new_order: list[int]) -> None:
+        """Rearrange the queue by a permutation of display indices.
+
+        new_order[i] is the old display position that should appear at
+        position i after reorder. Raises ValueError for invalid permutations.
+        Leaves _shuffle flag unchanged (consistent with move() for single-item drags).
+        """
+        n = len(self._order)
+        if sorted(new_order) != list(range(n)):
+            raise ValueError(f"Invalid permutation: {new_order}")
+        current_track_idx = self._order[self._pos] if self._pos >= 0 else None
+        self._order = [self._order[i] for i in new_order]
+        if current_track_idx is not None:
+            self._pos = self._order.index(current_track_idx)
+
+    def remove_at(self, display_indices: list[int]) -> None:
+        """Remove tracks at the given display positions.
+
+        Only indices strictly after _pos (unplayed tracks) are removed.
+        Current and past tracks are silently skipped, as are out-of-range
+        values. _pos is never adjusted because only later entries are removed.
+        """
+        n = len(self._order)
+        to_remove = sorted(
+            {i for i in display_indices if i > self._pos and 0 <= i < n},
+            reverse=True,
+        )
+        if not to_remove:
+            return
+        removed_slots: set[int] = set()
+        for disp_idx in to_remove:
+            removed_slots.add(self._order[disp_idx])
+            self._order.pop(disp_idx)
+        old_to_new: dict[int, int] = {}
+        new_tracks: list[Track] = []
+        for old_slot, track in enumerate(self._tracks):
+            if old_slot not in removed_slots:
+                old_to_new[old_slot] = len(new_tracks)
+                new_tracks.append(track)
+        self._tracks = new_tracks
+        self._order = [old_to_new[i] for i in self._order]
+
     def _shuffled_order(self, anchor_idx: int) -> None:
-        """Shuffle _order so anchor_idx appears first."""
-        rest = [i for i in range(len(self._tracks)) if i != anchor_idx]
-        random.shuffle(rest)
-        self._order = ([anchor_idx] if anchor_idx >= 0 else []) + rest
+        """Shuffle _order placing anchor_idx first; maximises artist diversity.
+
+        Greedily picks each next track from a pool that avoids repeating the
+        previous artist. Falls back to a different album when the whole
+        remaining pool shares the previous artist, then to unconstrained
+        random when even album diversity is impossible (e.g. single-album
+        queue). All tracks appear exactly once regardless of constraints.
+        """
+        result: list[int] = [anchor_idx] if anchor_idx >= 0 else []
+        remaining: list[int] = [i for i in range(len(self._tracks)) if i != anchor_idx]
+        prev_artist: str | None = (
+            self._tracks[anchor_idx].artist if anchor_idx >= 0 else None
+        )
+        prev_album: str | None = (
+            self._tracks[anchor_idx].album if anchor_idx >= 0 else None
+        )
+
+        while remaining:
+            preferred = [i for i in remaining if self._tracks[i].artist != prev_artist]
+            if preferred:
+                pick = random.choice(preferred)
+            else:
+                diff_album = [
+                    i for i in remaining if self._tracks[i].album != prev_album
+                ]
+                pick = (
+                    random.choice(diff_album)
+                    if diff_album
+                    else random.choice(remaining)
+                )
+            result.append(pick)
+            remaining.remove(pick)
+            prev_artist = self._tracks[pick].artist
+            prev_album = self._tracks[pick].album
+
+        self._order = result
+
+    def _album_shuffled_order(self, anchor_idx: int) -> None:
+        """Shuffle Next Up albums as units; exempt the straddled album.
+
+        Splits _order at _pos into history (unchanged) and future (anchor
+        onwards). The anchor's album is exempted from shuffling — its tracks
+        stay at the front of the future slice in their current order. All
+        other complete albums in the future slice are shuffled with the same
+        greedy album_artist-diversity heuristic as _shuffled_order. _pos is
+        not modified; the anchor remains the now-playing track after the call.
+        """
+        anchor_album_key = (
+            self._tracks[anchor_idx].album_artist,
+            self._tracks[anchor_idx].album,
+        )
+
+        # Keep history (before _pos) exactly as-is; only reshuffle the future.
+        history_order = self._order[: self._pos]
+        future_order = self._order[self._pos :]  # future_order[0] == anchor_idx
+
+        # Exempt the straddled album: its tracks in the future slice stay in place.
+        straddle_future = [
+            idx
+            for idx in future_order
+            if (self._tracks[idx].album_artist, self._tracks[idx].album)
+            == anchor_album_key
+        ]
+        other_future = [
+            idx
+            for idx in future_order
+            if (self._tracks[idx].album_artist, self._tracks[idx].album)
+            != anchor_album_key
+        ]
+
+        # Group other_future into contiguous album runs (preserving adjacency
+        # from the current order, not from _tracks load order).
+        other_runs: list[list[int]] = []
+        for idx in other_future:
+            key = (self._tracks[idx].album_artist, self._tracks[idx].album)
+            if other_runs:
+                last_run_last = other_runs[-1][-1]
+                if (
+                    self._tracks[last_run_last].album_artist,
+                    self._tracks[last_run_last].album,
+                ) == key:
+                    other_runs[-1].append(idx)
+                    continue
+            other_runs.append([idx])
+
+        # Shuffle other_runs with album_artist diversity.
+        prev_artist: str | None = self._tracks[anchor_idx].album_artist
+        shuffled: list[int] = []
+        while other_runs:
+            preferred = [
+                r for r in other_runs if self._tracks[r[0]].album_artist != prev_artist
+            ]
+            pick = random.choice(preferred if preferred else other_runs)
+            shuffled.extend(pick)
+            prev_artist = self._tracks[pick[0]].album_artist
+            other_runs.remove(pick)
+
+        # _pos is preserved: anchor stays at index self._pos in the new order.
+        self._order = history_order + straddle_future + shuffled
 
 
 # ---------------------------------------------------------------------------
@@ -789,6 +1035,14 @@ def _make_ipc_transport() -> _IPCTransport:
 # mpv's playlist triggers an immediate gapless EOF, stopping time-pos events.
 _GAPLESS_GUARD_SECS: float = 10.0
 
+# Fade duration in seconds. Must match the duration= set on the @kampfade afade
+# filter in _start_mpv (the Lua re-arms start_time/type, not duration, at runtime).
+_FADE_SECS = 0.15
+
+# Lua script that drives click-free pause/stop/resume fades inside mpv's event loop.
+# See kamp_core/kamp_fade.lua for implementation and rationale.
+_FADE_SCRIPT = Path(__file__).parent / "kamp_fade.lua"
+
 # Properties to observe from mpv for state tracking
 _OBSERVED: list[tuple[int, str]] = [
     (1, "time-pos"),
@@ -869,10 +1123,26 @@ class MpvPlaybackEngine:
         # Path of the track pre-appended to mpv's playlist as a gapless lookahead.
         # None means mpv's playlist has only the current track (slot 0).
         self._lookahead_path: Path | None = None
+        # CDN URL for a remote-track lookahead; mutually exclusive with
+        # _lookahead_path (a track is either local or remote, never both).
+        self._lookahead_url: str | None = None
+        # Track ID of the track registered in the lookahead slot.  Set eagerly
+        # by preload_next() — before the URL is fetched — so preload_next_url()
+        # can reject stale pre-fetch results after a queue change.
+        self._lookahead_id: int | None = None
+        # URI most recently passed to play() or load_paused(); used to include
+        # the failing URL in end-file error log messages.
+        self._current_uri: str | None = None
         self._start_mpv()
 
     def _start_mpv(self) -> None:  # pragma: no cover
-        """Launch mpv and connect to its IPC channel."""
+        """Launch mpv and connect to its IPC channel.
+
+        Note (KAMP-559): a fresh mpv starts with both afade filters at unity. There is
+        no mid-session restart today, but if crash-recovery is ever added it must
+        re-apply the mute fade (send `kamp-mute` when `state.muted`) — otherwise a
+        restart would play unmuted while `state.muted`/the slider still read muted.
+        """
         # Create the Job Object before Popen so we can assign mpv immediately
         # after it spawns. We rely on nested Jobs (Win8+) rather than
         # CREATE_BREAKAWAY_FROM_JOB — breakaway requires the parent's Job to
@@ -894,6 +1164,19 @@ class MpvPlaybackEngine:
                 )
                 self._job = None
 
+        # mpv silently ignores a --script= path that doesn't exist, which turns
+        # the script-message-driven transport controls into no-ops with no error
+        # anywhere. Surface it loudly: in the frozen app this file must be staged
+        # into the bundle by kamp.spec (KAMP-519); a missing file here means the
+        # packaging regressed.
+        if not _FADE_SCRIPT.exists():
+            logger.warning(
+                "Fade script not found at %s — pause/stop/resume fades and the "
+                "transport controls that depend on them will be no-ops. "
+                "(packaging bug: kamp_fade.lua not bundled?)",
+                _FADE_SCRIPT,
+            )
+
         self._proc = subprocess.Popen(
             [
                 self._mpv_bin,
@@ -901,6 +1184,7 @@ class MpvPlaybackEngine:
                 "--idle=yes",
                 "--really-quiet",
                 f"--input-ipc-server={self._ipc.server_arg}",
+                f"--script={_FADE_SCRIPT}",
                 # Prevent mpv from intercepting media keys via its IOKit HID tap.
                 # Media key events are now handled by the Electron now-playing-helper
                 # subprocess via MPRemoteCommandCenter (registered by the process
@@ -914,6 +1198,19 @@ class MpvPlaybackEngine:
                 # byte length computed from _LEVEL_FILTER_GRAPH so it stays
                 # accurate if the filter string ever changes.
                 f"--af=lavfi=graph=%{len(_LEVEL_FILTER_GRAPH)}%{_LEVEL_FILTER_GRAPH}",
+                # Persistent afade gain stage for click-free pause/stop/resume fades,
+                # appended AFTER the analysis chain so the ametadata parser is untouched.
+                # Parked at unity (start_time far in the future); the kamp_fade.lua
+                # script re-arms type/start_time via af-command. afade interpolates the
+                # gain per-sample (curve=hsin raised cosine) -- no zipper. See _FADE_LUA.
+                "--af-append=@kampfade:lavfi=[afade=type=out:curve=hsin:"
+                f"start_time=1000000000:duration={_FADE_SECS}]",
+                # Second, independent afade for user mute (KAMP-559). Kept separate
+                # from @kampfade so mute and pause/resume never fight over one filter;
+                # kamp_fade.lua re-arms it via af-command on kamp-mute/kamp-unmute and
+                # re-applies it after seeks/loads (which reset afade to unity).
+                "--af-append=@kampmute:lavfi=[afade=type=out:curve=hsin:"
+                f"start_time=1000000000:duration={_FADE_SECS}]",
             ],
             stdout=subprocess.PIPE,
             # Capture stderr so we can surface it if mpv fails to start.
@@ -1037,7 +1334,7 @@ class MpvPlaybackEngine:
     # Public interface
     # ------------------------------------------------------------------
 
-    def play(self, path: Path) -> None:
+    def play(self, path: str | Path) -> None:
         # loadfile replace clears mpv's entire playlist, including any lookahead.
         # _lookahead_path mutation and the IPC send are paired under _lock so a
         # concurrent end-file/eof handler cannot observe a stale lookahead value.
@@ -1053,13 +1350,17 @@ class MpvPlaybackEngine:
         logger.info("engine.play: loading %s", path)
         with self._lock:
             self._lookahead_path = None
+            self._lookahead_url = None
+            self._lookahead_id = None
+            self._current_uri = str(path)
             self.state.position = 0.0
             self.state.duration = 0.0
+            self.state.position_updated_at = time.time()
             self._send_command("loadfile", str(path), "replace")
         # Pause-toggle is unrelated to the lookahead slot; send outside the lock.
         self._send_command("set_property", "pause", False)
 
-    def load_paused(self, path: Path, position: float = 0.0) -> None:
+    def load_paused(self, path: Path | str, position: float = 0.0) -> None:
         """Load *path* into mpv, paused at *position*, without starting playback.
 
         Used on daemon startup to restore the previous session state without
@@ -1075,8 +1376,18 @@ class MpvPlaybackEngine:
         self._pending_seek = position if position > 0 else None
         with self._lock:
             self._lookahead_path = None
+            self._lookahead_url = None
+            self._lookahead_id = None
             self.state.position = 0.0
             self.state.duration = 0.0
+            self.state.position_updated_at = time.time()
+            # Pre-set pause so mpv inherits the paused state on loadfile.
+            # pause=yes in the loadfile options arg defers the network connection
+            # for remote URLs, preventing demux and leaving duration=0. Sending
+            # set_property pause True first is processed before loadfile, so mpv
+            # starts buffering normally but won't advance the playback clock.
+            self._current_uri = str(path)
+            self._send_command("set_property", "pause", True)
             self._send_command("loadfile", str(path), "replace")
         self._send_command("set_property", "pause", True)
 
@@ -1097,15 +1408,29 @@ class MpvPlaybackEngine:
         _lookahead_path mutation, and the playlist-remove/loadfile send happen
         atomically with respect to a concurrent end-file/eof handler.
         """
-        path = next_track.file_path if next_track is not None else None
+        # Remote tracks: CDN URL is resolved asynchronously by preload_next_url();
+        # passing the raw bandcamp: URI to mpv would silently fail.
+        path = (
+            None
+            if (next_track is None or next_track.is_remote)
+            else next_track.file_path
+        )
+        next_id = next_track.id if next_track is not None else None
         with self._lock:
-            if path == self._lookahead_path:
+            # Idempotent: no-op when the registered lookahead track hasn't changed.
+            # For remote tracks path is always None, so _lookahead_id distinguishes
+            # "same remote track" from "different remote track in the lookahead slot."
+            if path == self._lookahead_path and next_id == self._lookahead_id:
                 return
-            if self._lookahead_path is not None:
+            if self._lookahead_path is not None or self._lookahead_url is not None:
                 self._lookahead_path = (
                     None  # clear before sending remove (see docstring)
                 )
+                self._lookahead_url = None
                 self._send_command("playlist-remove", 1)
+            # Register the incoming track eagerly so preload_next_url() can reject
+            # stale pre-fetch results that arrive after a subsequent queue change.
+            self._lookahead_id = next_id
             if path is not None:
                 # Skip the append when we're within the gapless danger window.
                 # mpv would trigger an immediate EOF transition the moment the
@@ -1120,16 +1445,40 @@ class MpvPlaybackEngine:
                 self._send_command("loadfile", str(path), "append")
                 self._lookahead_path = path
 
+    def preload_next_url(self, url: str, track_id: int) -> None:
+        """Pre-load a CDN URL into mpv's slot-1 for gapless remote-track playback.
+
+        Called from a background thread once the CDN URL for the next remote
+        track has been resolved.  Discards stale results whose track_id no
+        longer matches the registered lookahead track (i.e. the queue changed
+        while the pre-fetch was in flight).
+        """
+        with self._lock:
+            if self._lookahead_id != track_id:
+                return  # queue changed while pre-fetch was in flight
+            if url == self._lookahead_url:
+                return
+            if self._lookahead_url is not None:
+                self._lookahead_url = None
+                self._send_command("playlist-remove", 1)
+            if (
+                self.state.duration > 0
+                and self.state.position > self.state.duration - _GAPLESS_GUARD_SECS
+            ):
+                return
+            self._send_command("loadfile", url, "append")
+            self._lookahead_url = url
+
     @property
     def has_lookahead(self) -> bool:
         """True when a next-track is pre-appended to mpv's playlist."""
-        return self._lookahead_path is not None
+        return self._lookahead_path is not None or self._lookahead_url is not None
 
     def pause(self) -> None:
-        self._send_command("set_property", "pause", True)
+        self._send_command("script-message", "kamp-pause")
 
     def resume(self) -> None:
-        self._send_command("set_property", "pause", False)
+        self._send_command("script-message", "kamp-resume")
 
     def seek(self, position: float) -> None:
         # Hold _lock so this check+clear is atomic with the end-file handler's
@@ -1147,11 +1496,13 @@ class MpvPlaybackEngine:
             # no gapless risk — removing the lookahead there breaks gapless at
             # the track's natural EOF without any benefit (KAMP-261 / KAMP-276).
             if (
-                self._lookahead_path is not None
+                (self._lookahead_path is not None or self._lookahead_url is not None)
                 and self.state.duration > 0
                 and position > self.state.duration - _GAPLESS_GUARD_SECS
             ):
                 self._lookahead_path = None
+                self._lookahead_url = None
+                self._lookahead_id = None
                 self._send_command("playlist-remove", 1)
         self._send_command("seek", position, "absolute")
 
@@ -1159,8 +1510,23 @@ class MpvPlaybackEngine:
         # Pause and seek to the beginning rather than unloading the file.
         # mpv's "stop" command unloads the file, making resume() a no-op.
         # Pausing + seeking keeps the track loaded so play() via resume() works.
-        self._send_command("set_property", "pause", True)
-        self._send_command("seek", 0, "absolute")
+        # The seek is issued by the Lua kamp-stop handler after the fade completes.
+        self._send_command("script-message", "kamp-stop")
+
+    def unload(self) -> None:
+        # Fully unload the current file from mpv using mpv's "stop" command.
+        # Used before deleting a file that is loaded but not actively playing;
+        # "stop" reason in the end-file event does NOT trigger queue advancement.
+        with self._lock:
+            self._lookahead_path = None
+            self._lookahead_url = None
+            self._lookahead_id = None
+            self._current_uri = None
+            self.state.playing = False
+            self.state.position = 0.0
+            self.state.duration = 0.0
+            self.state.position_updated_at = time.time()
+            self._send_command("stop")
 
     @property
     def volume(self) -> int:
@@ -1168,8 +1534,42 @@ class MpvPlaybackEngine:
 
     @volume.setter
     def volume(self, value: int) -> None:
+        # INVARIANT (KAMP-559): mpv's `volume` property is the logical level and is
+        # written ONLY here. Mute does NOT touch it — muting fades via the separate
+        # `kampmute` afade (below), leaving `volume` at the logical level so unmute
+        # can fade back in to it. Dragging the slider unmutes: send a fade-in so the
+        # new level is audible if the kampmute gate was closed.
+        was_muted = self.state.muted
         self.state.volume = max(0, min(100, value))
+        self.state.muted = False
         self._send_command("set_property", "volume", self.state.volume)
+        if was_muted:
+            self._send_command("script-message", "kamp-unmute")
+
+    @property
+    def muted(self) -> bool:
+        return self.state.muted
+
+    @muted.setter
+    def muted(self, value: bool) -> None:
+        # KAMP-559: mute is a click-free fade via the dedicated `kampmute` afade
+        # filter (script-message → kamp_fade.lua), NOT mpv's `mute` property (owned
+        # by the resume gate, KAMP-508) and NOT a `volume`-property jump (a stepped
+        # volume ramp is zipper noise, KAMP-508). The slider drops to 0 on mute and
+        # restores the remembered level on unmute; the `volume` property is left at
+        # the logical level throughout so the fade math and unmute restore work.
+        want = bool(value)
+        if want == self.state.muted:
+            return
+        if want:
+            self.state.pre_mute_volume = self.state.volume
+            self.state.volume = 0
+            self.state.muted = True
+            self._send_command("script-message", "kamp-mute")
+        else:
+            self.state.muted = False
+            self.state.volume = self.state.pre_mute_volume
+            self._send_command("script-message", "kamp-unmute")
 
     def shutdown(self) -> None:
         if self._proc is not None:
@@ -1244,6 +1644,7 @@ class MpvPlaybackEngine:
             data = event.get("data")
             if prop == "time-pos" and isinstance(data, (int, float)):
                 self.state.position = float(data)
+                self.state.position_updated_at = time.time()
             elif prop == "duration" and isinstance(data, (int, float)):
                 self.state.duration = float(data)
             elif prop == "pause" and isinstance(data, bool):
@@ -1259,6 +1660,7 @@ class MpvPlaybackEngine:
             # not fire on the new file-loaded event and block the lookahead re-arm.
             self.state.position = 0.0
             self.state.duration = 0.0
+            self.state.position_updated_at = time.time()
             if self._pending_seek is not None:
                 self.seek(self._pending_seek)
                 self._pending_seek = None
@@ -1277,7 +1679,10 @@ class MpvPlaybackEngine:
                 # slow callback (e.g. Last.fm scrobble) cannot block FastAPI
                 # threads on seek/pause/resume (KAMP-284).
                 with self._lock:
-                    had_lookahead = self._lookahead_path is not None
+                    had_lookahead = (
+                        self._lookahead_path is not None
+                        or self._lookahead_url is not None
+                    )
                     if had_lookahead:
                         # When a lookahead was present, mpv already transitioned
                         # gaplessly and the finished entry sits at slot 0.
@@ -1294,7 +1699,10 @@ class MpvPlaybackEngine:
                         # the new track at 0:00 instead of a stale position.
                         self.state.position = 0.0
                         self.state.duration = 0.0
+                        self.state.position_updated_at = time.time()
                     self._lookahead_path = None
+                    self._lookahead_url = None
+                    self._lookahead_id = None
                 logger.info("eof: had_lookahead=%s firing on_track_end", had_lookahead)
                 # had_lookahead tells the callback whether mpv already advanced
                 # so it can skip calling engine.play(next_path) — calling play()
@@ -1305,3 +1713,17 @@ class MpvPlaybackEngine:
                 logger.info(
                     "eof: on_track_end returned (had_lookahead=%s)", had_lookahead
                 )
+
+            elif event.get("reason") in ("error", "network", "redirect"):
+                # mpv failed to open or buffer the stream (expired CDN URL,
+                # network drop, HTTP 403/404). Advance the queue rather than
+                # stalling silently. "stop" is intentional (loadfile replace or
+                # stop command) and must NOT advance the queue.
+                logger.warning(
+                    "end-file: reason=%s file_error=%r uri=%s — advancing queue",
+                    event.get("reason"),
+                    event.get("file_error"),
+                    self._current_uri,
+                )
+                if self.on_track_end is not None:
+                    self.on_track_end(False)

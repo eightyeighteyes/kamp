@@ -6,8 +6,10 @@ declare global {
     electron: ElectronAPI
     api: {
       isPackaged: boolean
+      appVersion: string
       openDirectory: () => Promise<string | null>
       onOpenPreferences: (callback: () => void) => () => void
+      onCycleView: (callback: (direction: 'next' | 'prev') => void) => () => void
       bandcamp: {
         beginLogin: () => Promise<{ ok: boolean; error?: string }>
         onSyncStatus: (callback: (state: 'idle' | 'syncing') => void) => () => void
@@ -15,7 +17,7 @@ declare global {
         triggerSyncAll: () => Promise<{ ok: boolean }>
       }
       pipeline: {
-        onStage: (callback: (stage: string) => void) => () => void
+        onStage: (callback: (stage: string, album: string) => void) => () => void
       }
       onUpdateAvailable: (
         callback: (data: { version: string; notes: string }) => void
@@ -23,7 +25,9 @@ declare global {
       dismissUpdate: (version: string) => Promise<void>
       getApiToken: () => string | null
       showItemInFolder: (filePath: string) => void
+      openPath: (path: string) => void
       openExternal: (url: string) => void
+      syncThemeChrome: (name: string) => void
     }
     KampAPI: KampAPI
   }

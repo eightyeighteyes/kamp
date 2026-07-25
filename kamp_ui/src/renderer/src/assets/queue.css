@@ -1,13 +1,35 @@
 /* Queue panel -------------------------------------------------------------- */
 
 .queue-panel {
-  width: 280px;
+  min-width: 280px;
   flex-shrink: 0;
+  position: relative;
   border-left: 1px solid var(--border);
   background: var(--surface);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* visible so the inner-edge toggle tab can poke over the library as a child of
+     the panel, tracking resize exactly. Inner content scrolls on its own. KAMP-612. */
+  overflow: visible;
+}
+
+.queue-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 10;
+}
+
+.queue-panel--resizing {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.queue-panel--resizing .queue-track-row:hover {
+  background: none;
 }
 
 .queue-panel-header {
@@ -18,6 +40,18 @@
   height: 44px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+.queue-panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.queue-panel-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
 }
 
 .queue-panel-label {
@@ -41,6 +75,41 @@
 .queue-close-btn:hover {
   color: var(--text);
   background: var(--surface-hover);
+}
+
+/* Pinned block: History + Now Playing, always visible above Next Up */
+.queue-pinned {
+  flex-shrink: 0;
+  max-height: calc(100% - 60px); /* ensure at least ~60px for Next Up */
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+
+/* History track list — caps height so Now Playing is never pushed out of view */
+.queue-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: min(210px, 30vh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* Single current-track list in the Now Playing section */
+.queue-now-playing-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Next Up section takes remaining panel height and scrolls */
+.queue-next-up {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .queue-track-list {
@@ -77,6 +146,14 @@
   opacity: 0.4;
 }
 
+.queue-track-row.selected {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.queue-track-row.dragging {
+  opacity: 0.4;
+}
+
 .queue-track-fav {
   grid-row: 1 / 3;
   align-self: center;
@@ -84,6 +161,27 @@
   align-items: center;
   justify-content: center;
   color: var(--accent);
+}
+
+.queue-track-fav-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.queue-track-row:hover .queue-track-fav-btn,
+.queue-track-fav-btn.active {
+  opacity: 1;
+}
+
+.queue-panel--resizing .queue-track-row:hover .queue-track-fav-btn {
+  opacity: 0;
 }
 
 .queue-track-num {
@@ -129,15 +227,6 @@
   font-size: 12px;
 }
 
-/* Queue toggle button in transport bar */
-.queue-toggle-btn {
-  font-size: 15px;
-}
-
-.queue-toggle-btn.active {
-  color: var(--accent);
-}
-
 .favorite-btn {
   color: var(--text-dim);
 }
@@ -159,6 +248,25 @@
   pointer-events: none;
 }
 
+/* Offline / unreachable remote track rows */
+.queue-track-offline-icon {
+  display: inline-flex;
+  align-items: center;
+  color: #e0a020;
+  flex-shrink: 0;
+  margin-right: 3px;
+}
+
+.queue-track-row--offline .queue-track-num,
+.queue-track-row--offline .queue-track-artist {
+  opacity: 0.42;
+}
+
+.queue-track-row--offline .queue-track-title {
+  font-style: italic;
+  opacity: 0.42;
+}
+
 /* Drag-to-reorder: grab cursor for draggable rows, locked cursor for current */
 .queue-track-row[draggable='true'] {
   cursor: grab;
@@ -178,10 +286,72 @@
   outline-offset: -2px;
 }
 
+/* Queue section headers: History / Now Playing / Next Up */
+.queue-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  cursor: default;
+  user-select: none;
+}
+
+.queue-section-header.disabled {
+  opacity: 0.4;
+}
+
+.queue-history-toggle {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 2px;
+  line-height: 1;
+}
+
+.queue-history-toggle:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.queue-album-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+  line-height: 1;
+}
+
+.queue-album-toggle:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.queue-album-toggle--active {
+  color: var(--accent);
+}
+
 /* Right-click context menu on track rows */
 .track-context-menu {
   position: fixed;
-  z-index: 1000;
+  /* KAMP-625: above the tooltip (.kamp-tooltip, 9000) and modals (900-1100) — a
+     context menu is an active interaction and must never be occluded. The
+     tooltip is also dismissed on contextmenu (TooltipProvider), so this is
+     belt-and-suspenders for a tooltip that arms after the menu opens. Caveat:
+     if context-menu items ever gain tooltips, those would render under the menu. */
+  z-index: 9500;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -223,4 +393,124 @@
   height: 1px;
   background: var(--border);
   margin: 4px 0;
+}
+
+/* Album-grouping mode ------------------------------------------------------- */
+
+@keyframes queue-album-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.queue-album-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  margin: 0 4px;
+  min-height: 44px;
+  border-radius: 3px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  cursor: grab;
+  animation: queue-album-card-in 120ms ease-out both;
+  user-select: none;
+}
+
+.queue-album-card:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-hover));
+}
+
+.queue-album-card--dragging {
+  opacity: 0.4;
+}
+
+.queue-album-card--read-only {
+  cursor: default;
+}
+
+.queue-album-card--read-only:hover {
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+.queue-album-card.drag-over {
+  border-top: 2px solid var(--accent);
+}
+
+.queue-album-card-art {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--surface-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.queue-album-card-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: opacity 120ms;
+}
+
+.queue-album-card-art-placeholder {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.queue-album-card-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.queue-album-card-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-album-card-artist {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-album-card-count {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Drop indicators during album-card drag */
+.queue-drop-above {
+  border-top: 2px solid var(--accent) !important;
+}
+
+.queue-drop-below {
+  border-bottom: 2px solid var(--accent);
+}
+
+.queue-now-playing-drop {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -2px;
 }

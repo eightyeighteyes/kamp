@@ -46,10 +46,10 @@ win:
   # AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET from the environment.
   # See docs/code-signing.md for setup instructions.
   azureSignOptions:
-    publisherName: "Theodore Terry"
-    endpoint: "https://eus.codesigning.azure.net/"
-    codeSigningAccountName: "kamp-signing"
-    certificateProfileName: "kamp-public"
+    publisherName: 'Theodore Terry'
+    endpoint: 'https://eus.codesigning.azure.net/'
+    codeSigningAccountName: 'kamp-signing'
+    certificateProfileName: 'kamp-public'
   extraResources:
     # PyInstaller onedir bundle → resources\kamp\
     - from: resources/kamp
@@ -98,12 +98,12 @@ mac:
   # Python.framework binaries are pre-signed with --identifier to bypass the
   # "bundle format is ambiguous" error from the non-standard PyInstaller layout.
   signIgnore:
-    - "Contents/Resources/kamp"
-    - "Contents/Resources/mpv"
-    - "Contents/Resources/mpv-libs"
-    - "Contents/Resources/node"
-    - "Contents/Resources/now-playing-helper"
-    - "Contents/Resources/kamp-keychain-helper"
+    - 'Contents/Resources/kamp'
+    - 'Contents/Resources/mpv'
+    - 'Contents/Resources/mpv-libs'
+    - 'Contents/Resources/node'
+    - 'Contents/Resources/now-playing-helper'
+    - 'Contents/Resources/kamp-keychain-helper'
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
     - NSMicrophoneUsageDescription: Application requests access to the device's microphone.

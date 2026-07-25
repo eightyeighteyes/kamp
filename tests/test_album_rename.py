@@ -41,7 +41,7 @@ def _sample_track(file_path: Path, **overrides: object) -> Track:
         artist="Artist",
         album_artist="Artist",
         album="Old Album",
-        year="2024",
+        release_date="2024",
         track_number=1,
         disc_number=1,
         ext="mp3",
@@ -205,6 +205,7 @@ class TestRenameAlbumTrack:
         index.upsert_track(track)
         index.set_favorite(p, True)
         index.record_played(p)
+        index.record_track_started(p)
 
         new_p = tmp_path / "moved.mp3"
         index.rename_album_track(p, new_p, "New Album", "New Artist", 1.0)
@@ -258,7 +259,7 @@ def _make_album(
             mp3,
             album_artist=album_artist,
             album=album,
-            year=year,
+            release_date=year,
             track=str(i),
             title=title,
         )
@@ -267,7 +268,7 @@ def _make_album(
             title=title,
             album_artist=album_artist,
             album=album,
-            year=year,
+            release_date=year,
             track_number=i,
             mb_recording_id=f"rec-{i}",
         )
@@ -349,7 +350,7 @@ class TestPatchAlbumTagsEndpoint:
                 title=t.title,
                 album_artist="Artist",
                 album="Old Album",
-                year="2024",
+                release_date="2024",
                 track_number=t.track_number,
             )
             for flat, t in flat_files
@@ -403,7 +404,7 @@ class TestPatchAlbumTagsEndpoint:
                 artist="Docks",
                 album_artist="Docks",
                 album="Migjorn",
-                year="2020",
+                release_date="2020",
                 title=t.title,
                 track_number=t.track_number,
             )
@@ -623,7 +624,7 @@ class TestPatchAlbumTagsEndpoint:
                 title=track.title,
                 album_artist="Artist",
                 album="Old Album",
-                year="2024",
+                release_date="2024",
                 track_number=track.track_number,
             )
         ]
@@ -889,7 +890,7 @@ class TestPatchAlbumTagsEndpoint:
                 artist="Docks",
                 album_artist="Docks",
                 album="Migjorn",
-                year="2020",
+                release_date="2020",
                 title=t.title,
                 track_number=t.track_number,
             )
@@ -925,3 +926,50 @@ class TestPatchAlbumTagsEndpoint:
             )
             file_tags = id3.ID3(str(new_mp3))
             assert str(file_tags["TPE1"]) == "Activity Monitor"
+
+    def test_returns_409_when_albums_table_collision(
+        self, tmp_path: Path, _mock_engine: MagicMock, _mock_queue: MagicMock
+    ) -> None:
+        """Renaming to a name that already exists in the albums table (e.g. a
+        streaming-only album) returns 409 even when no filesystem collision exists."""
+        from kamp_core.library import Track as _Track
+
+        pairs = _make_album(tmp_path, "Artist", "Album A", "2024", 1)
+        track_objects = [t for _, t in pairs]
+        client, db = self._client_with_album(
+            tmp_path, track_objects, _mock_engine, _mock_queue
+        )
+
+        # Seed a remote-only album with the target name directly in the albums table.
+        # Use upsert_many with a bandcamp:// track so the albums row is created.
+        db.upsert_many(
+            [
+                _Track(
+                    file_path=__import__("pathlib").Path("bandcamp://sale-x/1"),
+                    title="T",
+                    artist="Artist",
+                    album_artist="Artist",
+                    album="Album B",
+                    release_date="2024",
+                    track_number=1,
+                    disc_number=1,
+                    ext="",
+                    embedded_art=False,
+                    mb_release_id="",
+                    mb_recording_id="",
+                    source="bandcamp",
+                )
+            ]
+        )
+
+        # No filesystem directory exists for "Album B" — only the albums table has it.
+        assert not (tmp_path / "Artist" / "2024 - Album B").exists()
+
+        resp = client.patch(
+            "/api/v1/albums/tags",
+            params={"album_artist": "Artist", "album": "Album A"},
+            json={"album": "Album B"},
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Album name already exists in library"

@@ -1,14 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { artUrl, fetchMusicBrainzCandidates, patchTrackMeta } from '../api/client'
+import { useTooltip } from '../hooks/useTooltip'
+import { TOOLTIPS } from '../tooltipStrings'
+import { artUrl, fetchAlbumGenres, fetchMusicBrainzCandidates, patchTrackMeta } from '../api/client'
 import type {
   AlbumTagsCollision,
-  MusicBrainzRelease,
+  MusicBrainzCandidate,
   Track,
   TrackTagsCollision
 } from '../api/client'
+import { ContextMenu } from './ContextMenu'
 import { TrackContextMenu } from './TrackContextMenu'
-import { EditableTrackTitle } from './EditableTrackTitle'
+import { EditableTrackField } from './EditableTrackField'
 import { EditableAlbumField } from './EditableAlbumField'
 import { CollisionModal } from './CollisionModal'
 import { AlbumMetaPanel } from './AlbumMetaPanel'
@@ -16,35 +19,63 @@ import { MusicBrainzModal } from './MusicBrainzModal'
 import type { MBApplyPayload } from './MusicBrainzModal'
 import { AlbumArtModal } from './AlbumArtModal'
 import {
+  BandcampIcon,
+  CloudIcon,
+  DownloadArrowIcon,
   FavoriteIcon,
   PencilIcon,
   PlayIcon,
   PauseIcon,
   QueueAddIcon,
-  PlayNextIcon
+  PlayNextIcon,
+  RemoveFromQueueIcon,
+  ShareIcon,
+  WarnIcon
 } from './TransportIcons'
+import { downloadAlbum } from '../api/client'
+import { formatTime, formatLongDuration } from '../utils/formatTime'
 
 const TOAST_TTL = 10_000 // ms
+
+const HERO_DEFAULT = 45
+const HERO_MIN = 15
+const HERO_KEY = 'kamp:hero-height-pct'
+const ART_OFFSET_DEFAULT = 0
+const artOffsetKey = (artist: string, album: string): string =>
+  `kamp:album-art-offset:${encodeURIComponent(artist)}:${encodeURIComponent(album)}`
+
+function sourceIcon(source: string, size: number): React.JSX.Element {
+  if (source === 'bandcamp') return <BandcampIcon size={size} />
+  return <CloudIcon size={size} />
+}
 
 type ContextMenu = { x: number; y: number; track: Track }
 type AlbumRenameToast = {
   message: string
-  undo: () => Promise<AlbumTagsCollision | null>
+  undo?: () => Promise<AlbumTagsCollision | null>
 }
 
 type MBFetchState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ready'; candidates: MusicBrainzRelease[] }
+  | { status: 'ready'; candidates: MusicBrainzCandidate[] }
   | { status: 'error'; message: string }
 
-function HeroImage({ src }: { src: string }): React.JSX.Element {
+function HeroImage({
+  src,
+  objectPositionY = 0
+}: {
+  src: string
+  objectPositionY?: number
+}): React.JSX.Element {
   const [loaded, setLoaded] = useState(false)
   return (
     <img
       className={`track-list-hero-img${loaded ? ' loaded' : ''}`}
       src={src}
       alt=""
+      draggable={false}
+      style={{ objectPosition: `center ${objectPositionY}%` }}
       onLoad={() => setLoaded(true)}
       onError={() => setLoaded(false)}
     />
@@ -61,8 +92,15 @@ export function TrackList(): React.JSX.Element | null {
   const playTrack = useStore((s) => s.playTrack)
   const togglePlayPause = useStore((s) => s.togglePlayPause)
   const setAlbumFavorite = useStore((s) => s.setAlbumFavorite)
+  const setFavorite = useStore((s) => s.setFavorite)
   const addAlbumToQueue = useStore((s) => s.addAlbumToQueue)
   const playAlbumNext = useStore((s) => s.playAlbumNext)
+
+  const configValues = useStore((s) => s.configValues)
+  const connected = configValues?.['bandcamp.connected'] ?? false
+  const downloadingAlbumIds = useStore((s) => s.downloadingAlbumIds)
+  const markAlbumDownloading = useStore((s) => s.markAlbumDownloading)
+  const removeDownload = useStore((s) => s.removeDownload)
 
   const albumEditMode = useStore((s) => s.albumEditMode)
   const setAlbumEditMode = useStore((s) => s.setAlbumEditMode)
@@ -70,15 +108,43 @@ export function TrackList(): React.JSX.Element | null {
   const setAlbumMetaExpanded = useStore((s) => s.setAlbumMetaExpanded)
   const patchAlbumMeta = useStore((s) => s.patchAlbumMeta)
   const patchTrackTitle = useStore((s) => s.patchTrackTitle)
+  const patchTrackDisplay = useStore((s) => s.patchTrackDisplay)
+  const patchTrackArtist = useStore((s) => s.patchTrackArtist)
   const patchAlbumTags = useStore((s) => s.patchAlbumTags)
+  const patchAlbumDisplay = useStore((s) => s.patchAlbumDisplay)
   const refreshOpenAlbum = useStore((s) => s.refreshOpenAlbum)
   const patchOpenAlbum = useStore((s) => s.patchOpenAlbum)
   const albumRenameProgress = useStore((s) => s.albumRenameProgress)
   const deferredOps = useStore((s) => s.deferredOps)
+  const showFlashToast = useStore((s) => s.showFlashToast)
+
+  const flashTrackId = useStore((s) => s.flashTrackId)
 
   const albumTitleRef = useRef<HTMLHeadingElement>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mbAbortRef = useRef<AbortController | null>(null)
+  const didDragRef = useRef(false)
+  const dragStartYRef = useRef(0)
+  const heroAtDragStartRef = useRef(HERO_DEFAULT)
+  const toggleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const artOffsetAtPanStartRef = useRef(ART_OFFSET_DEFAULT)
+  const panStartYRef = useRef(0)
+  const pendingSingleSelect = useRef<number | null>(null)
+  const [heroHeightPct, setHeroHeightPct] = useState<number>(() => {
+    const saved = parseFloat(localStorage.getItem(HERO_KEY) ?? '')
+    return isNaN(saved) ? HERO_DEFAULT : Math.min(HERO_DEFAULT, Math.max(HERO_MIN, saved))
+  })
+  const [artOffsetPct, setArtOffsetPct] = useState<number>(() => {
+    if (!album) return ART_OFFSET_DEFAULT
+    const saved = parseFloat(
+      localStorage.getItem(artOffsetKey(album.album_artist, album.album)) ?? ''
+    )
+    return isNaN(saved) ? ART_OFFSET_DEFAULT : Math.min(100, Math.max(0, saved))
+  })
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set())
+  const [anchorIdx, setAnchorIdx] = useState<number | null>(null)
+  const [isResizing, setIsResizing] = useState(false)
+  const [isArtPanning, setIsArtPanning] = useState(false)
   const [collision, setCollision] = useState<
     (TrackTagsCollision & { pendingTrackId: number; pendingTitle: string }) | null
   >(null)
@@ -88,6 +154,7 @@ export function TrackList(): React.JSX.Element | null {
   const [albumRenameToast, setAlbumRenameToast] = useState<AlbumRenameToast | null>(null)
   const [mbState, setMbState] = useState<MBFetchState>({ status: 'idle' })
   const [artSearchOpen, setArtSearchOpen] = useState(false)
+  const tooltip = useTooltip()
 
   // Reset MB state when navigating to a different album (derived state from props).
   // Using the render-time pattern avoids a setState-in-effect lint violation.
@@ -97,6 +164,103 @@ export function TrackList(): React.JSX.Element | null {
     setPrevAlbumKey(albumKey)
     setMbState({ status: 'idle' })
     setArtSearchOpen(false)
+    setSelectedIndices(new Set())
+    setAnchorIdx(null)
+    const savedOffset = album
+      ? parseFloat(localStorage.getItem(artOffsetKey(album.album_artist, album.album)) ?? '')
+      : NaN
+    setArtOffsetPct(
+      isNaN(savedOffset) ? ART_OFFSET_DEFAULT : Math.min(100, Math.max(0, savedOffset))
+    )
+  }
+
+  const handleArtPanMouseDown = (e: React.MouseEvent): void => {
+    if (e.button !== 0 || !album?.has_art) return
+    e.preventDefault()
+    artOffsetAtPanStartRef.current = artOffsetPct
+    panStartYRef.current = e.clientY
+    setIsArtPanning(true)
+
+    const onMove = (ev: MouseEvent): void => {
+      const delta = ev.clientY - panStartYRef.current
+      setArtOffsetPct(Math.min(100, Math.max(0, artOffsetAtPanStartRef.current - delta * 0.5)))
+    }
+
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setIsArtPanning(false)
+      if (album) {
+        setArtOffsetPct((o) => {
+          localStorage.setItem(artOffsetKey(album.album_artist, album.album), String(Math.round(o)))
+          return o
+        })
+      }
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const handleResizeMouseDown = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    didDragRef.current = false
+    dragStartYRef.current = e.clientY
+    heroAtDragStartRef.current = heroHeightPct
+    setIsResizing(true)
+
+    const onMove = (ev: MouseEvent): void => {
+      const deltaVh = ((ev.clientY - dragStartYRef.current) / window.innerHeight) * 100
+      if (Math.abs(ev.clientY - dragStartYRef.current) > 4) didDragRef.current = true
+      if (!didDragRef.current) return
+      setHeroHeightPct(
+        Math.min(HERO_DEFAULT, Math.max(HERO_MIN, heroAtDragStartRef.current + deltaVh))
+      )
+    }
+
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setIsResizing(false)
+      if (didDragRef.current) {
+        setHeroHeightPct((h) => {
+          localStorage.setItem(HERO_KEY, String(Math.round(h)))
+          return h
+        })
+      }
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const handleResizeReset = (): void => {
+    // Cancel any pending toggle from the first click of this double-click
+    if (toggleTimeoutRef.current) {
+      clearTimeout(toggleTimeoutRef.current)
+      toggleTimeoutRef.current = null
+    }
+    setHeroHeightPct(HERO_DEFAULT)
+    localStorage.setItem(HERO_KEY, String(HERO_DEFAULT))
+  }
+
+  const handleToggle = (): void => {
+    if (didDragRef.current) {
+      didDragRef.current = false
+      return
+    }
+    // Debounce so the second click of a double-click can cancel this toggle
+    // before it fires — double-click resets the hero without toggling the panel.
+    if (toggleTimeoutRef.current) {
+      clearTimeout(toggleTimeoutRef.current)
+      toggleTimeoutRef.current = null
+      return
+    }
+    const next = !albumMetaExpanded
+    toggleTimeoutRef.current = setTimeout(() => {
+      toggleTimeoutRef.current = null
+      setAlbumMetaExpanded(next)
+    }, 200)
   }
 
   const showRenameToast = (toast: AlbumRenameToast): void => {
@@ -118,6 +282,15 @@ export function TrackList(): React.JSX.Element | null {
       mbAbortRef.current = null
     }
   }, [albumKey])
+
+  // Clear resizing state and pending toggle on unmount.
+  // Document mousemove/mouseup listeners clean themselves up on the next mouseup.
+  useEffect(() => {
+    return () => {
+      if (toggleTimeoutRef.current) clearTimeout(toggleTimeoutRef.current)
+      setIsResizing(false)
+    }
+  }, [])
 
   const handleFetchMB = (): void => {
     if (!album) return
@@ -145,11 +318,12 @@ export function TrackList(): React.JSX.Element | null {
 
     const mbRelease = payload.release
 
-    // 1. Album meta (year, label, mb_release_id)
-    const metaOpts: { year?: string; label?: string; mb_release_id?: string } = {
+    // 1. Album meta (release_date, label, mb_release_id)
+    const metaOpts: { release_date?: string; label?: string; mb_release_id?: string } = {
       mb_release_id: mbRelease.mbid
     }
-    if (payload.album.year === 'mb' && mbRelease.year) metaOpts.year = mbRelease.year
+    if (payload.album.release_date === 'mb' && mbRelease.release_date)
+      metaOpts.release_date = mbRelease.release_date
     if (payload.album.label === 'mb' && mbRelease.label) metaOpts.label = mbRelease.label
     await patchAlbumMeta(album.album_artist, album.album, metaOpts)
 
@@ -161,17 +335,22 @@ export function TrackList(): React.JSX.Element | null {
       await patchAlbumTags(album.album_artist, album.album, tagOpts)
     }
 
-    // 3. Track titles (sequential) + recording MBIDs (parallel)
-    const mbTrackMap = new Map(
-      mbRelease.tracks.map((t) => [`${t.disc_number}-${t.track_number}`, t])
-    )
+    // 3. Track titles + artists (sequential) + recording MBIDs (parallel).
+    // The modal already resolved each local track to its MB counterpart, so
+    // there is no key derivation here to drift from the modal's (KAMP-583).
+    const localById = new Map(tracks.map((t) => [t.id, t]))
     const mbidPromises: Promise<unknown>[] = []
-    for (const local of tracks) {
-      const key = `${local.disc_number}-${local.track_number}`
-      const mbTrack = mbTrackMap.get(key)
-      if (!mbTrack) continue
-      if (payload.tracks[key] === 'mb' && local.title !== mbTrack.title) {
+    for (const entry of payload.tracks) {
+      const local = localById.get(entry.localId)
+      if (!local) continue
+      const mbTrack = entry.mb
+      // Title and artist both rewrite this file's tags: keep them sequential
+      // (never in mbidPromises) so two mutagen writes can't race on one file.
+      if (entry.title === 'mb' && local.title !== mbTrack.title) {
         await patchTrackTitle(local.id, mbTrack.title)
+      }
+      if (entry.artist === 'mb' && mbTrack.artist && local.artist !== mbTrack.artist) {
+        await patchTrackArtist(local.id, mbTrack.artist)
       }
       if (mbTrack.recording_mbid && local.mb_recording_id !== mbTrack.recording_mbid) {
         mbidPromises.push(patchTrackMeta(local.id, mbTrack.recording_mbid))
@@ -182,25 +361,124 @@ export function TrackList(): React.JSX.Element | null {
     await refreshOpenAlbum()
   }
 
+  const handleRowMouseDown = (e: React.MouseEvent, idx: number): void => {
+    if (e.button !== 0) return
+    if (e.shiftKey && anchorIdx !== null) {
+      const lo = Math.min(anchorIdx, idx)
+      const hi = Math.max(anchorIdx, idx)
+      setSelectedIndices(new Set(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i)))
+    } else if (e.metaKey || e.ctrlKey) {
+      setSelectedIndices((prev) => {
+        const next = new Set(prev)
+        next.has(idx) ? next.delete(idx) : next.add(idx)
+        return next
+      })
+      setAnchorIdx(idx)
+    } else if (selectedIndices.has(idx) && selectedIndices.size > 1) {
+      // Defer collapse to mouseup so a drag can start with the full selection.
+      pendingSingleSelect.current = idx
+    } else {
+      setSelectedIndices(new Set([idx]))
+      setAnchorIdx(idx)
+    }
+  }
+
+  const handleRowMouseUp = (idx: number): void => {
+    if (pendingSingleSelect.current === idx) {
+      pendingSingleSelect.current = null
+      setSelectedIndices(new Set([idx]))
+      setAnchorIdx(idx)
+    }
+  }
+
+  const handleDragStart = (e: React.DragEvent, idx: number, track: Track): void => {
+    pendingSingleSelect.current = null
+    const isMulti = selectedIndices.has(idx) && selectedIndices.size > 1
+    if (isMulti) {
+      const sorted = [...selectedIndices].sort((a, b) => a - b)
+      const ids = sorted.map((i) => tracks[i].id)
+      e.dataTransfer.setData('text/kamp-track-ids', JSON.stringify(ids))
+      const ghost = document.createElement('div')
+      ghost.textContent = `${sorted.length} tracks`
+      ghost.style.cssText =
+        'position:fixed;top:-100px;background:var(--accent);color:#fff;padding:4px 10px;border-radius:3px;font-size:12px;font-weight:600'
+      document.body.appendChild(ghost)
+      e.dataTransfer.setDragImage(ghost, 0, 0)
+      requestAnimationFrame(() => document.body.removeChild(ghost))
+    } else {
+      e.dataTransfer.setData('text/kamp-track-id', String(track.id))
+    }
+    e.dataTransfer.effectAllowed = 'copy'
+  }
+
   const [menu, setMenu] = useState<ContextMenu | null>(null)
+  const [heroMenu, setHeroMenu] = useState<{ x: number; y: number } | null>(null)
 
   if (!album) return null
+
+  const isRemoteAlbum = album.source !== 'local'
+  // KAMP-552: the sale_item_id is exposed on the album (parsed server-side from
+  // the tracks' bandcamp sources) — no longer parsed from a track file_path.
+  const saleItemId = isRemoteAlbum ? (album.sale_item_id ?? null) : null
+  const isDownloading = saleItemId !== null && downloadingAlbumIds.has(saleItemId)
 
   const isCurrentAlbum =
     currentTrack?.album === album.album && currentTrack?.album_artist === album.album_artist
 
+  const totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0)
+
   return (
-    <div className={`track-list-view${albumEditMode ? ' track-list-view--edit' : ''}`}>
+    <div
+      className={`track-list-view${albumEditMode ? ' track-list-view--edit' : ''}${isResizing ? ' track-list-view--resizing' : ''}${isArtPanning ? ' track-list-view--art-panning' : ''}`}
+      style={{ '--hero-height-pct': heroHeightPct } as React.CSSProperties}
+    >
       {/* Hero: full-width art — image intentionally taller than hero to bleed into track list */}
-      <div className={`track-list-hero${album.has_art ? ' has-art' : ''}`}>
+      <div
+        className={`track-list-hero${album.has_art ? ' has-art' : ''}`}
+        title={albumEditMode && album.has_art ? 'Drag to reposition art' : undefined}
+        onMouseDown={albumEditMode && album.has_art ? handleArtPanMouseDown : undefined}
+        onContextMenu={(e) => {
+          if (!album.album_url) return
+          e.preventDefault()
+          setHeroMenu({ x: e.clientX, y: e.clientY })
+        }}
+      >
         {album.has_art && (
           <HeroImage
-            src={artUrl(album.album_artist, album.album, album.file_path, album.art_version)}
+            src={artUrl(album.album_artist, album.album, {
+              trackId: album.track_id,
+              version: album.art_version
+            })}
+            objectPositionY={artOffsetPct}
           />
         )}
       </div>
       {/* Overlay spans the full view so the gradient covers both hero and the top of the track list */}
       <div className="track-list-hero-overlay" />
+      {heroMenu && album.album_url && (
+        <ContextMenu x={heroMenu.x} y={heroMenu.y} onClose={() => setHeroMenu(null)}>
+          <button
+            className="track-context-menu-item"
+            onClick={() => {
+              void navigator.clipboard.writeText(album.album_url!)
+              showFlashToast(`Copied link to ${album.album}`)
+              setHeroMenu(null)
+            }}
+          >
+            <span
+              style={{
+                marginRight: 6,
+                verticalAlign: 'middle',
+                flexShrink: 0,
+                display: 'inline-flex'
+              }}
+            >
+              <ShareIcon size={12} />
+            </span>
+            Copy Bandcamp link
+          </button>
+        </ContextMenu>
+      )}
 
       {/* Breadcrumb floats over the hero */}
       <nav className="breadcrumb" aria-label="Navigation">
@@ -221,15 +499,20 @@ export function TrackList(): React.JSX.Element | null {
             selectArtist(album.album_artist)
           }}
         >
-          {album.album_artist}
+          {album.display_album_artist ?? album.album_artist}
         </button>
         <span className="breadcrumb-sep" aria-hidden="true">
           ›
         </span>
-        <span>{album.album}</span>
+        <span>{album.display_album ?? album.album}</span>
+        {album.is_preorder && (
+          <span className="album-preorder-badge" aria-label="Pre-Order">
+            Pre-Order
+          </span>
+        )}
       </nav>
 
-      {/* Edit toggle — separate pill, right side of the hero row */}
+      {/* Edit toggle */}
       <button
         className={`breadcrumb-edit-btn${albumEditMode ? ' active' : ''}`}
         aria-pressed={albumEditMode}
@@ -239,12 +522,12 @@ export function TrackList(): React.JSX.Element | null {
         {albumEditMode ? 'Done' : 'Edit tags'}
       </button>
 
-      {/* MusicBrainz fetch pill — only visible in edit mode, stacked below Edit/Done */}
-      {albumEditMode && (
+      {/* MusicBrainz fetch pill — only for local albums in edit mode */}
+      {album.source === 'local' && albumEditMode && (
         <button
           className={`breadcrumb-edit-btn mb-pill${mbState.status === 'loading' ? ' mb-pill--loading' : mbState.status === 'error' ? ' mb-pill--error' : ''}`}
           disabled={mbState.status === 'loading'}
-          title={mbState.status === 'error' ? mbState.message : 'Fetch from MusicBrainz'}
+          {...tooltip(mbState.status === 'error' ? mbState.message : TOOLTIPS.LIBRARY_FETCH_MB)}
           onClick={handleFetchMB}
           type="button"
         >
@@ -272,11 +555,11 @@ export function TrackList(): React.JSX.Element | null {
         </button>
       )}
 
-      {/* iTunes album art fetch pill — only visible in edit mode */}
-      {albumEditMode && (
+      {/* iTunes album art fetch pill — only for local albums in edit mode */}
+      {album.source === 'local' && albumEditMode && (
         <button
           className="breadcrumb-edit-btn mb-pill mb-pill--second"
-          title="Fetch album art"
+          {...tooltip(TOOLTIPS.LIBRARY_FETCH_ART)}
           onClick={() => setArtSearchOpen(true)}
           type="button"
         >
@@ -294,6 +577,9 @@ export function TrackList(): React.JSX.Element | null {
         <div className="track-list-identity-text">
           <button
             className={`track-list-album-fav-btn favorite-btn${album.favorite ? ' active' : ''}`}
+            {...tooltip(
+              album.favorite ? TOOLTIPS.ALBUM_FAVORITE_REMOVE : TOOLTIPS.ALBUM_FAVORITE_ADD
+            )}
             aria-label={album.favorite ? 'Remove from favorites' : 'Add to favorites'}
             aria-pressed={album.favorite}
             onClick={() => setAlbumFavorite(album.album_artist, album.album, !album.favorite)}
@@ -301,22 +587,35 @@ export function TrackList(): React.JSX.Element | null {
             <FavoriteIcon active={album.favorite} size={36} />
           </button>
           <EditableAlbumField
-            value={album.album}
+            value={album.display_album ?? album.album}
             editMode={albumEditMode}
             disabled={albumRenameProgress !== null}
             className="track-list-album-title"
             onSave={async (newAlbum) => {
               const oldAlbum = album.album
               const oldArtist = album.album_artist
+              if (album.source === 'bandcamp') {
+                await patchAlbumDisplay(
+                  oldArtist,
+                  oldAlbum,
+                  newAlbum,
+                  album.display_album_artist ?? null
+                )
+                return
+              }
               const count = album.track_count
-              const result = await patchAlbumTags(oldArtist, oldAlbum, { album: newAlbum })
-              if (result?.collision) {
-                setAlbumCollision({ ...result, pendingOpts: { album: newAlbum } })
-              } else {
-                showRenameToast({
-                  message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
-                  undo: () => patchAlbumTags(oldArtist, newAlbum, { album: oldAlbum })
-                })
+              try {
+                const result = await patchAlbumTags(oldArtist, oldAlbum, { album: newAlbum })
+                if (result?.collision) {
+                  setAlbumCollision({ ...result, pendingOpts: { album: newAlbum } })
+                } else {
+                  showRenameToast({
+                    message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
+                    undo: () => patchAlbumTags(oldArtist, newAlbum, { album: oldAlbum })
+                  })
+                }
+              } catch (err) {
+                showRenameToast({ message: err instanceof Error ? err.message : 'Rename failed' })
               }
             }}
             renderStatic={(val) => (
@@ -326,22 +625,32 @@ export function TrackList(): React.JSX.Element | null {
             )}
           />
           <EditableAlbumField
-            value={album.album_artist}
+            value={album.display_album_artist ?? album.album_artist}
             editMode={albumEditMode}
             disabled={albumRenameProgress !== null}
             className="track-list-album-artist-input"
             onSave={async (newArtist) => {
               const oldArtist = album.album_artist
               const oldAlbum = album.album
+              if (album.source === 'bandcamp') {
+                await patchAlbumDisplay(oldArtist, oldAlbum, album.display_album ?? null, newArtist)
+                return
+              }
               const count = album.track_count
-              const result = await patchAlbumTags(oldArtist, oldAlbum, { album_artist: newArtist })
-              if (result?.collision) {
-                setAlbumCollision({ ...result, pendingOpts: { album_artist: newArtist } })
-              } else {
-                showRenameToast({
-                  message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
-                  undo: () => patchAlbumTags(newArtist, oldAlbum, { album_artist: oldArtist })
+              try {
+                const result = await patchAlbumTags(oldArtist, oldAlbum, {
+                  album_artist: newArtist
                 })
+                if (result?.collision) {
+                  setAlbumCollision({ ...result, pendingOpts: { album_artist: newArtist } })
+                } else {
+                  showRenameToast({
+                    message: `${count} ${count === 1 ? 'file' : 'files'} reorganized`,
+                    undo: () => patchAlbumTags(newArtist, oldAlbum, { album_artist: oldArtist })
+                  })
+                }
+              } catch (err) {
+                showRenameToast({ message: err instanceof Error ? err.message : 'Rename failed' })
               }
             }}
             renderStatic={(val) => (
@@ -358,41 +667,94 @@ export function TrackList(): React.JSX.Element | null {
               </h2>
             )}
           />
-          {album.year && <div className="track-list-album-year">{album.year}</div>}
+          {(album.release_date || totalDuration > 0) && (
+            <div className="track-list-album-year">
+              {[album.release_date, totalDuration > 0 ? formatLongDuration(totalDuration) : '']
+                .filter(Boolean)
+                .join(' · ')}
+            </div>
+          )}
           {albumRenameProgress && (
             <div className="album-rename-progress" aria-live="polite">
               Renaming {albumRenameProgress.done} of {albumRenameProgress.total}…
             </div>
           )}
         </div>
-        <div className="album-controls">
-          <button
-            className="album-secondary-btn"
-            title="Add to queue"
-            aria-label="Add album to queue"
-            onClick={() => void addAlbumToQueue(album.album_artist, album.album, album.file_path)}
-          >
-            <QueueAddIcon size={16} />
-          </button>
-          <button
-            className="album-secondary-btn"
-            title="Play next"
-            aria-label="Play album next"
-            onClick={() => void playAlbumNext(album.album_artist, album.album, album.file_path)}
-          >
-            <PlayNextIcon size={16} />
-          </button>
-          <button
-            className="play-all-btn"
-            aria-label={isCurrentAlbum && playing ? 'Pause' : 'Play all'}
-            onClick={() =>
-              isCurrentAlbum
-                ? togglePlayPause()
-                : playTrack(album.album_artist, album.album, 0, album.file_path)
-            }
-          >
-            {isCurrentAlbum && playing ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
-          </button>
+        <div className="album-controls-group">
+          {(isRemoteAlbum || album.sale_item_id) && (
+            <div className="streaming-controls">
+              <span className="source-pill">
+                {sourceIcon(isRemoteAlbum ? album.source : 'bandcamp', 16)}
+              </span>
+              {isRemoteAlbum && saleItemId && (
+                <button
+                  className={`album-download-btn${isDownloading ? ' album-download-btn--downloading' : ''}`}
+                  {...tooltip('Download Album')}
+                  aria-label="Download album"
+                  disabled={isDownloading}
+                  onClick={() => {
+                    markAlbumDownloading(saleItemId)
+                    void downloadAlbum(saleItemId)
+                  }}
+                >
+                  <DownloadArrowIcon size={16} />
+                </button>
+              )}
+              {!isRemoteAlbum && album.sale_item_id && (
+                <button
+                  className="album-download-btn"
+                  {...tooltip('Remove download')}
+                  aria-label="Remove download"
+                  onClick={() => void removeDownload(album.sale_item_id!)}
+                >
+                  <RemoveFromQueueIcon size={16} />
+                </button>
+              )}
+              {album.album_url && (
+                <button
+                  className="album-secondary-btn"
+                  {...tooltip('Copy Bandcamp link')}
+                  aria-label="Copy Bandcamp link"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(album.album_url!)
+                    showFlashToast(`Copied link to ${album.album}`)
+                  }}
+                >
+                  <ShareIcon size={16} />
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="album-controls">
+            <button
+              className="album-secondary-btn"
+              {...tooltip(TOOLTIPS.LIBRARY_ADD_TO_QUEUE)}
+              aria-label="Add album to queue"
+              onClick={() => void addAlbumToQueue(album.album_artist, album.album, album.track_id)}
+            >
+              <QueueAddIcon size={16} />
+            </button>
+            <button
+              className="album-secondary-btn"
+              {...tooltip(TOOLTIPS.LIBRARY_PLAY_NEXT)}
+              aria-label="Play album next"
+              onClick={() => void playAlbumNext(album.album_artist, album.album, album.track_id)}
+            >
+              <PlayNextIcon size={16} />
+            </button>
+            <button
+              className="play-all-btn"
+              aria-label={isCurrentAlbum && playing ? 'Pause' : 'Play all'}
+              onClick={() =>
+                isCurrentAlbum
+                  ? togglePlayPause()
+                  : playTrack(album.album_artist, album.album, 0, album.track_id)
+              }
+            >
+              {isCurrentAlbum && playing ? <PauseIcon size={18} /> : <PlayIcon size={18} />}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -402,8 +764,13 @@ export function TrackList(): React.JSX.Element | null {
         tracks={tracks}
         editMode={albumEditMode}
         expanded={albumMetaExpanded}
-        onToggle={() => setAlbumMetaExpanded(!albumMetaExpanded)}
+        onToggle={handleToggle}
         onSave={(opts) => patchAlbumMeta(album.album_artist, album.album, opts)}
+        onFetchGenres={() =>
+          fetchAlbumGenres(album.album_artist, album.album).then((r) => r.genres)
+        }
+        onHandleMouseDown={handleResizeMouseDown}
+        onHandleDoubleClick={handleResizeReset}
       />
 
       {/* Scrollable body */}
@@ -411,37 +778,74 @@ export function TrackList(): React.JSX.Element | null {
         <ol className="track-rows">
           {tracks.map((track, i) => {
             const isCurrent = currentTrack?.id === track.id
+            const isRemoteTrack = track.source !== 'local'
+            const isTrackOffline = isRemoteTrack && !connected
+            const isPreorderUnavailable = track.is_available === false
+            const isSelected = selectedIndices.has(i)
             return (
               <li
                 key={track.id}
-                className={`track-row${isCurrent ? ' current' : ''}`}
+                className={[
+                  'track-row',
+                  isCurrent ? 'current' : '',
+                  isTrackOffline ? 'track-row--offline' : '',
+                  isPreorderUnavailable ? 'track-row--preorder-unavailable' : '',
+                  flashTrackId === track.id ? 'track-row--new-flash' : '',
+                  isSelected ? 'selected' : ''
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
                 tabIndex={0}
+                onMouseDown={(e) => handleRowMouseDown(e, i)}
+                onMouseUp={() => handleRowMouseUp(i)}
                 onDoubleClick={() => {
+                  if (isTrackOffline || isPreorderUnavailable) return
                   if (isCurrent) {
                     togglePlayPause()
                   } else {
-                    playTrack(album.album_artist, album.album, i, album.file_path)
+                    playTrack(album.album_artist, album.album, i, album.track_id)
                   }
                 }}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter') return
+                  if (isTrackOffline || isPreorderUnavailable) return
                   if (isCurrent) togglePlayPause()
-                  else playTrack(album.album_artist, album.album, i, album.file_path)
+                  else playTrack(album.album_artist, album.album, i, album.track_id)
                 }}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData('text/kamp-track-path', track.file_path)
-                  e.dataTransfer.effectAllowed = 'copy'
-                }}
+                {...(!isTrackOffline && !isPreorderUnavailable
+                  ? {
+                      draggable: true,
+                      onDragStart: (e: React.DragEvent) => handleDragStart(e, i, track)
+                    }
+                  : {})}
                 onContextMenu={(e) => {
                   e.preventDefault()
+                  if (!isSelected) {
+                    setSelectedIndices(new Set([i]))
+                    setAnchorIdx(i)
+                  }
                   setMenu({ x: e.clientX, y: e.clientY, track })
                 }}
               >
                 <span className="track-row-fav">
-                  {track.favorite && <FavoriteIcon active size={10} />}
+                  <button
+                    className={`track-row-fav-btn${track.favorite ? ' active' : ''}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void setFavorite(track, !track.favorite)
+                    }}
+                    aria-label={track.favorite ? 'Remove from favorites' : 'Add to favorites'}
+                    aria-pressed={track.favorite}
+                  >
+                    <FavoriteIcon active={track.favorite} size={10} />
+                  </button>
                 </span>
                 <span className="track-row-num">
+                  {isRemoteTrack && !isCurrent && (
+                    <span className="track-row-cloud" aria-hidden="true">
+                      <CloudIcon size={8} />
+                    </span>
+                  )}
                   {isCurrent ? (
                     playing ? (
                       <PlayIcon size={11} />
@@ -452,19 +856,50 @@ export function TrackList(): React.JSX.Element | null {
                     track.track_number
                   )}
                 </span>
-                <EditableTrackTitle
+                <span className="track-row-title-cell">
+                  {isTrackOffline && (
+                    <span
+                      className="track-row-offline-icon"
+                      title="Track unavailable offline"
+                      aria-hidden="true"
+                    >
+                      <WarnIcon size={11} />
+                    </span>
+                  )}
+                  <EditableTrackField
+                    trackId={track.id}
+                    value={track.title}
+                    className="track-row-title"
+                    editMode={albumEditMode}
+                    deferred={track.id in deferredOps}
+                    onSave={async (trackId, newTitle) => {
+                      if (isRemoteTrack) {
+                        await patchTrackDisplay(trackId, { display_title: newTitle })
+                        return
+                      }
+                      const result = await patchTrackTitle(trackId, newTitle)
+                      if (result?.collision) {
+                        setCollision({ ...result, pendingTrackId: trackId, pendingTitle: newTitle })
+                      }
+                    }}
+                  />
+                </span>
+                <EditableTrackField
                   trackId={track.id}
-                  title={track.title}
+                  value={track.artist}
+                  className="track-row-artist"
                   editMode={albumEditMode}
-                  deferred={track.id in deferredOps}
-                  onSave={async (trackId, newTitle) => {
-                    const result = await patchTrackTitle(trackId, newTitle)
-                    if (result?.collision) {
-                      setCollision({ ...result, pendingTrackId: trackId, pendingTitle: newTitle })
+                  onSave={async (trackId, newArtist) => {
+                    if (isRemoteTrack) {
+                      await patchTrackDisplay(trackId, { display_artist: newArtist })
+                      return
                     }
+                    await patchTrackArtist(trackId, newArtist)
                   }}
                 />
-                <span className="track-row-artist">{track.artist}</span>
+                <span className="track-row-duration">
+                  {track.duration > 0 ? formatTime(track.duration) : '—'}
+                </span>
               </li>
             )
           })}
@@ -472,7 +907,17 @@ export function TrackList(): React.JSX.Element | null {
       </div>
 
       {menu && (
-        <TrackContextMenu x={menu.x} y={menu.y} track={menu.track} onClose={() => setMenu(null)} />
+        <TrackContextMenu
+          x={menu.x}
+          y={menu.y}
+          track={menu.track}
+          onClose={() => setMenu(null)}
+          selectedTracks={
+            selectedIndices.size > 1
+              ? [...selectedIndices].sort((a, b) => a - b).map((i) => tracks[i])
+              : undefined
+          }
+        />
       )}
       {mbState.status === 'ready' && (
         <MusicBrainzModal
@@ -528,16 +973,18 @@ export function TrackList(): React.JSX.Element | null {
       {albumRenameToast && (
         <div className="album-rename-toast" role="status">
           <span className="album-rename-toast-text">{albumRenameToast.message}</span>
-          <button
-            className="album-rename-toast-undo"
-            onClick={() => {
-              setAlbumRenameToast(null)
-              if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
-              void albumRenameToast.undo()
-            }}
-          >
-            Undo
-          </button>
+          {albumRenameToast.undo && (
+            <button
+              className="album-rename-toast-undo"
+              onClick={() => {
+                setAlbumRenameToast(null)
+                if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+                void albumRenameToast.undo!()
+              }}
+            >
+              Undo
+            </button>
+          )}
           <div className="album-rename-toast-bar" style={{ animationDuration: `${TOAST_TTL}ms` }} />
         </div>
       )}

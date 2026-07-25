@@ -13,13 +13,24 @@ export function ContextMenu({ x, y, onClose, children }: Props): React.JSX.Eleme
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const handler = (e: MouseEvent): void => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+    const onMouseDown = (e: MouseEvent): void => {
+      // Close unless the click is inside this menu or any portal submenu (.track-context-menu).
+      // Portal submenus are rendered in document.body, outside ref.current, so a simple
+      // ref.current.contains() check would close the parent when clicking a submenu item.
+      const insideAnyMenu = (e.target as Element).closest?.('.track-context-menu') !== null
+      if (!insideAnyMenu) {
         onClose()
       }
     }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
   }, [onClose])
 
   useMenuBounds(ref, true)

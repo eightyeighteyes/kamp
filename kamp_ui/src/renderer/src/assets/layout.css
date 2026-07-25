@@ -37,7 +37,7 @@
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 1px 6px;
-  font-family: monospace;
+  font-family: ui-monospace, 'SF Mono', monospace;
 }
 
 /* -------------------------------------------------------------------------
@@ -161,6 +161,30 @@ html[data-platform='win32'] .view-tabs {
   padding-right: 140px;
 }
 
+/* Left/right rail groups flank the search bar. Both flex:1 so the search bar
+   sits centered in the rail's free space (KAMP-585). */
+.view-tabs__group {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+}
+
+.view-tabs__group--left {
+  justify-content: flex-start;
+  gap: 2px;
+}
+
+.view-tabs__group--right {
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+/* The search bar is the centered flex child, so drop its default margin-left:auto
+   (which would otherwise consume all free space and break the centering). */
+.view-tabs > .search-bar {
+  margin-left: 0;
+}
+
 .view-tabs button {
   background: none;
   border: none;
@@ -228,6 +252,12 @@ html[data-platform='win32'] .view-tabs {
   animation: bandcamp-pulse 1.4s ease-in-out infinite;
 }
 
+.bandcamp-btn--disconnected svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
 .pipeline-indicator {
   display: flex;
   align-items: center;
@@ -236,9 +266,43 @@ html[data-platform='win32'] .view-tabs {
   cursor: default;
 }
 
+/* Idle state is a real <button>: reset the native chrome, keep the rail look. */
+.pipeline-indicator--idle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.pipeline-indicator--idle:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.pipeline-indicator--idle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .pipeline-indicator--active {
   color: var(--accent);
+}
+
+/* Copying: spinning two-arrows (transform only — safe in the Electron renderer). */
+.pipeline-indicator--copying svg {
+  animation: spin 1s linear infinite;
+}
+
+/* Tagging: pulsing tag (opacity only). */
+.pipeline-indicator--tagging {
   animation: bandcamp-pulse 1.4s ease-in-out infinite;
+}
+
+/* Respect reduced-motion: hold the highlighted icon steady, no spin/pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .pipeline-indicator--copying svg,
+  .pipeline-indicator--tagging {
+    animation: none;
+  }
 }
 
 .bandcamp-context-menu {
@@ -272,14 +336,7 @@ html[data-platform='win32'] .view-tabs {
 
 /* Panel picker ------------------------------------------------------------- */
 
-.panel-picker-anchor {
-  position: relative;
-  flex-shrink: 0;
-  margin-left: 6px;
-  -webkit-app-region: no-drag;
-}
-
-.panel-picker-trigger {
+.prefs-btn {
   background: none;
   border: none;
   color: var(--text-dim);
@@ -288,107 +345,30 @@ html[data-platform='win32'] .view-tabs {
   padding: 4px 6px;
   border-radius: 4px;
   line-height: 1;
+  flex-shrink: 0;
+  margin-left: 6px;
+  -webkit-app-region: no-drag;
   transition:
     color 0.15s,
     background 0.15s;
 }
 
-.panel-picker-trigger:hover,
-.panel-picker-trigger.active {
+.prefs-btn:hover {
   color: var(--text);
   background: var(--hover);
 }
 
-.panel-picker-popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 200;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  min-width: 280px;
-  padding-bottom: 6px;
-}
-
-.panel-picker-header {
-  padding: 10px 14px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
-}
-
-.panel-picker-legend {
-  display: flex;
-  gap: 12px;
-  padding: 4px 14px 6px;
-  font-size: 11px;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
-}
-
-.panel-picker-row {
+/* Downloads entry-point icon (KAMP-585): replaces the old Downloads text tab.
+   Uses .prefs-btn as its base; flex-centers the icon and highlights in the
+   accent color while the Downloads view is active. */
+.downloads-btn {
   display: flex;
   align-items: center;
-  padding: 4px 14px;
-  gap: 8px;
 }
 
-.panel-picker-row:hover {
-  background: var(--hover);
-}
-
-.panel-picker-name {
-  flex: 1;
-  font-size: 13px;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.panel-picker-controls {
-  display: flex;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.panel-picker-slot-btn {
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 2px 5px;
-  line-height: 1;
-  transition:
-    color 0.12s,
-    background 0.12s,
-    border-color 0.12s;
-}
-
-.panel-picker-slot-btn:hover {
-  color: var(--text);
-  background: var(--hover);
-}
-
-.panel-picker-slot-btn.active {
+.downloads-btn--active,
+.downloads-btn--active:hover {
   color: var(--accent);
-  border-color: var(--accent);
-}
-
-.panel-picker-slot-btn.disabled,
-.panel-picker-slot-btn:disabled {
-  color: var(--text-dim);
-  opacity: 0.3;
-  cursor: not-allowed;
 }
 
 /* App body ----------------------------------------------------------------- */
@@ -397,6 +377,46 @@ html[data-platform='win32'] .view-tabs {
   display: flex;
   flex: 1;
   overflow: hidden;
+  /* Anchor for the floating panel-toggle tabs (KAMP-612). */
+  position: relative;
+}
+
+/* Floating rounded panel-toggle tabs, anchored to the app-body bottom edges.
+   Rendered outside the panels so they persist when a panel is collapsed
+   (collapsed panels are unmounted). KAMP-612. */
+.panel-tab {
+  position: absolute;
+  bottom: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.panel-tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* Reopen handles rest against the app-body edge while the panel is collapsed. */
+.panel-tab--collection {
+  left: 0;
+  border-top-right-radius: 17px;
+  border-bottom-right-radius: 17px;
+}
+
+.panel-tab--queue {
+  right: 0;
+  border-top-left-radius: 17px;
+  border-bottom-left-radius: 17px;
 }
 
 .main-content {
@@ -407,6 +427,13 @@ html[data-platform='win32'] .view-tabs {
   position: relative;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
+  /* KAMP-631: overflow-y:auto promotes this to its own compositor layer. Without
+     an opaque background, its transparent pixels reveal Chromium's compositor
+     base color (= BrowserWindow.backgroundColor, pinned to the default theme's
+     #141414) rather than the themed page bg — a "letterbox" seam on non-default
+     palettes, next to the toolbars/search bar that DO paint var(--bg). Painting
+     the layer itself opaque-themed fixes it independent of the native surface. */
+  background: var(--bg);
 }
 
 /* View panes: always mounted so img elements survive view switches and cached
@@ -428,15 +455,105 @@ html[data-platform='win32'] .view-tabs {
   overflow: hidden;
 }
 
-/* Artist panel ------------------------------------------------------------- */
+/* Library view: the sticky toolbar manages its own top edge, so remove the
+   top padding here to let it sit flush with the pane. Left/right/bottom
+   padding remain so the album grid and track list keep their margins. */
+.main-content:has(.view-pane--active .album-grid-container) {
+  padding-top: 0;
+}
 
-.artist-panel {
-  width: var(--panel-w);
+/* When the track-list is active, track-list.css zeroes out .main-content's
+   padding entirely.  The .library-view wrapper (added for the collection
+   selector) is also inside .main-content, so it loses the 16px left/right
+   inset and the selector tabs jump 16px left relative to the grid views.
+   Restore the inset on .library-view itself, then pull .track-list-view back
+   out with a matching negative margin so the hero still bleeds edge-to-edge. */
+.main-content:has(.view-pane--active .track-list-view) .library-view {
+  height: 100%;
+  padding: 0 16px;
+}
+
+.main-content:has(.view-pane--active .track-list-view) .library-view .track-list-view {
+  margin: 0 -16px;
+}
+
+/* Collection panel --------------------------------------------------------- */
+
+.collection-panel {
+  min-width: 200px;
   flex-shrink: 0;
+  position: relative;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* The list scrolls via its own overflow; the panel itself does not clip. */
+  overflow: visible;
+}
+
+.collection-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 10;
+}
+
+.collection-panel--resizing {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.collection-panel--resizing .collection-list li:hover {
+  background: none;
+}
+
+/* Collection panel header: icon + "Collection" label on the left, X close on the
+   right — mirrors the queue panel header (KAMP-616). */
+.collection-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  height: 44px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.collection-panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.collection-panel-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.collection-panel-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+.collection-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.collection-close-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
 }
 
 .panel-header {
@@ -449,7 +566,49 @@ html[data-platform='win32'] .view-tabs {
   border-bottom: 1px solid var(--border);
 }
 
-.artist-list {
+/* Library sidebar mini-tabs (Artists | Genres) — KAMP-550 */
+.library-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.library-tab {
+  flex: 1;
+  padding: 10px 8px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.library-tab:hover {
+  color: var(--text);
+}
+
+.library-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.library-list-empty {
+  padding: 12px 14px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-style: italic;
+  cursor: default;
+}
+
+.library-list-empty:hover {
+  background: none;
+}
+
+.collection-list {
   list-style: none;
   overflow-y: auto;
   flex: 1;
@@ -457,7 +616,7 @@ html[data-platform='win32'] .view-tabs {
   scrollbar-color: var(--border) transparent;
 }
 
-.artist-list li {
+.collection-list li {
   padding: 8px 14px;
   cursor: pointer;
   border-radius: 4px;
@@ -467,18 +626,32 @@ html[data-platform='win32'] .view-tabs {
   text-overflow: ellipsis;
 }
 
-.artist-list li:hover {
+.collection-list li:hover {
   background: var(--surface-hover);
 }
 
-.artist-list li.active {
+/* Inline genre rename input (KAMP-608) — sized to sit inside the list item. */
+.genre-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1px 4px;
+  margin: -2px 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  outline: none;
+}
+
+.collection-list li.active {
   background: var(--accent-dim);
   color: var(--accent);
 }
 
 /* Focus-visible rings ----------------------------------------------------- */
 
-.artist-list li:focus-visible,
+.collection-list li:focus-visible,
 .album-card:focus-visible,
 .transport-btn:focus-visible,
 .back-btn:focus-visible,
@@ -487,9 +660,70 @@ html[data-platform='win32'] .view-tabs {
 .track-row:focus-visible,
 .seek-bar:focus-visible,
 .volume-slider:focus-visible,
-.view-tabs button:focus-visible {
+.view-tabs button:focus-visible,
+/* KAMP-598: sweep the focusable controls that had no :focus-visible rule (they
+   showed Chromium's yellow UA ring) onto the accent ring. Extends the existing
+   central allowlist above; purely additive — nothing here overrides an existing
+   ring, a text-input outline:none, or a non-focus (drag / new-arrival) outline.
+   Elements inside overflow/tight containers get an inset offset in the next
+   block so the ring isn't clipped. */
+.library-collection-tab:focus-visible,
+.toolbar-dropdown-trigger:focus-visible,
+.toolbar-dropdown-item:focus-visible,
+.toolbar-dropdown-clear:focus-visible,
+.track-context-menu-item:focus-visible,
+.volume-icon--btn:focus-visible,
+.album-secondary-btn:focus-visible,
+.album-download-btn:focus-visible,
+.meta-field-copy-btn:focus-visible,
+.panel-tab:focus-visible,
+.bandcamp-btn:focus-visible,
+.collection-close-btn:focus-visible,
+.prefs-btn:focus-visible,
+.prefs-link-btn:focus-visible,
+.prefs-select:focus-visible,
+.prefs-ext-remove-confirm:focus-visible,
+.genre-merge-btn:focus-visible,
+.genre-admin-add:focus-visible,
+.modal-btn:focus-visible,
+.mb-modal__btn:focus-visible,
+.mb-modal__nav-btn:focus-visible,
+.mb-modal__close-btn:focus-visible,
+.art-modal__choose-file-btn:focus-visible,
+.art-modal__cov-link:focus-visible,
+.magic-btn:focus-visible,
+.magic-close-btn:focus-visible,
+.magic-add-rule-btn:focus-visible,
+.magic-add-group-btn:focus-visible,
+.magic-remove-btn:focus-visible,
+.magic-select:focus-visible,
+.module-config-field select:focus-visible,
+.base-kamp-add-module:focus-visible,
+.base-kamp-add-module select:focus-visible,
+.base-kamp-remove-btn:focus-visible,
+.style-rail-control select:focus-visible,
+.onboarding-primary-btn:focus-visible,
+.onboarding-skip-btn:focus-visible,
+.setup-change-btn:focus-visible,
+.update-banner-link:focus-visible,
+.update-notes-modal__btn:focus-visible,
+.update-notes-modal__site-link:focus-visible,
+.shortcuts-close-btn:focus-visible,
+.download-card-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* KAMP-598: inset ring for controls inside overflow:hidden / tight containers,
+   where a 2px OUTWARD outline would be clipped (audited cases). */
+.view-mode-btn:focus-visible,
+.hero-art-btn:focus-visible,
+.search-clear:focus-visible,
+.track-title:focus-visible,
+.track-artist:focus-visible,
+.track-album:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Active / press feedback ------------------------------------------------- */
@@ -507,6 +741,38 @@ html[data-platform='win32'] .view-tabs {
 }
 
 .track-row:active,
-.artist-list li:active {
+.collection-list li:active {
   opacity: 0.7;
+}
+
+/* Flash toast — fixed bottom-right, used for transient copy confirmations (KAMP-367).
+   Matches .album-rename-toast exactly except position: fixed. */
+.flash-toast {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+  min-width: 240px;
+  animation: toast-in 0.22s ease-out;
+  pointer-events: none;
+}
+
+/* Error-toned variant (KAMP-571) — download failures and other error toasts. */
+.flash-toast--error {
+  border-color: var(--error);
+  border-left: 3px solid var(--error);
+}
+
+.flash-toast--error .album-rename-toast-bar {
+  background: var(--error);
 }

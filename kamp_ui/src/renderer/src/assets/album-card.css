@@ -52,6 +52,80 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: filter 0.5s;
+}
+
+/* Download-in-progress and queued states ------------------------------------ */
+
+@keyframes albumCardQueuedPulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* Queued albums dim while waiting their turn. */
+.album-card--queued {
+  animation: albumCardQueuedPulse 3s ease-in-out infinite;
+}
+
+/* Downloading: blur on the art image pulses in and out — no card-level motion. */
+@keyframes albumArtBlurPulse {
+  0%,
+  100% {
+    filter: blur(3px);
+  }
+  50% {
+    filter: blur(8px);
+  }
+}
+
+.album-art--blurred .album-art-img {
+  filter: blur(5px);
+  transition: filter 0s;
+}
+
+.album-card--downloading .album-art--blurred .album-art-img {
+  animation: albumArtBlurPulse 1.8s ease-in-out infinite;
+}
+
+.album-card--queued .album-art--blurred .album-art-img {
+  animation: none;
+}
+
+/* Progress-driven bottom-up reveal (KAMP-436) --------------------------------
+   When the daemon reports byte-progress, the base .album-art-img stays a steady
+   blur (no pulse) and a sharp copy is masked in from the bottom up. --reveal is
+   the download percentage (0–100), set inline from the WebSocket. A soft mask
+   band (not a hard clip edge) hides the seam against the blur's bleed. Uses
+   mask-image, not any height/scaleY animation, per the Electron CSS landmine. */
+.album-art--revealing .album-art-img {
+  animation: none;
+  filter: blur(6px);
+}
+
+.album-art-reveal {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Clear from the top down: sharp (black) from the top to --reveal%, then
+     transparent below so the blurred base shows through. ~12% feather so the
+     boundary reads as a soft wipe rather than a hard line. */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(var(--reveal, 0) * 1% - 6%),
+    transparent calc(var(--reveal, 0) * 1% + 6%)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(var(--reveal, 0) * 1% - 6%),
+    transparent calc(var(--reveal, 0) * 1% + 6%)
+  );
 }
 
 .now-playing-badge {
@@ -102,4 +176,168 @@
   font-size: 11px;
   color: var(--text-dim);
   margin-top: 1px;
+}
+
+.album-play-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 1px;
+}
+
+/* Source badge (in .album-info, upper-right) -------------------------------- */
+
+.album-source-badge {
+  position: absolute;
+  right: 6px;
+  top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1a4a;
+  color: #7c86e1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  height: 14px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+/* Tagging: the album is in the post-download pipeline (KAMP-562). The badge
+   swaps its source glyph for a tag icon and pulses (accent-tinted) to signal
+   "still processing" until the rescan flips the album to local. Uses
+   opacity/transform only (not height) per the Electron CSS-animation landmine. */
+@keyframes albumSourceBadgeTagPulse {
+  0%,
+  100% {
+    opacity: 0.6;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+.album-source-badge--tagging {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+/* Gate the motion like the rest of the card's animations — a lone unguarded
+   pulse would be an accessibility regression. */
+@media (prefers-reduced-motion: no-preference) {
+  .album-source-badge--tagging {
+    animation: albumSourceBadgeTagPulse 1.4s ease-in-out infinite;
+  }
+}
+
+/* Reserve right-side space so title doesn't run under the badge */
+.album-card--remote .album-title {
+  padding-right: 24px;
+}
+
+/* Offline state ------------------------------------------------------------- */
+
+.album-card--offline .album-source-badge {
+  background: #2e2e2e;
+  color: #666666;
+}
+
+/* Dim title / artist / year; badge opts back out below */
+.album-card--offline .album-info {
+  opacity: 0.4;
+}
+
+.album-card--offline .album-source-badge {
+  opacity: 1;
+}
+
+.album-card--offline .album-art {
+  opacity: 0.35;
+}
+
+.album-art-offline-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.album-art-offline-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: #e05e5e;
+  opacity: 0.85;
+}
+
+.album-art-offline-msg span {
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+/* Pre-order banner — anchored to bottom of album art area (KAMP-423) */
+.album-preorder-banner {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: lowercase;
+  background: rgba(124, 134, 225, 0.88);
+  color: #fff;
+  padding: 3px 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Magic playlist badge — top-left of art area (KAMP-463) */
+.playlist-magic-badge {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 5px;
+  border-radius: 3px;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.playlist-magic-badge::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.25) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+}
+
+.album-card:hover .playlist-magic-badge::after {
+  animation: magic-shimmer 0.7s ease-out 1 forwards;
+}
+
+@keyframes magic-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
 }

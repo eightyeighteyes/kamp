@@ -9,6 +9,15 @@ import { buildKampAPI, onBandcampSyncStatus, onPipelineStage } from './kampAPI'
 // directly from the filesystem. The .asar extension in __dirname is definitive.
 const isPackaged: boolean = __dirname.includes('.asar')
 
+// Read the app version from package.json at preload init time. __dirname in
+// the compiled preload is always two levels below the package root (out/preload/),
+// so ../../package.json resolves correctly in both dev and packaged modes.
+const appVersion: string = (
+  JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8')) as {
+    version: string
+  }
+).version
+
 function _kampTokenFilePath(): string {
   if (process.platform === 'win32') {
     return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'kamp', '.token')
@@ -27,12 +36,21 @@ function _readKampToken(): string | null {
 // Custom APIs for renderer
 const api = {
   isPackaged,
+  appVersion,
   openDirectory: (): Promise<string | null> => ipcRenderer.invoke('open-directory'),
   onOpenPreferences: (callback: () => void): (() => void) => {
     const handler = (): void => callback()
     ipcRenderer.on('open-preferences', handler)
     // Return a cleanup function so the caller can unsubscribe.
     return () => ipcRenderer.off('open-preferences', handler)
+  },
+  // View cycling (KAMP-560): the main process forwards Ctrl+Tab / Ctrl+Shift+Tab
+  // here as a direction so the renderer can advance through the top-level tabs.
+  onCycleView: (callback: (direction: 'next' | 'prev') => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, direction: 'next' | 'prev'): void =>
+      callback(direction)
+    ipcRenderer.on('cycle-view', handler)
+    return () => ipcRenderer.off('cycle-view', handler)
   },
   bandcamp: {
     /** Open the Bandcamp login BrowserWindow. Resolves when login succeeds or the window is closed. */
@@ -81,7 +99,13 @@ const api = {
   getApiToken: (): string | null => _readKampToken(),
   showItemInFolder: (filePath: string): void =>
     ipcRenderer.send('shell:show-item-in-folder', filePath),
-  openExternal: (url: string): void => ipcRenderer.send('shell:open-external', url)
+  // KAMP-558: open a folder (e.g. the Music Library) in Finder/Explorer.
+  openPath: (path: string): void => ipcRenderer.send('shell:open-path', path),
+  openExternal: (url: string): void => ipcRenderer.send('shell:open-external', url),
+  // KAMP-631: sync native window chrome (background + Windows titlebar overlay)
+  // to a theme. The main process derives the colors from the shared themes table
+  // so there is one source of truth; the renderer just names the active theme.
+  syncThemeChrome: (name: string): void => ipcRenderer.send('kamp:sync-theme-chrome', name)
 }
 
 const kampAPI = buildKampAPI()

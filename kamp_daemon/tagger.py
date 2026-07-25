@@ -33,8 +33,26 @@ _EDITION_RE = re.compile(
 )
 
 
+# MusicBrainz `inc` parameters. _BASE_INCLUDES covers every lookup; the manual
+# album-edit hydration additionally requests artist credits so each track's
+# credited artist (the compilation case) comes back — KAMP-583. The coupling is
+# named rather than implicit because _parse_release is shared: a caller that
+# omits the include silently yields TrackInfo.artist == "".
+_BASE_INCLUDES = ["artists", "recordings", "release-groups", "labels"]
+_DETAIL_INCLUDES = _BASE_INCLUDES + ["artist-credits"]
+
+
 class TaggingError(Exception):
     pass
+
+
+class ReleaseNotFoundError(TaggingError):
+    """The requested MusicBrainz release does not exist (HTTP 404).
+
+    Subclasses TaggingError so existing broad handlers keep working, while
+    letting callers (e.g. the manual-lookup endpoints) distinguish a missing
+    release from transient MB failures.
+    """
 
 
 @dataclass
@@ -46,7 +64,7 @@ class ReleaseInfo:
     title: str
     artist: str
     album_artist: str
-    year: str
+    release_date: str
     tracks: dict[str, TrackInfo]  # keyed by filename stem (best-effort) or track number
     # Extended MusicBrainz fields (default to empty so existing callers don't break)
     artist_sort: str = ""
@@ -73,6 +91,10 @@ class TrackInfo:
     title: str
     recording_mbid: str = ""
     total_tracks: int = 0
+    # Credited track artist (KAMP-583). Populated ONLY for releases fetched via
+    # lookup_release_by_mbid, whose _DETAIL_INCLUDES requests artist credits;
+    # the pipeline paths use _BASE_INCLUDES and leave this empty.
+    artist: str = ""
 
 
 def is_tagged(path: Path) -> bool:
@@ -183,7 +205,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
     title = ""
     album = ""
     album_artist = ""
-    year = ""
+    release_date = ""
     track_number = 0
     genre = ""
     label = ""
@@ -196,7 +218,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
             album_artist = str(tags.get("TPE2")) if tags.get("TPE2") else artist
             album = str(tags.get("TALB")) if tags.get("TALB") else ""
             title = str(tags.get("TIT2")) if tags.get("TIT2") else ""
-            year = str(tags.get("TDRC"))[:4] if tags.get("TDRC") else ""
+            release_date = str(tags.get("TDRC")) if tags.get("TDRC") else ""
             trck = tags.get("TRCK")
             if trck:
                 parts = str(trck).split("/")
@@ -220,7 +242,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
                 # Fall back to sort-name tag (sonm).
                 title = str(nam_v[0]) if nam_v else str((t.get("sonm") or [""])[0])
                 day_v = t.get("\xa9day")
-                year = str(day_v[0])[:4] if day_v else ""
+                release_date = str(day_v[0]) if day_v else ""
                 trkn_v = t.get("trkn")
                 if trkn_v:
                     track_number = trkn_v[0][0]  # type: ignore[index]
@@ -247,7 +269,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
                 tit_v2 = tf.get("TITLE")
                 title = tit_v2[0] if tit_v2 else ""
                 yr_v2 = tf.get("DATE")
-                year = yr_v2[0][:4] if yr_v2 else ""
+                release_date = yr_v2[0] if yr_v2 else ""
                 trck_v2 = tf.get("TRACKNUMBER")
                 if trck_v2:
                     t_s = trck_v2[0].split("/")[0]
@@ -269,7 +291,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
                 tit_v3 = to.get("TITLE")
                 title = tit_v3[0] if tit_v3 else ""
                 yr_v3 = to.get("DATE")
-                year = yr_v3[0][:4] if yr_v3 else ""
+                release_date = yr_v3[0] if yr_v3 else ""
                 trck_v3 = to.get("TRACKNUMBER")
                 if trck_v3:
                     t_s3 = trck_v3[0].split("/")[0]
@@ -290,7 +312,7 @@ def read_track_metadata_from_file(path: Path) -> TrackMetadata:
         artist=artist,
         album=album,
         album_artist=album_artist or artist,
-        year=year,
+        release_date=release_date,
         track_number=track_number,
         mbid="",
         genre=genre,
@@ -356,8 +378,8 @@ def _write_mp3_tags_from_metadata(
     tags["TPE2"] = id3.TPE2(encoding=3, text=track.album_artist)
     tags["TALB"] = id3.TALB(encoding=3, text=track.album)
     tags["TIT2"] = id3.TIT2(encoding=3, text=track.title)
-    if track.year:
-        tags["TDRC"] = id3.TDRC(encoding=3, text=track.year)
+    if track.release_date:
+        tags["TDRC"] = id3.TDRC(encoding=3, text=track.release_date)
 
     trck_str = (
         f"{track.track_number}/{total_tracks}"
@@ -404,8 +426,8 @@ def _write_m4a_tags_from_metadata(
     audio.tags["\xa9ART"] = [track.artist]
     audio.tags["aART"] = [track.album_artist]
     audio.tags["\xa9alb"] = [track.album]
-    if track.year:
-        audio.tags["\xa9day"] = [track.year]
+    if track.release_date:
+        audio.tags["\xa9day"] = [track.release_date]
 
     audio.tags["trkn"] = [(track.track_number, total_tracks)]
     audio.tags["disk"] = [(disc_number, total_discs)]
@@ -441,8 +463,8 @@ def _write_flac_tags_from_metadata(
     audio.tags["ARTIST"] = [track.artist]
     audio.tags["ALBUMARTIST"] = [track.album_artist]
     audio.tags["ALBUM"] = [track.album]
-    if track.year:
-        audio.tags["DATE"] = [track.year]
+    if track.release_date:
+        audio.tags["DATE"] = [track.release_date]
 
     trck_str = (
         f"{track.track_number}/{total_tracks}"
@@ -481,8 +503,8 @@ def _write_ogg_tags_from_metadata(
     audio.tags["ARTIST"] = [track.artist]
     audio.tags["ALBUMARTIST"] = [track.album_artist]
     audio.tags["ALBUM"] = [track.album]
-    if track.year:
-        audio.tags["DATE"] = [track.year]
+    if track.release_date:
+        audio.tags["DATE"] = [track.release_date]
 
     trck_str = (
         f"{track.track_number}/{total_tracks}"
@@ -503,6 +525,55 @@ def _write_ogg_tags_from_metadata(
 
     audio.save()
     logger.debug("Wrote metadata tags to OGG %s", path)
+
+
+# KAMP-523: the private tag that carries Bandcamp provenance. The scanner reads
+# it back (kamp_core.library._read_*_tags) and links the file to its album by
+# identity, so a download re-attaches to its streaming origin even when the
+# descriptive tags diverge.
+_SALE_ITEM_ID_MP3 = "TXXX:KAMP_SALE_ITEM_ID"
+_SALE_ITEM_ID_M4A = "----:com.apple.iTunes:KAMP_SALE_ITEM_ID"
+_SALE_ITEM_ID_VORBIS = "KAMP_SALE_ITEM_ID"
+
+
+def write_sale_item_id(path: Path, sale_item_id: str) -> None:
+    """Stamp *sale_item_id* into a file's KAMP_SALE_ITEM_ID private tag.
+
+    Written per codec, mirroring the MusicBrainz-ID tag conventions. A no-op
+    for an empty id or an unsupported format (logged, not raised).
+    """
+    if not sale_item_id:
+        return
+    suffix = path.suffix.lower()
+    if suffix == ".mp3":
+        try:
+            tags = id3.ID3(str(path))
+        except Exception:
+            tags = id3.ID3()
+        tags[_SALE_ITEM_ID_MP3] = id3.TXXX(
+            encoding=3, desc="KAMP_SALE_ITEM_ID", text=sale_item_id
+        )
+        tags.save(str(path))
+    elif suffix == ".m4a":
+        audio = mutagen.mp4.MP4(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        assert audio.tags is not None
+        audio.tags[_SALE_ITEM_ID_M4A] = [mutagen.mp4.MP4FreeForm(sale_item_id.encode())]
+        audio.save()
+    elif suffix in (".flac", ".ogg"):
+        audio = (
+            mutagen.flac.FLAC(str(path))
+            if suffix == ".flac"
+            else mutagen.oggvorbis.OggVorbis(str(path))
+        )
+        if audio.tags is None:
+            audio.add_tags()
+        assert audio.tags is not None
+        audio.tags[_SALE_ITEM_ID_VORBIS] = [sale_item_id]
+        audio.save()
+    else:
+        logger.warning("Unsupported format for provenance tag: %s", path)
 
 
 def _lookup_release_by_acoustid(
@@ -550,7 +621,7 @@ def _lookup_release_by_acoustid(
     detail = _mb_call(
         musicbrainzngs.get_release_by_id,
         winning_mbid,
-        includes=["artists", "recordings", "release-groups", "labels"],
+        includes=_BASE_INCLUDES,
     )
     return _parse_release(detail["release"]), file_acoustid_ids
 
@@ -821,7 +892,7 @@ def _lookup_release_by_recordings(audio_files: list[Path]) -> ReleaseInfo:
     detail = _mb_call(
         musicbrainzngs.get_release_by_id,
         winning_mbid,
-        includes=["artists", "recordings", "release-groups", "labels"],
+        includes=_BASE_INCLUDES,
     )
     return _parse_release(detail["release"])
 
@@ -882,7 +953,7 @@ def lookup_release_from_tracks(
         detail = _mb_call(
             musicbrainzngs.get_release_by_id,
             winning_mbid,
-            includes=["artists", "recordings", "release-groups", "labels"],
+            includes=_BASE_INCLUDES,
         )
         return _parse_release(detail["release"])
 
@@ -899,88 +970,45 @@ def lookup_release_from_tracks(
 _MAX_MB_CANDIDATES = 5
 
 
-def lookup_releases_from_tracks(
-    tracks: list[tuple[str, str, str]],
+def search_release_candidates(
+    artist: str, album: str, limit: int = 10
 ) -> list[ReleaseInfo]:
-    """Return up to _MAX_MB_CANDIDATES MusicBrainz releases ranked best-first.
+    """Return up to *limit* shallow release candidates from ONE search call.
 
-    Uses the same tier-1 (per-track recording votes) + tier-2 (album-level
-    search) strategy as lookup_release_from_tracks, but returns all parseable
-    candidates instead of stopping at the first.  Designed for the comparison
-    UI where the user selects from multiple possible matches.
-
-    Args:
-        tracks: Sequence of (artist, title, album) strings, one per track.
-
-    Returns:
-        Non-empty list of ReleaseInfo sorted best-first.
-
-    Raises:
-        TaggingError: If no release can be found at all.
+    Designed for the manual album-edit picker (KAMP-584): no per-candidate
+    get_release_by_id hydration, so the whole lookup is a single rate-limited
+    MB request.  Candidates carry only search-result fields (title, artist,
+    date, label, type — all per-release optional in MB search results) and
+    always have an empty ``tracks`` dict; callers hydrate a candidate on
+    demand via lookup_release_by_mbid.
     """
-    if not tracks:
-        raise TaggingError("No tracks provided for MusicBrainz lookup")
-
-    # Tier 1: per-track recording votes — collect top-N voted MBIDs
-    votes: Counter[str] = Counter()
-    for artist, title, album in tracks:
-        if not title:
+    candidates: list[ReleaseInfo] = []
+    for raw in _search_release_candidates_raw(artist, album, limit):
+        try:
+            candidates.append(_parse_release(raw))
+        except (ValueError, KeyError) as exc:
+            logger.debug("Skipping unparseable search result: %s", exc)
             continue
-        result = _mb_call(
-            musicbrainzngs.search_recordings,
-            recording=title,
-            artist=artist,
-            release=album,
-            limit=3,
-        )
-        recordings = result.get("recording-list", [])
-        if not recordings:
-            continue
-        top = recordings[0]
-        for rel in top.get("release-list", []):
-            rel_id = rel.get("id", "")
-            if rel_id:
-                votes[rel_id] += 1
+    return candidates
 
-    seen_mbids: set[str] = set()
-    releases: list[ReleaseInfo] = []
 
-    if votes:
-        logger.debug(
-            "lookup_releases_from_tracks: top votes=%s",
-            dict(votes.most_common(_MAX_MB_CANDIDATES)),
-        )
-        for mbid, _ in votes.most_common(_MAX_MB_CANDIDATES):
-            if len(releases) >= _MAX_MB_CANDIDATES:
-                break
-            try:
-                detail = _mb_call(
-                    musicbrainzngs.get_release_by_id,
-                    mbid,
-                    includes=["artists", "recordings", "release-groups", "labels"],
-                )
-                releases.append(_parse_release(detail["release"]))
-                seen_mbids.add(mbid)
-            except (ValueError, KeyError, TaggingError):
-                continue
+def lookup_release_by_mbid(mbid: str) -> ReleaseInfo:
+    """Fetch and parse one release by MBID (full detail, including tracks).
 
-    # Supplement with tier-2 (album-level) search when tier-1 left us short
-    if len(releases) < _MAX_MB_CANDIDATES:
-        artist, _, album = tracks[0]
-        for r in _search_releases(artist, album):
-            if r.mbid not in seen_mbids:
-                releases.append(r)
-                seen_mbids.add(r.mbid)
-                if len(releases) >= _MAX_MB_CANDIDATES:
-                    break
+    Raises ReleaseNotFoundError fast on HTTP 404 (no retry backoff — a
+    missing release is deterministic).  Note that a merged MBID resolves to
+    the merge target, so the returned ReleaseInfo.mbid may differ from the
+    requested one; callers should use the returned id.
 
-    if not releases:
-        artist, _, album = tracks[0]
-        raise TaggingError(
-            f"No MusicBrainz results for artist={artist!r} album={album!r}"
-        )
-
-    return releases
+    Uses _DETAIL_INCLUDES: this is the manual album-edit picker's path, the
+    only consumer of per-track artist credits (KAMP-583).
+    """
+    detail = _mb_call(
+        musicbrainzngs.get_release_by_id,
+        mbid,
+        includes=_DETAIL_INCLUDES,
+    )
+    return _parse_release(detail["release"])
 
 
 def _mb_call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -991,6 +1019,12 @@ def _mb_call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
         except (musicbrainzngs.WebServiceError, musicbrainzngs.NetworkError) as exc:
+            # A 404 is deterministic — retrying only burns the backoff delay.
+            cause = getattr(exc, "cause", None)
+            if getattr(cause, "code", None) == 404:
+                raise ReleaseNotFoundError(
+                    f"MusicBrainz entity not found: {exc}"
+                ) from exc
             if attempt == max_retries:
                 raise TaggingError(
                     f"MusicBrainz request failed after {max_retries} retries: {exc}"
@@ -1016,29 +1050,29 @@ def _search_release(artist: str, album: str) -> ReleaseInfo:
     )
 
 
-def _search_releases(artist: str, album: str) -> list[ReleaseInfo]:
-    """Return up to _MAX_MB_CANDIDATES parseable releases for artist + album.
+def _search_release_candidates_raw(
+    artist: str, album: str, limit: int
+) -> list[dict[str, Any]]:
+    """Run one search_releases call and return raw result dicts sorted best-first.
 
-    Performs one search_releases call (retrying with cleaned name when the
-    first attempt returns nothing), then fetches full details for each
-    candidate in preference order (highest score, earliest date).  Returns an
-    empty list rather than raising so callers can decide how to handle zero
-    results.
+    Retries once with any iTunes edition suffix stripped from the album name
+    (e.g. "Abbey Road (Super Deluxe Edition)" → "Abbey Road") when the first
+    attempt returns nothing.  Shared by the pipeline hydrate path
+    (_search_releases) and the manual shallow path (search_release_candidates)
+    so the retry and ordering logic never diverge.
     """
     logger.debug("MusicBrainz search: artist=%r release=%r", artist, album)
     result = _mb_call(
         musicbrainzngs.search_releases,
         artist=artist,
         release=album,
-        limit=_MAX_MB_CANDIDATES,
+        limit=limit,
     )
 
     raw_releases: list[dict[str, Any]] = result.get("release-list", [])
     logger.debug("MusicBrainz returned %d result(s)", len(raw_releases))
 
     if not raw_releases:
-        # Retry once with any iTunes edition suffix stripped from the album name
-        # (e.g. "Abbey Road (Super Deluxe Edition)" → "Abbey Road").
         cleaned = _EDITION_RE.sub("", album).strip()
         if cleaned != album:
             logger.debug(
@@ -1048,12 +1082,9 @@ def _search_releases(artist: str, album: str) -> list[ReleaseInfo]:
                 musicbrainzngs.search_releases,
                 artist=artist,
                 release=cleaned,
-                limit=_MAX_MB_CANDIDATES,
+                limit=limit,
             )
             raw_releases = result.get("release-list", [])
-
-    if not raw_releases:
-        return []
 
     # Sort candidates: highest score first; break ties by earliest release date so
     # original/digital releases (e.g. 2020-03-27) beat later vinyl reissues (2021-04-30).
@@ -1062,9 +1093,18 @@ def _search_releases(artist: str, album: str) -> list[ReleaseInfo]:
         date = r.get("date", "") or "9999"
         return (-score, date)
 
-    sorted_raw = sorted(raw_releases, key=_sort_key)
+    return sorted(raw_releases, key=_sort_key)
 
-    # Fetch full release details (search_releases returns minimal data).
+
+def _search_releases(artist: str, album: str) -> list[ReleaseInfo]:
+    """Return up to _MAX_MB_CANDIDATES parseable, fully-hydrated releases.
+
+    Composes the shared raw search with per-candidate get_release_by_id
+    hydration (search_releases returns minimal data).  Returns an empty list
+    rather than raising so callers can decide how to handle zero results.
+    """
+    sorted_raw = _search_release_candidates_raw(artist, album, _MAX_MB_CANDIDATES)
+
     # Skip releases whose metadata cannot be parsed (e.g. vinyl "A1" track nums).
     releases: list[ReleaseInfo] = []
     for candidate in sorted_raw:
@@ -1075,7 +1115,7 @@ def _search_releases(artist: str, album: str) -> list[ReleaseInfo]:
         detail = _mb_call(
             musicbrainzngs.get_release_by_id,
             candidate_mbid,
-            includes=["artists", "recordings", "release-groups", "labels"],
+            includes=_BASE_INCLUDES,
         )
         try:
             releases.append(_parse_release(detail["release"]))
@@ -1086,24 +1126,19 @@ def _search_releases(artist: str, album: str) -> list[ReleaseInfo]:
     return releases
 
 
-def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
-    mbid: str = raw["id"]
-    title: str = raw.get("title", "")
-    year: str = raw.get("date", "")[:4]
+def _flatten_artist_credit(artist_credit: list[Any]) -> str:
+    """Render a musicbrainzngs artist-credit list as its display string.
 
-    release_group = raw.get("release-group", {})
-    release_group_mbid: str = release_group.get("id", "")
-    release_type: str = release_group.get("primary-type", "")
-    original_date: str = release_group.get("first-release-date", "")
+    musicbrainzngs returns a flat list alternating between name-credit dicts
+    and joinphrase strings (e.g. [{"name": "Ali"}, " & ", {"name": "Charif"}]),
+    so the display name is the walk over both. A credit dict may carry the
+    printed name directly or only the nested artist's name.
 
-    # Artist credit — musicbrainzngs returns a flat list alternating between name-credit
-    # dicts and joinphrase strings (e.g. [{"name": "Ali"}, " & ", {"name": "Charif..."}]).
-    artist_credit = raw.get("artist-credit", [])
-    credits = [c for c in artist_credit if isinstance(c, dict)]
-    artists = [c.get("name") or c.get("artist", {}).get("name", "") for c in credits]
-    # Reconstruct the display string by walking the raw list, taking names from dicts
-    # and joinphrases from interleaved strings.
-    artist = "".join(
+    (musicbrainzngs computes the same thing as "artist-credit-phrase", but only
+    when it parses real XML — our tests mock get_release_by_id and hand-write
+    dicts, which never carry that key, so the walk stays ours.)
+    """
+    return "".join(
         (
             item
             if isinstance(item, str)
@@ -1111,6 +1146,22 @@ def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
         )
         for item in artist_credit
     ).strip()
+
+
+def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
+    mbid: str = raw["id"]
+    title: str = raw.get("title", "")
+    release_date: str = raw.get("date", "")
+
+    release_group = raw.get("release-group", {})
+    release_group_mbid: str = release_group.get("id", "")
+    release_type: str = release_group.get("primary-type", "")
+    original_date: str = release_group.get("first-release-date", "")
+
+    artist_credit = raw.get("artist-credit", [])
+    credits = [c for c in artist_credit if isinstance(c, dict)]
+    artists = [c.get("name") or c.get("artist", {}).get("name", "") for c in credits]
+    artist = _flatten_artist_credit(artist_credit)
     album_artist = artist
     artist_sort = " ".join(c.get("artist", {}).get("sort-name", "") for c in credits)
     album_artist_sort = artist_sort
@@ -1147,12 +1198,16 @@ def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
                 track_num = int(pos) if str(pos).isdigit() else 0
             recording = track_raw.get("recording", {})
             key = f"{disc_num}-{track_num}"
+            # Track-level credit is what this release prints for the track — the
+            # compilation case, where it diverges from the release artist. Empty
+            # unless the lookup requested _DETAIL_INCLUDES (KAMP-583).
             tracks[key] = TrackInfo(
                 number=track_num,
                 disc=disc_num,
                 title=recording.get("title", ""),
                 recording_mbid=recording.get("id", ""),
                 total_tracks=total_tracks,
+                artist=_flatten_artist_credit(track_raw.get("artist-credit", [])),
             )
 
     return ReleaseInfo(
@@ -1161,7 +1216,7 @@ def _parse_release(raw: dict[str, Any]) -> ReleaseInfo:
         title=title,
         artist=artist,
         album_artist=album_artist,
-        year=year,
+        release_date=release_date,
         tracks=tracks,
         artist_sort=artist_sort,
         album_artist_sort=album_artist_sort,
@@ -1263,7 +1318,7 @@ def _write_mp3_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -
     tags["TPE1"] = id3.TPE1(encoding=3, text=release.artist)
     tags["TPE2"] = id3.TPE2(encoding=3, text=release.album_artist)
     tags["TALB"] = id3.TALB(encoding=3, text=release.title)
-    tags["TDRC"] = id3.TDRC(encoding=3, text=release.year)
+    tags["TDRC"] = id3.TDRC(encoding=3, text=release.release_date)
     tags["TXXX:MusicBrainz Album Id"] = id3.TXXX(
         encoding=3, desc="MusicBrainz Album Id", text=release.mbid
     )
@@ -1371,7 +1426,7 @@ def _write_m4a_tags(path: Path, release: ReleaseInfo, track: TrackInfo | None) -
     audio.tags["\xa9ART"] = [release.artist]
     audio.tags["aART"] = [release.album_artist]
     audio.tags["\xa9alb"] = [release.title]
-    audio.tags["\xa9day"] = [release.year]
+    audio.tags["\xa9day"] = [release.release_date]
     audio.tags["----:com.apple.iTunes:MusicBrainz Album Id"] = _ff(release.mbid)
 
     # Sort names
@@ -1457,7 +1512,7 @@ def _assign_vorbis_tags(
     tags["ARTIST"] = _v(release.artist)
     tags["ALBUMARTIST"] = _v(release.album_artist)
     tags["ALBUM"] = _v(release.title)
-    tags["DATE"] = _v(release.year)
+    tags["DATE"] = _v(release.release_date)
     tags["MUSICBRAINZ_ALBUMID"] = _v(release.mbid)
 
     # Sort names

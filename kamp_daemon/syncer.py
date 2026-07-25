@@ -218,6 +218,7 @@ def process_next_download(
     *,
     provider: str = "bandcamp",
     on_state: Callable[[str, str], None] | None = None,
+    prepare: Callable[[], None] | None = None,
     retry_delays: Sequence[int] = (5, 10, 20),
     sleep: Callable[[float], None] = time.sleep,
 ) -> str | None:
@@ -233,8 +234,15 @@ def process_next_download(
     *on_state* (if given) is called ``(provider_item_id, state)`` on each
     transition ('downloading' | 'done' | 'failed') for WebSocket broadcast.
 
+    *prepare* (if given) runs before the next item is claimed — while every
+    pending row is still 'queued', which is the state the URL prefetch filters
+    on. It runs per item, not once per batch, because items enqueued while a
+    drain is already in flight need preparing too (KAMP-637).
+
     Returns the processed provider_item_id, or None when the queue is empty.
     """
+    if prepare is not None:
+        prepare()
     pid = index.next_queued_download(provider=provider)
     if pid is None:
         return None

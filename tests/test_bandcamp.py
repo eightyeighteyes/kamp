@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html as html_lib
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -3841,6 +3842,21 @@ class TestGetDownloadSizeBytes:
             is None
         )
 
+    def test_logs_why_an_unusable_size_mb_yielded_none(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """KAMP-637: a present-but-unparseable size_mb must be distinguishable
+        from a network failure in the log — silence is how "no sizes, ever" hid."""
+        blob = {"download_items": [{"downloads": {"flac": {"size_mb": "lots"}}}]}
+        with caplog.at_level(logging.DEBUG, logger="kamp_daemon.bandcamp"):
+            result = get_download_size_bytes(
+                "https://bc/download?x", "flac", self._session(blob)
+            )
+
+        assert result is None
+        assert "size probe" in caplog.text
+        assert "lots" in caplog.text
+
     def test_none_on_network_error(self) -> None:
         session = MagicMock()
         session.get.side_effect = RuntimeError("boom")
@@ -3892,6 +3908,83 @@ class TestPrefetchRedownloadUrls:
         index.set_download_redownload_url.assert_called_once_with(
             "111", "https://dl/111"
         )
+
+    # -- attempted-set guard (KAMP-637) -------------------------------------
+    # The prefetch now runs before every item, not once per drain. Bandcamp's
+    # collection endpoint is the rate-limited one, and some queued items simply
+    # have no redownload_url there — so an unresolvable item must not buy a
+    # fresh collection fetch on every single item. That is the 429 storm.
+
+    def test_unresolvable_item_is_not_refetched(self, mocker: MockerFixture) -> None:
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"999": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
+        attempted: set[str] = set()
+
+        first = prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        second = prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+
+        assert (first, second) == (0, 0)
+        fetch.assert_called_once()  # the second call must not hit the network
+
+    def test_newly_queued_item_earns_a_fetch(self, mocker: MockerFixture) -> None:
+        """An id we have never tried is exactly what justifies another fetch —
+        that is how items enqueued mid-drain get their URL."""
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"999": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            return_value=[{"sale_item_id": 222, "redownload_url": "https://dl/222"}],
+        )
+        attempted: set[str] = set()
+
+        prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        index.download_redownload_urls.return_value = {"999": None, "222": None}
+        n = prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+
+        assert n == 1
+        assert fetch.call_count == 2
+
+    def test_failed_fetch_leaves_ids_retryable(self, mocker: MockerFixture) -> None:
+        """A 429 is transient — it must not burn the ids and strand them on the
+        slow per-item path for the rest of the drain."""
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"999": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            side_effect=BandcampAPIError("HTTP 429"),
+        )
+        attempted: set[str] = set()
+
+        with pytest.raises(BandcampAPIError):
+            prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        assert attempted == set()
+
+        with pytest.raises(BandcampAPIError):
+            prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        assert fetch.call_count == 2
+
+    def test_attempted_forgets_ids_that_left_the_queue(
+        self, mocker: MockerFixture
+    ) -> None:
+        """A row that leaves the queue and comes back (retry) is tried again."""
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"999": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
+        attempted: set[str] = set()
+
+        prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        index.download_redownload_urls.return_value = {}  # drained
+        prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        assert attempted == set()
+
+        index.download_redownload_urls.return_value = {"999": None}  # re-queued
+        prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        assert fetch.call_count == 2
 
 
 class TestBackfillDownloadSizes:

@@ -1527,34 +1527,76 @@ def get_download_size_bytes(
             blob.get("download_items") or blob.get("digital_items") or []
         )
         if not items:
+            logger.debug("size probe: no download_items for %s", redownload_url)
             return None
         downloads: dict[str, Any] = items[0].get("downloads") or {}
         fmt_data = downloads.get(fmt)
         if not isinstance(fmt_data, dict):
+            logger.debug(
+                "size probe: format %r absent for %s (have: %s)",
+                fmt,
+                redownload_url,
+                ", ".join(downloads) or "none",
+            )
             return None
-        return _parse_size_mb(fmt_data.get("size_mb"))
+        size = _parse_size_mb(fmt_data.get("size_mb"))
+        if size is None:
+            # KAMP-637: an unparseable/absent size_mb is indistinguishable from a
+            # network failure without this — which is how a silent, permanent
+            # "no sizes ever" went unnoticed.
+            logger.debug(
+                "size probe: unusable size_mb=%r for %s",
+                fmt_data.get("size_mb"),
+                redownload_url,
+            )
+        return size
     except Exception:
+        logger.debug("size probe failed for %s", redownload_url, exc_info=True)
         return None
 
 
-def prefetch_redownload_urls(index: "LibraryIndex", session: _AnySession) -> int:
+def prefetch_redownload_urls(
+    index: "LibraryIndex",
+    session: _AnySession,
+    *,
+    attempted: set[str] | None = None,
+) -> int:
     """Fill missing redownload_urls on queued rows with a SINGLE collection fetch.
 
-    The download worker calls this once per drain (KAMP-575) so it can then download
-    every item via the fast path — no per-item collection re-fetch, which was the
-    429 storm. Rows that already have a URL (freshly enqueued with it) are left
-    alone, so this is a no-op (and does no network I/O) once URLs are populated.
+    The download worker calls this before each item (KAMP-637) so it can then
+    download every one via the fast path — no per-item collection re-fetch, which
+    was the 429 storm (KAMP-575). Rows that already have a URL (freshly enqueued
+    with it) are left alone, so this is a no-op — and does no network I/O — once
+    URLs are populated.
+
+    *attempted* is a caller-owned set of provider_item_ids already put through a
+    collection fetch. Some queued items simply have no redownload_url in the
+    collection, so without this they would stay "missing" forever and buy a fresh
+    fetch of the rate-limited collection endpoint on every item — the same storm
+    in a new costume. Only an id we have never tried justifies another fetch. Ids
+    that have left the queue are dropped from the set, so a re-queued retry is
+    tried afresh.
 
     Returns the number of rows populated. Best-effort: the caller catches failures;
     a 429 here just leaves rows unfilled so the per-item fallback runs (with the
     size-backfill paused, it has room). Never raises for a "nothing to do" case.
     """
-    missing = {pid for pid, url in index.download_redownload_urls().items() if not url}
-    if not missing:
+    queued = index.download_redownload_urls()
+    missing = {pid for pid, url in queued.items() if not url}
+    if attempted is not None:
+        attempted &= set(queued)  # rows that left the queue may be tried again
+        if not missing - attempted:
+            return 0
+    elif not missing:
         return 0
 
     fan_id, _username = _get_fan_info(session)
     collection = _fetch_collection(fan_id, session, index)
+    if attempted is not None:
+        # Marked only after the fetch succeeds: a 429 is transient, and burning
+        # these ids on a failed attempt would strand them on the slow per-item
+        # path for the rest of the drain.
+        attempted |= missing
     n = 0
     for item in collection:
         sid = item.get("sale_item_id")

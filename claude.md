@@ -130,6 +130,16 @@ Two dead ends, both shipped and both broken — do not retry either:
 
 **Debugging tell:** a failed download whose recorded `size_bytes` is ~3 KB (3038 at time of writing) *is* the Cloudflare challenge page — the byte count is stable, so compare it against a plain `requests` GET to `https://bandcamp.com/` from the same interpreter. `content-type: text/html; charset=utf-8` is the challenge; popplers5's own error pages are bare `text/html`. That distinction is the fastest way to tell "wrong host answered" from "CDN said no", and `_download_file` now names the post-redirect URL in the error so the hop is visible without reproducing.
 
+## The Bandcamp collection endpoint is the scarce resource — KAMP-637
+
+`_fetch_collection` (visible + hidden, paginated) is the call Bandcamp rate-limits hardest. Three of them inside a minute earns a 429, and once limited *everything* fails — the whole download queue cascades to "Album download failed: HTTP 429". Per-item download pages, by contrast, are cheap. Every KAMP-575/637-era design decision follows from that asymmetry.
+
+- **A "nothing is missing" guard is not enough to make a prefetch safe to call in a loop.** Some queued items have no `redownload_url` in the collection response at all, so `missing` never empties and every item buys another full collection fetch. `prefetch_redownload_urls` therefore takes a caller-owned `attempted` set: only an id it has *never* tried justifies a fetch. Mark ids attempted **after** the fetch succeeds — a 429 is transient, and burning them on a failed attempt strands them on the slow per-item path for the rest of the drain. Drop ids that have left the queue so a re-queued retry is tried afresh.
+- **Running the prefetch once per *drain* is a bug, not an optimisation.** Anything enqueued while a drain is in flight kept a NULL URL, which (a) starved `backfill_download_sizes` — it only sizes rows that have a stored URL, so the queue showed no size *ever* — and (b) forced each such item through its own collection re-fetch at download time, which is both the visible "download takes ages to start" and the 429 source. `process_next_download` now takes a `prepare` callback that runs before the item is claimed (while it is still `queued`, the state the prefetch filters on).
+- **Watch the ordering:** `prepare` must run *before* `next_queued_download`. Once an item is marked `downloading` it is invisible to `download_redownload_urls()`, which only returns `queued` rows.
+
+**Measuring bandcamp.com traffic on Windows:** Electron fetches `/api/v1/bandcamp/session-cookies` exactly once per relayed request, so `grep -c session-cookies` on the dev log is a faithful 1:1 counter of outbound requests. Useful baseline: a full stream sync runs at **every app start** and walked 773 albums for ~60 requests in about a minute — budget for that before blaming the download path for a 429.
+
 ## Diagnosis discipline: ask before assuming
 Before proposing or implementing a fix, verify the actual failure mode from logs or a direct question. In TASK-173 multiple sessions were spent fixing things that were not broken (downloads, onboarding completion, the watch-folder/library wiring) because the diagnosis was assumed rather than confirmed. The cost: rewrites of working components, regressions introduced and then reverted, and a much longer path to the real two-line fix.
 

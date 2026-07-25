@@ -1130,6 +1130,8 @@ def _cmd_daemon(
     # nudge the worker; ordering lives in the DB, not the in-memory queue.
 
     def _download_worker() -> None:
+        import time
+
         from .bandcamp import _make_requests_session, prefetch_redownload_urls
         from .syncer import process_next_download
 
@@ -1150,23 +1152,49 @@ def _cmd_daemon(
             except _queue_mod.Empty:
                 pass
 
+        # After a failed prefetch (usually a 429), wait this long before trying the
+        # collection endpoint again. Without it, running the prefetch per item would
+        # retry a rate-limited fetch on every item and re-create the 429 storm.
+        _PREFETCH_FAILURE_COOLDOWN = 120.0
+        _prefetch_failed_at = 0.0
+        # provider_item_ids already put through a collection fetch — see
+        # prefetch_redownload_urls. Owned here so it survives across items.
+        _prefetch_attempted: set[str] = set()
+
         def _prefetch_urls() -> None:
-            # One collection fetch per drain to fill any missing redownload_urls, so
+            # Fill any missing redownload_urls with a single collection fetch, so
             # every item downloads via the fast path (no per-item collection re-fetch
             # — the 429 storm). This also populates URLs the size-backfill needs, so
             # it too avoids the collection endpoint. Best-effort: a failure just
             # leaves the per-item fallback to resolve URLs.
+            #
+            # KAMP-637: this runs before EVERY item, not once per drain. Items
+            # enqueued while a drain is already in flight kept a NULL URL, which
+            # both starved the size-backfill (it only sizes rows that have one, so
+            # the queue showed no size at all) and forced each of those items
+            # through the slow per-item collection re-fetch at download time.
+            # prefetch_redownload_urls does no network I/O unless a queued id it
+            # has never tried is missing a URL, so the per-item call is a cheap
+            # indexed query in the common case.
+            nonlocal _prefetch_failed_at
+            if time.monotonic() - _prefetch_failed_at < _PREFETCH_FAILURE_COOLDOWN:
+                return
             try:
                 session_data = index.get_session("bandcamp")
                 if session_data:
                     n = prefetch_redownload_urls(
-                        index, _make_requests_session(session_data)
+                        index,
+                        _make_requests_session(session_data),
+                        attempted=_prefetch_attempted,
                     )
                     if n:
                         _logger.info("Prefetched %d download URL(s) for the queue", n)
             except Exception:
+                _prefetch_failed_at = time.monotonic()
                 _logger.warning(
-                    "Download URL prefetch failed; falling back to per-item resolution",
+                    "Download URL prefetch failed; falling back to per-item "
+                    "resolution for the next %.0fs",
+                    _PREFETCH_FAILURE_COOLDOWN,
                     exc_info=True,
                 )
 
@@ -1183,12 +1211,15 @@ def _cmd_daemon(
             if index.next_queued_download() is None:
                 _wait_for_work()
                 continue
-            # Draining: fill any missing URLs once for the whole batch, then drain
-            # via the fast path (no per-item collection re-fetch).
-            _prefetch_urls()
+            # Draining: process_next_download fills any missing URLs (prepare)
+            # before claiming each item, so every item — including one enqueued
+            # mid-drain — downloads via the fast path with a size already probed.
             while (
                 process_next_download(
-                    index, _album_download_trigger_ref[0], on_state=_on_state
+                    index,
+                    _album_download_trigger_ref[0],
+                    on_state=_on_state,
+                    prepare=_prefetch_urls,
                 )
                 is not None
             ):

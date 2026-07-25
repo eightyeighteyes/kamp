@@ -1061,6 +1061,51 @@ class TestProcessNextDownload:
         assert process_next_download(index, lambda pid: None) is None
         index.close()
 
+    def test_prepare_runs_before_every_item(self, tmp_path: Path) -> None:
+        """KAMP-637: *prepare* runs per item, so rows enqueued mid-drain are prepared.
+
+        The URL prefetch used to run once per drain. Anything enqueued while that
+        drain was in flight kept a NULL redownload_url, which both starved the
+        size-backfill (it only sizes rows that have one) and forced the item's
+        own slow per-item collection re-fetch at download time.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        for sid in ("a", "b"):
+            index.enqueue_download(sid)
+
+        calls: list[str] = []
+
+        def _prepare() -> None:
+            calls.append("prepare")
+
+        for _ in range(2):
+            process_next_download(index, lambda pid: None, prepare=_prepare)
+
+        assert len(calls) == 2
+        index.close()
+
+    def test_prepare_runs_before_the_item_is_claimed(self, tmp_path: Path) -> None:
+        """*prepare* must see the item still 'queued' — that is the row state the
+        URL prefetch filters on, so running it after the claim would miss it."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        seen: list[list[tuple[str, str]]] = []
+
+        process_next_download(
+            index,
+            lambda pid: None,
+            prepare=lambda: seen.append(self._states(index)),
+        )
+
+        assert seen == [[("a", "queued")]]
+        index.close()
+
+    def test_prepare_is_optional(self, tmp_path: Path) -> None:
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a")
+        assert process_next_download(index, lambda pid: None) == "a"
+        index.close()
+
     def test_failure_is_captured_and_batch_continues(self, tmp_path: Path) -> None:
         index = LibraryIndex(tmp_path / "library.db")
         for sid in ("a", "b"):

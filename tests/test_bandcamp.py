@@ -16,7 +16,7 @@ from kamp_daemon.bandcamp import (
     BandcampAPIError,
     CookieError,
     NeedsLoginError,
-    _ProxyResponse,
+    _cdn_download_session,
     _download_file,
     _download_item,
     _parse_content_length,
@@ -29,7 +29,6 @@ from kamp_daemon.bandcamp import (
     _get_fan_info,
     _make_requests_session,
     _paginate,
-    _resolve_cdn_redirect,
     _session_from_cookie_file,
     _username_from_logout_cookie,
     _validate_session,
@@ -1519,64 +1518,56 @@ class TestDownloadItem:
         "redownload_url": "https://bandcamp.com/download?sitem_id=42",
     }
 
-    def test_dev_mode_uses_authenticated_session(self, tmp_path: Path) -> None:
-        """Dev mode passes the authenticated requests.Session to _download_file directly."""
-        import requests as _req
-
+    def _capture_download(self, tmp_path: Path, session: Any) -> list[tuple[str, Any]]:
+        """Run _download_item with _download_file stubbed; return its (url, session) args."""
         watch_folder = tmp_path / "watch"
         watch_folder.mkdir()
-        session = _req.Session()
-        calls: list[tuple[str, Any]] = []
-
-        with patch("kamp_daemon.bandcamp._get_cdn_url", return_value=self._CDN):
-            with patch("kamp_daemon.bandcamp._resolve_cdn_redirect") as mock_resolve:
-                with patch(
-                    "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess, fmt, on_progress=None: (
-                        calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
-                    ),
-                ):
-                    _download_item(
-                        self._ITEM, _bc_config(tmp_path), watch_folder, session
-                    )
-
-        mock_resolve.assert_not_called()
-        assert len(calls) == 1
-        assert calls[0][0] == self._CDN
-        assert calls[0][1] is session
-
-    def test_frozen_mode_resolves_redirect_and_uses_plain_session(
-        self, tmp_path: Path
-    ) -> None:
-        """Frozen mode calls _resolve_cdn_redirect and downloads with a plain session."""
-        watch_folder = tmp_path / "watch"
-        watch_folder.mkdir()
-        frozen_session = MagicMock()  # not a requests.Session → frozen-mode branch
-        final_url = "https://bcbits.com/download/album?token=abc"
         calls: list[tuple[str, Any]] = []
 
         with patch("kamp_daemon.bandcamp._get_cdn_url", return_value=self._CDN):
             with patch(
-                "kamp_daemon.bandcamp._resolve_cdn_redirect", return_value=final_url
-            ) as mock_resolve:
-                with patch(
-                    "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess, fmt, on_progress=None: (
-                        calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
-                    ),
-                ):
-                    _download_item(
-                        self._ITEM, _bc_config(tmp_path), watch_folder, frozen_session
-                    )
+                "kamp_daemon.bandcamp._download_file",
+                side_effect=lambda url, dest, sess, fmt, on_progress=None: (
+                    calls.append((url, sess)) or dest.with_name(dest.name + ".zip")
+                ),
+            ):
+                _download_item(self._ITEM, _bc_config(tmp_path), watch_folder, session)
+        return calls
 
-        mock_resolve.assert_called_once_with(self._CDN, frozen_session)
-        assert len(calls) == 1
-        assert calls[0][0] == final_url
-        # dl_session is a fresh plain Session, not the proxy session
+    def test_dev_mode_uses_authenticated_session(self, tmp_path: Path) -> None:
+        """Dev mode passes the authenticated requests.Session to _download_file directly."""
         import requests as _req
 
-        assert isinstance(calls[0][1], _req.Session)
-        assert calls[0][1] is not frozen_session
+        session = _req.Session()
+        calls = self._capture_download(tmp_path, session)
+
+        assert len(calls) == 1
+        assert calls[0][0] == self._CDN
+        assert calls[0][1] is session
+
+    def test_proxy_mode_downloads_cdn_with_cookie_bearing_session(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-636: proxy mode downloads the CDN URL directly, with the cookies.
+
+        popplers5 is not Cloudflare-protected, so ``requests`` handles the CDN
+        leg fine — but cookieless it bounces to bandcamp.com and we save the
+        challenge page.  The download session must carry the Bandcamp cookies.
+        """
+        import requests as _req
+
+        from kamp_daemon.bandcamp import _ProxySession
+
+        proxy = _ProxySession(_make_session_data())
+        calls = self._capture_download(tmp_path, proxy)
+
+        assert len(calls) == 1
+        # No laundered bcbits URL — the popplers5 CDN URL is fetched as-is.
+        assert calls[0][0] == self._CDN
+        dl_session = calls[0][1]
+        assert isinstance(dl_session, _req.Session)
+        assert dl_session is not proxy
+        assert dl_session.cookies.get("js_logged_in", domain=".bandcamp.com") == "1"
 
     def test_raises_when_no_redownload_url(self, tmp_path: Path) -> None:
         watch_folder = tmp_path / "watch"
@@ -1604,18 +1595,17 @@ class TestDownloadItem:
             return_value="https://cdn.example.com/f",
         ):
             with patch(
-                "kamp_daemon.bandcamp._resolve_cdn_redirect",
-                return_value="https://cdn.example.com/f",
+                "kamp_daemon.bandcamp._download_file",
+                side_effect=lambda url, dest, sess, fmt, on_progress=None: dest.with_name(
+                    dest.name + ".zip"
+                ),
             ):
-                with patch(
-                    "kamp_daemon.bandcamp._download_file",
-                    side_effect=lambda url, dest, sess, fmt, on_progress=None: dest.with_name(
-                        dest.name + ".zip"
-                    ),
-                ):
-                    path = _download_item(
-                        item, _bc_config(tmp_path), watch_folder, MagicMock()
-                    )
+                path = _download_item(
+                    item,
+                    _bc_config(tmp_path),
+                    watch_folder,
+                    _make_requests_session(_make_session_data()),
+                )
         assert "/" not in path.name
         assert ":" not in path.name
 
@@ -1645,7 +1635,10 @@ class TestParseContentLength:
 
 class TestDownloadFile:
     def _make_resp(
-        self, chunks: list[bytes], content_type: str = "application/zip"
+        self,
+        chunks: list[bytes],
+        content_type: str = "application/zip",
+        url: str = "",
     ) -> MagicMock:
         resp = MagicMock()
         resp.__enter__ = lambda s: s
@@ -1653,6 +1646,7 @@ class TestDownloadFile:
         resp.raise_for_status = MagicMock()
         resp.headers = {"Content-Type": content_type}
         resp.iter_content.return_value = chunks
+        resp.url = url  # requests reports the post-redirect URL here
         return resp
 
     def test_writes_chunked_response_to_dest(self, tmp_path: Path) -> None:
@@ -1755,6 +1749,42 @@ class TestDownloadFile:
 
         assert not (tmp_path / "album.zip").exists()
         assert not (tmp_path / "album.part").exists()
+
+    def test_error_names_the_host_that_actually_served_the_body(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-636: a CDN request bounced to bandcamp.com must say so.
+
+        Reporting only the requested popplers5 URL hid the redirect and made a
+        cookie problem look like a CDN fault.
+        """
+        dest_base = tmp_path / "album"
+        cdn = "https://popplers5.bandcamp.com/download/album?enc=mp3-v0&id=1"
+        session = MagicMock()
+        session.get.return_value = self._make_resp(
+            [b"<!DOCTYPE html><html>challenge</html>"],
+            content_type="text/html; charset=utf-8",
+            url="https://bandcamp.com/login",
+        )
+
+        with pytest.raises(
+            BandcampAPIError, match="served by https://bandcamp.com/login"
+        ):
+            _download_file(cdn, dest_base, session, "mp3-v0")
+
+    def test_error_omits_served_by_when_no_redirect(self, tmp_path: Path) -> None:
+        """No redirect → no redundant 'served by' clause."""
+        dest_base = tmp_path / "album"
+        cdn = "https://popplers5.bandcamp.com/download/album?enc=mp3-v0&id=1"
+        session = MagicMock()
+        session.get.return_value = self._make_resp(
+            [b"<html>nope</html>"], content_type="text/html", url=cdn
+        )
+
+        with pytest.raises(BandcampAPIError) as excinfo:
+            _download_file(cdn, dest_base, session, "mp3-v0")
+
+        assert "served by" not in str(excinfo.value)
 
     # -- byte-progress reporting (KAMP-436) ---------------------------------
 
@@ -2094,89 +2124,38 @@ class TestProxySession:
 
         assert patched.call_args[1]["headers"] is None
 
-    def test_head_method_sends_head_to_proxy(self) -> None:
-        from kamp_daemon.bandcamp import _PROXY_FETCH_URL, _ProxySession
-
-        sess = _ProxySession()
-        bcbits_url = "https://p4.bcbits.com/download/album/abc/mp3-v0/123?token=x"
-        mock_post = MagicMock()
-        mock_post.raise_for_status.return_value = None
-        mock_post.json.return_value = {
-            "status": 200,
-            "body": "",
-            "content_type": "application/octet-stream",
-            "url": bcbits_url,
-        }
-
-        with patch(
-            "kamp_daemon.bandcamp._requests.post", return_value=mock_post
-        ) as patched:
-            resp = sess.head(
-                "https://popplers5.bandcamp.com/download/album?enc=mp3-v0&id=1"
-            )
-
-        payload = patched.call_args[1]["json"]
-        assert payload["method"] == "HEAD"
-        assert "popplers5.bandcamp.com" in payload["url"]
-        assert patched.call_args[0][0] == _PROXY_FETCH_URL
-        assert resp.url == bcbits_url
-
 
 # ---------------------------------------------------------------------------
-# _resolve_cdn_redirect
+# _cdn_download_session
 # ---------------------------------------------------------------------------
 
 
-class TestResolveCdnRedirect:
-    _popplers_url = (
-        "https://popplers5.bandcamp.com/download/album?enc=mp3-v0&id=1&sig=abc"
-    )
-    _bcbits_url = (
-        "https://p4.bcbits.com/download/album/hash/mp3-v0/1?id=1&sig=x&token=t"
-    )
+class TestCdnDownloadSession:
+    """KAMP-636: the CDN leg always downloads with cookies, never through the proxy."""
 
-    def test_dev_mode_follows_redirect(self) -> None:
-        """GET+stream follows the popplers5 redirect; final URL comes from resp.url."""
+    def test_returns_the_dev_session_unchanged(self) -> None:
         import requests
 
-        mock_resp = MagicMock(spec=requests.Response)
-        mock_resp.url = self._bcbits_url
-        session = MagicMock(spec=requests.Session)
-        session.get.return_value = mock_resp
+        session = requests.Session()
+        assert _cdn_download_session(session) is session
 
-        result = _resolve_cdn_redirect(self._popplers_url, session)
+    def test_proxy_session_yields_cookie_bearing_plain_session(self) -> None:
+        import requests
 
-        session.get.assert_called_once_with(
-            self._popplers_url, stream=True, allow_redirects=True, timeout=30
-        )
-        assert result == self._bcbits_url
-
-    def test_frozen_mode_uses_proxy_head(self) -> None:
-        """_ProxySession.head routes through Electron; final URL comes from resp.url."""
         from kamp_daemon.bandcamp import _ProxySession
 
-        proxy_resp = _ProxyResponse(
-            status_code=200, text="", content_type="", url=self._bcbits_url
-        )
-        sess = MagicMock(spec=_ProxySession)
-        sess.head.return_value = proxy_resp
+        result = _cdn_download_session(_ProxySession(_make_session_data()))
 
-        result = _resolve_cdn_redirect(self._popplers_url, sess)
+        assert isinstance(result, requests.Session)
+        assert result.cookies.get("js_logged_in", domain=".bandcamp.com") == "1"
 
-        sess.head.assert_called_once_with(self._popplers_url, timeout=30)
-        assert result == self._bcbits_url
-
-    def test_frozen_mode_falls_back_when_url_none(self) -> None:
-        """Falls back to the original popplers5 URL when proxy returns url=None."""
+    def test_proxy_session_without_session_data(self) -> None:
+        """A cookie-less _ProxySession still yields a usable (empty) session."""
         from kamp_daemon.bandcamp import _ProxySession
 
-        proxy_resp = _ProxyResponse(status_code=200, text="", content_type="", url=None)
-        sess = MagicMock(spec=_ProxySession)
-        sess.head.return_value = proxy_resp
+        result = _cdn_download_session(_ProxySession())
 
-        result = _resolve_cdn_redirect(self._popplers_url, sess)
-
-        assert result == self._popplers_url
+        assert len(list(result.cookies)) == 0
 
 
 # ---------------------------------------------------------------------------

@@ -138,12 +138,17 @@ class _ProxySession:
     Only GET and POST are needed by bandcamp.py.  The ``stream`` and
     ``allow_redirects`` kwargs accepted by requests.Session are silently
     consumed — Electron follows redirects automatically.
+
+    *session_data* is the stored Bandcamp session.  Electron does not need it
+    (the proxy-fetch handler pulls cookies from the daemon on every call), but
+    the CDN download leg does — see :func:`_cdn_download_session`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, session_data: dict[str, Any] | None = None) -> None:
         self.headers: dict[str, str] = {"User-Agent": _UA}
         # cookies is not used — Electron's session.defaultSession holds them.
         self.cookies: Any = None
+        self.session_data: dict[str, Any] = session_data or {}
 
     def _fetch(
         self,
@@ -191,9 +196,6 @@ class _ProxySession:
 
     def post(self, url: str, **kwargs: Any) -> _ProxyResponse:
         return self._fetch("POST", url, **kwargs)
-
-    def head(self, url: str, **kwargs: Any) -> _ProxyResponse:
-        return self._fetch("HEAD", url, **kwargs)
 
 
 # Alias json.dumps to avoid shadowing in _ProxySession._fetch
@@ -805,9 +807,15 @@ def _make_requests_session(
     if _needs_proxy_session():
         # Electron's session.defaultSession does *not* need to be pre-populated
         # with cookies: the proxy-fetch handler in kamp_ui/src/main/index.ts
-        # pulls them from the daemon's session storage on every call.
-        return _ProxySession()
+        # pulls them from the daemon's session storage on every call.  The
+        # session data still rides along for the CDN leg (_cdn_download_session).
+        return _ProxySession(session_data)
 
+    return _cookie_session(session_data)
+
+
+def _cookie_session(session_data: dict[str, Any]) -> _requests.Session:
+    """Build a plain ``requests.Session`` carrying the cookies from *session_data*."""
     session = _requests.Session()
     session.headers["User-Agent"] = _UA
     for cookie in session_data.get("cookies", []):
@@ -818,6 +826,26 @@ def _make_requests_session(
             path=cookie.get("path", "/"),
         )
     return session
+
+
+def _cdn_download_session(session: _AnySession) -> _requests.Session:
+    """Return a ``requests.Session`` to fetch the CDN payload with (KAMP-636).
+
+    The CDN host (popplers5.bandcamp.com) is plain nginx — it is *not* behind
+    the Cloudflare bot management that forces bandcamp.com API/page traffic
+    through Electron, so ``requests`` downloads it fine on every platform,
+    frozen bundle included.  What it does require is the Bandcamp session
+    cookies: without them popplers5 bounces the request to bandcamp.com, whose
+    answer to a non-browser TLS fingerprint is a ~3 KB Cloudflare challenge
+    page that then gets written to disk as the "ZIP".
+
+    In proxy mode the caller holds a :class:`_ProxySession`, which cannot
+    stream a large body (its payload round-trips through JSON), so build a
+    cookie-bearing plain session from the session data it carries.
+    """
+    if isinstance(session, _requests.Session):
+        return session
+    return _cookie_session(session.session_data)
 
 
 def _validate_session(session_data: dict[str, Any]) -> bool:
@@ -1589,35 +1617,6 @@ def backfill_download_sizes(
     return sized
 
 
-def _resolve_cdn_redirect(cdn_url: str, session: _AnySession) -> str:
-    """Authenticate the popplers5 CDN URL so that a subsequent cookieless download works.
-
-    popplers5.bandcamp.com serves ZIP content when accessed with valid Bandcamp
-    session cookies; without cookies it returns an HTML error page (HTTP 200).
-    An authenticated GET+stream (no body read) appears to activate the signed
-    URL server-side, allowing the follow-up cookieless download from
-    ``_download_file`` to succeed.  In practice popplers5 does not issue a
-    redirect — it serves directly — so the returned URL is the same as the
-    input.
-
-    In frozen mode ``session`` is a ``_ProxySession`` that routes through
-    Electron's net.fetch (which carries the Bandcamp cookies automatically).
-    """
-    if isinstance(session, _requests.Session):
-        resp = session.get(cdn_url, stream=True, allow_redirects=True, timeout=30)
-        try:
-            final_url: str = resp.url
-        finally:
-            resp.close()
-        logger.debug("_resolve_cdn_redirect: %s → %s", cdn_url, final_url)
-        return final_url
-    # Frozen mode: HEAD via Electron carries Bandcamp cookies to follow the
-    # popplers5 → bcbits.com redirect. HEAD avoids downloading the full ZIP
-    # here — the caller only needs the final URL.
-    proxy_resp = session.head(cdn_url, timeout=30)
-    return proxy_resp.url or cdn_url
-
-
 def _download_item(
     item: dict[str, Any],
     bc_config: BandcampConfig,
@@ -1645,21 +1644,15 @@ def _download_item(
     logger.info("Downloading %r by %r…", item_title, band_name)
     cdn_url = _get_cdn_url(redownload_url, bc_config.format, session)
 
-    if isinstance(session, _requests.Session):
-        # Dev mode: the requests.Session carries Bandcamp cookies.
-        # popplers5 requires cookies to serve the ZIP; pass the authenticated
-        # session directly so requests follows any redirect automatically.
-        return _download_file(
-            cdn_url, dest_base, session, bc_config.format, on_progress=on_progress
-        )
-    # Frozen mode: Electron's net.fetch carries cookies and follows the
-    # popplers5 → bcbits.com redirect via the proxy HEAD call.
-    # Download from bcbits.com directly — its pre-signed URLs need no cookies.
-    final_url = _resolve_cdn_redirect(cdn_url, session)
-    dl_session = _requests.Session()
-    dl_session.headers["User-Agent"] = _UA
+    # popplers5 requires the Bandcamp cookies to serve the ZIP, and answers
+    # directly (no bcbits redirect to chase), so the same cookie-bearing
+    # requests.Session works on every platform — see _cdn_download_session.
     return _download_file(
-        final_url, dest_base, dl_session, bc_config.format, on_progress=on_progress
+        cdn_url,
+        dest_base,
+        _cdn_download_session(session),
+        bc_config.format,
+        on_progress=on_progress,
     )
 
 
@@ -1745,11 +1738,17 @@ def _download_file(
         ) as resp:
             resp.raise_for_status()
             content_type = resp.headers.get("Content-Type", "")
+            # The URL the bytes actually came from. A CDN request that lost its
+            # cookies is redirected back to bandcamp.com, which answers with an
+            # HTML page — reporting only the requested URL hides that hop and
+            # made KAMP-636 look like a popplers5 fault.
+            final_url = str(resp.url)
             logger.debug(
-                "_download_file: status=%d content-type=%r url=%s",
+                "_download_file: status=%d content-type=%r url=%s final=%s",
                 resp.status_code,
                 content_type,
                 cdn_url,
+                final_url,
             )
             # KAMP-436/566: report byte-progress as (downloaded, total) so the
             # album card can reveal its art bottom-up and the Downloads view can
@@ -1794,10 +1793,15 @@ def _download_file(
         else:
             # Neither ZIP nor audio: the CDN served an HTML error page with
             # HTTP 200 (e.g. missing cookies on popplers5).
+            served_by = (
+                f" (served by {final_url})"
+                if final_url and final_url != cdn_url
+                else ""
+            )
             raise BandcampAPIError(
                 f"CDN response is neither a ZIP nor audio "
                 f"(first-bytes={magic!r}, content-type={content_type!r}) — "
-                f"url={cdn_url}"
+                f"url={cdn_url}{served_by}"
             )
 
         tmp.rename(final)

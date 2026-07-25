@@ -38,10 +38,10 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: '13.0'
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: '3.11'
 
@@ -340,7 +340,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Download bundle artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
@@ -462,7 +462,7 @@ jobs:
       - name: Cache electron-builder binaries
         # electron-builder downloads dmgbuild and other native helpers on first run.
         # Caching avoids transient network failures and speeds up subsequent builds.
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/Library/Caches/electron-builder
           key: electron-builder-cache-${{ matrix.arch }}-${{ hashFiles('kamp_ui/package-lock.json') }}
@@ -538,10 +538,10 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: '3.11'
 
@@ -663,7 +663,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Download bundle artifact
         # upload-artifact strips the least common ancestor of all `path:` entries
@@ -697,7 +697,7 @@ jobs:
           Write-Host "OK: bundle layout intact ($($required.Count) required paths present)"
 
       - name: Cache electron-builder binaries
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~\AppData\Local\electron-builder\Cache
           key: electron-builder-cache-win-x64-${{ hashFiles('kamp_ui/package-lock.json') }}

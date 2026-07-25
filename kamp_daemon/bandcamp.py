@@ -1641,7 +1641,19 @@ def prefetch_redownload_urls(
         state.attempted &= set(queued)  # rows that left the queue may be retried
         if not missing - state.attempted:
             return 0
-        if state.last_walk_at and now() - state.last_walk_at < state.min_walk_interval:
+        # The quiet window may only delay a SPECULATIVE walk. If the item the
+        # drain is about to claim has no URL, skipping here does not save a
+        # walk — it hands that item to the per-item fallback, which walks the
+        # whole collection by itself. Coalescing would then trade one prefetch
+        # walk for several fallback walks, which is exactly what it is meant to
+        # prevent. A walk now resolves every queued row at once.
+        head = index.next_queued_download()
+        head_needs_url = head is not None and not queued.get(head)
+        if (
+            not head_needs_url
+            and state.last_walk_at
+            and now() - state.last_walk_at < state.min_walk_interval
+        ):
             return 0
     elif not missing:
         return 0

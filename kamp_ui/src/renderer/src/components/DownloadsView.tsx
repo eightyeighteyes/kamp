@@ -17,14 +17,35 @@ import { computeNewOrder } from '../utils/computeNewOrder'
  * pointerup. Retry/Cancel are optimistic store actions reconciled by the WS
  * `download.queue` snapshot.
  */
+/** "1m 05s" / "45s" for the rate-limit countdown. */
+function formatPause(seconds: number): string {
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`
+}
+
 export function DownloadsView({ active = false }: { active?: boolean }): React.JSX.Element {
   const queue = useStore((s) => s.downloadQueue)
+  const pausedUntil = useStore((s) => s.downloadPausedUntil)
   const configValues = useStore((s) => s.configValues)
   const downloadProgress = useStore((s) => s.downloadProgress)
   const reorderDownloadQueue = useStore((s) => s.reorderDownloadQueue)
   const retryDownload = useStore((s) => s.retryDownload)
   const cancelDownload = useStore((s) => s.cancelDownload)
   const setActiveView = useStore((s) => s.setActiveView)
+
+  // KAMP-639: seconds left on a rate-limit pause. The daemon publishes the
+  // deadline once, so the countdown ticks here rather than costing a broadcast
+  // per second. 0 whenever the queue is running.
+  const [pauseRemaining, setPauseRemaining] = React.useState(0)
+  useEffect(() => {
+    const tick = (): void =>
+      setPauseRemaining(pausedUntil ? Math.max(0, pausedUntil - Date.now() / 1000) : 0)
+    tick()
+    if (!pausedUntil) return
+    const id = window.setInterval(tick, 1000)
+    return () => window.clearInterval(id)
+  }, [pausedUntil])
 
   // Currently highlighted drop-indicator element (avoids a DOM query on clear).
   const activeDropRef = useRef<HTMLElement | null>(null)
@@ -191,6 +212,14 @@ export function DownloadsView({ active = false }: { active?: boolean }): React.J
 
   return (
     <div className="downloads-view">
+      {pauseRemaining > 0 && (
+        // KAMP-639: a rate-limit wait is deliberate, but without saying so the
+        // queue just stops with every row reading "Queued" — indistinguishable
+        // from a hang, which is exactly how it was reported.
+        <div className="downloads-paused-banner" role="status">
+          Bandcamp is rate-limiting downloads — resuming in {formatPause(pauseRemaining)}
+        </div>
+      )}
       {downloading.length > 0 && (
         <section className="downloads-section">
           <h2 className="downloads-section-title">Now Downloading</h2>

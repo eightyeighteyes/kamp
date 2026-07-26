@@ -9590,12 +9590,43 @@ class TestDownloadQueueStateMachine:
         fresh one (heals a stale/dead link without inline classification)."""
         index = LibraryIndex(tmp_path / "library.db")
         index.enqueue_download("a", redownload_url="https://dl/stale")
-        index.mark_download_failed("a", "HTTP 429")
+        index.mark_download_failed("a", "boom")
         row = index.get_download_item("a")
         assert row is not None
         assert row["status"] == "failed"
-        assert row["error_text"] == "HTTP 429"
+        assert row["error_text"] == "boom"
         assert row["redownload_url"] is None
+        index.close()
+
+    def test_mark_download_failed_can_keep_the_url(self, tmp_path: Path) -> None:
+        """KAMP-639: a rate limit says nothing about the URL's validity.
+
+        Discarding it forced the retry down the slow per-item collection walk —
+        against the very endpoint that was rate-limiting us.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a", redownload_url="https://dl/good")
+        index.mark_download_failed("a", "HTTP 429", clear_url=False)
+        row = index.get_download_item("a")
+        assert row is not None
+        assert row["status"] == "failed"
+        assert row["redownload_url"] == "https://dl/good"
+        index.close()
+
+    def test_requeue_download_keeps_position(self, tmp_path: Path) -> None:
+        """KAMP-639: a rate-limited item goes back to 'queued' in place, so the
+        drain can pause and resume it rather than failing it and marching on."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a", redownload_url="https://dl/a")
+        index.enqueue_download("b")
+        before = index.get_download_item("a")["position"]  # type: ignore[index]
+        index.mark_downloading("a")
+        index.requeue_download("a")
+        row = index.get_download_item("a")
+        assert row is not None
+        assert row["status"] == "queued"
+        assert row["position"] == before  # not sent to the back
+        assert row["redownload_url"] == "https://dl/a"
         index.close()
 
     def test_set_download_redownload_url(self, tmp_path: Path) -> None:

@@ -156,6 +156,10 @@ type PlayerStore = {
   // `download.queue` WS event. Distinct from the per-album KAMP-436 sets above,
   // which decorate the library grid.
   downloadQueue: DownloadItem[]
+  // KAMP-639: Unix timestamp the queue is waiting out a Bandcamp rate limit
+  // until; 0 when running. A paused queue otherwise looks identical to a hung
+  // one -- every row still reads 'queued' while nothing happens.
+  downloadPausedUntil: number
   // KAMP-571: batch-anchored aggregate for the global download bar. Tracks the
   // ids seen active in the current download batch, the running total, how many
   // have completed (left the queue, not failed), and `floor` — the monotonic
@@ -200,7 +204,7 @@ type PlayerStore = {
   removeDownload: (saleItemId: string) => Promise<void>
   // KAMP-568: download-queue snapshot (Downloads view)
   loadDownloads: () => Promise<void>
-  setDownloadQueue: (items: DownloadItem[]) => void
+  setDownloadQueue: (items: DownloadItem[], pausedUntil?: number) => void
   // KAMP-570: Downloads-view interactions (optimistic; the download.queue WS
   // snapshot reconciles, or loadDownloads() reverts on API failure).
   reorderDownloadQueue: (orderedQueuedIds: string[]) => Promise<void>
@@ -535,6 +539,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   downloadProgress: new Map<string, number>(),
   taggingAlbumIds: new Set<string>(),
   downloadQueue: [],
+  downloadPausedUntil: 0,
   downloadBatch: null,
   flashToast: null,
   flashToastTone: null,
@@ -771,20 +776,22 @@ export const useStore = create<PlayerStore>((set, get) => ({
   // arrive via the `download.queue` WS event (setDownloadQueue).
   loadDownloads: async () => {
     try {
-      const { items } = await api.getDownloads()
-      get().setDownloadQueue(items) // route through the batch-tracking setter
+      const { items, paused_until } = await api.getDownloads()
+      // route through the batch-tracking setter
+      get().setDownloadQueue(items, paused_until ?? 0)
     } catch {
       // best-effort; the WS snapshot will populate on the next transition
     }
   },
-  setDownloadQueue: (items) =>
+  setDownloadQueue: (items, pausedUntil = 0) =>
     set((s) => {
       // KAMP-571: fold the snapshot into the batch-anchored aggregate. A batch is
       // "everything in flight until the queue drains". When nothing is active the
       // batch resets (bar hides). Otherwise every newly-seen active id extends the
       // total; `done` = seen ids that have left the queue without failing.
       const active = items.filter((i) => i.status === 'downloading' || i.status === 'queued')
-      if (active.length === 0) return { downloadQueue: items, downloadBatch: null }
+      if (active.length === 0)
+        return { downloadQueue: items, downloadBatch: null, downloadPausedUntil: pausedUntil }
 
       const prev = s.downloadBatch
       const seenIds = prev ? prev.seenIds.slice() : []
@@ -820,7 +827,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
         prev.seenIds.length === seenIds.length
           ? prev
           : { seenIds, total, done, floor }
-      return { downloadQueue: items, downloadBatch: batch }
+      return { downloadQueue: items, downloadBatch: batch, downloadPausedUntil: pausedUntil }
     }),
   // KAMP-570: reorder the queued items. Optimistically rebuild the queue as
   // [downloading, ...reordered queued, failed] (the snapshot's section order),

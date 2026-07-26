@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +23,7 @@ from kamp_daemon.bandcamp import (
     _download_item,
     _parse_content_length,
     _parse_size_mb,
+    PrefetchState,
     _ensure_session,
     _extract_pagedata,
     _fetch_collection,
@@ -1353,6 +1355,34 @@ class TestPaginate:
                 index,
             )
         assert [r["sale_item_id"] for r in result] == [1, 2, 3, 4, 5, 6]
+
+    def test_page_size_keeps_a_walk_cheap(self) -> None:
+        """KAMP-639: a collection walk's request cost is ceil(size / batch).
+
+        This is the biggest single lever on Bandcamp request volume. At the old
+        batch of 20 an 800-album collection cost ~40 POSTs against the endpoint
+        Bandcamp rate-limits hardest — every single walk. Verified against the
+        live API that count=100 is honoured (returning 100 items and their 100
+        redownload_urls), so guard the constant against drifting back down.
+        """
+        from kamp_daemon.bandcamp import _COLLECTION_PAGE_BATCH
+
+        assert _COLLECTION_PAGE_BATCH >= 100
+        # An 800-album collection must not cost more than 10 requests to walk.
+        assert -(-800 // _COLLECTION_PAGE_BATCH) <= 10
+
+    def test_requests_the_configured_page_size(self) -> None:
+        """The batch constant is what actually goes on the wire as `count`."""
+        session = self._make_post_mock([[_item(1)]])
+        index = MagicMock()
+        with patch("kamp_daemon.bandcamp._COLLECTION_PAGE_BATCH", 100):
+            _paginate(
+                "https://bandcamp.com/fancollection/1/collection_items",
+                123,
+                session,
+                index,
+            )
+        assert session.post.call_args[1]["json"]["count"] == 100
 
     def test_raises_on_session_expired_401(self) -> None:
         session = MagicMock()
@@ -3863,6 +3893,18 @@ class TestGetDownloadSizeBytes:
         assert get_download_size_bytes("https://bc/download?x", "flac", session) is None
 
 
+def _advancing_clock(step: float = 3600.0) -> Callable[[], float]:
+    """A monotonic clock that jumps a full step on every read.
+
+    The prefetch coalesces walks inside a quiet window (KAMP-639). Tests that
+    exercise the *attempted-set* guard across several calls need each call to
+    fall outside that window, so the behaviour under test is the one that
+    decides — not the window.
+    """
+    ticks = iter(range(1, 10_000))
+    return lambda: next(ticks) * step
+
+
 class TestPrefetchRedownloadUrls:
     """prefetch_redownload_urls: fill missing queue URLs with one fetch (KAMP-575)."""
 
@@ -3920,10 +3962,11 @@ class TestPrefetchRedownloadUrls:
         index.download_redownload_urls.return_value = {"999": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
-        attempted: set[str] = set()
+        state = PrefetchState()
+        clock = _advancing_clock()
 
-        first = prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
-        second = prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        first = prefetch_redownload_urls(index, MagicMock(), state=state, now=clock)
+        second = prefetch_redownload_urls(index, MagicMock(), state=state, now=clock)
 
         assert (first, second) == (0, 0)
         fetch.assert_called_once()  # the second call must not hit the network
@@ -3938,13 +3981,161 @@ class TestPrefetchRedownloadUrls:
             "kamp_daemon.bandcamp._fetch_collection",
             return_value=[{"sale_item_id": 222, "redownload_url": "https://dl/222"}],
         )
-        attempted: set[str] = set()
+        state = PrefetchState()
+        clock = _advancing_clock()
 
-        prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        prefetch_redownload_urls(index, MagicMock(), state=state, now=clock)
         index.download_redownload_urls.return_value = {"999": None, "222": None}
-        n = prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        n = prefetch_redownload_urls(index, MagicMock(), state=state, now=clock)
 
         assert n == 1
+        assert fetch.call_count == 2
+
+    # -- collection-walk coalescing (KAMP-639) ------------------------------
+    # A walk covers the ENTIRE collection, so one from moments ago already
+    # contains every purchase. Walking again for an id enqueued since then
+    # cannot find anything the last walk missed — it only costs another trip to
+    # the endpoint Bandcamp rate-limits hardest. Adding albums one at a time
+    # from the UI otherwise buys a full walk per album, which is what put the
+    # queue back into 429 after KAMP-640 fixed the auth race.
+
+    def test_burst_of_new_ids_shares_one_walk(self, mocker: MockerFixture) -> None:
+        """Clicking three albums into a queue that is already draining.
+
+        The head is resolved and downloading, so the new ids can ride the next
+        walk instead of buying one each.
+        """
+        from kamp_daemon.bandcamp import PrefetchState
+
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"1": None}
+        index.next_queued_download.return_value = "1"
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            return_value=[{"sale_item_id": 1, "redownload_url": "https://dl/1"}],
+        )
+        clock = [1000.0]
+        state = PrefetchState(min_walk_interval=60.0)
+
+        # First walk resolves the head.
+        prefetch_redownload_urls(index, MagicMock(), state=state, now=lambda: clock[0])
+        index.download_redownload_urls.return_value = {"1": "https://dl/1"}
+
+        # Three more albums clicked in over the next few seconds.
+        for i, new_id in enumerate(("2", "3", "4"), start=1):
+            clock[0] += 3
+            index.download_redownload_urls.return_value = {
+                "1": "https://dl/1",
+                **{str(n): None for n in range(2, 2 + i)},
+            }
+            _ = new_id
+            prefetch_redownload_urls(
+                index, MagicMock(), state=state, now=lambda: clock[0]
+            )
+
+        fetch.assert_called_once()  # the burst rode the first walk
+
+    def test_window_never_blocks_the_item_about_to_download(
+        self, mocker: MockerFixture
+    ) -> None:
+        """KAMP-639: coalescing must not starve the head of the queue.
+
+        Skipping the walk for a newly queued id is only free while that id is
+        still waiting. Once the drain is about to claim it, a skip sends it down
+        the per-item fallback, which walks the whole collection *by itself* —
+        so the window would trade one prefetch walk for several fallback walks.
+        A walk here resolves every queued row at once, so it pays for itself.
+        """
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"1": "https://dl/1", "2": None}
+        index.next_queued_download.return_value = "2"  # head has no URL
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
+        clock = [1000.0]
+        state = PrefetchState(min_walk_interval=60.0, last_walk_at=999.0)
+
+        prefetch_redownload_urls(index, MagicMock(), state=state, now=lambda: clock[0])
+
+        fetch.assert_called_once()  # inside the window, but the head needs it
+
+    def test_window_still_coalesces_when_the_head_is_resolved(
+        self, mocker: MockerFixture
+    ) -> None:
+        """The item about to download already has its URL, so the ids queued
+        behind it can wait for the window — that is the whole saving."""
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"1": "https://dl/1", "2": None}
+        index.next_queued_download.return_value = "1"  # head is resolved
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
+        state = PrefetchState(min_walk_interval=60.0, last_walk_at=999.0)
+
+        n = prefetch_redownload_urls(
+            index, MagicMock(), state=state, now=lambda: 1000.0
+        )
+
+        assert n == 0
+        fetch.assert_not_called()
+
+    def test_walk_allowed_again_after_the_interval(self, mocker: MockerFixture) -> None:
+        from kamp_daemon.bandcamp import PrefetchState
+
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"1": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
+        clock = [1000.0]
+        state = PrefetchState(min_walk_interval=60.0)
+
+        prefetch_redownload_urls(index, MagicMock(), state=state, now=lambda: clock[0])
+        clock[0] += 61
+        index.download_redownload_urls.return_value = {"1": None, "2": None}
+        prefetch_redownload_urls(index, MagicMock(), state=state, now=lambda: clock[0])
+
+        assert fetch.call_count == 2
+
+    def test_first_walk_is_never_delayed(self, mocker: MockerFixture) -> None:
+        """A fresh state must not sit out the window before its first walk."""
+        from kamp_daemon.bandcamp import PrefetchState
+
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"1": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
+
+        prefetch_redownload_urls(
+            index, MagicMock(), state=PrefetchState(), now=lambda: 5.0
+        )
+
+        fetch.assert_called_once()
+
+    def test_failed_walk_does_not_start_the_window(self, mocker: MockerFixture) -> None:
+        """A 429'd walk must not count as a recent walk — otherwise one failure
+        silences the prefetch for the whole window."""
+        from kamp_daemon.bandcamp import PrefetchState
+
+        index = MagicMock()
+        index.download_redownload_urls.return_value = {"1": None}
+        mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
+        fetch = mocker.patch(
+            "kamp_daemon.bandcamp._fetch_collection",
+            side_effect=BandcampAPIError("HTTP 429"),
+        )
+        state = PrefetchState(min_walk_interval=60.0)
+        clock = [1000.0]
+
+        with pytest.raises(BandcampAPIError):
+            prefetch_redownload_urls(
+                index, MagicMock(), state=state, now=lambda: clock[0]
+            )
+        assert state.last_walk_at == 0.0
+
+        clock[0] += 1
+        with pytest.raises(BandcampAPIError):
+            prefetch_redownload_urls(
+                index, MagicMock(), state=state, now=lambda: clock[0]
+            )
         assert fetch.call_count == 2
 
     def test_failed_fetch_leaves_ids_retryable(self, mocker: MockerFixture) -> None:
@@ -3957,14 +4148,15 @@ class TestPrefetchRedownloadUrls:
             "kamp_daemon.bandcamp._fetch_collection",
             side_effect=BandcampAPIError("HTTP 429"),
         )
-        attempted: set[str] = set()
+        state = PrefetchState()
+        clock = _advancing_clock()
 
         with pytest.raises(BandcampAPIError):
-            prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
-        assert attempted == set()
+            prefetch_redownload_urls(index, MagicMock(), state=state, now=clock)
+        assert state.attempted == set()
 
         with pytest.raises(BandcampAPIError):
-            prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+            prefetch_redownload_urls(index, MagicMock(), state=state, now=clock)
         assert fetch.call_count == 2
 
     def test_attempted_forgets_ids_that_left_the_queue(
@@ -3975,15 +4167,16 @@ class TestPrefetchRedownloadUrls:
         index.download_redownload_urls.return_value = {"999": None}
         mocker.patch("kamp_daemon.bandcamp._get_fan_info", return_value=(1, "u"))
         fetch = mocker.patch("kamp_daemon.bandcamp._fetch_collection", return_value=[])
-        attempted: set[str] = set()
+        state = PrefetchState()
+        clock = _advancing_clock()
 
-        prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        prefetch_redownload_urls(index, MagicMock(), state=state, now=clock)
         index.download_redownload_urls.return_value = {}  # drained
-        prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
-        assert attempted == set()
+        prefetch_redownload_urls(index, MagicMock(), state=state, now=clock)
+        assert state.attempted == set()
 
         index.download_redownload_urls.return_value = {"999": None}  # re-queued
-        prefetch_redownload_urls(index, MagicMock(), attempted=attempted)
+        prefetch_redownload_urls(index, MagicMock(), state=state, now=clock)
         assert fetch.call_count == 2
 
 

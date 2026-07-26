@@ -1132,8 +1132,12 @@ def _cmd_daemon(
     def _download_worker() -> None:
         import time
 
-        from .bandcamp import _make_requests_session, prefetch_redownload_urls
-        from .syncer import process_next_download
+        from .bandcamp import (
+            PrefetchState,
+            _make_requests_session,
+            prefetch_redownload_urls,
+        )
+        from .syncer import RateLimited, process_next_download
 
         def _on_state(provider_item_id: str, state: str) -> None:
             app.state.notify_album_download_status(provider_item_id, state)
@@ -1157,9 +1161,15 @@ def _cmd_daemon(
         # retry a rate-limited fetch on every item and re-create the 429 storm.
         _PREFETCH_FAILURE_COOLDOWN = 120.0
         _prefetch_failed_at = 0.0
-        # provider_item_ids already put through a collection fetch — see
-        # prefetch_redownload_urls. Owned here so it survives across items.
-        _prefetch_attempted: set[str] = set()
+        # Attempted-id set plus the walk-coalescing window — see PrefetchState.
+        # Owned here so it survives across items in a drain.
+        _prefetch_state = PrefetchState()
+        # How long to pause the whole drain when Bandcamp rate-limits us, with
+        # escalation: a one-off limit clears in a minute, so waiting five is
+        # indistinguishable from a hang. Repeats back off further. The queue
+        # resumes on its own; items stay 'queued' (KAMP-639).
+        _RATE_LIMIT_PAUSES = (60.0, 120.0, 300.0)
+        _rate_limit_hits = 0
 
         def _prefetch_urls() -> None:
             # Fill any missing redownload_urls with a single collection fetch, so
@@ -1185,7 +1195,7 @@ def _cmd_daemon(
                     n = prefetch_redownload_urls(
                         index,
                         _make_requests_session(session_data),
-                        attempted=_prefetch_attempted,
+                        state=_prefetch_state,
                     )
                     if n:
                         _logger.info("Prefetched %d download URL(s) for the queue", n)
@@ -1214,16 +1224,39 @@ def _cmd_daemon(
             # Draining: process_next_download fills any missing URLs (prepare)
             # before claiming each item, so every item — including one enqueued
             # mid-drain — downloads via the fast path with a size already probed.
-            while (
-                process_next_download(
-                    index,
-                    _album_download_trigger_ref[0],
-                    on_state=_on_state,
-                    prepare=_prefetch_urls,
+            try:
+                while (
+                    process_next_download(
+                        index,
+                        _album_download_trigger_ref[0],
+                        on_state=_on_state,
+                        prepare=_prefetch_urls,
+                    )
+                    is not None
+                ):
+                    pass  # drain the whole queue before sleeping again
+                _rate_limit_hits = 0  # a clean drain clears the escalation
+            except RateLimited as exc:
+                # KAMP-639: the account is rate-limited, so every remaining item
+                # would fail the same way. Stop the drain and wait it out — the
+                # item is back in 'queued' and resumes from here, no user action.
+                pause = _RATE_LIMIT_PAUSES[
+                    min(_rate_limit_hits, len(_RATE_LIMIT_PAUSES) - 1)
+                ]
+                _rate_limit_hits += 1
+                _logger.warning(
+                    "Bandcamp rate-limited (%s) — pausing the download queue for "
+                    "%.0fs; it will resume automatically",
+                    exc,
+                    pause,
                 )
-                is not None
-            ):
-                pass  # drain the whole queue before sleeping again
+                # Publish the deadline so the UI can say "resuming in N", not
+                # leave every row reading "queued" while nothing happens.
+                app.state.set_download_pause(time.time() + pause)
+                try:
+                    time.sleep(pause)
+                finally:
+                    app.state.set_download_pause(0.0)
 
     threading.Thread(
         target=_download_worker, daemon=True, name="album-dl-worker"

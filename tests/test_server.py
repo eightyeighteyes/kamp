@@ -3140,7 +3140,11 @@ class TestBandcampCollectionDownload:
             "state": "queued",
         }
         # Followed by a structured download.queue snapshot (KAMP-566)
-        assert ws_messages[1] == {"type": "download.queue", "items": []}
+        assert ws_messages[1] == {
+            "type": "download.queue",
+            "items": [],
+            "paused_until": 0.0,
+        }
 
     def test_second_download_also_broadcasts_queued(
         self,
@@ -3262,7 +3266,7 @@ class TestBandcampCollectionDownload:
             ws.receive_json()  # consume initial player.state
             app.state.notify_download_queue()
             msg = ws.receive_json()
-        assert msg == {"type": "download.queue", "items": items}
+        assert msg == {"type": "download.queue", "items": items, "paused_until": 0.0}
 
     def test_notify_album_download_progress_exposed_on_app_state(
         self,
@@ -3328,7 +3332,27 @@ class TestDownloadQueueEndpoints:
         app = self._app(mock_index, mock_engine, mock_queue)
         resp = TestClient(app).get("/api/v1/downloads")
         assert resp.status_code == 200
-        assert resp.json() == {"items": items}
+        assert resp.json() == {"items": items, "paused_until": 0.0}
+
+    def test_downloads_reports_a_rate_limit_pause(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """KAMP-639: a paused queue must be distinguishable from a hung one.
+
+        Every row still reads 'queued' while the drain waits out a rate limit,
+        so the deadline has to travel with the snapshot or the UI has nothing
+        to show but a stopped queue.
+        """
+        mock_index.download_queue_items.return_value = []
+        app = self._app(mock_index, mock_engine, mock_queue)
+        with TestClient(app) as c:
+            app.state.set_download_pause(1_800_000_000.0)
+            assert c.get("/api/v1/downloads").json()["paused_until"] == 1_800_000_000.0
+            app.state.set_download_pause(0.0)
+            assert c.get("/api/v1/downloads").json()["paused_until"] == 0.0
 
     def test_reorder_reorders_and_broadcasts_snapshot(
         self,
@@ -3347,7 +3371,7 @@ class TestDownloadQueueEndpoints:
                 snapshot = ws.receive_json()
         assert resp.status_code == 200
         mock_index.reorder_download_queue.assert_called_once_with(["c", "a", "b"])
-        assert snapshot == {"type": "download.queue", "items": []}
+        assert snapshot == {"type": "download.queue", "items": [], "paused_until": 0.0}
 
     def test_reorder_invalid_permutation_returns_400(
         self,
@@ -3386,7 +3410,7 @@ class TestDownloadQueueEndpoints:
             "sale_item_id": "42",
             "state": "queued",
         }
-        assert snapshot == {"type": "download.queue", "items": []}
+        assert snapshot == {"type": "download.queue", "items": [], "paused_until": 0.0}
 
     def test_retry_returns_503_when_dl_queue_not_configured(
         self,
@@ -3419,7 +3443,7 @@ class TestDownloadQueueEndpoints:
             "sale_item_id": "42",
             "state": "removed",
         }
-        assert snapshot == {"type": "download.queue", "items": []}
+        assert snapshot == {"type": "download.queue", "items": [], "paused_until": 0.0}
 
 
 # DELETE /api/v1/bandcamp/collection/{sale_item_id}/download

@@ -1061,6 +1061,50 @@ class TestProcessNextDownload:
         assert process_next_download(index, lambda pid: None) is None
         index.close()
 
+    def test_persistent_rate_limit_requeues_and_signals_the_drain(
+        self, tmp_path: Path
+    ) -> None:
+        """KAMP-639: a 429 is account-wide, not this item's fault.
+
+        Failing it and pulling the next item is what turned one rate-limited
+        download into a queue-wide cascade — every remaining item burned its own
+        retries and collection walks against the endpoint already refusing us.
+        """
+        from kamp_daemon.syncer import RateLimited
+
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a", redownload_url="https://dl/a")
+        index.enqueue_download("b")
+
+        def _dl(pid: str) -> None:
+            raise RuntimeError("Album download failed: HTTP 429")
+
+        with pytest.raises(RateLimited):
+            process_next_download(index, _dl, sleep=lambda _s: None)
+
+        row = index.get_download_item("a")
+        assert row is not None
+        assert row["status"] == "queued"  # left for the drain to resume
+        assert row["redownload_url"] == "https://dl/a"  # a 429 does not implicate it
+        # 'b' was never touched — the drain stops rather than marching on.
+        assert index.get_download_item("b")["status"] == "queued"  # type: ignore[index]
+        index.close()
+
+    def test_non_rate_limit_failure_still_fails_the_item(self, tmp_path: Path) -> None:
+        """Only rate limits pause the drain; a real error still fails and moves on."""
+        index = LibraryIndex(tmp_path / "library.db")
+        index.enqueue_download("a", redownload_url="https://dl/a")
+
+        def _dl(pid: str) -> None:
+            raise RuntimeError("CDN exploded")
+
+        assert process_next_download(index, _dl) == "a"
+        row = index.get_download_item("a")
+        assert row is not None
+        assert row["status"] == "failed"
+        assert row["redownload_url"] is None  # stale-link healing preserved
+        index.close()
+
     def test_prepare_runs_before_every_item(self, tmp_path: Path) -> None:
         """KAMP-637: *prepare* runs per item, so rows enqueued mid-drain are prepared.
 
@@ -1168,18 +1212,29 @@ class TestProcessNextDownload:
         assert index.download_queue_items() == []  # ultimately done
         index.close()
 
-    def test_429_exhausted_marks_failed(self, tmp_path: Path) -> None:
+    def test_429_exhausted_raises_after_every_retry(self, tmp_path: Path) -> None:
+        """Retries are still honoured; the exhausted case now pauses the drain.
+
+        KAMP-639 changed the terminal state from 'failed' to 'queued' + a
+        RateLimited signal — the item is not at fault, the account is limited.
+        """
+        from kamp_daemon.syncer import RateLimited
+
         index = LibraryIndex(tmp_path / "library.db")
         index.enqueue_download("a")
+        attempts = {"n": 0}
 
         def _dl(pid: str) -> None:
+            attempts["n"] += 1
             raise RuntimeError("HTTP 429 Too Many Requests")
 
-        pid = process_next_download(
-            index, _dl, retry_delays=(1, 1), sleep=lambda _s: None
-        )
-        assert pid == "a"
-        assert index.download_queue_items()[0]["status"] == "failed"
+        with pytest.raises(RateLimited):
+            process_next_download(
+                index, _dl, retry_delays=(1, 1), sleep=lambda _s: None
+            )
+
+        assert attempts["n"] == 3  # two delayed retries plus the final attempt
+        assert index.download_queue_items()[0]["status"] == "queued"
         index.close()
 
     def test_non_429_error_does_not_retry(self, tmp_path: Path) -> None:

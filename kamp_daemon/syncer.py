@@ -22,6 +22,16 @@ class NeedsLoginError(Exception):
     """No valid Bandcamp session — user must log in before syncing."""
 
 
+class RateLimited(Exception):
+    """Bandcamp is rate-limiting the account — stop working and back off.
+
+    Raised by :func:`process_next_download` instead of failing the item, because
+    a 429 is account-wide rather than a property of the item being downloaded.
+    The item is returned to 'queued' in place, so the caller resumes it once the
+    limiter relaxes (KAMP-639).
+    """
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -263,12 +273,26 @@ def process_next_download(
                 on_state(pid, "failed")
             return pid
         except Exception as exc:
-            if "429" in str(exc) and delay is not None:
+            rate_limited = "429" in str(exc)
+            if rate_limited and delay is not None:
                 logger.warning(
                     "Download rate-limited for %s; retrying in %ds", pid, delay
                 )
                 sleep(delay)
                 continue
+            if rate_limited:
+                # KAMP-639: a 429 is account-wide, not this item's fault. Failing
+                # it and letting the caller pull the next item is what turned one
+                # rate-limited download into a queue-wide cascade — every
+                # remaining item burned its own retries and collection walks
+                # against an endpoint already refusing us. Put it back where it
+                # stands (keeping its URL, which a 429 does not implicate) and
+                # make the caller stop and back off.
+                logger.warning("Download rate-limited for %s; pausing the queue", pid)
+                index.requeue_download(pid, provider=provider)
+                if on_state is not None:
+                    on_state(pid, "queued")
+                raise RateLimited(str(exc)[:200]) from exc
             logger.exception("Download failed for %s", pid)
             index.mark_download_failed(pid, str(exc)[:200], provider=provider)
             if on_state is not None:

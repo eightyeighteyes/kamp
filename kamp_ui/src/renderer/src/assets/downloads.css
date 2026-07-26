@@ -14,6 +14,20 @@
   margin-bottom: 12px;
 }
 
+/* KAMP-639: rate-limit pause notice. The queue deliberately stops and resumes
+   itself; without saying so, every row still reads "Queued" and the wait is
+   indistinguishable from a hang. Informational, not an error — the downloads
+   are fine, they are just waiting. */
+.downloads-paused-banner {
+  margin: 8px 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface-hover);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 .downloads-section-title {
   margin: 8px 12px 4px;
   font-size: 11px;

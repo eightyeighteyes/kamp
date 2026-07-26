@@ -821,6 +821,109 @@ app.whenReady().then(async () => {
     sameSite: string
   }
 
+  // --- Bandcamp cookie lease (KAMP-640) ---------------------------------
+  // Relayed requests run CONCURRENTLY: the preload fires ipcRenderer.invoke
+  // per WebSocket event without awaiting, and ipcMain.handle runs each async
+  // callback concurrently. They all share one cookie jar — session.defaultSession.
+  //
+  // Injecting and deleting per request therefore raced: whichever request
+  // finished first deleted the cookies out from under every request still in
+  // flight, which then went out UNAUTHENTICATED and came back 429. That is why
+  // the download queue cascaded on Windows and in packaged builds while macOS
+  // (which never uses the relay — each thread has its own requests.Session)
+  // stayed stable, and why it got worse exactly when concurrency was highest.
+  //
+  // So: reference-count the injection. The first request in injects, concurrent
+  // requests await that same promise, and the cookies are removed only once the
+  // last in-flight request has released. The security property is unchanged —
+  // cookies are absent from the session store whenever nothing is in flight.
+  let cookieLeases = 0
+  let cookieInjection: Promise<string[]> | null = null
+  let cookieRemoval: Promise<void> | null = null
+
+  async function injectBandcampCookies(): Promise<string[]> {
+    // In the PyInstaller bundle, cookies are stored in library.db rather than
+    // in session.defaultSession (cleared after login to avoid plaintext on disk).
+    // Fetch them from the daemon endpoint rather than reading from the WS payload
+    // so auth cookies are never broadcast to all WS clients.
+    const cookieResp = await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/session-cookies', {
+      headers: authHeaders()
+    })
+    const { cookies } = (await cookieResp.json()) as { cookies: BandcampCookie[] }
+    const injectedNames: string[] = []
+    for (const c of cookies) {
+      const sameSiteLower = c.sameSite?.toLowerCase()
+      const sameSite = (['lax', 'strict', 'no_restriction', 'unspecified'] as const).includes(
+        sameSiteLower as never
+      )
+        ? (sameSiteLower as 'unspecified' | 'no_restriction' | 'lax' | 'strict')
+        : 'unspecified'
+      try {
+        await session.defaultSession.cookies.set({
+          url: `https://${c.domain.replace(/^\./, '')}`,
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path,
+          secure: c.secure,
+          httpOnly: c.httpOnly,
+          expirationDate: c.expires > 0 ? c.expires : undefined,
+          sameSite
+        })
+        injectedNames.push(c.name)
+      } catch {
+        // Non-fatal: skip cookies that fail to set (e.g. malformed domain).
+      }
+    }
+    return injectedNames
+  }
+
+  async function acquireBandcampCookies(): Promise<void> {
+    cookieLeases += 1
+    // Increment before awaiting: a request arriving mid-injection must hold a
+    // lease already, or the injecting request could release to 0 and delete the
+    // cookies the newcomer is about to depend on.
+    if (cookieInjection === null) {
+      // Chain behind any cleanup still draining, or that cleanup's removals
+      // would delete the cookies this injection is about to write — the same
+      // race one level down.
+      const priorRemoval = cookieRemoval
+      cookieInjection = (async () => {
+        if (priorRemoval !== null) await priorRemoval
+        return injectBandcampCookies()
+      })()
+    }
+    try {
+      await cookieInjection
+    } catch {
+      // Injection failed — the request proceeds and fails on its own terms
+      // rather than hanging. The lease is still released by the caller.
+    }
+  }
+
+  async function releaseBandcampCookies(): Promise<void> {
+    cookieLeases -= 1
+    if (cookieLeases > 0 || cookieInjection === null) return
+    const pending = cookieInjection
+    cookieInjection = null
+    cookieRemoval = (async () => {
+      let names: string[] = []
+      try {
+        names = await pending
+      } catch {
+        return // nothing was injected
+      }
+      for (const name of names) {
+        try {
+          await session.defaultSession.cookies.remove('https://bandcamp.com', name)
+        } catch {
+          // Non-fatal: a cookie that will not delete must not break the response.
+        }
+      }
+    })()
+    await cookieRemoval
+  }
+
   ipcMain.handle(
     'bandcamp:proxy-fetch',
     async (
@@ -833,131 +936,111 @@ app.whenReady().then(async () => {
         body: string | null
       }
     ) => {
-      // In the PyInstaller bundle, cookies are stored in library.db rather than
-      // in session.defaultSession (cleared after login to avoid plaintext on disk).
-      // Fetch them from the daemon endpoint rather than reading from the WS payload
-      // so auth cookies are never broadcast to all WS clients.
-      const cookieResp = await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/session-cookies', {
-        headers: authHeaders()
-      })
-      const { cookies } = (await cookieResp.json()) as { cookies: BandcampCookie[] }
-      const injectedNames: string[] = []
-      for (const c of cookies) {
-        const sameSiteLower = c.sameSite?.toLowerCase()
-        const sameSite = (['lax', 'strict', 'no_restriction', 'unspecified'] as const).includes(
-          sameSiteLower as never
-        )
-          ? (sameSiteLower as 'unspecified' | 'no_restriction' | 'lax' | 'strict')
-          : 'unspecified'
-        try {
-          await session.defaultSession.cookies.set({
-            url: `https://${c.domain.replace(/^\./, '')}`,
-            name: c.name,
-            value: c.value,
-            domain: c.domain,
-            path: c.path,
-            secure: c.secure,
-            httpOnly: c.httpOnly,
-            expirationDate: c.expires > 0 ? c.expires : undefined,
-            sameSite
-          })
-          injectedNames.push(c.name)
-        } catch {
-          // Non-fatal: skip cookies that fail to set (e.g. malformed domain).
-        }
-      }
-
-      let status = 502
-      let body = 'net.fetch error'
-      let contentType = 'text/plain'
-      let url = req.url
-
+      await acquireBandcampCookies()
       try {
-        // Use net.request (Node.js IncomingMessage) instead of net.fetch (undici) so
-        // response headers are plain objects with no ByteString validation.
-        // net.fetch wraps response headers in undici's Headers class, which throws an
-        // uncaught TypeError inside ClientRequest.emit for values with code points
-        // > 0xFF (e.g. non-ASCII Content-Disposition filenames from Bandcamp CDN).
-        // That exception bypasses our try/catch and crashes the main process.
-        const safeHeaders = Object.fromEntries(
-          Object.entries(req.headers).filter(([, v]) =>
-            [...v].every((c) => c.charCodeAt(0) <= 0xff)
-          )
-        )
-        const result = await new Promise<{
-          status: number
-          body: string
-          contentType: string
-          url: string
-        }>((resolve, reject) => {
-          let finalUrl = req.url
-          const request = net.request({
-            method: req.method,
-            url: req.url,
-            session: session.defaultSession,
-            useSessionCookies: true
-          })
-          for (const [k, v] of Object.entries(safeHeaders)) {
-            request.setHeader(k, v)
-          }
-          // Track the final URL through redirects (popplers5.bandcamp.com →
-          // bcbits.com). followRedirect() must be called synchronously here.
-          request.on('redirect', (_code, _method, redirectUrl) => {
-            finalUrl = redirectUrl
-            request.followRedirect()
-          })
-          request.on('response', (response) => {
-            const resStatus = response.statusCode
-            const ct = response.headers['content-type']
-            const resContentType = Array.isArray(ct) ? ct[0] : (ct ?? 'text/html')
-            if (req.method === 'HEAD') {
-              // HEAD responses have no body per HTTP spec — resolve immediately.
-              resolve({ status: resStatus, body: '', contentType: resContentType, url: finalUrl })
-              return
-            }
-            const chunks: Buffer[] = []
-            let totalBytes = 0
-            // Bandcamp API responses are at most a few KB. 10 MB guards against
-            // stale GET events (from before the HEAD fix) buffering entire ZIPs.
-            const MAX_BODY = 10 * 1024 * 1024
-            response.on('data', (chunk: Buffer) => {
-              totalBytes += chunk.length
-              if (totalBytes <= MAX_BODY) chunks.push(chunk)
-            })
-            response.on('end', () => {
-              resolve({
-                status: totalBytes > MAX_BODY ? 413 : resStatus,
-                body: Buffer.concat(chunks).toString('utf-8'),
-                contentType: resContentType,
-                url: finalUrl
-              })
-            })
-            response.on('error', reject)
-          })
-          request.on('error', reject)
-          if (req.body) request.write(req.body)
-          request.end()
-        })
-        status = result.status
-        body = result.body
-        contentType = result.contentType
-        url = result.url
-      } catch (err) {
-        body = String(err)
+        return await runProxyFetch(req)
+      } finally {
+        // finally, so a throw or timeout cannot leak a lease and pin the
+        // cookies in the session store for the life of the process.
+        await releaseBandcampCookies()
       }
-
-      // Remove injected cookies so they don't linger in the session store between syncs.
-      for (const name of injectedNames) {
-        await session.defaultSession.cookies.remove('https://bandcamp.com', name)
-      }
-
-      await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/fetch-result', {
-        method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ id: req.id, status, body, content_type: contentType, url })
-      })
     }
   )
+
+  async function runProxyFetch(req: {
+    id: string
+    url: string
+    method: string
+    headers: Record<string, string>
+    body: string | null
+  }): Promise<void> {
+    let status = 502
+    let body = 'net.fetch error'
+    let contentType = 'text/plain'
+    let url = req.url
+
+    try {
+      // Use net.request (Node.js IncomingMessage) instead of net.fetch (undici) so
+      // response headers are plain objects with no ByteString validation.
+      // net.fetch wraps response headers in undici's Headers class, which throws an
+      // uncaught TypeError inside ClientRequest.emit for values with code points
+      // > 0xFF (e.g. non-ASCII Content-Disposition filenames from Bandcamp CDN).
+      // That exception bypasses our try/catch and crashes the main process.
+      const safeHeaders = Object.fromEntries(
+        Object.entries(req.headers).filter(([, v]) =>
+          [...v].every((c) => c.charCodeAt(0) <= 0xff)
+        )
+      )
+      const result = await new Promise<{
+        status: number
+        body: string
+        contentType: string
+        url: string
+      }>((resolve, reject) => {
+        let finalUrl = req.url
+        const request = net.request({
+          method: req.method,
+          url: req.url,
+          session: session.defaultSession,
+          useSessionCookies: true
+        })
+        for (const [k, v] of Object.entries(safeHeaders)) {
+          request.setHeader(k, v)
+        }
+        // Track the final URL through redirects (popplers5.bandcamp.com →
+        // bcbits.com). followRedirect() must be called synchronously here.
+        request.on('redirect', (_code, _method, redirectUrl) => {
+          finalUrl = redirectUrl
+          request.followRedirect()
+        })
+        request.on('response', (response) => {
+          const resStatus = response.statusCode
+          const ct = response.headers['content-type']
+          const resContentType = Array.isArray(ct) ? ct[0] : (ct ?? 'text/html')
+          if (req.method === 'HEAD') {
+            // HEAD responses have no body per HTTP spec — resolve immediately.
+            resolve({ status: resStatus, body: '', contentType: resContentType, url: finalUrl })
+            return
+          }
+          const chunks: Buffer[] = []
+          let totalBytes = 0
+          // Bandcamp API responses are at most a few KB. 10 MB guards against
+          // stale GET events (from before the HEAD fix) buffering entire ZIPs.
+          const MAX_BODY = 10 * 1024 * 1024
+          response.on('data', (chunk: Buffer) => {
+            totalBytes += chunk.length
+            if (totalBytes <= MAX_BODY) chunks.push(chunk)
+          })
+          response.on('end', () => {
+            resolve({
+              status: totalBytes > MAX_BODY ? 413 : resStatus,
+              body: Buffer.concat(chunks).toString('utf-8'),
+              contentType: resContentType,
+              url: finalUrl
+            })
+          })
+          response.on('error', reject)
+        })
+        request.on('error', reject)
+        if (req.body) request.write(req.body)
+        request.end()
+      })
+      status = result.status
+      body = result.body
+      contentType = result.contentType
+      url = result.url
+    } catch (err) {
+      body = String(err)
+    }
+
+    // Cookie removal is NOT done here — see releaseBandcampCookies. Removing
+    // per request deleted them out from under other in-flight requests.
+    await net.fetch('http://127.0.0.1:47483/api/v1/bandcamp/fetch-result', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ id: req.id, status, body, content_type: contentType, url })
+    })
+  }
 
   ipcMain.handle('kamp:install-extension', (_event, source: 'npm' | 'local', nameOrPath: string) =>
     installExtension(source, nameOrPath)

@@ -1180,7 +1180,9 @@ class TestKnownBandcampBranch:
         self, tmp_path: Path, config: Config
     ) -> None:
         # KAMP-588: cached Bandcamp tags are stamped as native multi-value genres
-        # onto the downloaded files during ingest.
+        # onto the downloaded files during ingest. Opt in explicitly — the toggle
+        # ships off (see the disabled case below).
+        config.tagging.bandcamp_genres = True
         config.paths.watch_folder.mkdir(parents=True)
         config.paths.library.mkdir(parents=True)
         db = tmp_path / "lib.db"

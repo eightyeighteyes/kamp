@@ -1252,11 +1252,13 @@ export function PreferencesDialog({
                       initialValue={configValues?.['tagging.lastfm_genres'] ?? true}
                       onSave={handleSave}
                     />
+                    {/* initialValue fallback must match _CONFIG_DEFAULTS in
+                        kamp_daemon/config.py — this one is off by default. */}
                     <BoolRow
                       label="Use bandcamp album labels as genres"
                       configKey="tagging.bandcamp_genres"
                       hint="Use artist supplied labels on bandcamp items as additional genre tags."
-                      initialValue={configValues?.['tagging.bandcamp_genres'] ?? true}
+                      initialValue={configValues?.['tagging.bandcamp_genres'] ?? false}
                       onSave={handleSave}
                     />
                     <div className="prefs-row">

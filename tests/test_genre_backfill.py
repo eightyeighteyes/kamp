@@ -26,7 +26,10 @@ def _config() -> Config:
         musicbrainz=MusicBrainzConfig(),
         artwork=ArtworkConfig(min_dimension=1000, max_bytes=1_000_000),
         library=LibraryConfig(path_template=""),
-        tagging=TaggingConfig(lastfm_genres=True),
+        # Both sources on: the backfill tests below exercise the Last.fm and the
+        # cached-Bandcamp-label paths, so state them explicitly rather than
+        # inheriting the dataclass defaults (bandcamp_genres ships off).
+        tagging=TaggingConfig(lastfm_genres=True, bandcamp_genres=True),
     )
 
 

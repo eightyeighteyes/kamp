@@ -53,9 +53,12 @@ class TaggingConfig:
     # never slows or fails a download. Users can turn it off in Tagging prefs.
     lastfm_genres: bool = True
     # KAMP-588: apply the artist-supplied Bandcamp album labels as genre tags.
-    # Default ON. When off, the labels are still cached (so a later toggle-on
-    # applies them without a re-scrape) but never written to the library.
-    bandcamp_genres: bool = True
+    # Default OFF — unlike Last.fm's canonical genres, Bandcamp labels are free
+    # text the artist chose, so applying them unasked sprays one-off tags across
+    # the genre list. Off is the safe default; opting in is one click. The labels
+    # are cached either way, so a later toggle-on applies them without a
+    # re-scrape, and existing installs keep whatever value they already stored.
+    bandcamp_genres: bool = False
 
 
 @dataclass
@@ -107,7 +110,7 @@ _CONFIG_DEFAULTS: dict[str, str] = {
     "artwork.max_bytes": "1000000",
     "artwork.save_format": "embedded",
     "tagging.lastfm_genres": "true",
-    "tagging.bandcamp_genres": "true",
+    "tagging.bandcamp_genres": "false",
     "library.path_template": "{album_artist}/{year} - {album}/{track:02d} - {title}.{ext}",
     "bandcamp.format": "mp3-v0",
     "bandcamp.poll_interval_minutes": "0",

@@ -80,9 +80,16 @@ class TestLoad:
         config = Config.load(db)
         assert config.tagging.lastfm_genres is False
 
-    def test_tagging_bandcamp_genres_default_true(self, db: LibraryIndex) -> None:
-        # Bandcamp album labels are applied as genres by default.
+    def test_tagging_bandcamp_genres_default_false(self, db: LibraryIndex) -> None:
+        # Bandcamp album labels are opt-in: artist-supplied labels are free text,
+        # so applying them unasked pollutes the genre list.
         Config.write_defaults(db)
+        config = Config.load(db)
+        assert config.tagging.bandcamp_genres is False
+
+    def test_tagging_bandcamp_genres_loads_true(self, db: LibraryIndex) -> None:
+        Config.write_defaults(db)
+        db.set_setting("tagging.bandcamp_genres", "true")
         config = Config.load(db)
         assert config.tagging.bandcamp_genres is True
 

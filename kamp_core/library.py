@@ -2928,10 +2928,16 @@ class LibraryIndex:
             "SELECT 1 FROM track_sources WHERE track_id = ? LIMIT 1", (track_id,)
         ).fetchone():
             return
+        # KAMP-552 dropped file_path/source/sale_item_id (and the per-source
+        # columns) from *tracks*; read them from the tracks_with_stats view, which
+        # re-derives them from the preferred track_sources row (and, while a legacy
+        # column still exists on a pre-552 DB mid-migration, COALESCEs back to it).
+        # Reading FROM tracks here raised "no such column: file_path" and aborted
+        # every re-scan that merged into a source-less survivor.
         r = self._conn.execute(
             "SELECT file_path, source, sale_item_id, ext, duration, embedded_art,"
             " file_mtime, is_available, stream_url, stream_url_expires_at"
-            " FROM tracks WHERE id = ?",
+            " FROM tracks_with_stats WHERE id = ?",
             (track_id,),
         ).fetchone()
         if r is None:
@@ -2939,6 +2945,12 @@ class LibraryIndex:
         uri, kind, provider, provider_item_id = _derive_source_fields(
             r["file_path"], r["source"], r["sale_item_id"]
         )
+        if not uri:
+            # Post-552 a source-less track derives nothing (its legacy columns are
+            # gone); the view yields file_path=''. There is no source to recover —
+            # bail rather than insert a bogus empty-uri row (which would also poison
+            # the uri-UNIQUE collision guard below for every other such track).
+            return
         if self._conn.execute(
             "SELECT 1 FROM track_sources WHERE uri = ?", (uri,)
         ).fetchone():

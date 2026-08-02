@@ -807,6 +807,53 @@ class TestLibraryIndex:
         assert index.has_remote_album_tracks("s7") is True
         index.close()
 
+    def test_scan_merges_into_source_less_incumbent(self, tmp_path: Path) -> None:
+        """A scan that merges into a source-less incumbent must not crash.
+
+        Regression: on the post-552 schema (file_path/sale_item_id dropped from
+        tracks), _ensure_track_source read those columns straight off *tracks* and
+        raised ``no such column: file_path`` whenever it ran — i.e. whenever the
+        merge survivor had no track_sources row at all. That aborted the whole
+        library re-scan, so watch-folder files never appeared. Here the incumbent
+        is a tracks row with an album link but zero sources; scanning a matching
+        file must merge cleanly and leave the survivor holding the file source.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        # NB: deliberately NOT _readd_legacy_track_columns — this must reproduce
+        # the real post-552 schema where the legacy tracks columns are gone.
+        c = index._conn
+        c.execute(
+            "INSERT INTO albums (album_artist, album) VALUES ('The Artist','The Album')"
+        )
+        alb = c.execute("SELECT id FROM albums").fetchone()[0]
+        # An incumbent canonical with an album link but NO track_sources row.
+        c.execute(
+            "INSERT INTO tracks (title, artist, album_artist, album, album_id,"
+            " track_number, disc_number) VALUES ('A Song','The Artist','The Artist',"
+            " 'The Album', ?, 1, 1)",
+            (alb,),
+        )
+        incumbent_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        c.commit()
+
+        # Scan a local file for the same album+track: it must merge, not crash.
+        index.upsert_many([_sample_track(tmp_path / "track1.mp3")])
+
+        n_tracks = c.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        surviving_id = c.execute("SELECT id FROM tracks").fetchone()[0]
+        kinds = sorted(
+            r["kind"]
+            for r in c.execute(
+                "SELECT kind FROM track_sources WHERE track_id = ?", (surviving_id,)
+            )
+        )
+        # One row survives (the incumbent), now carrying the scanned file source.
+        assert n_tracks == 1
+        assert surviving_id == incumbent_id
+        assert kinds == ["file"]
+        assert index.preferred_source(incumbent_id)["kind"] == "file"
+        index.close()
+
     def test_remove_download_refuses_when_no_stream_source(
         self, tmp_path: Path
     ) -> None:

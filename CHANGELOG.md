@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.26.1](https://github.com/eightyeighteyes/kamp/compare/v1.26.0...v1.26.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* read _ensure_track_source fields from the view, not dropped tracks columns ([#736](https://github.com/eightyeighteyes/kamp/issues/736)) ([6e957c1](https://github.com/eightyeighteyes/kamp/commit/6e957c1fc6a66d94f66eb020868aac71bd72c7e9))
+
 ## [1.26.0](https://github.com/eightyeighteyes/kamp/compare/v1.25.1...v1.26.0) (2026-07-30)
 
 

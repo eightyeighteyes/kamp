@@ -166,51 +166,79 @@ class Scrubber:
     """
 
     secrets: list[str] = field(default_factory=list)
-    literals: tuple[str, ...] = ("crumb", "identity", "js_logged_in", "client_id")
 
-    # Keys that carry account data whatever their value.  Detecting the *key* is
-    # strictly stronger than matching known values: a logged-in capture embeds
-    # fan_id / fan_username / fan_photo inside `fan_tralbum_data`, and a
-    # value-only denylist misses them entirely unless the exact value is known in
-    # advance.  This was a real gap — the first capture tripped only on `crumb`
-    # and `identity` while quietly carrying the account's fan id and username.
-    key_patterns: tuple[str, ...] = (
-        "fan_id",
-        "fan_username",
-        "fan_name",
-        "fan_photo",
-        "fan_location",
-        "buyer_location",
-        "is_purchased",
-        "is_wishlisted",
-    )
+    # A live crumb, not the word "crumb".  Crumbs are shaped |action|epoch|hmac=
+    # and an anonymous page ships `data-crumbs="{}"` — refusing on the bare
+    # substring would reject every clean capture, which is how a safety check
+    # gets switched off.  Match the token instead.
+    crumb_token = re.compile(r"\|[a-z_/0-9]{3,}\|\d{9,}\|[A-Za-z0-9+/=]{8,}")
 
     @classmethod
     def from_session(
         cls, session_data: dict[str, Any], extra: list[str] | None = None
     ) -> "Scrubber":
+        # Cookie *values* only.  Names like "identity" and "logout" are ordinary
+        # words that appear in any page; treating them as secrets produced false
+        # positives on every capture and taught the reader to ignore the warning.
         secrets = [
-            c["value"] for c in session_data.get("cookies", []) if c.get("value")
+            str(c["value"])
+            for c in session_data.get("cookies", [])
+            if c.get("value") and len(str(c["value"])) >= 12
         ]
-        secrets += [c["name"] for c in session_data.get("cookies", [])]
         if session_data.get("username"):
             secrets.append(str(session_data["username"]))
-        secrets += [str(e) for e in (extra or [])]
-        # Short values produce false positives against ordinary page text.
-        return cls(secrets=[s for s in secrets if len(str(s)) >= 6])
+        secrets += [str(e) for e in (extra or []) if str(e)]
+        return cls(secrets=secrets)
+
+    # Fan-identifying JSON keys, in both raw and HTML-escaped form (album pages
+    # embed JSON inside attributes, so `"` arrives as `&quot;`).
+    _REDACTIONS: tuple[tuple[str, str], ...] = (
+        (r'(&quot;|")fan_id\1:\s*\d+', r"\1fan_id\1:0"),
+        (r'(&quot;|")(fan_username|username|fan_name)\1:\1[^&"]*\1', r"\1\2\1:\1x\1"),
+        (r'(&quot;|")(token|fan_photo|image_id)\1:\1?[^&",}]*\1?', r"\1\2\1:\1x\1"),
+        (r'data-crumbs="[^"]*"', 'data-crumbs="{}"'),
+    )
+
+    @staticmethod
+    def redact(text: str) -> str:
+        """Strip fan identifiers from a capture before it is committed.
+
+        Necessary even for an anonymous capture: an album page publicly lists the
+        fans who *collected* it, so a page for an album the account owns embeds
+        that account's own fan_id and username — and every other collector's too.
+        Those are real people, and this repository is public, so the supporters
+        data is neutralised rather than republished.  Page structure and length
+        survive, which is what the fixture is actually for.
+        """
+        out = text
+        for pattern, repl in Scrubber._REDACTIONS:
+            out = re.sub(pattern, repl, out)
+        return out
 
     def findings(self, text: str) -> list[str]:
-        """Return which forbidden things appear in *text* (never the values)."""
+        """Return which forbidden things appear in *text* — never the values."""
         hits: list[str] = []
         for secret in self.secrets:
-            if secret and secret in text:
+            # Word-boundary match for all-digit secrets: a 7-digit fan id matches
+            # by accident inside the longer numeric ids a Bandcamp page is full of.
+            found = (
+                re.search(rf"\b{re.escape(secret)}\b", text)
+                if secret.isdigit()
+                else (secret in text)
+            )
+            if found:
                 hits.append(f"session-secret (len={len(secret)}, {secret[:3]}…)")
-        for lit in self.literals:
-            if lit in text:
-                hits.append(f"literal {lit!r}")
-        for key in self.key_patterns:
-            if f'"{key}"' in text:
-                hits.append(f"account key {key!r}")
+        if self.crumb_token.search(text):
+            hits.append("live crumb token")
+        # Any surviving fan identifier, whoever it belongs to.  Album pages list
+        # their collectors publicly, so these are third parties' names as often as
+        # the account holder's, and neither belongs in a public repo.
+        for key in ("fan_id", "fan_username", "fan_name"):
+            m = re.search(
+                rf'(?:&quot;|"){key}(?:&quot;|"):\s*(?:&quot;|")?([^,&"}}]+)', text
+            )
+            if m and m.group(1) not in ("0", "x"):
+                hits.append(f"unredacted {key}")
         return hits
 
 
@@ -246,9 +274,18 @@ class DirectTransport:
 
     name = "direct"
 
-    def __init__(self, session_data: dict[str, Any]) -> None:
+    def __init__(
+        self, session_data: dict[str, Any], *, anonymous: bool = False
+    ) -> None:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = UA
+        self.anonymous = anonymous
+        if anonymous:
+            # No cookies at all.  Fixtures are captured this way on purpose: a
+            # logged-in page embeds live crumbs, fan_id and fan_username, and this
+            # repository is public, so an anonymous capture is clean by
+            # construction rather than by remembering to redact.
+            return
         for name, value in cookie_dict(session_data).items():
             self.session.cookies.set(name, value, domain=".bandcamp.com", path="/")
 
@@ -355,7 +392,11 @@ class RelayTransport:
         return self._relay("POST", url, json.dumps(payload), timeout)
 
 
-def make_transport(name: str, session_data: dict[str, Any]) -> Any:
+def make_transport(
+    name: str, session_data: dict[str, Any], *, anonymous: bool = False
+) -> Any:
+    if anonymous:
+        return DirectTransport(session_data, anonymous=True)
     return DirectTransport(session_data) if name == "direct" else RelayTransport()
 
 
@@ -446,7 +487,7 @@ def cmd_session(args: argparse.Namespace) -> int:
 
 def cmd_fetch(args: argparse.Namespace) -> int:
     data = load_session()
-    transport = make_transport(args.transport, data)
+    transport = make_transport(args.transport, data, anonymous=args.anon)
     print(f"[fetch] {args.url}\n        via {transport.name}")
     got = transport.get(args.url)
     print(
@@ -1183,6 +1224,107 @@ def cmd_wishlist_roundtrip(args: argparse.Namespace) -> int:
     return 0
 
 
+FIXTURE_DIR = (
+    Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "discovery"
+)
+
+
+def cmd_capture(args: argparse.Namespace) -> int:
+    """Capture scrubbed fixtures + a manifest into tests/fixtures/discovery/.
+
+    Captured **anonymously**: an authenticated page carries live CSRF crumbs and
+    the account's fan id, and this repo is public, so the safe capture is the one
+    that never had secrets rather than the one we remembered to clean.  The
+    trade-off is recorded in the manifest (`logged_in: false`) and in the findings
+    doc — auth-only fields such as `fan_tralbum_data.is_wishlisted` are documented
+    there rather than fixtured.
+
+    Full pages are stored gzipped as the ground truth.  A fixture trimmed to the
+    interesting block could never catch a parser matching something *elsewhere* on
+    the page, which is the failure mode of every regex parser in bandcamp.py.
+    """
+    data = load_session()
+    anon = DirectTransport(data, anonymous=True)
+    scrub = Scrubber.from_session(data, extra=[str(args.fan_id)] if args.fan_id else [])
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+
+    manifest: dict[str, Any] = {}
+    manifest_path = FIXTURE_DIR / "manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+
+    targets: list[tuple[str, str, str]] = [
+        ("album_page_with_recs", "GET", args.album_url),
+        ("discover_root", "GET", "https://bandcamp.com/discover"),
+    ]
+
+    failures = 0
+    for name, method, url in targets:
+        got = anon.get(url)
+        if got.status != 200:
+            print(f"  ✗ {name}: HTTP {got.status}")
+            failures += 1
+            continue
+        redacted = Scrubber.redact(got.text)
+        hits = scrub.findings(redacted)
+        if hits:
+            print(f"  ✗ {name}: REFUSING to write — {sorted(set(hits))}")
+            failures += 1
+            continue
+        raw = redacted.encode()
+        out = FIXTURE_DIR / f"{name}.html.gz"
+        out.write_bytes(gzip.compress(raw))
+        manifest[name] = {
+            "source_url": url,
+            "method": method,
+            "captured_at": args.captured_at,
+            "transport": "direct",
+            "logged_in": False,
+            "request_headers": {"User-Agent": UA},
+            "status": got.status,
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "note": (
+                "Anonymous capture: this repo is public and a logged-in page "
+                "embeds live crumbs and fan_id."
+            ),
+        }
+        print(f"  ✓ {name}: {len(raw)} bytes -> {out.name} (gz {out.stat().st_size})")
+        time.sleep(1.0)
+
+    # The discover results API, captured anonymously as JSON.
+    got = anon.post_json(DISCOVER_API, discover_params(tag="ambient", slice_="top"))
+    if got.status == 200 and not scrub.findings(Scrubber.redact(got.text)):
+        raw = Scrubber.redact(got.text).encode()
+        out = FIXTURE_DIR / "discover_web_ambient_top.json.gz"
+        out.write_bytes(gzip.compress(raw))
+        manifest["discover_web_ambient_top"] = {
+            "source_url": DISCOVER_API,
+            "method": "POST",
+            "request_body": discover_params(tag="ambient", slice_="top"),
+            "captured_at": args.captured_at,
+            "transport": "direct",
+            "logged_in": False,
+            "request_headers": {"User-Agent": UA},
+            "status": got.status,
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "note": (
+                "Anonymous: is_owned/is_wishlisted are present but always false "
+                "without a session; their authenticated behaviour is in "
+                "docs/discovery-recon.md."
+            ),
+        }
+        print(f"  ✓ discover_web_ambient_top: {len(raw)} bytes")
+    else:
+        print(f"  ✗ discover_web: HTTP {got.status} or scrub hit")
+        failures += 1
+
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    print(f"\n  manifest -> {manifest_path}")
+    return 1 if failures else 0
+
+
 def cmd_context(args: argparse.Namespace) -> int:
     """Print characters around a needle in a saved capture (grep is line-based)."""
     path = SCRATCH / args.file
@@ -1218,6 +1360,7 @@ def main() -> int:
     p_fetch.add_argument(
         "--save", help="save raw body to the scratch dir under this name"
     )
+    p_fetch.add_argument("--anon", action="store_true", help="send no cookies")
 
     p_ins = sub.add_parser("inspect", help="dump part of a saved capture (no network)")
     p_ins.add_argument("file", help="filename under the scratch dir")
@@ -1275,6 +1418,11 @@ def main() -> int:
     p_rm.add_argument("--item-type", default="album")
     p_rm.add_argument("--album-url", required=True)
 
+    p_cap = sub.add_parser("capture", help="write scrubbed fixtures + manifest")
+    p_cap.add_argument("--album-url", required=True)
+    p_cap.add_argument("--captured-at", required=True, help="ISO date, e.g. 2026-08-06")
+    p_cap.add_argument("--fan-id", help="extra secret to assert absent")
+
     p_ctx = sub.add_parser("context", help="print text around a needle in a capture")
     p_ctx.add_argument("file")
     p_ctx.add_argument("needle")
@@ -1304,6 +1452,8 @@ def main() -> int:
         return cmd_wishlist_roundtrip(args)
     if args.cmd == "wishlist-remove":
         return cmd_wishlist_remove(args)
+    if args.cmd == "capture":
+        return cmd_capture(args)
     return 1
 
 

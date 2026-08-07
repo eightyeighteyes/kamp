@@ -284,6 +284,23 @@ class DiscoverySource(ABC):
         """
         return frozenset()
 
+    @property
+    def criterion_caps(self) -> dict[str, int]:
+        """How many picks from a given criterion a single crate should prefer.
+
+        The crate builder enforces variety across ``criterion`` labels without
+        interpreting them, which is what lets a future provider invent its own
+        criteria. But "at most one best-seller per crate" genuinely does require
+        knowing which label is the chart — so the *provider* names it here and the
+        builder honours it as opaque data.
+
+        A cap is a preference, not a ceiling: KAMP-648 backfills past it rather
+        than shipping a short crate, because a brand-new library's only available
+        criterion is the chart and a hard cap would hand that user a one-item
+        crate.
+        """
+        return {}
+
     @abstractmethod
     def gather(self, profile: SeedProfile, budget: RequestBudget) -> list[Candidate]:
         """Return candidates for *profile*, spending no more than *budget* allows.

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, types only
-    from kamp_core.library import LibraryIndex
+    from kamp_core.library import LibraryIndex, SeedAlbum, SeedArtist
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 ALBUM_PAGE = "album_page"
 DISCOVER_API = "discover_api"
 FANCOLLECTION = "fancollection"
+ARTIST_PAGE = "artist_page"
 
 
 class RequestBudget(Protocol):
@@ -103,7 +104,7 @@ def crate_budget() -> SimpleBudget:
     about, so a new fetcher must declare its class deliberately.
     """
     return SimpleBudget(
-        limits={ALBUM_PAGE: 8, DISCOVER_API: 6, FANCOLLECTION: 0},
+        limits={ALBUM_PAGE: 8, DISCOVER_API: 6, ARTIST_PAGE: 4, FANCOLLECTION: 0},
         default_limit=0,
     )
 
@@ -184,9 +185,13 @@ class SeedProfile:
     """
 
     recent_album_ids: set[int] = field(default_factory=set)
-    recent_albums: list[tuple[int, str, str]] = field(default_factory=list)
+    # Fetchable seeds — they carry the Bandcamp page URL, not just the display
+    # identity. A criterion needs an address to GET; an album title is the mutable
+    # tag, and a local-only album has no page at all.
+    recent_albums: list["SeedAlbum"] = field(default_factory=list)
     favorite_album_ids: set[int] = field(default_factory=set)
-    favorite_albums: list[tuple[int, str, str]] = field(default_factory=list)
+    favorite_albums: list["SeedAlbum"] = field(default_factory=list)
+    favorite_artists: list["SeedArtist"] = field(default_factory=list)
     top_artists: list[str] = field(default_factory=list)
     top_genres: list[str] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)
@@ -234,10 +239,11 @@ def build_seed_profile(
     recent = index.recently_played_albums(days=days)
     favorites = index.favorite_albums()
     return SeedProfile(
-        recent_album_ids={aid for aid, _, _ in recent},
+        recent_album_ids={s.album_id for s in recent},
         recent_albums=recent,
-        favorite_album_ids={aid for aid, _, _ in favorites},
+        favorite_album_ids={s.album_id for s in favorites},
         favorite_albums=favorites,
+        favorite_artists=index.favorite_artists_with_pages(artist_limit),
         top_artists=[a.name for a in index.top_artists(artist_limit)],
         top_genres=[name for name, _ in index.taste_genres(genre_limit)],
         labels=[name for name, _ in index.taste_labels(limit=label_limit)],

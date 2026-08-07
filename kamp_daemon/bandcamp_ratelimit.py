@@ -34,7 +34,7 @@ import threading
 import time
 from typing import Protocol
 
-from .discovery import ALBUM_PAGE, DISCOVER_API, FANCOLLECTION
+from .discovery import ALBUM_PAGE, ARTIST_PAGE, DISCOVER_API, FANCOLLECTION
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 # everything, including a bug.
 _MIN_SPACING = {
     ALBUM_PAGE: 1.5,
+    # An artist /music page is the same kind of HTML page fetch as an album page,
+    # so it gets the same floor rather than the silent _DEFAULT_SPACING.
+    ARTIST_PAGE: 1.5,
     DISCOVER_API: 1.0,
     # The collection endpoint is the one that rate-limits hardest (three walks in
     # a minute earns a 429), and crate building never touches it. Only the

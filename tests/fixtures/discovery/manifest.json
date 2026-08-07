@@ -13,6 +13,20 @@
     "status": 200,
     "transport": "direct"
   },
+  "artist_discography": {
+    "bytes": 166040,
+    "captured_at": "2026-08-07",
+    "logged_in": false,
+    "method": "GET",
+    "note": "Anonymous capture: this repo is public and a logged-in page embeds live crumbs and fan_id.",
+    "request_headers": {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    },
+    "sha256": "d22a2522a67b03e07ccce4c1ab12701a64a7981c792d821e6fc590b6cac3236f",
+    "source_url": "https://floatingpoints.bandcamp.com/music",
+    "status": 200,
+    "transport": "direct"
+  },
   "discover_root": {
     "bytes": 103983,
     "captured_at": "2026-08-06",

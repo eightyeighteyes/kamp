@@ -74,6 +74,29 @@ class TestAlsoLike:
         assert any("fans who also own" in i["supporters"] for i in items)
         assert any(i["fan_comment"] for i in items)
 
+    def test_inline_audio_url_is_unwrapped_from_its_json(self, album_page: str) -> None:
+        """data-audiourl is a JSON object keyed by format, not a bare URL.
+
+        Reading it as a string yields something unplayable that would only fail
+        at the point of pressing play (KAMP-651). Every recommendation carries
+        one, which is what lets a preview start before the album page loads.
+        """
+        items = parse_also_like(album_page).items
+        assert items
+        for item in items:
+            assert item["audio_url"], "every recommendation should carry an mp3"
+            assert item["audio_url"].startswith("https://")
+            assert not item["audio_url"].startswith("{")
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["", "not json", "[]", "{}", '{"flac": "https://x/y.flac"}', '{"mp3-128": ""}'],
+    )
+    def test_unusable_audio_url_is_none(self, raw: str) -> None:
+        from kamp_daemon.discovery_bandcamp_parsers import _audio_url
+
+        assert _audio_url(raw) is None
+
     def test_tracking_parameter_is_stripped(self, album_page: str) -> None:
         """Bandcamp appends ?from=<seed>, so the same album reached from two seeds
         would otherwise look like two albums and defeat cross-seed dedupe."""

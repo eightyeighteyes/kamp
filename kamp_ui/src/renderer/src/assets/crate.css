@@ -345,6 +345,25 @@
 
 /* --- Preview mini-player (KAMP-651) --------------------------------------- */
 
+/* The preview's reserved space. Held open whether or not anything is playing,
+   because rendering the strip into the normal flow grew the whole card and
+   pushed the rail down the page the moment a preview started. Sized for the
+   strip plus a scrolling track list, so a 3-track single and a 20-track album
+   occupy exactly the same room. */
+.crate-preview-slot {
+  min-height: 236px;
+  max-width: 52ch;
+  display: flex;
+  flex-direction: column;
+}
+
+.crate-preview-placeholder {
+  margin: auto 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  opacity: 0.7;
+}
+
 /* Its own strip rather than the TransportBar: the whole promise is that the
    main transport keeps showing the user's own queue, so two players on screen
    is the point. */
@@ -439,11 +458,15 @@
 
 /* --- Track list ----------------------------------------------------------- */
 
+/* Bounded and scrolling: track counts vary wildly and an unbounded list is
+   what pushed the rail off the bottom on a long record. */
 .crate-tracklist {
   list-style: none;
   margin: 10px 0 0;
   padding: 0;
   max-width: 52ch;
+  max-height: 132px;
+  overflow-y: auto;
 }
 
 .crate-track {

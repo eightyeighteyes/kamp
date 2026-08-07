@@ -395,43 +395,58 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                 </button>
               </div>
 
-              {previewingThis && preview && (
-                <CratePreviewStrip
-                  preview={preview}
-                  onToggle={togglePreview}
-                  onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
-                  onSeek={(position) => void previewSeek(position)}
-                />
-              )}
+              {/* The preview's own space, always present. Rendering the strip
+                  and track list into the normal flow made the whole card grow
+                  when a preview started, shoving the rail down the page — and
+                  the track list is unbounded, so a long record shoved it hard.
+                  The slot reserves the room; the list scrolls inside it. */}
+              <div className="crate-preview-slot">
+                {previewingThis && preview ? (
+                  <>
+                    <CratePreviewStrip
+                      preview={preview}
+                      onToggle={togglePreview}
+                      onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
+                      onSeek={(position) => void previewSeek(position)}
+                    />
 
-              {previewingThis && preview && preview.tracks.length > 0 && (
-                <ol className="crate-tracklist">
-                  {preview.tracks.map((track) => (
-                    <li key={track.track_num}>
-                      <button
-                        className={`crate-track${
-                          track.track_num === preview.track_num ? ' crate-track--current' : ''
-                        }`}
-                        onClick={() => void previewPlay(current.id, track.track_num)}
-                      >
-                        <span className="crate-track-num">{track.track_num}</span>
-                        <span className="crate-track-title">
-                          {track.title || `Track ${track.track_num}`}
-                        </span>
-                        <span className="crate-track-time">{formatClock(track.duration)}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ol>
-              )}
+                    {preview.tracks.length > 0 && (
+                      <ol className="crate-tracklist">
+                        {preview.tracks.map((track) => (
+                          <li key={track.track_num}>
+                            <button
+                              className={`crate-track${
+                                track.track_num === preview.track_num ? ' crate-track--current' : ''
+                              }`}
+                              onClick={() => void previewPlay(current.id, track.track_num)}
+                            >
+                              <span className="crate-track-num">{track.track_num}</span>
+                              <span className="crate-track-title">
+                                {track.title || `Track ${track.track_num}`}
+                              </span>
+                              <span className="crate-track-time">
+                                {formatClock(track.duration)}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
 
-              {previewingThis && preview?.error && (
-                <p className="crate-preview-error" role="status">
-                  {preview.error === 'rate_limited'
-                    ? 'Bandcamp asked us to slow down — try again shortly.'
-                    : 'No preview for this one.'}
-                </p>
-              )}
+                    {preview.error && (
+                      <p className="crate-preview-error" role="status">
+                        {preview.error === 'rate_limited'
+                          ? 'Bandcamp asked us to slow down — try again shortly.'
+                          : 'No preview for this one.'}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="crate-preview-placeholder">
+                    Space to hear it — your queue stays where it is.
+                  </p>
+                )}
+              </div>
             </div>
           </article>
         ) : (

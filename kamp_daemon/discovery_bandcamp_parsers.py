@@ -100,6 +100,34 @@ def tag_slug(name: str) -> str:
     return re.sub(r"-{2,}", "-", slug).strip("-")
 
 
+#: Bandcamp's art CDN pattern, matching ``fetch_album_art_bytes``' spelling
+#: (``kamp_daemon/bandcamp.py``): ``a<art_id>_<size>.jpg``, size 0 = original.
+_ART_URL = "https://f4.bcbits.com/img/a{art_id}_0.jpg"
+
+
+def art_url_from_image(raw: Any) -> str | None:
+    """Build a CDN art URL from whatever a surface calls its cover image.
+
+    The HTML surfaces embed a finished URL, but the discover API returns
+    ``primary_image`` as an **object** — ``{"image_id": ..., "is_art": true}`` —
+    so passing it straight through stored a dict in a TEXT column. SQLite refused
+    the bind, and because a failed row is skipped rather than fatal, every
+    discover-surface candidate silently vanished from the crate while the album
+    pages carried on working. Tolerant of all three shapes on purpose: this is
+    remote data whose spelling has already changed once.
+    """
+    if isinstance(raw, dict):
+        if not raw.get("is_art", True):
+            return None
+        raw = raw.get("image_id")
+    if raw is None or raw == "":
+        return None
+    text = str(raw)
+    if text.startswith("http"):
+        return text
+    return _ART_URL.format(art_id=text)
+
+
 def strip_tracking(url: str) -> str:
     """Drop Bandcamp's ``?from=`` attribution parameter from an item URL.
 
@@ -230,7 +258,7 @@ def parse_discover_results(payload: str | dict[str, Any]) -> ParseResult:
                 "item_url": strip_tracking(row.get("item_url") or ""),
                 "artist": row.get("band_name") or row.get("album_artist") or "",
                 "title": row.get("title") or "",
-                "art_url": row.get("primary_image") or None,
+                "art_url": art_url_from_image(row.get("primary_image")),
                 "release_date": row.get("release_date") or "",
                 "is_owned": bool(row.get("is_owned")),
                 "is_wishlisted": bool(row.get("is_wishlisted")),

@@ -15,6 +15,7 @@ import pytest
 
 from kamp_daemon.discovery_bandcamp_parsers import (
     FACET_FAMILIES,
+    art_url_from_image,
     normalise_item_id,
     parse_also_like,
     parse_discography,
@@ -116,6 +117,23 @@ class TestDiscoverResults:
         for item in parse_discover_results(discover_results).items:
             assert isinstance(item["is_owned"], bool)
             assert isinstance(item["is_wishlisted"], bool)
+
+    def test_art_url_is_built_from_the_image_object(
+        self, discover_results: str
+    ) -> None:
+        """This surface returns primary_image as an OBJECT, not a URL.
+
+        Passing it through stored a dict in a TEXT column; SQLite refused the
+        bind, and since the builder skips a row it cannot persist rather than
+        failing the crate, every discover-surface candidate silently vanished
+        while the album-page ones carried on. The fixture had the object shape
+        all along — nothing asserted the type.
+        """
+        items = parse_discover_results(discover_results).items
+        assert items
+        for item in items:
+            assert item["art_url"].startswith("https://f4.bcbits.com/img/a")
+            assert item["art_url"].endswith(".jpg")
 
     def test_exclusion_flags_are_honoured_when_true(self) -> None:
         """The captured fixture is anonymous, so both flags are always false in it.
@@ -323,6 +341,62 @@ class TestFixturesStillMatchReality:
         result = parse_discography(self._live_get(url), base_url=url)
         assert result.marker_present, "the music grid has moved or gone"
         assert len(result) > 0
+
+
+class TestItemFieldTypes:
+    """Every parser must emit the same field types, whatever surface it read.
+
+    The builder writes these straight into TEXT columns, so a field that is not
+    a string is a persistence failure — and a skipped row, being non-fatal, takes
+    the whole surface down quietly. Asserting the contract across all three
+    parsers is cheap; the discover surface already broke it once.
+    """
+
+    def _all_items(self, album_page: str, discover_results: str) -> list[dict]:
+        url = "https://band.bandcamp.com/music"
+        return [
+            *parse_also_like(album_page).items,
+            *parse_discover_results(discover_results).items,
+            *parse_discography(_fixture("artist_discography"), base_url=url).items,
+        ]
+
+    def test_art_url_is_a_string_or_none(
+        self, album_page: str, discover_results: str
+    ) -> None:
+        items = self._all_items(album_page, discover_results)
+        assert items
+        for item in items:
+            assert item["art_url"] is None or isinstance(item["art_url"], str)
+
+    def test_text_fields_are_strings(
+        self, album_page: str, discover_results: str
+    ) -> None:
+        for item in self._all_items(album_page, discover_results):
+            for field in ("provider_item_id", "item_url", "title"):
+                assert isinstance(item[field], str), field
+
+
+class TestArtUrlFromImage:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            # The discover API's object form — the shape that broke persistence.
+            ({"image_id": 123, "is_art": True}, "https://f4.bcbits.com/img/a123_0.jpg"),
+            ({"image_id": 9, "is_art": False}, None),
+            ({}, None),
+            (456, "https://f4.bcbits.com/img/a456_0.jpg"),
+            ("789", "https://f4.bcbits.com/img/a789_0.jpg"),
+            # Already a URL (the HTML surfaces): pass through untouched.
+            (
+                "https://f4.bcbits.com/img/a1_16.jpg",
+                "https://f4.bcbits.com/img/a1_16.jpg",
+            ),
+            (None, None),
+            ("", None),
+        ],
+    )
+    def test_tolerates_every_shape_bandcamp_uses(self, raw, expected) -> None:
+        assert art_url_from_image(raw) == expected
 
 
 class TestNormalisation:

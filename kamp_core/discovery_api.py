@@ -17,11 +17,17 @@ KAMP-649 adds the crate art proxy to this module.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import re
 import threading
+from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
+
+from kamp_core.proxy_hosts import ART_HOSTS, host_allowed
 
 if TYPE_CHECKING:  # pragma: no cover - types only
     from kamp_core.library import LibraryIndex
@@ -38,6 +44,32 @@ CRATE_EVENT = "discovery.crate"
 #: "already building" until the daemon restarted.
 _TERMINAL_STATES = frozenset({"ready", "empty", "error", "paused", "idle"})
 
+# Bandcamp's art CDN encodes the rendition in the filename: a<id>_<code>.jpg.
+#
+# Only the two aspect-preserving codes are offered, and the exclusions are the
+# point rather than an oversight. Measured against the live CDN: _0 is the
+# artist's original (197 KB to 7.2 MB, any aspect); _10 caps the long edge at
+# 1200px and preserves aspect (125-440 KB). _5/_16/_2 force 700x700 -- for a
+# 635x611 original they *upscale it and square it* -- and _16 is additionally the
+# same pixels as _5 at ~40% fewer bytes. kamp does not degrade covers, so those
+# renditions are not reachable through this endpoint at all.
+ART_SIZES: frozenset[int] = frozenset({0, 10})
+DEFAULT_ART_SIZE = 10
+
+_BCBITS_SIZE = re.compile(r"_(\d+)\.jpg$")
+
+_ART_TIMEOUT = 10.0  # a static CDN on the render path, not the 30s API budget
+_MAX_ART_BYTES = 16 * 1024 * 1024
+
+# The URL is keyed on (item id, size) and both are write-once -- discovery_items.id
+# is AUTOINCREMENT so ids are never reused, and add_discovery_candidate never
+# updates art_url -- so the response really is immutable.
+_ART_CACHE_CONTROL = "public, max-age=31536000, immutable"
+# Failures get a short positive TTL rather than no-store: art_url is write-once,
+# so a miss stays a miss, and without this ten cards remounting on a tab switch
+# is a fetch storm against the CDN.
+_ART_MISS_CACHE_CONTROL = "public, max-age=300"
+
 _INITIAL_STATUS: dict[str, Any] = {
     "state": "idle",
     "crate_no": None,
@@ -48,12 +80,54 @@ _INITIAL_STATUS: dict[str, Any] = {
 }
 
 
+def sized_art_url(art_url: str, size: int) -> str:
+    """Swap the bcbits rendition code in *art_url*, or return it untouched.
+
+    Parsers store ``_0`` (content identity); the delivery size is a presentation
+    decision made here. A URL that does not carry a rendition suffix is left
+    alone rather than guessed at.
+    """
+    return _BCBITS_SIZE.sub(f"_{size}.jpg", art_url)
+
+
+def _fetch_art_bytes(url: str) -> bytes | None:
+    """Download cover art from the CDN with a plain, unauthenticated session.
+
+    f4.bcbits.com serves art publicly with no cookies and is not behind the bot
+    management that guards bandcamp.com itself (KAMP-636), so this deliberately
+    does not go through the Electron relay -- and must not, since the relay
+    carries session cookies an image request has no need of.
+    """
+    import requests  # noqa: PLC0415 - keeps kamp_core import-light
+
+    try:
+        resp = requests.get(url, timeout=_ART_TIMEOUT, stream=True)
+        if resp.status_code != 200:
+            logger.debug("crate art: HTTP %d from %s", resp.status_code, url)
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in resp.iter_content(64 * 1024):
+            total += len(chunk)
+            if total > _MAX_ART_BYTES:
+                # Remote data: read it bounded rather than trusting the host.
+                logger.warning("crate art: oversized response from %s", url)
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except Exception as exc:  # noqa: BLE001 - a missing cover is not an error
+        logger.debug("crate art: fetch failed for %s: %s", url, exc)
+        return None
+
+
 def register_discovery_routes(
     app: FastAPI,
     *,
     index: "LibraryIndex",
     broadcast: Callable[[dict[str, Any]], None],
     on_build_start: Callable[[], None] | None = None,
+    art_cache_dir: Path | None = None,
+    fetch_bytes: Callable[[str], bytes | None] | None = None,
 ) -> None:
     """Register the Discovery Crate routes on *app*.
 
@@ -164,3 +238,89 @@ def register_discovery_routes(
         wishlist afterwards.
         """
         return _record(item_id, "url_copied")
+
+    # ------------------------------------------------------------------
+    # Album art (KAMP-649)
+    # ------------------------------------------------------------------
+
+    _fetch = fetch_bytes or _fetch_art_bytes
+
+    @app.get("/api/v1/discovery/art")
+    def get_crate_art(item_id: int, s: int = DEFAULT_ART_SIZE) -> Response:
+        """Proxy and cache cover art for one crate pick.
+
+        The renderer CSP does not allow f4.bcbits.com, and ``/api/v1/album-art``
+        resolves through the user's collection, so it cannot serve an album they
+        do not own. Proxying here keeps CSP untouched and gets the disk cache for
+        free. No auth work is needed in the UI: Electron injects X-Kamp-Token on
+        every local-API request including <img src>.
+
+        Every failure is a 404 or 400 rather than a 5xx -- the UI renders a
+        placeholder either way, and a missing cover is not a server fault.
+        """
+        if s not in ART_SIZES:
+            raise HTTPException(status_code=400, detail=f"Unsupported art size: {s}")
+        if art_cache_dir is None:
+            raise HTTPException(status_code=404, detail="No art found")
+
+        row = index.discovery_item(item_id)
+        art_url = (row or {}).get("art_url") or ""
+        if not art_url:
+            raise HTTPException(status_code=404, detail="No art found")
+
+        # The stored URL is remote data: art_url_from_image passes through any
+        # string starting with http, so an arbitrary host can reach the database.
+        # 400 rather than _validate_proxy_url's 422 -- that path validates a
+        # client-supplied URL, where blaming the caller is right; here the caller
+        # sent a perfectly good item id and our own stored data is at fault.
+        if not host_allowed(art_url, ART_HOSTS):
+            logger.warning("crate art: refusing host for item %d: %s", item_id, art_url)
+            raise HTTPException(status_code=400, detail="Art host not allowed")
+
+        url = sized_art_url(art_url, s)
+        # Keyed on content identity, NOT provider_item_id: that column is only
+        # unique paired with provider, and it is unvalidated remote text, so a
+        # crafted data-albumid would write outside the cache directory. Hashing
+        # the URL also lets two providers listing the same album share one file.
+        key = hashlib.sha256(url.encode()).hexdigest()
+        # A subdirectory so discovery art stays separable from collection art.
+        # NOTE: neither cache is pruned today (see the sibling writer in
+        # kamp_daemon/bandcamp.py); when a sweep is added it will meet this
+        # directory entry at the top level of art_cache and must not unlink it.
+        cache_dir = art_cache_dir / "discovery"
+        cache_path = cache_dir / f"{key}.jpg"
+        if cache_path.exists():
+            return Response(
+                content=cache_path.read_bytes(),
+                media_type="image/jpeg",
+                headers={"Cache-Control": _ART_CACHE_CONTROL},
+            )
+
+        data = _fetch(url)
+        if not data:
+            raise HTTPException(
+                status_code=404,
+                detail="No art found",
+                headers={"Cache-Control": _ART_MISS_CACHE_CONTROL},
+            )
+
+        # Written atomically: a focus card and its rail sleeve are the *same*
+        # item, so concurrent requests for one URL are the common case and a
+        # half-written file would be served as a broken image.
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            tmp = cache_dir / f"{key}.{os.getpid()}.{threading.get_ident()}.tmp"
+            try:
+                tmp.write_bytes(data)
+                os.replace(tmp, cache_path)
+            finally:
+                tmp.unlink(missing_ok=True)
+        except OSError:
+            # A full or read-only disk costs caching, not the image.
+            logger.warning("crate art: could not cache %s", cache_path, exc_info=True)
+
+        return Response(
+            content=data,
+            media_type="image/jpeg",
+            headers={"Cache-Control": _ART_CACHE_CONTROL},
+        )

@@ -302,6 +302,20 @@ export const playlistArtUrl = (playlistId: number, version?: number): string => 
   return version != null ? `${base}?v=${version}` : base
 }
 
+// Returns the URL for a Discovery Crate pick's cover art (KAMP-649).
+// The renderer CSP does not allow f4.bcbits.com and /api/v1/album-art only
+// serves albums the user owns, so crate art is proxied and cached by the daemon.
+// Gate on the crate item's own art_url being non-null before rendering — an item
+// with no art 404s here, and ten cards firing doomed requests is avoidable.
+// The server returns 404 for a missing or unfetchable cover — handle with onError.
+// size is a Bandcamp rendition code: 10 (default) caps the long edge at 1200px
+// preserving aspect; 0 is the artist's original upload, which can be several MB.
+// Only those two are accepted — the 700px codes square and upscale small covers.
+export const crateArtUrl = (itemId: number, size?: 0 | 10): string => {
+  const base = `${BASE_URL}/api/v1/discovery/art?item_id=${itemId}`
+  return size != null ? `${base}&s=${size}` : base
+}
+
 export type Artist = {
   name: string
   play_time: number // total elapsed playback seconds

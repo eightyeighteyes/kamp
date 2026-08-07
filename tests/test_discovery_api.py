@@ -30,13 +30,25 @@ def index(tmp_path: Path) -> Iterator[LibraryIndex]:
 
 
 class _Harness:
-    def __init__(self, index: LibraryIndex, on_build_start: Any = None) -> None:
+    def __init__(
+        self,
+        index: LibraryIndex,
+        on_build_start: Any = None,
+        art_cache_dir: Path | None = None,
+        art_bytes: bytes | None = b"JPEGDATA",
+    ) -> None:
         self.events: list[dict[str, Any]] = []
         self.build_calls = 0
+        self.fetched: list[str] = []
+        self.art_bytes = art_bytes
         self.app = FastAPI()
 
         def _default_start() -> None:
             self.build_calls += 1
+
+        def _fetch(url: str) -> bytes | None:
+            self.fetched.append(url)
+            return self.art_bytes
 
         register_discovery_routes(
             self.app,
@@ -45,6 +57,8 @@ class _Harness:
             on_build_start=(
                 _default_start if on_build_start is None else on_build_start
             ),
+            art_cache_dir=art_cache_dir,
+            fetch_bytes=_fetch,
         )
         self.client = TestClient(self.app)
 
@@ -56,6 +70,11 @@ class _Harness:
 @pytest.fixture
 def harness(index: LibraryIndex) -> _Harness:
     return _Harness(index)
+
+
+@pytest.fixture
+def art_dir(tmp_path: Path) -> Path:
+    return tmp_path / "art_cache"
 
 
 def _stock(index: LibraryIndex, crate_no: int, count: int = 3) -> None:
@@ -225,6 +244,290 @@ class TestItemEvents:
             harness.client.post("/api/v1/discovery/items/999/dismiss").status_code
             == 404
         )
+
+
+# ---------------------------------------------------------------------------
+# Art proxy (KAMP-649)
+# ---------------------------------------------------------------------------
+
+ART = "https://f4.bcbits.com/img/a123_0.jpg"
+
+
+def _candidate(
+    index: LibraryIndex,
+    art_url: str | None = ART,
+    provider_item_id: str = "1",
+    provider: str = "bandcamp",
+) -> int:
+    return index.add_discovery_candidate(
+        provider=provider,
+        provider_item_id=provider_item_id,
+        artist="Band",
+        title="X",
+        art_url=art_url,
+    )
+
+
+class TestArtProxy:
+    def _get(self, harness: _Harness, item_id: int, **params: Any) -> Any:
+        query = "".join(f"&{k}={v}" for k, v in params.items())
+        return harness.client.get(f"/api/v1/discovery/art?item_id={item_id}{query}")
+
+    def test_cache_miss_fetches_and_stores(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        harness = _Harness(index, art_cache_dir=art_dir)
+        resp = self._get(harness, _candidate(index))
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        assert resp.content == b"JPEGDATA"
+        assert len(harness.fetched) == 1
+        assert list((art_dir / "discovery").glob("*.jpg"))
+
+    def test_cache_hit_does_not_fetch(self, index: LibraryIndex, art_dir: Path) -> None:
+        """The AC's 'cache hit -> no network', asserted on the seam itself."""
+        harness = _Harness(index, art_cache_dir=art_dir)
+        item = _candidate(index)
+        self._get(harness, item)
+        harness.fetched.clear()
+
+        resp = self._get(harness, item)
+        assert resp.status_code == 200
+        assert resp.content == b"JPEGDATA"
+        assert harness.fetched == []
+
+    def test_art_is_served_immutable(self, index: LibraryIndex, art_dir: Path) -> None:
+        """Safe because discovery_items.id is AUTOINCREMENT (never reused) and
+        add_discovery_candidate never updates art_url — so id -> art is
+        write-once."""
+        harness = _Harness(index, art_cache_dir=art_dir)
+        resp = self._get(harness, _candidate(index))
+        assert "immutable" in resp.headers["cache-control"]
+
+    def test_two_items_with_the_same_art_share_one_file(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        """The key is content identity, so a re-listed album is fetched once."""
+        harness = _Harness(index, art_cache_dir=art_dir)
+        first = _candidate(index, provider_item_id="1")
+        second = _candidate(index, provider_item_id="2", provider="other")
+        self._get(harness, first)
+        self._get(harness, second)
+
+        assert len(list((art_dir / "discovery").glob("*.jpg"))) == 1
+        assert len(harness.fetched) == 1
+
+    # -- sizes ---------------------------------------------------------
+
+    def test_default_size_is_the_aspect_preserving_1200(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        harness = _Harness(index, art_cache_dir=art_dir)
+        self._get(harness, _candidate(index))
+        assert harness.fetched == ["https://f4.bcbits.com/img/a123_10.jpg"]
+
+    def test_size_zero_serves_the_untouched_original(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        harness = _Harness(index, art_cache_dir=art_dir)
+        self._get(harness, _candidate(index), s=0)
+        assert harness.fetched == [ART]
+
+    @pytest.mark.parametrize("size", [5, 16, 2, 9, 7, 999, -1])
+    def test_squaring_and_unknown_sizes_are_refused(
+        self, index: LibraryIndex, art_dir: Path, size: int
+    ) -> None:
+        """5/16/2 are not cheaper versions of the artwork — they force 700x700
+        and upscale a smaller original. kamp does not degrade covers, so they are
+        excluded from the allowlist rather than merely unused."""
+        harness = _Harness(index, art_cache_dir=art_dir)
+        resp = self._get(harness, _candidate(index), s=size)
+        assert resp.status_code == 400
+        assert harness.fetched == []
+
+    def test_sizes_differ_in_the_cache(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        harness = _Harness(index, art_cache_dir=art_dir)
+        item = _candidate(index)
+        self._get(harness, item)
+        self._get(harness, item, s=0)
+        assert len(list((art_dir / "discovery").glob("*.jpg"))) == 2
+
+    def test_a_url_without_a_size_suffix_is_left_alone(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        harness = _Harness(index, art_cache_dir=art_dir)
+        odd = "https://f4.bcbits.com/img/cover.png"
+        self._get(harness, _candidate(index, art_url=odd))
+        assert harness.fetched == [odd]
+
+    # -- failure matrix ------------------------------------------------
+
+    def test_unknown_item_is_404(self, index: LibraryIndex, art_dir: Path) -> None:
+        harness = _Harness(index, art_cache_dir=art_dir)
+        assert self._get(harness, 9999).status_code == 404
+
+    def test_item_without_art_is_404(self, index: LibraryIndex, art_dir: Path) -> None:
+        """art_url is nullable and every parser can produce None."""
+        harness = _Harness(index, art_cache_dir=art_dir)
+        resp = self._get(harness, _candidate(index, art_url=None))
+        assert resp.status_code == 404
+        assert harness.fetched == []
+
+    def test_no_cache_dir_is_404_not_500(self, index: LibraryIndex) -> None:
+        harness = _Harness(index, art_cache_dir=None)
+        assert self._get(harness, _candidate(index)).status_code == 404
+
+    def test_disallowed_host_is_refused_without_fetching(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        """art_url_from_image passes through any string starting with http, so an
+        arbitrary host really can reach the database."""
+        harness = _Harness(index, art_cache_dir=art_dir)
+        evil = _candidate(index, art_url="https://evil.example.com/a_0.jpg")
+        resp = self._get(harness, evil)
+        assert resp.status_code == 400
+        assert harness.fetched == []
+
+    def test_bandcamp_com_itself_is_not_an_art_host(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        """ART_HOSTS is deliberately narrower than the proxy allowlist."""
+        harness = _Harness(index, art_cache_dir=art_dir)
+        item = _candidate(index, art_url="https://bandcamp.com/img/a1_0.jpg")
+        assert self._get(harness, item).status_code == 400
+
+    def test_lookalike_host_is_refused(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        harness = _Harness(index, art_cache_dir=art_dir)
+        item = _candidate(index, art_url="https://evilf4.bcbits.com.bad/a_0.jpg")
+        assert self._get(harness, item).status_code == 400
+
+    def test_a_failed_fetch_writes_nothing(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        harness = _Harness(index, art_cache_dir=art_dir, art_bytes=None)
+        resp = self._get(harness, _candidate(index))
+        assert resp.status_code == 404
+        assert not list((art_dir / "discovery").glob("*.jpg"))
+
+    def test_a_failed_fetch_is_briefly_cached(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        """art_url is write-once, so a 404 stays a 404 — without this, ten cards
+        remounting on every tab switch is a fetch storm."""
+        harness = _Harness(index, art_cache_dir=art_dir, art_bytes=None)
+        resp = self._get(harness, _candidate(index))
+        assert "max-age" in resp.headers.get("cache-control", "")
+
+    # -- the traversal the ticket's suggested cache key would have opened --
+
+    def test_a_hostile_provider_item_id_cannot_escape_the_cache_dir(
+        self, index: LibraryIndex, art_dir: Path
+    ) -> None:
+        """normalise_item_id returns the raw string when it does not match
+        ^(album|track)-\\d+$, so provider_item_id is unvalidated remote text.
+        Keying the cache file on it would let a crafted data-albumid write
+        anywhere; the key is a hash of the art URL instead.
+        """
+        harness = _Harness(index, art_cache_dir=art_dir)
+        item = _candidate(index, provider_item_id="../../../../tmp/pwned")
+        assert self._get(harness, item).status_code == 200
+
+        written = list(art_dir.rglob("*.jpg"))
+        assert len(written) == 1
+        assert written[0].parent == art_dir / "discovery"
+        assert not (art_dir.parent / "pwned.jpg").exists()
+
+
+class TestArtCacheFailures:
+    def test_an_unwritable_cache_costs_caching_not_the_image(
+        self, index: LibraryIndex, art_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A full or read-only disk must not turn every crate card into a gap."""
+        harness = _Harness(index, art_cache_dir=art_dir)
+
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(Path, "mkdir", _boom)
+        resp = harness.client.get(f"/api/v1/discovery/art?item_id={_candidate(index)}")
+        assert resp.status_code == 200
+        assert resp.content == b"JPEGDATA"
+
+
+class _FakeResponse:
+    def __init__(self, status: int = 200, chunks: list[bytes] | None = None) -> None:
+        self.status_code = status
+        self._chunks = chunks if chunks is not None else [b"JPEG", b"DATA"]
+
+    def iter_content(self, _size: int) -> list[bytes]:
+        return self._chunks
+
+
+class TestRealArtFetch:
+    """The unstubbed CDN path — the seam every other test replaces."""
+
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, resp: Any) -> list[dict]:
+        calls: list[dict] = []
+
+        def _get(url: str, **kw: Any) -> Any:
+            calls.append({"url": url, **kw})
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
+
+        monkeypatch.setattr("requests.get", _get)
+        return calls
+
+    def test_streams_a_successful_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kamp_core.discovery_api import _fetch_art_bytes
+
+        calls = self._patch(monkeypatch, _FakeResponse())
+        assert _fetch_art_bytes("https://f4.bcbits.com/img/a1_10.jpg") == b"JPEGDATA"
+        # A static CDN on the render path, not the 30s Bandcamp API budget.
+        assert calls[0]["timeout"] == 10.0
+        assert calls[0]["stream"] is True
+
+    def test_non_200_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from kamp_core.discovery_api import _fetch_art_bytes
+
+        self._patch(monkeypatch, _FakeResponse(status=404))
+        assert _fetch_art_bytes("https://f4.bcbits.com/img/a1_10.jpg") is None
+
+    def test_an_oversized_body_is_refused_mid_stream(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Remote data is read bounded rather than trusted — the cap has to bite
+        while streaming, since a hostile host can lie about Content-Length."""
+        from kamp_core.discovery_api import _MAX_ART_BYTES, _fetch_art_bytes
+
+        chunk = b"x" * (1024 * 1024)
+        huge = [chunk] * (_MAX_ART_BYTES // len(chunk) + 2)
+        self._patch(monkeypatch, _FakeResponse(chunks=huge))
+        assert _fetch_art_bytes("https://f4.bcbits.com/img/a1_10.jpg") is None
+
+    def test_a_network_error_is_none_not_a_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kamp_core.discovery_api import _fetch_art_bytes
+
+        self._patch(monkeypatch, RuntimeError("connection reset"))
+        assert _fetch_art_bytes("https://f4.bcbits.com/img/a1_10.jpg") is None
+
+
+class TestArtHostAllowlist:
+    def test_art_hosts_are_a_subset_of_the_proxy_allowlist(self) -> None:
+        """Two lists that must not drift apart: anything the art proxy will fetch
+        must also be something the relay would have permitted."""
+        from kamp_core.proxy_hosts import ALLOWED_PROXY_HOSTS, ART_HOSTS
+
+        assert ART_HOSTS < ALLOWED_PROXY_HOSTS
 
 
 # ---------------------------------------------------------------------------

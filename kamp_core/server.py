@@ -4650,6 +4650,7 @@ def create_app(
         index=index,
         broadcast=_broadcast,
         on_build_start=on_crate_build_start,
+        art_cache_dir=art_cache_dir,
     )
 
     return app

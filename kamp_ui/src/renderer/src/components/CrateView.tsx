@@ -151,24 +151,35 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
 
   // The crate's own keys live on the view container, NOT on document. App's
   // global handler is a window listener and the React root sits below document
-  // in the bubble path, so stopPropagation here wins for Left/Right/W/X/C. A
-  // document listener would also win — and would pre-empt the Escape handling of
-  // every modal opened afterwards, since those are document listeners too and
-  // registration order decides.
+  // in the bubble path, so stopPropagation here wins. A document listener would
+  // also win — and would pre-empt the Escape handling of every modal opened
+  // afterwards, since those are document listeners too and registration order
+  // decides.
   //
-  // Space is deliberately NOT claimed. The ticket reserves it for preview, but
-  // preview lands in KAMP-651; swallowing it now would remove play/pause from a
-  // whole view of a music player for no gain.
+  // Digging is , and . rather than the arrows. The arrows are transport
+  // prev/next track globally, and taking them for the length of a whole view
+  // would strand a listener mid-album — the same objection that keeps Space
+  // unclaimed here (the ticket reserves it for preview, which is KAMP-651;
+  // swallowing it now would remove play/pause from a view of a music player for
+  // nothing).
+  //
+  // The arrows still work *inside the rail*, because that is the listbox
+  // contract a screen-reader user expects of a role="option" list and the scope
+  // is the widget rather than the view.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
-    const tag = (e.target as HTMLElement).tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return
+    const target = e.target as HTMLElement
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
     if (e.metaKey || e.ctrlKey || e.altKey) return
 
-    if (e.key === 'ArrowRight') {
+    const inRail = railRef.current?.contains(target) ?? false
+    const isNext = e.key === '.' || (inRail && e.key === 'ArrowRight')
+    const isPrev = e.key === ',' || (inRail && e.key === 'ArrowLeft')
+
+    if (isNext) {
       e.preventDefault()
       e.stopPropagation()
       if (visible.length > 0) focusSleeve(Math.min(focusIndex + 1, visible.length - 1))
-    } else if (e.key === 'ArrowLeft') {
+    } else if (isPrev) {
       e.preventDefault()
       e.stopPropagation()
       if (visible.length > 0) focusSleeve(Math.max(focusIndex - 1, 0))

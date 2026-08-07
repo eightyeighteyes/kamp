@@ -128,6 +128,40 @@ class TestCrateSnapshot:
         assert pushed["type"] == CRATE_EVENT
         assert {k: v for k, v in pushed.items() if k != "type"} == rest
 
+    def test_a_restored_crate_reports_what_is_actually_in_it(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """The status is in-memory and the crate is not, so after a daemon restart
+        _status is still _INITIAL_STATUS while items holds a full crate.
+
+        Reporting filled=0 for a crate of ten made the UI's fill progress wrong on
+        every launch, and short=False for a crate that really is short suppressed
+        the quiet note. Both are derived from items whenever no build is running.
+        """
+        _stock(index, 1, count=10)
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["state"] == "idle"
+        assert body["filled"] == 10
+        assert body["short"] is False
+
+    def test_a_restored_short_crate_still_reads_as_short(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        _stock(index, 1, count=4)
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["filled"] == 4
+        assert body["short"] is True
+
+    def test_a_live_build_keeps_its_own_progress(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """While building, filled counts what has landed so far and must NOT be
+        overwritten by the (already larger) row count of a previous crate."""
+        _stock(index, 1, count=10)
+        harness.publish({"state": "building", "filled": 3, "short": False})
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["filled"] == 3
+
     def test_publishing_pushes_to_clients(self, harness: _Harness) -> None:
         harness.publish({"state": "building", "hints": ["dub techno"]})
         assert harness.events[-1]["state"] == "building"

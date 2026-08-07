@@ -8,6 +8,7 @@ import { ExtensionPanel } from './components/ExtensionPanel'
 import { LibraryView } from './components/LibraryView'
 import { NowPlayingView } from './components/NowPlayingView'
 import { DownloadsView } from './components/DownloadsView'
+import { CrateView } from './components/CrateView'
 import { PreferencesDialog } from './components/PreferencesDialog'
 import { QueuePanel } from './components/QueuePanel'
 import { BandcampButton } from './components/BandcampButton'
@@ -73,6 +74,14 @@ registerBuiltInPanel({
   component: DownloadsView
 })
 registerBuiltInPanel({
+  id: 'kamp.crate',
+  // User-facing name (KAMP-643); `discovery` stays the code/API namespace.
+  title: 'The Crate',
+  defaultSlot: 'main',
+  compatibleSlots: ['main'],
+  component: CrateView
+})
+registerBuiltInPanel({
   id: 'kamp.collection',
   title: 'Collection',
   defaultSlot: 'left',
@@ -125,6 +134,11 @@ export default function App(): React.JSX.Element {
   const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
   const activeView = useStore((s) => s.activeView)
   const setActiveView = useStore((s) => s.setActiveView)
+  // KAMP-650: gates The Crate tab. Null until loadConfig() resolves — see the
+  // ringPanels filter and the force-switch effect below, both of which have to
+  // distinguish "not loaded yet" from "disconnected".
+  const configValuesForCrate = useStore((s) => s.configValues)
+  const bandcampConnected = configValuesForCrate?.['bandcamp.connected'] ?? false
   const togglePlayPause = useStore((s) => s.togglePlayPause)
   const next = useStore((s) => s.next)
   const prev = useStore((s) => s.prev)
@@ -264,6 +278,7 @@ export default function App(): React.JSX.Element {
           void loadQueue()
           void loadConfig()
           void useStore.getState().loadDownloads() // KAMP-568: seed Downloads view
+          void useStore.getState().loadCrate() // KAMP-650: seed The Crate
           // Reconcile pip state in case deferred_op.completed was missed
           // while the WS was disconnected.
           void getDeferredOps().then((ops) => {
@@ -344,6 +359,11 @@ export default function App(): React.JSX.Element {
         // rather than looking like a stalled queue.
         (items, pausedUntil) => {
           useStore.getState().setDownloadQueue(items, pausedUntil)
+        },
+        // KAMP-650: full crate snapshot → The Crate store slice. Fires once per
+        // placed record during a build, so the rail fills in as it is dug.
+        (snapshot) => {
+          useStore.getState().setCrate(snapshot)
         }
       )
     }
@@ -459,6 +479,18 @@ export default function App(): React.JSX.Element {
     if (!window.api.onCycleView) return
     return window.api.onCycleView((direction) => cycleViewRef.current(direction))
   }, [])
+
+  // KAMP-650: leave The Crate if Bandcamp gets disconnected while you are in it.
+  // The tab is filtered out of ringPanels when disconnected, and cycleView
+  // early-returns when the current view is not a ring member, so without this
+  // Ctrl+Tab goes dead. Gated on configValues being loaded: it is null until
+  // loadConfig() resolves and `?? false` reads that as disconnected, so an
+  // ungated switch would bounce a connected user out of the Crate on every
+  // launch — ui.active_view is persisted, so relaunching into it is normal.
+  useEffect(() => {
+    if (configValuesForCrate === null) return
+    if (activeView === 'crate' && !bandcampConnected) void setActiveView('library')
+  }, [configValuesForCrate, bandcampConnected, activeView, setActiveView])
 
   // Discover and load frontend extensions.
   // extState.disabledIds is captured at mount; re-runs if the disabled set changes
@@ -594,7 +626,14 @@ export default function App(): React.JSX.Element {
   // The view-cycle ring (KAMP-560) is exactly the rendered top-level tabs: main-slot
   // panels minus modal views. Downloads (KAMP-585) is an icon, not a tab, so it is
   // excluded. Single source of truth — used by both the rail render and cycleView.
-  const ringPanels = mainPanels.filter((panel) => panel.id !== 'kamp.downloads')
+  // The Crate (KAMP-650) is additionally gated on Bandcamp: with no account there
+  // is nothing to dig. `configValues` is null until loadConfig() resolves and
+  // `?? false` reads that as disconnected, so the tab appears a beat after launch
+  // rather than flickering out — and the force-switch below is gated on the same
+  // null so a connected user is never bounced out of the Crate on startup.
+  const ringPanels = mainPanels.filter(
+    (panel) => panel.id !== 'kamp.downloads' && (panel.id !== 'kamp.crate' || bandcampConnected)
+  )
 
   // Determine whether a given main-slot panel tab is active.
   const isActiveMain = (panel: UnifiedPanel): boolean => {
@@ -603,6 +642,7 @@ export default function App(): React.JSX.Element {
     if (panel.kind === 'builtin' && panel.id === 'kamp.library') return activeView === 'library'
     if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing')
       return activeView === 'now-playing'
+    if (panel.kind === 'builtin' && panel.id === 'kamp.crate') return activeView === 'crate'
     return false
   }
 
@@ -619,6 +659,9 @@ export default function App(): React.JSX.Element {
       if (selectedArtist !== null || selectedAlbum !== null) selectArtist(null)
     } else if (panel.kind === 'builtin' && panel.id === 'kamp.now-playing') {
       void setActiveView('now-playing')
+      setActiveExtPanel(null)
+    } else if (panel.kind === 'builtin' && panel.id === 'kamp.crate') {
+      void setActiveView('crate')
       setActiveExtPanel(null)
     } else if (panel.kind === 'extension') {
       setActiveExtPanel(panel.id)
@@ -684,6 +727,7 @@ export default function App(): React.JSX.Element {
     const isLibraryPane = !searchQuery && !activeExtPanel && activeView === 'library'
     const isNowPlayingPane = !searchQuery && !activeExtPanel && activeView === 'now-playing'
     const isDownloadsPane = !searchQuery && !activeExtPanel && activeView === 'downloads'
+    const isCratePane = !searchQuery && !activeExtPanel && activeView === 'crate'
     return (
       <>
         {/* key=panel.id forces a fresh component+DOM node on extension panel
@@ -701,6 +745,9 @@ export default function App(): React.JSX.Element {
         </div>
         <div className={isDownloadsPane ? 'view-pane view-pane--active' : 'view-pane'}>
           <DownloadsView active={isDownloadsPane} />
+        </div>
+        <div className={isCratePane ? 'view-pane view-pane--active' : 'view-pane'}>
+          <CrateView active={isCratePane} />
         </div>
       </>
     )

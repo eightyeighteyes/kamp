@@ -39,6 +39,19 @@ const GROUPS: Group[] = [
     shortcuts: [{ keys: ['Shift', 'click'], description: 'Range select in Next Up' }]
   },
   {
+    label: 'The Crate',
+    shortcuts: [
+      {
+        keys: [',', '.'],
+        description: 'Previous / next record',
+        note: 'Arrows stay on the transport; ← → also work inside the rail'
+      },
+      { keys: ['C'], description: 'Copy link' },
+      { keys: ['X'], description: 'Pass', note: 'Undo for 5 seconds' },
+      { keys: ['Esc'], description: 'Leave the crate' }
+    ]
+  },
+  {
     label: 'View',
     shortcuts: [
       { keys: [mod, '+'], description: 'Zoom in' },

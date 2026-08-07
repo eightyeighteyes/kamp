@@ -2110,6 +2110,13 @@ class TestUiStateEndpoints:
         assert resp.status_code == 200
         assert client.get("/api/v1/ui").json()["active_view"] == "downloads"
 
+    def test_set_active_view_crate_persists(self, client: TestClient) -> None:
+        """The Crate view (KAMP-650). Without this the round-trip 422s and the
+        view silently reverts to library on every relaunch."""
+        resp = client.post("/api/v1/ui/active-view", json={"view": "crate"})
+        assert resp.status_code == 200
+        assert client.get("/api/v1/ui").json()["active_view"] == "crate"
+
     def test_set_active_view_invalid_returns_422(self, client: TestClient) -> None:
         resp = client.post("/api/v1/ui/active-view", json={"view": "bogus"})
         assert resp.status_code == 422

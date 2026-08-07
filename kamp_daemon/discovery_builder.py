@@ -115,6 +115,10 @@ def build_crate(
         # name what is being dug through without the builder knowing any
         # provider's criteria.
         hints=list(profile.top_genres[:_HINT_LIMIT]),
+        # A brand-new library yields seeds for nothing but the chart, so the crate
+        # is real but un-personalised. The UI says so in one line rather than
+        # letting the picks imply a taste read we did not make.
+        thin=profile.is_thin,
     )
 
     try:

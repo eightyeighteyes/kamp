@@ -10,9 +10,12 @@ import { create } from 'zustand'
 import * as api from './api/client'
 import type { RepeatMode } from './api/client'
 import type {
+  ActiveView,
   Album,
   AlbumTagsCollision,
   ConfigValues,
+  CrateItem,
+  CrateSnapshot,
   CriteriaDoc,
   DownloadItem,
   PlayerState,
@@ -86,10 +89,10 @@ type PlayerStore = {
   peakDb: number | null
 
   configuredLibraryPath: string | null
-  activeView: 'library' | 'now-playing' | 'home' | 'downloads'
+  activeView: ActiveView
   // Last view active before the current one, used so Esc in Downloads can return
   // to where the user came from. In-memory only (not persisted to daemon UI state).
-  previousView: 'library' | 'now-playing' | 'home' | 'downloads' | null
+  previousView: ActiveView | null
   moduleOrder: string[]
   hiddenModules: string[]
   moduleDisplayStyles: Record<string, DisplayStyle>
@@ -167,6 +170,16 @@ type PlayerStore = {
   // Null when the queue is idle (bar hidden). Maintained in setDownloadQueue (done/
   // total) and setAlbumProgress (live floor); the bar just renders `floor`.
   downloadBatch: { seenIds: string[]; total: number; done: number; floor: number } | null
+  // KAMP-650: the current Discovery Crate. Seeded by loadCrate() on every WS
+  // (re)connect and kept live by the `discovery.crate` event. Null until the
+  // first snapshot arrives, which the view renders as "not dug yet" rather than
+  // as an error.
+  crate: CrateSnapshot | null
+  // Items passed locally but whose dismiss POST has not been sent yet. Pass is
+  // deferred rather than optimistic because 'dismissed' is terminal server-side
+  // (discovery_events has no un-dismiss kind and the state rank is monotonic),
+  // so an Undo has to happen before the request, not after it.
+  crateDismissPending: number[]
   flashToast: string | null
   // KAMP-571: tone for the current flashToast; 'error' renders the red variant.
   flashToastTone: 'error' | null
@@ -185,7 +198,7 @@ type PlayerStore = {
   ) => Promise<void>
   setSortDir: (dir: 'asc' | 'desc') => Promise<void>
   setLibraryFilter: (filters: string[]) => void
-  setActiveView: (view: 'library' | 'now-playing' | 'home' | 'downloads') => Promise<void>
+  setActiveView: (view: ActiveView) => Promise<void>
   setModuleOrder: (ids: string[]) => void
   hideModule: (id: string) => void
   showModule: (id: string) => void
@@ -210,6 +223,19 @@ type PlayerStore = {
   reorderDownloadQueue: (orderedQueuedIds: string[]) => Promise<void>
   retryDownload: (providerItemId: string) => Promise<void>
   cancelDownload: (providerItemId: string) => Promise<void>
+  // KAMP-650: The Crate
+  loadCrate: () => Promise<void>
+  setCrate: (snapshot: CrateSnapshot) => void
+  newCrate: () => Promise<void>
+  // Marks an item passed locally and holds the POST. Call commitCrateDismiss to
+  // send it or undoCrateDismiss to cancel — see crateDismissPending.
+  deferCrateDismiss: (itemId: number) => void
+  undoCrateDismiss: (itemId: number) => void
+  commitCrateDismiss: (itemId: number) => Promise<void>
+  // Sends every held dismiss at once. Must be called when the view unmounts or
+  // the user navigates away, or a pass made in the last few seconds is lost.
+  flushCrateDismissals: () => Promise<void>
+  copyCrateItemUrl: (item: CrateItem) => Promise<void>
   showFlashToast: (msg: string, tone?: 'error') => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
@@ -541,6 +567,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
   downloadQueue: [],
   downloadPausedUntil: 0,
   downloadBatch: null,
+  crate: null,
+  crateDismissPending: [],
   flashToast: null,
   flashToastTone: null,
   styleRailVisible: false,
@@ -882,6 +910,72 @@ export const useStore = create<PlayerStore>((set, get) => ({
       const msg = err instanceof Error ? err.message : 'Could not cancel download'
       get().showFlashToast(msg)
       void get().loadDownloads()
+    }
+  },
+  // ---------------------------------------------------------------------------
+  // The Crate (KAMP-650)
+  // ---------------------------------------------------------------------------
+  loadCrate: async () => {
+    try {
+      set({ crate: await api.getCrate() })
+    } catch {
+      // Best-effort, like loadDownloads: the WS snapshot populates on the next
+      // transition, and a crate that never loads renders as "not dug yet".
+    }
+  },
+  setCrate: (snapshot) => set({ crate: snapshot }),
+  newCrate: async () => {
+    try {
+      await api.newCrate()
+      // No optimistic state: the builder publishes state:'building' immediately,
+      // and inventing a local 'building' would race a 409 we already lost.
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not dig a crate'
+      get().showFlashToast(msg)
+    }
+  },
+  deferCrateDismiss: (itemId) =>
+    set((s) => ({
+      crateDismissPending: s.crateDismissPending.includes(itemId)
+        ? s.crateDismissPending
+        : [...s.crateDismissPending, itemId]
+    })),
+  undoCrateDismiss: (itemId) =>
+    set((s) => ({ crateDismissPending: s.crateDismissPending.filter((id) => id !== itemId) })),
+  commitCrateDismiss: async (itemId) => {
+    // Already undone while the timer was running.
+    if (!get().crateDismissPending.includes(itemId)) return
+    set((s) => ({ crateDismissPending: s.crateDismissPending.filter((id) => id !== itemId) }))
+    try {
+      await api.dismissCrateItem(itemId)
+      // The daemon re-broadcasts the whole snapshot after a dismiss, so the
+      // authoritative state arrives on its own.
+    } catch {
+      // The pass is lost rather than wrongly shown as kept — reload so the UI
+      // matches the server instead of quietly disagreeing with it.
+      void get().loadCrate()
+    }
+  },
+  flushCrateDismissals: async () => {
+    const pending = get().crateDismissPending
+    if (pending.length === 0) return
+    set({ crateDismissPending: [] })
+    await Promise.all(
+      pending.map((id) =>
+        api.dismissCrateItem(id).catch(() => {
+          // Best-effort on the way out; loadCrate() on the next mount reconciles.
+        })
+      )
+    )
+  },
+  copyCrateItemUrl: async (item) => {
+    try {
+      await navigator.clipboard.writeText(item.item_url)
+      get().showFlashToast('Link copied.')
+      // Recorded as engagement; deliberately does not change the item's state.
+      void api.crateItemUrlCopied(item.id).catch(() => {})
+    } catch {
+      get().showFlashToast('Could not copy the link', 'error')
     }
   },
   showFlashToast: (msg, tone) => {

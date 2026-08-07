@@ -316,6 +316,14 @@ class TestConfigSet:
         config = Config.load(db)
         assert config.ui.active_view == "home"
 
+    def test_ui_active_view_crate_is_valid(self, db: LibraryIndex) -> None:
+        """Both allowlists must agree — server.py accepts the POST, config.py is
+        what survives a restart."""
+        Config.write_defaults(db)
+        config_set(db, "ui.active_view", "crate")
+        config = Config.load(db)
+        assert config.ui.active_view == "crate"
+
     def test_ui_sort_order_valid(self, db: LibraryIndex) -> None:
         Config.write_defaults(db)
         config_set(db, "ui.sort_order", "last_played")

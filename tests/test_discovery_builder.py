@@ -414,6 +414,35 @@ class TestPublication:
         # 0 on the opening 'building' push, then one per row as it is committed.
         assert filled == list(range(CRATE_SIZE + 1))
 
+    def test_a_thin_profile_is_announced(self, index: LibraryIndex) -> None:
+        """A brand-new library gets a real crate, but an un-personalised one — the
+        UI says so rather than letting chart picks imply a taste read."""
+        publisher = _Publisher()
+        _build(
+            index,
+            _FakeSource(_spread({"best_seller": 12})),
+            publish=publisher,
+            profile=SeedProfile(),
+        )
+        assert publisher.pushes[0]["thin"] is True
+
+    def test_a_real_profile_is_not_thin(self, index: LibraryIndex) -> None:
+        publisher = _Publisher()
+        _build(
+            index,
+            _FakeSource(_spread({"a": 12})),
+            publish=publisher,
+            profile=SeedProfile(top_genres=["dub techno"]),
+        )
+        assert publisher.pushes[0]["thin"] is False
+
+    def test_crate_size_matches_the_api_layer(self) -> None:
+        """CRATE_SIZE is spelled twice — kamp_core cannot import kamp_daemon — and
+        a drift would make the API call a full crate short."""
+        from kamp_core.discovery_api import CRATE_SIZE as API_CRATE_SIZE
+
+        assert API_CRATE_SIZE == CRATE_SIZE
+
     def test_hints_carry_the_profile_genres(self, index: LibraryIndex) -> None:
         """KAMP-650 rotates status lines naming what is being dug through.
 

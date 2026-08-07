@@ -1,0 +1,380 @@
+/* The Crate (KAMP-650) — focus card + crate rail.
+ *
+ * Every colour comes from a theme token. There are eight palettes and --accent
+ * swings from indigo to magenta to green, so a hardcoded hex would look wrong in
+ * seven of them. Sleeve states are distinguished by opacity, border weight and a
+ * glyph rather than by hue, for the same reason.
+ *
+ * All motion lives inside a prefers-reduced-motion: no-preference wrapper, and
+ * nothing animates height (the project rule — Electron makes it jerky).
+ */
+
+.crate-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px 24px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.crate-banner {
+  border: 1px solid var(--border);
+  background: var(--surface-hover);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+/* --- Empty / error composition ------------------------------------------- */
+
+.crate-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 64px 16px;
+  text-align: center;
+}
+
+.crate-empty-glyph {
+  font-size: 40px;
+  color: var(--text-dim);
+  opacity: 0.5;
+}
+
+.crate-empty-title {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.crate-empty-hint {
+  color: var(--text-dim);
+  font-size: 13px;
+  max-width: 42ch;
+}
+
+/* --- Focus card ----------------------------------------------------------- */
+
+.crate-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.crate-focus {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.crate-focus--digging {
+  min-height: 220px;
+  align-items: center;
+  justify-content: center;
+}
+
+.crate-focus-art {
+  flex: 0 0 auto;
+  width: 220px;
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 32px;
+}
+
+/* Same contract as .album-art: no JS fallback branch — an item with no art_url
+   (or a 404 the <img> reports) simply never gets .has-art and the glyph shows. */
+.crate-focus-art:not(.has-art)::before {
+  content: '♪';
+}
+
+.crate-focus-art-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--bg);
+}
+
+.crate-focus-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.crate-focus-artist {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.crate-focus-title {
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.crate-focus-position {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* The clerk card: a shelf tag, not body copy. Deliberately set apart from the
+   title block so the reason reads as something written by hand and slipped into
+   the sleeve. */
+.crate-clerk-card {
+  margin: 4px 0 2px;
+  padding: 7px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  max-width: 52ch;
+}
+
+/* --- Actions -------------------------------------------------------------- */
+
+.crate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.crate-action {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.crate-action:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.crate-action--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.crate-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.crate-dig-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.crate-dig-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.crate-dig-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* --- The rail ------------------------------------------------------------- */
+
+.crate-rail {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  list-style: none;
+  padding: 10px 0 4px;
+  margin: 0;
+}
+
+.crate-rail:focus {
+  outline: none;
+}
+
+.crate-sleeve {
+  position: relative;
+  width: 72px;
+  cursor: pointer;
+  /* Static per-slot tilt from the component, so a rail reads as records in a bin
+     rather than a grid. Combined with the pull-out below in one transform. */
+  transform: rotate(var(--crate-tilt, 0deg));
+  transform-origin: bottom center;
+}
+
+.crate-sleeve-art {
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 18px;
+}
+
+.crate-sleeve-art:not(.has-art)::before {
+  content: '♪';
+}
+
+.crate-sleeve-art-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Focused: pulled out of the bin and outlined. Border weight and position carry
+   the state, not colour, so it survives every palette. */
+.crate-sleeve--focused {
+  transform: rotate(0deg) translateY(-8px);
+}
+
+.crate-sleeve--focused .crate-sleeve-art {
+  border-color: var(--accent);
+  border-width: 2px;
+}
+
+/* Dug (previewed / wishlisted / purchased) — no longer new, but not rejected. */
+.crate-sleeve--dug .crate-sleeve-art {
+  border-style: solid;
+  border-color: var(--text-dim);
+}
+
+.crate-sleeve--passed {
+  opacity: 0.35;
+}
+
+.crate-sleeve--wishlisted .crate-sleeve-art {
+  border-color: var(--accent);
+}
+
+.crate-sleeve-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.crate-sleeve--empty {
+  cursor: default;
+}
+
+.crate-sleeve--empty .crate-sleeve-art {
+  border-style: dashed;
+  background: transparent;
+  opacity: 0.5;
+}
+
+.crate-footer {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+/* --- Undo toast ----------------------------------------------------------- */
+
+.crate-undo-toast {
+  position: fixed;
+  right: 16px;
+  bottom: calc(var(--transport-h) + 16px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  z-index: 900;
+  overflow: hidden;
+}
+
+.crate-undo-text {
+  color: var(--text-dim);
+}
+
+.crate-undo-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent);
+  border-radius: 3px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.crate-undo-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+}
+
+/* --- Motion --------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  .crate-sleeve {
+    transition:
+      transform 160ms ease,
+      opacity 160ms ease;
+  }
+
+  .crate-focus-art-img {
+    animation: crateArtIn 200ms ease both;
+  }
+
+  .crate-undo-bar {
+    animation: crateUndoBar linear forwards;
+  }
+
+  @keyframes crateArtIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes crateUndoBar {
+    from {
+      transform: scaleX(1);
+    }
+    to {
+      transform: scaleX(0);
+    }
+  }
+}

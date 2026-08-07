@@ -261,7 +261,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
 
       <div className="crate-stage">
         {current ? (
-          <article className="crate-focus" aria-live="polite">
+          <article className="crate-focus">
             <div className={`crate-focus-art${current.art_url ? ' has-art' : ''}`}>
               {current.art_url && (
                 <img
@@ -346,6 +346,14 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
         </ul>
 
         <div className="crate-footer">{digButton}</div>
+
+        {/* The clerk card lives on the focus card, so arrowing the rail would
+            otherwise never announce it: the option's own aria-label and
+            aria-posinset already carry identity and position. Announcing only
+            the reason keeps this from double-reading every record. */}
+        <div className="sr-only" role="status" aria-live="polite">
+          {current ? `Record ${focusIndex + 1} of ${visible.length}. ${current.why}` : ''}
+        </div>
       </div>
 
       {undoItem && (

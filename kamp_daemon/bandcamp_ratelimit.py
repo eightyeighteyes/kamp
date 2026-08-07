@@ -183,12 +183,17 @@ class BandcampGovernor:
             )
 
     def reset(self) -> None:
-        """Forget all backoff state.
+        """Forget all backoff state. **Test isolation only.**
 
-        Called on logout: a 429 is scoped to the account, so a new session starts
-        clean. Deliberately NOT called on config reload, which fires on unrelated
-        preference changes — otherwise a user could clear a live backoff by
-        toggling a checkbox.
+        KAMP-646 wrote this expecting logout to call it, reasoning that a 429 is
+        scoped to the account. KAMP-648 deliberately left it unwired: the limit
+        is scoped to the IP at least as much as the account, so clearing a live
+        cooldown because someone signed out and back in asks Bandcamp for
+        another 429 and earns a longer one. Waiting costs 300s at worst.
+
+        Also not called on config reload, which fires on unrelated preference
+        changes — otherwise a user could clear a live backoff by toggling a
+        checkbox.
         """
         with self._lock:
             self._last_request_at.clear()
@@ -210,7 +215,7 @@ def get_governor() -> BandcampGovernor:
 
 
 def reset_governor() -> None:
-    """Drop the singleton. For logout, and for test isolation."""
+    """Drop the singleton. Test isolation only — see :meth:`BandcampGovernor.reset`."""
     global _governor
     with _governor_lock:
         _governor = None

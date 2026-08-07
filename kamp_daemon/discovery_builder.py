@@ -141,7 +141,12 @@ def build_crate(
         return _publish(publish, state="empty", crate_no=None)
 
     crate_no = index.next_crate_no()
-    for position, candidate in enumerate(picks):
+    # Position counts what actually landed, not what was picked. A row that
+    # fails to persist must not leave a hole in the slot sequence -- the rail
+    # renders by position, so a gap is a blank sleeve the user can focus and
+    # never fill.
+    placed = 0
+    for candidate in picks:
         try:
             item_id = index.add_discovery_candidate(
                 provider=candidate.provider,
@@ -156,7 +161,7 @@ def build_crate(
                 why=candidate.why,
                 seed_json=candidate.seed_json(),
             )
-            index.place_in_crate(item_id, crate_no, position)
+            index.place_in_crate(item_id, crate_no, placed)
         except Exception:  # noqa: BLE001 - one bad row costs a card, not the crate
             logger.exception(
                 "discovery: could not place %s in crate %d",
@@ -164,11 +169,17 @@ def build_crate(
                 crate_no,
             )
             continue
-        _publish(publish, crate_no=crate_no, filled=position + 1)
+        placed += 1
+        _publish(publish, crate_no=crate_no, filled=placed)
 
-    short = len(picks) < size
+    if placed == 0:
+        # next_crate_no() is a read, so nothing was consumed by trying.
+        logger.warning("discovery: crate %d persisted nothing", crate_no)
+        return _publish(publish, state="empty", crate_no=None)
+
+    short = placed < size
     if short:
-        logger.info("discovery: short crate %d (%d/%d)", crate_no, len(picks), size)
+        logger.info("discovery: short crate %d (%d/%d)", crate_no, placed, size)
     return _publish(publish, state="ready", crate_no=crate_no, short=short)
 
 

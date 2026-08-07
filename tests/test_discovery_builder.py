@@ -11,6 +11,7 @@ rate limit that presents as a hang.
 from __future__ import annotations
 
 import random
+import sqlite3
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -355,6 +356,42 @@ class TestDegradation:
         assert status["state"] == "error"
         assert index.latest_crate_no() is None
 
+    def test_a_row_that_will_not_persist_leaves_no_gap(
+        self, index: LibraryIndex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One bad row costs a card, not the crate — and not a blank slot.
+
+        The rail renders by position, so skipping a position would leave a
+        sleeve the user can focus and never fill.
+        """
+        real = index.place_in_crate
+        calls = {"n": 0}
+
+        def _flaky(item_id: int, crate_no: int, position: int) -> None:
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise sqlite3.OperationalError("disk full")
+            real(item_id, crate_no, position)
+
+        monkeypatch.setattr(index, "place_in_crate", _flaky)
+        status = _build(index, _FakeSource(_spread({"a": 12})))
+
+        positions = [row["position"] for row in index.crate_items(1)]
+        assert positions == list(range(CRATE_SIZE - 1))
+        # short must reflect what landed, not what was picked.
+        assert status["short"] is True
+
+    def test_a_crate_that_persists_nothing_is_empty_not_ready(
+        self, index: LibraryIndex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _fail(*_a: object, **_kw: object) -> None:
+            raise sqlite3.OperationalError("disk full")
+
+        monkeypatch.setattr(index, "place_in_crate", _fail)
+        status = _build(index, _FakeSource(_spread({"a": 12})))
+        assert status["state"] == "empty"
+        assert index.latest_crate_no() is None
+
 
 # ---------------------------------------------------------------------------
 # Status publication
@@ -391,6 +428,23 @@ class TestPublication:
             profile=SeedProfile(top_genres=["dub techno", "ambient"]),
         )
         assert publisher.pushes[0]["hints"] == ["dub techno", "ambient"]
+
+    def test_the_process_governor_is_used_by_default(
+        self, index: LibraryIndex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without this the builder would run unspaced against the endpoint class
+        that actually 429s, and never see the download drain's reported limits."""
+        import kamp_daemon.bandcamp_ratelimit as ratelimit
+
+        monkeypatch.setattr(ratelimit, "get_governor", lambda: _FakeGovernor(30.0))
+        status = build_crate(
+            index,
+            _FakeSource(_spread({"a": 12})),
+            publish=_Publisher(),
+            now=lambda: 0.0,
+        )
+        assert status["state"] == "paused"
+        assert status["paused_until"] == pytest.approx(30.0)
 
     def test_paused_until_clears_on_a_clean_build(self, index: LibraryIndex) -> None:
         publisher = _Publisher()

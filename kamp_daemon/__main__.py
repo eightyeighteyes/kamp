@@ -1033,6 +1033,45 @@ def _cmd_daemon(
     def _on_genre_backfill_cancel() -> None:
         _genre_backfill_cancel.set()
 
+    # --- KAMP-648: Discovery Crate build ---
+    def _on_crate_build_start() -> None:
+        """Assemble a crate on a background thread.
+
+        Returns immediately; the endpoint has already claimed the single-build
+        slot, and everything after this reaches the UI through
+        ``discovery_publish``.
+
+        The Bandcamp session is read per build rather than captured at startup,
+        so logging in or out mid-session is picked up without a daemon restart
+        (same reason as ``_on_genre_backfill_start``). No memory or global-state
+        argument for a subprocess here, and one would forfeit the shared
+        governor -- a plain thread is right.
+        """
+
+        def _run() -> None:
+            publish = app.state.discovery_publish
+            try:
+                from .bandcamp import _make_requests_session
+                from .discovery_builder import build_crate
+                from .discovery_sources import BandcampDiscoverySource
+
+                session_data = index.get_session("bandcamp")
+                if not session_data:
+                    _logger.info("crate build: not connected to Bandcamp")
+                    publish({"state": "error"})
+                    return
+                source = BandcampDiscoverySource(_make_requests_session(session_data))
+                build_crate(index, source, publish=publish)
+            except Exception:
+                # build_crate does not raise, so reaching here means the session
+                # or import failed. Publish a terminal state regardless: the
+                # endpoint's build flag is only released by one, so a silent
+                # death would wedge every later dig on 409.
+                _logger.exception("Unhandled error in crate build")
+                publish({"state": "error"})
+
+        threading.Thread(target=_run, daemon=True, name="crate-builder").start()
+
     # Bandcamp username comes only from the session (set after Electron login flow).
     _bc_session = index.get_session("bandcamp")
     _bc_ever_connected = index.get_setting("bandcamp.ever_connected") == "true"
@@ -1106,6 +1145,7 @@ def _cmd_daemon(
         on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,
         on_genre_backfill_start=_on_genre_backfill_start,
         on_genre_backfill_cancel=_on_genre_backfill_cancel,
+        on_crate_build_start=_on_crate_build_start,
         on_allowlist_changed=_on_allowlist_changed,
         get_default_allowlist=_genre_sources.default_allowlist_names,
         dl_queue=_dl_queue,

@@ -1137,6 +1137,8 @@ def _cmd_daemon(
             _make_requests_session,
             prefetch_redownload_urls,
         )
+        from .bandcamp_ratelimit import get_governor as _get_governor
+        from .discovery import FANCOLLECTION as _FANCOLLECTION
         from .syncer import RateLimited, process_next_download
 
         def _on_state(provider_item_id: str, state: str) -> None:
@@ -1253,6 +1255,12 @@ def _cmd_daemon(
                 # Publish the deadline so the UI can say "resuming in N", not
                 # leave every row reading "queued" while nothing happens.
                 app.state.set_download_pause(time.time() + pause)
+                # KAMP-646: tell the governor too, so discovery holds off on the
+                # one endpoint class it shares with this drain (the collection
+                # endpoint, which the wishlist walk uses). Album-page work is
+                # deliberately unaffected — the measured limits differ by ~2x, so
+                # pausing it here would cost time without buying protection.
+                _get_governor().report_429(_FANCOLLECTION)
                 try:
                     time.sleep(pause)
                 finally:

@@ -21,6 +21,7 @@ from kamp_core.library import LibraryIndex
 from kamp_daemon.discovery import (
     ALBUM_PAGE,
     DISCOVER_API,
+    FANCOLLECTION,
     PREVIEW,
     SAVE_REMOTE,
     Candidate,
@@ -31,6 +32,7 @@ from kamp_daemon.discovery import (
     SimpleBudget,
     UnsupportedCapability,
     build_seed_profile,
+    crate_budget,
 )
 
 
@@ -563,6 +565,31 @@ class TestDiscoverySource:
             seed={"b": 2, "a": 1},
         )
         assert candidate.seed_json() == '{"a": 1, "b": 2}'
+
+
+class TestCrateBudget:
+    def test_caps_carry_margin_over_the_measured_crate_cost(self) -> None:
+        """KAMP-644 measured a varied crate at 3-6 requests; these are ~2x that."""
+        budget = crate_budget()
+        assert budget.limits[ALBUM_PAGE] >= 6
+        assert budget.limits[DISCOVER_API] >= 4
+
+    def test_collection_endpoint_is_a_tripwire_not_a_limit(self) -> None:
+        """Crate building must never walk the collection endpoint — it is both the
+        most expensive call and the one that rate-limits hardest. A zero cap makes
+        an accidental walk fail loudly here instead of quietly earning a 429."""
+        assert crate_budget().allow(FANCOLLECTION) is False
+
+    def test_unknown_endpoint_classes_are_denied(self) -> None:
+        """A new fetcher must declare its class deliberately rather than inheriting
+        a permissive default."""
+        assert crate_budget().allow("some_new_surface") is False
+
+    def test_budget_is_fresh_per_crate(self) -> None:
+        first = crate_budget()
+        first.consume(ALBUM_PAGE, 8)
+        assert first.allow(ALBUM_PAGE) is False
+        assert crate_budget().allow(ALBUM_PAGE) is True
 
 
 class TestSimpleBudget:

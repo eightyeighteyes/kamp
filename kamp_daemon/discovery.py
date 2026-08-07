@@ -66,10 +66,13 @@ class RequestBudget(Protocol):
 
 @dataclass
 class SimpleBudget:
-    """A per-class counting budget. The default until KAMP-646 lands.
+    """A per-class counting budget.
 
     Deliberately dumb: it counts and it stops. It does not defer, back off, or know
-    that other workers exist — that is the governor's job.
+    that other workers exist — spacing and cooldown are
+    :class:`~kamp_daemon.bandcamp_ratelimit.BandcampGovernor`'s job. The two are
+    kept separate on purpose: ``allow`` is a predicate and must never block, so a
+    caller can ask "could I afford this?" without committing to a wait.
     """
 
     limits: dict[str, int] = field(default_factory=dict)
@@ -82,6 +85,27 @@ class SimpleBudget:
 
     def consume(self, endpoint_class: str, n: int = 1) -> None:
         self.spent[endpoint_class] = self.spent.get(endpoint_class, 0) + n
+
+
+def crate_budget() -> SimpleBudget:
+    """The per-class request allowance for building one crate (KAMP-646).
+
+    Calibrated from KAMP-644, which measured a varied crate at 3-6 requests
+    total — so these caps carry roughly 2x margin rather than being a target.
+
+    ``FANCOLLECTION`` is 0 on purpose, and is a tripwire rather than a limit:
+    crate building must never touch the collection endpoint, which is both the
+    most expensive call available and the one that rate-limits hardest. An
+    accidental walk should fail a test loudly instead of quietly earning a 429
+    that cascades into the download queue.
+
+    ``default_limit=0`` likewise denies any endpoint class nobody has thought
+    about, so a new fetcher must declare its class deliberately.
+    """
+    return SimpleBudget(
+        limits={ALBUM_PAGE: 8, DISCOVER_API: 6, FANCOLLECTION: 0},
+        default_limit=0,
+    )
 
 
 # ---------------------------------------------------------------------------

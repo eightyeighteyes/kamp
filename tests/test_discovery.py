@@ -1,0 +1,580 @@
+"""Discovery groundwork tests — schema, accessors, profile, ABC (KAMP-645).
+
+Named to sit alongside tests/test_discovery_fixtures.py (KAMP-644), which guards the
+captured Bandcamp fixtures rather than this code.
+
+The bias throughout is toward the cases that actually break: FK interactions with an
+account reset, the buffered-vs-shown distinction, boundary conditions on the recency
+window, and a degenerate empty library. Happy paths are covered incidentally.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from pathlib import Path
+
+import pytest
+
+from kamp_core.library import LibraryIndex
+from kamp_daemon.discovery import (
+    ALBUM_PAGE,
+    DISCOVER_API,
+    PREVIEW,
+    SAVE_REMOTE,
+    Candidate,
+    DiscoverySource,
+    PreviewStream,
+    RequestBudget,
+    SeedProfile,
+    SimpleBudget,
+    UnsupportedCapability,
+    build_seed_profile,
+)
+
+
+@pytest.fixture
+def index(tmp_path: Path) -> LibraryIndex:
+    idx = LibraryIndex(tmp_path / "library.db")
+    yield idx
+    idx.close()
+
+
+def _add_collection_row(
+    index: LibraryIndex,
+    sale_item_id: str,
+    *,
+    band_name: str = "Band",
+    item_title: str = "Album",
+    tralbum_id: str = "",
+    album_url: str = "",
+    keywords: list[str] | None = None,
+    added_at: float = 0.0,
+) -> None:
+    index._conn.execute(
+        "INSERT INTO bandcamp_collection"
+        " (sale_item_id, band_name, item_title, tralbum_id, album_url, keywords,"
+        "  added_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            sale_item_id,
+            band_name,
+            item_title,
+            tralbum_id,
+            album_url,
+            json.dumps(keywords) if keywords is not None else None,
+            added_at,
+        ),
+    )
+    index._conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+
+class TestSchema:
+    def test_fresh_db_is_v61_with_discovery_tables(self, tmp_path: Path) -> None:
+        LibraryIndex(tmp_path / "library.db").close()
+        conn = sqlite3.connect(str(tmp_path / "library.db"))
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        conn.close()
+        assert version == 61
+        assert {"discovery_items", "discovery_events"} <= tables
+
+    def test_v60_db_migrates_to_v61_preserving_data(self, tmp_path: Path) -> None:
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        _add_collection_row(index, "sale-1")
+        index._conn.execute("UPDATE schema_version SET version = 60")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        try:
+            version = reopened._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()["version"]
+            surviving = reopened._conn.execute(
+                "SELECT COUNT(*) AS c FROM bandcamp_collection"
+            ).fetchone()["c"]
+        finally:
+            reopened.close()
+        assert version == 61
+        assert surviving == 1
+
+    def test_crate_slot_is_unique_but_buffered_rows_are_exempt(
+        self, index: LibraryIndex
+    ) -> None:
+        """Many candidates may sit unshown; two cannot share one crate slot."""
+        for n in range(3):
+            index.add_discovery_candidate(
+                provider="bandcamp", provider_item_id=f"buffered-{n}"
+            )
+
+        first = index.add_discovery_candidate(provider="bandcamp", provider_item_id="a")
+        second = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="b"
+        )
+        index._conn.execute(
+            "UPDATE discovery_items SET crate_no = 1, position = 0 WHERE id = ?",
+            (first,),
+        )
+        index._conn.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            index._conn.execute(
+                "UPDATE discovery_items SET crate_no = 1, position = 0 WHERE id = ?",
+                (second,),
+            )
+            index._conn.commit()
+        index._conn.rollback()
+
+    def test_crate_no_and_position_must_agree(self, index: LibraryIndex) -> None:
+        """A half-promoted row is a bug; the CHECK makes it unrepresentable."""
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="x")
+        with pytest.raises(sqlite3.IntegrityError):
+            index._conn.execute(
+                "UPDATE discovery_items SET crate_no = 1 WHERE id = ?", (item,)
+            )
+            index._conn.commit()
+        index._conn.rollback()
+
+    def test_events_cannot_be_orphaned(self, index: LibraryIndex) -> None:
+        """ON DELETE RESTRICT keeps the stats ledger from being silently pruned."""
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="x")
+        index.record_discovery_event(item, "purchased")
+        with pytest.raises(sqlite3.IntegrityError):
+            index._conn.execute("DELETE FROM discovery_items WHERE id = ?", (item,))
+            index._conn.commit()
+        index._conn.rollback()
+
+    def test_event_free_buffered_rows_can_be_swept(self, index: LibraryIndex) -> None:
+        """The other half of RESTRICT: KAMP-657's TTL sweep must still work."""
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="x")
+        index._conn.execute("DELETE FROM discovery_items WHERE id = ?", (item,))
+        index._conn.commit()
+        assert index.discovery_item_id("bandcamp", "x") is None
+
+
+# ---------------------------------------------------------------------------
+# The FK that reintroduces KAMP-528 if it is wrong
+# ---------------------------------------------------------------------------
+
+
+class TestAccountResetWithPurchasedPick:
+    def test_clear_bandcamp_collection_survives_a_purchased_discovery_item(
+        self, index: LibraryIndex
+    ) -> None:
+        """An account reset must not crash once a crate pick has been purchased.
+
+        clear_bandcamp_collection() nulls the child FKs it knows about before deleting
+        the ledger, because foreign_keys=ON turns a dangling child into an
+        IntegrityError -- the crash KAMP-528 fixed. discovery_items is a child it does
+        NOT know about, so purchased_sale_item_id is declared ON DELETE SET NULL. If
+        that action is ever dropped, this test fails with the original KAMP-528 crash.
+        """
+        _add_collection_row(index, "sale-1", tralbum_id="777")
+        item = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="777"
+        )
+        index._conn.execute(
+            "UPDATE discovery_items SET purchased_sale_item_id = ?, purchased_at = ?"
+            " WHERE id = ?",
+            ("sale-1", time.time(), item),
+        )
+        index._conn.commit()
+        index.record_discovery_event(item, "purchased")
+
+        index.clear_bandcamp_collection()
+
+        row = index._conn.execute(
+            "SELECT purchased_sale_item_id, state FROM discovery_items WHERE id = ?",
+            (item,),
+        ).fetchone()
+        assert row is not None, "the discovery item must survive an account reset"
+        assert row["purchased_sale_item_id"] is None
+        # The event ledger is the ground truth for attribution and is untouched.
+        assert row["state"] == "purchased"
+        assert (
+            index._conn.execute(
+                "SELECT COUNT(*) AS c FROM discovery_events WHERE kind = 'purchased'"
+            ).fetchone()["c"]
+            == 1
+        )
+
+
+# ---------------------------------------------------------------------------
+# seen_before / in_library
+# ---------------------------------------------------------------------------
+
+
+class TestExclusionPredicates:
+    def test_buffered_candidate_is_not_seen(self, index: LibraryIndex) -> None:
+        """The KAMP-657 invariant: a gathered-but-unshown row stays eligible."""
+        index.add_discovery_candidate(provider="bandcamp", provider_item_id="123")
+        assert index.seen_before("bandcamp", "123") is False
+
+    def test_shown_candidate_is_seen(self, index: LibraryIndex) -> None:
+        item = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="123"
+        )
+        index._conn.execute(
+            "UPDATE discovery_items SET crate_no = 1, position = 0 WHERE id = ?",
+            (item,),
+        )
+        index._conn.commit()
+        assert index.seen_before("bandcamp", "123") is True
+
+    def test_seen_before_is_provider_scoped(self, index: LibraryIndex) -> None:
+        item = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="123"
+        )
+        index._conn.execute(
+            "UPDATE discovery_items SET crate_no = 1, position = 0 WHERE id = ?",
+            (item,),
+        )
+        index._conn.commit()
+        assert index.seen_before("discogs", "123") is False
+
+    def test_in_library_matches_on_tralbum_id(self, index: LibraryIndex) -> None:
+        _add_collection_row(index, "sale-1", tralbum_id="4242")
+        assert index.in_library("4242") is True
+        assert index.in_library("9999") is False
+
+    def test_in_library_falls_back_to_nocase_artist_title(
+        self, index: LibraryIndex
+    ) -> None:
+        """Rows whose tralbum_id was never backfilled still have to match."""
+        _add_collection_row(
+            index, "sale-1", band_name="Four Tet", item_title="Pink", tralbum_id=""
+        )
+        assert index.in_library("", artist="four tet", title="PINK") is True
+        assert index.in_library("", artist="Four Tet", title="Rounds") is False
+
+    def test_in_library_handles_custom_domain_and_dead_urls(
+        self, index: LibraryIndex
+    ) -> None:
+        """~1% of a real collection is on a Bandcamp Pro custom domain, and a stored
+        album_url can 404. Neither is an identity signal, so neither may affect
+        matching."""
+        _add_collection_row(
+            index,
+            "sale-1",
+            band_name="Artist",
+            item_title="Album",
+            tralbum_id="555",
+            album_url="https://music.example.com/album/x",
+        )
+        assert index.in_library("555") is True
+        assert index.in_library("", artist="Artist", title="Album") is True
+
+
+# ---------------------------------------------------------------------------
+# Event ledger and derived state
+# ---------------------------------------------------------------------------
+
+
+class TestEventLedger:
+    def test_state_precedence_is_highest_rank_not_last_write(
+        self, index: LibraryIndex
+    ) -> None:
+        """previewed -> dismissed -> purchased -> a late 'shown' stays 'purchased'.
+
+        Attribution runs on a collection sync, out of order with UI events, so a
+        last-event-wins cache would quietly downgrade a purchase.
+        """
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        for kind in ("shown", "previewed", "dismissed", "purchased", "shown"):
+            index.record_discovery_event(item, kind)
+        state = index._conn.execute(
+            "SELECT state FROM discovery_items WHERE id = ?", (item,)
+        ).fetchone()["state"]
+        assert state == "purchased"
+
+    def test_dismissed_does_not_override_wishlisted(self, index: LibraryIndex) -> None:
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "wishlisted")
+        index.record_discovery_event(item, "dismissed")
+        state = index._conn.execute(
+            "SELECT state FROM discovery_items WHERE id = ?", (item,)
+        ).fetchone()["state"]
+        assert state == "wishlisted"
+
+    def test_every_event_is_recorded_even_when_state_is_unchanged(
+        self, index: LibraryIndex
+    ) -> None:
+        """state is a cache; the ledger is the truth and must not lose rows."""
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        for _ in range(3):
+            index.record_discovery_event(item, "url_copied")
+        assert (
+            index._conn.execute(
+                "SELECT COUNT(*) AS c FROM discovery_events"
+            ).fetchone()["c"]
+            == 3
+        )
+
+    def test_events_denormalise_provider_identity(self, index: LibraryIndex) -> None:
+        item = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="abc"
+        )
+        index.record_discovery_event(item, "shown")
+        row = index._conn.execute(
+            "SELECT provider, provider_item_id FROM discovery_events"
+        ).fetchone()
+        assert (row["provider"], row["provider_item_id"]) == ("bandcamp", "abc")
+
+    def test_unknown_item_raises(self, index: LibraryIndex) -> None:
+        with pytest.raises(ValueError):
+            index.record_discovery_event(9999, "shown")
+
+    def test_unknown_event_kind_raises(self, index: LibraryIndex) -> None:
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        with pytest.raises(ValueError):
+            index.record_discovery_event(item, "teleported")
+
+    def test_candidate_insert_is_idempotent(self, index: LibraryIndex) -> None:
+        """Re-gathering an album must not duplicate it or resurrect a shown one."""
+        first = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="1", artist="A"
+        )
+        again = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="1", artist="A"
+        )
+        assert first == again
+
+
+# ---------------------------------------------------------------------------
+# Seed profile
+# ---------------------------------------------------------------------------
+
+
+class TestSeedProfile:
+    def _album(
+        self,
+        index: LibraryIndex,
+        artist: str,
+        title: str,
+        *,
+        last_played_at: float | None = None,
+        favorite: int = 0,
+        label: str = "",
+    ) -> int:
+        cur = index._conn.execute(
+            "INSERT INTO albums (album_artist, album, last_played_at, favorite, label)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (artist, title, last_played_at, favorite, label),
+        )
+        index._conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def test_recency_window_boundaries(self, index: LibraryIndex) -> None:
+        """29 days ago is recent; 31 is not. The boundary is the whole point."""
+        now = time.time()
+        self._album(index, "Fresh", "In", last_played_at=now - 29 * 86400)
+        self._album(index, "Stale", "Out", last_played_at=now - 31 * 86400)
+        self._album(index, "Never", "Played", last_played_at=None)
+
+        recent = index.recently_played_albums(days=30)
+        titles = {title for _, _, title in recent}
+        assert titles == {"In"}
+
+    def test_taste_genres_unions_keywords_regardless_of_tagging_toggle(
+        self, index: LibraryIndex
+    ) -> None:
+        """Bandcamp keywords are a taste signal even when the tagging option is off.
+
+        They are only promoted into track_genres when tagging.bandcamp_genres is on
+        AND only on an album's first index, so gating this read on that config would
+        make a user's taste invisible because of an unrelated tagging preference.
+        """
+        index.set_setting("tagging.bandcamp_genres", "false")
+        _add_collection_row(
+            index, "sale-1", tralbum_id="1", keywords=["dub techno", "ambient"]
+        )
+        _add_collection_row(index, "sale-2", tralbum_id="2", keywords=["dub techno"])
+
+        genres = dict(index.taste_genres())
+        assert genres.get("dub techno") == 2
+        assert genres.get("ambient") == 1
+
+    def test_taste_genres_survives_malformed_keyword_blobs(
+        self, index: LibraryIndex
+    ) -> None:
+        """The column is free-form TEXT; a bad row must not poison the profile."""
+        _add_collection_row(index, "sale-1", tralbum_id="1", keywords=["techno"])
+        index._conn.execute(
+            "UPDATE bandcamp_collection SET keywords = ? WHERE sale_item_id = 'sale-1'",
+            ("not json at all",),
+        )
+        _add_collection_row(index, "sale-2", tralbum_id="2", keywords=["techno"])
+        index._conn.commit()
+        assert dict(index.taste_genres()).get("techno") == 1
+
+    def test_labels_group_case_insensitively(self, index: LibraryIndex) -> None:
+        """albums.label is unnormalised free text: Ghostly and ghostly are one label."""
+        self._album(index, "A", "1", label="Ghostly")
+        self._album(index, "B", "2", label="ghostly")
+        self._album(index, "C", "3", label="Kranky")
+
+        labels = dict(index.taste_labels(min_albums=2))
+        assert len(labels) == 1
+        assert next(iter(labels)).casefold() == "ghostly"
+        assert next(iter(labels.values())) == 2
+
+    def test_labels_respect_the_minimum(self, index: LibraryIndex) -> None:
+        self._album(index, "A", "1", label="Solo")
+        assert index.taste_labels(min_albums=2) == []
+
+    def test_profile_on_an_empty_library_is_thin_not_broken(
+        self, index: LibraryIndex
+    ) -> None:
+        """The most likely first-run state, and the most likely to divide by zero."""
+        profile = build_seed_profile(index)
+        assert profile.is_thin is True
+        assert profile.recent_album_ids == set()
+        assert profile.top_genres == []
+        assert profile.purchase_dates == {}
+
+    def test_profile_collects_signals(self, index: LibraryIndex) -> None:
+        now = time.time()
+        recent_id = self._album(index, "Recent", "Album", last_played_at=now - 3600)
+        fav_id = self._album(index, "Fav", "Album", favorite=1)
+        _add_collection_row(
+            index, "sale-1", tralbum_id="900", keywords=["shoegaze"], added_at=now
+        )
+
+        profile = build_seed_profile(index)
+        assert recent_id in profile.recent_album_ids
+        assert fav_id in profile.favorite_album_ids
+        assert profile.has_genre("Shoegaze") is True
+        assert profile.purchase_dates["900"] == pytest.approx(now)
+        assert profile.is_thin is False
+
+    def test_membership_helpers_are_case_insensitive(self) -> None:
+        """KAMP-657 re-validates seeds through these, so casing must not matter."""
+        profile = SeedProfile(
+            top_genres=["Dub Techno"], top_artists=["Four Tet"], labels=["Ghostly"]
+        )
+        assert profile.has_genre("dub techno") is True
+        assert profile.has_artist("FOUR TET") is True
+        assert profile.has_label("ghostly") is True
+        assert profile.has_genre("noise") is False
+
+
+# ---------------------------------------------------------------------------
+# Provider abstraction
+# ---------------------------------------------------------------------------
+
+
+class _FakeSource(DiscoverySource):
+    """A minimal source, standing in for what KAMP-647 will build."""
+
+    provider_id = "fake"
+
+    def __init__(self, *, can_save: bool = False) -> None:
+        self._can_save = can_save
+        self.gathered_with: RequestBudget | None = None
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        # Mirrors the real shape: a capability that depends on runtime conditions
+        # rather than being fixed at class-definition time.
+        caps = {PREVIEW}
+        if self._can_save:
+            caps.add(SAVE_REMOTE)
+        return frozenset(caps)
+
+    def gather(self, profile: SeedProfile, budget: RequestBudget) -> list[Candidate]:
+        self.gathered_with = budget
+        if not budget.allow(ALBUM_PAGE):
+            return []
+        budget.consume(ALBUM_PAGE)
+        return [
+            Candidate(
+                provider="fake",
+                provider_item_id="1",
+                item_url="https://example.com/a",
+                criterion="also_like",
+                why="because you played X",
+                seed={"album_id": 1},
+            )
+        ]
+
+    def resolve_preview(self, candidate: Candidate) -> PreviewStream | None:
+        return PreviewStream(url="https://example.com/a.mp3")
+
+
+class TestDiscoverySource:
+    def test_capabilities_are_evaluated_at_call_time(self) -> None:
+        """Not a class constant: Bandcamp's save_remote depends on the transport, and
+        a stale constant would render a wishlist button that silently no-ops."""
+        source = _FakeSource(can_save=False)
+        assert SAVE_REMOTE not in source.capabilities
+        source._can_save = True
+        assert SAVE_REMOTE in source.capabilities
+
+    def test_save_remote_without_the_capability_raises(self) -> None:
+        """Fails loudly rather than looking like a rejection by the remote service."""
+        source = _FakeSource(can_save=False)
+        candidate = Candidate(
+            provider="fake", provider_item_id="1", item_url="https://example.com/a"
+        )
+        with pytest.raises(UnsupportedCapability):
+            source.save_remote(candidate)
+
+    def test_a_bare_source_offers_nothing_and_does_nothing(self) -> None:
+        """Capabilities are opt-in. A source that declares none must not be assumed
+        to preview or save just because the methods exist on the ABC."""
+
+        class _Bare(DiscoverySource):
+            provider_id = "np"
+
+            def gather(
+                self, profile: SeedProfile, budget: RequestBudget
+            ) -> list[Candidate]:
+                return []
+
+        source = _Bare()
+        candidate = Candidate(provider="np", provider_item_id="1", item_url="x")
+        assert source.capabilities == frozenset()
+        with pytest.raises(UnsupportedCapability):
+            source.resolve_preview(candidate)
+        with pytest.raises(UnsupportedCapability):
+            source.save_remote(candidate)
+
+    def test_gather_respects_the_budget(self) -> None:
+        source = _FakeSource()
+        budget = SimpleBudget(limits={ALBUM_PAGE: 1})
+        assert len(source.gather(SeedProfile(), budget)) == 1
+        assert source.gather(SeedProfile(), budget) == []
+
+    def test_candidate_serialises_its_seed_deterministically(self) -> None:
+        candidate = Candidate(
+            provider="fake",
+            provider_item_id="1",
+            item_url="x",
+            seed={"b": 2, "a": 1},
+        )
+        assert candidate.seed_json() == '{"a": 1, "b": 2}'
+
+
+class TestSimpleBudget:
+    def test_classes_are_counted_separately(self) -> None:
+        """Album pages and the discover API have different real-world limits, so a
+        single global counter would be wrong by construction."""
+        budget = SimpleBudget(limits={ALBUM_PAGE: 1, DISCOVER_API: 3})
+        budget.consume(ALBUM_PAGE)
+        assert budget.allow(ALBUM_PAGE) is False
+        assert budget.allow(DISCOVER_API) is True
+
+    def test_unlisted_classes_use_the_default(self) -> None:
+        budget = SimpleBudget(default_limit=2)
+        budget.consume("something_new", 2)
+        assert budget.allow("something_new") is False

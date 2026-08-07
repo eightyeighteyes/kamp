@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 60
+_SCHEMA_VERSION = 61
 
 
 class NoStreamableVersionError(Exception):
@@ -539,6 +539,94 @@ CREATE TABLE IF NOT EXISTS magic_playlist_criteria (
     evaluated_at        REAL,
     cached_track_count  INTEGER
 );
+
+-- Discovery Crate candidates (KAMP-645). Albums the user does NOT own, so nothing
+-- here can key off tracks.id / albums.id / bandcamp_collection.sale_item_id. Identity
+-- is (provider, provider_item_id) -- the same generalization download_queue and
+-- track_sources use -- where provider_item_id is Bandcamp's tralbum_id. KAMP-644
+-- verified that id is stable, present for unowned albums, and consistent across every
+-- discovery surface (it is merely spelled data-albumid / item_id / "album-<n>"
+-- depending on which one you scraped).
+--
+-- crate_no is the buffered/shown discriminator and the seen-ledger:
+--   crate_no IS NULL     -> a buffered candidate; gathered but NEVER shown (KAMP-657)
+--   crate_no IS NOT NULL -> shown to the user, in that crate, at that position
+-- "Has the user seen this?" is therefore `crate_no IS NOT NULL`, NOT mere row
+-- existence. Getting that wrong suppresses candidates forever and fails silently, so
+-- no code outside LibraryIndex writes these columns -- go through seen_before() /
+-- record_discovery_event(). An item belongs to at most one crate ever, which is why
+-- there is no crate join table. There is also no crates table: "crate 7" is just a
+-- value here and the current crate is MAX(crate_no); per-crate metadata (built_at, a
+-- short-crate flag) would be a cheap additive migration if KAMP-648 wants it.
+--
+-- state is a derived cache of discovery_events for the UI, so it CAN drift. Exactly
+-- one writer -- record_discovery_event() -- appends the event and updates state in the
+-- same transaction; never write it directly. Precedence is highest-rank-wins, not
+-- last-event-wins: purchased > wishlisted > dismissed > previewed > fresh.
+--
+-- purchased_sale_item_id is ON DELETE SET NULL deliberately. clear_bandcamp_collection()
+-- nulls child FKs before deleting the ledger because foreign_keys=ON turns a dangling
+-- child into an IntegrityError -- the crash KAMP-528 fixed. A new child it does not
+-- know about would reintroduce it the moment a crate pick is purchased. Nulling is
+-- also semantically right: the 'purchased' event remains the ground truth.
+CREATE TABLE IF NOT EXISTS discovery_items (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider               TEXT    NOT NULL DEFAULT 'bandcamp',
+    provider_item_id       TEXT    NOT NULL,
+    item_url               TEXT    NOT NULL DEFAULT '',
+    artist                 TEXT    NOT NULL DEFAULT '',
+    title                  TEXT    NOT NULL DEFAULT '',
+    art_url                TEXT,
+    label                  TEXT    NOT NULL DEFAULT '',
+    release_date           TEXT    NOT NULL DEFAULT '',
+    criterion              TEXT    NOT NULL DEFAULT '',
+    why                    TEXT    NOT NULL DEFAULT '',
+    seed_json              TEXT    NOT NULL DEFAULT '{{}}',
+    crate_no               INTEGER,
+    position               INTEGER,
+    state                  TEXT    NOT NULL DEFAULT 'fresh',
+    first_seen_at          REAL    NOT NULL DEFAULT (unixepoch()),
+    purchased_sale_item_id TEXT REFERENCES bandcamp_collection(sale_item_id) ON DELETE SET NULL,
+    purchased_at           REAL,
+    UNIQUE (provider, provider_item_id),
+    CHECK ((crate_no IS NULL) = (position IS NULL)),
+    CHECK (state IN ('fresh', 'previewed', 'wishlisted', 'dismissed', 'purchased'))
+);
+
+-- Two items cannot occupy the same slot in a crate. Partial index so the buffered
+-- rows (crate_no NULL) are exempt -- there can be any number of those.
+CREATE UNIQUE INDEX IF NOT EXISTS discovery_items_slot_idx
+    ON discovery_items(crate_no, position) WHERE crate_no IS NOT NULL;
+CREATE INDEX IF NOT EXISTS discovery_items_crate_idx ON discovery_items(crate_no);
+
+-- Append-only engagement ledger (KAMP-645). Ground truth for the digging-history
+-- stats in KAMP-655 and the purchase attribution in KAMP-654; discovery_items.state
+-- is only a cache of it.
+--
+-- ON DELETE RESTRICT, and deliberately NO append-only triggers, unlike
+-- extension_audit_log. Two reasons this differs from that precedent: RAISE(ABORT)
+-- triggers would make KAMP-657's buffer TTL sweep abort on any item that ever had an
+-- event, and ON DELETE CASCADE would silently shrink the purchase stats every time a
+-- row was pruned. RESTRICT means the sweep can only delete event-free rows, which is
+-- exactly the buffered ones. Note the edge it gets right: a buffered candidate the
+-- user buys independently gains a 'purchased' event and thereby becomes unsweepable,
+-- which is what we want -- the attribution outlives the candidate.
+--
+-- provider/provider_item_id are denormalized so aggregate stats stay answerable
+-- without joining a row that may since have been pruned.
+CREATE TABLE IF NOT EXISTS discovery_events (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id          INTEGER NOT NULL REFERENCES discovery_items(id) ON DELETE RESTRICT,
+    provider         TEXT    NOT NULL DEFAULT 'bandcamp',
+    provider_item_id TEXT    NOT NULL DEFAULT '',
+    kind             TEXT    NOT NULL,
+    at               REAL    NOT NULL DEFAULT (unixepoch()),
+    detail           TEXT,
+    CHECK (kind IN ('shown', 'previewed', 'wishlisted', 'url_copied',
+                    'dismissed', 'purchased'))
+);
+CREATE INDEX IF NOT EXISTS discovery_events_item_idx ON discovery_events(item_id);
+CREATE INDEX IF NOT EXISTS discovery_events_kind_at_idx ON discovery_events(kind, at);
 """
 
 # Characters that have special meaning in FTS5 MATCH expressions.
@@ -2563,7 +2651,21 @@ class LibraryIndex:
             )
             self._conn.execute("UPDATE schema_version SET version = 60")
             self._conn.commit()
-            version = 60  # noqa: F841
+            version = 60
+
+        if version == 60:
+            # v60 -> v61 (KAMP-645): discovery_items + discovery_events, the
+            # foundation of the Discovery Crate epic. Both tables are created up
+            # front by _DDL (CREATE IF NOT EXISTS, so they already exist by now);
+            # this step only records the version bump. New empty tables, no data
+            # backfill, and deliberately additive -- nothing here touches tracks,
+            # albums or any existing column, so the KAMP-552 rebuild recipe does
+            # not apply. Neither table is projected through tracks_with_stats
+            # either, so the DROP-VIEW-before-ALTER trap that only reproduces on
+            # CI's older SQLite is likewise not in play.
+            self._conn.execute("UPDATE schema_version SET version = 61")
+            self._conn.commit()
+            version = 61  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -4689,6 +4791,297 @@ class LibraryIndex:
             ):
                 return a
         return None
+
+    # ------------------------------------------------------------------
+    # Discovery Crate (KAMP-645)
+    # ------------------------------------------------------------------
+
+    def discovery_item_id(self, provider: str, provider_item_id: str) -> int | None:
+        """Return the discovery_items id for a provider identity, or None."""
+        row = self._conn.execute(
+            "SELECT id FROM discovery_items"
+            " WHERE provider = ? AND provider_item_id = ?",
+            (provider, str(provider_item_id)),
+        ).fetchone()
+        return int(row["id"]) if row else None
+
+    def add_discovery_candidate(
+        self,
+        *,
+        provider: str,
+        provider_item_id: str,
+        item_url: str = "",
+        artist: str = "",
+        title: str = "",
+        art_url: str | None = None,
+        label: str = "",
+        release_date: str = "",
+        criterion: str = "",
+        why: str = "",
+        seed_json: str = "{}",
+        first_seen_at: float | None = None,
+    ) -> int:
+        """Insert a *buffered* candidate (crate_no NULL) and return its row id.
+
+        Idempotent on (provider, provider_item_id): re-gathering an album we have
+        already seen or buffered returns the existing row rather than raising, and
+        never resurrects it into a new crate. Promotion into a crate is a separate,
+        explicit step (KAMP-648).
+        """
+        existing = self.discovery_item_id(provider, provider_item_id)
+        if existing is not None:
+            return existing
+        cur = self._conn.execute(
+            "INSERT INTO discovery_items"
+            " (provider, provider_item_id, item_url, artist, title, art_url,"
+            "  label, release_date, criterion, why, seed_json, first_seen_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                provider,
+                str(provider_item_id),
+                item_url,
+                artist,
+                title,
+                art_url,
+                label,
+                release_date,
+                criterion,
+                why,
+                seed_json,
+                _time.time() if first_seen_at is None else first_seen_at,
+            ),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def seen_before(self, provider: str, provider_item_id: str) -> bool:
+        """True only if this candidate has actually been SHOWN to the user.
+
+        A buffered row (crate_no IS NULL) exists but has never been shown, so it is
+        NOT seen and stays eligible for a future crate. Keying this on row existence
+        instead would strand every buffered candidate permanently, and would do it
+        silently -- which is why the check lives here rather than being open-coded
+        by callers.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM discovery_items"
+            " WHERE provider = ? AND provider_item_id = ?"
+            "   AND crate_no IS NOT NULL LIMIT 1",
+            (provider, str(provider_item_id)),
+        ).fetchone()
+        return row is not None
+
+    # Highest-rank-wins, NOT last-event-wins: a user who previews, dismisses, then
+    # buys an album has bought it, and 'purchased' must survive the later arrival of
+    # a lower-ranked event (attribution runs on a sync, out of order with the UI).
+    _DISCOVERY_STATE_RANK = {
+        "fresh": 0,
+        "previewed": 1,
+        "dismissed": 2,
+        "wishlisted": 3,
+        "purchased": 4,
+    }
+    _DISCOVERY_EVENT_STATE = {
+        "shown": "fresh",
+        "url_copied": "fresh",
+        "previewed": "previewed",
+        "dismissed": "dismissed",
+        "wishlisted": "wishlisted",
+        "purchased": "purchased",
+    }
+
+    def record_discovery_event(
+        self,
+        item_id: int,
+        kind: str,
+        detail: str | None = None,
+        at: float | None = None,
+    ) -> None:
+        """Append an engagement event and reconcile the cached state.
+
+        The ONLY writer of discovery_items.state. That column is a derived cache of
+        this ledger for the UI's benefit, so a second writer would let the two drift
+        with nothing to detect it. Both writes share one rollback-guarded transaction
+        (KAMP-527: on a pooled thread-local connection an uncommitted partial write is
+        otherwise flushed by the next unrelated commit on the same thread).
+        """
+        row = self._conn.execute(
+            "SELECT provider, provider_item_id, state FROM discovery_items"
+            " WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"no discovery item with id {item_id}")
+
+        target = self._DISCOVERY_EVENT_STATE.get(kind)
+        if target is None:
+            raise ValueError(f"unknown discovery event kind {kind!r}")
+        rank = self._DISCOVERY_STATE_RANK
+        new_state = target if rank[target] > rank.get(row["state"], 0) else row["state"]
+
+        try:
+            self._conn.execute(
+                "INSERT INTO discovery_events"
+                " (item_id, provider, provider_item_id, kind, at, detail)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    item_id,
+                    row["provider"],
+                    row["provider_item_id"],
+                    kind,
+                    _time.time() if at is None else at,
+                    detail,
+                ),
+            )
+            if new_state != row["state"]:
+                self._conn.execute(
+                    "UPDATE discovery_items SET state = ? WHERE id = ?",
+                    (new_state, item_id),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def in_library(
+        self, provider_item_id: str, artist: str = "", title: str = ""
+    ) -> bool:
+        """True if the user already owns this album.
+
+        Matches on bandcamp_collection.tralbum_id first -- the identity the discovery
+        surfaces actually carry -- then falls back to a NOCASE (band_name, item_title)
+        comparison for rows whose tralbum_id was never backfilled.
+
+        Never matches on tracks_with_stats-derived columns: that view picks a
+        preferred source at read time, so its file_path/sale_item_id are unstable as
+        lookup keys (KAMP-552/554).
+        """
+        if provider_item_id:
+            row = self._conn.execute(
+                "SELECT 1 FROM bandcamp_collection WHERE tralbum_id = ? LIMIT 1",
+                (str(provider_item_id),),
+            ).fetchone()
+            if row is not None:
+                return True
+        if artist and title:
+            row = self._conn.execute(
+                "SELECT 1 FROM bandcamp_collection"
+                " WHERE band_name = ? COLLATE NOCASE"
+                "   AND item_title = ? COLLATE NOCASE LIMIT 1",
+                (artist, title),
+            ).fetchone()
+            if row is not None:
+                return True
+        return False
+
+    def recently_played_albums(
+        self, days: int = 30, limit: int = 50
+    ) -> list[tuple[int, str, str]]:
+        """Return (album_id, album_artist, album) played within the last *days*.
+
+        Ordered most-recent first. Note the source signal is written at track START
+        (record_track_started), so "played" here means "began playing", not
+        "listened through".
+        """
+        cutoff = _time.time() - days * 86400
+        rows = self._conn.execute(
+            """
+            SELECT a.id, a.album_artist, a.album
+            FROM albums a
+            WHERE a.last_played_at IS NOT NULL AND a.last_played_at >= ?
+            ORDER BY a.last_played_at DESC
+            LIMIT ?
+            """,
+            (cutoff, limit),
+        ).fetchall()
+        return [(int(r["id"]), r["album_artist"], r["album"]) for r in rows]
+
+    def favorite_albums(self, limit: int = 50) -> list[tuple[int, str, str]]:
+        """Return (album_id, album_artist, album) for favorited albums."""
+        rows = self._conn.execute(
+            "SELECT id, album_artist, album FROM albums"
+            " WHERE favorite = 1 ORDER BY last_track_added_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [(int(r["id"]), r["album_artist"], r["album"]) for r in rows]
+
+    def taste_genres(self, limit: int = 25) -> list[tuple[str, int]]:
+        """Return (genre, track_count) across the library, most common first.
+
+        Unions the canonical track_genres with the Bandcamp per-album keyword cache.
+        The keywords are read directly and unconditionally: they are only promoted
+        into track_genres when tagging.bandcamp_genres is enabled AND only on an
+        album's first index, so a config-gated read here would make a user's taste
+        invisible purely because a tagging preference is off.
+
+        Keywords are parsed in Python rather than with SQLite's JSON1 functions --
+        JSON1 is used nowhere else in this codebase, and dev (SQLite 3.51) and CI
+        (Python 3.11's older SQLite) disagree often enough that a JSON1 query here
+        would be unverifiable locally.
+        """
+        counts: dict[str, int] = {}
+        display: dict[str, str] = {}
+
+        for r in self._conn.execute("""
+            SELECT g.name AS name, COUNT(*) AS n
+            FROM track_genres tg JOIN genres g ON g.id = tg.genre_id
+            GROUP BY g.id
+            """).fetchall():
+            key = r["name"].casefold()
+            counts[key] = counts.get(key, 0) + int(r["n"])
+            display.setdefault(key, r["name"])
+
+        for r in self._conn.execute(
+            "SELECT keywords FROM bandcamp_collection"
+            " WHERE keywords IS NOT NULL AND keywords != ''"
+        ).fetchall():
+            try:
+                tags = json.loads(r["keywords"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(tags, list):
+                continue
+            for tag in tags:
+                if not isinstance(tag, str) or not tag.strip():
+                    continue
+                key = tag.strip().casefold()
+                counts[key] = counts.get(key, 0) + 1
+                display.setdefault(key, tag.strip())
+
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return [(display[k], n) for k, n in ranked[:limit]]
+
+    def taste_labels(
+        self, min_albums: int = 2, limit: int = 25
+    ) -> list[tuple[str, int]]:
+        """Return (label, album_count) for labels with at least *min_albums* owned.
+
+        Grouped NOCASE because albums.label is unnormalized free text with no alias
+        table -- "Ghostly" and "ghostly" are one label. The display casing is
+        whichever spelling SQLite happens to surface for the group; harmless here,
+        since this feeds seed selection rather than anything canonical.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT label, COUNT(*) AS n
+            FROM albums
+            WHERE label IS NOT NULL AND TRIM(label) != ''
+            GROUP BY label COLLATE NOCASE
+            HAVING COUNT(*) >= ?
+            ORDER BY n DESC, label
+            LIMIT ?
+            """,
+            (min_albums, limit),
+        ).fetchall()
+        return [(r["label"], int(r["n"])) for r in rows]
+
+    def collection_purchase_dates(self) -> list[tuple[str, float]]:
+        """Return (tralbum_id, added_at) for owned albums with a known purchase date."""
+        rows = self._conn.execute(
+            "SELECT tralbum_id, added_at FROM bandcamp_collection"
+            " WHERE tralbum_id != '' AND added_at > 0 ORDER BY added_at DESC"
+        ).fetchall()
+        return [(r["tralbum_id"], float(r["added_at"])) for r in rows]
 
     # ------------------------------------------------------------------
     # Settings (application configuration)

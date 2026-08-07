@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 #: a reconnecting client then needs no replay, just the REST snapshot.
 CRATE_EVENT = "discovery.crate"
 
+#: Records in a full crate. Mirrors discovery_builder.CRATE_SIZE, duplicated
+#: rather than imported because kamp_core does not depend on kamp_daemon.
+CRATE_SIZE = 10
+
 #: States a build can end in. Reaching one releases the single-build lock, so
 #: this set is load-bearing: a state missing from it would wedge the feature on
 #: "already building" until the daemon restarted.
@@ -77,6 +81,7 @@ _INITIAL_STATUS: dict[str, Any] = {
     "short": False,
     "paused_until": 0.0,
     "hints": [],
+    "thin": False,
 }
 
 
@@ -156,7 +161,19 @@ def register_discovery_routes(
         if crate_no is None:
             crate_no = index.latest_crate_no()
             snap["crate_no"] = crate_no
-        snap["items"] = index.crate_items(crate_no) if crate_no is not None else []
+        items = index.crate_items(crate_no) if crate_no is not None else []
+        snap["items"] = items
+        if snap.get("state") != "building":
+            # The status is in-memory; the crate is not. After a daemon restart
+            # _status is still _INITIAL_STATUS while items holds a full crate, so
+            # a restored crate of ten reported filled=0 and a genuinely short one
+            # reported short=False -- wrong fill progress on every launch, and the
+            # quiet short-crate note suppressed. Derive both from what is actually
+            # there. Only while a build is in flight does the builder's own count
+            # win, since then it is ahead of the rows and this crate_no may still
+            # be the previous crate's.
+            snap["filled"] = len(items)
+            snap["short"] = bool(items) and len(items) < CRATE_SIZE
         return snap
 
     def _publish(fields: dict[str, Any]) -> None:

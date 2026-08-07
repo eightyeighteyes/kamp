@@ -101,6 +101,17 @@ class BandcampDiscoverySource(DiscoverySource):
         """
         return frozenset({PREVIEW})
 
+    @property
+    def criterion_caps(self) -> dict[str, int]:
+        """One chart pick per crate.
+
+        ``best_seller`` is the only criterion carrying no personal claim, and the
+        brand guardrails forbid letting un-personalised content dominate a crate
+        that presents itself as dug for you. Every other criterion may repeat as
+        the round-robin allows.
+        """
+        return {"best_seller": 1}
+
     # ------------------------------------------------------------------
     # The only place that touches the network
     # ------------------------------------------------------------------

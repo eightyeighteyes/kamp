@@ -1271,6 +1271,13 @@ def cmd_capture(args: argparse.Namespace) -> int:
         ("album_page_with_recs", "GET", args.album_url),
         ("discover_root", "GET", "https://bandcamp.com/discover"),
     ]
+    if getattr(args, "artist_url", None):
+        targets.append(("artist_discography", "GET", args.artist_url))
+    # Re-capturing a surface rewrites its bytes and therefore its manifest
+    # checksum, so adding one fixture must not churn the others.
+    only = getattr(args, "only", None)
+    if only:
+        targets = [t for t in targets if t[0] == only]
 
     failures = 0
     for name, method, url in targets:
@@ -1305,6 +1312,11 @@ def cmd_capture(args: argparse.Namespace) -> int:
         }
         print(f"  ✓ {name}: {len(raw)} bytes -> {out.name} (gz {out.stat().st_size})")
         time.sleep(1.0)
+
+    if only and only != "discover_web_ambient_top":
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        print(f"\n  manifest -> {manifest_path}")
+        return 1 if failures else 0
 
     # The discover results API, captured anonymously as JSON.
     got = anon.post_json(DISCOVER_API, discover_params(tag="ambient", slice_="top"))
@@ -1519,6 +1531,8 @@ def main() -> int:
 
     p_cap = sub.add_parser("capture", help="write scrubbed fixtures + manifest")
     p_cap.add_argument("--album-url", required=True)
+    p_cap.add_argument("--artist-url", help="artist /music page, for the disco fixture")
+    p_cap.add_argument("--only", help="capture just this surface, leaving others alone")
     p_cap.add_argument("--captured-at", required=True, help="ISO date, e.g. 2026-08-06")
     p_cap.add_argument("--fan-id", help="extra secret to assert absent")
 

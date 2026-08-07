@@ -190,6 +190,18 @@ class TestDiscoverFacets:
 
 
 class TestDiscography:
+    def test_parses_the_captured_artist_page(self) -> None:
+        """Real markup, not a hand-built grid."""
+        html = _fixture("artist_discography")
+        result = parse_discography(
+            html, base_url="https://floatingpoints.bandcamp.com/music"
+        )
+        assert result.marker_present is True
+        assert len(result) >= 5
+        for item in result.items:
+            assert item["provider_item_id"].isdigit()
+            assert item["item_url"].startswith("https://floatingpoints.bandcamp.com/")
+
     def test_finds_nothing_in_an_album_page_and_says_so(self, album_page: str) -> None:
         """The cross-page collision case, testable for free.
 
@@ -212,6 +224,56 @@ class TestDiscography:
         assert result.marker_present is True
         assert [i["provider_item_id"] for i in result.items] == ["123", "456"]
         assert result.items[0]["item_url"] == "https://band.bandcamp.com/album/one"
+
+
+@pytest.mark.live
+class TestFixturesStillMatchReality:
+    """Fixture-rot detection. Deselected in CI; run with ``-m live``.
+
+    A committed fixture keeps every parser test green while the live markup drifts
+    underneath it — the failure mode that makes an unofficial-endpoint feature die
+    silently. These re-fetch the real pages and assert only that the *structure*
+    still parses, not that the content matches, since content changes constantly
+    and is not what we are guarding.
+
+    docs/discovery-recon.md promised this test; KAMP-647 built it.
+    """
+
+    @staticmethod
+    def _live_get(url: str) -> str:
+        import requests
+
+        resp = requests.get(
+            url,
+            timeout=30,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                )
+            },
+        )
+        resp.raise_for_status()
+        return resp.text
+
+    def test_album_page_still_has_a_recommendation_block(self) -> None:
+        html = self._live_get("https://floatingpoints.bandcamp.com/album/promises")
+        result = parse_also_like(html)
+        assert result.marker_present, "the also-like block has moved or gone"
+        assert len(result) > 0, "the rec block is present but parses to nothing"
+
+    def test_discover_page_still_ships_its_facet_vocabulary(self) -> None:
+        facets = parse_discover_facets(self._live_get("https://bandcamp.com/discover"))
+        assert facets, "the DiscoverApp blob has moved"
+        for family in FACET_FAMILIES:
+            assert facets[family], f"facet family {family} is now empty"
+
+    def test_artist_page_still_renders_a_music_grid(self) -> None:
+        url = "https://floatingpoints.bandcamp.com/music"
+        result = parse_discography(self._live_get(url), base_url=url)
+        assert result.marker_present, "the music grid has moved or gone"
+        assert len(result) > 0
 
 
 class TestNormalisation:

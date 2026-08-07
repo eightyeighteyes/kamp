@@ -50,7 +50,13 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
-addopts = "--cov=kamp_daemon --cov=kamp_core --cov-report=term-missing"
+# -m "not live" excludes the tests that hit the real Bandcamp site. They exist to
+# catch fixture rot (KAMP-647) and are run deliberately, never in CI: they need a
+# network and would fail for reasons that have nothing to do with a given change.
+addopts = "--cov=kamp_daemon --cov=kamp_core --cov-report=term-missing -m 'not live'"
+markers = [
+    "live: hits the real Bandcamp site; run manually with -m live",
+]
 
 [tool.coverage.run]
 branch = true

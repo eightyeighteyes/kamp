@@ -135,6 +135,7 @@ collection items; the account was left exactly as found.
 | Anniversary (specific month/year) | **no-go** | direct |
 | Label pages / Label-Mates | **unknown** — not reached in the timebox | — |
 | Local Scene | **go, but only for 36 cities** | direct |
+| Rate limit located | **yes** — 429 at 57 album pages in 39s; discover API clean at 120 | direct |
 
 ### A — identity fields (go)
 
@@ -330,8 +331,32 @@ assumed. The one expensive call is the wishlist walk; note that
 avoidable for anything already on a fetched page.
 
 Observed latency, for context rather than as a limit: album page ~0.4–0.8s direct and
-~1.25s relayed; discover API ~0.3–0.5s on both. No 429 was encountered at any point
-during this spike.
+~1.25s relayed; discover API ~0.3–0.5s on both.
+
+### Where the limit actually bites
+
+Measured last, with the app quit, stopping at the first 429. Direct transport, because
+the relay cannot surface response headers at all.
+
+| Endpoint class | Result |
+| --- | --- |
+| `discover_web` API | **120 requests at ~85/min — no 429** (lower bound, not a ceiling) |
+| Album page | **429 after 57 requests in 39s (~87/min)** |
+
+Three things follow, and the first is the reason a single budget number was always the
+wrong shape:
+
+1. **The classes have different limits.** The album page — the endpoint behind the
+   flagship also-like criterion — is the more constrained of the two, while the
+   discover API absorbed twice the volume without complaint. The governor should
+   budget per class, not globally.
+2. **Bandcamp offered no `Retry-After`** even on the direct transport, so there is no
+   server-provided backoff hint to honour. The governor's own 60/120/300 ladder is the
+   only signal available, and through the relay not even the 429's headers are visible.
+3. **The headroom is enormous.** A crate costs ~1.5 album-page requests; the limit sat
+   at 57 in a sustained burst, i.e. roughly 38 crates' worth back to back. Normal use
+   will not approach this. The limit is nonetheless real and reachable, which is the
+   argument for having a governor at all rather than for tuning it aggressively.
 
 ### Other things worth knowing before KAMP-647
 

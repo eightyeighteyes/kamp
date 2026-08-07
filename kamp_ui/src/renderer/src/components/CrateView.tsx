@@ -440,13 +440,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           </div>
         )}
 
-        <ul
-          className="crate-rail"
-          role="listbox"
-          aria-label="Crate"
-          ref={railRef}
-          tabIndex={-1}
-        >
+        <ul className="crate-rail" role="listbox" aria-label="Crate" ref={railRef} tabIndex={-1}>
           {visible.map((item, index) => (
             <CrateSleeve
               key={item.id}

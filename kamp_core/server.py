@@ -53,6 +53,7 @@ from kamp_core.library import (
     _canonical_track_uri,
     extract_art,
 )
+from kamp_core.discovery_api import register_discovery_routes
 from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
 
 # ---------------------------------------------------------------------------
@@ -1090,6 +1091,7 @@ def create_app(
     on_bandcamp_sync_all_trigger: Callable[[], None] | None = None,
     on_genre_backfill_start: Callable[[], None] | None = None,
     on_genre_backfill_cancel: Callable[[], None] | None = None,
+    on_crate_build_start: Callable[[], None] | None = None,
     on_allowlist_changed: Callable[[], None] | None = None,
     get_default_allowlist: Callable[[], list[str]] | None = None,
     dl_queue: _queue.Queue[str] | None = None,
@@ -4637,5 +4639,17 @@ def create_app(
             pass
         finally:
             _ws_queues.discard(q)
+
+    # Discovery Crate routes live in their own module (KAMP-648) rather than
+    # inline: this function is already 3,500 lines and another view's worth of
+    # endpoints makes it worse. They still close over the same objects, so the
+    # style is unchanged -- only the file is. The auth middleware above wraps
+    # every route regardless of which module registered it.
+    register_discovery_routes(
+        app,
+        index=index,
+        broadcast=_broadcast,
+        on_build_start=on_crate_build_start,
+    )
 
     return app

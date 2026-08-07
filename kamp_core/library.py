@@ -4961,19 +4961,7 @@ class LibraryIndex:
         new_state = target if rank[target] > rank.get(row["state"], 0) else row["state"]
 
         try:
-            self._conn.execute(
-                "INSERT INTO discovery_events"
-                " (item_id, provider, provider_item_id, kind, at, detail)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    item_id,
-                    row["provider"],
-                    row["provider_item_id"],
-                    kind,
-                    _time.time() if at is None else at,
-                    detail,
-                ),
-            )
+            self._append_event(item_id, row, kind, at, detail)
             if new_state != row["state"]:
                 self._conn.execute(
                     "UPDATE discovery_items SET state = ? WHERE id = ?",
@@ -4983,6 +4971,122 @@ class LibraryIndex:
         except Exception:
             self._conn.rollback()
             raise
+
+    def _append_event(
+        self,
+        item_id: int,
+        row: sqlite3.Row,
+        kind: str,
+        at: float | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """Append one row to discovery_events. Does NOT commit.
+
+        Split out so place_in_crate() can put the promotion and its 'shown' event in
+        a single transaction without duplicating the INSERT. The duplication would
+        not be cosmetic: provider/provider_item_id are denormalized here so KAMP-655
+        can still count an event whose item was later pruned, and their column
+        defaults are '' -- a hand-rolled INSERT that forgot them would zero the
+        digging-history stats with nothing to notice it.
+        """
+        self._conn.execute(
+            "INSERT INTO discovery_events"
+            " (item_id, provider, provider_item_id, kind, at, detail)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                item_id,
+                row["provider"],
+                row["provider_item_id"],
+                kind,
+                _time.time() if at is None else at,
+                detail,
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Crate assembly (KAMP-648)
+    # ------------------------------------------------------------------
+
+    def next_crate_no(self) -> int:
+        """The number the next crate should take.
+
+        COALESCE because MAX() over an empty table is NULL, not 0 -- the first crate
+        must be 1 rather than None, which the CHECK constraint would reject anyway.
+        """
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(crate_no), 0) + 1 AS n FROM discovery_items"
+        ).fetchone()
+        return int(row["n"])
+
+    def latest_crate_no(self) -> int | None:
+        """The most recent crate's number, or None if none has ever been built."""
+        row = self._conn.execute(
+            "SELECT MAX(crate_no) AS n FROM discovery_items"
+        ).fetchone()
+        return None if row["n"] is None else int(row["n"])
+
+    def place_in_crate(self, item_id: int, crate_no: int, position: int) -> None:
+        """Promote a buffered candidate into a crate slot and record it as shown.
+
+        Both writes share one transaction. A slot collision must not leave a
+        'shown' event behind for a record the user never saw -- that event is the
+        ground truth KAMP-655 counts, and discovery_items.state is only a cache of
+        it, so a stranded row is undetectable after the fact.
+
+        Serialization is load-bearing rather than defensive: the partial unique
+        index on (crate_no, position) is all that stops two concurrent builders
+        from computing the same next_crate_no() and interleaving their slots. The
+        single-build lock in the daemon is what keeps that from being reachable.
+
+        Setting crate_no and position in one UPDATE satisfies the
+        CHECK ((crate_no IS NULL) = (position IS NULL)) constraint.
+        """
+        row = self._conn.execute(
+            "SELECT provider, provider_item_id FROM discovery_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"no discovery item with id {item_id}")
+        try:
+            self._conn.execute(
+                "UPDATE discovery_items SET crate_no = ?, position = ? WHERE id = ?",
+                (crate_no, position, item_id),
+            )
+            # 'shown' maps to state 'fresh' (rank 0), so record_discovery_event's
+            # state reconciliation would be a no-op here -- only the ledger write
+            # is needed.
+            self._append_event(item_id, row, "shown")
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def crate_items(self, crate_no: int) -> list[dict[str, Any]]:
+        """The cards of one crate, in slot order.
+
+        Carries everything a card renders so the UI needs no second lookup, and
+        parses seed_json here so every consumer sees the same shape. A malformed
+        blob costs that card its structured provenance, not the whole snapshot --
+        ``why`` is stored separately and still reads correctly.
+        """
+        rows = self._conn.execute(
+            "SELECT id, provider, provider_item_id, item_url, artist, title,"
+            "       art_url, label, release_date, criterion, why, seed_json,"
+            "       crate_no, position, state, first_seen_at"
+            " FROM discovery_items WHERE crate_no = ? ORDER BY position",
+            (crate_no,),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            raw = item.pop("seed_json", None)
+            try:
+                seed = json.loads(raw) if raw else {}
+            except (ValueError, TypeError):
+                seed = {}
+            item["seed"] = seed if isinstance(seed, dict) else {}
+            out.append(item)
+        return out
 
     def in_library(
         self, provider_item_id: str, artist: str = "", title: str = ""

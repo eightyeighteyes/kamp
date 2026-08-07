@@ -353,6 +353,147 @@ class TestEventLedger:
 
 
 # ---------------------------------------------------------------------------
+# Crate assembly accessors (KAMP-648)
+# ---------------------------------------------------------------------------
+
+
+class TestCrateAssembly:
+    def _buffered(self, index: LibraryIndex, item_id: str, **kw: object) -> int:
+        return index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id=item_id, **kw  # type: ignore[arg-type]
+        )
+
+    def test_first_crate_is_numbered_one(self, index: LibraryIndex) -> None:
+        """MAX() over an empty table is NULL, not 0 — COALESCE or crate 'None'."""
+        assert index.next_crate_no() == 1
+        assert index.latest_crate_no() is None
+
+    def test_crate_numbers_increment(self, index: LibraryIndex) -> None:
+        index.place_in_crate(self._buffered(index, "1"), 1, 0)
+        assert index.next_crate_no() == 2
+        assert index.latest_crate_no() == 1
+        index.place_in_crate(self._buffered(index, "2"), 2, 0)
+        assert index.next_crate_no() == 3
+        assert index.latest_crate_no() == 2
+
+    def test_placing_marks_seen_and_records_shown(self, index: LibraryIndex) -> None:
+        """Promotion is what makes a candidate 'seen' — row existence is not."""
+        item = self._buffered(index, "abc")
+        assert index.seen_before("bandcamp", "abc") is False
+        index.place_in_crate(item, 1, 3)
+
+        assert index.seen_before("bandcamp", "abc") is True
+        row = index._conn.execute(
+            "SELECT crate_no, position, state FROM discovery_items WHERE id = ?",
+            (item,),
+        ).fetchone()
+        assert (row["crate_no"], row["position"]) == (1, 3)
+        # 'shown' maps to 'fresh' (rank 0), so the cached state must not move.
+        assert row["state"] == "fresh"
+
+        event = index._conn.execute(
+            "SELECT kind, provider, provider_item_id FROM discovery_events"
+        ).fetchone()
+        # Denormalised identity is what KAMP-655's stats read after a row is pruned;
+        # a hand-rolled INSERT that skipped it would leave the columns at ''.
+        assert (event["kind"], event["provider"], event["provider_item_id"]) == (
+            "shown",
+            "bandcamp",
+            "abc",
+        )
+
+    def test_unknown_item_raises(self, index: LibraryIndex) -> None:
+        with pytest.raises(ValueError):
+            index.place_in_crate(9999, 1, 0)
+
+    def test_duplicate_slot_is_refused(self, index: LibraryIndex) -> None:
+        """The partial unique index is all that serialises two builders.
+
+        It fails on the UPDATE, before the event write, so nothing is stranded —
+        but the promotion must not stick either.
+        """
+        index.place_in_crate(self._buffered(index, "1"), 1, 0)
+        loser = self._buffered(index, "2")
+        with pytest.raises(sqlite3.IntegrityError):
+            index.place_in_crate(loser, 1, 0)
+
+        row = index._conn.execute(
+            "SELECT crate_no, position FROM discovery_items WHERE id = ?", (loser,)
+        ).fetchone()
+        assert (row["crate_no"], row["position"]) == (None, None)
+
+    def test_a_failed_event_write_unpromotes_the_item(
+        self, index: LibraryIndex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The half-written state that actually matters: promoted, never recorded.
+
+        The UPDATE lands first, so if the 'shown' insert then fails without a
+        rollback the item is left in the crate with no ledger entry — invisible to
+        the digging stats, and permanently suppressed by seen_before(), which keys
+        on crate_no. Both writes must share one transaction.
+        """
+        item = self._buffered(index, "1")
+
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise sqlite3.OperationalError("ledger unavailable")
+
+        monkeypatch.setattr(index, "_append_event", _boom)
+        with pytest.raises(sqlite3.OperationalError):
+            index.place_in_crate(item, 1, 0)
+
+        row = index._conn.execute(
+            "SELECT crate_no, position FROM discovery_items WHERE id = ?", (item,)
+        ).fetchone()
+        assert (row["crate_no"], row["position"]) == (None, None)
+        assert index.seen_before("bandcamp", "1") is False
+
+    def test_crate_items_are_ordered_by_position(self, index: LibraryIndex) -> None:
+        for position, item_id in ((2, "c"), (0, "a"), (1, "b")):
+            index.place_in_crate(
+                self._buffered(index, item_id, title=item_id.upper()), 7, position
+            )
+        titles = [row["title"] for row in index.crate_items(7)]
+        assert titles == ["A", "B", "C"]
+
+    def test_crate_items_carry_the_card_fields(self, index: LibraryIndex) -> None:
+        """The snapshot must be renderable without a second lookup per card."""
+        item = self._buffered(
+            index,
+            "42",
+            item_url="https://band.bandcamp.com/album/x",
+            artist="Band",
+            title="X",
+            art_url="https://f4.bcbits.com/img/a1_10.jpg",
+            criterion="also_like",
+            why="Filed next to something you played.",
+            seed_json='{"kind": "album"}',
+        )
+        index.place_in_crate(item, 1, 0)
+        row = index.crate_items(1)[0]
+        assert row["id"] == item
+        assert row["artist"] == "Band"
+        assert row["criterion"] == "also_like"
+        assert row["why"].startswith("Filed next to")
+        assert row["state"] == "fresh"
+        assert row["seed"] == {"kind": "album"}
+
+    def test_crate_items_survive_unparseable_seed_json(
+        self, index: LibraryIndex
+    ) -> None:
+        """A bad seed blob must cost provenance, not the whole crate snapshot."""
+        item = self._buffered(index, "1")
+        index._conn.execute(
+            "UPDATE discovery_items SET seed_json = ? WHERE id = ?", ("{oops", item)
+        )
+        index._conn.commit()
+        index.place_in_crate(item, 1, 0)
+        assert index.crate_items(1)[0]["seed"] == {}
+
+    def test_empty_crate_reads_as_empty(self, index: LibraryIndex) -> None:
+        assert index.crate_items(99) == []
+
+
+# ---------------------------------------------------------------------------
 # Seed profile
 # ---------------------------------------------------------------------------
 

@@ -51,6 +51,7 @@ export const TOOLTIPS = {
   // answer to "why am I seeing this?" — the shelf tag is the short version.
   CRATE_WHY: 'Picked from your own library and listening — nothing leaves this machine',
   CRATE_WISHLIST_SOON: 'Wishlisting from Kamp is coming — copy the link for now',
+  CRATE_PREVIEW: 'Play a preview (Space) — your queue stays put',
   CRATE_COPY: 'Copy link (C)',
   CRATE_PASS: 'Pass (X)',
 

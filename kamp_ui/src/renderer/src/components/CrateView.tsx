@@ -14,6 +14,8 @@ import { useStore } from '../store'
 import { crateArtUrl } from '../api/client'
 import type { CrateItem } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
+import { CratePreviewStrip } from './CratePreviewStrip'
+import { formatClock } from '../utils/formatClock'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
 
@@ -39,6 +41,10 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const flushCrateDismissals = useStore((s) => s.flushCrateDismissals)
   const copyCrateItemUrl = useStore((s) => s.copyCrateItemUrl)
   const setActiveView = useStore((s) => s.setActiveView)
+  const preview = useStore((s) => s.preview)
+  const previewPlay = useStore((s) => s.previewPlay)
+  const previewAction = useStore((s) => s.previewAction)
+  const previewSeek = useStore((s) => s.previewSeek)
   const tooltip = useTooltip()
 
   const [focused, setFocused] = useState(0)
@@ -74,6 +80,29 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // the intermediate frame where the focus card would be blank.
   const focusIndex = visible.length === 0 ? 0 : Math.min(focused, visible.length - 1)
   const current = visible[focusIndex] ?? null
+
+  // Preview state for the record on screen. The engine plays one item at a
+  // time, so a preview belonging to another card must not light this one up.
+  const previewingThis = Boolean(
+    current && preview && preview.item_id === current.id && preview.state !== 'idle'
+  )
+  const previewPlaying = previewingThis && preview?.state === 'playing'
+  const previewPreparing = previewingThis && preview?.state === 'preparing'
+
+  // Not memoized: `current` is derived from the filtered crate on every render,
+  // so a useCallback here cannot keep a stable identity anyway.
+  const togglePreview = (): void => {
+    if (!current) return
+    if (previewingThis) void previewAction('toggle')
+    else void previewPlay(current.id)
+  }
+
+  // Leaving the view stops the preview: audio with no visible controls is the
+  // one outcome worse than no preview at all.
+  useEffect(() => {
+    if (active) return
+    if (useStore.getState().preview?.state !== 'idle') void previewAction('stop')
+  }, [active, previewAction])
 
   // Any held dismiss must be sent before this view stops being able to send it.
   // Without this, passing a record and immediately switching views loses it.
@@ -118,8 +147,8 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     setUndoItem(null)
   }, [clearUndoTimer, undoCrateDismiss, undoItem])
 
-  // Preview ("Give it a spin") is KAMP-651 — there is no preview route yet — so
-  // the primary action is the honest one available now: the album's own page.
+  // The album's own page, for buying it or reading the notes — preview now
+  // handles listening (KAMP-651).
   const openOnBandcamp = useCallback((item: CrateItem): void => {
     if (item.item_url) window.api.openExternal(item.item_url)
   }, [])
@@ -142,12 +171,20 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       if (e.key !== 'Escape') return
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      // Two-stage, by state rather than by counting presses: a running preview
+      // is the innermost thing Escape can dismiss, so it goes first and the
+      // view stays put. This handler is on window, and modals listen on
+      // document, so a dialog opened over the Crate still wins outright.
+      if (useStore.getState().preview?.state !== 'idle') {
+        void previewAction('stop')
+        return
+      }
       const prev = useStore.getState().previousView
       void setActiveView(prev && prev !== 'crate' ? prev : 'library')
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [active, setActiveView])
+  }, [active, setActiveView, previewAction])
 
   // The crate's own keys live on the view container, NOT on document. App's
   // global handler is a window listener and the React root sits below document
@@ -196,7 +233,27 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       // itself is unavailable until KAMP-653 extends the Electron relay.
       e.preventDefault()
       e.stopPropagation()
+    } else if (e.key === ' ') {
+      // Now that preview exists, Space is the Crate's (KAMP-651). KAMP-650
+      // deliberately left it global, because claiming it for a no-op would have
+      // removed play/pause from a whole view of a music player.
+      e.preventDefault()
+      e.stopPropagation()
+      togglePreview()
     }
+  }
+
+  // App blurs the focused element on any key it handles when focus came from
+  // the mouse (KAMP-598), which lands focus on document.body — outside this
+  // container, so none of the handlers above would fire again. Click a sleeve,
+  // press a global key, and digging went silently dead. Taking focus back the
+  // moment it falls to nothing fixes that; focus moving into a dialog names
+  // that dialog as relatedTarget, so modals are left alone.
+  const onBlurCapture = (e: React.FocusEvent<HTMLDivElement>): void => {
+    if (e.relatedTarget !== null || !active) return
+    const rail = railRef.current
+    const option = rail?.querySelectorAll<HTMLElement>('[role="option"]')[focusIndex]
+    option?.focus()
   }
 
   // ---------------------------------------------------------------------------
@@ -267,7 +324,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const slots = building ? Math.max(CRATE_SIZE - visible.length, 0) : 0
 
   return (
-    <div className="crate-view" onKeyDown={onKeyDown}>
+    <div className="crate-view" onKeyDown={onKeyDown} onBlurCapture={onBlurCapture}>
       {banner}
 
       <div className="crate-stage">
@@ -298,6 +355,18 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
               <div className="crate-actions">
                 <button
                   className="crate-action crate-action--primary"
+                  onClick={togglePreview}
+                  disabled={previewPreparing}
+                  {...tooltip(TOOLTIPS.CRATE_PREVIEW)}
+                >
+                  {previewPreparing
+                    ? 'Cueing it up…'
+                    : previewPlaying
+                      ? 'Hold on'
+                      : 'Give it a spin'}
+                </button>
+                <button
+                  className="crate-action"
                   onClick={() => openOnBandcamp(current)}
                   disabled={!current.item_url}
                 >
@@ -325,6 +394,44 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                   Pass
                 </button>
               </div>
+
+              {previewingThis && preview && (
+                <CratePreviewStrip
+                  preview={preview}
+                  onToggle={togglePreview}
+                  onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
+                  onSeek={(position) => void previewSeek(position)}
+                />
+              )}
+
+              {previewingThis && preview && preview.tracks.length > 0 && (
+                <ol className="crate-tracklist">
+                  {preview.tracks.map((track) => (
+                    <li key={track.track_num}>
+                      <button
+                        className={`crate-track${
+                          track.track_num === preview.track_num ? ' crate-track--current' : ''
+                        }`}
+                        onClick={() => void previewPlay(current.id, track.track_num)}
+                      >
+                        <span className="crate-track-num">{track.track_num}</span>
+                        <span className="crate-track-title">
+                          {track.title || `Track ${track.track_num}`}
+                        </span>
+                        <span className="crate-track-time">{formatClock(track.duration)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              )}
+
+              {previewingThis && preview?.error && (
+                <p className="crate-preview-error" role="status">
+                  {preview.error === 'rate_limited'
+                    ? 'Bandcamp asked us to slow down — try again shortly.'
+                    : 'No preview for this one.'}
+                </p>
+              )}
             </div>
           </article>
         ) : (

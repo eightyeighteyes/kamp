@@ -46,9 +46,14 @@ const GROUPS: Group[] = [
         description: 'Previous / next record',
         note: 'Arrows stay on the transport; ← → also work inside the rail'
       },
+      {
+        keys: ['Space'],
+        description: 'Preview / hold',
+        note: 'Your queue pauses and comes back'
+      },
       { keys: ['C'], description: 'Copy link' },
       { keys: ['X'], description: 'Pass', note: 'Undo for 5 seconds' },
-      { keys: ['Esc'], description: 'Leave the crate' }
+      { keys: ['Esc'], description: 'Stop the preview, then leave the crate' }
     ]
   },
   {

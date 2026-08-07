@@ -279,6 +279,7 @@ export default function App(): React.JSX.Element {
           void loadConfig()
           void useStore.getState().loadDownloads() // KAMP-568: seed Downloads view
           void useStore.getState().loadCrate() // KAMP-650: seed The Crate
+          void useStore.getState().loadPreview() // KAMP-651: seed the preview
           // Reconcile pip state in case deferred_op.completed was missed
           // while the WS was disconnected.
           void getDeferredOps().then((ops) => {
@@ -364,6 +365,11 @@ export default function App(): React.JSX.Element {
         // placed record during a build, so the rail fills in as it is dug.
         (snapshot) => {
           useStore.getState().setCrate(snapshot)
+        },
+        // KAMP-651: preview transport state. Daemon-owned, so a reconnect
+        // carries whatever is already playing rather than starting from idle.
+        (state) => {
+          useStore.getState().setPreview(state)
         }
       )
     }

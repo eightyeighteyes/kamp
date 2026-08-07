@@ -16,6 +16,7 @@ import type {
   ConfigValues,
   CrateItem,
   CrateSnapshot,
+  PreviewState,
   CriteriaDoc,
   DownloadItem,
   PlayerState,
@@ -180,6 +181,10 @@ type PlayerStore = {
   // (discovery_events has no un-dismiss kind and the state rank is monotonic),
   // so an Undo has to happen before the request, not after it.
   crateDismissPending: number[]
+  // KAMP-651: preview transport state. Daemon-owned — it survives a renderer
+  // reload, so this is seeded from GET .../preview/state on every WS connect
+  // and kept live by the `discovery.preview` event, never invented locally.
+  preview: PreviewState | null
   flashToast: string | null
   // KAMP-571: tone for the current flashToast; 'error' renders the red variant.
   flashToastTone: 'error' | null
@@ -236,6 +241,13 @@ type PlayerStore = {
   // the user navigates away, or a pass made in the last few seconds is lost.
   flushCrateDismissals: () => Promise<void>
   copyCrateItemUrl: (item: CrateItem) => Promise<void>
+  // KAMP-651: preview transport. Every action returns the authoritative state,
+  // so none of these guess locally.
+  loadPreview: () => Promise<void>
+  setPreview: (state: PreviewState) => void
+  previewPlay: (itemId: number, trackNum?: number) => Promise<void>
+  previewAction: (action: 'pause' | 'resume' | 'toggle' | 'stop' | 'next' | 'prev') => Promise<void>
+  previewSeek: (position: number) => Promise<void>
   showFlashToast: (msg: string, tone?: 'error') => void
   setRecentlyAddedCount: (n: number) => void
   setRecentlyAddedDays: (n: number) => void
@@ -569,6 +581,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   downloadBatch: null,
   crate: null,
   crateDismissPending: [],
+  preview: null,
   flashToast: null,
   flashToastTone: null,
   styleRailVisible: false,
@@ -976,6 +989,40 @@ export const useStore = create<PlayerStore>((set, get) => ({
       void api.crateItemUrlCopied(item.id).catch(() => {})
     } catch {
       get().showFlashToast('Could not copy the link', 'error')
+    }
+  },
+  // --- Preview (KAMP-651) ---------------------------------------------------
+  loadPreview: async () => {
+    try {
+      set({ preview: await api.getPreviewState() })
+    } catch {
+      // Best-effort; the discovery.preview event repopulates on the next
+      // transition, and a null preview simply renders no mini-player.
+    }
+  },
+  setPreview: (state) => set({ preview: state }),
+  previewPlay: async (itemId, trackNum) => {
+    try {
+      set({ preview: await api.previewPlay(itemId, trackNum) })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not start the preview'
+      get().showFlashToast(msg, 'error')
+    }
+  },
+  previewAction: async (action) => {
+    try {
+      set({ preview: await api.previewAction(action) })
+    } catch {
+      // A failed transport call leaves the daemon authoritative; re-read rather
+      // than showing a state the preview engine does not agree with.
+      void get().loadPreview()
+    }
+  },
+  previewSeek: async (position) => {
+    try {
+      set({ preview: await api.previewSeek(position) })
+    } catch {
+      void get().loadPreview()
     }
   },
   showFlashToast: (msg, tone) => {

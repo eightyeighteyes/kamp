@@ -618,6 +618,42 @@ export const dismissCrateItem = (itemId: number): Promise<{ ok: boolean }> =>
 export const crateItemUrlCopied = (itemId: number): Promise<{ ok: boolean }> =>
   post(`/api/v1/discovery/items/${itemId}/url-copied`)
 
+// --- Preview (KAMP-651) ----------------------------------------------------
+// Preview runs on a second, isolated mpv so it cannot disturb the queue. It is
+// daemon-owned and survives a renderer reload, which is why there is a state
+// endpoint as well as an event.
+
+export type PreviewTrack = { track_num: number; title: string; duration: number }
+
+export type PreviewState = {
+  state: 'idle' | 'preparing' | 'playing' | 'paused'
+  item_id: number | null
+  track_num: number | null
+  title: string
+  // position is a sample, not a stream: the daemon publishes on transitions and
+  // the UI interpolates from position_updated_at rather than being told 4x/sec.
+  position: number
+  position_updated_at: number
+  duration: number
+  buffering: boolean
+  tracks: PreviewTrack[]
+  // 'not_found' | 'unavailable' | 'rate_limited' — a rate limit and an album
+  // with nothing streamable want different words on screen.
+  error: string | null
+}
+
+export const getPreviewState = (): Promise<PreviewState> => get('/api/v1/discovery/preview/state')
+
+export const previewPlay = (itemId: number, trackNum?: number): Promise<PreviewState> =>
+  post('/api/v1/discovery/preview/play', { item_id: itemId, track_num: trackNum ?? null })
+
+export const previewAction = (
+  action: 'pause' | 'resume' | 'toggle' | 'stop' | 'next' | 'prev'
+): Promise<PreviewState> => post(`/api/v1/discovery/preview/${action}`)
+
+export const previewSeek = (position: number): Promise<PreviewState> =>
+  post('/api/v1/discovery/preview/seek', { position })
+
 // ---------------------------------------------------------------------------
 // Player
 // ---------------------------------------------------------------------------
@@ -1118,6 +1154,10 @@ export type DownloadQueueMessage = {
 // client attached, so a client that missed the build has to ask.
 export type DiscoveryCrateMessage = { type: 'discovery.crate' } & CrateSnapshot
 
+// KAMP-651: preview transport state. Pushed on transitions, not per frame —
+// see PreviewState.position.
+export type DiscoveryPreviewMessage = { type: 'discovery.preview' } & PreviewState
+
 export type ServerMessage =
   | StateMessage
   | TrackChangedMessage
@@ -1130,6 +1170,7 @@ export type ServerMessage =
   | PipelineStageMessage
   | DownloadQueueMessage
   | DiscoveryCrateMessage
+  | DiscoveryPreviewMessage
 
 export async function getDeferredOps(): Promise<{ op_id: number; track_id: number }[]> {
   const res = await fetch(`${BASE_URL}/api/v1/deferred-ops`, {
@@ -1161,7 +1202,9 @@ export function connectStateStream(
   // so the existing positional callbacks keep their indices.
   onDownloadQueue?: (items: DownloadItem[], pausedUntil: number) => void,
   // KAMP-650: full crate snapshot for The Crate view. Appended last, same reason.
-  onDiscoveryCrate?: (snapshot: CrateSnapshot) => void
+  onDiscoveryCrate?: (snapshot: CrateSnapshot) => void,
+  // KAMP-651: preview transport state. Appended last, same reason.
+  onDiscoveryPreview?: (state: PreviewState) => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 
@@ -1187,6 +1230,7 @@ export function connectStateStream(
       // DiscoveryCrateMessage is CrateSnapshot plus `type`, so it satisfies the
       // callback as-is; the discriminator rides along inertly.
       else if (msg.type === 'discovery.crate') onDiscoveryCrate?.(msg)
+      else if (msg.type === 'discovery.preview') onDiscoveryPreview?.(msg)
     } catch {
       // malformed message — ignore
     }

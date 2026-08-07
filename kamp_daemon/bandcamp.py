@@ -1040,6 +1040,32 @@ def _extract_pagedata(html: str, url: str) -> dict[str, Any]:
     return result
 
 
+def parse_tralbum(html: str) -> dict[str, Any] | None:
+    """Return the ``data-tralbum`` JSON blob from an album page, or None.
+
+    Every Bandcamp album/track page embeds this attribute; it carries the track
+    list (with signed ``mp3-128``/``mp3-v0`` URLs), ``item_type``, ``art_id`` and
+    the release dates. It was parsed identically in three places before KAMP-647
+    consolidated it here.
+
+    Returns None rather than raising, because the three callers legitimately
+    disagree about what an absent blob means: stream and track fetching treat it
+    as an error worth surfacing (each with its own message), while art fetching
+    treats it as "no art available" and moves on. Raising here would force one of
+    those to catch-and-discard, which reads as an error being swallowed.
+    """
+    match = re.search(r'data-tralbum="([^"]+)"', html)
+    if not match:
+        return None
+    try:
+        blob: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
+    except json.JSONDecodeError:
+        # Malformed JSON is the same practical outcome as a missing blob, and is
+        # what a truncated or challenge-page response looks like.
+        return None
+    return blob
+
+
 def _fetch_collection(
     fan_id: int, session: _AnySession, index: "LibraryIndex"
 ) -> list[dict[str, Any]]:
@@ -1193,13 +1219,12 @@ def fetch_stream_url(
     resp.raise_for_status()
     html = resp.text
 
-    match = re.search(r'data-tralbum="([^"]+)"', html)
-    if not match:
+    tralbum = parse_tralbum(html)
+    if tralbum is None:
         raise BandcampAPIError(
             f"fetch_stream_url: no data-tralbum found in {album_url}"
         )
 
-    tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
     tracks: list[dict[str, Any]] = tralbum.get("trackinfo") or []
 
     # A standalone single-track page exposes its lone track with track_num=None;
@@ -1327,11 +1352,10 @@ def fetch_album_tracks(
     resp = session.get(album_url, timeout=30)
     resp.raise_for_status()
 
-    match = re.search(r'data-tralbum="([^"]+)"', resp.text)
-    if not match:
+    tralbum = parse_tralbum(resp.text)
+    if tralbum is None:
         raise BandcampAPIError(f"fetch_album_tracks: no data-tralbum in {album_url}")
 
-    tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
     trackinfo: list[dict[str, Any]] = tralbum.get("trackinfo") or []
 
     # Standalone single-track purchases (item_type='track') expose their lone
@@ -1442,10 +1466,9 @@ def fetch_album_art_bytes(album_url: str, session_data: dict[str, Any]) -> bytes
         session = _make_requests_session(session_data)
         resp = session.get(album_url, timeout=30)
         resp.raise_for_status()
-        match = re.search(r'data-tralbum="([^"]+)"', resp.text)
-        if not match:
+        tralbum = parse_tralbum(resp.text)
+        if tralbum is None:
             return None
-        tralbum: dict[str, Any] = json.loads(html_lib.unescape(match.group(1)))
         art_id = tralbum.get("art_id")
         if not art_id:
             return None

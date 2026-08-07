@@ -43,6 +43,7 @@ from kamp_daemon.bandcamp import (
     get_download_size_bytes,
     mark_collection_synced,
     parse_album_keywords,
+    parse_tralbum,
     prefetch_redownload_urls,
     refresh_stream_url,
     sync_collection_stream,
@@ -335,6 +336,40 @@ class TestExtractPagedata:
         html = _make_pagedata_html(blob)
         result = _extract_pagedata(html, "https://example.com")
         assert result["key"] == blob["key"]
+
+
+# ---------------------------------------------------------------------------
+# parse_tralbum (KAMP-647)
+# ---------------------------------------------------------------------------
+
+
+class TestParseTralbum:
+    """The blob three call sites used to parse identically.
+
+    It returns None rather than raising because those callers disagree about what
+    an absent blob means — two surface an error, one treats it as "no art".
+    """
+
+    @staticmethod
+    def _html(blob: dict) -> str:
+        escaped = html_lib.escape(json.dumps(blob), quote=True)
+        return f'<html><script data-tralbum="{escaped}"></script></html>'
+
+    def test_extracts_and_unescapes(self) -> None:
+        blob = {"item_type": "album", "art_id": 123, "trackinfo": [{"track_num": 1}]}
+        parsed = parse_tralbum(self._html(blob))
+        assert parsed is not None
+        assert parsed["art_id"] == 123
+        assert parsed["trackinfo"][0]["track_num"] == 1
+
+    def test_returns_none_when_absent(self) -> None:
+        assert parse_tralbum("<html><body>nothing here</body></html>") is None
+
+    def test_returns_none_on_malformed_json(self) -> None:
+        """A truncated or challenge-page response is practically the same outcome
+        as a missing blob, and must not raise out of a caller that only expects
+        None."""
+        assert parse_tralbum('<div data-tralbum="{not valid json"></div>') is None
 
 
 # ---------------------------------------------------------------------------

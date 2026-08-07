@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 ALBUM_PAGE = "album_page"
 DISCOVER_API = "discover_api"
 FANCOLLECTION = "fancollection"
+ARTIST_PAGE = "artist_page"
 
 
 class RequestBudget(Protocol):
@@ -103,7 +104,7 @@ def crate_budget() -> SimpleBudget:
     about, so a new fetcher must declare its class deliberately.
     """
     return SimpleBudget(
-        limits={ALBUM_PAGE: 8, DISCOVER_API: 6, FANCOLLECTION: 0},
+        limits={ALBUM_PAGE: 8, DISCOVER_API: 6, ARTIST_PAGE: 4, FANCOLLECTION: 0},
         default_limit=0,
     )
 

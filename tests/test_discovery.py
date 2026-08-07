@@ -367,11 +367,29 @@ class TestSeedProfile:
         last_played_at: float | None = None,
         favorite: int = 0,
         label: str = "",
+        album_url: str | None = None,
+        sale_item_id: str | None = None,
     ) -> int:
+        """Insert an album, optionally linked to a collection row.
+
+        The link matters: seed accessors only return albums with a fetchable
+        Bandcamp URL, so an album created without one is deliberately invisible to
+        them (a local-only album has no page to read recommendations from).
+        """
+        if album_url is not None:
+            sale_item_id = sale_item_id or f"sale-{artist}-{title}"
+            _add_collection_row(
+                index,
+                sale_item_id,
+                band_name=artist,
+                item_title=title,
+                album_url=album_url,
+            )
         cur = index._conn.execute(
-            "INSERT INTO albums (album_artist, album, last_played_at, favorite, label)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (artist, title, last_played_at, favorite, label),
+            "INSERT INTO albums"
+            " (album_artist, album, last_played_at, favorite, label, sale_item_id)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (artist, title, last_played_at, favorite, label, sale_item_id),
         )
         index._conn.commit()
         return int(cur.lastrowid or 0)
@@ -379,13 +397,36 @@ class TestSeedProfile:
     def test_recency_window_boundaries(self, index: LibraryIndex) -> None:
         """29 days ago is recent; 31 is not. The boundary is the whole point."""
         now = time.time()
-        self._album(index, "Fresh", "In", last_played_at=now - 29 * 86400)
-        self._album(index, "Stale", "Out", last_played_at=now - 31 * 86400)
-        self._album(index, "Never", "Played", last_played_at=None)
+        url = "https://a.bandcamp.com/album/x"
+        self._album(
+            index, "Fresh", "In", last_played_at=now - 29 * 86400, album_url=url
+        )
+        self._album(
+            index, "Stale", "Out", last_played_at=now - 31 * 86400, album_url=url
+        )
+        self._album(index, "Never", "Played", last_played_at=None, album_url=url)
 
         recent = index.recently_played_albums(days=30)
-        titles = {title for _, _, title in recent}
-        assert titles == {"In"}
+        assert {s.album for s in recent} == {"In"}
+
+    def test_seeds_without_a_fetchable_url_are_excluded(
+        self, index: LibraryIndex
+    ) -> None:
+        """A local-only album has no Bandcamp page, so it cannot seed a criterion.
+
+        Returning it would hand fetchers a seed they can do nothing with, which
+        surfaces later as an unexplained empty criterion rather than an absent one.
+        """
+        now = time.time()
+        self._album(index, "Local", "Only", last_played_at=now - 3600)
+        self._album(
+            index,
+            "Streamed",
+            "Album",
+            last_played_at=now - 3600,
+            album_url="https://b.bandcamp.com/album/y",
+        )
+        assert {s.album for s in index.recently_played_albums()} == {"Album"}
 
     def test_taste_genres_unions_keywords_regardless_of_tagging_toggle(
         self, index: LibraryIndex
@@ -446,8 +487,20 @@ class TestSeedProfile:
 
     def test_profile_collects_signals(self, index: LibraryIndex) -> None:
         now = time.time()
-        recent_id = self._album(index, "Recent", "Album", last_played_at=now - 3600)
-        fav_id = self._album(index, "Fav", "Album", favorite=1)
+        recent_id = self._album(
+            index,
+            "Recent",
+            "Album",
+            last_played_at=now - 3600,
+            album_url="https://recent.bandcamp.com/album/a",
+        )
+        fav_id = self._album(
+            index,
+            "Fav",
+            "Album",
+            favorite=1,
+            album_url="https://fav.bandcamp.com/album/b",
+        )
         _add_collection_row(
             index, "sale-1", tralbum_id="900", keywords=["shoegaze"], added_at=now
         )
@@ -458,6 +511,48 @@ class TestSeedProfile:
         assert profile.has_genre("Shoegaze") is True
         assert profile.purchase_dates["900"] == pytest.approx(now)
         assert profile.is_thin is False
+
+    def test_profile_seeds_carry_fetchable_urls(self, index: LibraryIndex) -> None:
+        """The whole point of the seed types: a criterion needs an address."""
+        self._album(
+            index,
+            "Artist",
+            "Album",
+            last_played_at=time.time(),
+            album_url="https://artist.bandcamp.com/album/thing",
+        )
+        seed = build_seed_profile(index).recent_albums[0]
+        assert seed.album_url == "https://artist.bandcamp.com/album/thing"
+        assert seed.album_artist == "Artist"
+
+    def test_favorite_artists_derive_a_page_from_an_owned_album(
+        self, index: LibraryIndex
+    ) -> None:
+        """bandcamp_collection stores no band URL, so the artist page comes from
+        the subdomain of an album we own."""
+        self._album(
+            index,
+            "Four Tet",
+            "Pink",
+            favorite=1,
+            album_url="https://fourtet.bandcamp.com/album/pink",
+        )
+        artists = index.favorite_artists_with_pages()
+        assert len(artists) == 1
+        assert artists[0].artist_page == "https://fourtet.bandcamp.com/music"
+
+    def test_custom_domain_artists_are_skipped(self, index: LibraryIndex) -> None:
+        """Bandcamp Pro custom domains yield no subdomain to build from, and are
+        outside the Electron relay's allowlist, so a packaged build could not fetch
+        them even if we guessed a URL."""
+        self._album(
+            index,
+            "Indie",
+            "Record",
+            favorite=1,
+            album_url="https://music.example.com/album/record",
+        )
+        assert index.favorite_artists_with_pages() == []
 
     def test_membership_helpers_are_case_insensitive(self) -> None:
         """KAMP-657 re-validates seeds through these, so casing must not matter."""

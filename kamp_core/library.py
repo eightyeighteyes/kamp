@@ -856,6 +856,47 @@ class ArtistInfo:
     top_album: str | None  # album with highest play_count_avg for thumbnail
 
 
+@dataclass(frozen=True)
+class SeedAlbum:
+    """An owned album that discovery can fetch from (KAMP-647).
+
+    Carries the Bandcamp page URL, not just the display identity: a seed without
+    a fetchable URL is useless to a discovery criterion, and album titles are the
+    mutable tag rather than an address.
+    """
+
+    album_id: int
+    album_artist: str
+    album: str
+    album_url: str
+    tralbum_id: str = ""
+
+
+@dataclass(frozen=True)
+class SeedArtist:
+    """An owned artist with a fetchable Bandcamp page (KAMP-647).
+
+    ``artist_page`` is derived from an owned album's URL because
+    ``bandcamp_collection`` stores no band URL of its own.
+    """
+
+    name: str
+    artist_page: str
+    owned_count: int = 0
+
+
+def _artist_page_from_album_url(album_url: str) -> str:
+    """Derive ``https://<sub>.bandcamp.com/music`` from an album URL, or "".
+
+    Returns "" for Bandcamp Pro custom domains: there is no ``*.bandcamp.com``
+    subdomain to build from, and those hosts are outside the Electron relay's
+    allowlist, so a packaged build could not fetch them anyway (~1% of a real
+    collection).
+    """
+    match = re.match(r"https://([a-z0-9-]+)\.bandcamp\.com/", album_url or "")
+    return f"https://{match.group(1)}.bandcamp.com/music" if match else ""
+
+
 @dataclass
 class LibraryStats:
     """Aggregate library and listening statistics, returned by get_stats()."""
@@ -4974,36 +5015,100 @@ class LibraryIndex:
                 return True
         return False
 
+    # Owned albums that discovery can actually fetch from: the Bandcamp page URL
+    # comes from the collection ledger, joined the same way _NAMED_ALBUM_FROM does
+    # it. A seed with no album_url is useless to a fetcher, so these filter them
+    # out at the source rather than making every caller remember to.
+    _SEED_ALBUM_SELECT = """
+            SELECT a.id, a.album_artist, a.album, bc.album_url, bc.tralbum_id
+            FROM albums a
+            JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id"""
+
+    @staticmethod
+    def _seed_album_rows(rows: "Sequence[Any]") -> list["SeedAlbum"]:
+        return [
+            SeedAlbum(
+                album_id=int(r["id"]),
+                album_artist=r["album_artist"],
+                album=r["album"],
+                album_url=r["album_url"],
+                tralbum_id=r["tralbum_id"] or "",
+            )
+            for r in rows
+            if r["album_url"]
+        ]
+
     def recently_played_albums(
         self, days: int = 30, limit: int = 50
-    ) -> list[tuple[int, str, str]]:
-        """Return (album_id, album_artist, album) played within the last *days*.
+    ) -> list["SeedAlbum"]:
+        """Return fetchable owned albums played within the last *days*.
 
         Ordered most-recent first. Note the source signal is written at track START
         (record_track_started), so "played" here means "began playing", not
         "listened through".
+
+        Only albums with a Bandcamp ``album_url`` are returned: discovery seeds
+        must be fetchable, and a local-only album has no page to read
+        recommendations from.
         """
         cutoff = _time.time() - days * 86400
         rows = self._conn.execute(
-            """
-            SELECT a.id, a.album_artist, a.album
-            FROM albums a
+            self._SEED_ALBUM_SELECT + """
             WHERE a.last_played_at IS NOT NULL AND a.last_played_at >= ?
             ORDER BY a.last_played_at DESC
             LIMIT ?
             """,
             (cutoff, limit),
         ).fetchall()
-        return [(int(r["id"]), r["album_artist"], r["album"]) for r in rows]
+        return self._seed_album_rows(rows)
 
-    def favorite_albums(self, limit: int = 50) -> list[tuple[int, str, str]]:
-        """Return (album_id, album_artist, album) for favorited albums."""
+    def favorite_albums(self, limit: int = 50) -> list["SeedAlbum"]:
+        """Return fetchable owned albums the user has favorited."""
         rows = self._conn.execute(
-            "SELECT id, album_artist, album FROM albums"
-            " WHERE favorite = 1 ORDER BY last_track_added_at DESC LIMIT ?",
+            self._SEED_ALBUM_SELECT + """
+            WHERE a.favorite = 1
+            ORDER BY a.last_track_added_at DESC
+            LIMIT ?
+            """,
             (limit,),
         ).fetchall()
-        return [(int(r["id"]), r["album_artist"], r["album"]) for r in rows]
+        return self._seed_album_rows(rows)
+
+    def favorite_artists_with_pages(self, limit: int = 25) -> list["SeedArtist"]:
+        """Return artists the user has favorited an album by, with a fetchable page.
+
+        ``bandcamp_collection`` stores no band URL, so the artist page is derived
+        from the subdomain of an owned album's URL — ``https://<sub>.bandcamp.com``
+        plus ``/music``. Albums on Bandcamp Pro custom domains yield no usable
+        subdomain and are skipped; that is ~1% of a real collection, and those
+        hosts would 422 through the Electron relay anyway.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT a.album_artist AS name,
+                   MIN(bc.album_url) AS album_url,
+                   COUNT(*) AS owned_count
+            FROM albums a
+            JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id
+            WHERE a.favorite = 1 AND bc.album_url != ''
+            GROUP BY a.album_artist COLLATE NOCASE
+            ORDER BY owned_count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        out: list[SeedArtist] = []
+        for r in rows:
+            page = _artist_page_from_album_url(r["album_url"])
+            if page:
+                out.append(
+                    SeedArtist(
+                        name=r["name"],
+                        artist_page=page,
+                        owned_count=int(r["owned_count"]),
+                    )
+                )
+        return out
 
     def taste_genres(self, limit: int = 25) -> list[tuple[str, int]]:
         """Return (genre, track_count) across the library, most common first.

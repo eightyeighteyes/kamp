@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import json
 import logging
 import time
@@ -2476,6 +2477,70 @@ class TestMpvPlaybackEngine:
         popen_args, _ = mock_popen.call_args
         cmd = popen_args[0]
         assert "--msg-level=ffmpeg=v" in cmd
+
+    def _spawn_argv(self, monkeypatch: pytest.MonkeyPatch, **kw: object) -> list[str]:
+        monkeypatch.setattr("kamp_core.playback.sys.platform", "darwin")
+        fake_proc = MagicMock()
+        fake_proc.stdout = io.BytesIO(b"")
+        with (
+            patch(
+                "kamp_core.playback.subprocess.Popen", return_value=fake_proc
+            ) as mock_popen,
+            patch("kamp_core.playback._WindowsJobObject"),
+            patch("kamp_core.playback._make_ipc_transport", return_value=MagicMock()),
+            patch("kamp_core.playback.threading.Thread"),
+        ):
+            MpvPlaybackEngine(**kw)  # type: ignore[arg-type]
+        args, _ = mock_popen.call_args
+        return list(args[0])
+
+    def test_metering_off_drops_only_the_metering_flags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Crate's preview engine runs without metering (KAMP-651).
+
+        What must survive is the reason KAMP-519 exists: pause/resume/stop/mute
+        are pure script-messages, so --script and both afade filters are not
+        optional decoration — without them the transport is silently dead.
+        --input-media-keys=no must survive too, or a second mpv installs an
+        IOKit HID tap and steals media keys from the now-playing helper.
+        """
+        cmd = self._spawn_argv(monkeypatch, metering=False)
+
+        assert not any(c.startswith("--af=lavfi=graph=") for c in cmd)
+        assert "--msg-level=ffmpeg=v" not in cmd
+
+        assert any(c.startswith("--script=") for c in cmd)
+        assert any(c.startswith("--af-append=@kampfade:") for c in cmd)
+        assert any(c.startswith("--af-append=@kampmute:") for c in cmd)
+        assert "--input-media-keys=no" in cmd
+        assert "--idle=yes" in cmd
+
+    def test_metering_is_on_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cmd = self._spawn_argv(monkeypatch)
+        assert "--msg-level=ffmpeg=v" in cmd
+        assert any(c.startswith("--af=lavfi=graph=") for c in cmd)
+
+    def test_shutdown_reaps_the_child(self) -> None:
+        """Dropping the Popen without waiting leaves a zombie — harmless for the
+        one long-lived engine, not for a preview engine spawned and killed on
+        every idle-out."""
+        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
+            engine = MpvPlaybackEngine()
+        proc = MagicMock()
+        engine._proc = proc
+        engine.shutdown()
+        proc.terminate.assert_called_once()
+        proc.wait.assert_called_once()
+
+    def test_shutdown_survives_a_wedged_child(self) -> None:
+        """A mpv that will not die must not stall daemon shutdown."""
+        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
+            engine = MpvPlaybackEngine()
+        proc = MagicMock()
+        proc.wait.side_effect = subprocess.TimeoutExpired(cmd="mpv", timeout=2.0)
+        engine._proc = proc
+        engine.shutdown()  # must not raise
 
     def test_start_mpv_stdout_is_piped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """mpv stdout must be PIPE so _stdout_reader_loop can read ametadata output."""

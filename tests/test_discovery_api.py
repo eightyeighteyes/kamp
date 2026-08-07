@@ -555,6 +555,172 @@ class TestRealArtFetch:
         assert _fetch_art_bytes("https://f4.bcbits.com/img/a1_10.jpg") is None
 
 
+class FakePreview:
+    """The PreviewPlayer surface the routes touch."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+        self.state: dict[str, Any] = {"state": "idle", "item_id": None}
+
+    def snapshot(self) -> dict[str, Any]:
+        return dict(self.state)
+
+    def play(self, item_id: int, track_num: int | None = None) -> dict[str, Any]:
+        self.calls.append(("play", (item_id, track_num)))
+        self.state = {"state": "playing", "item_id": item_id}
+        return self.snapshot()
+
+    def _simple(self, name: str) -> dict[str, Any]:
+        self.calls.append((name, None))
+        return self.snapshot()
+
+    def pause(self) -> dict[str, Any]:
+        return self._simple("pause")
+
+    def resume(self) -> dict[str, Any]:
+        return self._simple("resume")
+
+    def toggle(self) -> dict[str, Any]:
+        return self._simple("toggle")
+
+    def stop(self) -> dict[str, Any]:
+        return self._simple("stop")
+
+    def step(self, delta: int) -> dict[str, Any]:
+        self.calls.append(("step", delta))
+        return self.snapshot()
+
+    def seek(self, position: float) -> dict[str, Any]:
+        self.calls.append(("seek", position))
+        return self.snapshot()
+
+    def release_for_main(self) -> None:
+        self.calls.append(("release_for_main", None))
+
+    def set_volume(self, v: int) -> None:
+        self.calls.append(("set_volume", v))
+
+    def set_muted(self, m: bool) -> None:
+        self.calls.append(("set_muted", m))
+
+
+def _preview_app(index: LibraryIndex, preview: Any) -> Any:
+    app = FastAPI()
+    register_discovery_routes(
+        app, index=index, broadcast=lambda _e: None, preview=preview
+    )
+    return TestClient(app)
+
+
+class TestPreviewRoutes:
+    def test_play_starts_a_preview(self, index: LibraryIndex) -> None:
+        preview = FakePreview()
+        client = _preview_app(index, preview)
+        body = client.post(
+            "/api/v1/discovery/preview/play", json={"item_id": 7, "track_num": 2}
+        ).json()
+        assert body["state"] == "playing"
+        assert preview.calls == [("play", (7, 2))]
+
+    def test_play_requires_an_integer_item(self, index: LibraryIndex) -> None:
+        client = _preview_app(index, FakePreview())
+        assert client.post("/api/v1/discovery/preview/play", json={}).status_code == 422
+
+    @pytest.mark.parametrize("action", ["pause", "resume", "toggle", "stop"])
+    def test_simple_actions(self, index: LibraryIndex, action: str) -> None:
+        preview = FakePreview()
+        client = _preview_app(index, preview)
+        assert client.post(f"/api/v1/discovery/preview/{action}").status_code == 200
+        assert preview.calls == [(action, None)]
+
+    @pytest.mark.parametrize("action,delta", [("next", 1), ("prev", -1)])
+    def test_stepping(self, index: LibraryIndex, action: str, delta: int) -> None:
+        preview = FakePreview()
+        client = _preview_app(index, preview)
+        client.post(f"/api/v1/discovery/preview/{action}")
+        assert preview.calls == [("step", delta)]
+
+    def test_seek_requires_a_number(self, index: LibraryIndex) -> None:
+        client = _preview_app(index, FakePreview())
+        assert (
+            client.post(
+                "/api/v1/discovery/preview/seek", json={"position": "soon"}
+            ).status_code
+            == 422
+        )
+
+    def test_an_unknown_action_is_404_not_an_arbitrary_call(
+        self, index: LibraryIndex
+    ) -> None:
+        """One route serves several verbs, so the allowlist is what stops it
+        being a remote method call on the player."""
+        preview = FakePreview()
+        client = _preview_app(index, preview)
+        assert client.post("/api/v1/discovery/preview/shutdown").status_code == 404
+        assert preview.calls == []
+
+    def test_state_is_the_reconnect_path(self, index: LibraryIndex) -> None:
+        preview = FakePreview()
+        client = _preview_app(index, preview)
+        client.post("/api/v1/discovery/preview/play", json={"item_id": 3})
+        body = client.get("/api/v1/discovery/preview/state").json()
+        assert body["item_id"] == 3
+
+    def test_no_engine_reports_unavailable_but_still_answers_state(
+        self, index: LibraryIndex
+    ) -> None:
+        """The routes register either way so the UI has one code path; state
+        returns the idle shape rather than an error the view must special-case."""
+        client = _preview_app(index, None)
+        assert client.post("/api/v1/discovery/preview/stop").status_code == 503
+        assert client.get("/api/v1/discovery/preview/state").json()["state"] == "idle"
+
+
+class TestMainTransportWins:
+    """Any main-transport POST stops a preview — except volume and mute, which
+    are a change to how loud everything is, not a demand for the floor."""
+
+    def _app(self, index: LibraryIndex, preview: Any) -> Any:
+        from kamp_core.server import create_app
+
+        engine = MagicMock()
+        engine.state = MagicMock(playing=False, position=0.0, duration=0.0, volume=100)
+        queue = MagicMock()
+        queue.current.return_value = None
+        queue.peek_next.return_value = None
+        return TestClient(
+            create_app(index=index, engine=engine, queue=queue, preview_player=preview)
+        )
+
+    @pytest.mark.parametrize(
+        "path", ["/api/v1/player/pause", "/api/v1/player/resume", "/api/v1/player/stop"]
+    )
+    def test_transport_posts_stop_the_preview(
+        self, index: LibraryIndex, path: str
+    ) -> None:
+        preview = FakePreview()
+        self._app(index, preview).post(path)
+        assert ("release_for_main", None) in preview.calls
+
+    def test_volume_mirrors_instead_of_stopping(self, index: LibraryIndex) -> None:
+        """Otherwise the slider moves everything except what you can hear."""
+        preview = FakePreview()
+        self._app(index, preview).post("/api/v1/player/volume", json={"volume": 40})
+        assert ("set_volume", 40) in preview.calls
+        assert ("release_for_main", None) not in preview.calls
+
+    def test_mute_mirrors_instead_of_stopping(self, index: LibraryIndex) -> None:
+        preview = FakePreview()
+        self._app(index, preview).post("/api/v1/player/mute", json={"muted": True})
+        assert ("set_muted", True) in preview.calls
+        assert ("release_for_main", None) not in preview.calls
+
+    def test_a_get_does_not_stop_the_preview(self, index: LibraryIndex) -> None:
+        preview = FakePreview()
+        self._app(index, preview).get("/api/v1/player/state")
+        assert preview.calls == []
+
+
 class TestArtHostAllowlist:
     def test_art_hosts_are_a_subset_of_the_proxy_allowlist(self) -> None:
         """Two lists that must not drift apart: anything the art proxy will fetch

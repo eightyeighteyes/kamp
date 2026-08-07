@@ -114,6 +114,14 @@ def load_session() -> dict[str, Any]:
     except (requests.RequestException, SystemExit):
         pass
 
+    # Cookie cache: written while the app was up, so work that requires the app to
+    # be *down* (the rate-limit probe) still has credentials.
+    cache = SCRATCH / "session-cookies.json"
+    if cache.exists():
+        cached: dict[str, Any] = json.loads(cache.read_text())
+        print(f"[session] source: cookie cache ({len(cached.get('cookies', []))})")
+        return cached
+
     snapshot = SCRATCH / "library-snapshot.db"
     if not snapshot.exists():
         sys.exit(
@@ -464,6 +472,12 @@ def summarise(obj: Any, depth: int = 0, max_depth: int = 2) -> str:
 
 def cmd_session(args: argparse.Namespace) -> int:
     data = load_session()
+    if args.cache_cookies:
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        out = SCRATCH / "session-cookies.json"
+        out.write_text(json.dumps(data))
+        out.chmod(0o600)
+        print(f"[session] cached cookies -> {out} (scratch only, never the repo)")
     cookies = cookie_dict(data)
     print(f"[session] cookie names: {sorted(cookies)}")
     print(f"[session] username in session data: {data.get('username', '(absent)')}")
@@ -1325,6 +1339,84 @@ def cmd_capture(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_probe(args: argparse.Namespace) -> int:
+    """Find where the rate limit actually bites, per endpoint class.
+
+    Run this LAST and with the app quit.  A 429 is account-wide, so tripping it
+    while the daemon is draining downloads converts one measurement into a
+    queue-wide cascade, and the app's own traffic would contaminate the numbers
+    besides.
+
+    Stops at the very first 429: the ceiling has been found at that point and
+    continuing only deepens a backoff the account has to serve out.  Runs on the
+    direct transport because the relay cannot surface ``Retry-After`` at all.
+    """
+    if not args.yes:
+        print("Refusing to provoke a rate limit without --yes.")
+        return 1
+    try:
+        requests.get("http://127.0.0.1:47483/api/v1/config", timeout=3)
+    except requests.RequestException:
+        pass
+    else:
+        if not args.allow_app_running:
+            print(
+                "The daemon is UP. A 429 here is account-wide and would cascade "
+                "into its download drain.\nQuit Kamp, or pass --allow-app-running."
+            )
+            return 1
+
+    data = load_session()
+    transport = DirectTransport(data)
+    classes: dict[str, Any] = {
+        "album_page": lambda: transport.get("https://fourtet.bandcamp.com/album/pink"),
+        "discover_api": lambda: transport.post_json(
+            DISCOVER_API, discover_params(tag="ambient", slice_="rand", size=20)
+        ),
+    }
+    target = classes[args.endpoint]
+
+    print(
+        f"[probe] class={args.endpoint} max={args.max} delay={args.delay}s "
+        "— stops at the first 429"
+    )
+    started = time.monotonic()
+    limited_at: int | None = None
+    for n in range(1, args.max + 1):
+        got = target()
+        elapsed = time.monotonic() - started
+        rate = n / elapsed * 60 if elapsed else 0
+        if got.status != 200 or got.looks_like_cloudflare_challenge:
+            retry_after = (got.headers or {}).get("Retry-After", "—")
+            print(
+                f"  #{n:3d} at {elapsed:6.1f}s ({rate:5.1f}/min): "
+                f"HTTP {got.status} Retry-After={retry_after}"
+            )
+            if got.status == 429:
+                limited_at = n
+                break
+            print(f"       non-200 body head: {got.text[:120]!r}")
+            break
+        if n % args.report_every == 0 or n == 1:
+            print(f"  #{n:3d} at {elapsed:6.1f}s ({rate:5.1f}/min): 200")
+        time.sleep(args.delay)
+
+    total = time.monotonic() - started
+    if limited_at is None:
+        print(
+            f"\n  no 429 within {args.max} requests over {total:.0f}s "
+            f"(~{args.max / total * 60:.0f}/min sustained).\n"
+            "  Report this as a lower bound, not a ceiling."
+        )
+    else:
+        print(
+            f"\n  429 after {limited_at} requests in {total:.0f}s "
+            f"(~{limited_at / total * 60:.1f}/min).\n"
+            "  Leave the account alone until the backoff clears."
+        )
+    return 0
+
+
 def cmd_context(args: argparse.Namespace) -> int:
     """Print characters around a needle in a saved capture (grep is line-based)."""
     path = SCRATCH / args.file
@@ -1352,7 +1444,14 @@ def main() -> int:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("session", help="validate the stored session and print fan info")
+    p_sess = sub.add_parser(
+        "session", help="validate the stored session and print fan info"
+    )
+    p_sess.add_argument(
+        "--cache-cookies",
+        action="store_true",
+        help="save cookies to scratch so work needing the app DOWN still authenticates",
+    )
 
     p_fetch = sub.add_parser("fetch", help="fetch one URL and report on it")
     p_fetch.add_argument("url")
@@ -1423,6 +1522,16 @@ def main() -> int:
     p_cap.add_argument("--captured-at", required=True, help="ISO date, e.g. 2026-08-06")
     p_cap.add_argument("--fan-id", help="extra secret to assert absent")
 
+    p_probe = sub.add_parser("probe", help="find the rate limit (run LAST, app quit)")
+    p_probe.add_argument(
+        "--endpoint", choices=("album_page", "discover_api"), default="discover_api"
+    )
+    p_probe.add_argument("--max", type=int, default=120)
+    p_probe.add_argument("--delay", type=float, default=0.4)
+    p_probe.add_argument("--report-every", type=int, default=10)
+    p_probe.add_argument("--yes", action="store_true")
+    p_probe.add_argument("--allow-app-running", action="store_true")
+
     p_ctx = sub.add_parser("context", help="print text around a needle in a capture")
     p_ctx.add_argument("file")
     p_ctx.add_argument("needle")
@@ -1454,6 +1563,8 @@ def main() -> int:
         return cmd_wishlist_remove(args)
     if args.cmd == "capture":
         return cmd_capture(args)
+    if args.cmd == "probe":
+        return cmd_probe(args)
     return 1
 
 

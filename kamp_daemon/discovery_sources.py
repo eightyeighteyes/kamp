@@ -17,7 +17,8 @@ from __future__ import annotations
 import logging
 import time as _time
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
+
+from kamp_core.proxy_hosts import FETCHABLE_HOSTS, host_allowed
 
 from .bandcamp_ratelimit import BandcampGovernor, get_governor
 from .discovery import (
@@ -53,19 +54,15 @@ logger = logging.getLogger(__name__)
 
 DISCOVER_API_URL = "https://bandcamp.com/api/discover/1/discover_web"
 
-# Mirrors _validate_proxy_url's rule in kamp_core/server.py exactly:
-# `host == h or host.endswith("." + h)`. Approximating it with a bare suffix test
-# would reject `bandcamp.com` itself — which is where the discover API lives.
-#
-# A Bandcamp Pro custom domain matches neither, so a candidate pointing at one is
-# unfetchable in every packaged build (~1% of a real collection) and is skipped
-# rather than attempted.
-_FETCHABLE_HOSTS = ("bandcamp.com",)
-
 
 def _is_fetchable(url: str) -> bool:
-    host = (urlparse(url).hostname or "").lower()
-    return any(host == h or host.endswith(f".{h}") for h in _FETCHABLE_HOSTS)
+    """True if discovery may fetch *url*.
+
+    A Bandcamp Pro custom domain matches nothing in FETCHABLE_HOSTS, so a
+    candidate pointing at one is unfetchable in every packaged build (~1% of a
+    real collection) and is skipped rather than attempted.
+    """
+    return host_allowed(url, FETCHABLE_HOSTS)
 
 
 class RateLimitedError(RuntimeError):

@@ -55,6 +55,7 @@ from kamp_core.library import (
 )
 from kamp_core.discovery_api import register_discovery_routes
 from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
+from kamp_core.proxy_hosts import ALLOWED_PROXY_HOSTS, host_allowed
 
 # ---------------------------------------------------------------------------
 # Playback URI resolution
@@ -870,10 +871,10 @@ class ReorderPlaylistRequest(BaseModel):
 # Only requests targeting these hostnames (or subdomains) may be forwarded to
 # Electron's net.fetch, which carries Bandcamp session cookies.  This prevents
 # a malicious extension or local process from exfiltrating credentials to an
-# arbitrary host.
-_ALLOWED_PROXY_HOSTS: frozenset[str] = frozenset(
-    {"bandcamp.com", "f4.bcbits.com", "t4.bcbits.com"}
-)
+# arbitrary host.  Defined in kamp_core.proxy_hosts so the discovery fetchers and
+# the crate art proxy share one rule rather than three copies of it (KAMP-649);
+# re-exported here because it was this module's name first.
+_ALLOWED_PROXY_HOSTS = ALLOWED_PROXY_HOSTS
 
 # SVG template for playlist placeholder art (KAMP-441).
 # __TITLE__ is substituted with the (possibly-truncated) playlist title at request time.
@@ -999,11 +1000,10 @@ def _track_out(index: LibraryIndex, track: Track) -> TrackOut:
 
 
 def _validate_proxy_url(url: str) -> str:
-    parsed = urlparse(url)
-    host = parsed.hostname or ""
-    if not any(host == h or host.endswith(f".{h}") for h in _ALLOWED_PROXY_HOSTS):
+    if not host_allowed(url, _ALLOWED_PROXY_HOSTS):
         raise HTTPException(
-            status_code=422, detail=f"Proxy URL host not allowed: {host}"
+            status_code=422,
+            detail=f"Proxy URL host not allowed: {urlparse(url).hostname or ''}",
         )
     return url
 
@@ -4650,6 +4650,7 @@ def create_app(
         index=index,
         broadcast=_broadcast,
         on_build_start=on_crate_build_start,
+        art_cache_dir=art_cache_dir,
     )
 
     return app

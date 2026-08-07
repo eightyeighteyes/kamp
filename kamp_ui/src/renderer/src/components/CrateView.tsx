@@ -1,6 +1,6 @@
-// The Crate (KAMP-650) — a crate of ten records to dig through.
+// Crate (KAMP-650) — a crate of ten records to dig through.
 //
-// User-facing name is "The Crate"; `discovery` stays the code/API namespace.
+// User-facing name is "Crate"; `discovery` stays the code/API namespace.
 // The whole crate arrives in one `discovery.crate` snapshot and is seeded from
 // GET /api/v1/discovery/crate on every WS (re)connect, since _broadcast no-ops
 // with no client attached.
@@ -443,7 +443,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
         <ul
           className="crate-rail"
           role="listbox"
-          aria-label="The Crate"
+          aria-label="Crate"
           ref={railRef}
           tabIndex={-1}
         >

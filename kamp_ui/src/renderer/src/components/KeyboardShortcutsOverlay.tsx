@@ -39,7 +39,7 @@ const GROUPS: Group[] = [
     shortcuts: [{ keys: ['Shift', 'click'], description: 'Range select in Next Up' }]
   },
   {
-    label: 'The Crate',
+    label: 'Crate',
     shortcuts: [
       {
         keys: [',', '.'],

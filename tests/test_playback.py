@@ -2497,7 +2497,7 @@ class TestMpvPlaybackEngine:
     def test_metering_off_drops_only_the_metering_flags(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The Crate's preview engine runs without metering (KAMP-651).
+        """The Crate preview engine runs without metering (KAMP-651).
 
         What must survive is the reason KAMP-519 exists: pause/resume/stop/mute
         are pure script-messages, so --script and both afade filters are not

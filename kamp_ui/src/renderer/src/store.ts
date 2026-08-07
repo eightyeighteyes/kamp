@@ -228,7 +228,7 @@ type PlayerStore = {
   reorderDownloadQueue: (orderedQueuedIds: string[]) => Promise<void>
   retryDownload: (providerItemId: string) => Promise<void>
   cancelDownload: (providerItemId: string) => Promise<void>
-  // KAMP-650: The Crate
+  // KAMP-650: the Crate
   loadCrate: () => Promise<void>
   setCrate: (snapshot: CrateSnapshot) => void
   newCrate: () => Promise<void>
@@ -926,7 +926,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
     }
   },
   // ---------------------------------------------------------------------------
-  // The Crate (KAMP-650)
+  // Crate (KAMP-650)
   // ---------------------------------------------------------------------------
   loadCrate: async () => {
     try {

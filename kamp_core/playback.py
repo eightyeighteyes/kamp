@@ -1096,7 +1096,7 @@ class MpvPlaybackEngine:
         """Spawn an mpv and connect to it.
 
         *metering* off drops the astats filter graph and the ffmpeg log level
-        that feed :attr:`on_audio_level`. The Crate's preview engine (KAMP-651)
+        that feed :attr:`on_audio_level`. the Crate's preview engine (KAMP-651)
         turns it off: its levels must never reach the main VU meter, and without
         it mpv writes ~20 lines a second into a pipe for nobody. Leaving
         ``on_audio_level`` unset would also suppress the meter, but only because

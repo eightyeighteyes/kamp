@@ -76,7 +76,7 @@ registerBuiltInPanel({
 registerBuiltInPanel({
   id: 'kamp.crate',
   // User-facing name (KAMP-643); `discovery` stays the code/API namespace.
-  title: 'The Crate',
+  title: 'Crate',
   defaultSlot: 'main',
   compatibleSlots: ['main'],
   component: CrateView
@@ -134,7 +134,7 @@ export default function App(): React.JSX.Element {
   const configuredLibraryPath = useStore((s) => s.configuredLibraryPath)
   const activeView = useStore((s) => s.activeView)
   const setActiveView = useStore((s) => s.setActiveView)
-  // KAMP-650: gates The Crate tab. Null until loadConfig() resolves — see the
+  // KAMP-650: gates the Crate tab. Null until loadConfig() resolves — see the
   // ringPanels filter and the force-switch effect below, both of which have to
   // distinguish "not loaded yet" from "disconnected".
   const configValuesForCrate = useStore((s) => s.configValues)
@@ -278,7 +278,7 @@ export default function App(): React.JSX.Element {
           void loadQueue()
           void loadConfig()
           void useStore.getState().loadDownloads() // KAMP-568: seed Downloads view
-          void useStore.getState().loadCrate() // KAMP-650: seed The Crate
+          void useStore.getState().loadCrate() // KAMP-650: seed the Crate
           void useStore.getState().loadPreview() // KAMP-651: seed the preview
           // Reconcile pip state in case deferred_op.completed was missed
           // while the WS was disconnected.
@@ -361,7 +361,7 @@ export default function App(): React.JSX.Element {
         (items, pausedUntil) => {
           useStore.getState().setDownloadQueue(items, pausedUntil)
         },
-        // KAMP-650: full crate snapshot → The Crate store slice. Fires once per
+        // KAMP-650: full crate snapshot → the Crate store slice. Fires once per
         // placed record during a build, so the rail fills in as it is dug.
         (snapshot) => {
           useStore.getState().setCrate(snapshot)
@@ -486,7 +486,7 @@ export default function App(): React.JSX.Element {
     return window.api.onCycleView((direction) => cycleViewRef.current(direction))
   }, [])
 
-  // KAMP-650: leave The Crate if Bandcamp gets disconnected while you are in it.
+  // KAMP-650: leave the Crate if Bandcamp gets disconnected while you are in it.
   // The tab is filtered out of ringPanels when disconnected, and cycleView
   // early-returns when the current view is not a ring member, so without this
   // Ctrl+Tab goes dead. Gated on configValues being loaded: it is null until
@@ -632,7 +632,7 @@ export default function App(): React.JSX.Element {
   // The view-cycle ring (KAMP-560) is exactly the rendered top-level tabs: main-slot
   // panels minus modal views. Downloads (KAMP-585) is an icon, not a tab, so it is
   // excluded. Single source of truth — used by both the rail render and cycleView.
-  // The Crate (KAMP-650) is additionally gated on Bandcamp: with no account there
+  // Crate (KAMP-650) is additionally gated on Bandcamp: with no account there
   // is nothing to dig. `configValues` is null until loadConfig() resolves and
   // `?? false` reads that as disconnected, so the tab appears a beat after launch
   // rather than flickering out — and the force-switch below is gated on the same

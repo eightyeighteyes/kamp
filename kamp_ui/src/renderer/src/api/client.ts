@@ -565,7 +565,7 @@ export const cancelDownload = (id: string): Promise<{ ok: boolean }> =>
   del(`/api/v1/downloads/${encodeURIComponent(id)}`)
 
 // ---------------------------------------------------------------------------
-// The Crate (KAMP-650) — /api/v1/discovery surface
+// Crate (KAMP-650) — /api/v1/discovery surface
 // ---------------------------------------------------------------------------
 
 // One recommended album; mirrors LibraryIndex.crate_items(). Also the item shape
@@ -1201,7 +1201,7 @@ export function connectStateStream(
   // KAMP-568: full download-queue snapshot for the Downloads view. Appended last
   // so the existing positional callbacks keep their indices.
   onDownloadQueue?: (items: DownloadItem[], pausedUntil: number) => void,
-  // KAMP-650: full crate snapshot for The Crate view. Appended last, same reason.
+  // KAMP-650: full crate snapshot for the Crate view. Appended last, same reason.
   onDiscoveryCrate?: (snapshot: CrateSnapshot) => void,
   // KAMP-651: preview transport state. Appended last, same reason.
   onDiscoveryPreview?: (state: PreviewState) => void

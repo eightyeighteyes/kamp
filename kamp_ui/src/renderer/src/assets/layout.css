@@ -653,6 +653,10 @@ html[data-platform='win32'] .view-tabs {
 
 .collection-list li:focus-visible,
 .album-card:focus-visible,
+.crate-sleeve:focus-visible,
+.crate-action:focus-visible,
+.crate-dig-btn:focus-visible,
+.crate-undo-btn:focus-visible,
 .transport-btn:focus-visible,
 .back-btn:focus-visible,
 .play-all-btn:focus-visible,

@@ -47,6 +47,13 @@ export const TOOLTIPS = {
   // Downloads
   DOWNLOADS_VIEW: 'Downloads',
 
+  // The Crate (KAMP-650). The clerk card's tooltip is the plain mechanical
+  // answer to "why am I seeing this?" — the shelf tag is the short version.
+  CRATE_WHY: 'Picked from your own library and listening — nothing leaves this machine',
+  CRATE_WISHLIST_SOON: 'Wishlisting from Kamp is coming — copy the link for now',
+  CRATE_COPY: 'Copy link (C)',
+  CRATE_PASS: 'Pass (X)',
+
   // Track / album favorites
   ALBUM_FAVORITE_ADD: 'Add to favorites',
   ALBUM_FAVORITE_REMOVE: 'Remove from favorites'

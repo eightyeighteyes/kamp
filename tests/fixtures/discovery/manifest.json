@@ -1,0 +1,59 @@
+{
+  "album_page_with_recs": {
+    "bytes": 340923,
+    "captured_at": "2026-08-06",
+    "logged_in": false,
+    "method": "GET",
+    "note": "Anonymous capture: this repo is public and a logged-in page embeds live crumbs and fan_id.",
+    "request_headers": {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    },
+    "sha256": "bf9820b588d96dbf53f9504c11e452130896148d26d4a7f2d5dea14bdb0d3bea",
+    "source_url": "https://floatingpoints.bandcamp.com/album/promises",
+    "status": 200,
+    "transport": "direct"
+  },
+  "discover_root": {
+    "bytes": 103983,
+    "captured_at": "2026-08-06",
+    "logged_in": false,
+    "method": "GET",
+    "note": "Anonymous capture: this repo is public and a logged-in page embeds live crumbs and fan_id.",
+    "request_headers": {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    },
+    "sha256": "e7c72cfb3c0e1f63ae267e9146cd21b9a1dc075bacc2365429a1a88f741f63e0",
+    "source_url": "https://bandcamp.com/discover",
+    "status": 200,
+    "transport": "direct"
+  },
+  "discover_web_ambient_top": {
+    "bytes": 25299,
+    "captured_at": "2026-08-06",
+    "logged_in": false,
+    "method": "POST",
+    "note": "Anonymous: is_owned/is_wishlisted are present but always false without a session; their authenticated behaviour is in docs/discovery-recon.md.",
+    "request_body": {
+      "category_id": 0,
+      "cursor": null,
+      "followed_bands": false,
+      "geoname_id": 0,
+      "include_result_types": [
+        "a"
+      ],
+      "size": 20,
+      "slice": "top",
+      "tag_norm_names": [
+        "ambient"
+      ],
+      "time_facet_id": null
+    },
+    "request_headers": {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    },
+    "sha256": "67c864e544967f83c91de4c2f34b24ffa26d6ae8c7153324a7a7e6741856cf11",
+    "source_url": "https://bandcamp.com/api/discover/1/discover_web",
+    "status": 200,
+    "transport": "direct"
+  }
+}

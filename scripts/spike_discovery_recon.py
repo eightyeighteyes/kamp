@@ -265,9 +265,41 @@ class DirectTransport:
             headers=dict(resp.headers),
         )
 
-    def post_json(self, url: str, payload: Any, timeout: int = 25) -> Fetched:
+    def post_json(
+        self,
+        url: str,
+        payload: Any,
+        timeout: int = 25,
+        headers: dict[str, str] | None = None,
+    ) -> Fetched:
         start = time.monotonic()
-        resp = self.session.post(url, json=payload, timeout=timeout)
+        resp = self.session.post(url, json=payload, timeout=timeout, headers=headers)
+        return Fetched(
+            status=resp.status_code,
+            text=resp.text,
+            content_type=resp.headers.get("Content-Type", ""),
+            final_url=resp.url,
+            elapsed=time.monotonic() - start,
+            transport=self.name,
+            headers=dict(resp.headers),
+        )
+
+    def post_form(
+        self,
+        url: str,
+        payload: Any,
+        timeout: int = 25,
+        headers: dict[str, str] | None = None,
+    ) -> Fetched:
+        """Form-encoded POST — what the browser actually does for ``*_cb`` endpoints.
+
+        Has no relay equivalent: ``_ProxySession._fetch`` accepts only ``json=``
+        and drops a ``data=`` kwarg into ``**_kwargs``.  Kept here specifically to
+        compare against :meth:`post_json` and settle whether shipped builds can
+        perform this call at all.
+        """
+        start = time.monotonic()
+        resp = self.session.post(url, data=payload, timeout=timeout, headers=headers)
         return Fetched(
             status=resp.status_code,
             text=resp.text,
@@ -913,6 +945,244 @@ def cmd_facets(args: argparse.Namespace) -> int:
     return 0
 
 
+WISHLIST_API = "https://bandcamp.com/api/fancollection/1/wishlist_items"
+COLLECT_URL = "https://bandcamp.com/collect_item_cb"
+UNCOLLECT_URL = "https://bandcamp.com/uncollect_item_cb"
+
+
+def fetch_crumbs(transport: Any, page_url: str) -> dict[str, str]:
+    """Return the ``js-crumbs-data`` map from a logged-in page.
+
+    Crumbs are per-action CSRF tokens shaped ``|<action>|<ts>|<hmac>=``, embedded
+    in a ``<meta id="js-crumbs-data">`` tag on any logged-in page.  They are
+    short-lived: the server answers a stale one with HTTP 403 and
+    ``{"error": "invalid_crumb", "crumb": "<fresh>"}``, which is the documented
+    refresh path (the site's own ``Crumb.ajax`` retries twice on exactly that).
+    """
+    got = transport.get(page_url)
+    m = re.search(r'id="js-crumbs-data"[^>]*data-crumbs="([^"]+)"', got.text)
+    if not m:
+        return {}
+    crumbs: dict[str, str] = json.loads(html_lib.unescape(m.group(1)))
+    return crumbs
+
+
+def fan_id_of(transport: Any) -> int:
+    got = transport.get("https://bandcamp.com/api/fan/2/collection_summary")
+    return int(json.loads(got.text)["fan_id"])
+
+
+def wishlist_ids(transport: Any, fan_id: int, count: int = 100) -> set[str]:
+    payload = {
+        "fan_id": fan_id,
+        "count": count,
+        "older_than_token": f"{int(time.time())}:0:a::",
+    }
+    got = transport.post_json(WISHLIST_API, payload)
+    if got.status != 200:
+        raise RuntimeError(f"wishlist_items HTTP {got.status}: {got.text[:200]}")
+    body = json.loads(got.text)
+    return {str(i.get("item_id")) for i in body.get("items", []) if i.get("item_id")}
+
+
+def collect_ok(got: Fetched) -> bool:
+    """True only if a ``*_cb`` call really succeeded.
+
+    These endpoints answer **HTTP 200 with an error body** — a JSON-encoded
+    request comes back 200 carrying
+    ``{"error":true,"ok":false,"exception":"...InsistError...no crumb..."}``.
+    Checking the status alone reports success for a call that did nothing, which
+    is precisely how the first round trip left an album on the account: the undo
+    step saw 200, skipped its form-encoded fallback, and never actually removed.
+    """
+    if got.status != 200:
+        return False
+    try:
+        body = json.loads(got.text)
+    except json.JSONDecodeError:
+        return False
+    return bool(body.get("ok")) and not body.get("error")
+
+
+def cmd_wishlist_remove(args: argparse.Namespace) -> int:
+    """Remove one album from the wishlist (form-encoded — the encoding that works)."""
+    data = load_session()
+    transport = make_transport(args.transport, data)
+    fan_id = fan_id_of(transport)
+    crumbs = fetch_crumbs(transport, args.album_url)
+    if "uncollect_item_cb" not in crumbs:
+        print(f"  ✗ no uncollect crumb; keys={sorted(crumbs)[:8]}")
+        return 2
+    payload = {
+        "fan_id": fan_id,
+        "item_id": int(args.item_id),
+        "item_type": args.item_type,
+        "band_id": int(args.band_id),
+        "crumb": crumbs["uncollect_item_cb"],
+    }
+    got = transport.post_form(
+        UNCOLLECT_URL,
+        payload,
+        headers={
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": args.album_url,
+            "Origin": "https://bandcamp.com",
+        },
+    )
+    print(f"[remove] status={got.status} ok={collect_ok(got)} body={got.text[:140]!r}")
+    time.sleep(1.5)
+    page = transport.get(args.album_url)
+    ftd = extract_pagedata(page.text).get("fan_tralbum_data") or {}
+    print(f"  verify: album page reports is_wishlisted={ftd.get('is_wishlisted')}")
+    return 0 if not ftd.get("is_wishlisted") else 2
+
+
+def cmd_wishlist(args: argparse.Namespace) -> int:
+    """Read the fan wishlist — the exclusion source, and safe (no mutation)."""
+    data = load_session()
+    transport = make_transport(args.transport, data)
+    fan_id = fan_id_of(transport)
+    payload = {
+        "fan_id": fan_id,
+        "count": args.count,
+        "older_than_token": f"{int(time.time())}:0:a::",
+    }
+    print(f"[wishlist] POST {WISHLIST_API} via {transport.name}")
+    got = transport.post_json(WISHLIST_API, payload)
+    print(f"  status={got.status} in {got.elapsed:.2f}s ct={got.content_type}")
+    if got.status != 200:
+        print(f"  ✗ body head: {got.text[:300]!r}")
+        return 2
+    body = json.loads(got.text)
+    items = body.get("items", [])
+    print(
+        f"  ✓ {len(items)} item(s); more_available={body.get('more_available')} "
+        f"last_token={'yes' if body.get('last_token') else 'no'}"
+    )
+    if items:
+        print(f"  item keys: {sorted(items[0])[:18]}")
+    for i in items[: args.show]:
+        print(
+            f"    - {i.get('band_name')} — {i.get('item_title')} "
+            f"(item_id={i.get('item_id')}, type={i.get('item_type')})"
+        )
+    return 0
+
+
+def cmd_wishlist_roundtrip(args: argparse.Namespace) -> int:
+    """Add an album to the wishlist, verify, then remove it and verify — net zero.
+
+    A crumb that merely parses proves nothing about field names, item_type, or
+    referer checks, so the only honest verdict for KAMP-653 comes from a real 200.
+    Doing it as a round trip means the account ends where it started.
+
+    Also settles the question the relay poses: ``_ProxySession`` can send only
+    JSON bodies, while the site's own ``Crumb.ajax`` defaults to form encoding.
+    Both encodings are tried, and which ones work is the actual finding.
+    """
+    if not args.yes:
+        print("Refusing to mutate the account without --yes.")
+        return 1
+
+    data = load_session()
+    transport = make_transport(args.transport, data)
+    fan_id = fan_id_of(transport)
+
+    print(f"[roundtrip] target item_id={args.item_id} band_id={args.band_id}")
+    print(f"  transport={transport.name} fan_id={fan_id}")
+
+    # Verify via the album page's own fan_tralbum_data rather than by walking the
+    # wishlist: the walk pages at 100 and this account has more than that, so a
+    # first-page check could report "absent" for something already wishlisted.
+    # The album page carries an exact per-item is_wishlisted flag for one request.
+    def is_wishlisted() -> bool | None:
+        got = transport.get(args.album_url)
+        blob = extract_pagedata(got.text)
+        ftd = blob.get("fan_tralbum_data") or {}
+        return ftd.get("is_wishlisted")
+
+    before = is_wishlisted()
+    print(f"  album page reports is_wishlisted={before} before we touch anything")
+    if before:
+        print("  ✗ target is already wishlisted — pick another album")
+        return 1
+
+    crumbs = fetch_crumbs(transport, args.crumb_page)
+    if "collect_item_cb" not in crumbs:
+        print(f"  ✗ no collect_item_cb crumb; keys={sorted(crumbs)[:8]}")
+        return 2
+    print(
+        f"  crumbs found: collect={('collect_item_cb' in crumbs)} "
+        f"uncollect={('uncollect_item_cb' in crumbs)}"
+    )
+
+    base = {
+        "fan_id": fan_id,
+        "item_id": int(args.item_id),
+        # "album", not the discover API's "a" — the same concept is spelled
+        # differently on the two surfaces, and the wrong one earns a bare 400.
+        "item_type": args.item_type,
+        "band_id": int(args.band_id),
+    }
+    # jQuery's $.ajax sets X-Requested-With, and *_cb endpoints are referer-checked.
+    ajax_headers = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": args.album_url,
+        "Origin": "https://bandcamp.com",
+    }
+
+    # Try JSON first: it is the only encoding the relay can express, so if it
+    # works, shipped builds can wishlist without touching _ProxySession.
+    print("\n  [add] attempt 1: JSON body (the encoding the relay can send)")
+    got = transport.post_json(
+        COLLECT_URL, {**base, "crumb": crumbs["collect_item_cb"]}, headers=ajax_headers
+    )
+    print(f"    status={got.status} ok={collect_ok(got)} body={got.text[:160]!r}")
+    json_worked = collect_ok(got)
+
+    if not json_worked and args.transport == "direct":
+        print("\n  [add] attempt 2: form-encoded (what the browser sends)")
+        form = dict(base)
+        form["crumb"] = crumbs["collect_item_cb"]
+        got = transport.post_form(COLLECT_URL, form, headers=ajax_headers)
+        print(f"    status={got.status} ok={collect_ok(got)} body={got.text[:160]!r}")
+
+    time.sleep(1.5)
+    landed = is_wishlisted()
+    print(f"\n  verify: album page now reports is_wishlisted={landed}")
+    if not landed:
+        print("  ✗ add did not land — recording as no-go, nothing to undo")
+        return 2
+
+    # Undo, so the account ends exactly where it started.
+    print("\n  [remove] restoring account state")
+    uncrumb = crumbs.get("uncollect_item_cb")
+    got = transport.post_json(
+        UNCOLLECT_URL, {**base, "crumb": uncrumb}, headers=ajax_headers
+    )
+    print(f"    json status={got.status} ok={collect_ok(got)} body={got.text[:120]!r}")
+    # Gate the fallback on the parsed body, never the status: these endpoints
+    # return 200 for a failed call, and trusting the status here is what stranded
+    # an album on the account the first time round.
+    if not collect_ok(got) and args.transport == "direct":
+        form = dict(base)
+        form["crumb"] = uncrumb or ""
+        got = transport.post_form(UNCOLLECT_URL, form, headers=ajax_headers)
+        print(
+            f"    form status={got.status} ok={collect_ok(got)} body={got.text[:120]!r}"
+        )
+
+    time.sleep(1.5)
+    still = is_wishlisted()
+    gone = not still
+    print(f"  verify: album page now reports is_wishlisted={still}")
+    if not gone:
+        print("  ! LEFT ON ACCOUNT — remove it manually on bandcamp.com")
+        return 2
+    print("\n  ✓ round trip complete, account state restored")
+    return 0
+
+
 def cmd_context(args: argparse.Namespace) -> int:
     """Print characters around a needle in a saved capture (grep is line-based)."""
     path = SCRATCH / args.file
@@ -981,6 +1251,30 @@ def main() -> int:
     p_fac = sub.add_parser("facets", help="prove/disprove each discover facet")
     p_fac.add_argument("--delay", type=float, default=1.5)
 
+    p_wl = sub.add_parser("wishlist", help="read the fan wishlist (no mutation)")
+    p_wl.add_argument("--count", type=int, default=100)
+    p_wl.add_argument("--show", type=int, default=5)
+
+    p_rt = sub.add_parser(
+        "wishlist-roundtrip", help="add then remove one album (net zero); needs --yes"
+    )
+    p_rt.add_argument("--item-id", required=True)
+    p_rt.add_argument("--band-id", required=True)
+    p_rt.add_argument("--item-type", default="a")
+    p_rt.add_argument(
+        "--album-url", required=True, help="target album page, for verification"
+    )
+    p_rt.add_argument(
+        "--crumb-page", required=True, help="logged-in page to crumb from"
+    )
+    p_rt.add_argument("--yes", action="store_true", help="required to mutate")
+
+    p_rm = sub.add_parser("wishlist-remove", help="remove one album from the wishlist")
+    p_rm.add_argument("--item-id", required=True)
+    p_rm.add_argument("--band-id", required=True)
+    p_rm.add_argument("--item-type", default="album")
+    p_rm.add_argument("--album-url", required=True)
+
     p_ctx = sub.add_parser("context", help="print text around a needle in a capture")
     p_ctx.add_argument("file")
     p_ctx.add_argument("needle")
@@ -1004,6 +1298,12 @@ def main() -> int:
         return cmd_discover(args)
     if args.cmd == "facets":
         return cmd_facets(args)
+    if args.cmd == "wishlist":
+        return cmd_wishlist(args)
+    if args.cmd == "wishlist-roundtrip":
+        return cmd_wishlist_roundtrip(args)
+    if args.cmd == "wishlist-remove":
+        return cmd_wishlist_remove(args)
     return 1
 
 

@@ -211,6 +211,31 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
   return res.json() as Promise<T>
 }
 
+// Like post(), but surfaces the server's `detail` the way del()/patch() do.
+// post() has ~30 call sites and throws a bare "409 Conflict — <path>", which
+// loses the one thing worth telling the user (KAMP-650).
+async function postWithDetail<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'POST',
+    headers:
+      body !== undefined ? _authHeaders({ 'Content-Type': 'application/json' }) : _authHeaders(),
+    body: body !== undefined ? JSON.stringify(body) : undefined
+  })
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`
+    try {
+      const json = (await res.json()) as { detail?: string }
+      if (json.detail) message = json.detail
+    } catch {
+      // JSON parse failed — fall back to the HTTP status message.
+    }
+    const err = new Error(message) as Error & { status?: number }
+    err.status = res.status
+    throw err
+  }
+  return res.json() as Promise<T>
+}
+
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, { headers: _authHeaders(), signal })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`)
@@ -398,8 +423,12 @@ export const scanLibrary = (): Promise<ScanResult> => post('/api/v1/library/scan
 export const setLibraryPath = (path: string): Promise<{ ok: boolean }> =>
   post('/api/v1/config/library-path', { path })
 
+// Keep in step with the allowlists in kamp_core/server.py and kamp_daemon/config.py:
+// a view the server rejects silently reverts to library on the next relaunch.
+export type ActiveView = 'library' | 'now-playing' | 'home' | 'downloads' | 'crate'
+
 export type UiState = {
-  active_view: 'library' | 'now-playing' | 'home' | 'downloads'
+  active_view: ActiveView
   sort_order:
     | 'album_artist'
     | 'album'
@@ -412,9 +441,8 @@ export type UiState = {
 }
 
 export const getUiState = (): Promise<UiState> => get('/api/v1/ui')
-export const setActiveViewApi = (
-  view: 'library' | 'now-playing' | 'home' | 'downloads'
-): Promise<{ ok: boolean }> => post('/api/v1/ui/active-view', { view })
+export const setActiveViewApi = (view: ActiveView): Promise<{ ok: boolean }> =>
+  post('/api/v1/ui/active-view', { view })
 export const setSortOrderApi = (
   sortOrder:
     | 'album_artist'
@@ -535,6 +563,60 @@ export const retryDownload = (id: string): Promise<{ ok: boolean }> =>
 
 export const cancelDownload = (id: string): Promise<{ ok: boolean }> =>
   del(`/api/v1/downloads/${encodeURIComponent(id)}`)
+
+// ---------------------------------------------------------------------------
+// The Crate (KAMP-650) — /api/v1/discovery surface
+// ---------------------------------------------------------------------------
+
+// One recommended album; mirrors LibraryIndex.crate_items(). Also the item shape
+// of the `discovery.crate` WS snapshot.
+export type CrateItem = {
+  id: number // AUTOINCREMENT and never reused — the key for /items/{id}/* and art
+  provider: string
+  provider_item_id: string
+  item_url: string
+  artist: string
+  title: string
+  art_url: string | null // nullable — gate crateArtUrl() on this being set
+  label: string
+  release_date: string
+  criterion: string // provider-scoped label, e.g. 'also_like'; never shown raw
+  why: string // the clerk-card line
+  seed: Record<string, unknown> // parsed seed_json; {} when the blob was malformed
+  crate_no: number | null
+  position: number | null
+  state: 'fresh' | 'previewed' | 'wishlisted' | 'dismissed' | 'purchased'
+  first_seen_at: number
+}
+
+export type CrateState = 'idle' | 'building' | 'ready' | 'empty' | 'error' | 'paused'
+
+// The whole crate in one payload. `filled`/`short` are authoritative: the daemon
+// derives them from the stored rows whenever no build is running, so they are
+// still right after a restart (KAMP-650).
+export type CrateSnapshot = {
+  state: CrateState
+  crate_no: number | null
+  filled: number
+  short: boolean
+  paused_until: number // Unix seconds; 0 when running
+  hints: string[] // the user's top genres, for the digging status lines
+  thin: boolean // a library with no listening history yet — chart picks only
+  items: CrateItem[]
+}
+
+export const getCrate = (): Promise<CrateSnapshot> => get('/api/v1/discovery/crate')
+
+// 409 while a crate is already building — postWithDetail keeps the server's
+// message ("a crate is already building") instead of a bare status line.
+export const newCrate = (): Promise<{ started: boolean }> =>
+  postWithDetail('/api/v1/discovery/crate/new')
+
+export const dismissCrateItem = (itemId: number): Promise<{ ok: boolean }> =>
+  post(`/api/v1/discovery/items/${itemId}/dismiss`)
+
+export const crateItemUrlCopied = (itemId: number): Promise<{ ok: boolean }> =>
+  post(`/api/v1/discovery/items/${itemId}/url-copied`)
 
 // ---------------------------------------------------------------------------
 // Player
@@ -1030,6 +1112,12 @@ export type DownloadQueueMessage = {
   // which is indistinguishable from a hang.
   paused_until?: number
 }
+// KAMP-650: the whole crate in one snapshot, broadcast on every build transition
+// and on every per-item event. Same shape as GET /api/v1/discovery/crate, which
+// is the source of truth on mount and reconnect — _broadcast no-ops with no
+// client attached, so a client that missed the build has to ask.
+export type DiscoveryCrateMessage = { type: 'discovery.crate' } & CrateSnapshot
+
 export type ServerMessage =
   | StateMessage
   | TrackChangedMessage
@@ -1041,6 +1129,7 @@ export type ServerMessage =
   | MagicPlaylistUpdatedMessage
   | PipelineStageMessage
   | DownloadQueueMessage
+  | DiscoveryCrateMessage
 
 export async function getDeferredOps(): Promise<{ op_id: number; track_id: number }[]> {
   const res = await fetch(`${BASE_URL}/api/v1/deferred-ops`, {
@@ -1070,7 +1159,9 @@ export function connectStateStream(
   onAlbumPipelineStage?: (saleItemId: string | null, stage: string, committed: boolean) => void,
   // KAMP-568: full download-queue snapshot for the Downloads view. Appended last
   // so the existing positional callbacks keep their indices.
-  onDownloadQueue?: (items: DownloadItem[], pausedUntil: number) => void
+  onDownloadQueue?: (items: DownloadItem[], pausedUntil: number) => void,
+  // KAMP-650: full crate snapshot for The Crate view. Appended last, same reason.
+  onDiscoveryCrate?: (snapshot: CrateSnapshot) => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 
@@ -1092,8 +1183,10 @@ export function connectStateStream(
       else if (msg.type === 'magic_playlist.updated') onMagicPlaylistUpdated?.(msg.id)
       else if (msg.type === 'pipeline.stage')
         onAlbumPipelineStage?.(msg.sale_item_id ?? null, msg.stage, msg.committed ?? false)
-      else if (msg.type === 'download.queue')
-        onDownloadQueue?.(msg.items, msg.paused_until ?? 0)
+      else if (msg.type === 'download.queue') onDownloadQueue?.(msg.items, msg.paused_until ?? 0)
+      // DiscoveryCrateMessage is CrateSnapshot plus `type`, so it satisfies the
+      // callback as-is; the discriminator rides along inertly.
+      else if (msg.type === 'discovery.crate') onDiscoveryCrate?.(msg)
     } catch {
       // malformed message — ignore
     }

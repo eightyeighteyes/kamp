@@ -10,12 +10,28 @@
  */
 
 .crate-view {
+  /* One number for the content column. The rail is the widest thing in the
+     view (10 sleeves + gaps ≈ 810px), so this is sized from it rather than
+     from the card — set it too narrow and the rail wraps to two rows. */
+  --crate-width: 880px;
+
   display: flex;
   flex-direction: column;
   gap: 16px;
   padding: 16px 20px 24px;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* Everything sits in one centred column rather than hugging the left edge.
+   Only the blocks are centred — text inside the card stays left-aligned,
+   because centred body copy reads badly and the clerk card is a shelf tag. */
+.crate-banner,
+.crate-stage,
+.crate-empty {
+  width: 100%;
+  max-width: var(--crate-width);
+  margin-inline: auto;
 }
 
 .crate-banner {
@@ -69,6 +85,9 @@
   display: flex;
   gap: 20px;
   align-items: flex-start;
+  /* The card is narrower than the rail, so centring the pair keeps the two
+     visually stacked instead of the card sitting off to one side. */
+  justify-content: center;
 }
 
 .crate-focus--digging {
@@ -202,6 +221,7 @@
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  justify-content: center;
   list-style: none;
   padding: 10px 0 4px;
   margin: 0;

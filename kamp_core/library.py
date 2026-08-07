@@ -5061,6 +5061,21 @@ class LibraryIndex:
             self._conn.rollback()
             raise
 
+    def discovery_item(self, item_id: int) -> dict[str, Any] | None:
+        """One discovery candidate by row id, or None.
+
+        Deliberately not filtered on crate_no: a buffered row (KAMP-657) has art
+        worth showing too, and restricting this to promoted rows would make the
+        art proxy fail in a way that looks like a missing cover.
+        """
+        row = self._conn.execute(
+            "SELECT id, provider, provider_item_id, item_url, artist, title,"
+            "       art_url, crate_no, position, state"
+            " FROM discovery_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def crate_items(self, crate_no: int) -> list[dict[str, Any]]:
         """The cards of one crate, in slot order.
 

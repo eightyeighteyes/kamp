@@ -492,6 +492,34 @@ class TestCrateAssembly:
     def test_empty_crate_reads_as_empty(self, index: LibraryIndex) -> None:
         assert index.crate_items(99) == []
 
+    def test_single_item_lookup_carries_the_art_fields(
+        self, index: LibraryIndex
+    ) -> None:
+        """The art proxy resolves one item by id without loading a whole crate."""
+        item = self._buffered(
+            index,
+            "42",
+            artist="Band",
+            title="X",
+            art_url="https://f4.bcbits.com/img/a1_0.jpg",
+        )
+        row = index.discovery_item(item)
+        assert row is not None
+        assert row["provider"] == "bandcamp"
+        assert row["provider_item_id"] == "42"
+        assert row["art_url"] == "https://f4.bcbits.com/img/a1_0.jpg"
+
+    def test_single_item_lookup_works_before_promotion(
+        self, index: LibraryIndex
+    ) -> None:
+        """Buffered rows (crate_no NULL) must resolve too — KAMP-657 will show
+        art for candidates that have never been in a crate."""
+        item = self._buffered(index, "1", art_url="https://f4.bcbits.com/img/a2_0.jpg")
+        assert index.discovery_item(item) is not None
+
+    def test_unknown_item_lookup_is_none(self, index: LibraryIndex) -> None:
+        assert index.discovery_item(9999) is None
+
 
 # ---------------------------------------------------------------------------
 # Seed profile

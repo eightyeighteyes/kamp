@@ -42,6 +42,13 @@ class ParseResult:
 
     items: list[dict[str, Any]] = field(default_factory=list)
     marker_present: bool = False
+    #: Set by the parser when the response's *shape* was not understood. Each
+    #: surface decides what that means for itself, because the answer differs:
+    #: an HTML block that exists but yields no entries is drift, while a JSON
+    #: ``results: []`` is Bandcamp honestly saying it has nothing. Inferring drift
+    #: from "marker present and empty" got the JSON case backwards and warned on
+    #: every genuinely empty query.
+    drifted: bool = False
 
     def __bool__(self) -> bool:
         return bool(self.items)
@@ -50,10 +57,10 @@ class ParseResult:
         return len(self.items)
 
     def warn_if_drifted(self, surface: str, url: str) -> None:
-        if self.items or not self.marker_present:
+        if not self.drifted:
             return
         logger.warning(
-            "discovery: %s markup present but parsed 0 items from %s — "
+            "discovery: %s response was not understood from %s — "
             "the surface has probably drifted",
             surface,
             url,
@@ -76,6 +83,21 @@ def normalise_item_id(raw: Any) -> str:
     text = str(raw or "").strip()
     match = _ALBUM_ID_PREFIX.match(text)
     return match.group(1) if match else text
+
+
+def tag_slug(name: str) -> str:
+    """Convert a display genre name to Bandcamp's ``tag_norm_names`` spelling.
+
+    The discover API matches on normalised slugs — lowercase, hyphen-separated
+    (``rock``, ``indie-rock``, ``hip-hop-rap``) — while kamp's genres carry display
+    casing (``Rock``, ``Indie Rock``). Sending the display form is not an error:
+    the API cheerfully returns an empty result set for a tag it does not know, so
+    the criterion silently produces nothing and looks like a parser problem. This
+    was found by running the criteria against a real library.
+    """
+    slug = re.sub(r"[\s/_]+", "-", (name or "").strip().lower())
+    slug = re.sub(r"[^a-z0-9-]", "", slug)
+    return re.sub(r"-{2,}", "-", slug).strip("-")
 
 
 def strip_tracking(url: str) -> str:
@@ -134,6 +156,8 @@ def parse_also_like(html: str) -> ParseResult:
                 "fan_comment": _clean_text(comment.group(1)) if comment else "",
             }
         )
+    # The block is on the page but we understood none of it.
+    result.drifted = result.marker_present and not result.items
     return result
 
 
@@ -189,7 +213,13 @@ def parse_discover_results(payload: str | dict[str, Any]) -> ParseResult:
         body = payload
 
     rows = body.get("results")
-    result = ParseResult(marker_present=isinstance(rows, list))
+    # A present-but-empty `results` is an honest "nothing matched" — Bandcamp
+    # returns exactly that for a tag outside its vocabulary, which is a normal
+    # query outcome and must not be reported as drift. Drift on this surface means
+    # the response parsed as JSON but no longer has a results key at all.
+    result = ParseResult(
+        marker_present=isinstance(rows, list), drifted="results" not in body
+    )
     for row in rows or []:
         item_id = normalise_item_id(row.get("item_id"))
         if not item_id:
@@ -221,25 +251,43 @@ def release_year(release_date: str) -> int | None:
 # ---------------------------------------------------------------------------
 
 _DISCO_MARKER = 'id="music-grid"'
-_DISCO_ITEM = re.compile(r'data-item-id="((?:album|track)-\d+)"')
-_DISCO_GRID_LINK = re.compile(r'<a href="(/(?:album|track)/[^"]+)"')
+# Matched as whole <li> blocks rather than by zipping separate findall passes for
+# ids and hrefs: that only works while every entry has both, in the same order,
+# and fails by silently pairing the wrong id with the wrong album rather than by
+# returning nothing.
+_DISCO_ITEM = re.compile(
+    r'<li data-item-id="((?:album|track)-\d+)"(.*?)</li>', re.DOTALL
+)
+_DISCO_HREF = re.compile(r'<a href="(/(?:album|track)/[^"]+)"')
+_DISCO_TITLE = re.compile(r'<p class="title">\s*(.*?)\s*(?:<|$)', re.DOTALL)
+_DISCO_ART = re.compile(r"https://f4\.bcbits\.com/img/a(\d+)_")
 
 
 def parse_discography(html: str, *, base_url: str = "") -> ParseResult:
-    """Parse an artist's ``/music`` grid into item ids and URLs.
+    """Parse an artist's ``/music`` grid.
 
-    Grid entries carry ids as ``album-<n>`` and relative hrefs, so *base_url* (the
-    artist page) is needed to build absolute URLs.
+    Grid entries carry ids as ``album-<n>`` and *relative* hrefs, so *base_url*
+    (the artist page) is needed to build absolute URLs.
+
+    The grid gives no artist name — every entry belongs to the page's artist, so
+    the caller supplies it from the seed rather than parsing it back out.
     """
     result = ParseResult(marker_present=_DISCO_MARKER in html)
-    ids = _DISCO_ITEM.findall(html)
-    hrefs = _DISCO_GRID_LINK.findall(html)
     root = re.sub(r"/music/?$", "", base_url or "")
-    for raw_id, href in zip(ids, hrefs):
+    for raw_id, body in _DISCO_ITEM.findall(html):
+        href = _DISCO_HREF.search(body)
+        if not href:
+            continue
+        title = _DISCO_TITLE.search(body)
+        art = _DISCO_ART.search(body)
         result.items.append(
             {
                 "provider_item_id": normalise_item_id(raw_id),
-                "item_url": f"{root}{href}" if root else href,
+                "item_url": f"{root}{href.group(1)}" if root else href.group(1),
+                "title": _clean_text(title.group(1)) if title else "",
+                "art_url": art.group(0) + "0.jpg" if art else None,
+                "band_id": _attr(body, "data-band-id"),
             }
         )
+    result.drifted = result.marker_present and not result.items
     return result

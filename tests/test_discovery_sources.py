@@ -208,6 +208,14 @@ class TestGatherAgainstFixtures:
         assert payload["slice"] == "top"
         assert payload["include_result_types"] == ["a"]
 
+    def test_display_genres_are_sent_as_bandcamp_slugs(self) -> None:
+        """The profile carries "Indie Rock" so the clerk card can say it; the API
+        needs "indie-rock" or it answers with an empty set that looks like a bug."""
+        session = FakeSession(post_body='{"results": []}')
+        _source(session).gather(SeedProfile(top_genres=["Indie Rock"]), crate_budget())
+        _, payload = session.posts[0]
+        assert payload["tag_norm_names"] == ["indie-rock"]
+
     def test_owned_and_wishlisted_results_are_excluded(self) -> None:
         """Bandcamp does the exclusion for us on this surface; honour it."""
         payload = {
@@ -278,6 +286,52 @@ class TestGatherAgainstFixtures:
         session = FakeSession(post_body=json.dumps(payload))
         found = _source(session).gather(SeedProfile(top_genres=["x"]), crate_budget())
         assert [c.title for c in found] == ["Fine"]
+
+    def test_albums_the_user_already_owns_are_dropped(self) -> None:
+        """Only the discover surface reports ownership itself. A favourite artist's
+        discography is precisely where owned records cluster, so without this the
+        crate recommends the user their own collection — which a first end-to-end
+        run against the real library did.
+
+        The owned set comes from the profile's purchase_dates, so no database
+        access is needed inside the provider.
+        """
+        html = (
+            '<div id="music-grid">'
+            '<li data-item-id="album-111"><a href="/album/owned">'
+            '<p class="title">Already Yours</p></a></li>'
+            '<li data-item-id="album-222"><a href="/album/new">'
+            '<p class="title">Not Yet</p></a></li>'
+            "</div>"
+        )
+        session = FakeSession(get_body=html)
+        profile = SeedProfile(
+            favorite_artists=[
+                SeedArtist(name="Band", artist_page="https://band.bandcamp.com/music")
+            ],
+            purchase_dates={"111": 1.0},
+        )
+        found = _source(session).gather(profile, crate_budget())
+        assert [c.title for c in found] == ["Not Yet"]
+
+    def test_discography_candidates_take_their_artist_from_the_seed(self) -> None:
+        """The grid carries no artist name; every entry belongs to the page."""
+        html = (
+            '<div id="music-grid">'
+            '<li data-item-id="album-9"><a href="/album/x">'
+            '<p class="title">Record</p></a></li>'
+            "</div>"
+        )
+        profile = SeedProfile(
+            favorite_artists=[
+                SeedArtist(
+                    name="Frankie Rose", artist_page="https://fr.bandcamp.com/music"
+                )
+            ]
+        )
+        found = _source(FakeSession(get_body=html)).gather(profile, crate_budget())
+        assert found[0].artist == "Frankie Rose"
+        assert found[0].title == "Record"
 
     def test_duplicate_candidates_are_deduped_across_criteria(self) -> None:
         """~15% of recommendations recur across seeds."""

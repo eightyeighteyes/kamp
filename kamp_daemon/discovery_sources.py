@@ -34,6 +34,7 @@ from .discovery_bandcamp_parsers import (
     parse_discography,
     parse_discover_results,
     release_year,
+    tag_slug,
 )
 from .discovery_criteria import (
     OLD_ALBUM_YEARS,
@@ -179,9 +180,17 @@ class BandcampDiscoverySource(DiscoverySource):
         out: list[Candidate] = []
         seen: set[str] = set()
 
+        # Albums the user already owns. The discover surface reports is_owned
+        # itself, but album-page recommendations and the discography grid do not,
+        # and the discography of a favourite artist is precisely where owned
+        # records cluster — recommending someone their own collection is the
+        # clerk who does not know his own shop. The profile already carries these
+        # ids, so no database access is needed here.
+        owned = set(profile.purchase_dates)
+
         for criterion in criteria_for(profile):
             try:
-                found = self._run_criterion(criterion, profile, budget)
+                found = self._run_criterion(criterion, profile, budget, owned)
             except RateLimitedError as exc:
                 logger.warning("discovery: stopping gather early — %s", exc)
                 break
@@ -202,13 +211,17 @@ class BandcampDiscoverySource(DiscoverySource):
         return out
 
     def _run_criterion(
-        self, criterion: Criterion, profile: SeedProfile, budget: RequestBudget
+        self,
+        criterion: Criterion,
+        profile: SeedProfile,
+        budget: RequestBudget,
+        owned: set[str] | None = None,
     ) -> list[Candidate]:
         found: list[Candidate] = []
         for seed in criterion.seeds(profile):
             if not budget.allow(criterion.endpoint_class):
                 break
-            found.extend(self._run_seed(criterion, seed, budget))
+            found.extend(self._run_seed(criterion, seed, budget, owned or set()))
             if found:
                 # One good seed per criterion is enough for a crate; spending the
                 # rest of the budget deepening a single criterion would starve the
@@ -217,32 +230,48 @@ class BandcampDiscoverySource(DiscoverySource):
         return found
 
     def _run_seed(
-        self, criterion: Criterion, seed: Seed, budget: RequestBudget
+        self,
+        criterion: Criterion,
+        seed: Seed,
+        budget: RequestBudget,
+        owned: set[str],
     ) -> list[Candidate]:
         if criterion.surface == SURFACE_DISCOVER:
-            return self._discover(criterion, seed, budget)
+            return self._discover(criterion, seed, budget, owned)
         if criterion.surface == SURFACE_ALBUM_RECS:
             body = self._fetch(criterion.endpoint_class, str(seed.target), budget)
             if body is None:
                 return []
             result = parse_also_like(body)
             result.warn_if_drifted(criterion.surface, str(seed.target))
-            return self._to_candidates(criterion, seed, result)
+            return self._to_candidates(criterion, seed, result, owned)
         if criterion.surface == SURFACE_DISCOGRAPHY:
             body = self._fetch(criterion.endpoint_class, str(seed.target), budget)
             if body is None:
                 return []
             result = parse_discography(body, base_url=str(seed.target))
             result.warn_if_drifted(criterion.surface, str(seed.target))
-            return self._to_candidates(criterion, seed, result)
+            # The grid carries no artist name — every entry is the page's artist,
+            # which the seed already knows.
+            artist = str(seed.seed_data.get("artist", ""))
+            for item in result.items:
+                item.setdefault("artist", artist)
+            return self._to_candidates(criterion, seed, result, owned)
         logger.warning("discovery: unknown surface %r", criterion.surface)
         return []
 
     def _discover(
-        self, criterion: Criterion, seed: Seed, budget: RequestBudget
+        self,
+        criterion: Criterion,
+        seed: Seed,
+        budget: RequestBudget,
+        owned: set[str],
     ) -> list[Candidate]:
         params: dict[str, Any] = dict(seed.target)
-        tag = params.get("tag")
+        # Normalise here rather than in the criterion: the seed carries the display
+        # genre so the clerk card can say "you've been deep in Indie Rock lately",
+        # while the API needs "indie-rock".
+        tag = tag_slug(params.get("tag") or "")
         payload = {
             "category_id": 0,
             "tag_norm_names": [tag] if tag else [],
@@ -270,7 +299,7 @@ class BandcampDiscoverySource(DiscoverySource):
         ]
         if criterion.key == "older_than_ten":
             result.items = [item for item in result.items if self._is_old_enough(item)]
-        return self._to_candidates(criterion, seed, result)
+        return self._to_candidates(criterion, seed, result, owned)
 
     def _is_old_enough(self, item: dict[str, Any]) -> bool:
         year = release_year(item.get("release_date", ""))
@@ -280,10 +309,19 @@ class BandcampDiscoverySource(DiscoverySource):
         return now_year - year >= OLD_ALBUM_YEARS
 
     def _to_candidates(
-        self, criterion: Criterion, seed: Seed, result: ParseResult
+        self,
+        criterion: Criterion,
+        seed: Seed,
+        result: ParseResult,
+        owned: set[str],
     ) -> list[Candidate]:
         out: list[Candidate] = []
         for item in result.items:
+            if item["provider_item_id"] in owned:
+                # Recommending someone a record they already own is the clerk who
+                # does not know his own shop. Only the discover surface reports
+                # ownership itself; this covers the other two.
+                continue
             url = item.get("item_url") or ""
             if not _is_fetchable(url):
                 # Same reasoning as the fetch-side skip: a candidate we could

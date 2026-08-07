@@ -22,6 +22,7 @@ from kamp_daemon.discovery_bandcamp_parsers import (
     parse_discover_results,
     release_year,
     strip_tracking,
+    tag_slug,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "discovery"
@@ -149,11 +150,28 @@ class TestDiscoverResults:
         assert result.items == []
         assert result.marker_present is False
 
-    def test_empty_result_list_is_an_honest_empty(self) -> None:
-        """A tag outside Bandcamp's vocabulary legitimately returns zero rows."""
+    def test_empty_result_list_is_an_honest_empty_and_does_not_warn(
+        self, caplog
+    ) -> None:
+        """A tag outside Bandcamp's vocabulary legitimately returns zero rows.
+
+        Treating that as drift made the warning fire on every genuinely empty
+        query — found by running the criteria against a real library, where a
+        mis-cased genre produced four false alarms in one gather.
+        """
         result = parse_discover_results({"results": []})
         assert result.marker_present is True
         assert result.items == []
+        assert result.drifted is False
+        result.warn_if_drifted("discover", "https://x")
+        assert caplog.text == ""
+
+    def test_missing_results_key_is_drift(self, caplog) -> None:
+        """The shape changed — that is the case worth shouting about."""
+        result = parse_discover_results({"something_else": []})
+        assert result.drifted is True
+        result.warn_if_drifted("discover", "https://x")
+        assert "probably drifted" in caplog.text
 
 
 class TestDiscoverFacets:
@@ -201,6 +219,37 @@ class TestDiscography:
         for item in result.items:
             assert item["provider_item_id"].isdigit()
             assert item["item_url"].startswith("https://floatingpoints.bandcamp.com/")
+
+    def test_grid_entries_carry_a_title(self) -> None:
+        """Without this the crate renders blank cards — which is exactly what a
+        first end-to-end run against the real library produced."""
+        result = parse_discography(
+            _fixture("artist_discography"),
+            base_url="https://floatingpoints.bandcamp.com/music",
+        )
+        assert all(item["title"] for item in result.items)
+        assert any(item["art_url"] for item in result.items)
+
+    def test_ids_stay_paired_with_their_own_album(self) -> None:
+        """Entries are matched as whole <li> blocks rather than by zipping separate
+        id and href passes — that only holds while every entry has both in the same
+        order, and fails by pairing the wrong id with the wrong album rather than by
+        returning nothing."""
+        html = (
+            '<div id="music-grid">'
+            '<li data-item-id="album-111"><a href="/album/one">'
+            '<p class="title">One</p></a></li>'
+            # No href: must be skipped entirely, not shift the pairing.
+            '<li data-item-id="album-222"><p class="title">Orphan</p></li>'
+            '<li data-item-id="album-333"><a href="/album/three">'
+            '<p class="title">Three</p></a></li>'
+            "</div>"
+        )
+        items = parse_discography(html, base_url="https://b.bandcamp.com/music").items
+        assert [(i["provider_item_id"], i["title"]) for i in items] == [
+            ("111", "One"),
+            ("333", "Three"),
+        ]
 
     def test_finds_nothing_in_an_album_page_and_says_so(self, album_page: str) -> None:
         """The cross-page collision case, testable for free.
@@ -290,6 +339,24 @@ class TestNormalisation:
     def test_item_ids_normalise_across_surfaces(self, raw, expected) -> None:
         """One concept, three spellings: data-albumid, item_id, data-item-id."""
         assert normalise_item_id(raw) == expected
+
+    @pytest.mark.parametrize(
+        "display,slug",
+        [
+            ("Rock", "rock"),
+            ("Indie Rock", "indie-rock"),
+            ("hip-hop/rap", "hip-hop-rap"),
+            ("singer-songwriter", "singer-songwriter"),
+            ("  Dub   Techno ", "dub-techno"),
+            ("R&B", "rb"),
+            ("", ""),
+        ],
+    )
+    def test_genre_names_become_bandcamp_tag_slugs(self, display, slug) -> None:
+        """The discover API matches normalised slugs and answers an unknown tag
+        with an empty result set rather than an error — so a mis-cased genre looks
+        exactly like a broken criterion. Real bug, found by running it."""
+        assert tag_slug(display) == slug
 
     def test_strip_tracking(self) -> None:
         assert (

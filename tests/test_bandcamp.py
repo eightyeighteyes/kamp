@@ -2124,6 +2124,73 @@ class TestProxySession:
         assert '"fan_id": 99' in payload["body"]
         assert payload["headers"]["Content-Type"] == "application/json"
 
+    def test_post_sends_form_encoded_body(self) -> None:
+        """A form body reaches the relay urlencoded, with the matching content type.
+
+        Bandcamp's ``collect_item_cb`` accepts only form encoding — the identical
+        call with a JSON body answers HTTP 200 carrying an ``InsistError``. Before
+        KAMP-653 a ``data=`` kwarg fell into ``**_kwargs`` and vanished, so the
+        request went out with an empty body and the wishlist write was dead in
+        every packaged build.
+        """
+        from kamp_daemon.bandcamp import _ProxySession
+
+        sess = _ProxySession()
+        mock_post = self._make_proxy_response(200, '{"ok":true}')
+
+        with patch(
+            "kamp_daemon.bandcamp._requests.post", return_value=mock_post
+        ) as patched:
+            sess.post(
+                "https://bandcamp.com/collect_item_cb",
+                data={"fan_id": 7, "item_id": 42, "crumb": "|collect|1|abc="},
+                timeout=30,
+            )
+
+        payload = patched.call_args[1]["json"]
+        assert payload["method"] == "POST"
+        assert payload["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+        # Percent-encoded, not JSON: the pipes and '=' in a crumb must survive.
+        assert payload["body"] == "fan_id=7&item_id=42&crumb=%7Ccollect%7C1%7Cabc%3D"
+
+    def test_form_body_does_not_clobber_a_caller_supplied_content_type(self) -> None:
+        """``headers=`` is applied before the body branch, so the branch must defer.
+
+        Only matters because the same dict is built in one pass; a caller that
+        knows better should keep its own content type.
+        """
+        from kamp_daemon.bandcamp import _ProxySession
+
+        sess = _ProxySession()
+        mock_post = self._make_proxy_response(200, "{}")
+
+        with patch(
+            "kamp_daemon.bandcamp._requests.post", return_value=mock_post
+        ) as patched:
+            sess.post(
+                "https://bandcamp.com/collect_item_cb",
+                data={"a": "b"},
+                headers={"Content-Type": "text/plain"},
+            )
+
+        assert patched.call_args[1]["json"]["headers"]["Content-Type"] == "text/plain"
+
+    def test_json_still_wins_when_both_are_given(self) -> None:
+        """Not a shape any caller should use, but it must not send both bodies."""
+        from kamp_daemon.bandcamp import _ProxySession
+
+        sess = _ProxySession()
+        mock_post = self._make_proxy_response(200, "{}")
+
+        with patch(
+            "kamp_daemon.bandcamp._requests.post", return_value=mock_post
+        ) as patched:
+            sess.post("https://bandcamp.com/x", json={"a": 1}, data={"b": 2})
+
+        payload = patched.call_args[1]["json"]
+        assert payload["headers"]["Content-Type"] == "application/json"
+        assert payload["body"] == '{"a": 1}'
+
     def test_raise_for_status_on_error_response(self) -> None:
         import requests
 

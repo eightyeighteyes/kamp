@@ -81,6 +81,20 @@ DEFAULT_ART_SIZE = 10
 
 _BCBITS_SIZE = re.compile(r"_(\d+)\.jpg$")
 
+# Why a wishlist write failed, as a status. Five distinguishable outcomes rather
+# than a blanket 502, because the UI says something different for each and a
+# single code would flatten "Bandcamp asked us to slow down" and "you have been
+# logged out" into the same shrug. The reason string travels as `detail`; the
+# renderer owns the wording.
+_WISHLIST_STATUS: dict[str, int] = {
+    "unknown_item": 404,
+    "not_connected": 503,
+    "unsupported": 501,
+    "needs_login": 401,
+    "rate_limited": 429,
+    "rejected": 502,
+}
+
 _ART_TIMEOUT = 10.0  # a static CDN on the render path, not the 30s API budget
 _MAX_ART_BYTES = 16 * 1024 * 1024
 
@@ -153,6 +167,7 @@ def register_discovery_routes(
     art_cache_dir: Path | None = None,
     fetch_bytes: Callable[[str], bytes | None] | None = None,
     preview: Any = None,
+    wishlist_write: Callable[[dict[str, Any], bool], str] | None = None,
 ) -> None:
     """Register the Discovery Crate routes on *app*.
 
@@ -274,13 +289,56 @@ def register_discovery_routes(
 
     @app.post("/api/v1/discovery/items/{item_id}/url-copied")
     def url_copied(item_id: int) -> dict[str, Any]:
-        """The always-available action while wishlist-write is unbuilt (KAMP-653).
+        """The fallback action, and the one offered when a wishlist write fails.
 
         Recorded as engagement but deliberately does NOT move the item's state:
         copying a link is not passing on it, and the user may still preview or
         wishlist afterwards.
         """
         return _record(item_id, "url_copied")
+
+    # ------------------------------------------------------------------
+    # Wishlist write (KAMP-653)
+    # ------------------------------------------------------------------
+
+    def _wishlist(item_id: int, *, add: bool) -> dict[str, Any]:
+        """Write to the provider's wishlist, then record it — in that order.
+
+        Nothing is written locally until the provider confirms. The feature's one
+        promise is that the heart means the record really is on your Bandcamp
+        wishlist, so an optimistic write would be the feature lying.
+
+        The remote call itself is injected, because it needs ``Candidate`` and a
+        provider session and kamp_core cannot import kamp_daemon — the same reason
+        ``preview`` is injected. It answers with a machine reason and no
+        user-facing prose: the daemon does not write brand voice, and the renderer
+        maps the reason to the clerk's line.
+        """
+        item = index.discovery_item(item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="unknown_item")
+        if wishlist_write is None:
+            raise HTTPException(status_code=503, detail="not_connected")
+
+        reason = wishlist_write(dict(item), add)
+        if reason != "ok":
+            raise HTTPException(
+                status_code=_WISHLIST_STATUS.get(reason, 502), detail=reason
+            )
+
+        # Confirmed by the provider. Only now does any of it become true locally.
+        _record(item_id, "wishlisted" if add else "unwishlisted")
+        return {"ok": True, "wishlisted": add}
+
+    @app.post("/api/v1/discovery/items/{item_id}/wishlist")
+    def wishlist_item(item_id: int) -> dict[str, Any]:
+        """Put this record on the user's Bandcamp wishlist."""
+        return _wishlist(item_id, add=True)
+
+    @app.post("/api/v1/discovery/items/{item_id}/unwishlist")
+    def unwishlist_item(item_id: int) -> dict[str, Any]:
+        """Take it back off again."""
+        return _wishlist(item_id, add=False)
 
     # ------------------------------------------------------------------
     # Preview (KAMP-651)

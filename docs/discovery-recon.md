@@ -91,7 +91,8 @@ direct-transport "go" into a shipped-build failure:
 
 | Constraint | Consequence |
 | --- | --- |
-| `_fetch(..., *, headers, json, timeout, **_kwargs)` — no `data=` | A form-encoded POST is silently sent with an empty body. If Bandcamp's wishlist write is form-encoded, wishlist-add is blocked in every shipped build until `_ProxySession`, the server model, and the Electron handler are extended. |
+| `_fetch(..., *, headers, json, timeout, **_kwargs)` — no `data=` | A form-encoded POST is silently sent with an empty body. **Fixed in KAMP-653** by giving `_fetch` a `data=` branch; the server model and Electron handler needed no change at all, see the correction below. |
+| A manually-set `Referer` is **unsettable** through the relay | Chromium rejects it: `net.request` returns `net::ERR_BLOCKED_BY_CLIENT` and the call never leaves the machine. `Origin` passes through untouched. Any request shape that depends on a Referer works on the direct transport and can never work in a shipped build (KAMP-653). |
 | `_ProxyResponse` exposes status/text/content_type/url/ok only | No `Retry-After`, no `Set-Cookie`. Rate-limit calibration through the relay is blind by construction. |
 | No `.content` (text only) | Binary responses cannot round-trip. |
 | GET/POST only; redirects auto-followed, opaque | Redirect chains cannot be inspected. |
@@ -130,7 +131,7 @@ collection items; the account was left exactly as found.
 | Best sellers | **go** (it is a discover slice) | direct + relay |
 | Artist discography | **go** | direct |
 | Wishlist read | **go** | direct |
-| Wishlist add/remove | **go on direct, NO-GO on the relay** | both |
+| Wishlist add/remove | **go** (see the KAMP-653 correction) | ~~both~~ direct only; re-proven on both by KAMP-653 |
 | "Over 10 years old" via the time facet | **no-go** (workaround below) | direct |
 | Anniversary (specific month/year) | **no-go** | direct |
 | Label pages / Label-Mates | **unknown** — not reached in the timebox | — |
@@ -271,21 +272,47 @@ was returned to its original state.
   `uncollect_item_cb` are present, so add *and* remove are available.
 - `POST https://bandcamp.com/collect_item_cb` with
   `{fan_id, item_id, item_type:"album", band_id, crumb}` plus
-  `X-Requested-With: XMLHttpRequest` and a `Referer`.
+  `X-Requested-With: XMLHttpRequest` and `Origin: https://bandcamp.com`
+  (**not** a `Referer` — see the correction above).
+- `band_id` is `data-tralbum`'s **`current.band_id`**, never `current.selling_band_id`;
+  they differ on label-released albums. **Sending the wrong one returns HTTP 200 with
+  `{"ok":true}` and silently does nothing** — verified by deliberately sending
+  `selling_band_id` and watching the album fail to appear. So `ok:true` is only
+  trustworthy for a `band_id` read off the album's own page, and there must be no
+  fallback to `selling_band_id`: it would report success and change nothing.
+- `collect_item_cb` is **idempotent** — repeating an add for an already-wishlisted
+  album answers `{"ok":true}` rather than erroring.
 - **The body must be form-encoded.** The identical call with a JSON body returns
   HTTP 200 carrying
   `{"error":true,"ok":false,"exception":"…InsistError… old or no crumb specified …"}`.
   Form-encoded returns `{"ok":true}` and the album page then reports
   `is_wishlisted: true`.
 
-> **This is the blocker for KAMP-653, and it is a kamp problem rather than a Bandcamp
-> one.** `_ProxySession._fetch` accepts only `json=`; a `data=` kwarg falls into
-> `**_kwargs` and is silently dropped, and the relay's wire format carries a single
-> `body` string with a JSON content type. Since every shipped build routes through the
-> relay, **wishlist-add cannot work in any packaged build today**. Making it work means
-> extending `_ProxySession`, the proxy-fetch request model in `kamp_core/server.py`,
-> and the Electron handler in `kamp_ui/src/main/index.ts` to carry a form-encoded body
-> and content type. That work belongs in KAMP-653 and should be sized into it.
+> **CORRECTION (KAMP-653): the "NO-GO on the relay" verdict above was wrong, and it was
+> wrong in the exact way this document warns against.** It described *this script's*
+> relay helper, not the relay. `RelayTransport` had no `post_form` method at all,
+> hard-coded `Content-Type: application/json`, and its `post_json` did not even accept
+> a `headers=` kwarg — so `wishlist-roundtrip --transport relay` would have raised a
+> `TypeError` before reaching Bandcamp. Every form-encoded fallback was additionally
+> gated on `args.transport == "direct"`. **The relay was never handed a form body.**
+> Recorded here rather than quietly amended, because the failure is the interesting
+> part: a verdict is only as good as the transport it was proven on, and "proven on:
+> both" was itself the unproven claim.
+>
+> What is actually true, re-measured live on both transports:
+>
+> - The relay wire format is `{url, method, headers, body}` with the content type
+>   riding in `headers`. `kamp_core/server.py`, `kampAPI.ts` and `index.ts` forward
+>   both verbatim. **Only `_ProxySession._fetch` needed a `data=` branch** — one Python
+>   function, not the three layers claimed above.
+> - Chunked encoding is not a risk: `net.request` defaults `chunkedEncoding: false`
+>   and buffers the body, so one `write()`/`end()` emits a `Content-Length` request.
+> - **The header set recorded below cannot work in a shipped build.** Bandcamp insists
+>   on an origin *or* a referrer (`InsistError: expected either an origin or a referrer
+>   header` with neither), but Chromium blocks a manually-set `Referer` outright. Send
+>   `Origin: https://bandcamp.com` and no `Referer`; that satisfies both. The original
+>   "`*_cb` endpoints are referer-checked" note was borrowed from jQuery's `$.ajax`
+>   defaults rather than measured.
 
 **Trap for whoever implements it: these endpoints answer HTTP 200 on failure.**
 Success must be read from the parsed body (`ok: true` and no `error`), never the

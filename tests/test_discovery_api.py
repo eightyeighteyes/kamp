@@ -21,6 +21,10 @@ from fastapi.testclient import TestClient
 from kamp_core.discovery_api import CRATE_EVENT, register_discovery_routes
 from kamp_core.library import LibraryIndex
 
+# Sentinel so a test can pass wishlist_write=None (the not-connected case) and
+# have it mean None rather than "use the default".
+_UNSET = object()
+
 
 @pytest.fixture
 def index(tmp_path: Path) -> Iterator[LibraryIndex]:
@@ -36,12 +40,19 @@ class _Harness:
         on_build_start: Any = None,
         art_cache_dir: Path | None = None,
         art_bytes: bytes | None = b"JPEGDATA",
+        wishlist_write: Any = _UNSET,
     ) -> None:
         self.events: list[dict[str, Any]] = []
         self.build_calls = 0
         self.fetched: list[str] = []
         self.art_bytes = art_bytes
+        self.wishlist_calls: list[tuple[dict[str, Any], bool]] = []
+        self.wishlist_reason = "ok"
         self.app = FastAPI()
+
+        def _default_wishlist(item: dict[str, Any], add: bool) -> str:
+            self.wishlist_calls.append((item, add))
+            return self.wishlist_reason
 
         def _default_start() -> None:
             self.build_calls += 1
@@ -59,6 +70,9 @@ class _Harness:
             ),
             art_cache_dir=art_cache_dir,
             fetch_bytes=_fetch,
+            wishlist_write=(
+                _default_wishlist if wishlist_write is _UNSET else wishlist_write
+            ),
         )
         self.client = TestClient(self.app)
 
@@ -278,6 +292,141 @@ class TestItemEvents:
             harness.client.post("/api/v1/discovery/items/999/dismiss").status_code
             == 404
         )
+
+
+# ---------------------------------------------------------------------------
+# Wishlist write (KAMP-653)
+# ---------------------------------------------------------------------------
+
+
+class TestWishlistRoutes:
+    def _item(self, index: LibraryIndex) -> int:
+        item = index.add_discovery_candidate(
+            provider="bandcamp",
+            provider_item_id="555",
+            title="X",
+            item_url="https://a.bandcamp.com/album/x",
+        )
+        index.place_in_crate(item, 1, 0)
+        return item
+
+    def test_a_confirmed_add_records_the_event_and_moves_state(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        item = self._item(index)
+        resp = harness.client.post(f"/api/v1/discovery/items/{item}/wishlist")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "wishlisted": True}
+        assert index.crate_items(1)[0]["state"] == "wishlisted"
+
+    def test_a_confirmed_removal_walks_the_state_back(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        item = self._item(index)
+        harness.client.post(f"/api/v1/discovery/items/{item}/wishlist")
+        resp = harness.client.post(f"/api/v1/discovery/items/{item}/unwishlist")
+        assert resp.json() == {"ok": True, "wishlisted": False}
+        assert index.crate_items(1)[0]["state"] == "fresh"
+
+    def test_the_provider_is_handed_the_whole_item(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """It needs item_url to fetch the crumb page and provider_item_id for the
+        POST; passing an id alone would make it re-read the row."""
+        item = self._item(index)
+        harness.client.post(f"/api/v1/discovery/items/{item}/wishlist")
+        sent, add = harness.wishlist_calls[0]
+        assert add is True
+        assert sent["provider_item_id"] == "555"
+        assert sent["item_url"] == "https://a.bandcamp.com/album/x"
+
+    def test_nothing_is_written_locally_unless_the_provider_confirms(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """The whole promise of the feature: the heart means it really is on your
+        Bandcamp wishlist. An optimistic write would be the feature lying."""
+        item = self._item(index)
+        harness.wishlist_reason = "rejected"
+        assert (
+            harness.client.post(f"/api/v1/discovery/items/{item}/wishlist").status_code
+            == 502
+        )
+        assert index.crate_items(1)[0]["state"] == "fresh"
+        assert (
+            index._conn.execute(
+                "SELECT COUNT(*) AS c FROM discovery_events WHERE kind = 'wishlisted'"
+            ).fetchone()["c"]
+            == 0
+        )
+
+    @pytest.mark.parametrize(
+        "reason,status",
+        [
+            ("not_connected", 503),
+            ("unsupported", 501),
+            ("needs_login", 401),
+            ("rate_limited", 429),
+            ("rejected", 502),
+        ],
+    )
+    def test_each_failure_gets_its_own_status_and_reason(
+        self, index: LibraryIndex, harness: _Harness, reason: str, status: int
+    ) -> None:
+        """A blanket 502 would flatten "Bandcamp asked us to slow down" and "you
+        have been logged out" into the same shrug."""
+        item = self._item(index)
+        harness.wishlist_reason = reason
+        resp = harness.client.post(f"/api/v1/discovery/items/{item}/wishlist")
+        assert resp.status_code == status
+        assert resp.json()["detail"] == reason
+
+    def test_an_unknown_reason_is_still_a_failure(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """A provider inventing a new reason must not read as success."""
+        item = self._item(index)
+        harness.wishlist_reason = "something_new"
+        assert (
+            harness.client.post(f"/api/v1/discovery/items/{item}/wishlist").status_code
+            == 502
+        )
+
+    def test_no_writer_at_all_is_not_connected(self, index: LibraryIndex) -> None:
+        """A server-only context — or a daemon with no Bandcamp session — must
+        503 rather than 500 on a missing callable."""
+        harness = _Harness(index, wishlist_write=None)
+        item = self._item(index)
+        resp = harness.client.post(f"/api/v1/discovery/items/{item}/wishlist")
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "not_connected"
+
+    def test_an_unknown_item_never_reaches_the_provider(
+        self, harness: _Harness
+    ) -> None:
+        assert (
+            harness.client.post("/api/v1/discovery/items/999/wishlist").status_code
+            == 404
+        )
+        assert harness.wishlist_calls == []
+
+    def test_a_confirmed_write_pushes_a_fresh_snapshot(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """The rail draws its heart off item.state, so the write has to reach
+        every client rather than just the tab that clicked."""
+        item = self._item(index)
+        harness.events.clear()
+        harness.client.post(f"/api/v1/discovery/items/{item}/wishlist")
+        assert harness.events[-1]["items"][0]["state"] == "wishlisted"
+
+    def test_a_failed_write_pushes_nothing(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        item = self._item(index)
+        harness.wishlist_reason = "rate_limited"
+        harness.events.clear()
+        harness.client.post(f"/api/v1/discovery/items/{item}/wishlist")
+        assert harness.events == []
 
 
 # ---------------------------------------------------------------------------
@@ -756,3 +905,36 @@ class TestServerWiring:
         assert client.get("/api/v1/discovery/crate").status_code == 401
         ok = client.get("/api/v1/discovery/crate", headers={"X-Kamp-Token": "secret"})
         assert ok.status_code == 200
+
+    def test_the_wishlist_writer_reaches_the_route(self, index: LibraryIndex) -> None:
+        """create_app takes it and register_discovery_routes must receive it —
+        the KAMP-436 failure shape: a callable set on a wrapper that the thing
+        doing the work never sees."""
+        calls: list[tuple[dict[str, Any], bool]] = []
+
+        def _write(item: dict[str, Any], add: bool) -> str:
+            calls.append((item, add))
+            return "ok"
+
+        item = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="1", item_url="https://a.b.com/x"
+        )
+        index.place_in_crate(item, 1, 0)
+        client = TestClient(self._app(index, wishlist_write=_write))
+
+        assert (
+            client.post(f"/api/v1/discovery/items/{item}/wishlist").status_code == 200
+        )
+        assert calls and calls[0][1] is True
+
+    def test_a_server_without_a_writer_503s_rather_than_500s(
+        self, index: LibraryIndex
+    ) -> None:
+        item = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="1", item_url="https://a.b.com/x"
+        )
+        index.place_in_crate(item, 1, 0)
+        client = TestClient(self._app(index))
+        assert (
+            client.post(f"/api/v1/discovery/items/{item}/wishlist").status_code == 503
+        )

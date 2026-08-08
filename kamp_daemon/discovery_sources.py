@@ -22,7 +22,9 @@ from kamp_core.proxy_hosts import FETCHABLE_HOSTS, host_allowed
 
 from .bandcamp_ratelimit import BandcampGovernor, get_governor
 from .discovery import (
+    ALBUM_PAGE,
     PREVIEW,
+    SAVE_REMOTE,
     Candidate,
     DiscoverySource,
     PreviewStream,
@@ -32,8 +34,13 @@ from .discovery import (
 from .discovery_bandcamp_parsers import (
     ParseResult,
     parse_also_like,
+    parse_band_id,
+    parse_collect_ok,
+    parse_crumbs,
     parse_discography,
     parse_discover_results,
+    parse_fresh_crumb,
+    parse_is_wishlisted,
     release_year,
     tag_slug,
 )
@@ -53,6 +60,12 @@ if TYPE_CHECKING:  # pragma: no cover - types only
 logger = logging.getLogger(__name__)
 
 DISCOVER_API_URL = "https://bandcamp.com/api/discover/1/discover_web"
+
+# The wishlist write pair. Both live on bandcamp.com itself rather than on the
+# album's own host, so a Bandcamp Pro custom domain is no obstacle to the POST --
+# only to the album-page GET that supplies the crumb and band_id.
+COLLECT_URL = "https://bandcamp.com/collect_item_cb"
+UNCOLLECT_URL = "https://bandcamp.com/uncollect_item_cb"
 
 
 def _is_fetchable(url: str) -> bool:
@@ -89,14 +102,17 @@ class BandcampDiscoverySource(DiscoverySource):
 
     @property
     def capabilities(self) -> frozenset[str]:
-        """Preview only, for now.
+        """Preview and the wishlist write, both of which need a session.
 
-        ``save_remote`` (wishlist-add) is deliberately absent: it needs a
-        form-encoded POST that the Electron relay cannot express, so it would be
-        dead in every packaged build until KAMP-653 extends the relay. Declaring
-        it here would render a wishlist button that silently does nothing.
+        ``SAVE_REMOTE`` covers add *and* remove: Bandcamp serves both from one
+        crumb mechanism, so a source that can do one can do the other.
+
+        It was withheld until KAMP-653 on the belief that the write needed a
+        form-encoded POST the Electron relay could not express. The relay carries
+        one fine — the earlier verdict was measured against a spike helper with no
+        form path at all — so it is now available on every platform.
         """
-        return frozenset({PREVIEW})
+        return frozenset({PREVIEW, SAVE_REMOTE})
 
     @property
     def criterion_caps(self) -> dict[str, int]:
@@ -421,3 +437,179 @@ class BandcampDiscoverySource(DiscoverySource):
         if not out:
             logger.info("discovery: nothing streamable on %s", candidate.item_url)
         return out
+
+    # ------------------------------------------------------------------
+    # Wishlist write (KAMP-653)
+    # ------------------------------------------------------------------
+
+    def save_remote(self, candidate: Candidate) -> bool:
+        """Put *candidate* in the fan's Bandcamp wishlist."""
+        return self._collect(candidate, COLLECT_URL, "collect_item_cb", want=True)
+
+    def unsave_remote(self, candidate: Candidate) -> bool:
+        """Take *candidate* back out of the fan's Bandcamp wishlist."""
+        return self._collect(candidate, UNCOLLECT_URL, "uncollect_item_cb", want=False)
+
+    def _collect(
+        self, candidate: Candidate, url: str, crumb_key: str, *, want: bool
+    ) -> bool:
+        """One crumb-authenticated wishlist mutation. Add and remove differ only
+        in the endpoint, the crumb key, and which end state counts as done.
+
+        Two requests: a GET of the album's own page, then the POST. The GET is not
+        overhead — it is the only source of all three things the POST needs. The
+        crumb lives in a meta tag on it, ``band_id`` lives in its ``data-tralbum``
+        blob, and ``fan_tralbum_data.is_wishlisted`` says whether the work is
+        already done. There is no cheaper way to learn any of them.
+
+        Raises :class:`RateLimitedError` if the album-page class is cooling down —
+        a refusal the caller can explain, rather than a request that will 429.
+
+        Deliberately does *not* re-check :attr:`capabilities`: this class only
+        exists when a session does, so the check would be unreachable. The gate
+        belongs at the route, which is handed whichever source is available and is
+        the only place a provider without the capability can turn up.
+        """
+        from .bandcamp import _get_fan_info
+
+        if not _is_fetchable(candidate.item_url):
+            # Unreachable for anything the builder produced -- _to_candidates
+            # drops custom-domain albums before they can enter a crate -- but
+            # item_url is remote data read back out of the database, so it gets
+            # the same check the art proxy and preview apply.
+            logger.warning(
+                "discovery: wishlist host not fetchable %s", candidate.item_url
+            )
+            return False
+
+        # Checked, never waited on. Same rule as preview_tracks: this is a click,
+        # and wait_turn would hang it for up to five minutes. Unlike preview it can
+        # refuse outright, because there is no partial answer worth giving.
+        if self._governor.blocked_for(ALBUM_PAGE) > 0:
+            raise RateLimitedError("album pages are cooling down")
+
+        page = self._album_page(candidate)
+        if page is None:
+            return False
+
+        already = parse_is_wishlisted(page)
+        if already is want:
+            # Idempotent by contract, and free: the page we had to fetch anyway
+            # already answered. Bandcamp agrees -- a repeat collect_item_cb returns
+            # ok:true -- so this saves a request rather than changing the outcome.
+            logger.info("discovery: %s already wishlisted=%s", candidate.title, want)
+            return True
+
+        crumbs = parse_crumbs(page)
+        crumb = crumbs.get(crumb_key)
+        if not crumb:
+            # A logged-out page ships data-crumbs="{}". Since capabilities said we
+            # had a session, this means the session is no longer good.
+            logger.warning(
+                "discovery: no %s crumb on %s (session expired?)",
+                crumb_key,
+                candidate.item_url,
+            )
+            return False
+
+        band_id = parse_band_id(page)
+        if not band_id:
+            # Refuse rather than guess. selling_band_id is right there and wrong:
+            # it returns ok:true and silently does nothing, so a fallback would
+            # show a done-state for a record that never moved.
+            logger.warning(
+                "discovery: no band_id on %s — refusing to guess", candidate.item_url
+            )
+            return False
+
+        try:
+            fan_id, _ = _get_fan_info(self._session)
+        except Exception:
+            logger.warning("discovery: could not resolve fan_id for the wishlist write")
+            raise
+
+        form = {
+            "fan_id": fan_id,
+            "item_id": candidate.provider_item_id,
+            # "album", not the discover API's "a" -- the same concept is spelled
+            # differently on the two surfaces and the short form earns a bare 400.
+            "item_type": "album",
+            "band_id": band_id,
+            "crumb": crumb,
+        }
+        ok, fresh = self._post_collect(url, form)
+        if not ok and fresh:
+            # Documented refresh path: a stale crumb comes back as HTTP 403 with a
+            # replacement in the body, and Bandcamp's own Crumb.ajax retries on
+            # exactly this. Once only -- a second failure is not a crumb problem.
+            logger.info("discovery: crumb was stale, retrying with the fresh one")
+            form["crumb"] = fresh
+            ok, _ = self._post_collect(url, form)
+        return ok
+
+    def _album_page(self, candidate: Candidate) -> str | None:
+        """GET the candidate's page, reporting the outcome to the governor."""
+        try:
+            resp = self._session.get(candidate.item_url, timeout=30)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "discovery: wishlist page fetch failed for %s", candidate.item_url
+            )
+            return None
+        if resp.status_code == 429:
+            self._governor.report_429(ALBUM_PAGE)
+            raise RateLimitedError(f"429 from {candidate.item_url}")
+        if resp.status_code != 200:
+            logger.warning(
+                "discovery: wishlist page HTTP %d from %s",
+                resp.status_code,
+                candidate.item_url,
+            )
+            return None
+        self._governor.report_ok(ALBUM_PAGE)
+        return str(resp.text)
+
+    def _post_collect(self, url: str, form: dict[str, Any]) -> tuple[bool, str | None]:
+        """POST one form-encoded mutation. Returns (succeeded, fresh crumb if any).
+
+        Form-encoded, not JSON: the identical call with a JSON body answers HTTP
+        200 carrying an InsistError about a missing crumb.
+
+        Success comes from the parsed body and never from the status, because
+        these endpoints answer 200 on failure. Note this is only trustworthy
+        because band_id came off the album's own page -- with a wrong band_id the
+        body says ok:true and nothing happens (see parse_band_id).
+        """
+        try:
+            resp = self._session.post(
+                url,
+                data=form,
+                # Origin, not Referer. Bandcamp insists on one of the two, and
+                # Chromium blocks a manually-set Referer on net.request outright
+                # (net::ERR_BLOCKED_BY_CLIENT), so a Referer here would work in dev
+                # and fail in every packaged build.
+                headers={
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Origin": "https://bandcamp.com",
+                },
+                timeout=30,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("discovery: wishlist POST to %s failed", url, exc_info=True)
+            return False, None
+
+        if resp.status_code == 429:
+            self._governor.report_429(ALBUM_PAGE)
+            raise RateLimitedError(f"429 from {url}")
+
+        body = str(resp.text)
+        if parse_collect_ok(body):
+            self._governor.report_ok(ALBUM_PAGE)
+            return True, None
+        logger.warning(
+            "discovery: wishlist POST rejected by %s — HTTP %d %.200r",
+            url,
+            resp.status_code,
+            body,
+        )
+        return False, parse_fresh_crumb(body)

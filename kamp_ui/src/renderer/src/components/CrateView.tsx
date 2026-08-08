@@ -40,6 +40,10 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const commitCrateDismiss = useStore((s) => s.commitCrateDismiss)
   const flushCrateDismissals = useStore((s) => s.flushCrateDismissals)
   const copyCrateItemUrl = useStore((s) => s.copyCrateItemUrl)
+  const toggleCrateWishlist = useStore((s) => s.toggleCrateWishlist)
+  const wishlistPending = useStore((s) => s.crateWishlistPending)
+  const wishlistError = useStore((s) => s.crateWishlistError)
+  const clearCrateWishlistError = useStore((s) => s.clearCrateWishlistError)
   const setActiveView = useStore((s) => s.setActiveView)
   const preview = useStore((s) => s.preview)
   const previewPlay = useStore((s) => s.previewPlay)
@@ -80,6 +84,14 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // the intermediate frame where the focus card would be blank.
   const focusIndex = visible.length === 0 ? 0 : Math.min(focused, visible.length - 1)
   const current = visible[focusIndex] ?? null
+
+  // The done-state is read from item.state, never from a local flag. A confirmed
+  // write re-broadcasts the whole crate, so this arrives from the daemon — which
+  // makes "never show a done-state Bandcamp has not confirmed" structural rather
+  // than something the click handler has to remember. It also survives a remount,
+  // a view switch, and KAMP-652 marking items out of band.
+  const wishlisted = current?.state === 'wishlisted'
+  const wishlistSaving = current ? wishlistPending.includes(current.id) : false
 
   // Preview state for the record on screen. The engine plays one item at a
   // time, so a preview belonging to another card must not light this one up.
@@ -152,6 +164,13 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const openOnBandcamp = useCallback((item: CrateItem): void => {
     if (item.item_url) window.api.openExternal(item.item_url)
   }, [])
+
+  // A failure explains the record it happened on. Carrying it to the next one
+  // would have the clerk apologising about something else entirely.
+  const currentId = current?.id ?? null
+  useEffect(() => {
+    clearCrateWishlistError()
+  }, [currentId, clearCrateWishlistError])
 
   const focusSleeve = useCallback((index: number): void => {
     setFocused(index)
@@ -229,10 +248,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       e.stopPropagation()
       if (current) void copyCrateItemUrl(current)
     } else if (e.key === 'w' || e.key === 'W') {
-      // Claimed so it does not fall through to a global shortcut, but wishlist
-      // itself is unavailable until KAMP-653 extends the Electron relay.
       e.preventDefault()
       e.stopPropagation()
+      // `current` is captured here and never read again in the resolution
+      // handler: it is derived during render from a clamped index, and any
+      // snapshot push can change its identity while the request is out.
+      if (current) void toggleCrateWishlist(current)
     } else if (e.key === ' ') {
       // Now that preview exists, Space is the Crate's (KAMP-651). KAMP-650
       // deliberately left it global, because claiming it for a no-op would have
@@ -373,11 +394,16 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                   Open on Bandcamp
                 </button>
                 <button
-                  className="crate-action"
-                  disabled
-                  {...tooltip(TOOLTIPS.CRATE_WISHLIST_SOON)}
+                  className={`crate-action${wishlisted ? ' crate-action--done' : ''}`}
+                  onClick={() => void toggleCrateWishlist(current)}
+                  disabled={wishlistSaving}
+                  {...tooltip(wishlisted ? TOOLTIPS.CRATE_UNWISHLIST : TOOLTIPS.CRATE_WISHLIST)}
                 >
-                  Wishlist it
+                  {wishlistSaving
+                    ? 'Setting it aside…'
+                    : wishlisted
+                      ? '♥ In your wishlist'
+                      : 'Wishlist it'}
                 </button>
                 <button
                   className="crate-action"
@@ -394,6 +420,17 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                   Pass
                 </button>
               </div>
+
+              {/* The clerk explains a failed wishlist write here rather than in a
+                  toast: the retry is this button, so the message belongs beside
+                  it. Copy link is right there as the fallback every reason ends
+                  at. Not a reserved slot — unlike the preview strip it appears
+                  rarely and pushes nothing the user is mid-interaction with. */}
+              {wishlistError && (
+                <p className="crate-action-error" role="status">
+                  {wishlistError}
+                </p>
+              )}
 
               {/* The preview's own space, always present. Rendering the strip
                   and track list into the normal flow made the whole card grow

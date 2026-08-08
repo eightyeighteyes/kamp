@@ -63,13 +63,29 @@ class FakeResponse:
 
 
 class FakeSession:
-    """Records requests and replays canned bodies."""
+    """Records requests and replays canned bodies.
 
-    def __init__(self, get_body: str = "", post_body: str = "") -> None:
+    ``post_bodies`` replays a *sequence* where the crumb-retry path needs the
+    second answer to differ from the first; ``post_body`` is the single-answer
+    shorthand. Same for ``get_bodies`` / ``get_body``.
+    """
+
+    def __init__(
+        self,
+        get_body: str = "",
+        post_body: str = "",
+        *,
+        post_bodies: list[str] | None = None,
+        post_statuses: list[int] | None = None,
+    ) -> None:
         self.get_body = get_body
         self.post_body = post_body
+        self.post_bodies = post_bodies
+        self.post_statuses = post_statuses
         self.gets: list[str] = []
         self.posts: list[tuple[str, Any]] = []
+        self.post_forms: list[dict[str, Any]] = []
+        self.post_headers: list[dict[str, str]] = []
         self.get_status = 200
         self.post_status = 200
 
@@ -77,9 +93,30 @@ class FakeSession:
         self.gets.append(url)
         return FakeResponse(self.get_body, self.get_status)
 
-    def post(self, url: str, json: Any = None, timeout: int = 30) -> FakeResponse:
-        self.posts.append((url, json))
-        return FakeResponse(self.post_body, self.post_status)
+    def post(
+        self,
+        url: str,
+        json: Any = None,
+        data: Any = None,
+        headers: dict[str, str] | None = None,
+        timeout: int = 30,
+    ) -> FakeResponse:
+        n = len(self.posts)
+        self.posts.append((url, json if json is not None else data))
+        if data is not None:
+            self.post_forms.append(dict(data))
+        self.post_headers.append(dict(headers or {}))
+        body = (
+            self.post_bodies[min(n, len(self.post_bodies) - 1)]
+            if self.post_bodies
+            else self.post_body
+        )
+        status = (
+            self.post_statuses[min(n, len(self.post_statuses) - 1)]
+            if self.post_statuses
+            else self.post_status
+        )
+        return FakeResponse(body, status)
 
 
 def _source(session: FakeSession) -> BandcampDiscoverySource:
@@ -439,12 +476,13 @@ class TestFetchPolicy:
 
 
 class TestCapabilities:
-    def test_preview_is_offered_and_wishlist_is_not(self) -> None:
-        """save_remote needs a form-encoded POST the relay cannot send, so
-        declaring it would render a button that silently does nothing."""
+    def test_preview_and_the_wishlist_write_are_both_offered(self) -> None:
+        """SAVE_REMOTE was withheld until KAMP-653 on the belief that the relay
+        could not send a form body. It can; the earlier verdict was measured
+        against a spike helper that had no form path."""
         caps = _source(FakeSession()).capabilities
         assert PREVIEW in caps
-        assert SAVE_REMOTE not in caps
+        assert SAVE_REMOTE in caps
 
     def test_preview_resolves_an_mp3_from_the_album_page(self) -> None:
         import html as html_lib
@@ -620,3 +658,237 @@ class TestPreviewNeverWaitsOnTheGovernor:
             source.preview_tracks(_candidate())
         governor.report_429.assert_called_once_with("album_page")
         governor.wait_turn.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Wishlist write (KAMP-653)
+# ---------------------------------------------------------------------------
+
+
+def _write_page(
+    *,
+    band_id: str | int | None = "692277828",
+    selling_band_id: str | int | None = "237579501",
+    is_wishlisted: bool | None = False,
+    crumbs: dict[str, str] | None = None,
+) -> str:
+    """An album page carrying the three things the POST needs.
+
+    Hand-built rather than captured: a real logged-in page embeds live CSRF
+    crumbs and a fan_id, and this repository is public.
+    """
+    import html as html_lib
+
+    current: dict[str, Any] = {}
+    if band_id is not None:
+        current["band_id"] = band_id
+    if selling_band_id is not None:
+        current["selling_band_id"] = selling_band_id
+    tralbum = html_lib.escape(json.dumps({"id": 1, "current": current}), quote=True)
+
+    fan_data = None if is_wishlisted is None else {"is_wishlisted": is_wishlisted}
+    pagedata = html_lib.escape(json.dumps({"fan_tralbum_data": fan_data}), quote=True)
+
+    if crumbs is None:
+        crumbs = {
+            "collect_item_cb": "|collect_item_cb|1754|abc=",
+            "uncollect_item_cb": "|uncollect_item_cb|1754|def=",
+        }
+    crumb_attr = html_lib.escape(json.dumps(crumbs), quote=True)
+
+    return (
+        f'<meta id="js-crumbs-data" data-crumbs="{crumb_attr}">'
+        f'<div id="pagedata" data-blob="{pagedata}"></div>'
+        f'<script data-tralbum="{tralbum}"></script>'
+    )
+
+
+@pytest.fixture
+def fan_id(monkeypatch: pytest.MonkeyPatch) -> int:
+    """_get_fan_info is one authenticated GET; stub it. It is not what is under
+    test here and has its own coverage in tests/test_bandcamp.py."""
+    import kamp_daemon.bandcamp as bc
+
+    monkeypatch.setattr(bc, "_get_fan_info", lambda session: (4346318, "fan"))
+    return 4346318
+
+
+class TestWishlistWrite:
+    def test_add_posts_a_form_and_confirms_from_the_body(self, fan_id: int) -> None:
+        session = FakeSession(get_body=_write_page(), post_body='{"ok":true}')
+        assert _source(session).save_remote(_candidate()) is True
+
+        url, _ = session.posts[0]
+        assert url == "https://bandcamp.com/collect_item_cb"
+        # data=, not json=: the identical call with a JSON body answers HTTP 200
+        # carrying an InsistError about a missing crumb.
+        assert session.post_forms[0] == {
+            "fan_id": fan_id,
+            "item_id": "1",
+            # "album", not the discover API's "a"; the short form earns a bare 400.
+            "item_type": "album",
+            "band_id": "692277828",
+            "crumb": "|collect_item_cb|1754|abc=",
+        }
+
+    def test_remove_uses_the_uncollect_endpoint_and_its_own_crumb(
+        self, fan_id: int
+    ) -> None:
+        session = FakeSession(
+            get_body=_write_page(is_wishlisted=True), post_body='{"ok":true}'
+        )
+        assert _source(session).unsave_remote(_candidate()) is True
+        assert session.posts[0][0] == "https://bandcamp.com/uncollect_item_cb"
+        assert session.post_forms[0]["crumb"] == "|uncollect_item_cb|1754|def="
+
+    def test_origin_is_sent_and_referer_is_not(self, fan_id: int) -> None:
+        """Bandcamp insists on an origin OR a referrer, but Chromium blocks a
+        manually-set Referer on net.request (net::ERR_BLOCKED_BY_CLIENT). A
+        Referer here would work in dev and fail in every packaged build."""
+        session = FakeSession(get_body=_write_page(), post_body='{"ok":true}')
+        _source(session).save_remote(_candidate())
+        headers = session.post_headers[0]
+        assert headers["Origin"] == "https://bandcamp.com"
+        assert headers["X-Requested-With"] == "XMLHttpRequest"
+        assert "Referer" not in headers
+
+    def test_band_id_is_current_band_id_never_selling_band_id(
+        self, fan_id: int
+    ) -> None:
+        """Sending selling_band_id returns HTTP 200 with {"ok":true} and does
+        nothing — verified live. The wrong field is not a failure we would even
+        notice at runtime, so it has to be got right here."""
+        session = FakeSession(get_body=_write_page(), post_body='{"ok":true}')
+        _source(session).save_remote(_candidate())
+        assert session.post_forms[0]["band_id"] == "692277828"
+
+    def test_a_page_without_a_band_id_refuses_rather_than_guessing(
+        self, fan_id: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """selling_band_id is right there and wrong. Falling back to it would
+        report success for a record that never moved."""
+        session = FakeSession(
+            get_body=_write_page(band_id=None), post_body='{"ok":true}'
+        )
+        assert _source(session).save_remote(_candidate()) is False
+        assert session.posts == []
+        assert "refusing to guess" in caplog.text
+
+    def test_a_200_carrying_an_error_body_is_a_failure(self, fan_id: int) -> None:
+        """The trap that stranded an album on a real account: these endpoints
+        answer 200 on failure, so the status is never the answer."""
+        session = FakeSession(
+            get_body=_write_page(),
+            post_body='{"error":true,"ok":false,"exception":"InsistError: no crumb"}',
+        )
+        session.post_status = 200
+        assert _source(session).save_remote(_candidate()) is False
+
+    def test_a_stale_crumb_is_retried_once_with_the_fresh_one(
+        self, fan_id: int
+    ) -> None:
+        session = FakeSession(
+            get_body=_write_page(),
+            post_bodies=[
+                '{"error":"invalid_crumb","crumb":"|collect_item_cb|9999|new="}',
+                '{"ok":true}',
+            ],
+            post_statuses=[403, 200],
+        )
+        assert _source(session).save_remote(_candidate()) is True
+        assert len(session.posts) == 2
+        assert session.post_forms[0]["crumb"] == "|collect_item_cb|1754|abc="
+        assert session.post_forms[1]["crumb"] == "|collect_item_cb|9999|new="
+        # The page is fetched once: the fresh crumb rides in on the error body.
+        assert len(session.gets) == 1
+
+    def test_the_crumb_retry_happens_at_most_once(self, fan_id: int) -> None:
+        """A second invalid_crumb is not a crumb problem, and retrying forever
+        would hammer the endpoint class closest to its rate limit."""
+        session = FakeSession(
+            get_body=_write_page(),
+            post_bodies=['{"error":"invalid_crumb","crumb":"|c|9|new="}'],
+            post_statuses=[403],
+        )
+        assert _source(session).save_remote(_candidate()) is False
+        assert len(session.posts) == 2
+
+    def test_a_non_crumb_failure_is_not_retried(self, fan_id: int) -> None:
+        session = FakeSession(
+            get_body=_write_page(), post_body='{"error":true,"ok":false}'
+        )
+        assert _source(session).save_remote(_candidate()) is False
+        assert len(session.posts) == 1
+
+    def test_already_wishlisted_is_a_silent_success_costing_no_post(
+        self, fan_id: int
+    ) -> None:
+        """The page we had to fetch anyway already answered. Bandcamp agrees — a
+        repeat collect_item_cb returns ok:true — so this saves a request rather
+        than changing the outcome."""
+        session = FakeSession(get_body=_write_page(is_wishlisted=True))
+        assert _source(session).save_remote(_candidate()) is True
+        assert session.posts == []
+
+    def test_removing_something_already_absent_is_a_silent_success(
+        self, fan_id: int
+    ) -> None:
+        session = FakeSession(get_body=_write_page(is_wishlisted=False))
+        assert _source(session).unsave_remote(_candidate()) is True
+        assert session.posts == []
+
+    def test_an_unknown_wishlist_state_still_attempts_the_write(
+        self, fan_id: int
+    ) -> None:
+        """None is not False. A page that cannot say must not short-circuit
+        either direction — it means we could not tell, so do the work."""
+        session = FakeSession(
+            get_body=_write_page(is_wishlisted=None), post_body='{"ok":true}'
+        )
+        assert _source(session).save_remote(_candidate()) is True
+        assert len(session.posts) == 1
+
+    def test_a_crumbless_page_fails_without_posting(
+        self, fan_id: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A logged-out page ships data-crumbs="{}" — the session has expired."""
+        session = FakeSession(get_body=_write_page(crumbs={}))
+        assert _source(session).save_remote(_candidate()) is False
+        assert session.posts == []
+        assert "session expired" in caplog.text
+
+    def test_a_cooldown_refuses_immediately_without_any_request(
+        self, fan_id: int
+    ) -> None:
+        """Checked, never waited on. wait_turn would hang a click for up to five
+        minutes; unlike preview there is no partial answer worth giving, so this
+        refuses and lets the UI say why."""
+        governor = MagicMock()
+        governor.blocked_for.return_value = 300.0
+        session = FakeSession(get_body=_write_page(), post_body='{"ok":true}')
+        source = BandcampDiscoverySource(session, governor=governor)
+
+        with pytest.raises(RateLimitedError):
+            source.save_remote(_candidate())
+        assert session.gets == []
+        assert session.posts == []
+        governor.wait_turn.assert_not_called()
+
+    def test_a_429_on_the_post_is_reported_and_raised(self, fan_id: int) -> None:
+        governor = MagicMock()
+        governor.blocked_for.return_value = 0.0
+        session = FakeSession(get_body=_write_page())
+        session.post_status = 429
+        source = BandcampDiscoverySource(session, governor=governor)
+
+        with pytest.raises(RateLimitedError):
+            source.save_remote(_candidate())
+        governor.report_429.assert_called_with(ALBUM_PAGE)
+
+    def test_an_unfetchable_host_fails_without_a_request(self, fan_id: int) -> None:
+        """Unreachable for a built crate — _to_candidates drops custom domains —
+        but item_url is remote data read back out of the database."""
+        session = FakeSession(get_body=_write_page())
+        candidate = _candidate("https://music.example.com/album/x")
+        assert _source(session).save_remote(candidate) is False
+        assert session.gets == []

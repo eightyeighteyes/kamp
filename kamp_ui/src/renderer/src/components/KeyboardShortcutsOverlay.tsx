@@ -51,6 +51,11 @@ const GROUPS: Group[] = [
         description: 'Preview / hold',
         note: 'Your queue pauses and comes back'
       },
+      {
+        keys: ['W'],
+        description: 'Wishlist / un-wishlist',
+        note: 'Writes to your Bandcamp account'
+      },
       { keys: ['C'], description: 'Copy link' },
       { keys: ['X'], description: 'Pass', note: 'Undo for 5 seconds' },
       { keys: ['Esc'], description: 'Stop the preview, then leave the crate' }

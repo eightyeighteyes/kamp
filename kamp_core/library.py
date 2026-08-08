@@ -91,7 +91,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 61
+_SCHEMA_VERSION = 62
 
 
 class NoStreamableVersionError(Exception):
@@ -564,6 +564,13 @@ CREATE TABLE IF NOT EXISTS magic_playlist_criteria (
 -- same transaction; never write it directly. Precedence is highest-rank-wins, not
 -- last-event-wins: purchased > wishlisted > dismissed > previewed > fresh.
 --
+-- Highest-rank-wins is no longer the whole story (KAMP-653). 'unwishlisted' RETRACTS
+-- an earlier 'wishlisted', so it is the one event that can move state downward, and a
+-- rank comparison cannot express that. It recomputes from the ledger instead -- which
+-- is what this comment has always claimed state is, so the retraction path makes the
+-- claim true rather than bending it. The append-only kinds keep the cheap rank
+-- comparison; only a retraction pays for a re-read.
+--
 -- purchased_sale_item_id is ON DELETE SET NULL deliberately. clear_bandcamp_collection()
 -- nulls child FKs before deleting the ledger because foreign_keys=ON turns a dangling
 -- child into an IntegrityError -- the crash KAMP-528 fixed. A new child it does not
@@ -623,7 +630,7 @@ CREATE TABLE IF NOT EXISTS discovery_events (
     at               REAL    NOT NULL DEFAULT (unixepoch()),
     detail           TEXT,
     CHECK (kind IN ('shown', 'previewed', 'wishlisted', 'url_copied',
-                    'dismissed', 'purchased'))
+                    'dismissed', 'purchased', 'unwishlisted'))
 );
 CREATE INDEX IF NOT EXISTS discovery_events_item_idx ON discovery_events(item_id);
 CREATE INDEX IF NOT EXISTS discovery_events_kind_at_idx ON discovery_events(kind, at);
@@ -2706,7 +2713,57 @@ class LibraryIndex:
             # CI's older SQLite is likewise not in play.
             self._conn.execute("UPDATE schema_version SET version = 61")
             self._conn.commit()
-            version = 61  # noqa: F841
+            version = 61
+
+        if version == 61:
+            # v61 -> v62 (KAMP-653): widen discovery_events.kind to accept
+            # 'unwishlisted'. SQLite cannot ALTER a CHECK, so the table is rebuilt.
+            #
+            # Far simpler than the KAMP-552 recipe, and for one reason worth stating
+            # so nobody copies that ceremony in here: discovery_events is a LEAF. It
+            # references discovery_items, but nothing references it, so DROP TABLE
+            # cascades to nothing and the foreign_keys=OFF dance is unnecessary.
+            # _DDL already carries the widened CHECK, so a fresh DB never runs this.
+            before = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM discovery_events"
+            ).fetchone()["c"]
+            self._conn.executescript(
+                "CREATE TABLE discovery_events_new ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " item_id INTEGER NOT NULL"
+                "   REFERENCES discovery_items(id) ON DELETE RESTRICT,"
+                " provider TEXT NOT NULL DEFAULT 'bandcamp',"
+                " provider_item_id TEXT NOT NULL DEFAULT '',"
+                " kind TEXT NOT NULL,"
+                " at REAL NOT NULL DEFAULT (unixepoch()),"
+                " detail TEXT,"
+                " CHECK (kind IN ('shown', 'previewed', 'wishlisted', 'url_copied',"
+                "                 'dismissed', 'purchased', 'unwishlisted')));"
+                # id copied verbatim: nothing keys on an event id today, but a
+                # renumbering rebuild is exactly the kind of silent trap that only
+                # surfaces once something does.
+                " INSERT INTO discovery_events_new"
+                "   (id, item_id, provider, provider_item_id, kind, at, detail)"
+                " SELECT id, item_id, provider, provider_item_id, kind, at, detail"
+                "   FROM discovery_events;"
+                " DROP TABLE discovery_events;"
+                " ALTER TABLE discovery_events_new RENAME TO discovery_events;"
+                # DROP TABLE took the indexes with it.
+                " CREATE INDEX IF NOT EXISTS discovery_events_item_idx"
+                "   ON discovery_events(item_id);"
+                " CREATE INDEX IF NOT EXISTS discovery_events_kind_at_idx"
+                "   ON discovery_events(kind, at);"
+            )
+            after = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM discovery_events"
+            ).fetchone()["c"]
+            if after != before:  # pragma: no cover - defensive
+                raise RuntimeError(
+                    f"v62 rebuild lost events: {before} before, {after} after"
+                )
+            self._conn.execute("UPDATE schema_version SET version = 62")
+            self._conn.commit()
+            version = 62  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -4930,6 +4987,10 @@ class LibraryIndex:
         "wishlisted": "wishlisted",
         "purchased": "purchased",
     }
+    #: Events that take an earlier event back, mapped to the state they cancel.
+    #: The only way state can move downward, and the reason a rank comparison is
+    #: not sufficient on its own (KAMP-653).
+    _DISCOVERY_EVENT_RETRACTS = {"unwishlisted": "wishlisted"}
 
     def record_discovery_event(
         self,
@@ -4954,14 +5015,25 @@ class LibraryIndex:
         if row is None:
             raise ValueError(f"no discovery item with id {item_id}")
 
+        retracts = kind in self._DISCOVERY_EVENT_RETRACTS
         target = self._DISCOVERY_EVENT_STATE.get(kind)
-        if target is None:
+        if target is None and not retracts:
             raise ValueError(f"unknown discovery event kind {kind!r}")
-        rank = self._DISCOVERY_STATE_RANK
-        new_state = target if rank[target] > rank.get(row["state"], 0) else row["state"]
 
         try:
             self._append_event(item_id, row, kind, at, detail)
+            if retracts:
+                # Recomputed AFTER the append, so the retraction is part of the
+                # ledger it is derived from.
+                new_state = self._state_from_ledger(item_id)
+            else:
+                rank = self._DISCOVERY_STATE_RANK
+                assert target is not None  # narrowed by the guard above
+                new_state = (
+                    target
+                    if rank[target] > rank.get(row["state"], 0)
+                    else str(row["state"])
+                )
             if new_state != row["state"]:
                 self._conn.execute(
                     "UPDATE discovery_items SET state = ? WHERE id = ?",
@@ -4971,6 +5043,35 @@ class LibraryIndex:
         except Exception:
             self._conn.rollback()
             raise
+
+    def _state_from_ledger(self, item_id: int) -> str:
+        """Derive state from the whole event history. Does NOT commit.
+
+        Only used on the retraction path -- every other kind can be folded in with
+        a rank comparison against the cached value, and re-reading the ledger for
+        those would make the common case pay for the rare one.
+
+        Ordered by (at, id) rather than by insertion: attribution back-dates a
+        'purchased' event to the sale time, so row order and event order genuinely
+        disagree, and a retraction must cancel the wishlist that preceded it *in
+        time* rather than the one that happened to be inserted first.
+        """
+        live: set[str] = set()
+        for event in self._conn.execute(
+            "SELECT kind FROM discovery_events WHERE item_id = ? ORDER BY at, id",
+            (item_id,),
+        ):
+            kind = str(event["kind"])
+            cancelled = self._DISCOVERY_EVENT_RETRACTS.get(kind)
+            if cancelled is not None:
+                live.discard(cancelled)
+                continue
+            state = self._DISCOVERY_EVENT_STATE.get(kind)
+            if state is not None:
+                live.add(state)
+        if not live:
+            return "fresh"
+        return max(live, key=lambda s: self._DISCOVERY_STATE_RANK.get(s, 0))
 
     def _append_event(
         self,

@@ -289,13 +289,17 @@ class DiscoverySource(ABC):
     def capabilities(self) -> frozenset[str]:
         """What this source can do *right now*.
 
-        A property rather than a class constant because capability can depend on the
-        transport, not just the provider. Bandcamp's wishlist write needs a
-        form-encoded POST that the Electron relay cannot express, so it is unavailable
-        in every packaged build until KAMP-653 extends the relay — while working fine
-        in a dev checkout. A constant would have the UI render a wishlist button that
-        silently does nothing for every real user, which is the exact class of failure
-        ``docs/discovery-recon.md`` exists to prevent.
+        A property rather than a class constant because capability can depend on
+        runtime state — the transport, the credentials, what the remote service is
+        currently willing to do — not just on which provider this is. A constant
+        would let the UI render a control that silently does nothing, which is the
+        class of failure ``docs/discovery-recon.md`` exists to prevent.
+
+        The original example here was Bandcamp's wishlist write, which was thought
+        to be inexpressible through the Electron relay. It was not: the relay
+        carries a form body fine and KAMP-653 ships the write on every platform.
+        The property still earns its keep, because a source with no Bandcamp
+        session can do neither.
         """
         return frozenset()
 
@@ -365,5 +369,23 @@ class DiscoverySource(ABC):
         from the HTTP status: Bandcamp's ``*_cb`` endpoints answer 200 with an error
         payload, and trusting the status is what left an album stranded on a real
         account during the KAMP-644 spike.
+
+        Idempotent by contract. Saving something already saved is a success, not an
+        error — the user's intent is satisfied either way, and the alternative is an
+        error message for a record that is sitting exactly where they wanted it.
+        """
+        raise UnsupportedCapability(f"{self.provider_id} cannot save remotely")
+
+    def unsave_remote(self, candidate: Candidate) -> bool:
+        """Take *candidate* back off the provider's list. The inverse of
+        :meth:`save_remote`, and gated by the same :data:`SAVE_REMOTE` capability.
+
+        One capability for both directions because a provider that can add to a
+        remote list can generally remove from it — Bandcamp serves both from one
+        crumb mechanism. Splitting them would be inventing a distinction no
+        provider has yet made.
+
+        Same rules as :meth:`save_remote`: confirm from the parsed body, and treat
+        removing something already absent as a success.
         """
         raise UnsupportedCapability(f"{self.provider_id} cannot save remotely")

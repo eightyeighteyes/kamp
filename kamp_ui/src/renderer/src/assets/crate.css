@@ -196,6 +196,30 @@
   cursor: default;
 }
 
+/* The wishlist done-state. Deliberately not --primary: the primary slot belongs
+   to "Give it a spin", and two accent-filled buttons side by side would read as
+   competing calls to action. This is a quiet confirmation of something already
+   true, so it takes the accent as a tint and an outline rather than a fill. */
+.crate-action--done {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Still clickable when done — pressing it again removes the record — so it must
+   not inherit the flat :disabled treatment. */
+.crate-action--done:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+/* Sits under the action row, beside the button that is also the retry. Matches
+   .crate-preview-error rather than shouting in an error colour: the clerk is
+   explaining, not warning, and Copy link is right there. */
+.crate-action-error {
+  margin: 8px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 .crate-dig-btn {
   border: 1px solid var(--border);
   background: var(--surface);

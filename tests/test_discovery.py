@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from kamp_core.library import LibraryIndex
+from kamp_core.library import _SCHEMA_VERSION, LibraryIndex
 from kamp_daemon.discovery import (
     ALBUM_PAGE,
     DISCOVER_API,
@@ -78,7 +78,7 @@ def _add_collection_row(
 
 
 class TestSchema:
-    def test_fresh_db_is_v61_with_discovery_tables(self, tmp_path: Path) -> None:
+    def test_fresh_db_is_v62_with_discovery_tables(self, tmp_path: Path) -> None:
         LibraryIndex(tmp_path / "library.db").close()
         conn = sqlite3.connect(str(tmp_path / "library.db"))
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
@@ -87,10 +87,111 @@ class TestSchema:
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         conn.close()
-        assert version == 61
+        assert version == 62
         assert {"discovery_items", "discovery_events"} <= tables
 
-    def test_v60_db_migrates_to_v61_preserving_data(self, tmp_path: Path) -> None:
+    def test_fresh_db_accepts_a_retraction_without_any_migration(
+        self, tmp_path: Path
+    ) -> None:
+        """_DDL carries the widened CHECK, so a new DB never needs the rebuild."""
+        index = LibraryIndex(tmp_path / "library.db")
+        try:
+            item = index.add_discovery_candidate(
+                provider="bandcamp", provider_item_id="1"
+            )
+            index.record_discovery_event(item, "unwishlisted")
+        finally:
+            index.close()
+
+    def test_v61_db_migrates_to_v62_and_then_accepts_a_retraction(
+        self, tmp_path: Path
+    ) -> None:
+        """The CHECK on discovery_events.kind cannot be ALTERed, so it is rebuilt.
+
+        Before the rebuild an 'unwishlisted' row is an IntegrityError; after it, the
+        same insert is accepted and every pre-existing event is still there with its
+        id intact.
+        """
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "wishlisted")
+        event_id = index._conn.execute("SELECT id FROM discovery_events").fetchone()[
+            "id"
+        ]
+
+        # Recreate the pre-migration CHECK: _DDL already built the widened one, so
+        # a synthetic v61 DB has to be rebuilt back down to it or the test proves
+        # nothing about the migration.
+        index._conn.executescript(
+            "ALTER TABLE discovery_events RENAME TO discovery_events_old;"
+            "CREATE TABLE discovery_events ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " item_id INTEGER NOT NULL REFERENCES discovery_items(id) ON DELETE RESTRICT,"
+            " provider TEXT NOT NULL DEFAULT 'bandcamp',"
+            " provider_item_id TEXT NOT NULL DEFAULT '',"
+            " kind TEXT NOT NULL,"
+            " at REAL NOT NULL DEFAULT (unixepoch()),"
+            " detail TEXT,"
+            " CHECK (kind IN ('shown', 'previewed', 'wishlisted', 'url_copied',"
+            "                 'dismissed', 'purchased')));"
+            "INSERT INTO discovery_events SELECT * FROM discovery_events_old;"
+            "DROP TABLE discovery_events_old;"
+        )
+        index._conn.execute("UPDATE schema_version SET version = 61")
+        index._conn.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            index._conn.execute(
+                "INSERT INTO discovery_events (item_id, kind) VALUES (?, 'unwishlisted')",
+                (item,),
+            )
+        index._conn.rollback()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        try:
+            version = reopened._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()["version"]
+            surviving = reopened._conn.execute(
+                "SELECT id, kind FROM discovery_events"
+            ).fetchall()
+            # The retraction the old CHECK rejected is now accepted.
+            reopened.record_discovery_event(item, "unwishlisted")
+            state = reopened._conn.execute(
+                "SELECT state FROM discovery_items WHERE id = ?", (item,)
+            ).fetchone()["state"]
+        finally:
+            reopened.close()
+
+        assert version == 62
+        # id copied verbatim -- nothing downstream keys on an event id today, but a
+        # renumbering rebuild would be a silent trap for whatever does first.
+        assert [(r["id"], r["kind"]) for r in surviving] == [(event_id, "wishlisted")]
+        assert state == "fresh"
+
+    def test_v62_rebuild_keeps_the_indexes(self, tmp_path: Path) -> None:
+        """DROP TABLE takes its indexes with it; they must be put back."""
+        db = tmp_path / "library.db"
+        index = LibraryIndex(db)
+        index._conn.execute("UPDATE schema_version SET version = 61")
+        index._conn.commit()
+        index.close()
+
+        reopened = LibraryIndex(db)
+        try:
+            names = {
+                r["name"]
+                for r in reopened._conn.execute(
+                    "SELECT name FROM sqlite_master"
+                    " WHERE type='index' AND tbl_name='discovery_events'"
+                )
+            }
+        finally:
+            reopened.close()
+        assert {"discovery_events_item_idx", "discovery_events_kind_at_idx"} <= names
+
+    def test_v60_db_migrates_forward_preserving_data(self, tmp_path: Path) -> None:
         db = tmp_path / "library.db"
         index = LibraryIndex(db)
         _add_collection_row(index, "sale-1")
@@ -108,7 +209,10 @@ class TestSchema:
             ).fetchone()["c"]
         finally:
             reopened.close()
-        assert version == 61
+        # Against the constant, not a literal: this test is about a v60 DB reaching
+        # the current schema with its rows intact, and pinning the number here means
+        # every later migration has to come back and edit it.
+        assert version == _SCHEMA_VERSION
         assert surviving == 1
 
     def test_crate_slot_is_unique_but_buffered_rows_are_exempt(
@@ -335,6 +439,97 @@ class TestEventLedger:
     def test_unknown_item_raises(self, index: LibraryIndex) -> None:
         with pytest.raises(ValueError):
             index.record_discovery_event(9999, "shown")
+
+    def _state(self, index: LibraryIndex, item: int) -> str:
+        row = index._conn.execute(
+            "SELECT state FROM discovery_items WHERE id = ?", (item,)
+        ).fetchone()
+        return str(row["state"])
+
+    def test_unwishlisting_falls_back_to_what_the_ledger_still_says(
+        self, index: LibraryIndex
+    ) -> None:
+        """Not to 'fresh' — the record was still previewed, and that happened.
+
+        This is the one event that moves state *down*, so it cannot use the
+        highest-rank-wins fast path. It recomputes from the ledger instead, which
+        is what the schema has always claimed state is.
+        """
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "previewed")
+        index.record_discovery_event(item, "wishlisted")
+        assert self._state(index, item) == "wishlisted"
+
+        index.record_discovery_event(item, "unwishlisted")
+        assert self._state(index, item) == "previewed"
+
+    def test_unwishlisting_a_record_never_wishlisted_changes_nothing(
+        self, index: LibraryIndex
+    ) -> None:
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "previewed")
+        index.record_discovery_event(item, "unwishlisted")
+        assert self._state(index, item) == "previewed"
+
+    def test_unwishlisting_does_not_undo_a_purchase(self, index: LibraryIndex) -> None:
+        """Buying it is a different fact from wishlisting it, and outranks both."""
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "wishlisted")
+        index.record_discovery_event(item, "purchased")
+        index.record_discovery_event(item, "unwishlisted")
+        assert self._state(index, item) == "purchased"
+
+    def test_rewishlisting_after_a_retraction_sticks(self, index: LibraryIndex) -> None:
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "wishlisted")
+        index.record_discovery_event(item, "unwishlisted")
+        index.record_discovery_event(item, "wishlisted")
+        assert self._state(index, item) == "wishlisted"
+
+    def test_retraction_falls_back_past_a_dismissal_to_the_dismissal(
+        self, index: LibraryIndex
+    ) -> None:
+        """Passing on a record outranks previewing it, and the pass still stands."""
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "previewed")
+        index.record_discovery_event(item, "dismissed")
+        index.record_discovery_event(item, "wishlisted")
+        index.record_discovery_event(item, "unwishlisted")
+        assert self._state(index, item) == "dismissed"
+
+    def test_a_bare_retraction_on_an_untouched_record_is_fresh(
+        self, index: LibraryIndex
+    ) -> None:
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "unwishlisted")
+        assert self._state(index, item) == "fresh"
+
+    def test_the_retraction_itself_is_recorded(self, index: LibraryIndex) -> None:
+        """The ledger is history: an un-wishlist is a thing the user did."""
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "wishlisted")
+        index.record_discovery_event(item, "unwishlisted")
+        kinds = [
+            r["kind"]
+            for r in index._conn.execute(
+                "SELECT kind FROM discovery_events WHERE item_id = ? ORDER BY id",
+                (item,),
+            )
+        ]
+        assert kinds == ["wishlisted", "unwishlisted"]
+
+    def test_retraction_recompute_respects_event_order_not_row_order(
+        self, index: LibraryIndex
+    ) -> None:
+        """Attribution back-dates events, so `at` and insertion order can disagree.
+
+        A wishlist added *after* the retraction in wall-clock terms must survive it,
+        even though its row was inserted first.
+        """
+        item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.record_discovery_event(item, "wishlisted", at=5000.0)
+        index.record_discovery_event(item, "unwishlisted", at=1000.0)
+        assert self._state(index, item) == "wishlisted"
 
     def test_unknown_event_kind_raises(self, index: LibraryIndex) -> None:
         item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")

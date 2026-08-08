@@ -29,6 +29,8 @@ from .bandcamp_ratelimit import BandcampGovernor, get_governor
 from .discovery import FANCOLLECTION
 
 if TYPE_CHECKING:  # pragma: no cover - types only
+    from kamp_core.library import LibraryIndex
+
     from .bandcamp import _AnySession
 
 logger = logging.getLogger(__name__)
@@ -117,10 +119,15 @@ def fetch_wishlist_album_ids(
 
         items: list[dict[str, Any]] = body.get("items") or []
         for item in items:
-            # Albums only. A wishlist holds individual tracks too (11 of 824 on
+            # Albums only. A wishlist holds individual tracks too (11 of 825 on
             # the measured account), and normalise_item_id flattens `track-N`
             # and `album-N` to the same string -- so a wishlisted track would
             # silently suppress an unrelated album sharing its numeric id.
+            #
+            # Measured on a real account: `item_type` and `tralbum_type` agree on
+            # every row (814 album/a, 11 track/t, zero disagreements), and
+            # item_id == tralbum_id throughout. Either field would do; this uses
+            # tralbum_* because that is the identity the candidate side keys on.
             if item.get("tralbum_type") != "a":
                 continue
             tralbum_id = item.get("tralbum_id") or item.get("item_id")
@@ -141,6 +148,37 @@ def fetch_wishlist_album_ids(
         len(ids),
     )
     return ids
+
+
+def mark_wishlisted_crate_items(index: "LibraryIndex", ids: set[str]) -> int:
+    """Flag any record in the current crate that turns out to be wishlisted.
+
+    The crate is assembled against whatever the cache held at the time, so an
+    item can be shown before the wishlist is known -- the very first crate after
+    launch is built with nothing cached at all. Rather than leave those looking
+    new, the walk marks them once it completes, and the rail draws its heart.
+
+    Only ever moves a record forward: ``record_discovery_event`` is
+    highest-rank-wins, so an already-purchased pick is not demoted, and calling
+    this twice writes a second event but no second state change.
+    """
+    crate_no = index.latest_crate_no()
+    if crate_no is None or not ids:
+        return 0
+    marked = 0
+    for item in index.crate_items(crate_no):
+        if item["state"] == "wishlisted":
+            continue
+        if str(item["provider_item_id"]) not in ids:
+            continue
+        try:
+            index.record_discovery_event(int(item["id"]), "wishlisted")
+            marked += 1
+        except Exception:  # noqa: BLE001 - a badge is not worth failing over
+            logger.warning("wishlist: could not mark item %s", item["id"])
+    if marked:
+        logger.info("wishlist: marked %d crate item(s) as already wishlisted", marked)
+    return marked
 
 
 class WishlistCache:

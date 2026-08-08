@@ -8,17 +8,26 @@ tracks, rows carrying tralbum_id/tralbum_type.
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterator
 from unittest.mock import MagicMock
 
 import pytest
 
+from kamp_core.library import LibraryIndex
 from kamp_daemon.discovery import FANCOLLECTION
 from kamp_daemon.wishlist import (
     PAGE_SIZE,
     WishlistCache,
     fetch_wishlist_album_ids,
 )
+
+
+@pytest.fixture
+def index(tmp_path: Path) -> Iterator[LibraryIndex]:
+    idx = LibraryIndex(tmp_path / "library.db")
+    yield idx
+    idx.close()
 
 
 def _row(tralbum_id: int, tralbum_type: str = "a") -> dict[str, Any]:
@@ -152,6 +161,51 @@ class TestWalkFailures:
     def test_an_unparseable_page_is_not_fatal(self) -> None:
         session = FakeSession([FakeResponse(ValueError("not json"))])
         assert fetch_wishlist_album_ids(session, 1, governor=_gov()) == set()
+
+
+class TestMarkingCrateItems:
+    """The crate on screen was assembled against whatever was cached at the
+    time — nothing at all, on the first build after launch."""
+
+    def _crate(self, index: Any, ids: list[str]) -> list[int]:
+        rows = []
+        for position, provider_item_id in enumerate(ids):
+            row = index.add_discovery_candidate(
+                provider="bandcamp", provider_item_id=provider_item_id, title="X"
+            )
+            index.place_in_crate(row, 1, position)
+            rows.append(row)
+        return rows
+
+    def test_a_wishlisted_item_gets_the_state(self, index: Any) -> None:
+        from kamp_daemon.wishlist import mark_wishlisted_crate_items
+
+        self._crate(index, ["1", "2", "3"])
+        assert mark_wishlisted_crate_items(index, {"2"}) == 1
+        states = {r["provider_item_id"]: r["state"] for r in index.crate_items(1)}
+        assert states == {"1": "fresh", "2": "wishlisted", "3": "fresh"}
+
+    def test_marking_is_idempotent(self, index: Any) -> None:
+        from kamp_daemon.wishlist import mark_wishlisted_crate_items
+
+        self._crate(index, ["1"])
+        mark_wishlisted_crate_items(index, {"1"})
+        assert mark_wishlisted_crate_items(index, {"1"}) == 0
+
+    def test_a_purchased_pick_is_not_demoted(self, index: Any) -> None:
+        """record_discovery_event is highest-rank-wins, and this must not fight
+        it: bought outranks wishlisted."""
+        from kamp_daemon.wishlist import mark_wishlisted_crate_items
+
+        rows = self._crate(index, ["1"])
+        index.record_discovery_event(rows[0], "purchased")
+        mark_wishlisted_crate_items(index, {"1"})
+        assert index.crate_items(1)[0]["state"] == "purchased"
+
+    def test_no_crate_is_harmless(self, index: Any) -> None:
+        from kamp_daemon.wishlist import mark_wishlisted_crate_items
+
+        assert mark_wishlisted_crate_items(index, {"1"}) == 0
 
 
 class TestCache:

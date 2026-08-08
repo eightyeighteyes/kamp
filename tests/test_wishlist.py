@@ -15,11 +15,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from kamp_core.library import LibraryIndex
-from kamp_daemon.discovery import FANCOLLECTION
+from kamp_daemon.discovery import FANCOLLECTION, PREVIEW, SAVE_REMOTE
 from kamp_daemon.wishlist import (
     PAGE_SIZE,
     WishlistCache,
     fetch_wishlist_album_ids,
+    write_wishlist,
 )
 
 
@@ -271,6 +272,52 @@ class TestCache:
         cache.add("77")
         assert "77" in cache.ids
 
+    def test_discard_records_kamps_own_removal(self) -> None:
+        """Without it, an album the user just un-wishlisted stays excluded from
+        every crate for the rest of the TTL, with nothing to explain why."""
+        cache = WishlistCache()
+        cache.refresh(
+            FakeSession([_page([_row(1), _row(2)], last_token="")]), 42, governor=_gov()
+        )
+        cache.discard("1")
+        assert cache.ids == {"2"}
+
+    def test_an_add_during_a_walk_survives_the_walk_landing(self) -> None:
+        """A walk takes ~40s and runs outside the lock, so it can start before a
+        wishlist click and finish after it. Replacing the id set wholesale would
+        silently undo what the user just did — and Bandcamp confirmed it."""
+        cache = WishlistCache()
+        clicked: list[str] = []
+
+        class ClickMidWalk(FakeSession):
+            def post(self, url, json=None, timeout=30, headers=None):  # type: ignore[no-untyped-def]
+                # Mid-flight, exactly as a request thread would.
+                if not clicked:
+                    clicked.append("77")
+                    cache.add("77")
+                    cache.discard("1")
+                return super().post(url, json=json, timeout=timeout, headers=headers)
+
+        # The walk's own view is stale: it still has 1 and has never seen 77.
+        cache.refresh(
+            ClickMidWalk([_page([_row(1), _row(2)], last_token="")]),
+            42,
+            governor=_gov(),
+        )
+        assert cache.ids == {"2", "77"}
+
+    def test_mutations_outside_a_walk_do_not_leak_into_the_next_one(self) -> None:
+        """Only in-flight mutations are re-applied. One made before a walk is
+        already reflected in what that walk read, and replaying it would pin a
+        stale id past a genuine change made in a browser."""
+        t = [1000.0]
+        cache = self._cache(t)
+        cache.add("99")
+        cache.refresh(
+            FakeSession([_page([_row(1)], last_token="")]), 42, governor=_gov()
+        )
+        assert cache.ids == {"1"}
+
     def test_invalidate_drops_everything(self) -> None:
         """The ids belong to an account that can change."""
         cache = WishlistCache()
@@ -286,3 +333,99 @@ class TestCache:
         cache.add("1")
         cache.ids.add("2")
         assert cache.ids == {"1"}
+
+
+class _FakeSource:
+    """Stands in for BandcampDiscoverySource at the write boundary."""
+
+    def __init__(
+        self,
+        *,
+        result: Any = True,
+        caps: frozenset[str] = frozenset({PREVIEW, SAVE_REMOTE}),
+    ) -> None:
+        self.result = result
+        self.capabilities = caps
+        self.saved: list[Any] = []
+        self.unsaved: list[Any] = []
+
+    def _answer(self, candidate: Any) -> bool:
+        if isinstance(self.result, Exception):
+            raise self.result
+        return bool(self.result)
+
+    def save_remote(self, candidate: Any) -> bool:
+        self.saved.append(candidate)
+        return self._answer(candidate)
+
+    def unsave_remote(self, candidate: Any) -> bool:
+        self.unsaved.append(candidate)
+        return self._answer(candidate)
+
+
+_ITEM = {
+    "id": 1,
+    "provider": "bandcamp",
+    "provider_item_id": "555",
+    "item_url": "https://a.bandcamp.com/album/x",
+    "artist": "Artist",
+    "title": "Title",
+}
+
+
+class TestWriteWishlist:
+    def test_a_confirmed_add_reports_ok_and_updates_the_cache(self) -> None:
+        cache = WishlistCache()
+        source = _FakeSource()
+        assert write_wishlist(source, _ITEM, add=True, cache=cache) == "ok"
+        assert cache.ids == {"555"}
+        assert source.saved[0].item_url == "https://a.bandcamp.com/album/x"
+
+    def test_a_confirmed_removal_drops_it_from_the_cache(self) -> None:
+        """Otherwise the album the user just removed stays excluded from every
+        crate for the rest of the TTL, with nothing to explain why."""
+        cache = WishlistCache()
+        cache.add("555")
+        assert write_wishlist(_FakeSource(), _ITEM, add=False, cache=cache) == "ok"
+        assert cache.ids == set()
+
+    def test_the_cache_is_untouched_when_the_write_fails(self) -> None:
+        cache = WishlistCache()
+        source = _FakeSource(result=False)
+        assert write_wishlist(source, _ITEM, add=True, cache=cache) == "rejected"
+        assert cache.ids == set()
+
+    def test_no_source_is_not_connected(self) -> None:
+        assert write_wishlist(None, _ITEM, add=True) == "not_connected"
+
+    def test_a_source_without_the_capability_is_unsupported_not_rejected(self) -> None:
+        """The capability gate, and the first thing in the codebase to read the
+        property. Without it, a provider that cannot write is indistinguishable
+        from Bandcamp saying no — and the UI would blame Bandcamp."""
+        source = _FakeSource(caps=frozenset({PREVIEW}))
+        assert write_wishlist(source, _ITEM, add=True) == "unsupported"
+        assert source.saved == []
+
+    def test_a_rate_limit_is_reported_as_such(self) -> None:
+        from kamp_daemon.discovery_sources import RateLimitedError
+
+        source = _FakeSource(result=RateLimitedError("cooling down"))
+        assert write_wishlist(source, _ITEM, add=True) == "rate_limited"
+
+    def test_an_expired_session_asks_for_a_login(self) -> None:
+        from kamp_daemon.bandcamp import NeedsLoginError
+
+        source = _FakeSource(result=NeedsLoginError("session rejected"))
+        assert write_wishlist(source, _ITEM, add=True) == "needs_login"
+
+    def test_an_unexpected_error_is_rejected_rather_than_raised(self) -> None:
+        """A failed nicety must not 500 the endpoint."""
+        source = _FakeSource(result=RuntimeError("boom"))
+        assert write_wishlist(source, _ITEM, add=True) == "rejected"
+
+    def test_the_candidate_carries_the_identity_the_post_needs(self) -> None:
+        source = _FakeSource()
+        write_wishlist(source, _ITEM, add=True)
+        candidate = source.saved[0]
+        assert candidate.provider_item_id == "555"
+        assert candidate.provider == "bandcamp"

@@ -575,7 +575,7 @@ def _cmd_daemon(
     from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
 
     from .discovery_preview import PreviewPlayer
-    from .wishlist import WishlistCache, mark_wishlisted_crate_items
+    from .wishlist import WishlistCache, mark_wishlisted_crate_items, write_wishlist
     from kamp_core.scrobbler import Scrobbler, authenticate as _lastfm_authenticate
     from kamp_core.server import create_app, resolve_playback_uri
     from kamp_daemon.config import config_set as _config_set
@@ -1061,6 +1061,16 @@ def _cmd_daemon(
         except Exception:
             _logger.warning("wishlist warm-up failed", exc_info=True)
 
+    def _on_wishlist_write(item: dict[str, Any], add: bool) -> str:
+        """Write one crate item to the Bandcamp wishlist. Returns a machine reason.
+
+        Builds the source per call for the same reason the crate build does: the
+        session is read fresh so logging in or out mid-session is picked up
+        without a daemon restart. That costs a keychain read, which is fine on a
+        click and is exactly why the crate snapshot does not do it.
+        """
+        return write_wishlist(_discovery_source(), item, add=add, cache=_wishlist_cache)
+
     def _on_crate_build_start() -> None:
         """Assemble a crate on a background thread.
 
@@ -1122,8 +1132,13 @@ def _cmd_daemon(
         # and without it mpv writes ~20 lines a second into a pipe for nobody.
         return MpvPlaybackEngine(mpv_bin=_resolve_mpv_binary(), metering=False)
 
-    def _preview_source() -> Any:
-        """A Bandcamp source for preview, or None when not connected."""
+    def _discovery_source() -> Any:
+        """A Bandcamp source, or None when not connected.
+
+        Shared by preview and the wishlist write rather than written twice: two
+        factories are two chances to disagree about what "connected" means, and
+        the capability property they expose is what gates both features.
+        """
         session_data = index.get_session("bandcamp")
         if not session_data:
             return None
@@ -1133,7 +1148,7 @@ def _cmd_daemon(
 
             return BandcampDiscoverySource(_make_requests_session(session_data))
         except Exception:
-            _logger.exception("preview: could not build a Bandcamp session")
+            _logger.exception("discovery: could not build a Bandcamp session")
             return None
 
     def _preview_notify(snapshot: dict[str, Any]) -> None:
@@ -1150,7 +1165,7 @@ def _cmd_daemon(
         index,
         main_engine=engine,
         engine_factory=_preview_engine,
-        source_factory=_preview_source,
+        source_factory=_discovery_source,
         notify=_preview_notify,
     )
 
@@ -1233,6 +1248,7 @@ def _cmd_daemon(
         on_genre_backfill_start=_on_genre_backfill_start,
         on_genre_backfill_cancel=_on_genre_backfill_cancel,
         on_crate_build_start=_on_crate_build_start,
+        wishlist_write=_on_wishlist_write,
         preview_player=preview_player,
         on_allowlist_changed=_on_allowlist_changed,
         get_default_allowlist=_genre_sources.default_allowlist_names,

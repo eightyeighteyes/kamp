@@ -181,12 +181,78 @@ def mark_wishlisted_crate_items(index: "LibraryIndex", ids: set[str]) -> int:
     return marked
 
 
+def write_wishlist(
+    source: Any,
+    item: dict[str, Any],
+    *,
+    add: bool,
+    cache: "WishlistCache | None" = None,
+) -> str:
+    """Add or remove one crate item on the provider's wishlist (KAMP-653).
+
+    Returns ``"ok"``, or a machine reason the API layer maps to a status. Lives
+    here rather than in ``kamp_core.discovery_api`` because it needs
+    :class:`~kamp_daemon.discovery.Candidate` and a provider session, and
+    ``kamp_core`` cannot import ``kamp_daemon`` -- the same boundary that makes
+    the preview player an injected object.
+
+    Reasons, not prose: the daemon does not write brand voice. The renderer turns
+    each of these into the clerk's line.
+    """
+    from .discovery import SAVE_REMOTE, Candidate, UnsupportedCapability
+    from .discovery_sources import RateLimitedError
+
+    if source is None:
+        return "not_connected"
+    # The capability gate, and the first thing in the codebase to read the
+    # property. Without it a provider that cannot write would surface as a
+    # generic failure indistinguishable from the remote service saying no.
+    if SAVE_REMOTE not in getattr(source, "capabilities", frozenset()):
+        return "unsupported"
+
+    candidate = Candidate(
+        provider=str(item.get("provider") or "bandcamp"),
+        provider_item_id=str(item.get("provider_item_id") or ""),
+        item_url=str(item.get("item_url") or ""),
+        artist=str(item.get("artist") or ""),
+        title=str(item.get("title") or ""),
+    )
+    try:
+        ok = source.save_remote(candidate) if add else source.unsave_remote(candidate)
+    except RateLimitedError:
+        return "rate_limited"
+    except UnsupportedCapability:
+        return "unsupported"
+    except Exception as exc:  # noqa: BLE001
+        # NeedsLoginError is raised by _get_fan_info on a 401/403/302. Matched by
+        # name because importing it here would drag kamp_daemon.bandcamp -- and
+        # its module-level requests setup -- into every caller.
+        if type(exc).__name__ == "NeedsLoginError":
+            return "needs_login"
+        logger.warning(
+            "wishlist: write failed for item %s", item.get("id"), exc_info=True
+        )
+        return "rejected"
+
+    if not ok:
+        return "rejected"
+
+    # Keep the exclusion filter honest immediately. Without the discard half, an
+    # album the user just removed stays suppressed from every crate for the rest
+    # of the TTL with nothing to explain why.
+    if cache is not None:
+        if add:
+            cache.add(candidate.provider_item_id)
+        else:
+            cache.discard(candidate.provider_item_id)
+    return "ok"
+
+
 class WishlistCache:
     """The wishlist ids, walked rarely and read often.
 
-    Locked because KAMP-653's ``add`` will arrive on a request thread while a
-    crate build reads on another; builds are serialised today, so this is not
-    yet reachable, but the lock is cheaper than remembering later.
+    Locked because KAMP-653's ``add``/``discard`` arrive on a request thread while
+    a crate build reads on another.
     """
 
     def __init__(
@@ -201,6 +267,11 @@ class WishlistCache:
         self._ids: set[str] = set()
         self._fetched_at: float | None = None
         self._walking = False
+        #: Mutations made *during* a walk, id -> present. A walk takes ~40s and
+        #: runs outside the lock, so it can start before a wishlist click and land
+        #: after it; replacing the id set wholesale would then silently undo what
+        #: the user just did. Applied on top of the walk result when it lands.
+        self._pending: dict[str, bool] = {}
 
     @property
     def ids(self) -> set[str]:
@@ -224,17 +295,31 @@ class WishlistCache:
         """Record a wishlist addition kamp made itself (KAMP-653).
 
         Covers only kamp's own writes. A wishlist change made in a browser is
-        invisible until the next walk, which is why the per-item check on the
-        preview fetch exists.
+        invisible until the next walk.
         """
         with self._lock:
             self._ids.add(str(tralbum_id))
+            if self._walking:
+                self._pending[str(tralbum_id)] = True
+
+    def discard(self, tralbum_id: str) -> None:
+        """Record a wishlist removal kamp made itself (KAMP-653).
+
+        Without this a removed album stays excluded from every crate until the
+        cache expires -- the user takes it off their wishlist and kamp keeps
+        refusing to offer it, for up to an hour, with nothing to explain why.
+        """
+        with self._lock:
+            self._ids.discard(str(tralbum_id))
+            if self._walking:
+                self._pending[str(tralbum_id)] = False
 
     def invalidate(self) -> None:
         """Drop everything — the ids belong to an account that can change."""
         with self._lock:
             self._ids = set()
             self._fetched_at = None
+            self._pending.clear()
 
     def refresh(
         self,
@@ -260,6 +345,7 @@ class WishlistCache:
                 logger.info("wishlist: skipping the walk, endpoint is cooling down")
                 return
             self._walking = True
+            self._pending.clear()
 
         try:
             ids = fetch_wishlist_album_ids(session, fan_id, governor=gov)
@@ -275,6 +361,15 @@ class WishlistCache:
             return
 
         with self._lock:
+            # Re-apply anything the user did while the walk was in flight. The
+            # walk reflects Bandcamp as of ~40s ago; these are newer and were
+            # confirmed by Bandcamp, so they win over whatever the pages said.
+            for tralbum_id, present in self._pending.items():
+                if present:
+                    ids.add(tralbum_id)
+                else:
+                    ids.discard(tralbum_id)
+            self._pending.clear()
             self._ids = ids
             self._fetched_at = self._now()
         logger.info("wishlist: %d albums cached", len(ids))

@@ -1099,6 +1099,11 @@ def create_app(
     # not depend on kamp_daemon. Never assign this to `engine` — create_app
     # wires main-player callbacks onto whatever it is given.
     preview_player: Any = None,
+    # (item, add) -> machine reason. Performs the Bandcamp wishlist write and
+    # answers "ok" or why not. Injected for the same reason preview_player is:
+    # it needs Candidate and a provider session, and kamp_core cannot import
+    # kamp_daemon.
+    wishlist_write: Callable[[dict[str, Any], bool], str] | None = None,
     on_allowlist_changed: Callable[[], None] | None = None,
     get_default_allowlist: Callable[[], list[str]] | None = None,
     dl_queue: _queue.Queue[str] | None = None,
@@ -4705,6 +4710,7 @@ def create_app(
         on_build_start=on_crate_build_start,
         art_cache_dir=art_cache_dir,
         preview=preview_player,
+        wishlist_write=wishlist_write,
     )
 
     return app

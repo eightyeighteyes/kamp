@@ -332,6 +332,15 @@ class Syncer:
         self.on_stream_albums_added: Callable[[list[tuple[str, str]]], None] | None = (
             None
         )
+        # KAMP-654: fired once after any successful collection walk, in the parent
+        # process. Named for what happened rather than "after a sync", because the
+        # thing a listener cares about is that bandcamp_collection changed --
+        # purchase attribution is a pure-DB join over it.
+        #
+        # The parent, not the subprocess: the child cannot broadcast, its index is
+        # closed in a finally, and marshalling a toast payload back through
+        # result_q to do the same work is strictly worse.
+        self.on_collection_synced: Callable[[], None] | None = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -538,6 +547,21 @@ class Syncer:
         # and manual syncs — an empty string signals "no active sync").
         if self.status_callback is not None:
             self.status_callback("")
+
+        # The ONE place this fires, deliberately. Both result branches converge
+        # here, and the other two entry points route through this method:
+        # sync_all_purchases() delegates to sync_once() in both modes, and
+        # mark_synced() is invoked from *inside* sync_once()'s first-run branch
+        # above. Firing at those sites too would double-fire, and firing in
+        # mark_synced() would fire before the sync that produces the purchases.
+        #
+        # A listener that raises must not fail the sync -- the collection is
+        # already written and this is bookkeeping on top of it.
+        if self.on_collection_synced is not None:
+            try:
+                self.on_collection_synced()
+            except Exception:  # noqa: BLE001
+                logger.warning("on_collection_synced failed", exc_info=True)
 
     def sync_all_purchases(self) -> None:
         """Re-sync or re-download the entire Bandcamp collection.

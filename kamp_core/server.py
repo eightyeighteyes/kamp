@@ -1370,6 +1370,34 @@ def create_app(
 
     app.state.notify_deferred_op_completed = _notify_deferred_op_completed
 
+    def _notify_crate_purchase(items: list[dict[str, Any]]) -> None:
+        """Tell the UI a crate pick came home (KAMP-654).
+
+        Sent as a batch, not one event per item: attribution runs once per sync
+        and a user who bought three picks since last launch would otherwise get
+        three toasts into a single-slot 5s display, where each new one clears the
+        previous early and two are lost outright.
+
+        Carries artist and title because the crate snapshot cannot supply them —
+        it only ever rebuilds the *latest* crate, so a pick bought out of crate 2
+        while the user is looking at crate 7 has no card to read from.
+        """
+        _broadcast(
+            {
+                "type": "discovery.purchased",
+                "items": [
+                    {
+                        "id": item["id"],
+                        "artist": item["artist"],
+                        "title": item["title"],
+                    }
+                    for item in items
+                ],
+            }
+        )
+
+    app.state.notify_crate_purchase = _notify_crate_purchase
+
     # Wired by the daemon after create_app() to suppress watcher events and
     # trigger a direct scan following a tag-edit file move.
     app.state.on_track_file_moved = None

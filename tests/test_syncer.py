@@ -641,6 +641,98 @@ class TestMarkSynced:
         mock_mark.assert_called_once()
 
 
+class TestCollectionSyncedCallback:
+    """KAMP-654: the hook purchase attribution hangs off."""
+
+    def test_fires_after_a_sync(self, tmp_path: Path) -> None:
+        _seed_collection_db(tmp_path)
+        fired: list[int] = []
+        with patch("kamp_daemon.syncer._spawn_worker", side_effect=_noop_worker):
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path))
+                syncer.on_collection_synced = lambda: fired.append(1)
+                syncer.sync_once()
+        assert fired == [1]
+
+    def test_fires_exactly_once_for_sync_all_purchases(self, tmp_path: Path) -> None:
+        """sync_all_purchases() delegates to sync_once() in both modes, so a
+        second fire site there would double-fire — and double-attribute."""
+        _seed_collection_db(tmp_path)
+        fired: list[int] = []
+        with patch("kamp_daemon.syncer._spawn_worker", side_effect=_noop_worker):
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path))
+                syncer.on_collection_synced = lambda: fired.append(1)
+                syncer.sync_all_purchases()
+        assert fired == [1]
+
+    def test_does_not_fire_before_the_sync_that_produces_purchases(
+        self, tmp_path: Path
+    ) -> None:
+        """mark_synced() is called from INSIDE sync_once()'s first-run branch.
+
+        Firing there would run attribution against a collection that has just been
+        wholesale marked as already-owned, before the sync that would actually
+        bring in a new purchase — so the one fire must come after both.
+        """
+        fired_at: list[str] = []
+
+        def _recording_worker(
+            target: Any, args: tuple[Any, ...]
+        ) -> tuple[Any, Any, Any, Any]:
+            fired_at.append(f"worker:{target.__name__}")
+            status_q: _queue_module.Queue[str] = _queue_module.Queue()
+            log_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q.put(("ok", []))
+            return _FakeProc(), status_q, log_q, result_q
+
+        # No collection rows => sync_once() takes the first-run auto-mark branch.
+        with patch("kamp_daemon.syncer._spawn_worker", side_effect=_recording_worker):
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path))
+                syncer.on_collection_synced = lambda: fired_at.append("callback")
+                syncer.sync_once()
+
+        assert fired_at.count("callback") == 1
+        assert fired_at[-1] == "callback", "must fire after every worker has run"
+
+    def test_a_raising_listener_does_not_fail_the_sync(self, tmp_path: Path) -> None:
+        """The collection is already written; this is bookkeeping on top of it."""
+        _seed_collection_db(tmp_path)
+        with patch("kamp_daemon.syncer._spawn_worker", side_effect=_noop_worker):
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path))
+
+                def _boom() -> None:
+                    raise RuntimeError("no")
+
+                syncer.on_collection_synced = _boom
+                syncer.sync_once()  # must not raise
+
+    def test_does_not_fire_when_the_sync_failed(self, tmp_path: Path) -> None:
+        """Nothing was written, so there is nothing to attribute."""
+        _seed_collection_db(tmp_path)
+        fired: list[int] = []
+
+        def _failing_worker(
+            target: Any, args: tuple[Any, ...]
+        ) -> tuple[Any, Any, Any, Any]:
+            status_q: _queue_module.Queue[str] = _queue_module.Queue()
+            log_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q: _queue_module.Queue[Any] = _queue_module.Queue()
+            result_q.put(("error", "boom"))
+            return _FakeProc(), status_q, log_q, result_q
+
+        with patch("kamp_daemon.syncer._spawn_worker", side_effect=_failing_worker):
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path))
+                syncer.on_collection_synced = lambda: fired.append(1)
+                with pytest.raises(RuntimeError):
+                    syncer.sync_once()
+        assert fired == []
+
+
 class TestSyncAllPurchases:
     def test_resets_collection_sync_state_before_sync(self, tmp_path: Path) -> None:
         """sync_all_purchases() nulls synced_at for all rows and runs sync with skip_auto_mark."""

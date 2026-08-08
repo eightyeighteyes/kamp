@@ -198,6 +198,20 @@ class KampBandcampSyncer(BaseSyncer):
         self._inner.on_stream_albums_added = cb
 
     @property
+    def on_collection_synced(self) -> Callable[[], None] | None:
+        """Callback fired once after any successful collection walk (KAMP-654)."""
+        if self._inner is None:
+            return None
+        return self._inner.on_collection_synced
+
+    @on_collection_synced.setter
+    def on_collection_synced(self, cb: Callable[[], None] | None) -> None:
+        assert (
+            self._inner is not None
+        ), "call _configure() before setting on_collection_synced"
+        self._inner.on_collection_synced = cb
+
+    @property
     def progress_callback(self) -> Callable[[str, int, int], None] | None:
         """Per-album byte-progress callback (sale_item_id, downloaded_bytes,
         total_bytes) (KAMP-436/566)."""

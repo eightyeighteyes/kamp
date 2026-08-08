@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.27.0](https://github.com/eightyeighteyes/kamp/compare/v1.26.1...v1.27.0) (2026-08-08)
+
+
+### Features
+
+* **KAMP-645:** discovery groundwork — schema v61, seed profile, provider ABC ([#744](https://github.com/eightyeighteyes/kamp/issues/744)) ([f97c81c](https://github.com/eightyeighteyes/kamp/commit/f97c81ce2f37f8fa52ddb3588882919433f137a6))
+* **KAMP-646:** Bandcamp rate-limit governor + calibrated crate budget ([#746](https://github.com/eightyeighteyes/kamp/issues/746)) ([1b68335](https://github.com/eightyeighteyes/kamp/commit/1b68335728928e4fe14e8912f4a3f9583f4ab0a8))
+
 ## [1.26.1](https://github.com/eightyeighteyes/kamp/compare/v1.26.0...v1.26.1) (2026-08-02)
 
 

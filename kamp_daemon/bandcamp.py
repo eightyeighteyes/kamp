@@ -167,6 +167,7 @@ class _ProxySession:
         *,
         headers: dict[str, str] | None = None,
         json: Any = None,
+        data: Any = None,
         timeout: int | float = 30,
         **_kwargs: Any,
     ) -> _ProxyResponse:
@@ -175,8 +176,24 @@ class _ProxySession:
             req_headers.update(headers)
         body: str | None = None
         if json is not None:
-            req_headers["Content-Type"] = "application/json"
+            req_headers.setdefault("Content-Type", "application/json")
             body = _json_dumps(json)
+        elif data is not None:
+            # Form encoding, which Bandcamp's collect_item_cb / uncollect_item_cb
+            # require: the identical call with a JSON body answers HTTP 200
+            # carrying an InsistError about a missing crumb (KAMP-644).
+            #
+            # The relay carries this fine — the wire format is
+            # {url, method, headers, body} with the content type riding in
+            # headers, and server.py, kampAPI.ts and index.ts all forward both
+            # verbatim. Nothing else needed changing; the recon's claim that the
+            # server model and the Electron handler also needed extending was
+            # measured against a spike helper that had no form path at all.
+            #
+            # setdefault, not assignment: headers= was merged above, so a caller
+            # that supplied its own content type should keep it.
+            req_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+            body = _urlencode(data)
 
         # The proxy relay chain adds significant latency: the request goes
         # subprocess → server → WS → Electron → net.fetch(bandcamp.com) → back.
@@ -193,8 +210,10 @@ class _ProxySession:
             timeout=proxy_timeout,
         )
         resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
-        status = data["status"]
+        # Named `result`, not `data`: the request body kwarg is now called `data`,
+        # the same shadowing hazard the _json_dumps alias above exists for.
+        result: dict[str, Any] = resp.json()
+        status = result["status"]
         if status >= 400:
             # Log what Bandcamp actually said. A 429 surfaced only as
             # "Album download failed: HTTP 429" tells us nothing about WHICH
@@ -205,14 +224,14 @@ class _ProxySession:
                 method,
                 url,
                 status,
-                data.get("content_type", "?"),
-                data.get("body", ""),
+                result.get("content_type", "?"),
+                result.get("body", ""),
             )
         return _ProxyResponse(
             status_code=status,
-            text=data["body"],
-            content_type=data.get("content_type", "text/html"),
-            url=data.get("url"),
+            text=result["body"],
+            content_type=result.get("content_type", "text/html"),
+            url=result.get("url"),
         )
 
     def get(self, url: str, **kwargs: Any) -> _ProxyResponse:
@@ -222,8 +241,9 @@ class _ProxySession:
         return self._fetch("POST", url, **kwargs)
 
 
-# Alias json.dumps to avoid shadowing in _ProxySession._fetch
+# Aliased because _ProxySession._fetch shadows both names with its own kwargs.
 _json_dumps = json.dumps
+_urlencode = urllib.parse.urlencode
 
 # Union type accepted by all internal helpers that take an HTTP session.
 _AnySession = Union[_requests.Session, _ProxySession]

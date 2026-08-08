@@ -53,7 +53,10 @@ from kamp_core.library import (
     _canonical_track_uri,
     extract_art,
 )
-from kamp_core.discovery_api import register_discovery_routes
+from kamp_core.discovery_api import (
+    PREVIEW_EVENT as CRATE_PREVIEW_EVENT,
+    register_discovery_routes,
+)
 from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
 from kamp_core.proxy_hosts import ALLOWED_PROXY_HOSTS, host_allowed
 
@@ -1092,6 +1095,10 @@ def create_app(
     on_genre_backfill_start: Callable[[], None] | None = None,
     on_genre_backfill_cancel: Callable[[], None] | None = None,
     on_crate_build_start: Callable[[], None] | None = None,
+    # kamp_daemon.discovery_preview.PreviewPlayer; Any because kamp_core does
+    # not depend on kamp_daemon. Never assign this to `engine` — create_app
+    # wires main-player callbacks onto whatever it is given.
+    preview_player: Any = None,
     on_allowlist_changed: Callable[[], None] | None = None,
     get_default_allowlist: Callable[[], list[str]] | None = None,
     dl_queue: _queue.Queue[str] | None = None,
@@ -1475,6 +1482,34 @@ def create_app(
         token = request.headers.get("X-Kamp-Token") or request.query_params.get("token")
         if token != auth_token:
             return Response(status_code=401)
+        return await call_next(request)
+
+    # KAMP-651: the main transport always wins over a Crate preview.
+    #
+    # A middleware rather than a call in each handler: there are ~15 endpoints
+    # under /api/v1/player that start or alter playback, several of them only
+    # conditionally, and forgetting one would leave preview audio playing
+    # underneath the user's own music with no obvious cause. One rule cannot be
+    # forgotten by the next endpoint anyone adds.
+    #
+    # Volume and mute are the deliberate exceptions: they are not a demand for
+    # the floor, they are a change to how loud everything is, so they are
+    # mirrored onto the preview instead of stopping it.
+    _PREVIEW_SAFE_PLAYER_PATHS = ("/api/v1/player/volume", "/api/v1/player/mute")
+
+    @app.middleware("http")
+    async def _preview_yields_to_transport(request: Request, call_next: Any) -> Any:
+        if (
+            request.method == "POST"
+            and request.url.path.startswith("/api/v1/player/")
+            and request.url.path not in _PREVIEW_SAFE_PLAYER_PATHS
+        ):
+            stop = getattr(app.state, "stop_preview", None)
+            if stop is not None:
+                try:
+                    stop()
+                except Exception:  # noqa: BLE001 - never break the transport
+                    logger.warning("could not stop the preview", exc_info=True)
         return await call_next(request)
 
     # Restrict to origins kamp actually serves; wildcard would allow any page
@@ -4040,11 +4075,18 @@ def create_app(
     @app.post("/api/v1/player/volume")
     def set_volume(req: VolumeRequest) -> dict[str, Any]:
         engine.volume = req.volume
+        # A Crate preview runs on its own engine with its own volume, so without
+        # this the slider would move everything except what you can currently
+        # hear (KAMP-651).
+        if preview_player is not None:
+            preview_player.set_volume(req.volume)
         return {"ok": True}
 
     @app.post("/api/v1/player/mute")
     def set_mute(req: MuteRequest) -> dict[str, Any]:
         engine.muted = req.muted
+        if preview_player is not None:
+            preview_player.set_muted(req.muted)
         return {"ok": True}
 
     @app.post("/api/v1/player/next")
@@ -4593,6 +4635,17 @@ def create_app(
         # proxy request before the Electron preload established its WS connection.
         for pending_event in list(_pending_proxy_fetches.values()):
             await ws.send_json(pending_event)
+        # KAMP-651: a preview is daemon-owned and survives a renderer reload, so
+        # a reconnecting client has to be told about audio that is already
+        # playing. _broadcast no-ops with no client attached, and the preview
+        # only pushes on transitions, so without this the mini-player would be
+        # missing while its audio kept going.
+        _preview_snapshot = getattr(app.state, "discovery_preview_snapshot", None)
+        if _preview_snapshot is not None:
+            try:
+                await ws.send_json({"type": CRATE_PREVIEW_EVENT, **_preview_snapshot()})
+            except Exception:  # noqa: BLE001 - a bad frame must not drop the socket
+                logger.warning("could not send the preview snapshot", exc_info=True)
         last_library_version: int = _state["library_version"]
         try:
             while True:
@@ -4651,6 +4704,7 @@ def create_app(
         broadcast=_broadcast,
         on_build_start=on_crate_build_start,
         art_cache_dir=art_cache_dir,
+        preview=preview_player,
     )
 
     return app

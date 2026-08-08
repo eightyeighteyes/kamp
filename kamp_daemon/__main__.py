@@ -573,6 +573,8 @@ def _cmd_daemon(
 
     from kamp_core.library import LibraryIndex, Track
     from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
+
+    from .discovery_preview import PreviewPlayer
     from kamp_core.scrobbler import Scrobbler, authenticate as _lastfm_authenticate
     from kamp_core.server import create_app, resolve_playback_uri
     from kamp_daemon.config import config_set as _config_set
@@ -1072,6 +1074,44 @@ def _cmd_daemon(
 
         threading.Thread(target=_run, daemon=True, name="crate-builder").start()
 
+    # --- KAMP-651: Crate preview, on its own isolated mpv ---
+    def _preview_engine() -> Any:
+        # metering off: this engine's levels must never reach the main VU meter,
+        # and without it mpv writes ~20 lines a second into a pipe for nobody.
+        return MpvPlaybackEngine(mpv_bin=_resolve_mpv_binary(), metering=False)
+
+    def _preview_source() -> Any:
+        """A Bandcamp source for preview, or None when not connected."""
+        session_data = index.get_session("bandcamp")
+        if not session_data:
+            return None
+        try:
+            from .bandcamp import _make_requests_session
+            from .discovery_sources import BandcampDiscoverySource
+
+            return BandcampDiscoverySource(_make_requests_session(session_data))
+        except Exception:
+            _logger.exception("preview: could not build a Bandcamp session")
+            return None
+
+    def _preview_notify(snapshot: dict[str, Any]) -> None:
+        # Deferred lookup: the player is built before create_app, so the
+        # broadcaster does not exist yet at construction time.
+        publish = getattr(app.state, "discovery_preview_publish", None)
+        if publish is not None:
+            publish(snapshot)
+
+    # NOTE the name: _state_saver and create_app both close over `engine`, so
+    # this must never be bound to that name or the preview would become the
+    # main player as far as the rest of the daemon is concerned.
+    preview_player = PreviewPlayer(
+        index,
+        main_engine=engine,
+        engine_factory=_preview_engine,
+        source_factory=_preview_source,
+        notify=_preview_notify,
+    )
+
     # Bandcamp username comes only from the session (set after Electron login flow).
     _bc_session = index.get_session("bandcamp")
     _bc_ever_connected = index.get_setting("bandcamp.ever_connected") == "true"
@@ -1146,6 +1186,7 @@ def _cmd_daemon(
         on_genre_backfill_start=_on_genre_backfill_start,
         on_genre_backfill_cancel=_on_genre_backfill_cancel,
         on_crate_build_start=_on_crate_build_start,
+        preview_player=preview_player,
         on_allowlist_changed=_on_allowlist_changed,
         get_default_allowlist=_genre_sources.default_allowlist_names,
         dl_queue=_dl_queue,
@@ -1619,23 +1660,30 @@ def _cmd_daemon(
     # indefinite stall; any ops not drained survive in the DB for startup drain.
     from kamp_core.deferred_ops import drain_all as _drain_all_shutdown
 
-    _drain_all_shutdown(
-        index,
-        lib_watcher,
-        app.state.notify_deferred_op_completed,
-        app.state.notify_library_changed,
-        timeout_secs=5.0,
-        is_locked=_is_locked,
-    )
+    # The engines are torn down in a finally so an exception anywhere above --
+    # a wedged deferred-op drain, a watcher that will not stop -- cannot leave
+    # an mpv running with no parent. There are two of them now (KAMP-651), so
+    # the exposure doubled.
+    try:
+        _drain_all_shutdown(
+            index,
+            lib_watcher,
+            app.state.notify_deferred_op_completed,
+            app.state.notify_library_changed,
+            timeout_secs=5.0,
+            is_locked=_is_locked,
+        )
 
-    if lib_watcher is not None:
-        lib_watcher.stop()
-    # Stop the scrobbler's HTTP worker thread BEFORE the engine so any final
-    # scrobble queued by a closing on_track_ended has a chance to land. The
-    # 2-second join cap makes a hung Last.fm endpoint never stall shutdown.
-    if _scrobbler_ref[0] is not None:
-        _scrobbler_ref[0].shutdown(timeout=2.0)
-    engine.shutdown()
+        if lib_watcher is not None:
+            lib_watcher.stop()
+        # Stop the scrobbler's HTTP worker thread BEFORE the engine so any final
+        # scrobble queued by a closing on_track_ended has a chance to land. The
+        # 2-second join cap makes a hung Last.fm endpoint never stall shutdown.
+        if _scrobbler_ref[0] is not None:
+            _scrobbler_ref[0].shutdown(timeout=2.0)
+    finally:
+        preview_player.shutdown()
+        engine.shutdown()
     # Flush any accumulated artist play time before closing the DB.
     _flush_elapsed()
     index.close()

@@ -1,4 +1,4 @@
-/* The Crate (KAMP-650) — focus card + crate rail.
+/* Crate (KAMP-650) — focus card + crate rail.
  *
  * Every colour comes from a theme token. There are eight palettes and --accent
  * swings from indigo to magenta to green, so a hardcoded hex would look wrong in
@@ -10,12 +10,28 @@
  */
 
 .crate-view {
+  /* One number for the content column. The rail is the widest thing in the
+     view (10 sleeves + gaps ≈ 810px), so this is sized from it rather than
+     from the card — set it too narrow and the rail wraps to two rows. */
+  --crate-width: 880px;
+
   display: flex;
   flex-direction: column;
   gap: 16px;
   padding: 16px 20px 24px;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* Everything sits in one centred column rather than hugging the left edge.
+   Only the blocks are centred — text inside the card stays left-aligned,
+   because centred body copy reads badly and the clerk card is a shelf tag. */
+.crate-banner,
+.crate-stage,
+.crate-empty {
+  width: 100%;
+  max-width: var(--crate-width);
+  margin-inline: auto;
 }
 
 .crate-banner {
@@ -69,6 +85,9 @@
   display: flex;
   gap: 20px;
   align-items: flex-start;
+  /* The card is narrower than the rail, so centring the pair keeps the two
+     visually stacked instead of the card sitting off to one side. */
+  justify-content: center;
 }
 
 .crate-focus--digging {
@@ -202,6 +221,7 @@
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  justify-content: center;
   list-style: none;
   padding: 10px 0 4px;
   margin: 0;
@@ -341,6 +361,174 @@
   width: 100%;
   background: var(--accent);
   transform-origin: left center;
+}
+
+/* --- Preview mini-player (KAMP-651) --------------------------------------- */
+
+/* The preview's reserved space. Held open whether or not anything is playing,
+   because rendering the strip into the normal flow grew the whole card and
+   pushed the rail down the page the moment a preview started. Sized for the
+   strip plus a scrolling track list, so a 3-track single and a 20-track album
+   occupy exactly the same room. */
+.crate-preview-slot {
+  min-height: 236px;
+  max-width: 52ch;
+  display: flex;
+  flex-direction: column;
+}
+
+.crate-preview-placeholder {
+  margin: auto 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* Its own strip rather than the TransportBar: the whole promise is that the
+   main transport keeps showing the user's own queue, so two players on screen
+   is the point. */
+.crate-preview {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  max-width: 52ch;
+}
+
+.crate-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.crate-preview-chip {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.crate-preview-title {
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crate-preview-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.crate-preview-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  border-radius: 3px;
+  min-width: 28px;
+  padding: 3px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.crate-preview-btn:hover {
+  background: var(--surface-hover);
+}
+
+.crate-preview-btn--play {
+  min-width: 34px;
+}
+
+.crate-preview-seek {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.crate-preview-clock {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.crate-preview-bar {
+  margin-top: 8px;
+  height: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.crate-preview-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.crate-preview-error {
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* --- Track list ----------------------------------------------------------- */
+
+/* Bounded and scrolling: track counts vary wildly and an unbounded list is
+   what pushed the rail off the bottom on a long record. */
+.crate-tracklist {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  max-width: 52ch;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.crate-track {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 4px 6px;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.crate-track:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.crate-track--current {
+  color: var(--text);
+  background: var(--accent-dim);
+}
+
+.crate-track-num {
+  min-width: 1.6em;
+  font-variant-numeric: tabular-nums;
+}
+
+.crate-track-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crate-track-time {
+  font-variant-numeric: tabular-nums;
 }
 
 /* --- Motion --------------------------------------------------------------- */

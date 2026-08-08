@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time as _time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -153,11 +154,25 @@ class PreviewStream:
     Bandcamp's ``mp3-128`` URLs are signed with a ``ts`` parameter and expire in about
     a day (KAMP-644), so a stored one is a bug waiting to surface as silent playback
     failure. Resolve at play time; throw it away after.
+
+    "Never persisted" means never written to the database. KAMP-651 does keep a
+    resolved list **in memory for the session**, keyed on ``expires_at`` so it is
+    dropped before it can go stale -- otherwise every next/prev inside one album
+    would cost another album-page fetch.
     """
 
     url: str
     track_num: int = 1
     title: str = ""
+    duration: float = 0.0
+    #: Unix time this URL stops working. Derived from the URL's own ``ts``, which
+    #: is when Bandcamp signed it -- more accurate than our fetch time, since the
+    #: page itself may have been served from a cache.
+    expires_at: float = 0.0
+
+    @property
+    def is_expired(self) -> bool:
+        return bool(self.expires_at) and _time.time() >= self.expires_at
 
 
 class UnsupportedCapability(RuntimeError):
@@ -315,18 +330,28 @@ class DiscoverySource(ABC):
         that arrives as "discovery is broken" with nothing in the log to explain it.
         """
 
-    def resolve_preview(self, candidate: Candidate) -> PreviewStream | None:
-        """Resolve a playable preview for *candidate*, or None if unavailable.
+    def preview_tracks(self, candidate: Candidate) -> list[PreviewStream]:
+        """Every playable track of *candidate*, in track order. May be empty.
 
-        Deliberately **not** budgeted, unlike :meth:`gather`: preview is user-initiated
-        and one click should never be refused because a background gather spent the
-        allowance. It does hit the tighter endpoint class, so implementations should
-        keep it to a single request.
+        The primary preview API, and the one implementations should override:
+        :meth:`resolve_preview` is derived from it so there is a single parser
+        rather than two that can disagree.
+
+        Deliberately **not** budgeted, unlike :meth:`gather`: preview is
+        user-initiated and one click should never be refused because a background
+        gather spent the allowance. Implementations must also not *wait* on the
+        rate-limit governor here — it is documented as a non-playback tool, and a
+        cooldown would hang a click for up to five minutes. Report the outcome to
+        it instead, so a crate build backs off without a listener paying for it.
 
         Raises :class:`UnsupportedCapability` if ``PREVIEW`` is not in
         :attr:`capabilities`.
         """
         raise UnsupportedCapability(f"{self.provider_id} cannot preview")
+
+    def resolve_preview(self, candidate: Candidate) -> PreviewStream | None:
+        """The first playable track of *candidate*, or None if there is none."""
+        return next(iter(self.preview_tracks(candidate)), None)
 
     def save_remote(self, candidate: Candidate) -> bool:
         """Save *candidate* to the provider's own list (Bandcamp: the wishlist).

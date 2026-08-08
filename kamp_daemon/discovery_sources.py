@@ -355,34 +355,69 @@ class BandcampDiscoverySource(DiscoverySource):
     # Preview
     # ------------------------------------------------------------------
 
-    def resolve_preview(self, candidate: Candidate) -> PreviewStream | None:
-        """Resolve a playable preview from the candidate's own album page.
+    def preview_tracks(self, candidate: Candidate) -> list[PreviewStream]:
+        """Every playable track on the candidate's own album page.
 
-        Deliberately unbudgeted (see the ABC): preview is user-initiated, and a
-        click should never be refused because a background gather spent the
-        allowance. Kept to a single request.
+        One request for the whole album, so stepping through tracks costs
+        nothing further while the URLs are alive.
+
+        **Does not wait on the governor**, unlike every other request this class
+        makes. ``bandcamp_ratelimit`` documents itself as a non-playback tool for
+        exactly this reason: ``wait_turn`` blocks until a 60/120/300s cooldown
+        expires, and a listener who clicked play would get a hang with nothing on
+        screen to explain it. The outcome is still reported, so a 429 earned here
+        makes the *crate builder* back off -- the cost lands on the background
+        work rather than on the click.
         """
-        from .bandcamp import parse_tralbum
+        from .bandcamp import parse_tralbum, stream_url_expiry
 
-        if not self._governor.wait_turn("album_page"):
-            return None
+        # item_url is remote data read back out of discovery_items, so it gets
+        # the same host check the art proxy applies (KAMP-649). A Bandcamp Pro
+        # custom domain also lands here, and is unfetchable in packaged builds.
+        if not _is_fetchable(candidate.item_url):
+            logger.debug("discovery: preview host not fetchable %s", candidate.item_url)
+            return []
+
         try:
             resp = self._session.get(candidate.item_url, timeout=30)
-            if resp.status_code != 200:
-                return None
-            tralbum = parse_tralbum(resp.text)
         except Exception:  # noqa: BLE001 - a failed preview is not an error state
             logger.warning("discovery: preview fetch failed for %s", candidate.item_url)
-            return None
+            return []
+
+        status = resp.status_code
+        if status == 429:
+            self._governor.report_429("album_page")
+            raise RateLimitedError(f"429 from {candidate.item_url}")
+        if status != 200:
+            logger.warning(
+                "discovery: preview HTTP %d from %s", status, candidate.item_url
+            )
+            return []
+        self._governor.report_ok("album_page")
+
+        tralbum = parse_tralbum(resp.text)
         if not tralbum:
-            return None
+            logger.warning("discovery: no tralbum on %s", candidate.item_url)
+            return []
+
+        # A standalone single-track page exposes its lone track with
+        # track_num=None; it is #1 everywhere else in kamp, so match that here.
+        is_single = tralbum.get("item_type") == "track"
+        out: list[PreviewStream] = []
         for track in tralbum.get("trackinfo") or []:
             files = track.get("file") or {}
             url = files.get("mp3-128") or files.get("mp3-v0")
-            if url:
-                return PreviewStream(
+            if not url:
+                continue  # unreleased / pre-order tracks carry no stream
+            out.append(
+                PreviewStream(
                     url=url,
-                    track_num=int(track.get("track_num") or 1),
+                    track_num=int(track.get("track_num") or (1 if is_single else 1)),
                     title=track.get("title") or "",
+                    duration=float(track.get("duration") or 0.0),
+                    expires_at=stream_url_expiry(url),
                 )
-        return None
+            )
+        if not out:
+            logger.info("discovery: nothing streamable on %s", candidate.item_url)
+        return out

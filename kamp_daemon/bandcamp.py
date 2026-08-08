@@ -1200,6 +1200,32 @@ def _get_download_links(
 # Stream URL resolution
 # ---------------------------------------------------------------------------
 
+#: How long Bandcamp honours a signed CDN URL, in seconds.
+_STREAM_URL_TTL = 86400.0
+
+
+def stream_url_expiry(url: str) -> float:
+    """Unix time *url* stops working.
+
+    ``ts=`` in the signed CDN URL is the creation timestamp; the token is
+    hmac(ts + path + secret), so ts cannot be changed independently. Bandcamp
+    rejects the URL once ts is older than ~24 hours, so the true expiry is
+    ts + 86400. Reading the URL's own ts is more accurate than ``time.time()``
+    because it reflects when Bandcamp signed it, not when we fetched the page --
+    which may itself have come from a cache.
+
+    Falls back to now + 24h for a URL with no ts, which is the conservative
+    direction only if the URL is fresh; callers should treat it as a hint.
+    """
+    try:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        ts = qs.get("ts")
+        if ts:
+            return float(ts[0]) + _STREAM_URL_TTL
+    except Exception:  # noqa: BLE001 - a malformed URL is not worth raising over
+        pass
+    return time.time() + _STREAM_URL_TTL
+
 
 def fetch_stream_url(
     album_url: str,
@@ -1242,19 +1268,7 @@ def fetch_stream_url(
                     f"fetch_stream_url: no mp3 stream URL for track {track_number} "
                     f"in {album_url}"
                 )
-            # ts= in the signed CDN URL is the creation timestamp; the token
-            # is hmac(ts + path + secret) so ts cannot be changed independently.
-            # Bandcamp rejects the URL once ts is older than ~24 hours, so the
-            # true expiry is ts + 86400.  Using the URL-embedded ts is more
-            # accurate than time.time() because it reflects when Bandcamp
-            # actually signed the URL, not when we fetched the page.
-            try:
-                _qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-                _ts = _qs.get("ts")
-                expires_at = float(_ts[0]) + 86400 if _ts else time.time() + 86400
-            except Exception:
-                expires_at = time.time() + 86400
-            return url, expires_at
+            return url, stream_url_expiry(url)
 
     raise BandcampAPIError(
         f"fetch_stream_url: track_num={track_number} not found in {album_url} "

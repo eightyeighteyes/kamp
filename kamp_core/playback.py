@@ -1092,8 +1092,19 @@ class MpvPlaybackEngine:
     so the misdirected seek is visible for at most one frame.
     """
 
-    def __init__(self, mpv_bin: str = "mpv") -> None:
+    def __init__(self, mpv_bin: str = "mpv", *, metering: bool = True) -> None:
+        """Spawn an mpv and connect to it.
+
+        *metering* off drops the astats filter graph and the ffmpeg log level
+        that feed :attr:`on_audio_level`. the Crate's preview engine (KAMP-651)
+        turns it off: its levels must never reach the main VU meter, and without
+        it mpv writes ~20 lines a second into a pipe for nobody. Leaving
+        ``on_audio_level`` unset would also suppress the meter, but only because
+        the stdout reader always drains — this removes the traffic instead of
+        relying on that.
+        """
         self.state = PlaybackState()
+        self._metering = metering
         # had_lookahead is True when mpv transitioned gaplessly (slot 1 became
         # slot 0) at this eof; False when mpv went idle. The callback uses this
         # to decide whether to issue engine.play(next_path) — calling play()
@@ -1177,6 +1188,25 @@ class MpvPlaybackEngine:
                 _FADE_SCRIPT,
             )
 
+        # The metering pair is optional; everything else is load-bearing. In
+        # particular --script and both @kampfade/@kampmute filters must survive,
+        # because pause/resume/stop/mute are pure script-messages and are silent
+        # no-ops without them (KAMP-519).
+        metering_args = (
+            [
+                # Surface ametadata=print output (AV_LOG_VERBOSE) on stdout so
+                # _stdout_reader_loop can parse per-channel RMS at ~20 Hz
+                # without polling the IPC socket.
+                "--msg-level=ffmpeg=v",
+                # %N% is mpv's percent-encoding for the graph value; N is the
+                # byte length computed from _LEVEL_FILTER_GRAPH so it stays
+                # accurate if the filter string ever changes.
+                f"--af=lavfi=graph=%{len(_LEVEL_FILTER_GRAPH)}%{_LEVEL_FILTER_GRAPH}",
+            ]
+            if self._metering
+            else []
+        )
+
         self._proc = subprocess.Popen(
             [
                 self._mpv_bin,
@@ -1190,14 +1220,7 @@ class MpvPlaybackEngine:
                 # subprocess via MPRemoteCommandCenter (registered by the process
                 # that owns MPNowPlayingInfoCenter, which is now the helper).
                 "--input-media-keys=no",
-                # Surface ametadata=print output (AV_LOG_VERBOSE) on stdout so
-                # _stdout_reader_loop can parse per-channel RMS at ~20 Hz
-                # without polling the IPC socket.
-                "--msg-level=ffmpeg=v",
-                # %N% is mpv's percent-encoding for the graph value; N is the
-                # byte length computed from _LEVEL_FILTER_GRAPH so it stays
-                # accurate if the filter string ever changes.
-                f"--af=lavfi=graph=%{len(_LEVEL_FILTER_GRAPH)}%{_LEVEL_FILTER_GRAPH}",
+                *metering_args,
                 # Persistent afade gain stage for click-free pause/stop/resume fades,
                 # appended AFTER the analysis chain so the ametadata parser is untouched.
                 # Parked at unity (start_time far in the future); the kamp_fade.lua
@@ -1573,8 +1596,19 @@ class MpvPlaybackEngine:
 
     def shutdown(self) -> None:
         if self._proc is not None:
-            self._proc.terminate()
+            proc = self._proc
             self._proc = None
+            proc.terminate()
+            # Reap it. Dropping the Popen without waiting leaves a zombie until
+            # some later subprocess call happens to sweep it, which is harmless
+            # for the one engine that lives as long as the daemon but not for
+            # the Crate's preview engine (KAMP-651), which is spawned and killed
+            # repeatedly as it idles out. Bounded so a wedged mpv cannot stall
+            # daemon shutdown; the Win32 Job Object below is the backstop.
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:  # noqa: BLE001 - including TimeoutExpired
+                pass
         # Releasing the Job handle triggers KILL_ON_JOB_CLOSE, a backstop in
         # case mpv didn't exit on terminate(). Win32-only; None on POSIX.
         if self._job is not None:

@@ -155,6 +155,25 @@ def _attr(body: str, name: str) -> str:
     return html_lib.unescape(match.group(1)) if match else ""
 
 
+def _audio_url(raw: str) -> str | None:
+    """Pull a playable mp3 out of a recommendation's ``data-audiourl``.
+
+    The attribute is a JSON *object* keyed by format (``{"mp3-128": "..."}``),
+    not a bare URL -- reading it as a string yields something unplayable that
+    would only fail at the point of pressing play.
+    """
+    if not raw:
+        return None
+    try:
+        files = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(files, dict):
+        return None
+    url = files.get("mp3-128") or files.get("mp3-v0")
+    return url if isinstance(url, str) and url else None
+
+
 def parse_also_like(html: str) -> ParseResult:
     """Parse the album page's recommendation block.
 
@@ -180,6 +199,12 @@ def parse_also_like(html: str) -> ParseResult:
                 "title": _attr(body, "data-albumtitle"),
                 "artist_id": _attr(body, "data-artistid"),
                 "art_url": art.group(0) + "0.jpg" if art else None,
+                # An inline mp3-128 for the album's first track, present on every
+                # recommendation KAMP-644 measured (48/48). Kept so a preview can
+                # start playing immediately instead of waiting out a cold engine
+                # spawn plus an album-page fetch; the full track list still needs
+                # the page, but the listener does not wait for it.
+                "audio_url": _audio_url(_attr(body, "data-audiourl")),
                 "supporters": _clean_text(supporters.group(1)) if supporters else "",
                 "fan_comment": _clean_text(comment.group(1)) if comment else "",
             }

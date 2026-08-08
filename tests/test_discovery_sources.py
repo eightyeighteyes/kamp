@@ -10,6 +10,7 @@ import gzip
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -482,3 +483,140 @@ class TestCapabilities:
             )
             is None
         )
+
+
+def _album_html(tracks: list[dict[str, Any]], item_type: str = "album") -> str:
+    import html as html_lib
+
+    blob = {"item_type": item_type, "trackinfo": tracks}
+    return f'<div data-tralbum="{html_lib.escape(json.dumps(blob), quote=True)}">'
+
+
+def _candidate(url: str = "https://a.bandcamp.com/album/x") -> Candidate:
+    return Candidate(provider="bandcamp", provider_item_id="1", item_url=url)
+
+
+class TestPreviewTracks:
+    def test_returns_every_playable_track_in_order(self) -> None:
+        """One request buys the whole album, so next/prev costs nothing more."""
+        html = _album_html(
+            [
+                {
+                    "track_num": 1,
+                    "title": "One",
+                    "duration": 60.5,
+                    "file": {"mp3-128": "https://cdn/1.mp3?ts=1000"},
+                },
+                {
+                    "track_num": 2,
+                    "title": "Two",
+                    "duration": 90.0,
+                    "file": {"mp3-128": "https://cdn/2.mp3?ts=1000"},
+                },
+            ]
+        )
+        tracks = _source(FakeSession(get_body=html)).preview_tracks(_candidate())
+        assert [t.track_num for t in tracks] == [1, 2]
+        assert [t.title for t in tracks] == ["One", "Two"]
+        assert tracks[0].duration == 60.5
+
+    def test_expiry_comes_from_the_urls_own_timestamp(self) -> None:
+        """ts is when Bandcamp signed the URL — more accurate than fetch time,
+        since the page itself may have been served from a cache."""
+        html = _album_html(
+            [{"track_num": 1, "file": {"mp3-128": "https://cdn/1.mp3?ts=1000000"}}]
+        )
+        tracks = _source(FakeSession(get_body=html)).preview_tracks(_candidate())
+        assert tracks[0].expires_at == 1000000 + 86400
+
+    def test_unreleased_tracks_are_skipped_not_fatal(self) -> None:
+        """A pre-order album has tracks with no stream; the rest still play."""
+        html = _album_html(
+            [
+                {"track_num": 1, "title": "Teaser", "file": {}},
+                {
+                    "track_num": 2,
+                    "title": "Real",
+                    "file": {"mp3-128": "https://cdn/2.mp3"},
+                },
+            ]
+        )
+        tracks = _source(FakeSession(get_body=html)).preview_tracks(_candidate())
+        assert [t.title for t in tracks] == ["Real"]
+
+    def test_single_track_page_is_numbered_one(self) -> None:
+        """item_type='track' pages expose track_num=None (KAMP-526)."""
+        html = _album_html(
+            [
+                {
+                    "track_num": None,
+                    "title": "Lone",
+                    "file": {"mp3-128": "https://cdn/1.mp3"},
+                }
+            ],
+            item_type="track",
+        )
+        tracks = _source(FakeSession(get_body=html)).preview_tracks(_candidate())
+        assert tracks[0].track_num == 1
+
+    def test_resolve_preview_is_the_first_of_the_list(self) -> None:
+        """One parser, not two that can disagree."""
+        # ts= pins expires_at so the two calls are comparable; without it the
+        # fallback is time.time() and they differ by microseconds.
+        html = _album_html(
+            [
+                {
+                    "track_num": 1,
+                    "title": "One",
+                    "file": {"mp3-128": "https://cdn/1.mp3?ts=1000"},
+                },
+                {
+                    "track_num": 2,
+                    "title": "Two",
+                    "file": {"mp3-128": "https://cdn/2.mp3?ts=1000"},
+                },
+            ]
+        )
+        source = _source(FakeSession(get_body=html))
+        assert (
+            source.resolve_preview(_candidate())
+            == source.preview_tracks(_candidate())[0]
+        )
+
+    def test_a_custom_domain_is_refused_without_fetching(self) -> None:
+        """item_url is remote data read back out of discovery_items."""
+        session = FakeSession(get_body=_album_html([]))
+        source = _source(session)
+        assert (
+            source.preview_tracks(_candidate("https://evil.example.com/album/x")) == []
+        )
+        assert session.gets == []
+
+
+class TestPreviewNeverWaitsOnTheGovernor:
+    """bandcamp_ratelimit documents itself as a non-playback tool.
+
+    wait_turn blocks until a 60/120/300s cooldown expires, so a listener who
+    clicked play would get a hang with nothing on screen. The outcome is still
+    reported, so a 429 earned here makes the crate builder back off instead.
+    """
+
+    def test_a_cooldown_does_not_delay_a_click(self) -> None:
+        governor = MagicMock()
+        governor.blocked_for.return_value = 300.0
+        html = _album_html([{"track_num": 1, "file": {"mp3-128": "https://cdn/1.mp3"}}])
+        source = BandcampDiscoverySource(FakeSession(get_body=html), governor=governor)
+
+        assert len(source.preview_tracks(_candidate())) == 1
+        governor.wait_turn.assert_not_called()
+        governor.report_ok.assert_called_once_with("album_page")
+
+    def test_a_429_is_reported_and_raised(self) -> None:
+        governor = MagicMock()
+        session = FakeSession()
+        session.get_status = 429
+        source = BandcampDiscoverySource(session, governor=governor)
+        with pytest.raises(RateLimitedError):
+            source.preview_tracks(_candidate())
+        governor.report_429.assert_called_once_with("album_page")
+        governor.wait_turn.assert_not_called()

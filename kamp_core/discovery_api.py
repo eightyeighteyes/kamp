@@ -23,7 +23,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING, cast
 
 from fastapi import FastAPI, HTTPException, Response
 
@@ -38,6 +38,25 @@ logger = logging.getLogger(__name__)
 #: ``download.queue`` snapshot idiom rather than streaming per-item deltas —
 #: a reconnecting client then needs no replay, just the REST snapshot.
 CRATE_EVENT = "discovery.crate"
+
+#: Preview transport state (KAMP-651). Pushed on transitions rather than per
+#: frame; the UI interpolates position between them from position_updated_at.
+PREVIEW_EVENT = "discovery.preview"
+
+#: What GET .../preview/state returns when no preview engine exists at all —
+#: the same shape the player publishes, so the UI has one branch, not two.
+_IDLE_PREVIEW: dict[str, Any] = {
+    "state": "idle",
+    "item_id": None,
+    "track_num": None,
+    "title": "",
+    "position": 0.0,
+    "position_updated_at": 0.0,
+    "duration": 0.0,
+    "buffering": False,
+    "tracks": [],
+    "error": None,
+}
 
 #: Records in a full crate. Mirrors discovery_builder.CRATE_SIZE, duplicated
 #: rather than imported because kamp_core does not depend on kamp_daemon.
@@ -133,6 +152,7 @@ def register_discovery_routes(
     on_build_start: Callable[[], None] | None = None,
     art_cache_dir: Path | None = None,
     fetch_bytes: Callable[[str], bytes | None] | None = None,
+    preview: Any = None,
 ) -> None:
     """Register the Discovery Crate routes on *app*.
 
@@ -140,6 +160,12 @@ def register_discovery_routes(
     reporting progress. It updates the status and broadcasts in one step so
     "changed the state but forgot to notify" is not representable — the failure
     that presents as a backend which works and a UI that never moves.
+
+    *preview* is a ``kamp_daemon.discovery_preview.PreviewPlayer``, taken as
+    ``Any`` because kamp_core does not depend on kamp_daemon. It is optional so
+    the routes still register (and 503) in a test app that has no engine.
+    Also exposes ``app.state.discovery_preview_snapshot`` for the WS accept
+    frame and ``app.state.stop_preview`` for the main transport.
     """
     _status: dict[str, Any] = dict(_INITIAL_STATUS)
     # Guards _status and the single-build flag together. Builds are serialized
@@ -255,6 +281,76 @@ def register_discovery_routes(
         wishlist afterwards.
         """
         return _record(item_id, "url_copied")
+
+    # ------------------------------------------------------------------
+    # Preview (KAMP-651)
+    # ------------------------------------------------------------------
+
+    def _preview_or_503() -> Any:
+        if preview is None:
+            raise HTTPException(status_code=503, detail="preview is unavailable")
+        return preview
+
+    def _push_preview(snapshot: dict[str, Any]) -> None:
+        broadcast({"type": PREVIEW_EVENT, **snapshot})
+
+    # The player is built before create_app, so it cannot be handed this
+    # directly; the daemon looks it up here at call time instead (the same
+    # deferred-lookup the notify_* helpers use).
+    app.state.discovery_preview_publish = _push_preview
+
+    if preview is not None:
+        # The player owns its own state; this is only how it reaches clients.
+        app.state.discovery_preview_snapshot = preview.snapshot
+        # The main transport always wins. Exposed for the player endpoints in
+        # server.py, following the drain_for_track_async precedent.
+        app.state.stop_preview = preview.release_for_main
+
+    @app.get("/api/v1/discovery/preview/state")
+    def get_preview_state() -> dict[str, Any]:
+        """The reconnect path. ``_broadcast`` no-ops with no client attached, so
+        a renderer reload mid-preview would otherwise leave audible audio with
+        no controls anywhere on screen."""
+        if preview is None:
+            return dict(_IDLE_PREVIEW)
+        return cast(dict[str, Any], preview.snapshot())
+
+    @app.post("/api/v1/discovery/preview/play")
+    def preview_play(req: dict[str, Any]) -> dict[str, Any]:
+        """Start previewing an item, optionally at a given track."""
+        item_id = req.get("item_id")
+        if not isinstance(item_id, int):
+            raise HTTPException(status_code=422, detail="item_id must be an integer")
+        track_num = req.get("track_num")
+        return cast(
+            dict[str, Any],
+            _preview_or_503().play(
+                item_id, track_num if isinstance(track_num, int) else None
+            ),
+        )
+
+    @app.post("/api/v1/discovery/preview/{action}")
+    def preview_action(
+        action: str, req: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """pause / resume / toggle / stop / next / prev / seek.
+
+        One route rather than six near-identical ones; the action allowlist is
+        what keeps it from being an arbitrary method call.
+        """
+        player = _preview_or_503()
+        if action in ("pause", "resume", "toggle", "stop"):
+            return cast(dict[str, Any], getattr(player, action)())
+        if action == "next":
+            return cast(dict[str, Any], player.step(1))
+        if action == "prev":
+            return cast(dict[str, Any], player.step(-1))
+        if action == "seek":
+            position = (req or {}).get("position")
+            if not isinstance(position, (int, float)):
+                raise HTTPException(status_code=422, detail="position must be a number")
+            return cast(dict[str, Any], player.seek(float(position)))
+        raise HTTPException(status_code=404, detail=f"unknown preview action: {action}")
 
     # ------------------------------------------------------------------
     # Album art (KAMP-649)

@@ -618,6 +618,22 @@ export const dismissCrateItem = (itemId: number): Promise<{ ok: boolean }> =>
 export const crateItemUrlCopied = (itemId: number): Promise<{ ok: boolean }> =>
   post(`/api/v1/discovery/items/${itemId}/url-copied`)
 
+// --- Wishlist write (KAMP-653) ---------------------------------------------
+// postWithDetail, not post: every failure here carries a machine reason the UI
+// turns into the clerk's line, and plain post() would flatten all of them into
+// "502 Bad Gateway — /api/v1/...".
+//
+// The daemon writes to Bandcamp FIRST and records the event only on a confirmed
+// success, so the returned state is never optimistic. The rail's heart comes
+// from the crate snapshot that follows, not from these responses.
+export const wishlistCrateItem = (itemId: number): Promise<{ ok: boolean; wishlisted: boolean }> =>
+  postWithDetail(`/api/v1/discovery/items/${itemId}/wishlist`)
+
+export const unwishlistCrateItem = (
+  itemId: number
+): Promise<{ ok: boolean; wishlisted: boolean }> =>
+  postWithDetail(`/api/v1/discovery/items/${itemId}/unwishlist`)
+
 // --- Preview (KAMP-651) ----------------------------------------------------
 // Preview runs on a second, isolated mpv so it cannot disturb the queue. It is
 // daemon-owned and survives a renderer reload, which is why there is a state

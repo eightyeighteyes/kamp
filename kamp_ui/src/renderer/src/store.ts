@@ -241,6 +241,18 @@ type PlayerStore = {
   // the user navigates away, or a pass made in the last few seconds is lost.
   flushCrateDismissals: () => Promise<void>
   copyCrateItemUrl: (item: CrateItem) => Promise<void>
+  // KAMP-653: the wishlist write. Ids currently in flight, so the button can be
+  // disabled per card rather than per view — focus can move with , and . while a
+  // request is out, and a single boolean would disable the wrong card.
+  crateWishlistPending: number[]
+  // The last failure, as a clerk-voice line, or null. Cleared on the next
+  // attempt and when the focused record changes.
+  crateWishlistError: string | null
+  clearCrateWishlistError: () => void
+  // Never optimistic: the daemon writes to Bandcamp first and records the event
+  // only on a confirmed success, so the heart arrives on the crate snapshot that
+  // follows rather than from here.
+  toggleCrateWishlist: (item: CrateItem) => Promise<void>
   // KAMP-651: preview transport. Every action returns the authoritative state,
   // so none of these guess locally.
   loadPreview: () => Promise<void>
@@ -426,6 +438,30 @@ const SEARCH_DEBOUNCE_MS = 250
 let _searchTimer: ReturnType<typeof setTimeout> | null = null
 let _searchAbort: AbortController | null = null
 
+// KAMP-653: the daemon answers a failed wishlist write with a machine reason and
+// no prose — it does not write brand voice. This is where the reason becomes the
+// clerk's line. Every one of them ends somewhere the user can still act, because
+// Copy link is always available beside the button.
+const wishlistErrorLine = (err: unknown, adding: boolean): string => {
+  const reason = err instanceof Error ? err.message : ''
+  switch (reason) {
+    case 'rate_limited':
+      return 'Bandcamp asked us to slow down — try that again shortly.'
+    case 'needs_login':
+      return 'Bandcamp signed us out. Reconnect in Settings and try again.'
+    case 'not_connected':
+      return "We're not connected to Bandcamp right now."
+    case 'unsupported':
+      return "This one can't be wishlisted from here — the link still works."
+    default:
+      // Includes 'rejected' and anything a future provider invents. Deliberately
+      // does not claim to know why: the honest version of "Bandcamp said no".
+      return adding
+        ? "Couldn't reach Bandcamp — here's the link instead."
+        : "Couldn't reach Bandcamp to take that back off."
+  }
+}
+
 // KAMP-571: raw aggregate percent for the global download bar — completed items
 // plus the currently-downloading item's byte-fraction, over the batch total.
 // downloadProgress is keyed by sale_item_id (== provider_item_id for bandcamp);
@@ -581,6 +617,8 @@ export const useStore = create<PlayerStore>((set, get) => ({
   downloadBatch: null,
   crate: null,
   crateDismissPending: [],
+  crateWishlistPending: [],
+  crateWishlistError: null,
   preview: null,
   flashToast: null,
   flashToastTone: null,
@@ -989,6 +1027,30 @@ export const useStore = create<PlayerStore>((set, get) => ({
       void api.crateItemUrlCopied(item.id).catch(() => {})
     } catch {
       get().showFlashToast('Could not copy the link', 'error')
+    }
+  },
+  clearCrateWishlistError: () => set({ crateWishlistError: null }),
+  toggleCrateWishlist: async (item) => {
+    // Guarded by id, not by a boolean: holding W down repeats the key, and
+    // focus can move to another record with , or . while a request is out.
+    if (get().crateWishlistPending.includes(item.id)) return
+    const adding = item.state !== 'wishlisted'
+    set((s) => ({
+      crateWishlistPending: [...s.crateWishlistPending, item.id],
+      crateWishlistError: null
+    }))
+    try {
+      await (adding ? api.wishlistCrateItem(item.id) : api.unwishlistCrateItem(item.id))
+      // No local state change on success either. The daemon re-broadcasts the
+      // whole crate after a confirmed write, and the heart is drawn from
+      // item.state — so the done-state cannot get ahead of Bandcamp even by
+      // accident, which is the promise rather than a nicety.
+    } catch (err) {
+      set({ crateWishlistError: wishlistErrorLine(err, adding) })
+    } finally {
+      set((s) => ({
+        crateWishlistPending: s.crateWishlistPending.filter((id) => id !== item.id)
+      }))
     }
   },
   // --- Preview (KAMP-651) ---------------------------------------------------

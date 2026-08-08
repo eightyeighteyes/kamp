@@ -38,6 +38,7 @@ import json
 import re
 import sys
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -336,13 +337,7 @@ class DirectTransport:
         timeout: int = 25,
         headers: dict[str, str] | None = None,
     ) -> Fetched:
-        """Form-encoded POST — what the browser actually does for ``*_cb`` endpoints.
-
-        Has no relay equivalent: ``_ProxySession._fetch`` accepts only ``json=``
-        and drops a ``data=`` kwarg into ``**_kwargs``.  Kept here specifically to
-        compare against :meth:`post_json` and settle whether shipped builds can
-        perform this call at all.
-        """
+        """Form-encoded POST — what the browser actually does for ``*_cb`` endpoints."""
         start = time.monotonic()
         resp = self.session.post(url, data=payload, timeout=timeout, headers=headers)
         return Fetched(
@@ -367,11 +362,21 @@ class RelayTransport:
     def __init__(self) -> None:
         self.token = auth_token()
 
-    def _relay(self, method: str, url: str, body: str | None, timeout: int) -> Fetched:
+    def _relay(
+        self,
+        method: str,
+        url: str,
+        body: str | None,
+        timeout: int,
+        content_type: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> Fetched:
         start = time.monotonic()
         headers = {"User-Agent": UA}
         if body is not None:
-            headers["Content-Type"] = "application/json"
+            headers["Content-Type"] = content_type or "application/json"
+        if extra_headers:
+            headers.update(extra_headers)
         resp = requests.post(
             PROXY_FETCH_URL,
             json={"url": url, "method": method, "headers": headers, "body": body},
@@ -393,11 +398,44 @@ class RelayTransport:
     def get(self, url: str, timeout: int = 25) -> Fetched:
         return self._relay("GET", url, None, timeout)
 
-    def post_json(self, url: str, payload: Any, timeout: int = 25) -> Fetched:
-        # Note: the relay carries a JSON *string* body.  A form-encoded body has
-        # no representation here at all — see the transport notes in
-        # docs/discovery-recon.md.
-        return self._relay("POST", url, json.dumps(payload), timeout)
+    def post_json(
+        self,
+        url: str,
+        payload: Any,
+        timeout: int = 25,
+        headers: dict[str, str] | None = None,
+    ) -> Fetched:
+        return self._relay(
+            "POST", url, json.dumps(payload), timeout, extra_headers=headers
+        )
+
+    def post_form(
+        self,
+        url: str,
+        payload: Any,
+        timeout: int = 25,
+        headers: dict[str, str] | None = None,
+    ) -> Fetched:
+        """Form-encoded POST through the relay.
+
+        The original spike had no such method, hard-coded a JSON content type in
+        :meth:`_relay`, and gated every form-encoded fallback on
+        ``--transport direct`` — so the relay was never handed a form body, and the
+        resulting "NO-GO on the relay" verdict described this harness rather than
+        the relay.  The wire format is ``{url, method, headers, body}`` with the
+        content type riding in ``headers``, and both the server model
+        (``kamp_core/server.py``) and the Electron handler
+        (``kamp_ui/src/main/index.ts``) forward headers and body verbatim, so a
+        form body has always been expressible.  KAMP-653 tests that claim here.
+        """
+        return self._relay(
+            "POST",
+            url,
+            urllib.parse.urlencode(payload),
+            timeout,
+            content_type="application/x-www-form-urlencoded",
+            extra_headers=headers,
+        )
 
 
 def make_transport(
@@ -436,6 +474,12 @@ def extract_pagedata(html: str) -> dict[str, Any]:
 
 
 def extract_tralbum(html: str) -> dict[str, Any]:
+    """The ``data-tralbum`` blob — an attribute, not a ``data-blob`` element.
+
+    Different shape from :func:`extract_blob`, hence its own function.  Carries
+    ``current.band_id``, which is what ``collect_item_cb`` wants and which nothing
+    else on the page states as plainly.
+    """
     m = re.search(r'data-tralbum="([^"]+)"', html)
     if not m:
         return {}
@@ -1131,9 +1175,18 @@ def cmd_wishlist_roundtrip(args: argparse.Namespace) -> int:
     referer checks, so the only honest verdict for KAMP-653 comes from a real 200.
     Doing it as a round trip means the account ends where it started.
 
-    Also settles the question the relay poses: ``_ProxySession`` can send only
-    JSON bodies, while the site's own ``Crumb.ajax`` defaults to form encoding.
-    Both encodings are tried, and which ones work is the actual finding.
+    Also settles the question the relay poses: the site's own ``Crumb.ajax``
+    defaults to form encoding.  Both encodings are tried **on whichever transport
+    was asked for**, which the original version of this command did not do — its
+    form-encoded fallback was gated on ``--transport direct``, so the relay was
+    only ever handed JSON and the resulting "NO-GO on the relay" verdict was a
+    statement about this script.  KAMP-653 removes that gate.
+
+    ``--band-id`` is optional: omitted, it is read off the album page's own
+    ``data-tralbum`` blob, which is what the shipped implementation must do.  Both
+    ``band_id`` and ``selling_band_id`` are printed, because they differ on
+    label-released albums and only one of them is the one ``collect_item_cb``
+    wants.
     """
     if not args.yes:
         print("Refusing to mutate the account without --yes.")
@@ -1143,7 +1196,19 @@ def cmd_wishlist_roundtrip(args: argparse.Namespace) -> int:
     transport = make_transport(args.transport, data)
     fan_id = fan_id_of(transport)
 
-    print(f"[roundtrip] target item_id={args.item_id} band_id={args.band_id}")
+    page = transport.get(args.album_url)
+    tralbum = extract_tralbum(page.text)
+    current = tralbum.get("current") or {}
+    print(
+        f"  page identity: id={tralbum.get('id')} item_type={tralbum.get('item_type')!r} "
+        f"band_id={current.get('band_id')} selling_band_id={current.get('selling_band_id')}"
+    )
+    band_id = args.band_id or current.get("band_id")
+    if not band_id:
+        print("  ✗ no band_id on the page and none supplied")
+        return 2
+
+    print(f"[roundtrip] target item_id={args.item_id} band_id={band_id}")
     print(f"  transport={transport.name} fan_id={fan_id}")
 
     # Verify via the album page's own fan_tralbum_data rather than by walking the
@@ -1177,25 +1242,37 @@ def cmd_wishlist_roundtrip(args: argparse.Namespace) -> int:
         # "album", not the discover API's "a" — the same concept is spelled
         # differently on the two surfaces, and the wrong one earns a bare 400.
         "item_type": args.item_type,
-        "band_id": int(args.band_id),
+        "band_id": int(band_id),
     }
-    # jQuery's $.ajax sets X-Requested-With, and *_cb endpoints are referer-checked.
+    # Origin, NOT Referer — and that distinction is load-bearing on the relay.
+    #
+    # Bandcamp insists on one of the two: with neither, the call comes back
+    # `InsistError: Failed insist: expected either an origin or a referrer header`.
+    # But Chromium rejects a manually-set Referer on net.request outright — the
+    # relayed call returns HTTP 502 `net::ERR_BLOCKED_BY_CLIENT` before it ever
+    # leaves the machine.  Bisected header by header on the live relay: every case
+    # carrying a Referer is blocked, Origin passes through untouched.
+    #
+    # So the header set the original recon recorded (X-Requested-With + Referer +
+    # Origin) works on the direct transport and can NEVER work on the one every
+    # shipped build uses.  Origin alone satisfies both.
     ajax_headers = {
         "X-Requested-With": "XMLHttpRequest",
-        "Referer": args.album_url,
         "Origin": "https://bandcamp.com",
     }
 
-    # Try JSON first: it is the only encoding the relay can express, so if it
-    # works, shipped builds can wishlist without touching _ProxySession.
-    print("\n  [add] attempt 1: JSON body (the encoding the relay can send)")
+    # JSON first, so the difference between the two encodings is measured on this
+    # transport rather than assumed from the other one.
+    print("\n  [add] attempt 1: JSON body")
     got = transport.post_json(
         COLLECT_URL, {**base, "crumb": crumbs["collect_item_cb"]}, headers=ajax_headers
     )
     print(f"    status={got.status} ok={collect_ok(got)} body={got.text[:160]!r}")
-    json_worked = collect_ok(got)
 
-    if not json_worked and args.transport == "direct":
+    if not collect_ok(got):
+        # No --transport gate: whether a form body survives THIS transport is the
+        # whole question, and gating it on "direct" is what produced a relay
+        # verdict nobody had actually tested.
         print("\n  [add] attempt 2: form-encoded (what the browser sends)")
         form = dict(base)
         form["crumb"] = crumbs["collect_item_cb"]
@@ -1209,6 +1286,16 @@ def cmd_wishlist_roundtrip(args: argparse.Namespace) -> int:
         print("  ✗ add did not land — recording as no-go, nothing to undo")
         return 2
 
+    # Idempotency: what does collect_item_cb say for something already collected?
+    # KAMP-653 treats "already wishlisted" as a silent success, and it matters
+    # whether that is a pre-check we must do ourselves or something the endpoint
+    # reports honestly.
+    print("\n  [add] attempt 3: repeat the same add, now that it is already there")
+    form = dict(base)
+    form["crumb"] = crumbs["collect_item_cb"]
+    got = transport.post_form(COLLECT_URL, form, headers=ajax_headers)
+    print(f"    status={got.status} ok={collect_ok(got)} body={got.text[:160]!r}")
+
     # Undo, so the account ends exactly where it started.
     print("\n  [remove] restoring account state")
     uncrumb = crumbs.get("uncollect_item_cb")
@@ -1219,7 +1306,7 @@ def cmd_wishlist_roundtrip(args: argparse.Namespace) -> int:
     # Gate the fallback on the parsed body, never the status: these endpoints
     # return 200 for a failed call, and trusting the status here is what stranded
     # an album on the account the first time round.
-    if not collect_ok(got) and args.transport == "direct":
+    if not collect_ok(got):
         form = dict(base)
         form["crumb"] = uncrumb or ""
         got = transport.post_form(UNCOLLECT_URL, form, headers=ajax_headers)
@@ -1513,8 +1600,12 @@ def main() -> int:
         "wishlist-roundtrip", help="add then remove one album (net zero); needs --yes"
     )
     p_rt.add_argument("--item-id", required=True)
-    p_rt.add_argument("--band-id", required=True)
-    p_rt.add_argument("--item-type", default="a")
+    p_rt.add_argument(
+        "--band-id", default=None, help="omit to read it off the album page"
+    )
+    # "album", not the discover API's "a" — the *_cb endpoints spell it the long
+    # way and the short one earns a bare HTTP 400.
+    p_rt.add_argument("--item-type", default="album")
     p_rt.add_argument(
         "--album-url", required=True, help="target album page, for verification"
     )

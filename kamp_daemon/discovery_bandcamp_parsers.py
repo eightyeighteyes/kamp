@@ -316,6 +316,115 @@ _DISCO_TITLE = re.compile(r'<p class="title">\s*(.*?)\s*(?:<|$)', re.DOTALL)
 _DISCO_ART = re.compile(r"https://f4\.bcbits\.com/img/a(\d+)_")
 
 
+# ---------------------------------------------------------------------------
+# Wishlist write material (KAMP-653)
+# ---------------------------------------------------------------------------
+
+_CRUMBS = re.compile(r'id="js-crumbs-data"[^>]*data-crumbs="([^"]*)"')
+_TRALBUM = re.compile(r'data-tralbum="([^"]+)"')
+_PAGEDATA = re.compile(r'id="pagedata"[^>]*data-blob="([^"]+)"')
+
+
+def _escaped_json(match: re.Match[str] | None) -> Any:
+    """Decode one HTML-escaped JSON attribute, or None if it will not decode."""
+    if match is None:
+        return None
+    try:
+        return json.loads(html_lib.unescape(match.group(1)))
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_crumbs(html: str) -> dict[str, str]:
+    """The per-action CSRF tokens on any logged-in page.
+
+    Shaped ``|<action>|<epoch>|<hmac>=`` and keyed by the endpoint they authorise
+    (``collect_item_cb``, ``uncollect_item_cb``). Short-lived: a stale one earns
+    HTTP 403 with a fresh crumb in the error body, which is the documented
+    refresh path.
+
+    Returns ``{}`` for a logged-out page, which ships ``data-crumbs="{}"`` — the
+    tag is present either way, so its presence is not a logged-in check.
+    """
+    blob = _escaped_json(_CRUMBS.search(html))
+    if not isinstance(blob, dict):
+        return {}
+    return {str(k): str(v) for k, v in blob.items()}
+
+
+def parse_band_id(html: str) -> str | None:
+    """The band that ``collect_item_cb`` collects under.
+
+    From ``data-tralbum``'s ``current.band_id`` — the same blob
+    :func:`kamp_daemon.bandcamp.parse_tralbum` reads for the track list.
+
+    **Never ``current.selling_band_id``, and never a fallback to it.** The two
+    diverge on label-released albums, and sending the wrong one returns HTTP 200
+    carrying ``{"ok":true}`` while doing nothing at all — verified live by sending
+    it deliberately. A fallback would therefore report success and change nothing,
+    which is worse than failing: the UI would show a done-state for a record that
+    never left the shop.
+    """
+    blob = _escaped_json(_TRALBUM.search(html))
+    if not isinstance(blob, dict):
+        return None
+    current = blob.get("current")
+    band_id = current.get("band_id") if isinstance(current, dict) else None
+    return None if band_id is None else str(band_id)
+
+
+def parse_is_wishlisted(html: str) -> bool | None:
+    """Whether the logged-in fan already has this album wishlisted.
+
+    ``None`` when the page cannot say — an anonymous page carries
+    ``fan_tralbum_data: null``. Deliberately tri-state: collapsing that to False
+    would turn "we were not logged in" into a confident "not wishlisted", which
+    the caller would act on.
+    """
+    blob = _escaped_json(_PAGEDATA.search(html))
+    if not isinstance(blob, dict):
+        return None
+    fan_data = blob.get("fan_tralbum_data")
+    if not isinstance(fan_data, dict):
+        return None
+    value = fan_data.get("is_wishlisted")
+    return None if value is None else bool(value)
+
+
+def parse_collect_ok(body: str) -> bool:
+    """Did a ``*_cb`` call actually succeed?
+
+    **Never trust the HTTP status here.** These endpoints answer 200 with an error
+    payload — a JSON-encoded request comes back 200 carrying
+    ``{"error":true,"ok":false,"exception":"...InsistError..."}``. Checking the
+    status alone reports success for a call that did nothing, which is precisely
+    how the KAMP-644 spike left an album stranded on a real account.
+    """
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    return bool(parsed.get("ok")) and not parsed.get("error")
+
+
+def parse_fresh_crumb(body: str) -> str | None:
+    """The replacement crumb Bandcamp hands back when ours was stale.
+
+    A 403 carrying ``{"error":"invalid_crumb","crumb":"<fresh>"}`` is a documented,
+    recoverable flow — the site's own ``Crumb.ajax`` retries on exactly this.
+    """
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict) or parsed.get("error") != "invalid_crumb":
+        return None
+    crumb = parsed.get("crumb")
+    return str(crumb) if crumb else None
+
+
 def parse_discography(html: str, *, base_url: str = "") -> ParseResult:
     """Parse an artist's ``/music`` grid.
 

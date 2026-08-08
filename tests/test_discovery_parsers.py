@@ -18,9 +18,14 @@ from kamp_daemon.discovery_bandcamp_parsers import (
     art_url_from_image,
     normalise_item_id,
     parse_also_like,
+    parse_band_id,
+    parse_collect_ok,
+    parse_crumbs,
     parse_discography,
     parse_discover_facets,
     parse_discover_results,
+    parse_fresh_crumb,
+    parse_is_wishlisted,
     release_year,
     strip_tracking,
     tag_slug,
@@ -467,3 +472,146 @@ class TestNormalisation:
     )
     def test_release_year(self, value, expected) -> None:
         assert release_year(value) == expected
+
+
+class TestCrumbs:
+    """The CSRF tokens the wishlist write needs (KAMP-653)."""
+
+    def test_crumbs_are_parsed_and_html_unescaped(self) -> None:
+        html = (
+            '<meta id="js-crumbs-data" data-crumbs="{&quot;collect_item_cb&quot;:'
+            "&quot;|collect_item_cb|1754|abc=&quot;,&quot;uncollect_item_cb&quot;:"
+            '&quot;|uncollect_item_cb|1754|def=&quot;}">'
+        )
+        assert parse_crumbs(html) == {
+            "collect_item_cb": "|collect_item_cb|1754|abc=",
+            "uncollect_item_cb": "|uncollect_item_cb|1754|def=",
+        }
+
+    def test_an_anonymous_page_has_an_empty_crumb_map(self) -> None:
+        """Logged-out pages ship `data-crumbs="{}"` — present but empty.
+
+        Distinct from a missing tag, and the reason "is the tag there" is not a
+        usable logged-in check. The captured fixture is anonymous, so this is the
+        shape the fixture itself has.
+        """
+        assert parse_crumbs('<meta id="js-crumbs-data" data-crumbs="{}">') == {}
+
+    def test_a_missing_or_malformed_tag_yields_nothing_rather_than_raising(
+        self,
+    ) -> None:
+        assert parse_crumbs("<html><body>nothing here</body></html>") == {}
+        assert parse_crumbs('<meta id="js-crumbs-data" data-crumbs="{oops">') == {}
+
+    def test_the_real_fixture_is_anonymous_and_therefore_crumbless(
+        self, album_page: str
+    ) -> None:
+        """Guards the privacy rule as much as the parser: a captured page that
+        started carrying live crumbs would fail here as well as in
+        tests/test_discovery_fixtures.py."""
+        assert parse_crumbs(album_page) == {}
+
+
+class TestWriteIdentity:
+    """band_id and is_wishlisted, both read off the album page (KAMP-653)."""
+
+    def test_band_id_comes_from_current_not_selling_band_id(self) -> None:
+        """They diverge on label-released albums, and only one of them works.
+
+        Sending selling_band_id returns HTTP 200 with {"ok":true} and silently
+        does nothing — verified live against a real account. So this must never
+        fall back to it: a fallback would report success and change nothing.
+        """
+        html = (
+            '<script data-tralbum="{&quot;id&quot;:1,&quot;current&quot;:'
+            '{&quot;band_id&quot;:692277828,&quot;selling_band_id&quot;:237579501}}">'
+        )
+        assert parse_band_id(html) == "692277828"
+
+    def test_band_id_is_none_when_absent(self) -> None:
+        assert parse_band_id('<script data-tralbum="{&quot;id&quot;:1}">') is None
+        assert parse_band_id("<html></html>") is None
+
+    def test_selling_band_id_is_never_used_as_a_fallback(self) -> None:
+        """The dangerous shape: band_id absent, selling_band_id right there.
+
+        Falling back would send a value the endpoint accepts with {"ok":true}
+        while doing nothing, so the caller must be told it has no band_id rather
+        than handed one that fails silently.
+        """
+        html = (
+            '<script data-tralbum="{&quot;current&quot;:'
+            '{&quot;selling_band_id&quot;:237579501}}">'
+        )
+        assert parse_band_id(html) is None
+
+    def test_the_real_album_fixture_yields_a_band_id(self, album_page: str) -> None:
+        assert parse_band_id(album_page) == "2009518365"
+
+    @pytest.mark.parametrize("flag,expected", [(True, True), (False, False)])
+    def test_is_wishlisted_is_read_from_fan_tralbum_data(self, flag, expected) -> None:
+        blob = "true" if flag else "false"
+        html = (
+            '<div id="pagedata" data-blob="{&quot;fan_tralbum_data&quot;:'
+            "{&quot;is_wishlisted&quot;:" + blob + '}}"></div>'
+        )
+        assert parse_is_wishlisted(html) is expected
+
+    def test_is_wishlisted_is_none_when_the_page_cannot_say(self) -> None:
+        """None is not False. An anonymous page carries fan_tralbum_data: null,
+        and treating that as "not wishlisted" would turn a logged-out response
+        into a confident negative."""
+        assert parse_is_wishlisted("<html></html>") is None
+        assert (
+            parse_is_wishlisted(
+                '<div id="pagedata" data-blob="{&quot;fan_tralbum_data&quot;:null}">'
+            )
+            is None
+        )
+
+    def test_the_real_album_fixture_cannot_say(self, album_page: str) -> None:
+        """Captured anonymously, so fan_tralbum_data is null — exactly the case
+        that must not be mistaken for False."""
+        assert parse_is_wishlisted(album_page) is None
+
+
+class TestCollectResponse:
+    """Reading a `*_cb` reply. The status is not the answer (KAMP-653)."""
+
+    def test_only_ok_true_without_an_error_counts_as_success(self) -> None:
+        assert parse_collect_ok('{"ok":true}') is True
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # The exact shape a JSON-encoded request comes back with, at HTTP 200.
+            '{"error":true,"ok":false,"exception":"InsistError: old or no crumb"}',
+            '{"ok":false}',
+            '{"ok":true,"error":true}',  # both set: an error is still an error
+            '{"error":"invalid_crumb","crumb":"|c|1|z="}',
+            "not json at all",
+            "[]",
+            "",
+        ],
+    )
+    def test_everything_else_is_a_failure(self, body: str) -> None:
+        assert parse_collect_ok(body) is False
+
+    def test_a_stale_crumb_yields_the_replacement(self) -> None:
+        assert (
+            parse_fresh_crumb('{"error":"invalid_crumb","crumb":"|collect|9|zz="}')
+            == "|collect|9|zz="
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '{"error":true,"ok":false}',  # a different error: not retryable
+            '{"error":"invalid_crumb"}',  # says stale but offers nothing to retry with
+            '{"error":"invalid_crumb","crumb":""}',
+            '{"ok":true}',
+            "garbage",
+        ],
+    )
+    def test_no_replacement_crumb_offered(self, body: str) -> None:
+        assert parse_fresh_crumb(body) is None

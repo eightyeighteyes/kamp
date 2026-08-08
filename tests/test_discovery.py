@@ -974,8 +974,9 @@ class _FakeSource(DiscoverySource):
 
 class TestDiscoverySource:
     def test_capabilities_are_evaluated_at_call_time(self) -> None:
-        """Not a class constant: Bandcamp's save_remote depends on the transport, and
-        a stale constant would render a wishlist button that silently no-ops."""
+        """Not a class constant: capability depends on runtime state — credentials,
+        the transport, what the remote service will currently accept — and a stale
+        constant would render a control that silently no-ops."""
         source = _FakeSource(can_save=False)
         assert SAVE_REMOTE not in source.capabilities
         source._can_save = True
@@ -1009,6 +1010,8 @@ class TestDiscoverySource:
             source.resolve_preview(candidate)
         with pytest.raises(UnsupportedCapability):
             source.save_remote(candidate)
+        with pytest.raises(UnsupportedCapability):
+            source.unsave_remote(candidate)
 
     def test_gather_respects_the_budget(self) -> None:
         source = _FakeSource()

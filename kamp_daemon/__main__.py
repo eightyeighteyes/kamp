@@ -575,6 +575,7 @@ def _cmd_daemon(
     from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
 
     from .discovery_preview import PreviewPlayer
+    from .wishlist import WishlistCache, mark_wishlisted_crate_items
     from kamp_core.scrobbler import Scrobbler, authenticate as _lastfm_authenticate
     from kamp_core.server import create_app, resolve_playback_uri
     from kamp_daemon.config import config_set as _config_set
@@ -955,6 +956,8 @@ def _cmd_daemon(
 
     def _on_bandcamp_disconnect() -> None:
         index.clear_session("bandcamp")
+        # The wishlist ids belong to an account that can change (KAMP-652).
+        _wishlist_cache.invalidate()
 
     def _on_bandcamp_sync_trigger() -> None:
         from .syncer import NeedsLoginError
@@ -1036,6 +1039,28 @@ def _cmd_daemon(
         _genre_backfill_cancel.set()
 
     # --- KAMP-648: Discovery Crate build ---
+    def _warm_wishlist(session: Any) -> None:
+        """Refresh the wishlist cache. Cheap when fresh, silent when it fails."""
+        try:
+            from .bandcamp import _get_fan_info
+
+            # fan_id is not persisted anywhere -- _get_fan_info re-reads it from
+            # collection_summary -- so it costs one request on top of the walk.
+            # Only paid when the cache is actually stale, since refresh() bails
+            # before this on a fresh cache.
+            if _wishlist_cache.is_fresh:
+                return
+            fan_id, _ = _get_fan_info(session)
+            _wishlist_cache.refresh(session, fan_id)
+            # The crate on screen was assembled against whatever was cached at
+            # the time -- nothing at all, on the first build after launch. Mark
+            # anything in it that turns out to be wishlisted so the rail shows a
+            # heart rather than presenting it as new.
+            mark_wishlisted_crate_items(index, _wishlist_cache.ids)
+            app.state.discovery_publish({})
+        except Exception:
+            _logger.warning("wishlist warm-up failed", exc_info=True)
+
     def _on_crate_build_start() -> None:
         """Assemble a crate on a background thread.
 
@@ -1062,8 +1087,25 @@ def _cmd_daemon(
                     _logger.info("crate build: not connected to Bandcamp")
                     publish({"state": "error"})
                     return
-                source = BandcampDiscoverySource(_make_requests_session(session_data))
-                build_crate(index, source, publish=publish)
+                session = _make_requests_session(session_data)
+                source = BandcampDiscoverySource(session)
+
+                # Warm the wishlist behind this build, never in front of it: a
+                # real wishlist is 9 pages / ~40s (KAMP-652), and waiting for it
+                # would park the UI on "building" -- the KAMP-639 failure the
+                # builder already refuses to commit. So this crate is filtered by
+                # whatever is cached (nothing, on the very first build) and every
+                # crate after it gets the full set.
+                threading.Thread(
+                    target=_warm_wishlist,
+                    args=(session,),
+                    daemon=True,
+                    name="wishlist-warm",
+                ).start()
+
+                build_crate(
+                    index, source, publish=publish, wishlist_ids=_wishlist_cache.ids
+                )
             except Exception:
                 # build_crate does not raise, so reaching here means the session
                 # or import failed. Publish a terminal state regardless: the
@@ -1111,6 +1153,11 @@ def _cmd_daemon(
         source_factory=_preview_source,
         notify=_preview_notify,
     )
+
+    # KAMP-652: wishlist ids for crate exclusion. Walked in the background and
+    # cached for an hour -- see kamp_daemon/wishlist.py for why it must never sit
+    # on the crate path.
+    _wishlist_cache = WishlistCache()
 
     # Bandcamp username comes only from the session (set after Electron login flow).
     _bc_session = index.get_session("bandcamp")

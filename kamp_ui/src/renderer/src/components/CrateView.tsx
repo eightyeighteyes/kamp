@@ -17,6 +17,8 @@ import { CrateSleeve, CrateSlot } from './CrateSleeve'
 import { CrateBin } from './CrateBin'
 import { crateSpineName } from './crateSpine'
 import { CratePreviewStrip } from './CratePreviewStrip'
+import { RecordFlight } from './RecordFlight'
+import type { FlightRect } from './RecordFlight'
 import { formatClock } from '../utils/formatClock'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
@@ -34,6 +36,11 @@ function formatPause(seconds: number): string {
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
+
+// A record in transit between its slot in the crate and the deck (KAMP-668).
+// `dir` is where it is heading, which decides both which end hides its copy and
+// which end the rects came from.
+type Flight = { id: number; dir: 'deck' | 'home'; from: FlightRect; to: FlightRect }
 
 // The lifetime line. Everything the user has dug, in the clerk's register:
 // concrete counts, no percentages, nothing that reads as a score to beat.
@@ -153,6 +160,53 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // Where a record flies TO. Measured at the moment a flight starts rather than
   // held as state — the view scrolls, so a rect captured earlier is stale.
   const deckArtRef = useRef<HTMLDivElement | null>(null)
+  const [flight, setFlight] = useState<Flight | null>(null)
+  const lastDeckId = useRef<number | null>(null)
+  const seededDeck = useRef(false)
+
+  // A record leaves the crate when it goes on the deck and comes back when it
+  // comes off. The flight is an enhancement on that STATE CHANGE, never the
+  // thing that puts it there: preview is daemon-owned and survives a renderer
+  // reload (KAMP-651), so arriving with something already playing must show an
+  // occupied deck and no flight at all. Hence seeding the first value silently.
+  useEffect(() => {
+    const nextId = deckItem?.id ?? null
+    const prevId = lastDeckId.current
+    lastDeckId.current = nextId
+    if (!seededDeck.current) {
+      seededDeck.current = true
+      return
+    }
+    if (nextId === prevId) return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+
+    const platter = deckArtRef.current?.getBoundingClientRect()
+    if (!platter) return
+    const sleeveOf = (id: number): DOMRect | undefined =>
+      railRef.current
+        ?.querySelector<HTMLElement>(`[data-bin-item="${id}"]`)
+        ?.getBoundingClientRect()
+
+    if (nextId !== null) {
+      // Out of the crate and onto the deck.
+      const sleeve = sleeveOf(nextId)
+      if (sleeve) setFlight({ id: nextId, dir: 'deck', from: sleeve, to: platter })
+    } else if (prevId !== null) {
+      // Off the deck and home. Covers stopping, and covers a preview that
+      // failed to play — otherwise a record that never started would leave the
+      // crate a gap forever.
+      const sleeve = sleeveOf(prevId)
+      if (sleeve) setFlight({ id: prevId, dir: 'home', from: platter, to: sleeve })
+    }
+  }, [deckItem?.id, railRef])
+
+  // Which sleeve is invisible in the bin: the one on the deck, or the one still
+  // flying home. Without the second case the sleeve reappears the instant the
+  // preview stops and you see the record in two places at once.
+  const awayItemId = deckItem?.id ?? (flight?.dir === 'home' ? flight.id : null)
+  // Same idea at the other end: the platter stays empty until the outbound
+  // flight lands on it, or the art is in two places for the length of the trip.
+  const platterItem = flight?.dir === 'deck' ? null : deckItem
 
   // Preview state for the record on screen. The engine plays one item at a
   // time, so a preview belonging to another card must not light this one up.
@@ -566,6 +620,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             crateNo={crate?.crate_no ?? null}
             focusIndex={focusIndex}
             pendingDismissals={pendingDismissals}
+            awayItemId={awayItemId}
             spineName={spineName}
             railRef={railRef}
             onFocus={focusSleeve}
@@ -586,12 +641,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             deck should not change under you when you do. */}
         <div className="crate-deck" role="group" aria-label="Preview deck">
           <div
-            className={`crate-deck-platter${deckItem ? ' is-loaded' : ''}`}
+            className={`crate-deck-platter${platterItem ? ' is-loaded' : ''}`}
             ref={deckArtRef}
             aria-hidden="true"
           >
-            {deckItem?.art_url && (
-              <img className="crate-deck-art" src={crateArtUrl(deckItem.id)} alt="" />
+            {platterItem?.art_url && (
+              <img className="crate-deck-art" src={crateArtUrl(platterItem.id)} alt="" />
             )}
           </div>
 
@@ -664,6 +719,19 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           {current ? `Record ${focusIndex + 1} of ${visible.length}. ${current.why}` : ''}
         </div>
       </div>
+
+      {/* Keyed on the record AND the direction, so previewing a second record
+          before the first has landed mounts a fresh traveller for it rather than
+          the old one snapping to a new destination mid-flight. */}
+      {flight && (
+        <RecordFlight
+          key={`${flight.id}-${flight.dir}`}
+          from={flight.from}
+          to={flight.to}
+          artUrl={crateArtUrl(flight.id)}
+          onDone={() => setFlight((f) => (f === flight ? null : f))}
+        />
+      )}
 
       {undoItem && (
         <div className="crate-undo-toast" role="status">

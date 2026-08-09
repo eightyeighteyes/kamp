@@ -14,6 +14,8 @@ import { useStore } from '../store'
 import { crateArtUrl } from '../api/client'
 import type { CrateItem, DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
+import { CrateBin } from './CrateBin'
+import { crateSpineName } from './crateSpine'
 import { CratePreviewStrip } from './CratePreviewStrip'
 import { formatClock } from '../utils/formatClock'
 import { useTooltip } from '../hooks/useTooltip'
@@ -131,6 +133,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const history = crate?.stats ?? null
   const crateTally = crate?.crate_stats ?? null
   const atLastRecord = visible.length > 1 && focusIndex === visible.length - 1
+
+  // The name on the crate's divider card (KAMP-656). Derived from the snapshot
+  // the view already has, because this story is skin only — no API changes. It
+  // is memoised on the item identities rather than recomputed per render, and it
+  // reads nothing from the clock, so a crate keeps its name.
+  const spineName = useMemo(() => crateSpineName(items, crate?.hints ?? []), [items, crate?.hints])
 
   // Preview state for the record on screen. The engine plays one item at a
   // time, so a preview belonging to another card must not light this one up.
@@ -320,6 +328,27 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     option?.focus()
   }
 
+  // Claim focus when the view opens, so , and . work on arrival.
+  //
+  // The recovery above only fires when focus is LOST; nothing ever claimed it in
+  // the first place, so the keys did nothing until you clicked a record. The
+  // handlers live on this container by design — listening on document would
+  // pre-empt every modal's Escape — so the container has to actually hold focus.
+  //
+  // preventScroll matters: the view scrolls, the bin sits below the focus card,
+  // and a plain focus() scrolls the record into view, yanking the card off the
+  // top of the screen the moment you arrive.
+  useEffect(() => {
+    if (!active || visible.length === 0) return
+    const rail = railRef.current
+    if (!rail) return
+    // Never steal focus from something already in use inside the view — a
+    // pressed action button, or a record the user just clicked.
+    if (rail.contains(document.activeElement)) return
+    const option = rail.querySelectorAll<HTMLElement>('[role="option"]')[focusIndex]
+    option?.focus({ preventScroll: true })
+  }, [active, visible.length, focusIndex])
+
   // ---------------------------------------------------------------------------
   // Compositions
   // ---------------------------------------------------------------------------
@@ -487,59 +516,6 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                   {wishlistError}
                 </p>
               )}
-
-              {/* The preview's own space, always present. Rendering the strip
-                  and track list into the normal flow made the whole card grow
-                  when a preview started, shoving the rail down the page — and
-                  the track list is unbounded, so a long record shoved it hard.
-                  The slot reserves the room; the list scrolls inside it. */}
-              <div className="crate-preview-slot">
-                {previewingThis && preview ? (
-                  <>
-                    <CratePreviewStrip
-                      preview={preview}
-                      onToggle={togglePreview}
-                      onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
-                      onSeek={(position) => void previewSeek(position)}
-                    />
-
-                    {preview.tracks.length > 0 && (
-                      <ol className="crate-tracklist">
-                        {preview.tracks.map((track) => (
-                          <li key={track.track_num}>
-                            <button
-                              className={`crate-track${
-                                track.track_num === preview.track_num ? ' crate-track--current' : ''
-                              }`}
-                              onClick={() => void previewPlay(current.id, track.track_num)}
-                            >
-                              <span className="crate-track-num">{track.track_num}</span>
-                              <span className="crate-track-title">
-                                {track.title || `Track ${track.track_num}`}
-                              </span>
-                              <span className="crate-track-time">
-                                {formatClock(track.duration)}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-
-                    {preview.error && (
-                      <p className="crate-preview-error" role="status">
-                        {preview.error === 'rate_limited'
-                          ? 'Bandcamp asked us to slow down — try again shortly.'
-                          : 'No preview for this one.'}
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p className="crate-preview-placeholder">
-                    Space to hear it — your queue stays where it is.
-                  </p>
-                )}
-              </div>
             </div>
           </article>
         ) : (
@@ -548,22 +524,98 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           </div>
         )}
 
-        <ul className="crate-rail" role="listbox" aria-label="Crate" ref={railRef} tabIndex={-1}>
-          {visible.map((item, index) => (
-            <CrateSleeve
-              key={item.id}
-              item={item}
-              index={index}
-              total={visible.length}
-              focused={index === focusIndex}
-              passed={pendingDismissals.includes(item.id)}
-              onFocus={focusSleeve}
-            />
-          ))}
-          {Array.from({ length: slots }, (_unused, i) => (
-            <CrateSlot key={`slot-${i}`} index={visible.length + i} />
-          ))}
-        </ul>
+        {/* KAMP-656 prototype: the bin renders the same state the flat rail did.
+            CrateSleeve and .crate-sleeve are left intact so the Counter fallback
+            is a switch back to them here, not a rewrite. While a build streams,
+            the flat rail still runs — the empty slots are the fill indicator and
+            a half-full bin has no pile to show yet. */}
+        {building ? (
+          <ul className="crate-rail" role="listbox" aria-label="Crate" ref={railRef} tabIndex={-1}>
+            {visible.map((item, index) => (
+              <CrateSleeve
+                key={item.id}
+                item={item}
+                index={index}
+                total={visible.length}
+                focused={index === focusIndex}
+                passed={pendingDismissals.includes(item.id)}
+                onFocus={focusSleeve}
+              />
+            ))}
+            {Array.from({ length: slots }, (_unused, i) => (
+              <CrateSlot key={`slot-${i}`} index={visible.length + i} />
+            ))}
+          </ul>
+        ) : (
+          <CrateBin
+            items={visible}
+            crateNo={crate?.crate_no ?? null}
+            focusIndex={focusIndex}
+            pendingDismissals={pendingDismissals}
+            spineName={spineName}
+            railRef={railRef}
+            onFocus={focusSleeve}
+          />
+        )}
+
+        {/* The preview's own space, always present, and BELOW the bin (KAMP-656).
+            It sat inside the focus card until the bin got its proper sizing, at
+            which point the sleeves — absolutely positioned and leaning out of
+            their container — drew straight over the mini-player and the hint
+            text. Ordering it after the bin fixes that by construction rather
+            than by fighting the overflow, and there is plenty of vertical room.
+
+            Still a reserved slot: rendering the strip and track list into the
+            normal flow made the whole thing grow when a preview started, and the
+            track list is unbounded, so a long record shoved everything below it
+            down the page. The slot holds the room; the list scrolls inside it. */}
+        {current && (
+          <div className="crate-preview-slot">
+            {previewingThis && preview ? (
+              <>
+                <CratePreviewStrip
+                  preview={preview}
+                  onToggle={togglePreview}
+                  onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
+                  onSeek={(position) => void previewSeek(position)}
+                />
+
+                {preview.tracks.length > 0 && (
+                  <ol className="crate-tracklist">
+                    {preview.tracks.map((track) => (
+                      <li key={track.track_num}>
+                        <button
+                          className={`crate-track${
+                            track.track_num === preview.track_num ? ' crate-track--current' : ''
+                          }`}
+                          onClick={() => void previewPlay(current.id, track.track_num)}
+                        >
+                          <span className="crate-track-num">{track.track_num}</span>
+                          <span className="crate-track-title">
+                            {track.title || `Track ${track.track_num}`}
+                          </span>
+                          <span className="crate-track-time">{formatClock(track.duration)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+
+                {preview.error && (
+                  <p className="crate-preview-error" role="status">
+                    {preview.error === 'rate_limited'
+                      ? 'Bandcamp asked us to slow down — try again shortly.'
+                      : 'No preview for this one.'}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="crate-preview-placeholder">
+                Space to hear it — your queue stays where it is.
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="crate-footer">
           {digButton}

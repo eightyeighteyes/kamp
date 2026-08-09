@@ -238,6 +238,295 @@
   text-align: center;
 }
 
+/* --- The bin (KAMP-656, prototype) ---------------------------------------
+ *
+ * A three-quarter crate of records you flip through, rendering exactly the state
+ * the flat rail rendered: everything before focusIndex lies on the pile at the
+ * lip, everything from it back stands leaning in the bin.
+ *
+ * Geometry lives out here rather than inside the prefers-reduced-motion wrapper
+ * on purpose. Reduced motion means "do not animate", not "do not have a shape" —
+ * the bin still looks like a bin, it just stops moving (see the override at the
+ * bottom of this block). Only transform and opacity are ever animated; nothing
+ * here touches height, which is the project rule and Electron is why.
+ */
+
+.crate-bin {
+  /* ONE number the rest is derived from. The prototype hardcoded a 132px sleeve
+     and a 180px bin height, which is why the sizing read wrong and why tuning it
+     meant guessing at two unrelated constants. Everything below is a ratio of
+     this, so a crate of four and a crate of ten need no separate treatment and
+     the bin scales with the content column rather than against it. */
+  /* vw, NOT a percentage, and that is load-bearing rather than a preference.
+     This token is used for `width` AND inside `calc()` for `height` below. A
+     percentage means "of the containing block's width" in one and "of its
+     height" in the other — and the parent's height is auto, so the height calc
+     went indefinite, the records box collapsed to zero, and every sleeve (all
+     absolutely positioned at bottom: 0) hung its full height UPWARD out of a box
+     with no height, straight over the focus card. A viewport unit resolves
+     identically in both contexts. */
+  --bin-sleeve: clamp(150px, 20vw, 230px);
+  --bin-lean: 15deg;
+  /* Proportional to the sleeve, so the stagger stays a constant fraction of the
+     art rather than collapsing at large sizes and swamping it at small ones. */
+  --bin-depth-step: calc(var(--bin-sleeve) * 0.07);
+
+  position: relative;
+  width: 100%;
+  max-width: var(--crate-width);
+  margin-inline: auto;
+  /* Deep enough to read as a room rather than a fisheye. Under ~700px the
+     lean starts to look like a funhouse mirror. */
+  perspective: 900px;
+  perspective-origin: 50% 30%;
+  padding: 28px 0 12px;
+}
+
+.crate-bin-records {
+  position: relative;
+  /* The sleeve is square, plus room for the lean behind it and the pile in
+     front. A fixed height here is what clipped the top of a larger sleeve. */
+  height: calc(var(--bin-sleeve) * 1.3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  transform-style: preserve-3d;
+  display: flex;
+  justify-content: center;
+}
+
+.crate-bin-records:focus {
+  outline: none;
+}
+
+/* TRANSFORM ORDER IS LOAD-BEARING, and getting it wrong is what made the first
+   pile stack upside down.
+ *
+ * `transform: A B C` composes as A×B×C, so the RIGHTMOST function is applied
+ * first, in the element's own space, and everything to its left then operates on
+ * the result. Put translateZ after rotateX(-96deg) and the translation is
+ * rotated too — after a 96 degree tilt it points roughly up and down, not toward
+ * the viewer, so it stops controlling depth at all and the pile stacks by
+ * whatever the browser felt like.
+ *
+ * So: translate first (world space), rotate last. */
+
+.bin-sleeve {
+  position: absolute;
+  bottom: 0;
+  width: var(--bin-sleeve);
+  cursor: pointer;
+  /* Hinged at the bottom edge, like a record resting on the bottom of a crate.
+     Any other origin makes the flip look like a card turning over. */
+  transform-origin: 50% 100%;
+  /* Standing in the bin: stepped back from the record you are looking at, and
+     leaning BACK. Relative to focus, so the stack advances as you flip instead
+     of the focused record pulling away from a bin that never moves.
+
+     The lean is POSITIVE, and the sign is the whole point. CSS's +Y axis points
+     DOWN, so rotateX(positive) takes the bottom toward the viewer and the top
+     away — a record leaning back into the crate. A negative lean does the
+     opposite: every record behind tips its top toward you and crosses in front
+     of the one you are looking at, which is exactly the band of someone else's
+     art that appeared across the top of the focused sleeve once the sleeves got
+     big enough to notice. */
+  transform: translateZ(calc(var(--bin-rel) * var(--bin-depth-step) * -1))
+    translateY(calc(var(--bin-rel) * -2px)) rotateX(var(--bin-lean));
+  will-change: transform;
+}
+
+/* Flipped past: tipped forward past vertical onto the pile at the crate lip.
+   The growing pile IS the progress indicator — there is no separate bar.
+ *
+ * Stacked by --bin-order (the absolute index), NOT by position relative to
+ * focus: records land in index order, so record 0 is the bottom of the pile and
+ * every later one lands on top of it. Ordering the pile relative to focus
+ * rebuilds it upside down on every flip, which is exactly what it did.
+ *
+ * The pile MUST sit in front of the focused record, and that is a correctness
+ * constraint rather than a look. A transition interpolates the transform matrix,
+ * so the two sleeves that move on a flip sweep continuously between their
+ * endpoints; if the outgoing record travels backwards while the incoming one
+ * travels forwards, their planes cross mid-flight and you see one through the
+ * other. With the pile behind focus that crossing was unavoidable — separation
+ * ran 32px to -11px and hit zero about three-quarters through. Ahead of focus,
+ * the outgoing record stays ahead of the incoming one for the whole transition
+ * and nothing intersects. */
+.bin-sleeve--flipped {
+  transform: translateZ(calc(var(--bin-order) * 1.6px + 44px))
+    translateY(calc(var(--bin-order) * -1px - 4px)) rotateX(-96deg);
+}
+
+/* The one you are looking at: upright and forward of the rest. A touch of the
+   same backward lean rather than a forward one, so it never tips into the record
+   behind it — being pulled forward is carried by translateZ, not by tilting at
+   the viewer. */
+.bin-sleeve--focused {
+  transform: translateZ(18px) translateY(-6px) rotateX(3deg);
+}
+
+.bin-sleeve-art {
+  position: relative; /* containing block for the worn top edge */
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 20px;
+  /* Pre-baked rather than an animated box-shadow: shadow is one of the most
+     expensive things to animate, and the depth cue does not need to move. */
+  box-shadow: 0 6px 14px rgb(0 0 0 / 35%);
+}
+
+.bin-sleeve-art:not(.has-art)::before {
+  content: '♪';
+}
+
+.bin-sleeve-art-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.bin-sleeve--focused .bin-sleeve-art {
+  border-color: var(--accent);
+  border-width: 2px;
+}
+
+/* Same rule as the flat rail: state is opacity, border weight and a glyph —
+   never hue. There is one --accent token and it swings from indigo to magenta
+   to green across the eight palettes. */
+.bin-sleeve--passed {
+  opacity: 0.35;
+}
+
+.bin-sleeve--wishlisted .bin-sleeve-art,
+.bin-sleeve--purchased .bin-sleeve-art {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.bin-sleeve-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 12px;
+  color: var(--text);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 60%);
+}
+
+/* --- Paper props ----------------------------------------------------------
+ *
+ * Two materials, and they behave differently: cardboard is the sleeve, paper is
+ * the divider and the sticker. Paper is lighter, so it sits flatter and catches
+ * a little more light.
+ *
+ * No colour is invented here. Kraft is built from the theme's own surface and
+ * text tokens at low alpha rather than a hardcoded brown — there are eight
+ * palettes and a fixed tan would be wrong in most of them. The accent stays
+ * reserved for interactive affordances; none of this is interactive.
+ */
+
+/* The divider card standing at the back of the bin. The one place a
+   handwritten-adjacent face is allowed, small and once — the typeface is a
+   seasoning, not a theme. */
+.crate-bin-spine {
+  /* Above the records, because the card stands at the BACK of the bin — you
+     read it over their tops. The tab is therefore clipped on its top corners
+     and open at the bottom, where the card continues down behind the sleeves. */
+  margin: 0 auto 8px;
+  width: fit-content;
+  max-width: 90%;
+  padding: 4px 14px 6px;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  /* Kraft: a warm wash over the theme surface rather than a hardcoded tan,
+     which would be wrong in seven of the eight palettes. */
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 6%), rgb(0 0 0 / 10%)),
+    var(--surface-hover);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  /* The cut of a divider card's tab. */
+  clip-path: polygon(0 8px, 8px 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+}
+
+/* Corner sticker on the focused record: honest metadata only.
+   Year and label, straight from the crate row. Never a price, never a rating,
+   never a fabricated "rare" — a shop that lies on its stickers is the thing this
+   whole feature is defined against. Hidden entirely when the data is absent
+   rather than filled with a placeholder. */
+.bin-sleeve-sticker {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  max-width: calc(100% - 12px);
+  padding: 2px 6px;
+  font-size: 10px;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  /* Paper, not cardboard: a lighter shadow, and a slight lie of the hand. */
+  box-shadow: 0 1px 3px rgb(0 0 0 / 30%);
+  transform: rotate(-1.5deg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* Worn top edge. The edge a crate's records actually wear, from being flipped
+   through by a thousand thumbs — so it belongs on the top, not all round. */
+.bin-sleeve-art::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 14%), rgb(255 255 255 / 0%));
+  pointer-events: none;
+}
+
+/* Reduced motion: keep the bin, lose the depth and the movement. A flipped
+   record simply fades rather than tipping, and nothing transitions — the
+   transitions themselves only exist inside the no-preference wrapper below, so
+   this only has to flatten the geometry. */
+@media (prefers-reduced-motion: reduce) {
+  .crate-bin {
+    perspective: none;
+  }
+
+  .bin-sleeve,
+  .bin-sleeve--focused,
+  .bin-sleeve--flipped {
+    transform: none;
+    position: relative;
+  }
+
+  .crate-bin-records {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .bin-sleeve--flipped {
+    opacity: 0.4;
+  }
+
+  .bin-sleeve {
+    width: 72px;
+  }
+}
+
 .crate-dig-btn {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -363,10 +652,15 @@
   opacity: 0.5;
 }
 
+/* Dig button and the digging-history line, centred in the space between the
+   preview slot above and the app's transport bar below. */
 .crate-footer {
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  padding-top: 4px;
+  gap: 4px;
+  padding-top: 20px;
 }
 
 /* --- Undo toast ----------------------------------------------------------- */
@@ -419,9 +713,17 @@
    pushed the rail down the page the moment a preview started. Sized for the
    strip plus a scrolling track list, so a 3-track single and a 20-track album
    occupy exactly the same room. */
+/* Below the bin since KAMP-656, and centred with it rather than hugging the
+   left edge of the stage — it reads as the deck under the crate, not as a
+   caption on the card.
+
+   The top margin is clearance, not taste: the flipped pile sits forward of
+   everything at the crate lip and is translated up, so it hangs below the bin's
+   own box and would otherwise land on the player. */
 .crate-preview-slot {
   min-height: 236px;
   max-width: 52ch;
+  margin: 44px auto 0;
   display: flex;
   flex-direction: column;
 }
@@ -431,6 +733,7 @@
   color: var(--text-dim);
   font-size: 12px;
   opacity: 0.7;
+  text-align: center;
 }
 
 /* Its own strip rather than the TransportBar: the whole promise is that the
@@ -612,6 +915,57 @@
     }
     to {
       transform: scaleX(0);
+    }
+  }
+
+  /* The settle — the payload of the whole bin concept (KAMP-656).
+
+     An overshooting cubic-bezier on the transition rather than a @keyframes
+     animation, and that choice is what makes riffling work: a transition
+     retargets from wherever it currently is when the value changes again, while
+     an animation restarts from the top. At 2-3 flips/sec an animation would
+     stutter and queue; this just redirects.
+
+     The curve overshoots ~3% and comes back, which at the flip's 22deg swing is
+     the 2-3deg overshoot and ~90ms spring the ticket asks for. */
+  .bin-sleeve {
+    transition: transform 260ms cubic-bezier(0.22, 1.42, 0.36, 1);
+  }
+
+  /* The receiving pile compresses by a pixel or two as a record lands on it,
+     then recovers. Same overshoot logic, slightly slower so it reads as weight
+     rather than as a bounce. */
+  .bin-sleeve--flipped {
+    transition: transform 300ms cubic-bezier(0.18, 1.3, 0.4, 1);
+  }
+
+  /* Stock-in: a new crate is filed back-to-front, the way you would put records
+     into a bin — not all at once, and not front-to-back, which would look like
+     they were being dealt at you.
+
+     The stagger is applied per sleeve from --bin-order, so the last record is
+     the last to land. At 70ms a step, ten records take 630ms of stagger plus one
+     260ms drop: comfortably inside the 1.5s the story asks for.
+
+     opacity and transform only. This is an entrance, so a keyframe animation is
+     right where the flip needed a transition — there is nothing to interrupt,
+     and it must not re-run when the crate merely re-renders, which is what the
+     one-shot `both` fill gives. */
+  .crate-bin--stocking .bin-sleeve {
+    animation: binStockIn 260ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+    animation-delay: calc(var(--bin-order) * 70ms);
+  }
+
+  @keyframes binStockIn {
+    from {
+      opacity: 0;
+      /* Dropped in from above and slightly behind, so it arrives into its slot
+         rather than sliding across the front of the ones already filed. */
+      transform: translateZ(calc(var(--bin-rel) * var(--bin-depth-step) * -1))
+        translateY(calc(var(--bin-rel) * -2px - 40px)) rotateX(var(--bin-lean));
+    }
+    to {
+      opacity: 1;
     }
   }
 }

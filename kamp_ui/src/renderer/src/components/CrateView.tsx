@@ -14,6 +14,8 @@ import { useStore } from '../store'
 import { crateArtUrl } from '../api/client'
 import type { CrateItem, DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
+import { CrateBin } from './CrateBin'
+import { crateSpineName } from './crateSpine'
 import { CratePreviewStrip } from './CratePreviewStrip'
 import { formatClock } from '../utils/formatClock'
 import { useTooltip } from '../hooks/useTooltip'
@@ -131,6 +133,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const history = crate?.stats ?? null
   const crateTally = crate?.crate_stats ?? null
   const atLastRecord = visible.length > 1 && focusIndex === visible.length - 1
+
+  // The name on the crate's divider card (KAMP-656). Derived from the snapshot
+  // the view already has, because this story is skin only — no API changes. It
+  // is memoised on the item identities rather than recomputed per render, and it
+  // reads nothing from the clock, so a crate keeps its name.
+  const spineName = useMemo(() => crateSpineName(items, crate?.hints ?? []), [items, crate?.hints])
 
   // Preview state for the record on screen. The engine plays one item at a
   // time, so a preview belonging to another card must not light this one up.
@@ -548,22 +556,38 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           </div>
         )}
 
-        <ul className="crate-rail" role="listbox" aria-label="Crate" ref={railRef} tabIndex={-1}>
-          {visible.map((item, index) => (
-            <CrateSleeve
-              key={item.id}
-              item={item}
-              index={index}
-              total={visible.length}
-              focused={index === focusIndex}
-              passed={pendingDismissals.includes(item.id)}
-              onFocus={focusSleeve}
-            />
-          ))}
-          {Array.from({ length: slots }, (_unused, i) => (
-            <CrateSlot key={`slot-${i}`} index={visible.length + i} />
-          ))}
-        </ul>
+        {/* KAMP-656 prototype: the bin renders the same state the flat rail did.
+            CrateSleeve and .crate-sleeve are left intact so the Counter fallback
+            is a switch back to them here, not a rewrite. While a build streams,
+            the flat rail still runs — the empty slots are the fill indicator and
+            a half-full bin has no pile to show yet. */}
+        {building ? (
+          <ul className="crate-rail" role="listbox" aria-label="Crate" ref={railRef} tabIndex={-1}>
+            {visible.map((item, index) => (
+              <CrateSleeve
+                key={item.id}
+                item={item}
+                index={index}
+                total={visible.length}
+                focused={index === focusIndex}
+                passed={pendingDismissals.includes(item.id)}
+                onFocus={focusSleeve}
+              />
+            ))}
+            {Array.from({ length: slots }, (_unused, i) => (
+              <CrateSlot key={`slot-${i}`} index={visible.length + i} />
+            ))}
+          </ul>
+        ) : (
+          <CrateBin
+            items={visible}
+            focusIndex={focusIndex}
+            pendingDismissals={pendingDismissals}
+            spineName={spineName}
+            railRef={railRef}
+            onFocus={focusSleeve}
+          />
+        )}
 
         <div className="crate-footer">
           {digButton}

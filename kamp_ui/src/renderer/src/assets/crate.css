@@ -257,7 +257,15 @@
      meant guessing at two unrelated constants. Everything below is a ratio of
      this, so a crate of four and a crate of ten need no separate treatment and
      the bin scales with the content column rather than against it. */
-  --bin-sleeve: clamp(160px, 24%, 240px);
+  /* vw, NOT a percentage, and that is load-bearing rather than a preference.
+     This token is used for `width` AND inside `calc()` for `height` below. A
+     percentage means "of the containing block's width" in one and "of its
+     height" in the other — and the parent's height is auto, so the height calc
+     went indefinite, the records box collapsed to zero, and every sleeve (all
+     absolutely positioned at bottom: 0) hung its full height UPWARD out of a box
+     with no height, straight over the focus card. A viewport unit resolves
+     identically in both contexts. */
+  --bin-sleeve: clamp(150px, 20vw, 230px);
   --bin-lean: 15deg;
   /* Proportional to the sleeve, so the stagger stays a constant fraction of the
      art rather than collapsing at large sizes and swamping it at small ones. */

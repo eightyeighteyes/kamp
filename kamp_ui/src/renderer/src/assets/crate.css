@@ -309,6 +309,13 @@
   opacity: 0.35;
 }
 
+/* Brought home. Reads as the strongest of the "dug" states because it is the
+   one that means the record left the shop. */
+.crate-sleeve--purchased .crate-sleeve-art {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .crate-sleeve--wishlisted .crate-sleeve-art {
   border-color: var(--accent);
 }

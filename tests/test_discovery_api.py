@@ -927,6 +927,44 @@ class TestServerWiring:
         )
         assert calls and calls[0][1] is True
 
+    def test_purchase_notification_broadcasts_the_album_not_just_an_id(
+        self, index: LibraryIndex
+    ) -> None:
+        """The crate snapshot only ever rebuilds the LATEST crate, so a pick
+        bought out of an older one has no card to read artist/title from. The
+        toast has to be self-contained (KAMP-654)."""
+        engine = MagicMock()
+        # The WS accept frame reads real numbers off the engine; a bare MagicMock
+        # makes the position extrapolation compare a mock with an int.
+        engine.state.playing = False
+        engine.state.duration = 0.0
+        engine.state.position = 0.0
+        engine.state.position_updated_at = 0.0
+        queue = MagicMock()
+        queue.current.return_value = None
+        queue.peek_next.return_value = None
+
+        from kamp_core.server import create_app
+
+        app = create_app(index=index, engine=engine, queue=queue)
+        sent: list[dict[str, Any]] = []
+        # Captured through a real WS client rather than by reaching into internals.
+        with TestClient(app) as client:
+            with client.websocket_connect("/api/v1/ws") as ws:
+                ws.receive_json()  # accept frame
+                app.state.notify_crate_purchase(
+                    [{"id": 7, "artist": "abracadabra", "title": "peel away"}]
+                )
+                for _ in range(20):
+                    msg = ws.receive_json()
+                    if msg.get("type") == "discovery.purchased":
+                        sent.append(msg)
+                        break
+        assert sent, "no discovery.purchased frame was broadcast"
+        assert sent[0]["items"] == [
+            {"id": 7, "artist": "abracadabra", "title": "peel away"}
+        ]
+
     def test_a_server_without_a_writer_503s_rather_than_500s(
         self, index: LibraryIndex
     ) -> None:

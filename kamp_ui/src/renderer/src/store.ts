@@ -17,6 +17,7 @@ import type {
   CrateItem,
   CrateSnapshot,
   PreviewState,
+  PurchasedPick,
   CriteriaDoc,
   DownloadItem,
   PlayerState,
@@ -253,6 +254,9 @@ type PlayerStore = {
   // only on a confirmed success, so the heart arrives on the crate snapshot that
   // follows rather than from here.
   toggleCrateWishlist: (item: CrateItem) => Promise<void>
+  // KAMP-654: a sync found crate picks the user has bought. Batched, because
+  // attribution runs once per sync and can turn up several at once.
+  celebrateCratePurchases: (items: PurchasedPick[]) => void
   // KAMP-651: preview transport. Every action returns the authoritative state,
   // so none of these guess locally.
   loadPreview: () => Promise<void>
@@ -1028,6 +1032,18 @@ export const useStore = create<PlayerStore>((set, get) => ({
     } catch {
       get().showFlashToast('Could not copy the link', 'error')
     }
+  },
+  celebrateCratePurchases: (items) => {
+    if (items.length === 0) return
+    // One toast, never one per item: showFlashToast is a single slot with its
+    // own 5s timer, so three would show one and silently discard two — and each
+    // new timer would clear the previous message early. Naming the album is the
+    // whole charm of this, so a single purchase still gets named.
+    const msg =
+      items.length === 1
+        ? `Good ear. You took home a crate pick — ${items[0].title}.`
+        : `Good ear. ${items.length} crate picks came home.`
+    get().showFlashToast(msg)
   },
   clearCrateWishlistError: () => set({ crateWishlistError: null }),
   toggleCrateWishlist: async (item) => {

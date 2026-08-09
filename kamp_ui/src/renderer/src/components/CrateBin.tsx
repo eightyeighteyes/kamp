@@ -20,12 +20,11 @@ import React, { useEffect, useRef, useState } from 'react'
 import { crateArtUrl } from '../api/client'
 import type { CrateItem } from '../api/client'
 
-// Depth stagger between standing sleeves, in px. Small: enough for art slivers
-// to tease the next few records, not so much that the bin becomes a fan.
-const DEPTH = 14
-// How far back the standing sleeves lean. The ticket asks for 72-78 degrees off
-// the horizontal, which is 12-18 off vertical.
-const LEAN = 15
+// The bin's geometry — sleeve size, lean and depth stagger — lives entirely in
+// crate.css, derived from a single --bin-sleeve. It used to be set inline from
+// constants here too, which silently won: an inline custom property beats the
+// stylesheet, so the proportional depth step introduced with the sizing pass
+// never actually applied and a hardcoded 14px kept being used. One home for it.
 
 // What goes on the corner sticker. Only facts already on the row: the release
 // year and the label. Deliberately no price and no scarcity claim — those would
@@ -194,12 +193,7 @@ export function CrateBin({
   }, [crateNo])
 
   return (
-    <div
-      className={`crate-bin${stocking ? ' crate-bin--stocking' : ''}`}
-      style={
-        { '--bin-lean': `${LEAN}deg`, '--bin-depth-step': `${DEPTH}px` } as React.CSSProperties
-      }
-    >
+    <div className={`crate-bin${stocking ? ' crate-bin--stocking' : ''}`}>
       <ul
         className="crate-bin-records"
         role="listbox"

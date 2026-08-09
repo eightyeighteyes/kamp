@@ -312,10 +312,18 @@
      Any other origin makes the flip look like a card turning over. */
   transform-origin: 50% 100%;
   /* Standing in the bin: stepped back from the record you are looking at, and
-     leaning. Relative to focus, so the stack advances as you flip instead of the
-     focused record pulling away from a bin that never moves. */
+     leaning BACK. Relative to focus, so the stack advances as you flip instead
+     of the focused record pulling away from a bin that never moves.
+
+     The lean is POSITIVE, and the sign is the whole point. CSS's +Y axis points
+     DOWN, so rotateX(positive) takes the bottom toward the viewer and the top
+     away — a record leaning back into the crate. A negative lean does the
+     opposite: every record behind tips its top toward you and crosses in front
+     of the one you are looking at, which is exactly the band of someone else's
+     art that appeared across the top of the focused sleeve once the sleeves got
+     big enough to notice. */
   transform: translateZ(calc(var(--bin-rel) * var(--bin-depth-step) * -1))
-    translateY(calc(var(--bin-rel) * -2px)) rotateX(calc(var(--bin-lean) * -1));
+    translateY(calc(var(--bin-rel) * -2px)) rotateX(var(--bin-lean));
   will-change: transform;
 }
 
@@ -341,9 +349,12 @@
     translateY(calc(var(--bin-order) * -1px - 4px)) rotateX(-96deg);
 }
 
-/* The one you are looking at: upright and forward of the rest. */
+/* The one you are looking at: upright and forward of the rest. A touch of the
+   same backward lean rather than a forward one, so it never tips into the record
+   behind it — being pulled forward is carried by translateZ, not by tilting at
+   the viewer. */
 .bin-sleeve--focused {
-  transform: translateZ(18px) translateY(-6px) rotateX(-4deg);
+  transform: translateZ(18px) translateY(-6px) rotateX(3deg);
 }
 
 .bin-sleeve-art {
@@ -925,7 +936,7 @@
       /* Dropped in from above and slightly behind, so it arrives into its slot
          rather than sliding across the front of the ones already filed. */
       transform: translateZ(calc(var(--bin-rel) * var(--bin-depth-step) * -1))
-        translateY(calc(var(--bin-rel) * -2px - 40px)) rotateX(calc(var(--bin-lean) * -1));
+        translateY(calc(var(--bin-rel) * -2px - 40px)) rotateX(var(--bin-lean));
     }
     to {
       opacity: 1;

@@ -328,6 +328,27 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     option?.focus()
   }
 
+  // Claim focus when the view opens, so , and . work on arrival.
+  //
+  // The recovery above only fires when focus is LOST; nothing ever claimed it in
+  // the first place, so the keys did nothing until you clicked a record. The
+  // handlers live on this container by design — listening on document would
+  // pre-empt every modal's Escape — so the container has to actually hold focus.
+  //
+  // preventScroll matters: the view scrolls, the bin sits below the focus card,
+  // and a plain focus() scrolls the record into view, yanking the card off the
+  // top of the screen the moment you arrive.
+  useEffect(() => {
+    if (!active || visible.length === 0) return
+    const rail = railRef.current
+    if (!rail) return
+    // Never steal focus from something already in use inside the view — a
+    // pressed action button, or a record the user just clicked.
+    if (rail.contains(document.activeElement)) return
+    const option = rail.querySelectorAll<HTMLElement>('[role="option"]')[focusIndex]
+    option?.focus({ preventScroll: true })
+  }, [active, visible.length, focusIndex])
+
   // ---------------------------------------------------------------------------
   // Compositions
   // ---------------------------------------------------------------------------
@@ -495,59 +516,6 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                   {wishlistError}
                 </p>
               )}
-
-              {/* The preview's own space, always present. Rendering the strip
-                  and track list into the normal flow made the whole card grow
-                  when a preview started, shoving the rail down the page — and
-                  the track list is unbounded, so a long record shoved it hard.
-                  The slot reserves the room; the list scrolls inside it. */}
-              <div className="crate-preview-slot">
-                {previewingThis && preview ? (
-                  <>
-                    <CratePreviewStrip
-                      preview={preview}
-                      onToggle={togglePreview}
-                      onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
-                      onSeek={(position) => void previewSeek(position)}
-                    />
-
-                    {preview.tracks.length > 0 && (
-                      <ol className="crate-tracklist">
-                        {preview.tracks.map((track) => (
-                          <li key={track.track_num}>
-                            <button
-                              className={`crate-track${
-                                track.track_num === preview.track_num ? ' crate-track--current' : ''
-                              }`}
-                              onClick={() => void previewPlay(current.id, track.track_num)}
-                            >
-                              <span className="crate-track-num">{track.track_num}</span>
-                              <span className="crate-track-title">
-                                {track.title || `Track ${track.track_num}`}
-                              </span>
-                              <span className="crate-track-time">
-                                {formatClock(track.duration)}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-
-                    {preview.error && (
-                      <p className="crate-preview-error" role="status">
-                        {preview.error === 'rate_limited'
-                          ? 'Bandcamp asked us to slow down — try again shortly.'
-                          : 'No preview for this one.'}
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p className="crate-preview-placeholder">
-                    Space to hear it — your queue stays where it is.
-                  </p>
-                )}
-              </div>
             </div>
           </article>
         ) : (
@@ -588,6 +556,65 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             railRef={railRef}
             onFocus={focusSleeve}
           />
+        )}
+
+        {/* The preview's own space, always present, and BELOW the bin (KAMP-656).
+            It sat inside the focus card until the bin got its proper sizing, at
+            which point the sleeves — absolutely positioned and leaning out of
+            their container — drew straight over the mini-player and the hint
+            text. Ordering it after the bin fixes that by construction rather
+            than by fighting the overflow, and there is plenty of vertical room.
+
+            Still a reserved slot: rendering the strip and track list into the
+            normal flow made the whole thing grow when a preview started, and the
+            track list is unbounded, so a long record shoved everything below it
+            down the page. The slot holds the room; the list scrolls inside it. */}
+        {current && (
+          <div className="crate-preview-slot">
+            {previewingThis && preview ? (
+              <>
+                <CratePreviewStrip
+                  preview={preview}
+                  onToggle={togglePreview}
+                  onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
+                  onSeek={(position) => void previewSeek(position)}
+                />
+
+                {preview.tracks.length > 0 && (
+                  <ol className="crate-tracklist">
+                    {preview.tracks.map((track) => (
+                      <li key={track.track_num}>
+                        <button
+                          className={`crate-track${
+                            track.track_num === preview.track_num ? ' crate-track--current' : ''
+                          }`}
+                          onClick={() => void previewPlay(current.id, track.track_num)}
+                        >
+                          <span className="crate-track-num">{track.track_num}</span>
+                          <span className="crate-track-title">
+                            {track.title || `Track ${track.track_num}`}
+                          </span>
+                          <span className="crate-track-time">{formatClock(track.duration)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+
+                {preview.error && (
+                  <p className="crate-preview-error" role="status">
+                    {preview.error === 'rate_limited'
+                      ? 'Bandcamp asked us to slow down — try again shortly.'
+                      : 'No preview for this one.'}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="crate-preview-placeholder">
+                Space to hear it — your queue stays where it is.
+              </p>
+            )}
+          </div>
         )}
 
         <div className="crate-footer">

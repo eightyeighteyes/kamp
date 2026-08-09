@@ -12,7 +12,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { crateArtUrl } from '../api/client'
-import type { CrateItem } from '../api/client'
+import type { CrateItem, DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
 import { CratePreviewStrip } from './CratePreviewStrip'
 import { formatClock } from '../utils/formatClock'
@@ -29,6 +29,30 @@ function formatPause(seconds: number): string {
   const mins = Math.floor(total / 60)
   const secs = total % 60
   return mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
+
+// The lifetime line. Everything the user has dug, in the clerk's register:
+// concrete counts, no percentages, nothing that reads as a score to beat.
+function describeHistory(s: DiggingStats): string {
+  const parts = [plural(s.crates, 'crate') + ' dug', plural(s.records, 'record')]
+  if (s.previewed > 0) parts.push(`${s.previewed} previewed`)
+  if (s.wishlisted > 0) parts.push(`${s.wishlisted} set aside`)
+  if (s.purchased > 0) parts.push(`${s.purchased} brought home`)
+  return parts.join(' · ')
+}
+
+// One crate's tally. Omits the zeroes: "0 brought home" at the end of a crate
+// reads as a reprimand, which is the opposite of what this is for.
+function describeTally(s: DiggingStats): string {
+  const parts: string[] = []
+  if (s.previewed > 0) parts.push(`${s.previewed} previewed`)
+  if (s.wishlisted > 0) parts.push(`${s.wishlisted} set aside`)
+  if (s.purchased > 0) parts.push(`${s.purchased} brought home`)
+  return parts.length > 0
+    ? `${plural(s.records, 'record')} — ${parts.join(', ')}.`
+    : `${plural(s.records, 'record')}.`
 }
 
 export function CrateView({ active = false }: { active?: boolean }): React.JSX.Element {
@@ -101,6 +125,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // is owned sidesteps the masking entirely, and is the better answer anyway:
   // you do not wishlist something you already have.
   const purchased = current?.state === 'purchased'
+
+  // KAMP-655. Both ride the crate snapshot, so they are live without a fetch and
+  // the tally cannot drift from the lifetime line.
+  const history = crate?.stats ?? null
+  const crateTally = crate?.crate_stats ?? null
+  const atLastRecord = visible.length > 1 && focusIndex === visible.length - 1
 
   // Preview state for the record on screen. The engine plays one item at a
   // time, so a preview belonging to another card must not light this one up.
@@ -350,6 +380,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             </>
           )}
           {digButton}
+          {/* Also here: the empty state is its own early return, and a first-run
+              user with nothing dug yet should not see a row of zeroes. */}
+          {history && history.records > 0 && (
+            <p className="crate-history">{describeHistory(history)}</p>
+          )}
         </div>
       </div>
     )
@@ -530,7 +565,18 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           ))}
         </ul>
 
-        <div className="crate-footer">{digButton}</div>
+        <div className="crate-footer">
+          {digButton}
+          {/* The closing beat, at the moment the user has actually just done the
+              digging rather than as a running score. Only worth showing for a
+              crate with more than one record in it. */}
+          {atLastRecord && crateTally && (
+            <p className="crate-tally" role="status">
+              That&rsquo;s the crate. {describeTally(crateTally)}
+            </p>
+          )}
+          {history && <p className="crate-history">{describeHistory(history)}</p>}
+        </div>
 
         {/* The clerk card lives on the focus card, so arrowing the rail would
             otherwise never announce it: the option's own aria-label and

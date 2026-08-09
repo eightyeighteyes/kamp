@@ -5159,6 +5159,108 @@ class LibraryIndex:
          GROUP BY d.id
     """
 
+    def discovery_stats(self, crate_no: int | None = None) -> dict[str, int]:
+        """The user's digging history: what they dug, heard, kept and bought.
+
+        Computed on read from ``discovery_events``, the ``get_stats()`` model --
+        there are no counters to drift, and the ledger is the ground truth the
+        schema already promises it is.
+
+        Pass *crate_no* for one crate's tally. Same five counts over a narrower
+        scope, deliberately one function: the end-of-crate summary and the
+        lifetime line cannot disagree if neither has its own query.
+
+        **The counts are not mutually exclusive.** A record previewed, wishlisted
+        and bought appears in all three, because that is the honest account of a
+        dig rather than a bucket it has to be sorted into.
+
+        **Boundary, and it is a product constraint rather than a note.** These
+        may inform how well the criteria mix is working. They must never drive
+        engagement mechanics -- no nudges, no streaks, no notifications, nothing
+        that turns a record shop into a slot machine. The measures that matter
+        are purchases-per-crate and wishlist quality; crates-per-week and session
+        time are explicitly not goals, and a stat added to serve one of those
+        would be the feature turning into the thing it was defined against.
+        """
+        scope = "" if crate_no is None else " AND d.crate_no = :crate_no"
+        args = {"crate_no": crate_no}
+
+        def _count(sql: str) -> int:
+            row = self._conn.execute(sql, args).fetchone()
+            return int(row["c"] if row["c"] is not None else 0)
+
+        # Shown, not merely gathered: "has the user seen this?" is crate_no IS NOT
+        # NULL, so a buffered candidate (KAMP-657) is nobody's history yet.
+        dug = f"FROM discovery_items d WHERE d.crate_no IS NOT NULL{scope}"
+
+        def _with_event(kind: str) -> int:
+            return _count(
+                f"SELECT COUNT(*) AS c {dug} AND EXISTS ("
+                "  SELECT 1 FROM discovery_events e"
+                f"  WHERE e.item_id = d.id AND e.kind = '{kind}')"
+            )
+
+        return {
+            "crates": _count(f"SELECT COUNT(DISTINCT d.crate_no) AS c {dug}"),
+            "records": _count(f"SELECT COUNT(*) AS c {dug}"),
+            # Records previewed, not previews played.
+            "previewed": _with_event("previewed"),
+            # Currently wishlisted: the newest 'wishlisted' is newer than the
+            # newest 'unwishlisted'. NOT a count of 'wishlisted' events, which
+            # would score 3 for one record toggled on/off/on (KAMP-653), and NOT
+            # state = 'wishlisted', because 'purchased' outranks and masks it --
+            # dropping exactly the picks this feature most wants to show.
+            "wishlisted": _count(
+                f"SELECT COUNT(*) AS c {dug} AND ("
+                "  SELECT MAX(e.at) FROM discovery_events e"
+                "   WHERE e.item_id = d.id AND e.kind = 'wishlisted'"
+                ") > COALESCE(("
+                "  SELECT MAX(u.at) FROM discovery_events u"
+                "   WHERE u.item_id = d.id AND u.kind = 'unwishlisted'"
+                "), -1)"
+            ),
+            "purchased": _with_event("purchased"),
+        }
+
+    def clear_discovery_history(self, *, forget_seen: bool = False) -> None:
+        """Erase the digging history. The user's data is theirs to wipe.
+
+        Always clears ``discovery_events`` and everything derived from it.
+        *forget_seen* additionally drops ``discovery_items``, which is a
+        materially different thing and must be presented as one: that table is
+        the **seen ledger**, so dropping it means previously-shown picks start
+        coming round again.
+
+        Order is load-bearing. ``discovery_events.item_id`` is ON DELETE RESTRICT,
+        so the events must go first -- deleting the items first raises. The
+        RESTRICT itself is deliberate (KAMP-645): CASCADE would silently shrink
+        the purchase stats every time KAMP-657's buffer sweep pruned a row, and
+        that sweep relies on RESTRICT to only ever delete event-free rows. For
+        the same reason there are deliberately no append-only triggers here,
+        unlike extension_audit_log -- they would abort the sweep.
+        """
+        try:
+            self._conn.execute("DELETE FROM discovery_events")
+            if forget_seen:
+                self._conn.execute("DELETE FROM discovery_items")
+            else:
+                # Everything derived from the ledger goes with it. state is a
+                # cache of these events, so leaving it set would leave cards
+                # wearing hearts with nothing behind them; and a purchase link
+                # with no event behind it reads to attribute_crate_purchases() as
+                # "attributed but unrecorded", which appends a fresh event on the
+                # next sync.
+                self._conn.execute(
+                    "UPDATE discovery_items"
+                    "   SET state = 'fresh',"
+                    "       purchased_at = NULL,"
+                    "       purchased_sale_item_id = NULL"
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
     def attribute_crate_purchases(self) -> list[dict[str, Any]]:
         """Link newly purchased albums back to the crate picks that offered them.
 

@@ -220,6 +220,24 @@
   font-size: 12px;
 }
 
+/* Digging history (KAMP-655). Quiet on purpose: a record of what you have dug,
+   not a scoreboard. Sits under the dig button in the footer. */
+.crate-history {
+  margin: 10px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* The closing beat when you reach the last record. One step less dim than the
+   lifetime line, because it is about what just happened. */
+.crate-tally {
+  margin: 10px 0 0;
+  color: var(--text);
+  font-size: 13px;
+  text-align: center;
+}
+
 .crate-dig-btn {
   border: 1px solid var(--border);
   background: var(--surface);

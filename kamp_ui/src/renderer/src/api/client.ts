@@ -603,9 +603,36 @@ export type CrateSnapshot = {
   hints: string[] // the user's top genres, for the digging status lines
   thin: boolean // a library with no listening history yet — chart picks only
   items: CrateItem[]
+  // KAMP-655: the digging history, computed on read and carried here so the
+  // numbers are live without a second request. `crate_stats` is the same five
+  // counts scoped to this crate — null when there is no crate to tally, which is
+  // different from a crate of zero.
+  stats: DiggingStats
+  crate_stats: DiggingStats | null
+}
+
+// Deliberately not mutually exclusive: a record you previewed, wishlisted and
+// bought counts in all three, because that is the honest account of a dig.
+export type DiggingStats = {
+  crates: number
+  records: number
+  previewed: number
+  wishlisted: number
+  purchased: number
 }
 
 export const getCrate = (): Promise<CrateSnapshot> => get('/api/v1/discovery/crate')
+
+// KAMP-655: the digging history. Also on every crate snapshot, so the UI rarely
+// needs this — it exists as the reconnect path and so "what does kamp know about
+// my digging" has an address of its own.
+export const getDiggingHistory = (): Promise<{ stats: DiggingStats }> =>
+  get('/api/v1/discovery/stats')
+
+// forgetSeen is a materially different act, not a stronger version of the same
+// one: it drops the seen ledger, so records already shown come round again.
+export const clearDiggingHistory = (forgetSeen: boolean): Promise<{ ok: boolean }> =>
+  del(`/api/v1/discovery/history?forget_seen=${forgetSeen ? 'true' : 'false'}`)
 
 // 409 while a crate is already building — postWithDetail keeps the server's
 // message ("a crate is already building") instead of a bare status line.

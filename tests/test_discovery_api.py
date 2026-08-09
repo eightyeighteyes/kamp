@@ -295,6 +295,79 @@ class TestItemEvents:
 
 
 # ---------------------------------------------------------------------------
+# Digging history (KAMP-655)
+# ---------------------------------------------------------------------------
+
+
+class TestDiggingHistoryRoutes:
+    def test_the_snapshot_carries_the_history(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """Riding the snapshot is what keeps the numbers live without a second
+        request, and what stops the tally and the lifetime line disagreeing."""
+        _stock(index, 1, count=2)
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["stats"]["records"] == 2
+        assert body["crate_stats"]["records"] == 2
+
+    def test_an_empty_library_reports_no_crate_stats(self, harness: _Harness) -> None:
+        """There is no crate to tally, which is different from a crate of zero."""
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["stats"]["records"] == 0
+        assert body["crate_stats"] is None
+
+    def test_the_endpoint_and_the_snapshot_agree(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        _stock(index, 1, count=3)
+        endpoint = harness.client.get("/api/v1/discovery/stats").json()["stats"]
+        snapshot = harness.client.get("/api/v1/discovery/crate").json()["stats"]
+        assert endpoint == snapshot
+
+    def test_the_numbers_move_with_an_event(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        _stock(index, 1, count=2)
+        item = index.crate_items(1)[0]["id"]
+        harness.client.post(f"/api/v1/discovery/items/{item}/wishlist")
+        assert harness.events[-1]["stats"]["wishlisted"] == 1
+
+    def test_clearing_stats_keeps_the_crate(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        _stock(index, 1, count=2)
+        item = index.crate_items(1)[0]["id"]
+        harness.client.post(f"/api/v1/discovery/items/{item}/wishlist")
+
+        resp = harness.client.delete("/api/v1/discovery/history")
+
+        assert resp.status_code == 200
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["stats"]["wishlisted"] == 0
+        assert body["stats"]["records"] == 2, "the records themselves stay"
+        assert len(body["items"]) == 2
+
+    def test_clearing_everything_empties_the_crate(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        _stock(index, 1, count=2)
+        harness.client.delete("/api/v1/discovery/history?forget_seen=true")
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["items"] == []
+        assert body["stats"]["records"] == 0
+        assert index.seen_before("bandcamp", "1-0") is False
+
+    def test_clearing_republishes_so_open_clients_update(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """Without this the numbers stay on screen until something else moves."""
+        _stock(index, 1, count=2)
+        harness.events.clear()
+        harness.client.delete("/api/v1/discovery/history")
+        assert harness.events[-1]["stats"]["records"] == 2
+
+
+# ---------------------------------------------------------------------------
 # Wishlist write (KAMP-653)
 # ---------------------------------------------------------------------------
 

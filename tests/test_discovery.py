@@ -548,6 +548,236 @@ class TestPurchaseAttribution:
 
 
 # ---------------------------------------------------------------------------
+# Digging history (KAMP-655)
+# ---------------------------------------------------------------------------
+
+
+class TestDiggingHistory:
+    """The collector's journal: what the user has dug, and erasing it.
+
+    The counts are deliberately NOT mutually exclusive. A record you previewed,
+    wishlisted and bought counts in all three, because that is the honest story
+    of your digging rather than a bucket it has to be sorted into.
+    """
+
+    def _dig(
+        self,
+        index: LibraryIndex,
+        crate_no: int,
+        position: int,
+        provider_item_id: str,
+    ) -> int:
+        item = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id=provider_item_id
+        )
+        index.place_in_crate(item, crate_no, position)
+        return item
+
+    def test_an_untouched_library_is_all_zeroes_not_an_error(
+        self, index: LibraryIndex
+    ) -> None:
+        stats = index.discovery_stats()
+        assert stats == {
+            "crates": 0,
+            "records": 0,
+            "previewed": 0,
+            "wishlisted": 0,
+            "purchased": 0,
+        }
+
+    def test_counts_crates_and_records_dug_through(self, index: LibraryIndex) -> None:
+        self._dig(index, 1, 0, "a")
+        self._dig(index, 1, 1, "b")
+        self._dig(index, 2, 0, "c")
+        stats = index.discovery_stats()
+        assert stats["crates"] == 2
+        assert stats["records"] == 3
+
+    def test_a_buffered_candidate_counts_in_neither(self, index: LibraryIndex) -> None:
+        """ "Has the user seen this" is crate_no IS NOT NULL, not row existence.
+        A gathered-but-never-shown candidate is not part of anyone's history."""
+        self._dig(index, 1, 0, "a")
+        index.add_discovery_candidate(provider="bandcamp", provider_item_id="buffered")
+        stats = index.discovery_stats()
+        assert stats["crates"] == 1
+        assert stats["records"] == 1
+
+    def test_previewing_the_same_record_twice_counts_once(
+        self, index: LibraryIndex
+    ) -> None:
+        """Records previewed, not previews played."""
+        item = self._dig(index, 1, 0, "a")
+        index.record_discovery_event(item, "previewed")
+        index.record_discovery_event(item, "previewed")
+        assert index.discovery_stats()["previewed"] == 1
+
+    def test_wishlisting_and_un_wishlisting_nets_out(self, index: LibraryIndex) -> None:
+        """The count is what is on your wishlist NOW.
+
+        Counting 'wishlisted' events would score 3 for one record toggled on, off
+        and on again — KAMP-653 made that reachable and this story predates it.
+        """
+        item = self._dig(index, 1, 0, "a")
+        index.record_discovery_event(item, "wishlisted")
+        index.record_discovery_event(item, "unwishlisted")
+        assert index.discovery_stats()["wishlisted"] == 0
+
+        index.record_discovery_event(item, "wishlisted")
+        assert index.discovery_stats()["wishlisted"] == 1
+
+    def test_a_wishlisted_record_that_was_bought_still_counts_as_both(
+        self, index: LibraryIndex
+    ) -> None:
+        """The masked-cache case, and why these are ledger-derived.
+
+        discovery_items.state is a single-slot rank cache: 'purchased' (rank 4)
+        masks 'wishlisted' (rank 3). Counting state would silently drop every
+        pick the user wishlisted and then bought out of the wishlist number —
+        exactly the records the feature most wants to show.
+        """
+        item = self._dig(index, 1, 0, "a")
+        index.record_discovery_event(item, "wishlisted")
+        index.record_discovery_event(item, "purchased")
+        state = index._conn.execute(
+            "SELECT state FROM discovery_items WHERE id = ?", (item,)
+        ).fetchone()["state"]
+        assert state == "purchased", "guards the premise of this test"
+
+        stats = index.discovery_stats()
+        assert stats["wishlisted"] == 1
+        assert stats["purchased"] == 1
+
+    def test_dismissing_does_not_reduce_what_you_dug_through(
+        self, index: LibraryIndex
+    ) -> None:
+        """Passing on a record is still digging through it."""
+        item = self._dig(index, 1, 0, "a")
+        index.record_discovery_event(item, "dismissed")
+        assert index.discovery_stats()["records"] == 1
+
+    def test_scoping_to_one_crate(self, index: LibraryIndex) -> None:
+        """The end-of-crate tally is the same query over a narrower scope, which
+        is what makes it impossible for the two to disagree."""
+        first = self._dig(index, 1, 0, "a")
+        index.record_discovery_event(first, "previewed")
+        second = self._dig(index, 2, 0, "b")
+        index.record_discovery_event(second, "wishlisted")
+
+        tally = index.discovery_stats(crate_no=2)
+        assert tally["crates"] == 1
+        assert tally["records"] == 1
+        assert tally["previewed"] == 0
+        assert tally["wishlisted"] == 1
+
+    def test_lifetime_and_per_crate_agree_for_a_single_crate_library(
+        self, index: LibraryIndex
+    ) -> None:
+        item = self._dig(index, 1, 0, "a")
+        index.record_discovery_event(item, "previewed")
+        assert index.discovery_stats() == index.discovery_stats(crate_no=1)
+
+    # -- erasing it ------------------------------------------------------
+
+    def test_clearing_stats_zeroes_the_numbers_but_keeps_the_records(
+        self, index: LibraryIndex
+    ) -> None:
+        item = self._dig(index, 1, 0, "a")
+        index.record_discovery_event(item, "previewed")
+        index.record_discovery_event(item, "wishlisted")
+
+        index.clear_discovery_history(forget_seen=False)
+
+        assert index.discovery_stats() == {
+            "crates": 1,
+            "records": 1,
+            "previewed": 0,
+            "wishlisted": 0,
+            "purchased": 0,
+        }
+        assert index.seen_before("bandcamp", "a") is True
+
+    def test_clearing_stats_resets_the_state_cache(self, index: LibraryIndex) -> None:
+        """state is a cache of discovery_events. Leaving it set after wiping the
+        ledger leaves cards wearing hearts with nothing behind them."""
+        item = self._dig(index, 1, 0, "a")
+        index.record_discovery_event(item, "wishlisted")
+        index.clear_discovery_history(forget_seen=False)
+        assert index.crate_items(1)[0]["state"] == "fresh"
+
+    def test_clearing_stats_also_clears_the_purchase_link(
+        self, index: LibraryIndex
+    ) -> None:
+        """Left set with no event behind it, KAMP-654's guard reads "attributed
+        but unrecorded" and appends a fresh event on the next sync."""
+        item = self._dig(index, 1, 0, "777")
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=9e9)
+        index.attribute_crate_purchases()
+
+        index.clear_discovery_history(forget_seen=False)
+
+        row = index._conn.execute(
+            "SELECT purchased_sale_item_id, purchased_at FROM discovery_items"
+            " WHERE id = ?",
+            (item,),
+        ).fetchone()
+        assert row["purchased_sale_item_id"] is None
+        assert row["purchased_at"] is None
+
+    def test_a_stats_wipe_lets_the_purchase_be_re_derived(
+        self, index: LibraryIndex
+    ) -> None:
+        """Pinned as intended behaviour, not a bug.
+
+        The purchase really did happen and the ledger is ground truth, so after
+        erasing the ledger kamp re-learns what it still can from the collection.
+        Suppressing it would mean keeping a shadow copy of the history the user
+        just asked to erase, which is the opposite of the point.
+        """
+        self._dig(index, 1, 0, "777")
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=9e9)
+        index.attribute_crate_purchases()
+        index.clear_discovery_history(forget_seen=False)
+
+        again = index.attribute_crate_purchases()
+        assert len(again) == 1
+        assert index.discovery_stats()["purchased"] == 1
+
+    def test_clearing_everything_makes_old_picks_eligible_again(
+        self, index: LibraryIndex
+    ) -> None:
+        self._dig(index, 1, 0, "a")
+        index.clear_discovery_history(forget_seen=True)
+        assert index.discovery_stats()["records"] == 0
+        assert index.seen_before("bandcamp", "a") is False
+
+    def test_clearing_everything_removes_the_events_first(
+        self, index: LibraryIndex
+    ) -> None:
+        """discovery_events.item_id is ON DELETE RESTRICT, so deleting the items
+        first raises. The order is load-bearing, not incidental."""
+        item = self._dig(index, 1, 0, "a")
+        index.record_discovery_event(item, "previewed")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            index._conn.execute("DELETE FROM discovery_items")
+        index._conn.rollback()
+
+        index.clear_discovery_history(forget_seen=True)
+        assert (
+            index._conn.execute(
+                "SELECT COUNT(*) AS c FROM discovery_events"
+            ).fetchone()["c"]
+            == 0
+        )
+
+    def test_clearing_an_empty_history_is_not_an_error(
+        self, index: LibraryIndex
+    ) -> None:
+        index.clear_discovery_history(forget_seen=True)
+        index.clear_discovery_history(forget_seen=False)
+
+
+# ---------------------------------------------------------------------------
 # seen_before / in_library
 # ---------------------------------------------------------------------------
 

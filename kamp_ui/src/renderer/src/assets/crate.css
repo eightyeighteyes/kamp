@@ -315,9 +315,19 @@
  * Stacked by --bin-order (the absolute index), NOT by position relative to
  * focus: records land in index order, so record 0 is the bottom of the pile and
  * every later one lands on top of it. Ordering the pile relative to focus
- * rebuilds it upside down on every flip, which is exactly what it did. */
+ * rebuilds it upside down on every flip, which is exactly what it did.
+ *
+ * The pile MUST sit in front of the focused record, and that is a correctness
+ * constraint rather than a look. A transition interpolates the transform matrix,
+ * so the two sleeves that move on a flip sweep continuously between their
+ * endpoints; if the outgoing record travels backwards while the incoming one
+ * travels forwards, their planes cross mid-flight and you see one through the
+ * other. With the pile behind focus that crossing was unavoidable — separation
+ * ran 32px to -11px and hit zero about three-quarters through. Ahead of focus,
+ * the outgoing record stays ahead of the incoming one for the whole transition
+ * and nothing intersects. */
 .bin-sleeve--flipped {
-  transform: translateZ(calc(var(--bin-order) * 1.6px + 6px))
+  transform: translateZ(calc(var(--bin-order) * 1.6px + 44px))
     translateY(calc(var(--bin-order) * -1px - 4px)) rotateX(-96deg);
 }
 

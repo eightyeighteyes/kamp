@@ -290,9 +290,30 @@
   margin: 0;
   padding: 0;
   list-style: none;
-  transform-style: preserve-3d;
   display: flex;
   justify-content: center;
+  /* transform-style is deliberately left FLAT (the default). This is the fix for
+     records passing through each other, and it is the opposite of what the
+     obvious reading suggests.
+   *
+   * preserve-3d makes siblings share one 3D space, so the browser depth-sorts
+   * them by real geometry and they genuinely INTERSECT — and z-index is ignored
+   * entirely, which is what made it look like a red herring. Depth alone cannot
+   * separate them either: with the pile behind the focused record the arriving
+   * record sweeps backwards through the one advancing to meet it, and with the
+   * pile in front it sweeps forwards through the pile, whose members sit ~1.6px
+   * apart. It has to travel from one group to the other, so some crossing is
+   * unavoidable while they share a space.
+   *
+   * Flat costs nothing that matters. `perspective` on .crate-bin still applies
+   * to each sleeve's OWN rotateX/translateZ, so every record is still
+   * foreshortened and scaled by its depth — the bin looks the same. What changes
+   * is that siblings composite as flat layers in z-index order and cannot
+   * intersect at any angle, at any speed.
+   *
+   * Which makes the z-index in CrateBin authoritative rather than a fallback:
+   * standing records paint back-to-front, and the whole pile paints above all of
+   * them. */
 }
 
 .crate-bin-records:focus {

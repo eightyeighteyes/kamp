@@ -140,6 +140,20 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // reads nothing from the clock, so a crate keeps its name.
   const spineName = useMemo(() => crateSpineName(items, crate?.hints ?? []), [items, crate?.hints])
 
+  // What is actually ON the deck, which is deliberately NOT `current`: the
+  // engine plays one item at a time and you can keep flipping while it plays, so
+  // the deck must follow the preview rather than the focus. Looked up in the
+  // crate because the preview state carries an id, not the row (KAMP-668).
+  const deckItem = useMemo(() => {
+    const id = preview?.item_id
+    if (id == null || preview?.state === 'idle') return null
+    return items.find((item) => item.id === id) ?? null
+  }, [items, preview?.item_id, preview?.state])
+
+  // Where a record flies TO. Measured at the moment a flight starts rather than
+  // held as state — the view scrolls, so a rect captured earlier is stale.
+  const deckArtRef = useRef<HTMLDivElement | null>(null)
+
   // Preview state for the record on screen. The engine plays one item at a
   // time, so a preview belonging to another card must not light this one up.
   const previewingThis = Boolean(
@@ -558,20 +572,31 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           />
         )}
 
-        {/* The preview's own space, always present, and BELOW the bin (KAMP-656).
-            It sat inside the focus card until the bin got its proper sizing, at
-            which point the sleeves — absolutely positioned and leaning out of
-            their container — drew straight over the mini-player and the hint
-            text. Ordering it after the bin fixes that by construction rather
-            than by fighting the overflow, and there is plenty of vertical room.
+        {/* The deck (KAMP-668). Always here, whether or not a record is on it —
+            it is the thing a record gets put ON, so it has to exist before one
+            does. It used to be a reserved-but-empty slot showing a hint line,
+            which reserved the room without ever reading as an object.
 
-            Still a reserved slot: rendering the strip and track list into the
-            normal flow made the whole thing grow when a preview started, and the
-            track list is unbounded, so a long record shoved everything below it
-            down the page. The slot holds the room; the list scrolls inside it. */}
-        {current && (
-          <div className="crate-preview-slot">
-            {previewingThis && preview ? (
+            Below the bin because the sleeves are absolutely positioned and lean
+            out of their container: ordering it after them keeps them off it by
+            construction rather than by fighting overflow.
+
+            The platter shows whatever is PLAYING, which is not necessarily the
+            focused record — you can keep flipping while something plays, and the
+            deck should not change under you when you do. */}
+        <div className="crate-deck" role="group" aria-label="Preview deck">
+          <div
+            className={`crate-deck-platter${deckItem ? ' is-loaded' : ''}`}
+            ref={deckArtRef}
+            aria-hidden="true"
+          >
+            {deckItem?.art_url && (
+              <img className="crate-deck-art" src={crateArtUrl(deckItem.id)} alt="" />
+            )}
+          </div>
+
+          <div className="crate-deck-body">
+            {deckItem && preview ? (
               <>
                 <CratePreviewStrip
                   preview={preview}
@@ -588,7 +613,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                           className={`crate-track${
                             track.track_num === preview.track_num ? ' crate-track--current' : ''
                           }`}
-                          onClick={() => void previewPlay(current.id, track.track_num)}
+                          onClick={() => void previewPlay(deckItem.id, track.track_num)}
                         >
                           <span className="crate-track-num">{track.track_num}</span>
                           <span className="crate-track-title">
@@ -610,12 +635,13 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                 )}
               </>
             ) : (
-              <p className="crate-preview-placeholder">
-                Space to hear it — your queue stays where it is.
+              <p className="crate-deck-empty">
+                Nothing on the deck. Space puts the record you&rsquo;re looking at on — your queue
+                stays where it is.
               </p>
             )}
           </div>
-        )}
+        </div>
 
         <div className="crate-footer">
           {digButton}

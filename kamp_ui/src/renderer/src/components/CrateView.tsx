@@ -581,6 +581,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
         ) : (
           <CrateBin
             items={visible}
+            crateNo={crate?.crate_no ?? null}
             focusIndex={focusIndex}
             pendingDismissals={pendingDismissals}
             spineName={spineName}

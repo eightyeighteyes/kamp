@@ -16,7 +16,7 @@
 // shipped — roving tabindex, aria-setsize/aria-posinset, arrows inside the
 // widget — and the perspective sits on top of that contract rather than
 // replacing it.
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { crateArtUrl } from '../api/client'
 import type { CrateItem } from '../api/client'
 
@@ -26,6 +26,16 @@ const DEPTH = 14
 // How far back the standing sleeves lean. The ticket asks for 72-78 degrees off
 // the horizontal, which is 12-18 off vertical.
 const LEAN = 15
+
+// What goes on the corner sticker. Only facts already on the row: the release
+// year and the label. Deliberately no price and no scarcity claim — those would
+// be invented, and an invented sticker is the one thing a record shop cannot do
+// and stay trustworthy. Returns '' when there is nothing honest to print, and
+// the caller renders no sticker at all rather than an empty one.
+function sticker(item: CrateItem): string {
+  const year = item.release_date ? item.release_date.slice(0, 4) : ''
+  return [year, item.label].filter(Boolean).join(' · ')
+}
 
 function BinSleeve({
   item,
@@ -120,12 +130,30 @@ function BinSleeve({
           ◆
         </span>
       )}
+      {/* Corner sticker, on the focused record only — a bin of ten stickers is
+          a spreadsheet. Year and label straight off the row, and nothing else:
+          no price, no rating, no invented "rare". A shop that lies on its
+          stickers is precisely what this feature is defined against, so an
+          absent field means no sticker rather than a placeholder.
+
+          aria-hidden because both values are already in the focus card above;
+          a screen reader should not hear the year twice. */}
+      {focused && sticker(item) && (
+        <span className="bin-sleeve-sticker" aria-hidden="true">
+          {sticker(item)}
+        </span>
+      )}
     </li>
   )
 }
 
+// How long the stock-in cascade needs to finish: the last record's delay plus
+// its own drop, with a little slack. Ten records at 70ms is 630ms + 260ms.
+const STOCK_IN_MS = 1200
+
 export function CrateBin({
   items,
+  crateNo,
   focusIndex,
   pendingDismissals,
   spineName,
@@ -133,15 +161,41 @@ export function CrateBin({
   onFocus
 }: {
   items: CrateItem[]
+  crateNo: number | null
   focusIndex: number
   pendingDismissals: number[]
   spineName: string
   railRef: React.RefObject<HTMLUListElement | null>
   onFocus: (index: number) => void
 }): React.JSX.Element {
+  // Stock-in runs on a DELIVERY, not on every render that happens to have
+  // records in it. Arriving at a crate that already exists — switching to the
+  // tab, reloading the renderer — is not a delivery, and replaying the cascade
+  // there would turn a moment into a tic.
+  //
+  // So the first crate_no this component sees is seeded silently, and only a
+  // change from it counts. That also gets the first-ever crate right: mount
+  // seeds null, the build completes, null -> 1 is a change, and it plays.
+  const seenRef = useRef<number | null>(null)
+  const seededRef = useRef(false)
+  const [stocking, setStocking] = useState(false)
+
+  useEffect(() => {
+    if (!seededRef.current) {
+      seededRef.current = true
+      seenRef.current = crateNo
+      return
+    }
+    if (crateNo === null || crateNo === seenRef.current) return
+    seenRef.current = crateNo
+    setStocking(true)
+    const timer = window.setTimeout(() => setStocking(false), STOCK_IN_MS)
+    return () => window.clearTimeout(timer)
+  }, [crateNo])
+
   return (
     <div
-      className="crate-bin"
+      className={`crate-bin${stocking ? ' crate-bin--stocking' : ''}`}
       style={
         { '--bin-lean': `${LEAN}deg`, '--bin-depth-step': `${DEPTH}px` } as React.CSSProperties
       }

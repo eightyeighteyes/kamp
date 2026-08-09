@@ -4,7 +4,13 @@ import type { PrefsTab } from '../store'
 import type { ExtensionInfo, ExtensionSettingSchema } from '../../../shared/kampAPI'
 import type { ExtensionStateHook } from '../hooks/useExtensionState'
 import { useExtensionInstall } from '../hooks/useExtensionInstall'
-import { connectLastfm, disconnectLastfm, disconnectBandcamp } from '../api/client'
+import {
+  connectLastfm,
+  disconnectLastfm,
+  disconnectBandcamp,
+  clearDiggingHistory
+} from '../api/client'
+import { ClearDiggingHistoryModal } from './ClearDiggingHistoryModal'
 import { DiscordIcon } from './TransportIcons'
 import { GenreManagementSection } from './GenreManagementSection'
 
@@ -682,6 +688,8 @@ function BandcampSection({
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   const [syncAllBusy, setSyncAllBusy] = useState(false)
+  const [clearingHistory, setClearingHistory] = useState(false)
+  const [clearBusy, setClearBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const handleConnect = async (): Promise<void> => {
@@ -711,6 +719,21 @@ function BandcampSection({
       setError(e instanceof Error ? e.message : 'Disconnect failed.')
     } finally {
       setBusy(false)
+    }
+  }
+
+  const handleClearHistory = async (forgetSeen: boolean): Promise<void> => {
+    setClearingHistory(false)
+    setClearBusy(true)
+    setError(null)
+    try {
+      await clearDiggingHistory(forgetSeen)
+      // No local state to update: the daemon republishes the crate snapshot,
+      // which is where the numbers live.
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not clear the digging history.')
+    } finally {
+      setClearBusy(false)
     }
   }
 
@@ -794,6 +817,34 @@ function BandcampSection({
             </span>
           </div>
         </div>
+      )}
+      {/* Digging history (KAMP-655). Here rather than in the Crate view because
+          this is where the user is already asking who has their data — and it is
+          where the privacy line belongs, stated once, next to the thing that
+          proves it. */}
+      <div className="prefs-row">
+        <div className="prefs-row-header">
+          <span className="prefs-label">Digging history</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            className="prefs-choose-btn"
+            onClick={() => setClearingHistory(true)}
+            disabled={clearBusy}
+          >
+            {clearBusy ? 'Clearing…' : 'Clear digging history'}
+          </button>
+          <span className="prefs-hint">
+            Your digging history lives in your library database on this machine. It&rsquo;s never
+            sent anywhere.
+          </span>
+        </div>
+      </div>
+      {clearingHistory && (
+        <ClearDiggingHistoryModal
+          onConfirm={(forgetSeen) => void handleClearHistory(forgetSeen)}
+          onCancel={() => setClearingHistory(false)}
+        />
       )}
     </>
   )

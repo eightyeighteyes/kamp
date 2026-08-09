@@ -215,6 +215,17 @@ def register_discovery_routes(
             # be the previous crate's.
             snap["filled"] = len(items)
             snap["short"] = bool(items) and len(items) < CRATE_SIZE
+        # The digging history rides along rather than being fetched separately
+        # (KAMP-655). Five COUNTs over two small indexed tables, against a
+        # snapshot that already reads every row of the crate -- so the numbers
+        # are live with no second request and no staleness, and the end-of-crate
+        # tally cannot drift from the lifetime line.
+        snap["stats"] = index.discovery_stats()
+        # Scoped to the crate on screen, which is always the LATEST one -- see
+        # crate_no above. If crate browsing ever arrives this has to follow it.
+        snap["crate_stats"] = (
+            index.discovery_stats(crate_no=crate_no) if crate_no is not None else None
+        )
         return snap
 
     def _publish(fields: dict[str, Any]) -> None:
@@ -269,6 +280,41 @@ def register_discovery_routes(
             logger.exception("discovery: could not start a crate build")
             raise HTTPException(status_code=500, detail="could not start the build")
         return {"started": True}
+
+    # ------------------------------------------------------------------
+    # Digging history (KAMP-655)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/v1/discovery/stats")
+    def get_discovery_stats() -> dict[str, Any]:
+        """The digging history on its own.
+
+        The crate snapshot already carries these, so the UI does not need this —
+        it is the reconnect path and the answer to "what does kamp know about my
+        digging", which deserves an address of its own rather than being buried
+        in a crate payload. Same function either way, so they cannot disagree.
+        """
+        return {"stats": index.discovery_stats()}
+
+    @app.delete("/api/v1/discovery/history")
+    def clear_discovery_history(forget_seen: bool = False) -> dict[str, Any]:
+        """Erase the digging history. The user's data is theirs to wipe.
+
+        ``forget_seen`` is a materially different act, not a stronger version of
+        the same one: it drops the seen ledger, so records already shown start
+        coming round again. The UI must say that rather than a generic warning.
+        """
+        try:
+            index.clear_discovery_history(forget_seen=forget_seen)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("discovery: could not clear the digging history")
+            raise HTTPException(
+                status_code=500, detail="could not clear the history"
+            ) from exc
+        # Republish: the numbers are on the snapshot, and forget_seen has just
+        # emptied the crate the client is looking at.
+        _publish({})
+        return {"ok": True}
 
     # ------------------------------------------------------------------
     # Per-item engagement

@@ -281,6 +281,18 @@
   outline: none;
 }
 
+/* TRANSFORM ORDER IS LOAD-BEARING, and getting it wrong is what made the first
+   pile stack upside down.
+ *
+ * `transform: A B C` composes as A×B×C, so the RIGHTMOST function is applied
+ * first, in the element's own space, and everything to its left then operates on
+ * the result. Put translateZ after rotateX(-96deg) and the translation is
+ * rotated too — after a 96 degree tilt it points roughly up and down, not toward
+ * the viewer, so it stops controlling depth at all and the pile stacks by
+ * whatever the browser felt like.
+ *
+ * So: translate first (world space), rotate last. */
+
 .bin-sleeve {
   position: absolute;
   bottom: 0;
@@ -289,22 +301,29 @@
   /* Hinged at the bottom edge, like a record resting on the bottom of a crate.
      Any other origin makes the flip look like a card turning over. */
   transform-origin: 50% 100%;
-  /* Standing in the bin: leaning back, stepped away from the viewer. */
-  transform: rotateX(calc(var(--bin-lean) * -1))
-    translateZ(calc(var(--bin-depth) * var(--bin-depth-step) * -1))
-    translateY(calc(var(--bin-depth) * -2px));
+  /* Standing in the bin: stepped back from the record you are looking at, and
+     leaning. Relative to focus, so the stack advances as you flip instead of the
+     focused record pulling away from a bin that never moves. */
+  transform: translateZ(calc(var(--bin-rel) * var(--bin-depth-step) * -1))
+    translateY(calc(var(--bin-rel) * -2px)) rotateX(calc(var(--bin-lean) * -1));
   will-change: transform;
 }
 
 /* Flipped past: tipped forward past vertical onto the pile at the crate lip.
-   The growing pile IS the progress indicator — there is no separate bar. */
+   The growing pile IS the progress indicator — there is no separate bar.
+ *
+ * Stacked by --bin-order (the absolute index), NOT by position relative to
+ * focus: records land in index order, so record 0 is the bottom of the pile and
+ * every later one lands on top of it. Ordering the pile relative to focus
+ * rebuilds it upside down on every flip, which is exactly what it did. */
 .bin-sleeve--flipped {
-  transform: rotateX(-96deg) translateZ(calc(var(--bin-depth) * 2px)) translateY(-4px);
+  transform: translateZ(calc(var(--bin-order) * 1.6px + 6px))
+    translateY(calc(var(--bin-order) * -1px - 4px)) rotateX(-96deg);
 }
 
 /* The one you are looking at: upright and forward of the rest. */
 .bin-sleeve--focused {
-  transform: rotateX(-4deg) translateZ(18px) translateY(-6px);
+  transform: translateZ(18px) translateY(-6px) rotateX(-4deg);
 }
 
 .bin-sleeve-art {

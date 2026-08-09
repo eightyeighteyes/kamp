@@ -31,6 +31,7 @@ function BinSleeve({
   item,
   index,
   total,
+  focusIndex,
   focused,
   flipped,
   passed,
@@ -39,6 +40,7 @@ function BinSleeve({
   item: CrateItem
   index: number
   total: number
+  focusIndex: number
   focused: boolean
   // Already flipped past: lying on the pile at the crate lip.
   flipped: boolean
@@ -55,10 +57,17 @@ function BinSleeve({
   if (item.state === 'wishlisted') classes.push('bin-sleeve--wishlisted')
   if (item.state === 'purchased') classes.push('bin-sleeve--purchased')
 
-  // Standing records step back into the bin; flipped ones stack forward at the
-  // lip. Both are expressed as one custom property so the transform itself stays
-  // in CSS, where the transition and its overshoot live.
-  const depth = flipped ? index - total : index
+  // Two different numbers, because the pile and the bin are ordered differently.
+  //
+  // `rel` is distance from the record you are looking at, so the standing stack
+  // advances as you flip rather than the focused record pulling away from a
+  // bin that never moves.
+  //
+  // `order` is the absolute index, and it is what stacks the pile: records land
+  // in index order, so record 0 is at the BOTTOM and each later one lands on top
+  // of it. Using `rel` here would rebuild the pile upside down every flip.
+  const rel = index - focusIndex
+  const order = index
 
   return (
     <li
@@ -76,9 +85,11 @@ function BinSleeve({
       onClick={() => onFocus(index)}
       style={
         {
-          '--bin-depth': depth,
-          // Later records paint behind earlier ones; flipped ones stack on top
-          // of the pile in the order they landed.
+          '--bin-rel': rel,
+          '--bin-order': order,
+          // A fallback only. Inside preserve-3d the browser sorts by actual 3D
+          // position and ignores this, which is exactly why the pile order has
+          // to be right in the transform rather than here.
           zIndex: flipped ? total + index : total - index
         } as React.CSSProperties
       }
@@ -148,6 +159,7 @@ export function CrateBin({
             item={item}
             index={index}
             total={items.length}
+            focusIndex={focusIndex}
             focused={index === focusIndex}
             flipped={index < focusIndex}
             passed={pendingDismissals.includes(item.id)}

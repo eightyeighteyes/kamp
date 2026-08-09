@@ -92,6 +92,15 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // a view switch, and KAMP-652 marking items out of band.
   const wishlisted = current?.state === 'wishlisted'
   const wishlistSaving = current ? wishlistPending.includes(current.id) : false
+  // A bought record is not offered a wishlist toggle at all (KAMP-654).
+  //
+  // Not cosmetic: `state` is a single-slot rank cache and 'purchased' (rank 4)
+  // MASKS 'wishlisted' (rank 3), so after attribution `wishlisted` above goes
+  // false for a record that really is on the user's Bandcamp wishlist — and the
+  // next W press would POST an *add* for it. Retiring the toggle once the record
+  // is owned sidesteps the masking entirely, and is the better answer anyway:
+  // you do not wishlist something you already have.
+  const purchased = current?.state === 'purchased'
 
   // Preview state for the record on screen. The engine plays one item at a
   // time, so a preview belonging to another card must not light this one up.
@@ -253,7 +262,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       // `current` is captured here and never read again in the resolution
       // handler: it is derived during render from a clamped index, and any
       // snapshot push can change its identity while the request is out.
-      if (current) void toggleCrateWishlist(current)
+      //
+      // Guarded on `purchased` for the same reason the button is disabled — the
+      // key would otherwise walk straight past it and re-add an owned record to
+      // the wishlist (see the `purchased` note above).
+      if (current && !purchased) void toggleCrateWishlist(current)
     } else if (e.key === ' ') {
       // Now that preview exists, Space is the Crate's (KAMP-651). KAMP-650
       // deliberately left it global, because claiming it for a no-op would have
@@ -394,16 +407,24 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                   Open on Bandcamp
                 </button>
                 <button
-                  className={`crate-action${wishlisted ? ' crate-action--done' : ''}`}
+                  className={`crate-action${wishlisted || purchased ? ' crate-action--done' : ''}`}
                   onClick={() => void toggleCrateWishlist(current)}
-                  disabled={wishlistSaving}
-                  {...tooltip(wishlisted ? TOOLTIPS.CRATE_UNWISHLIST : TOOLTIPS.CRATE_WISHLIST)}
+                  disabled={wishlistSaving || purchased}
+                  {...tooltip(
+                    purchased
+                      ? TOOLTIPS.CRATE_PURCHASED
+                      : wishlisted
+                        ? TOOLTIPS.CRATE_UNWISHLIST
+                        : TOOLTIPS.CRATE_WISHLIST
+                  )}
                 >
-                  {wishlistSaving
-                    ? 'Setting it aside…'
-                    : wishlisted
-                      ? '♥ In your wishlist'
-                      : 'Wishlist it'}
+                  {purchased
+                    ? '◆ In your collection'
+                    : wishlistSaving
+                      ? 'Setting it aside…'
+                      : wishlisted
+                        ? '♥ In your wishlist'
+                        : 'Wishlist it'}
                 </button>
                 <button
                   className="crate-action"

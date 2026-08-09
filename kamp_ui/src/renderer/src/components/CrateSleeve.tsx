@@ -40,6 +40,7 @@ export function CrateSleeve({
   if (focused) classes.push('crate-sleeve--focused')
   if (passed || item.state === 'dismissed') classes.push('crate-sleeve--passed')
   if (item.state === 'wishlisted') classes.push('crate-sleeve--wishlisted')
+  if (item.state === 'purchased') classes.push('crate-sleeve--purchased')
   if (item.state !== 'fresh' && item.state !== 'dismissed') classes.push('crate-sleeve--dug')
 
   return (
@@ -77,6 +78,15 @@ export function CrateSleeve({
       {item.state === 'wishlisted' && (
         <span className="crate-sleeve-badge" aria-hidden="true">
           ♥
+        </span>
+      )}
+      {/* Outranks the heart rather than sitting beside it: `state` is a
+          single-slot rank cache, so a purchased pick reports only 'purchased'
+          even if it was wishlisted first. Showing the record you own is the
+          truer of the two anyway. */}
+      {item.state === 'purchased' && (
+        <span className="crate-sleeve-badge" aria-hidden="true">
+          ◆
         </span>
       )}
     </li>

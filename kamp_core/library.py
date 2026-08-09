@@ -5007,6 +5007,33 @@ class LibraryIndex:
         (KAMP-527: on a pooled thread-local connection an uncommitted partial write is
         otherwise flushed by the next unrelated commit on the same thread).
         """
+        try:
+            self._record_event(item_id, kind, detail, at)
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _record_event(
+        self,
+        item_id: int,
+        kind: str,
+        detail: str | None = None,
+        at: float | None = None,
+    ) -> None:
+        """Append the event and reconcile state. Does NOT commit.
+
+        Split out for the same reason ``_append_event`` was (KAMP-654): a caller
+        that must write something else in the *same* transaction -- purchase
+        attribution writes purchased_sale_item_id and purchased_at alongside --
+        would otherwise have to choose an ordering, and both orderings are unsafe.
+        Event first and a crash appends a duplicate on the retry, double-counting
+        the ledger. Columns first and a crash leaves the item attributed but
+        invisible to the ledger.
+
+        Still the only place state is written; the public method is this plus a
+        commit.
+        """
         row = self._conn.execute(
             "SELECT provider, provider_item_id, state FROM discovery_items"
             " WHERE id = ?",
@@ -5020,29 +5047,24 @@ class LibraryIndex:
         if target is None and not retracts:
             raise ValueError(f"unknown discovery event kind {kind!r}")
 
-        try:
-            self._append_event(item_id, row, kind, at, detail)
-            if retracts:
-                # Recomputed AFTER the append, so the retraction is part of the
-                # ledger it is derived from.
-                new_state = self._state_from_ledger(item_id)
-            else:
-                rank = self._DISCOVERY_STATE_RANK
-                assert target is not None  # narrowed by the guard above
-                new_state = (
-                    target
-                    if rank[target] > rank.get(row["state"], 0)
-                    else str(row["state"])
-                )
-            if new_state != row["state"]:
-                self._conn.execute(
-                    "UPDATE discovery_items SET state = ? WHERE id = ?",
-                    (new_state, item_id),
-                )
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
+        self._append_event(item_id, row, kind, at, detail)
+        if retracts:
+            # Recomputed AFTER the append, so the retraction is part of the
+            # ledger it is derived from.
+            new_state = self._state_from_ledger(item_id)
+        else:
+            rank = self._DISCOVERY_STATE_RANK
+            assert target is not None  # narrowed by the guard above
+            new_state = (
+                target
+                if rank[target] > rank.get(row["state"], 0)
+                else str(row["state"])
+            )
+        if new_state != row["state"]:
+            self._conn.execute(
+                "UPDATE discovery_items SET state = ? WHERE id = ?",
+                (new_state, item_id),
+            )
 
     def _state_from_ledger(self, item_id: int) -> str:
         """Derive state from the whole event history. Does NOT commit.
@@ -5072,6 +5094,128 @@ class LibraryIndex:
         if not live:
             return "fresh"
         return max(live, key=lambda s: self._DISCOVERY_STATE_RANK.get(s, 0))
+
+    # The join that attributes a purchase to the crate pick that caused it.
+    #
+    # Driven from discovery_items, not from the collection: there is no index on
+    # bandcamp_collection.tralbum_id, and the unattributed discovery set is small
+    # and shrinks while the collection only grows.
+    #
+    # Every clause in the WHERE is a guard against a *silent wrong answer* rather
+    # than a crash, so none of them is optional:
+    #
+    #   provider_item_id != '' / tralbum_id != ''
+    #     Both columns are NOT NULL DEFAULT '' and tralbum_id is lazily backfilled
+    #     (schema note, KAMP-382). One empty-id discovery row would otherwise
+    #     attribute every un-backfilled collection row to it.
+    #
+    #   added_at > 0
+    #     mark_collection_synced writes added_at=0 for "you already owned this at
+    #     first run", and upsert_collection_item merges with MIN(), so once 0 it
+    #     can never become non-zero. An exact marker for pre-owned, not a guess.
+    #
+    #   added_at >= first_seen_at
+    #     The gather-time ownership exclusion is NOT airtight -- it reads
+    #     collection_purchase_dates(), which itself drops blank tralbum_ids -- so an
+    #     already-owned album can reach a crate. Buying it before we showed it is
+    #     proof we did not sell it.
+    #
+    #   NOT EXISTS(a purchased event)
+    #     The idempotency key, deliberately NOT purchased_at as the ticket
+    #     specified: clear_bandcamp_collection() nulls purchased_sale_item_id and
+    #     leaves purchased_at set, so keying on the column would orphan the FK
+    #     permanently. The ledger is ground truth and cannot be nulled by a reset,
+    #     which lets the columns re-heal on the next walk without a second event.
+    #
+    # MIN(added_at) because tralbum_id is not unique -- a gift or a re-purchase
+    # yields two rows -- and an unaggregated join would pick nondeterministically.
+    _ATTRIBUTABLE_SQL = """
+        SELECT d.id            AS id,
+               d.artist        AS artist,
+               d.title         AS title,
+               d.crate_no      AS crate_no,
+               b.sale_item_id  AS sale_item_id,
+               b.added_at      AS added_at,
+               NOT EXISTS (
+                   SELECT 1 FROM discovery_events e
+                    WHERE e.item_id = d.id AND e.kind = 'purchased'
+               )               AS is_new
+          FROM discovery_items d
+          JOIN bandcamp_collection b
+            ON b.tralbum_id = d.provider_item_id
+           AND b.added_at = (
+                   SELECT MIN(b2.added_at) FROM bandcamp_collection b2
+                    WHERE b2.tralbum_id = d.provider_item_id
+               )
+         WHERE d.provider = 'bandcamp'
+           AND d.provider_item_id != ''
+           AND b.tralbum_id != ''
+           AND b.added_at > 0
+           AND b.added_at >= d.first_seen_at
+           AND (d.purchased_sale_item_id IS NULL OR NOT EXISTS (
+                   SELECT 1 FROM discovery_events e
+                    WHERE e.item_id = d.id AND e.kind = 'purchased'
+               ))
+         GROUP BY d.id
+    """
+
+    def attribute_crate_purchases(self) -> list[dict[str, Any]]:
+        """Link newly purchased albums back to the crate picks that offered them.
+
+        Returns the picks attributed *for the first time* by this call, each with
+        ``shown`` saying whether it was ever actually in a crate -- so a caller can
+        celebrate the ones the user really was offered and stay quiet about the
+        rest. Re-healing a link broken by an account reset returns nothing: it is
+        not a new purchase.
+
+        Idempotent by construction, which matters because a full collection walk
+        runs at every app start and this re-fires on every one of them.
+
+        Attribution deliberately ignores ``crate_no``. A buffered candidate the
+        user buys independently must still gain its 'purchased' event -- that is
+        what makes the row unsweepable by KAMP-657's TTL sweep, so the attribution
+        outlives the candidate (see the discovery_events schema note).
+        """
+        rows = self._conn.execute(self._ATTRIBUTABLE_SQL).fetchall()
+        attributed: list[dict[str, Any]] = []
+        for row in rows:
+            is_new = bool(row["is_new"])
+            try:
+                self._conn.execute(
+                    "UPDATE discovery_items"
+                    "   SET purchased_sale_item_id = ?, purchased_at = ?"
+                    " WHERE id = ?",
+                    (row["sale_item_id"], float(row["added_at"]), row["id"]),
+                )
+                if is_new:
+                    # Back-dated to the sale, not to this sync. _state_from_ledger
+                    # orders by `at`, and KAMP-655 wants the gap between digging
+                    # and buying.
+                    self._record_event(
+                        int(row["id"]), "purchased", at=float(row["added_at"])
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                logger.warning(
+                    "discovery: could not attribute purchase for item %s",
+                    row["id"],
+                    exc_info=True,
+                )
+                continue
+            if is_new:
+                attributed.append(
+                    {
+                        "id": int(row["id"]),
+                        "artist": str(row["artist"]),
+                        "title": str(row["title"]),
+                        "sale_item_id": str(row["sale_item_id"]),
+                        "shown": row["crate_no"] is not None,
+                    }
+                )
+        if attributed:
+            logger.info("discovery: attributed %d purchased pick(s)", len(attributed))
+        return attributed
 
     def _append_event(
         self,

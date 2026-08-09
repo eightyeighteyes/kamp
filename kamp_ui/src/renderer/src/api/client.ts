@@ -1174,6 +1174,17 @@ export type DiscoveryCrateMessage = { type: 'discovery.crate' } & CrateSnapshot
 // see PreviewState.position.
 export type DiscoveryPreviewMessage = { type: 'discovery.preview' } & PreviewState
 
+// KAMP-654: crate picks the user has since bought, found by a collection sync.
+// Batched — attribution runs once per sync and can turn up several at once.
+export type PurchasedPick = { id: number; artist: string; title: string }
+// Carries artist/title rather than just ids on purpose: the crate snapshot only
+// ever rebuilds the LATEST crate, so a pick bought out of an older one has no
+// card on screen to read them from.
+export type DiscoveryPurchasedMessage = {
+  type: 'discovery.purchased'
+  items: PurchasedPick[]
+}
+
 export type ServerMessage =
   | StateMessage
   | TrackChangedMessage
@@ -1187,6 +1198,7 @@ export type ServerMessage =
   | DownloadQueueMessage
   | DiscoveryCrateMessage
   | DiscoveryPreviewMessage
+  | DiscoveryPurchasedMessage
 
 export async function getDeferredOps(): Promise<{ op_id: number; track_id: number }[]> {
   const res = await fetch(`${BASE_URL}/api/v1/deferred-ops`, {
@@ -1220,7 +1232,10 @@ export function connectStateStream(
   // KAMP-650: full crate snapshot for the Crate view. Appended last, same reason.
   onDiscoveryCrate?: (snapshot: CrateSnapshot) => void,
   // KAMP-651: preview transport state. Appended last, same reason.
-  onDiscoveryPreview?: (state: PreviewState) => void
+  onDiscoveryPreview?: (state: PreviewState) => void,
+  // KAMP-654: crate picks the user has bought, batched per sync. Appended last,
+  // same reason.
+  onDiscoveryPurchased?: (items: PurchasedPick[]) => void
 ): () => void {
   const ws = new WebSocket(`${WS_BASE}/api/v1/ws`)
 
@@ -1247,6 +1262,7 @@ export function connectStateStream(
       // callback as-is; the discriminator rides along inertly.
       else if (msg.type === 'discovery.crate') onDiscoveryCrate?.(msg)
       else if (msg.type === 'discovery.preview') onDiscoveryPreview?.(msg)
+      else if (msg.type === 'discovery.purchased') onDiscoveryPurchased?.(msg.items)
     } catch {
       // malformed message — ignore
     }

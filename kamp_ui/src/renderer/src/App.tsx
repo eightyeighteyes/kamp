@@ -370,6 +370,10 @@ export default function App(): React.JSX.Element {
         // carries whatever is already playing rather than starting from idle.
         (state) => {
           useStore.getState().setPreview(state)
+        },
+        // KAMP-654: crate picks the user bought, found by a collection sync.
+        (items) => {
+          useStore.getState().celebrateCratePurchases(items)
         }
       )
     }

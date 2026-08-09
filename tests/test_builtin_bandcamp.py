@@ -261,6 +261,56 @@ class TestKampBandcampSyncer:
         syncer = KampBandcampSyncer(_ctx())
         assert syncer.on_stream_albums_added is None
 
+    def test_on_collection_synced_getter_delegates(self) -> None:
+        """on_collection_synced getter returns the inner syncer's value (KAMP-654)."""
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer._inner.on_collection_synced = cb
+        assert syncer.on_collection_synced is cb
+
+    def test_on_collection_synced_setter_delegates(self) -> None:
+        """on_collection_synced setter writes THROUGH to the inner syncer.
+
+        The KAMP-436 lesson again: without the setter, the daemon's assignment
+        lands on the wrapper, the inner Syncer never fires it, and purchase
+        attribution never runs — silently, and only in the running daemon.
+        """
+        syncer = _make_syncer()
+        cb = MagicMock()
+        syncer.on_collection_synced = cb
+        assert syncer._inner.on_collection_synced is cb
+
+    def test_on_collection_synced_none_before_configure(self) -> None:
+        syncer = KampBandcampSyncer(_ctx())
+        assert syncer.on_collection_synced is None
+
+    def test_every_inner_syncer_callback_has_a_wrapper(self) -> None:
+        """No Syncer callback may exist without a delegating property here.
+
+        KAMP-436 shipped a feature that worked at every layer and did nothing in
+        the daemon, because a new Syncer callback had no wrapper setter and the
+        assignment landed on a dead attribute. Enumerating the pair rather than
+        remembering to add one is what stops that recurring — a new callback on
+        Syncer fails this test rather than failing silently in production.
+        """
+        from kamp_daemon.syncer import Syncer
+
+        # __init__ only stores the config; nothing reads it until start().
+        probe = Syncer(MagicMock())
+        callbacks = {
+            name
+            for name, value in vars(probe).items()
+            if not name.startswith("_")
+            and (value is None or callable(value))
+            and ("callback" in name or name.startswith("on_"))
+        }
+        missing = {
+            name
+            for name in callbacks
+            if not isinstance(getattr(KampBandcampSyncer, name, None), property)
+        }
+        assert not missing, f"Syncer callbacks with no wrapper property: {missing}"
+
     def test_methods_assert_before_configure(self) -> None:
         """Calling lifecycle methods before _configure() raises AssertionError."""
         syncer = KampBandcampSyncer(_ctx())

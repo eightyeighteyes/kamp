@@ -53,6 +53,7 @@ export const TOOLTIPS = {
   // Names Bandcamp explicitly: this writes to the account, not to anything local.
   CRATE_WISHLIST: 'Add to your Bandcamp wishlist (W)',
   CRATE_UNWISHLIST: 'Remove from your Bandcamp wishlist (W)',
+  CRATE_PURCHASED: 'You brought this one home',
   CRATE_PREVIEW: 'Play a preview (Space) — your queue stays put',
   CRATE_COPY: 'Copy link (C)',
   CRATE_PASS: 'Pass (X)',

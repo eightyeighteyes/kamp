@@ -14,6 +14,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -313,6 +314,237 @@ class TestAccountResetWithPurchasedPick:
             ).fetchone()["c"]
             == 1
         )
+
+
+# ---------------------------------------------------------------------------
+# Purchase attribution (KAMP-654)
+# ---------------------------------------------------------------------------
+
+
+class TestPurchaseAttribution:
+    """Linking a new bandcamp_collection row back to the crate pick it came from.
+
+    Most of these guard a *silent wrong answer* rather than a crash: attribution
+    that fires for an album owned since before kamp existed reads, to the user,
+    as the app congratulating itself for their own record collection.
+    """
+
+    def _pick(
+        self,
+        index: LibraryIndex,
+        provider_item_id: str = "777",
+        *,
+        first_seen_at: float = 1000.0,
+        crate_no: int | None = 1,
+    ) -> int:
+        item = index.add_discovery_candidate(
+            provider="bandcamp",
+            provider_item_id=provider_item_id,
+            artist="Artist",
+            title="Album",
+        )
+        index._conn.execute(
+            "UPDATE discovery_items SET first_seen_at = ? WHERE id = ?",
+            (first_seen_at, item),
+        )
+        index._conn.commit()
+        if crate_no is not None:
+            index.place_in_crate(item, crate_no, 0)
+        return item
+
+    def _row(self, index: LibraryIndex, item: int) -> Any:
+        return index._conn.execute(
+            "SELECT purchased_sale_item_id, purchased_at, state"
+            " FROM discovery_items WHERE id = ?",
+            (item,),
+        ).fetchone()
+
+    def _events(self, index: LibraryIndex, kind: str = "purchased") -> list[Any]:
+        return index._conn.execute(
+            "SELECT item_id, at FROM discovery_events WHERE kind = ? ORDER BY id",
+            (kind,),
+        ).fetchall()
+
+    # -- the happy path --------------------------------------------------
+
+    def test_a_bought_pick_is_attributed(self, index: LibraryIndex) -> None:
+        item = self._pick(index)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+
+        attributed = index.attribute_crate_purchases()
+
+        assert [a["id"] for a in attributed] == [item]
+        row = self._row(index, item)
+        assert row["purchased_sale_item_id"] == "sale-1"
+        assert row["state"] == "purchased"
+
+    def test_the_event_is_back_dated_to_the_sale(self, index: LibraryIndex) -> None:
+        """Not the sync time. _state_from_ledger orders by `at`, and KAMP-655 needs
+        it to answer how long passed between digging and buying."""
+        item = self._pick(index)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+        index.attribute_crate_purchases()
+        assert self._events(index)[0]["at"] == 2000.0
+
+    def test_a_purchase_outranks_a_wishlist(self, index: LibraryIndex) -> None:
+        """The ticket's own AC: wishlisted elsewhere, then bought."""
+        item = self._pick(index)
+        index.record_discovery_event(item, "wishlisted")
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+        index.attribute_crate_purchases()
+        assert self._row(index, item)["state"] == "purchased"
+
+    # -- idempotency -----------------------------------------------------
+
+    def test_a_second_walk_attributes_nothing(self, index: LibraryIndex) -> None:
+        """A full collection walk runs at every app start, so the join re-fires
+        constantly and must be a no-op once attributed."""
+        self._pick(index)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+        assert len(index.attribute_crate_purchases()) == 1
+        assert index.attribute_crate_purchases() == []
+        assert len(self._events(index)) == 1
+
+    def test_a_crash_before_the_event_cannot_double_count(
+        self, index: LibraryIndex
+    ) -> None:
+        """The ledger is the idempotency key, not purchased_at.
+
+        If the columns were written and the process died before the event, keying
+        on purchased_at would either block the item forever or, on the other
+        ordering, append a second event and double-count the KAMP-655 stat the
+        ledger is supposed to be ground truth for.
+        """
+        item = self._pick(index)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+        # Simulate the half-write: columns set, no event.
+        index._conn.execute(
+            "UPDATE discovery_items SET purchased_sale_item_id = ?, purchased_at = ?"
+            " WHERE id = ?",
+            ("sale-1", 2000.0, item),
+        )
+        index._conn.commit()
+
+        index.attribute_crate_purchases()
+        assert len(self._events(index)) == 1
+
+    def test_an_account_reset_re_heals_the_link_without_a_second_event(
+        self, index: LibraryIndex
+    ) -> None:
+        """clear_bandcamp_collection() nulls purchased_sale_item_id and leaves
+        purchased_at set. Keying idempotency on purchased_at alone would orphan
+        the FK permanently; keying it on the ledger lets the column re-heal."""
+        item = self._pick(index)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+        index.attribute_crate_purchases()
+
+        index.clear_bandcamp_collection()
+        assert self._row(index, item)["purchased_sale_item_id"] is None
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+
+        again = index.attribute_crate_purchases()
+        assert self._row(index, item)["purchased_sale_item_id"] == "sale-1"
+        # Healing a column is not a new purchase.
+        assert len(self._events(index)) == 1
+        assert again == [], "a re-heal must not be reported as a fresh purchase"
+
+    # -- the guards that stop a false congratulation ---------------------
+
+    def test_an_album_marked_synced_at_first_run_is_never_attributed(
+        self, index: LibraryIndex
+    ) -> None:
+        """added_at == 0 is mark_collection_synced's permanent marker for "you
+        already owned this". upsert_collection_item merges added_at with MIN(),
+        so once 0 it can never become non-zero -- the test is exact, not a
+        heuristic.
+
+        Without this guard, upgrading and syncing would retroactively congratulate
+        the user on records they have owned for years, the moment a lazily
+        backfilled tralbum_id happened to match.
+
+        first_seen_at is pinned to 0 here **so that this guard is the only thing
+        that can reject the row**. In production the added_at >= first_seen_at
+        comparison would also catch it, since first_seen_at defaults to
+        unixepoch(); with a realistic fixture this test passed even with the guard
+        deleted, which is exactly the vacuous test falsification exists to find.
+        The guard stays as defence in depth: it protects against congratulating
+        someone on their own collection, and that is worth not having depend on a
+        second clause continuing to be written the way it is today.
+        """
+        self._pick(index, first_seen_at=0.0)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=0.0)
+        assert index.attribute_crate_purchases() == []
+
+    def test_an_album_bought_before_the_pick_was_seen_is_never_attributed(
+        self, index: LibraryIndex
+    ) -> None:
+        """The ownership exclusion at gather time is not airtight -- it reads
+        collection_purchase_dates(), which itself filters out blank tralbum_ids --
+        so an already-owned album can reach a crate. Buying it earlier than we
+        showed it is proof we did not sell it."""
+        self._pick(index, first_seen_at=5000.0)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=4000.0)
+        assert index.attribute_crate_purchases() == []
+
+    def test_a_purchase_at_the_same_instant_still_counts(
+        self, index: LibraryIndex
+    ) -> None:
+        """Boundary: >= rather than >, so a same-timestamp row is not lost."""
+        self._pick(index, first_seen_at=2000.0)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+        assert len(index.attribute_crate_purchases()) == 1
+
+    def test_an_empty_tralbum_id_matches_nothing(self, index: LibraryIndex) -> None:
+        """tralbum_id is NOT NULL DEFAULT '' and is lazily backfilled, and
+        normalise_item_id returns '' for falsy input. One empty-id discovery row
+        would otherwise attribute every un-backfilled collection row to it."""
+        self._pick(index, provider_item_id="")
+        _add_collection_row(index, "sale-1", tralbum_id="", added_at=2000.0)
+        _add_collection_row(index, "sale-2", tralbum_id="", added_at=3000.0)
+        assert index.attribute_crate_purchases() == []
+
+    def test_a_different_album_is_not_attributed(self, index: LibraryIndex) -> None:
+        self._pick(index, provider_item_id="777")
+        _add_collection_row(index, "sale-1", tralbum_id="888", added_at=2000.0)
+        assert index.attribute_crate_purchases() == []
+
+    def test_a_non_bandcamp_provider_is_not_attributed(
+        self, index: LibraryIndex
+    ) -> None:
+        item = index.add_discovery_candidate(provider="other", provider_item_id="777")
+        index.place_in_crate(item, 1, 0)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+        assert index.attribute_crate_purchases() == []
+
+    # -- determinism and the buffered case --------------------------------
+
+    def test_two_collection_rows_sharing_an_id_pick_deterministically(
+        self, index: LibraryIndex
+    ) -> None:
+        """tralbum_id is not unique -- a gift or a re-purchase yields two rows --
+        so an unaggregated join would attribute a nondeterministic sale_item_id."""
+        item = self._pick(index)
+        _add_collection_row(index, "sale-late", tralbum_id="777", added_at=3000.0)
+        _add_collection_row(index, "sale-early", tralbum_id="777", added_at=2000.0)
+        index.attribute_crate_purchases()
+        assert self._row(index, item)["purchased_sale_item_id"] == "sale-early"
+
+    def test_a_buffered_candidate_is_attributed_but_not_celebrated(
+        self, index: LibraryIndex
+    ) -> None:
+        """The schema depends on this: a buffered candidate that gains a purchased
+        event becomes unsweepable by KAMP-657's TTL sweep, so the attribution
+        outlives the candidate. But congratulating someone on a record we never
+        showed them is nonsense, so it is not offered for a toast.
+        """
+        item = self._pick(index, crate_no=None)
+        _add_collection_row(index, "sale-1", tralbum_id="777", added_at=2000.0)
+
+        attributed = index.attribute_crate_purchases()
+
+        assert self._row(index, item)["state"] == "purchased"
+        assert len(self._events(index)) == 1
+        assert [a["id"] for a in attributed if a["shown"]] == []
 
 
 # ---------------------------------------------------------------------------

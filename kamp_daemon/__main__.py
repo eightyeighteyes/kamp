@@ -1697,6 +1697,38 @@ def _cmd_daemon(
         threading.Thread(target=_run, daemon=True, name="stream-genre-enrich").start()
 
     core.syncer.on_stream_albums_added = _on_stream_albums_added
+
+    def _on_collection_synced() -> None:
+        """Attribute any crate picks the user has since bought (KAMP-654).
+
+        Runs in the parent, where the index and the broadcaster both live. Pure
+        DB work over a collection that was just written, so it is cheap and needs
+        no network -- the same shape as mark_wishlisted_crate_items.
+        """
+        try:
+            attributed = index.attribute_crate_purchases()
+        except Exception:
+            _logger.warning("purchase attribution failed", exc_info=True)
+            return
+        if not attributed:
+            return
+        # The card's own state moved, so refresh whoever is looking at the crate.
+        # Only ever rebuilds the LATEST crate, which is why the toast below has to
+        # carry its own copy of the album -- a pick bought out of an older crate
+        # has no card on screen to update.
+        publish = getattr(app.state, "discovery_publish", None)
+        if publish is not None:
+            publish({})
+        # Congratulate only on records actually offered. A buffered candidate is
+        # still attributed (it must be, or KAMP-657's sweep would prune the
+        # attribution away) but was never shown, and "good ear" about something
+        # the user found themselves is nonsense.
+        shown = [item for item in attributed if item["shown"]]
+        notify = getattr(app.state, "notify_crate_purchase", None)
+        if shown and notify is not None:
+            notify(shown)
+
+    core.syncer.on_collection_synced = _on_collection_synced
     core.watcher.stage_callback = app.state.notify_pipeline_stage
 
     # After each album finishes processing, run a library rescan directly on a

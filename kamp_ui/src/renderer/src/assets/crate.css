@@ -435,22 +435,26 @@
    handwritten-adjacent face is allowed, small and once — the typeface is a
    seasoning, not a theme. */
 .crate-bin-spine {
-  margin: 10px auto 0;
+  /* Above the records, because the card stands at the BACK of the bin — you
+     read it over their tops. The tab is therefore clipped on its top corners
+     and open at the bottom, where the card continues down behind the sleeves. */
+  margin: 0 auto 8px;
   width: fit-content;
   max-width: 90%;
-  padding: 4px 14px 5px;
+  padding: 4px 14px 6px;
   text-align: center;
   font-size: 11px;
   letter-spacing: 0.1em;
   color: var(--text-dim);
-  /* Kraft: a warm wash over the theme surface, plus the tab notch that makes it
-     read as a divider rather than a caption. */
+  /* Kraft: a warm wash over the theme surface rather than a hardcoded tan,
+     which would be wrong in seven of the eight palettes. */
   background:
-    linear-gradient(0deg, rgb(0 0 0 / 8%), rgb(0 0 0 / 0%)), var(--surface-hover);
+    linear-gradient(180deg, rgb(255 255 255 / 6%), rgb(0 0 0 / 10%)),
+    var(--surface-hover);
   border: 1px solid var(--border);
   border-bottom: none;
   border-radius: 3px 3px 0 0;
-  /* The tab: clipped top corners, the way a divider card is cut. */
+  /* The cut of a divider card's tab. */
   clip-path: polygon(0 8px, 8px 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
 }
 
@@ -648,10 +652,15 @@
   opacity: 0.5;
 }
 
+/* Dig button and the digging-history line, centred in the space between the
+   preview slot above and the app's transport bar below. */
 .crate-footer {
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  padding-top: 4px;
+  gap: 4px;
+  padding-top: 20px;
 }
 
 /* --- Undo toast ----------------------------------------------------------- */
@@ -704,9 +713,17 @@
    pushed the rail down the page the moment a preview started. Sized for the
    strip plus a scrolling track list, so a 3-track single and a 20-track album
    occupy exactly the same room. */
+/* Below the bin since KAMP-656, and centred with it rather than hugging the
+   left edge of the stage — it reads as the deck under the crate, not as a
+   caption on the card.
+
+   The top margin is clearance, not taste: the flipped pile sits forward of
+   everything at the crate lip and is translated up, so it hangs below the bin's
+   own box and would otherwise land on the player. */
 .crate-preview-slot {
   min-height: 236px;
   max-width: 52ch;
+  margin: 44px auto 0;
   display: flex;
   flex-direction: column;
 }
@@ -716,6 +733,7 @@
   color: var(--text-dim);
   font-size: 12px;
   opacity: 0.7;
+  text-align: center;
 }
 
 /* Its own strip rather than the TransportBar: the whole promise is that the

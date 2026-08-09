@@ -194,6 +194,11 @@ export function CrateBin({
 
   return (
     <div className={`crate-bin${stocking ? ' crate-bin--stocking' : ''}`}>
+      {/* The divider card, ABOVE the records — it stands at the back of the bin,
+          so from this angle you read it over the tops of the sleeves rather than
+          under them. Written in marker, and the one place a
+          handwritten-adjacent face is allowed: small, and once. */}
+      {spineName && <p className="crate-bin-spine">{spineName}</p>}
       <ul
         className="crate-bin-records"
         role="listbox"
@@ -215,9 +220,6 @@ export function CrateBin({
           />
         ))}
       </ul>
-      {/* The divider card at the back of the bin. Written in marker, so it is
-          the one place a handwritten-adjacent face is allowed — small, and once. */}
-      {spineName && <p className="crate-bin-spine">{spineName}</p>}
     </div>
   )
 }

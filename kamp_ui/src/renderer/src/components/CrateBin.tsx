@@ -96,9 +96,13 @@ function BinSleeve({
         {
           '--bin-rel': rel,
           '--bin-order': order,
-          // A fallback only. Inside preserve-3d the browser sorts by actual 3D
-          // position and ignores this, which is exactly why the pile order has
-          // to be right in the transform rather than here.
+          // Authoritative, not a fallback. The records container is deliberately
+          // FLAT rather than preserve-3d (see crate.css), so siblings composite
+          // as layers in this order and can never intersect — which is what
+          // stopped a record in motion showing through the one it moves toward.
+          //
+          // Standing records paint back-to-front (nearer index on top), and the
+          // entire pile paints above all of them, newest landing highest.
           zIndex: flipped ? total + index : total - index
         } as React.CSSProperties
       }

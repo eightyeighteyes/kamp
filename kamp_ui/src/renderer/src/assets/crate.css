@@ -275,15 +275,31 @@
   width: 100%;
   max-width: var(--crate-width);
   margin-inline: auto;
-  /* Deep enough to read as a room rather than a fisheye. Under ~700px the
-     lean starts to look like a funhouse mirror. */
-  perspective: 900px;
-  perspective-origin: 50% 30%;
   padding: 28px 0 12px;
 }
 
 .crate-bin-records {
   position: relative;
+  /* Perspective lives HERE, on the sleeves' immediate parent, and that placement
+     is the whole reason the pile still reads as a trapezoid.
+   *
+   * `perspective` applies to an element's DIRECT children only. It used to sit
+     on .crate-bin, one level up, and reached the sleeves solely because this
+     element was preserve-3d and propagated the 3D context down. Flattening this
+     element to stop the sleeves intersecting therefore also cut them off from
+     the perspective: a record rotated -96deg with no perspective is not a
+     receding trapezoid, it is an orthographic squash — a flat strip, which is
+     exactly what the pile turned into.
+   *
+   * On the immediate parent it applies to each sleeve directly, so every record
+     is foreshortened correctly, while transform-style stays flat so siblings
+     still composite as layers and cannot intersect. Both properties are needed
+     and they are not in tension — they just have to be on the same element.
+   *
+   * 900px is deep enough to read as a room rather than a fisheye; under ~700px
+     the lean starts to look like a funhouse mirror. */
+  perspective: 900px;
+  perspective-origin: 50% 30%;
   /* The sleeve is square, plus room for the lean behind it and the pile in
      front. A fixed height here is what clipped the top of a larger sleeve. */
   height: calc(var(--bin-sleeve) * 1.3);
@@ -305,11 +321,11 @@
    * apart. It has to travel from one group to the other, so some crossing is
    * unavoidable while they share a space.
    *
-   * Flat costs nothing that matters. `perspective` on .crate-bin still applies
-   * to each sleeve's OWN rotateX/translateZ, so every record is still
-   * foreshortened and scaled by its depth — the bin looks the same. What changes
-   * is that siblings composite as flat layers in z-index order and cannot
-   * intersect at any angle, at any speed.
+   * Flat costs nothing that matters PROVIDED the perspective moves down to this
+   * element with it — see the note above. Each sleeve is then still foreshortened
+   * and scaled by its own depth, so the bin looks the same; what changes is that
+   * siblings composite as flat layers in z-index order and cannot intersect at
+   * any angle, at any speed.
    *
    * Which makes the z-index in CrateBin authoritative rather than a fallback:
    * standing records paint back-to-front, and the whole pile paints above all of
@@ -522,7 +538,10 @@
    transitions themselves only exist inside the no-preference wrapper below, so
    this only has to flatten the geometry. */
 @media (prefers-reduced-motion: reduce) {
-  .crate-bin {
+  /* Matches where the perspective actually lives — on the records container, not
+     on .crate-bin. Targeting the wrong element here would have left the reduced
+     path still rendering in perspective. */
+  .crate-bin-records {
     perspective: none;
   }
 

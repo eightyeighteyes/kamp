@@ -12,7 +12,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { crateArtUrl } from '../api/client'
-import type { CrateItem, DiggingStats } from '../api/client'
+import type { DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
 import { CrateBin } from './CrateBin'
 import { CrateTitles } from './CrateTitles'
@@ -21,7 +21,6 @@ import { CratePreviewStrip } from './CratePreviewStrip'
 import { RecordFlight } from './RecordFlight'
 import type { FlightRect } from './RecordFlight'
 import { formatClock } from '../utils/formatClock'
-import { BandcampIcon, FavoriteIcon, PauseIcon, PlayIcon, ShareIcon } from './TransportIcons'
 import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
 
@@ -113,21 +112,16 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const focusIndex = items.length === 0 ? 0 : Math.min(focused, items.length - 1)
   const current = items[focusIndex] ?? null
 
-  // The done-state is read from item.state, never from a local flag. A confirmed
-  // write re-broadcasts the whole crate, so this arrives from the daemon — which
-  // makes "never show a done-state Bandcamp has not confirmed" structural rather
-  // than something the click handler has to remember. It also survives a remount,
-  // a view switch, and KAMP-652 marking items out of band.
-  const wishlisted = current?.state === 'wishlisted'
-  const wishlistSaving = current ? wishlistPending.includes(current.id) : false
-  // A bought record is not offered a wishlist toggle at all (KAMP-654).
+  // Read from item.state, never from a local flag: a confirmed write
+  // re-broadcasts the whole crate, so this arrives from the daemon — which makes
+  // "never show a done-state Bandcamp has not confirmed" structural rather than
+  // something a click handler has to remember. The heart itself now lives in the
+  // titles list and the deck; what is needed HERE is the guard for the W key.
   //
   // Not cosmetic: `state` is a single-slot rank cache and 'purchased' (rank 4)
-  // MASKS 'wishlisted' (rank 3), so after attribution `wishlisted` above goes
-  // false for a record that really is on the user's Bandcamp wishlist — and the
-  // next W press would POST an *add* for it. Retiring the toggle once the record
-  // is owned sidesteps the masking entirely, and is the better answer anyway:
-  // you do not wishlist something you already have.
+  // MASKS 'wishlisted' (rank 3), so after attribution a record really on the
+  // user's Bandcamp wishlist reports false — and the next W press would POST an
+  // *add* for something already owned (KAMP-654).
   const purchased = current?.state === 'purchased'
 
   // KAMP-655. Both ride the crate snapshot, so they are live without a fetch and
@@ -205,11 +199,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
 
   // Preview state for the record on screen. The engine plays one item at a
   // time, so a preview belonging to another card must not light this one up.
+  // Only Space reads this now that the header carries no play button — the
+  // deck's own transport reads `preview` directly, because it follows what is
+  // PLAYING rather than what is focused.
   const previewingThis = Boolean(
     current && preview && preview.item_id === current.id && preview.state !== 'idle'
   )
-  const previewPlaying = previewingThis && preview?.state === 'playing'
-  const previewPreparing = previewingThis && preview?.state === 'preparing'
 
   // Not memoized: `current` is derived from the filtered crate on every render,
   // so a useCallback here cannot keep a stable identity anyway.
@@ -226,11 +221,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     if (useStore.getState().preview?.state !== 'idle') void previewAction('stop')
   }, [active, previewAction])
 
-  // The album's own page, for buying it or reading the notes — preview now
-  // handles listening (KAMP-651).
-  const openOnBandcamp = useCallback((item: CrateItem): void => {
-    if (item.item_url) window.api.openExternal(item.item_url)
-  }, [])
+  // NOTE: there is no longer any way to open the record's own Bandcamp page from
+  // the Crate. Its only affordance was the header icon row, which this story
+  // removed; unlike play (Space, and the deck), the heart (the titles list, the
+  // deck, W) and the link (C), nothing else offers it. Copy link plus a paste is
+  // the remaining path. Flagged rather than quietly kept as dead code — if it
+  // should come back it wants a home and a key, not a reinstated button.
 
   // A failure explains the record it happened on. Carrying it to the next one
   // would have the clerk apologising about something else entirely.
@@ -456,82 +452,31 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             being the same picture twice (KAMP-671). */}
         {current ? (
           <header className="crate-header">
-            <div className="crate-header-row">
-              <div className="crate-focus-meta">
-                <p className="crate-focus-artist">{current.artist}</p>
-                <h2 className="crate-focus-title">{current.title}</h2>
-                {current.why && (
-                  <p className="crate-clerk-card" {...tooltip(TOOLTIPS.CRATE_WHY)}>
-                    {current.why}
-                  </p>
-                )}
-                <p className="crate-focus-position">
-                  Record {focusIndex + 1} of {items.length}
-                  {current.release_date ? ` · ${current.release_date.slice(0, 4)}` : ''}
-                </p>
-              </div>
+            {/* Type only. The header used to end in a row of action icons; they
+                are gone and the whole band is given over to naming the record
+                and saying why it is here. Every action they carried is still
+                reachable: play from the deck or Space, the heart from the titles
+                list and the deck, the link from C.
 
-              {/* Icons, each with a tooltip through the useTooltip() hook — never
-                  a native `title`, which renders an OS tooltip this app does not
-                  use. Every glyph here already existed in TransportIcons; none
-                  was drawn for this. aria-label carries the same words as the
-                  tooltip, because the tooltip is not an accessible name. */}
-              <div className="crate-actions">
-                <button
-                  className="crate-action crate-action--primary"
-                  onClick={togglePreview}
-                  disabled={previewPreparing}
-                  aria-label={previewPlaying ? 'Hold on' : 'Give it a spin'}
-                  {...tooltip(TOOLTIPS.CRATE_PREVIEW)}
-                >
-                  {previewPlaying ? <PauseIcon size={26} /> : <PlayIcon size={26} />}
-                </button>
-                <button
-                  className={`crate-action${wishlisted || purchased ? ' crate-action--done' : ''}`}
-                  onClick={() => void toggleCrateWishlist(current)}
-                  disabled={wishlistSaving || purchased}
-                  aria-label={
-                    purchased
-                      ? 'In your collection'
-                      : wishlisted
-                        ? 'Remove from your wishlist'
-                        : 'Add to your wishlist'
-                  }
-                  {...tooltip(
-                    purchased
-                      ? TOOLTIPS.CRATE_PURCHASED
-                      : wishlisted
-                        ? TOOLTIPS.CRATE_UNWISHLIST
-                        : TOOLTIPS.CRATE_WISHLIST
-                  )}
-                >
-                  <FavoriteIcon active={wishlisted || purchased} size={18} />
-                </button>
-                <button
-                  className="crate-action"
-                  onClick={() => void copyCrateItemUrl(current)}
-                  aria-label="Copy link"
-                  {...tooltip(TOOLTIPS.CRATE_COPY)}
-                >
-                  <ShareIcon size={18} />
-                </button>
-                <button
-                  className="crate-action"
-                  onClick={() => openOnBandcamp(current)}
-                  disabled={!current.item_url}
-                  aria-label="Open on Bandcamp"
-                  {...tooltip(TOOLTIPS.CRATE_BANDCAMP)}
-                >
-                  <BandcampIcon size={18} />
-                </button>
-              </div>
-            </div>
+                The title box is a FIXED two lines whether the title needs one or
+                two. Letting it size to content made the header taller on a long
+                title and shorter on a short one, which shifted the columns, the
+                bin and the footer every time you flipped past a wordy record. */}
+            <p className="crate-focus-artist">{current.artist}</p>
+            <h2 className="crate-focus-title">{current.title}</h2>
+            {current.why && (
+              <p className="crate-clerk-card" {...tooltip(TOOLTIPS.CRATE_WHY)}>
+                {current.why}
+              </p>
+            )}
+            <p className="crate-focus-position">
+              Record {focusIndex + 1} of {items.length}
+              {current.release_date ? ` · ${current.release_date.slice(0, 4)}` : ''}
+            </p>
 
-            {/* The clerk explains a failed wishlist write here rather than in a
-                toast: the retry is that button, so the message belongs beside
-                it. Copy link is right there as the fallback every reason ends
-                at. Appears rarely and pushes nothing the user is mid-interaction
-                with. */}
+            {/* A failed wishlist write still explains itself here — the writes
+                now come from the titles list and the deck, but the header is the
+                one place that names the record the message is about. */}
             {wishlistError && (
               <p className="crate-action-error" role="status">
                 {wishlistError}

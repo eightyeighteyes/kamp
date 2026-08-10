@@ -437,10 +437,6 @@
 /* Same rule as the flat rail: state is opacity, border weight and a glyph —
    never hue. There is one --accent token and it swings from indigo to magenta
    to green across the eight palettes. */
-.bin-sleeve--passed {
-  opacity: 0.35;
-}
-
 .bin-sleeve--wishlisted .bin-sleeve-art,
 .bin-sleeve--purchased .bin-sleeve-art {
   outline: 2px solid var(--accent);
@@ -652,10 +648,6 @@
   border-color: var(--text-dim);
 }
 
-.crate-sleeve--passed {
-  opacity: 0.35;
-}
-
 /* Brought home. Reads as the strongest of the "dug" states because it is the
    one that means the record left the shop. */
 .crate-sleeve--purchased .crate-sleeve-art {
@@ -703,56 +695,6 @@
   padding-top: 20px;
 }
 
-/* --- Undo toast ----------------------------------------------------------- */
-
-.crate-undo-toast {
-  position: fixed;
-  right: 16px;
-  bottom: calc(var(--transport-h) + 16px);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--text);
-  font-size: 13px;
-  z-index: 900;
-  overflow: hidden;
-}
-
-.crate-undo-text {
-  color: var(--text-dim);
-}
-
-.crate-undo-btn {
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--accent);
-  border-radius: 3px;
-  padding: 3px 10px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.crate-undo-bar {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 2px;
-  width: 100%;
-  background: var(--accent);
-  transform-origin: left center;
-}
-
-/* --- Preview mini-player (KAMP-651) --------------------------------------- */
-
-/* The preview's reserved space. Held open whether or not anything is playing,
-   because rendering the strip into the normal flow grew the whole card and
-   pushed the rail down the page the moment a preview started. Sized for the
-   strip plus a scrolling track list, so a 3-track single and a 20-track album
-   occupy exactly the same room. */
 /* --- The deck (KAMP-668) ---------------------------------------------------
  *
  * Always present, with or without a record on it. It used to be a reserved slot
@@ -1018,25 +960,12 @@
     animation: crateArtIn 200ms ease both;
   }
 
-  .crate-undo-bar {
-    animation: crateUndoBar linear forwards;
-  }
-
   @keyframes crateArtIn {
     from {
       opacity: 0;
     }
     to {
       opacity: 1;
-    }
-  }
-
-  @keyframes crateUndoBar {
-    from {
-      transform: scaleX(1);
-    }
-    to {
-      transform: scaleX(0);
     }
   }
 

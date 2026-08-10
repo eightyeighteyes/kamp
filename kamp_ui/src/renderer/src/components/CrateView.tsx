@@ -24,9 +24,6 @@ import { useTooltip } from '../hooks/useTooltip'
 import { TOOLTIPS } from '../tooltipStrings'
 
 const CRATE_SIZE = 10
-// How long a passed record can be brought back. The dismiss POST is held for
-// this long rather than sent and reversed: 'dismissed' is terminal server-side.
-const UNDO_MS = 5000
 
 function formatPause(seconds: number): string {
   const total = Math.ceil(seconds)
@@ -66,12 +63,7 @@ function describeTally(s: DiggingStats): string {
 
 export function CrateView({ active = false }: { active?: boolean }): React.JSX.Element {
   const crate = useStore((s) => s.crate)
-  const pendingDismissals = useStore((s) => s.crateDismissPending)
   const newCrate = useStore((s) => s.newCrate)
-  const deferCrateDismiss = useStore((s) => s.deferCrateDismiss)
-  const undoCrateDismiss = useStore((s) => s.undoCrateDismiss)
-  const commitCrateDismiss = useStore((s) => s.commitCrateDismiss)
-  const flushCrateDismissals = useStore((s) => s.flushCrateDismissals)
   const copyCrateItemUrl = useStore((s) => s.copyCrateItemUrl)
   const toggleCrateWishlist = useStore((s) => s.toggleCrateWishlist)
   const wishlistPending = useStore((s) => s.crateWishlistPending)
@@ -85,8 +77,6 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const tooltip = useTooltip()
 
   const [focused, setFocused] = useState(0)
-  const [undoItem, setUndoItem] = useState<CrateItem | null>(null)
-  const undoTimerRef = useRef<number | null>(null)
   const railRef = useRef<HTMLUListElement | null>(null)
   const [pauseRemaining, setPauseRemaining] = useState(0)
 
@@ -96,7 +86,10 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // Never derived from `filled` outside a live build: the daemon's status is
   // in-memory, so a restored crate reports the builder's last count. The
   // snapshot derives both from the stored rows when idle (KAMP-650).
-  const visible = items.filter((item) => !pendingDismissals.includes(item.id))
+  //
+  // The crate is exactly what the daemon sent. There used to be a `visible`
+  // subset filtering out locally-passed records; pass is gone (KAMP-674), so
+  // every record in the snapshot is on screen for the life of the crate.
   const hasCrate = items.length > 0
 
   // Rate-limit countdown, ticked locally so the daemon publishes the deadline
@@ -112,11 +105,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   }, [pausedUntil])
 
   // Clamped during render rather than corrected in an effect: the crate grows
-  // while a build streams and shrinks as records are passed, so the stored index
-  // can briefly point past the end. Deriving avoids a re-render round trip and
-  // the intermediate frame where the focus card would be blank.
-  const focusIndex = visible.length === 0 ? 0 : Math.min(focused, visible.length - 1)
-  const current = visible[focusIndex] ?? null
+  // while a build streams, so the stored index can briefly point past the end.
+  // Deriving avoids a re-render round trip and the intermediate frame where the
+  // focus card would be blank.
+  const focusIndex = items.length === 0 ? 0 : Math.min(focused, items.length - 1)
+  const current = items[focusIndex] ?? null
 
   // The done-state is read from item.state, never from a local flag. A confirmed
   // write re-broadcasts the whole crate, so this arrives from the daemon — which
@@ -139,7 +132,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // the tally cannot drift from the lifetime line.
   const history = crate?.stats ?? null
   const crateTally = crate?.crate_stats ?? null
-  const atLastRecord = visible.length > 1 && focusIndex === visible.length - 1
+  const atLastRecord = items.length > 1 && focusIndex === items.length - 1
 
   // The name on the crate's divider card (KAMP-656). Derived from the snapshot
   // the view already has, because this story is skin only — no API changes. It
@@ -231,49 +224,6 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     if (useStore.getState().preview?.state !== 'idle') void previewAction('stop')
   }, [active, previewAction])
 
-  // Any held dismiss must be sent before this view stops being able to send it.
-  // Without this, passing a record and immediately switching views loses it.
-  useEffect(() => {
-    if (active) return
-    void flushCrateDismissals()
-  }, [active, flushCrateDismissals])
-  useEffect(() => {
-    return () => {
-      void useStore.getState().flushCrateDismissals()
-    }
-  }, [])
-
-  const clearUndoTimer = useCallback((): void => {
-    if (undoTimerRef.current !== null) {
-      window.clearTimeout(undoTimerRef.current)
-      undoTimerRef.current = null
-    }
-  }, [])
-
-  const pass = useCallback(
-    (item: CrateItem): void => {
-      // Commit whatever was already waiting — only one Undo is offered at a time,
-      // and the previous one's window is over the moment a new pass happens.
-      if (undoItem && undoItem.id !== item.id) void commitCrateDismiss(undoItem.id)
-      clearUndoTimer()
-      deferCrateDismiss(item.id)
-      setUndoItem(item)
-      undoTimerRef.current = window.setTimeout(() => {
-        undoTimerRef.current = null
-        setUndoItem(null)
-        void commitCrateDismiss(item.id)
-      }, UNDO_MS)
-    },
-    [clearUndoTimer, commitCrateDismiss, deferCrateDismiss, undoItem]
-  )
-
-  const undo = useCallback((): void => {
-    if (!undoItem) return
-    clearUndoTimer()
-    undoCrateDismiss(undoItem.id)
-    setUndoItem(null)
-  }, [clearUndoTimer, undoCrateDismiss, undoItem])
-
   // The album's own page, for buying it or reading the notes — preview now
   // handles listening (KAMP-651).
   const openOnBandcamp = useCallback((item: CrateItem): void => {
@@ -349,15 +299,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     if (isNext) {
       e.preventDefault()
       e.stopPropagation()
-      if (visible.length > 0) focusSleeve(Math.min(focusIndex + 1, visible.length - 1))
+      if (items.length > 0) focusSleeve(Math.min(focusIndex + 1, items.length - 1))
     } else if (isPrev) {
       e.preventDefault()
       e.stopPropagation()
-      if (visible.length > 0) focusSleeve(Math.max(focusIndex - 1, 0))
-    } else if (e.key === 'x' || e.key === 'X') {
-      e.preventDefault()
-      e.stopPropagation()
-      if (current) pass(current)
+      if (items.length > 0) focusSleeve(Math.max(focusIndex - 1, 0))
     } else if (e.key === 'c' || e.key === 'C') {
       e.preventDefault()
       e.stopPropagation()
@@ -407,7 +353,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // and a plain focus() scrolls the record into view, yanking the card off the
   // top of the screen the moment you arrive.
   useEffect(() => {
-    if (!active || visible.length === 0) return
+    if (!active || items.length === 0) return
     const rail = railRef.current
     if (!rail) return
     // Never steal focus from something already in use inside the view — a
@@ -415,7 +361,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     if (rail.contains(document.activeElement)) return
     const option = rail.querySelectorAll<HTMLElement>('[role="option"]')[focusIndex]
     option?.focus({ preventScroll: true })
-  }, [active, visible.length, focusIndex])
+  }, [active, items.length, focusIndex])
 
   // ---------------------------------------------------------------------------
   // Compositions
@@ -487,7 +433,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     )
   }
 
-  const slots = building ? Math.max(CRATE_SIZE - visible.length, 0) : 0
+  const slots = building ? Math.max(CRATE_SIZE - items.length, 0) : 0
 
   return (
     <div className="crate-view" onKeyDown={onKeyDown} onBlurCapture={onBlurCapture}>
@@ -515,7 +461,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                 </p>
               )}
               <p className="crate-focus-position">
-                Record {focusIndex + 1} of {visible.length}
+                Record {focusIndex + 1} of {items.length}
                 {current.release_date ? ` · ${current.release_date.slice(0, 4)}` : ''}
               </p>
               <div className="crate-actions">
@@ -565,13 +511,6 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                 >
                   Copy link
                 </button>
-                <button
-                  className="crate-action"
-                  onClick={() => pass(current)}
-                  {...tooltip(TOOLTIPS.CRATE_PASS)}
-                >
-                  Pass
-                </button>
               </div>
 
               {/* The clerk explains a failed wishlist write here rather than in a
@@ -599,27 +538,25 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             a half-full bin has no pile to show yet. */}
         {building ? (
           <ul className="crate-rail" role="listbox" aria-label="Crate" ref={railRef} tabIndex={-1}>
-            {visible.map((item, index) => (
+            {items.map((item, index) => (
               <CrateSleeve
                 key={item.id}
                 item={item}
                 index={index}
-                total={visible.length}
+                total={items.length}
                 focused={index === focusIndex}
-                passed={pendingDismissals.includes(item.id)}
                 onFocus={focusSleeve}
               />
             ))}
             {Array.from({ length: slots }, (_unused, i) => (
-              <CrateSlot key={`slot-${i}`} index={visible.length + i} />
+              <CrateSlot key={`slot-${i}`} index={items.length + i} />
             ))}
           </ul>
         ) : (
           <CrateBin
-            items={visible}
+            items={items}
             crateNo={crate?.crate_no ?? null}
             focusIndex={focusIndex}
-            pendingDismissals={pendingDismissals}
             awayItemId={awayItemId}
             spineName={spineName}
             railRef={railRef}
@@ -716,7 +653,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             aria-posinset already carry identity and position. Announcing only
             the reason keeps this from double-reading every record. */}
         <div className="sr-only" role="status" aria-live="polite">
-          {current ? `Record ${focusIndex + 1} of ${visible.length}. ${current.why}` : ''}
+          {current ? `Record ${focusIndex + 1} of ${items.length}. ${current.why}` : ''}
         </div>
       </div>
 
@@ -731,16 +668,6 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           artUrl={crateArtUrl(flight.id)}
           onDone={() => setFlight((f) => (f === flight ? null : f))}
         />
-      )}
-
-      {undoItem && (
-        <div className="crate-undo-toast" role="status">
-          <span className="crate-undo-text">Passed on {undoItem.title}.</span>
-          <button className="crate-undo-btn" onClick={undo}>
-            Undo
-          </button>
-          <div className="crate-undo-bar" style={{ animationDuration: `${UNDO_MS}ms` }} />
-        </div>
       )}
     </div>
   )

@@ -56,7 +56,6 @@ export const TOOLTIPS = {
   CRATE_PURCHASED: 'You brought this one home',
   CRATE_PREVIEW: 'Play a preview (Space) — your queue stays put',
   CRATE_COPY: 'Copy link (C)',
-  CRATE_PASS: 'Pass (X)',
 
   // Track / album favorites
   ALBUM_FAVORITE_ADD: 'Add to favorites',

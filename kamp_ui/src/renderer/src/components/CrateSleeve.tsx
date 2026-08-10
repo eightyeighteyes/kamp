@@ -22,15 +22,12 @@ export function CrateSleeve({
   index,
   total,
   focused,
-  passed,
   onFocus
 }: {
   item: CrateItem
   index: number
   total: number
   focused: boolean
-  // Passed locally but not yet committed — the 5s Undo window.
-  passed: boolean
   onFocus: (index: number) => void
 }): React.JSX.Element {
   const [artFailed, setArtFailed] = useState(false)
@@ -38,10 +35,11 @@ export function CrateSleeve({
 
   const classes = ['crate-sleeve']
   if (focused) classes.push('crate-sleeve--focused')
-  if (passed || item.state === 'dismissed') classes.push('crate-sleeve--passed')
   if (item.state === 'wishlisted') classes.push('crate-sleeve--wishlisted')
   if (item.state === 'purchased') classes.push('crate-sleeve--purchased')
-  if (item.state !== 'fresh' && item.state !== 'dismissed') classes.push('crate-sleeve--dug')
+  // 'dismissed' is a legacy state with no writer (KAMP-674), so it no longer
+  // gets an exemption here — a record carrying it counts as dug like any other.
+  if (item.state !== 'fresh') classes.push('crate-sleeve--dug')
 
   return (
     <li
@@ -70,11 +68,6 @@ export function CrateSleeve({
           />
         )}
       </div>
-      {(passed || item.state === 'dismissed') && (
-        <span className="crate-sleeve-badge" aria-hidden="true">
-          ✕
-        </span>
-      )}
       {item.state === 'wishlisted' && (
         <span className="crate-sleeve-badge" aria-hidden="true">
           ♥

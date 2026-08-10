@@ -254,15 +254,21 @@ class TestItemEvents:
         index.place_in_crate(item, 1, 0)
         return item
 
-    def test_dismiss_records_and_moves_state(
+    def test_there_is_no_way_to_pass_on_a_record(
         self, index: LibraryIndex, harness: _Harness
     ) -> None:
+        """The dismiss endpoint is gone (KAMP-674).
+
+        Not merely unused by the UI: passing changed nothing a user could
+        observe, so leaving the writer reachable would keep minting 'dismissed'
+        rows that nothing reads. 405 rather than 404 because FastAPI still has a
+        route for the {item_id} prefix.
+        """
         item = self._item(index)
-        assert (
-            harness.client.post(f"/api/v1/discovery/items/{item}/dismiss").status_code
-            == 200
-        )
-        assert index.crate_items(1)[0]["state"] == "dismissed"
+        assert harness.client.post(
+            f"/api/v1/discovery/items/{item}/dismiss"
+        ).status_code in (404, 405)
+        assert index.crate_items(1)[0]["state"] == "fresh"
 
     def test_copying_a_link_is_not_passing_on_it(
         self, index: LibraryIndex, harness: _Harness
@@ -284,12 +290,13 @@ class TestItemEvents:
     ) -> None:
         item = self._item(index)
         harness.events.clear()
-        harness.client.post(f"/api/v1/discovery/items/{item}/dismiss")
-        assert harness.events[-1]["items"][0]["state"] == "dismissed"
+        harness.client.post(f"/api/v1/discovery/items/{item}/url-copied")
+        assert len(harness.events) == 1
+        assert [i["id"] for i in harness.events[-1]["items"]] == [item]
 
     def test_unknown_item_is_a_404(self, harness: _Harness) -> None:
         assert (
-            harness.client.post("/api/v1/discovery/items/999/dismiss").status_code
+            harness.client.post("/api/v1/discovery/items/999/url-copied").status_code
             == 404
         )
 

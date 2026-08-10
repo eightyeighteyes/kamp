@@ -585,6 +585,9 @@ export type CrateItem = {
   seed: Record<string, unknown> // parsed seed_json; {} when the blob was malformed
   crate_no: number | null
   position: number | null
+  // 'dismissed' is legacy-only (KAMP-674 removed pass): nothing writes it any
+  // more, but rows on disk from before the removal still report it and must
+  // render as ordinary records rather than crash a narrowed union.
   state: 'fresh' | 'previewed' | 'wishlisted' | 'dismissed' | 'purchased'
   first_seen_at: number
 }
@@ -638,9 +641,6 @@ export const clearDiggingHistory = (forgetSeen: boolean): Promise<{ ok: boolean 
 // message ("a crate is already building") instead of a bare status line.
 export const newCrate = (): Promise<{ started: boolean }> =>
   postWithDetail('/api/v1/discovery/crate/new')
-
-export const dismissCrateItem = (itemId: number): Promise<{ ok: boolean }> =>
-  post(`/api/v1/discovery/items/${itemId}/dismiss`)
 
 export const crateItemUrlCopied = (itemId: number): Promise<{ ok: boolean }> =>
   post(`/api/v1/discovery/items/${itemId}/url-copied`)

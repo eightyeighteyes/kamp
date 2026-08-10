@@ -328,10 +328,14 @@ def register_discovery_routes(
         _publish({})  # state unchanged; the item's cached state moved
         return {"ok": True}
 
-    @app.post("/api/v1/discovery/items/{item_id}/dismiss")
-    def dismiss_item(item_id: int) -> dict[str, Any]:
-        """Pass on a record. Recorded, never deleted — the ledger is history."""
-        return _record(item_id, "dismissed")
+    # There is deliberately no 'dismiss' endpoint (KAMP-674). Passing on a record
+    # changed nothing a user could observe: `_excluded` bans anything ever placed
+    # in a crate via `seen_before`, so a passed record and an ignored one produce
+    # identical future crates, and no stat counted the difference.
+    #
+    # The 'dismissed' event kind is still honoured by the ledger — real rows exist
+    # on disk and `_state_from_ledger` must keep resolving them — it simply has no
+    # writer anymore.
 
     @app.post("/api/v1/discovery/items/{item_id}/url-copied")
     def url_copied(item_id: int) -> dict[str, Any]:

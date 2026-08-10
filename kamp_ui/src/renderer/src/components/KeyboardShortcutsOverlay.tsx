@@ -57,7 +57,6 @@ const GROUPS: Group[] = [
         note: 'Writes to your Bandcamp account'
       },
       { keys: ['C'], description: 'Copy link' },
-      { keys: ['X'], description: 'Pass', note: 'Undo for 5 seconds' },
       { keys: ['Esc'], description: 'Stop the preview, then leave the crate' }
     ]
   },

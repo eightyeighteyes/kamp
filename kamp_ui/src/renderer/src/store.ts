@@ -177,11 +177,6 @@ type PlayerStore = {
   // first snapshot arrives, which the view renders as "not dug yet" rather than
   // as an error.
   crate: CrateSnapshot | null
-  // Items passed locally but whose dismiss POST has not been sent yet. Pass is
-  // deferred rather than optimistic because 'dismissed' is terminal server-side
-  // (discovery_events has no un-dismiss kind and the state rank is monotonic),
-  // so an Undo has to happen before the request, not after it.
-  crateDismissPending: number[]
   // KAMP-651: preview transport state. Daemon-owned — it survives a renderer
   // reload, so this is seeded from GET .../preview/state on every WS connect
   // and kept live by the `discovery.preview` event, never invented locally.
@@ -233,14 +228,6 @@ type PlayerStore = {
   loadCrate: () => Promise<void>
   setCrate: (snapshot: CrateSnapshot) => void
   newCrate: () => Promise<void>
-  // Marks an item passed locally and holds the POST. Call commitCrateDismiss to
-  // send it or undoCrateDismiss to cancel — see crateDismissPending.
-  deferCrateDismiss: (itemId: number) => void
-  undoCrateDismiss: (itemId: number) => void
-  commitCrateDismiss: (itemId: number) => Promise<void>
-  // Sends every held dismiss at once. Must be called when the view unmounts or
-  // the user navigates away, or a pass made in the last few seconds is lost.
-  flushCrateDismissals: () => Promise<void>
   copyCrateItemUrl: (item: CrateItem) => Promise<void>
   // KAMP-653: the wishlist write. Ids currently in flight, so the button can be
   // disabled per card rather than per view — focus can move with , and . while a
@@ -620,7 +607,6 @@ export const useStore = create<PlayerStore>((set, get) => ({
   downloadPausedUntil: 0,
   downloadBatch: null,
   crate: null,
-  crateDismissPending: [],
   crateWishlistPending: [],
   crateWishlistError: null,
   preview: null,
@@ -988,40 +974,6 @@ export const useStore = create<PlayerStore>((set, get) => ({
       const msg = err instanceof Error ? err.message : 'Could not dig a crate'
       get().showFlashToast(msg)
     }
-  },
-  deferCrateDismiss: (itemId) =>
-    set((s) => ({
-      crateDismissPending: s.crateDismissPending.includes(itemId)
-        ? s.crateDismissPending
-        : [...s.crateDismissPending, itemId]
-    })),
-  undoCrateDismiss: (itemId) =>
-    set((s) => ({ crateDismissPending: s.crateDismissPending.filter((id) => id !== itemId) })),
-  commitCrateDismiss: async (itemId) => {
-    // Already undone while the timer was running.
-    if (!get().crateDismissPending.includes(itemId)) return
-    set((s) => ({ crateDismissPending: s.crateDismissPending.filter((id) => id !== itemId) }))
-    try {
-      await api.dismissCrateItem(itemId)
-      // The daemon re-broadcasts the whole snapshot after a dismiss, so the
-      // authoritative state arrives on its own.
-    } catch {
-      // The pass is lost rather than wrongly shown as kept — reload so the UI
-      // matches the server instead of quietly disagreeing with it.
-      void get().loadCrate()
-    }
-  },
-  flushCrateDismissals: async () => {
-    const pending = get().crateDismissPending
-    if (pending.length === 0) return
-    set({ crateDismissPending: [] })
-    await Promise.all(
-      pending.map((id) =>
-        api.dismissCrateItem(id).catch(() => {
-          // Best-effort on the way out; loadCrate() on the next mount reconciles.
-        })
-      )
-    )
   },
   copyCrateItemUrl: async (item) => {
     try {

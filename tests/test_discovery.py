@@ -647,10 +647,15 @@ class TestDiggingHistory:
         assert stats["wishlisted"] == 1
         assert stats["purchased"] == 1
 
-    def test_dismissing_does_not_reduce_what_you_dug_through(
+    def test_a_legacy_dismissal_does_not_reduce_what_you_dug_through(
         self, index: LibraryIndex
     ) -> None:
-        """Passing on a record is still digging through it."""
+        """A record passed on before KAMP-674 is still a record you dug through.
+
+        'dismissed' has no writer now, but the counts are computed on read from
+        the whole ledger, so a pre-removal row must not quietly shrink anyone's
+        history the first time they open the Crate after upgrading.
+        """
         item = self._dig(index, 1, 0, "a")
         index.record_discovery_event(item, "dismissed")
         assert index.discovery_stats()["records"] == 1
@@ -951,7 +956,14 @@ class TestEventLedger:
     def test_retraction_falls_back_past_a_dismissal_to_the_dismissal(
         self, index: LibraryIndex
     ) -> None:
-        """Passing on a record outranks previewing it, and the pass still stands."""
+        """A retraction falls back through a LEGACY dismissal, not past it.
+
+        Pass was removed in KAMP-674 and nothing writes 'dismissed' any more, but
+        rows written before the removal are real history on real disks. The
+        vocabulary therefore stays in the ledger maps: drop it and this record
+        would resolve to 'previewed' after the retraction, silently rewriting
+        what the user did.
+        """
         item = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
         index.record_discovery_event(item, "previewed")
         index.record_discovery_event(item, "dismissed")

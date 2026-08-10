@@ -44,7 +44,6 @@ function BinSleeve({
   focused,
   flipped,
   away,
-  passed,
   onFocus
 }: {
   item: CrateItem
@@ -56,7 +55,6 @@ function BinSleeve({
   flipped: boolean
   // Out of the crate and on the deck.
   away: boolean
-  passed: boolean
   onFocus: (index: number) => void
 }): React.JSX.Element {
   const [artFailed, setArtFailed] = useState(false)
@@ -70,7 +68,9 @@ function BinSleeve({
   // in the listbox, so roving tabindex, aria-posinset and the focus recovery all
   // carry on working while the record is away (KAMP-668).
   if (away) classes.push('bin-sleeve--away')
-  if (passed || item.state === 'dismissed') classes.push('bin-sleeve--passed')
+  // No 'dismissed' branch: pass is gone (KAMP-674). A legacy dismissed row from
+  // before the removal is an ordinary record now, which is the honest rendering
+  // — nothing in the product acts on that state any more.
   if (item.state === 'wishlisted') classes.push('bin-sleeve--wishlisted')
   if (item.state === 'purchased') classes.push('bin-sleeve--purchased')
 
@@ -130,11 +130,6 @@ function BinSleeve({
           />
         )}
       </div>
-      {(passed || item.state === 'dismissed') && (
-        <span className="bin-sleeve-badge" aria-hidden="true">
-          ✕
-        </span>
-      )}
       {item.state === 'wishlisted' && (
         <span className="bin-sleeve-badge" aria-hidden="true">
           ♥
@@ -170,7 +165,6 @@ export function CrateBin({
   items,
   crateNo,
   focusIndex,
-  pendingDismissals,
   awayItemId,
   spineName,
   railRef,
@@ -179,7 +173,6 @@ export function CrateBin({
   items: CrateItem[]
   crateNo: number | null
   focusIndex: number
-  pendingDismissals: number[]
   // The record currently out of the crate and on the deck, if any.
   awayItemId: number | null
   spineName: string
@@ -235,7 +228,6 @@ export function CrateBin({
             focused={index === focusIndex}
             flipped={index < focusIndex}
             away={item.id === awayItemId}
-            passed={pendingDismissals.includes(item.id)}
             onFocus={onFocus}
           />
         ))}

@@ -94,9 +94,15 @@
 
 /* --- The stage: three columns under a header ------------------------------
  *
- * titles | bin | deck, with the header over the MIDDLE column only. That is not
- * a simplification of the spec — the header's text starts at the same x as the
- * centre album art, so it reads as that column's heading rather than the page's.
+ * titles | bin | deck, with the header spanning all three.
+ *
+ * The header sat over the middle column alone at first, matching the spec's
+ * drawing, and that made the layout hostage to one record's title: an item
+ * confined to a single track contributes ITS min-content to that track, so a
+ * long album name widened the middle column and shoved both neighbours. Spanning
+ * every column bounds the header by the stage instead of by a track, so no one
+ * record can resize the page. The titles are ellipsised too — the span alone
+ * raises the ceiling rather than removing it.
  *
  * minmax(0, 1fr) on the records row, never a bare 1fr: `1fr` is shorthand for
  * minmax(auto, 1fr), whose auto minimum refuses to shrink below content — which
@@ -110,7 +116,7 @@
   grid-template-columns: minmax(220px, 0.8fr) minmax(300px, 1.3fr) minmax(260px, 0.9fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   grid-template-areas:
-    '.      header .'
+    'header header header'
     'titles bin    deck'
     'footer footer footer';
   gap: 12px 20px;
@@ -129,6 +135,15 @@
   height: 100%;
 }
 
+/* Top-aligned, NOT centred, and that is the pile's clearance.
+ *
+ * The flipped pile is a projection of a sleeve rotated -96deg about its bottom
+ * edge, so it hangs well below the bin's own box — by more than the sleeve is
+ * tall. Centring the bin in this row split the leftover space evenly above and
+ * below, which put the pile straight through the footer as soon as more than a
+ * couple of records had been flipped past. Pushing the bin to the top of the
+ * row gives the whole of the leftover height to the side that actually needs
+ * it. */
 .crate-bin-col {
   grid-area: bin;
   min-width: 0;
@@ -136,7 +151,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .crate-deck-col {
@@ -165,11 +180,14 @@
   justify-content: center;
 }
 
+/* Bounded and growing — see .crate-header-row for why the ceiling matters. */
 .crate-focus-meta {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 62ch;
 }
 
 /* The band name takes the accent, matching the spec and the titles list. It is
@@ -179,13 +197,27 @@
   color: var(--accent);
   font-size: 13px;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* Two lines then an ellipsis, never more. Real Bandcamp releases carry titles
+   like "- if i had a body - consecutions from the long dark" and a single
+   unbroken one of those would otherwise set the width of the whole stage. Two
+   lines rather than one because album names are genuinely long and cutting most
+   of them at one line would be its own kind of wrong. overflow-wrap breaks a
+   single unspaced monster that no ellipsis could catch. */
 .crate-focus-title {
   color: var(--text);
   font-size: 26px;
   font-weight: 600;
   line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .crate-focus-position {
@@ -193,13 +225,19 @@
   font-size: 12px;
 }
 
-/* Header: metadata on the left, the actions on the right, baseline-aligned so
-   the play control sits against the album title rather than floating. */
+/* Header: metadata, then the actions immediately to its right.
+ *
+ * flex-start with a bounded, GROWING meta block rather than space-between. Now
+ * that the header spans all three columns, space-between would throw the icons
+ * against the far right edge of the stage, a screen away from the title they act
+ * on. And a plain shrink-to-fit meta block would park them at a different x for
+ * every record. Growing to a fixed ceiling gives one stable position that does
+ * not depend on how long this particular album is called. */
 .crate-header-row {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
+  justify-content: flex-start;
+  gap: 16px;
 }
 
 /* The clerk card: a shelf tag, not body copy. Deliberately set apart from the
@@ -332,28 +370,30 @@
      its height" in the other — and the parent's height was auto, so the height
      calc went indefinite, the records box collapsed to zero, and every sleeve
      (all absolutely positioned at bottom: 0) hung its full height UPWARD out of
-     a box with no height, straight over the focus card. vw and vh both resolve
-     identically whichever axis they are used on, so mixing the two is safe where
-     mixing in a percentage is not.
+     a box with no height, straight over the focus card. A viewport unit resolves
+     identically in both contexts.
    *
-   * The vh term is new with KAMP-671 and is what keeps the footer in the
-   * viewport. The view no longer scrolls, so a sleeve sized purely from WIDTH
-   * overflows the stage the moment the window is short and wide — the bin simply
-   * grows past its grid row. Taking the smaller of the two means the bin gives
-   * way to the height it actually has. */
-  --bin-sleeve: clamp(140px, min(24vw, 38vh), 320px);
+   * Sizing is deliberately WIDTH-only. A vh term was tried in KAMP-671 to keep
+   * the bin inside a non-scrolling view and reverted: the pile is a projection
+   * of the sleeve through a -96deg rotation, so it grows over 1.2x faster than
+   * the sleeve does, and a taller sleeve made the pile comically large long
+   * before the bin itself ran out of room. The pile is given space by
+   * top-aligning the bin in its column instead — see .crate-bin-col. */
+  --bin-sleeve: clamp(150px, 20vw, 230px);
   --bin-lean: 15deg;
   /* Proportional to the sleeve, so the stagger stays a constant fraction of the
      art rather than collapsing at large sizes and swamping it at small ones. */
   --bin-depth-step: calc(var(--bin-sleeve) * 0.07);
+  /* Clearance above the art for the lean and the perspective scale-up. Named
+     because TWO rules depend on it agreeing: the records box adds it to its
+     height, and the divider card cancels it with a negative margin so the card
+     lands exactly on the top edge of the artwork. */
+  --bin-headroom: calc(var(--bin-sleeve) * 0.3);
 
   position: relative;
   width: 100%;
   max-width: var(--crate-width);
   margin-inline: auto;
-  /* The divider card sits directly on top of the art rather than floating above
-     it (KAMP-671) — in a real crate you read the divider over the record tops,
-     touching them. Only enough top padding for the label's own line box. */
   padding: 0 0 12px;
 }
 
@@ -379,9 +419,11 @@
      the lean starts to look like a funhouse mirror. */
   perspective: 900px;
   perspective-origin: 50% 30%;
-  /* The sleeve is square, plus room for the lean behind it and the pile in
-     front. A fixed height here is what clipped the top of a larger sleeve. */
-  height: calc(var(--bin-sleeve) * 1.3);
+  /* The sleeve is square, plus the headroom the lean and the perspective
+     scale-up need above it. A fixed height here is what clipped the top of a
+     larger sleeve. The headroom is a named token because the divider card
+     cancels exactly this much to sit flush on the artwork. */
+  height: calc(var(--bin-sleeve) + var(--bin-headroom));
   margin: 0;
   padding: 0;
   list-style: none;
@@ -551,10 +593,17 @@
      read it over their tops. The tab is therefore clipped on its top corners
      and open at the bottom, where the card continues down behind the sleeves.
    *
-   * Zero bottom margin (KAMP-671): flush with the top of the album art, so the
-   * card and the record tops touch the way they would in a real crate. The gap
-   * it used to have read as a caption floating above the bin. */
-  margin: 0 auto;
+   * The negative bottom margin is what makes it FLUSH with the top of the
+   * artwork (KAMP-671) rather than floating above the bin like a caption. The
+   * sleeves sit at bottom: 0 of a box that is taller than they are by exactly
+   * --bin-headroom, so a plain `margin-bottom: 0` still left the card that much
+   * clear of the art. Cancelling the same token closes it exactly, at any
+   * sleeve size, without a magic number. */
+  margin: 0 auto calc(var(--bin-headroom) * -1);
+  position: relative;
+  /* Above the empty headroom it now overlaps, but below the records themselves
+     so a leaning sleeve still reads as being in front of the card. */
+  z-index: 0;
   width: fit-content;
   max-width: 90%;
   padding: 4px 14px 6px;
@@ -1144,6 +1193,10 @@
   background: var(--surface-hover);
 }
 
+/* min-width: 0 is load-bearing on both the button and the spans inside it: a
+   flex item's automatic minimum size is min-content, so without it a long
+   unbroken title refuses to shrink and widens the whole column instead of
+   ellipsising. Same reason the header has a ceiling. */
 .crate-title-btn {
   flex: 1 1 auto;
   min-width: 0;

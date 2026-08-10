@@ -43,6 +43,7 @@ function BinSleeve({
   focusIndex,
   focused,
   flipped,
+  away,
   passed,
   onFocus
 }: {
@@ -53,6 +54,8 @@ function BinSleeve({
   focused: boolean
   // Already flipped past: lying on the pile at the crate lip.
   flipped: boolean
+  // Out of the crate and on the deck.
+  away: boolean
   passed: boolean
   onFocus: (index: number) => void
 }): React.JSX.Element {
@@ -62,6 +65,11 @@ function BinSleeve({
   const classes = ['bin-sleeve']
   if (focused) classes.push('bin-sleeve--focused')
   if (flipped) classes.push('bin-sleeve--flipped')
+  // On the deck: the record is genuinely out of the crate, so you see into the
+  // gap where it was. Hidden rather than unmounted — the element keeps its place
+  // in the listbox, so roving tabindex, aria-posinset and the focus recovery all
+  // carry on working while the record is away (KAMP-668).
+  if (away) classes.push('bin-sleeve--away')
   if (passed || item.state === 'dismissed') classes.push('bin-sleeve--passed')
   if (item.state === 'wishlisted') classes.push('bin-sleeve--wishlisted')
   if (item.state === 'purchased') classes.push('bin-sleeve--purchased')
@@ -81,6 +89,10 @@ function BinSleeve({
   return (
     <li
       className={classes.join(' ')}
+      // How the flight finds its start and end rects. An attribute rather than a
+      // ref per sleeve: the view needs to measure exactly one of these, once, at
+      // the moment a flight begins.
+      data-bin-item={item.id}
       role="option"
       aria-selected={focused}
       aria-setsize={total}
@@ -159,6 +171,7 @@ export function CrateBin({
   crateNo,
   focusIndex,
   pendingDismissals,
+  awayItemId,
   spineName,
   railRef,
   onFocus
@@ -167,6 +180,8 @@ export function CrateBin({
   crateNo: number | null
   focusIndex: number
   pendingDismissals: number[]
+  // The record currently out of the crate and on the deck, if any.
+  awayItemId: number | null
   spineName: string
   railRef: React.RefObject<HTMLUListElement | null>
   onFocus: (index: number) => void
@@ -219,6 +234,7 @@ export function CrateBin({
             focusIndex={focusIndex}
             focused={index === focusIndex}
             flipped={index < focusIndex}
+            away={item.id === awayItemId}
             passed={pendingDismissals.includes(item.id)}
             onFocus={onFocus}
           />

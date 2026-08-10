@@ -455,6 +455,18 @@ html[data-platform='win32'] .view-tabs {
   overflow: hidden;
 }
 
+/* The Crate fills its pane instead of scrolling it (KAMP-671). The spec's one
+   hard layout rule is that the footer — "Dig another crate" and the digging
+   stats — is never below a scroll, and the way to honour that is to stop the
+   view scrolling at all: .crate-view takes the full height and lays its columns
+   out inside it. Same override now-playing uses, and for the same reason.
+
+   .view-pane--active is display:contents, so .crate-view is effectively a direct
+   child of .main-content and its height:100% resolves against this box. */
+.main-content:has(.view-pane--active .crate-view) {
+  overflow: hidden;
+}
+
 /* Library view: the sticky toolbar manages its own top edge, so remove the
    top padding here to let it sit flush with the pane. Left/right/bottom
    padding remain so the album grid and track list keep their margins. */

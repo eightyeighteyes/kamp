@@ -63,6 +63,40 @@ class Criterion:
     label: str
 
 
+def seed_dimension(seed_data: dict[str, Any]) -> str | None:
+    """What a crate can only stand so much of, or None if the seed shares nothing.
+
+    A crate read narrower than the library it came from (KAMP-665): three records
+    off one album page, and one genre covering both discover criteria. Preventing
+    that needs a name for the thing being repeated, and the seeds already carry
+    it — ``seed_data`` exists to explain a pick, and "what explains it" and "what
+    it must not duplicate" turn out to be the same question.
+
+    Read off the provenance rather than added as a field, which is what makes it
+    work ACROSS criteria: ``genre_top`` says ``kind='genre'`` and
+    ``older_than_ten`` says ``kind='genre_old'``, but both name a genre, so both
+    produce the same key and cannot both take Rock.
+
+    Case- and space-folded, because these are tags typed by hundreds of different
+    labels and "Dub Techno" is not a second genre.
+
+    **None means "never excluded"**, not "excluded from everything". The chart
+    seed carries no personal claim and there is exactly one of it; giving it an
+    empty-string key would make it collide with itself and drop the criterion
+    from every crate after the first.
+    """
+    for field_name in ("genre", "artist", "album_id", "label"):
+        value = seed_data.get(field_name)
+        if value in (None, ""):
+            continue
+        # Namespaced so an artist called "Rock" is not the genre Rock. `genre` is
+        # deliberately NOT namespaced per criterion -- the whole point is that the
+        # two genre criteria collide with each other.
+        kind = "genre" if field_name == "genre" else field_name
+        return f"{kind}:{str(value).strip().casefold()}"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Seed selectors — pure functions of the profile
 # ---------------------------------------------------------------------------

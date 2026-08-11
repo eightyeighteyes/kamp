@@ -19,6 +19,7 @@ from kamp_daemon.discovery import (
     ALBUM_PAGE,
     ARTIST_PAGE,
     DISCOVER_API,
+    FANCOLLECTION,
     PREVIEW,
     SAVE_REMOTE,
     Candidate,
@@ -32,6 +33,7 @@ from kamp_daemon.discovery_criteria import (
     Seed,
     _genre_top_seeds,
     criteria_for,
+    seed_dimension,
 )
 from kamp_daemon.discovery_sources import (
     BandcampDiscoverySource,
@@ -394,6 +396,243 @@ class TestGatherAgainstFixtures:
         assert len(found) == 1
 
 
+class TestSeedDimension:
+    """KAMP-665: what a crate can have too much of.
+
+    A crate took three records off one album page and covered two criteria with
+    the same genre. The dimension is the thing that must not repeat — read from
+    the provenance a seed already carries rather than a new field, so it
+    generalises past genre to artist and album for free.
+    """
+
+    def test_a_genre_seed_is_keyed_on_its_genre(self) -> None:
+        """Both discover criteria read top_genres, so both must key the same way
+        or the exclusion between them cannot work."""
+        top = seed_dimension({"kind": "genre", "genre": "Rock"})
+        old = seed_dimension({"kind": "genre_old", "genre": "Rock"})
+        assert top == old, "genre_top and older_than_ten must collide on Rock"
+
+    def test_case_and_spacing_do_not_defeat_it(self) -> None:
+        """'Dub Techno' and 'dub techno' are one genre wearing two hats — taste
+        signals come from tags typed by hundreds of different labels."""
+        assert seed_dimension({"kind": "genre", "genre": " Dub Techno "}) == (
+            seed_dimension({"kind": "genre_old", "genre": "dub techno"})
+        )
+
+    def test_artists_and_albums_have_their_own_dimensions(self) -> None:
+        assert seed_dimension({"kind": "artist", "artist": "Four Tet"}) is not None
+        assert seed_dimension({"kind": "album", "album_id": 7}) is not None
+        assert seed_dimension({"kind": "artist", "artist": "Four Tet"}) != (
+            seed_dimension({"kind": "album", "album_id": 7})
+        )
+
+    def test_a_seed_with_nothing_to_share_has_no_dimension(self) -> None:
+        """The chart carries no personal claim and there is only one of it.
+
+        None means "never excluded" rather than "excluded from everything" — an
+        empty-string key would make the single chart seed collide with itself and
+        the criterion would vanish from every crate after the first.
+        """
+        assert seed_dimension({"kind": "chart"}) is None
+        assert seed_dimension({}) is None
+        assert seed_dimension({"kind": "genre", "genre": ""}) is None
+
+
+class TestSpreadWithinACrate:
+    """KAMP-665: one criterion should not take everything from one seed."""
+
+    def test_a_criterion_reads_more_than_one_seed(self) -> None:
+        """It used to stop at the first productive seed, so three of a crate's
+        records could come off a single album page."""
+        session = FakeSession(get_body=_fixture("album_page_with_recs"))
+        profile = SeedProfile(
+            recent_album_ids={1, 2, 3},
+            recent_albums=[
+                _album_seed(album_id=i, url=f"https://a{i}.bandcamp.com/album/x")
+                for i in (1, 2, 3)
+            ],
+        )
+        _source(session).gather(profile, crate_budget(), {})
+        assert len(session.gets) >= 2, "still stopping at the first productive seed"
+
+    def test_the_spread_stays_inside_the_budget(self) -> None:
+        """Variety is bought from the allowance, never from more of it.
+
+        These endpoints are the scarce resource — KAMP-637/639 are both about a
+        crate build earning a 429 that cascades account-wide — so the guard is
+        that the spend never exceeds what crate_budget() funds.
+        """
+        budget = crate_budget()
+        session = FakeSession(
+            get_body=_fixture("album_page_with_recs"),
+            post_body=_fixture("discover_web_ambient_top"),
+        )
+        _source(session).gather(RICH_PROFILE, budget, {})
+
+        for endpoint_class, cap in budget.limits.items():
+            assert budget.spent.get(endpoint_class, 0) <= cap, endpoint_class
+        # And the collection endpoint is never touched at all — funded at zero as
+        # a tripwire rather than a limit.
+        assert budget.spent.get(FANCOLLECTION, 0) == 0
+
+    def test_one_criterion_cannot_eat_a_shared_class_allowance(self) -> None:
+        """Three criteria sit on DISCOVER_API's six requests.
+
+        Without a per-criterion seed cap the first of them would spend the lot on
+        its own seed list — genre_top alone offers twenty seeds against a profile
+        of ten genres — and the other two would find nothing left, trading one
+        kind of narrowness for another.
+
+        Asserted on the REQUESTS, not the candidates: every seed replays the same
+        canned body here, so gather's id-dedupe would credit all of them to
+        whichever criterion ran first and the candidate list would say nothing
+        about who got to spend.
+        """
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+        budget = crate_budget()
+        profile = SeedProfile(top_genres=[f"g{i}" for i in range(10)])
+        _source(session).gather(profile, budget, {})
+
+        spent = budget.spent[DISCOVER_API]
+        assert spent <= budget.limits[DISCOVER_API], "spilled past the class cap"
+        assert spent >= 3, "at least one request each for the three criteria"
+        # The chart carries no tag, so its request is the one identifiable by
+        # shape — proof the criteria after genre_top still had budget to spend.
+        assert any(
+            not p[1]["tag_norm_names"] for p in session.posts
+        ), "genre_top consumed the whole discover allowance"
+
+
+class TestGenreExclusionAcrossCriteria:
+    def test_the_two_genre_criteria_do_not_take_the_same_genre(self) -> None:
+        """Both read top_genres and both started at its head, so one genre
+        covered two criteria in the same crate — measured on a real library."""
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+        profile = SeedProfile(top_genres=["rock", "metal", "dub techno"])
+        _source(session).gather(profile, crate_budget(), {})
+
+        tags = [
+            p[1]["tag_norm_names"] for p in session.posts if p[1].get("tag_norm_names")
+        ]
+        flat = [t[0] for t in tags if t]
+        assert len(flat) == len(set(flat)), f"a genre was fetched twice: {flat}"
+
+    def test_a_skipped_genre_is_not_owed_another_turn(self) -> None:
+        """The offset advances past a skipped seed, and that is deliberate.
+
+        A dimension only enters the used set when the seed that claimed it
+        actually produced records, so a skip always means "the crate already has
+        records for this genre, from the other criterion". The genre was covered;
+        this criterion simply was not the one to cover it. Parking the offset
+        behind it would leave this criterion permanently one step behind whichever
+        one runs first.
+        """
+        source = _source(FakeSession())
+        criterion = Criterion(
+            key="fake",
+            surface="fake",
+            endpoint_class=ALBUM_PAGE,
+            seeds=lambda _p: [
+                Seed(target=f"https://x/{i}", why="", seed_data={"genre": g})
+                for i, g in enumerate(["rock", "metal", "jazz", "funk"])
+            ],
+            label="fake",
+        )
+        state: dict[str, Any] = {}
+        source._run_seed = lambda *a, **k: [MagicMock()]  # type: ignore[method-assign]
+        source._run_criterion(
+            criterion,
+            SeedProfile(),
+            crate_budget(),
+            set(),
+            state,
+            used={"genre:rock"},
+        )
+        # rock skipped, then metal and jazz taken (the two-seed spread) — so the
+        # next crate resumes at funk rather than re-reading any of them.
+        assert state["seeds"]["fake"] == 3
+
+
+class TestACrateReflectsTheLibrarysRange:
+    """The user-visible complaint, end to end (KAMP-665).
+
+    A user with 800 albums and six genres got a crate that looked like it knew
+    one album and one genre. These run the real criteria against the real parsers
+    with a fake session, so they fail if any layer stops spreading.
+    """
+
+    def test_a_library_dominated_by_one_genre_still_names_several(self) -> None:
+        """Raw track count puts the broadest genre first and keeps it there.
+
+        The ranking is right — Rock really is the biggest thing in that library —
+        so the fix is not to rerank it but to stop both discover criteria starting
+        at its head.
+        """
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+        # The shape of a real library: one enormous genre, then a long tail.
+        profile = SeedProfile(top_genres=["rock", "metal", "dub techno", "ambient"])
+        _source(session).gather(profile, crate_budget(), {})
+
+        tags = {t[0] for _, p in session.posts if (t := p["tag_norm_names"])}
+        assert len(tags) >= 2, f"the whole crate came from one genre: {tags}"
+
+    def test_the_favourite_artist_criterion_reads_more_than_one_artist(self) -> None:
+        """Both favorite_artist picks in a real crate were the same artist."""
+        session = FakeSession(get_body=_fixture("artist_discography"))
+        profile = SeedProfile(
+            favorite_artists=[
+                SeedArtist(
+                    name=f"Band {i}", artist_page=f"https://b{i}.bandcamp.com/music"
+                )
+                for i in range(4)
+            ]
+        )
+        _source(session).gather(profile, crate_budget(), {})
+        assert len(set(session.gets)) >= 2, "one artist page supplied the lot"
+
+    def test_consecutive_crates_change_which_artists_they_read(self) -> None:
+        """The rotation from KAMP-661 applies per criterion, so favourite_artist
+        gets it too — asserted rather than assumed, because the acceptance
+        criteria name this case specifically and 'the mechanism is generic' is
+        the kind of claim that is true right up until it is not."""
+        session = FakeSession(get_body=_fixture("artist_discography"))
+        profile = SeedProfile(
+            favorite_artists=[
+                SeedArtist(
+                    name=f"Band {i}", artist_page=f"https://b{i}.bandcamp.com/music"
+                )
+                for i in range(4)
+            ]
+        )
+        source = _source(session)
+        state: dict[str, Any] = {}
+
+        source.gather(profile, crate_budget(), state)
+        first = set(session.gets)
+        session.gets.clear()
+        source.gather(profile, crate_budget(), state)
+        assert not (first & set(session.gets)), "the same artists two crates running"
+
+    def test_a_whole_crate_gather_stays_within_every_class_budget(self) -> None:
+        """The guard on the whole story: variety comes out of the allowance.
+
+        Asserted across a rich profile that exercises every criterion at once,
+        because the allowance is per endpoint class and three criteria share
+        DISCOVER_API's six — the interesting failure is one of them starving the
+        others, not any single criterion overspending.
+        """
+        budget = crate_budget()
+        session = FakeSession(
+            get_body=_fixture("album_page_with_recs"),
+            post_body=_fixture("discover_web_ambient_top"),
+        )
+        _source(session).gather(RICH_PROFILE, budget, {})
+        assert budget.spent[ALBUM_PAGE] <= budget.limits[ALBUM_PAGE]
+        assert budget.spent[DISCOVER_API] <= budget.limits[DISCOVER_API]
+        assert budget.spent.get(ARTIST_PAGE, 0) <= budget.limits[ARTIST_PAGE]
+        assert budget.spent.get(FANCOLLECTION, 0) == 0
+
+
 class TestRotationAndPagination:
     """KAMP-661: the reachable candidate space has to grow with use.
 
@@ -447,13 +686,19 @@ class TestRotationAndPagination:
     def test_consecutive_gathers_use_different_seeds_for_the_same_criterion(
         self,
     ) -> None:
-        """Rotation, asserted on the URL fetched rather than on the candidates."""
+        """Rotation, asserted on the URL fetched rather than on the candidates.
+
+        FOUR albums, not two. KAMP-665 lets a criterion read two seeds per crate,
+        so a two-album profile is fully consumed every time and there is nothing
+        left to rotate — the offset wraps straight back to the head, correctly.
+        Rotation is only observable once the list is longer than the spread.
+        """
         session = FakeSession(get_body=_fixture("album_page_with_recs"))
         profile = SeedProfile(
-            recent_album_ids={1, 2},
+            recent_album_ids={1, 2, 3, 4},
             recent_albums=[
-                _album_seed(album_id=1, url="https://a.bandcamp.com/album/one"),
-                _album_seed(album_id=2, url="https://b.bandcamp.com/album/two"),
+                _album_seed(album_id=i, url=f"https://a{i}.bandcamp.com/album/x")
+                for i in (1, 2, 3, 4)
             ],
         )
         source = _source(session)
@@ -466,7 +711,7 @@ class TestRotationAndPagination:
         second = list(session.gets)
 
         assert first and second
-        assert first[0] != second[0], "the same seed was fetched twice running"
+        assert not (set(first) & set(second)), "a seed was re-read the very next crate"
 
     def test_rotation_advances_past_a_seed_that_produced_nothing(self) -> None:
         """Otherwise a dead seed at the head of the list is retried forever.

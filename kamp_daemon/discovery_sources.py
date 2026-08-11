@@ -52,6 +52,7 @@ from .discovery_criteria import (
     Criterion,
     Seed,
     criteria_for,
+    seed_dimension,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - types only
@@ -68,6 +69,16 @@ DISCOVER_API_URL = "https://bandcamp.com/api/discover/1/discover_web"
 # only to the album-page GET that supplies the crumb and band_id.
 COLLECT_URL = "https://bandcamp.com/collect_item_cb"
 UNCOLLECT_URL = "https://bandcamp.com/uncollect_item_cb"
+
+#: How many seeds one criterion may read from in a single crate (KAMP-665).
+#:
+#: Two, not "until the budget is spent". The allowance is per endpoint class and
+#: three criteria share DISCOVER_API's six, so an uncapped criterion would take
+#: the lot and starve the others — narrow in a different way. Two also keeps a
+#: build near the 3-6 requests crate_budget() was calibrated against, which
+#: matters because these endpoints are the thing that rate-limits hardest and a
+#: 429 here cascades account-wide (KAMP-639).
+_SEEDS_PER_CRITERION = 2
 
 
 def _sub(state: "MutableMapping[str, Any]", key: str) -> dict[str, Any]:
@@ -246,9 +257,19 @@ class BandcampDiscoverySource(DiscoverySource):
         # ids, so no database access is needed here.
         owned = set(profile.purchase_dates)
 
+        # Seed dimensions already spoken for in THIS crate (KAMP-665). Criteria
+        # run in sequence here, which is what lets a later one be told what an
+        # earlier one took: genre_top and older_than_ten both read top_genres and
+        # both started at its head, so one genre covered two criteria in the same
+        # crate. Per gather, never persisted — it is about the shape of one crate,
+        # not about what previous crates did (that is rotation's job, KAMP-661).
+        used: set[str] = set()
+
         for criterion in criteria_for(profile):
             try:
-                found = self._run_criterion(criterion, profile, budget, owned, state)
+                found = self._run_criterion(
+                    criterion, profile, budget, owned, state, used=used
+                )
             except RateLimitedError as exc:
                 logger.warning("discovery: stopping gather early — %s", exc)
                 break
@@ -275,17 +296,40 @@ class BandcampDiscoverySource(DiscoverySource):
         budget: RequestBudget,
         owned: set[str] | None = None,
         state: "MutableMapping[str, Any] | None" = None,
+        used: set[str] | None = None,
     ) -> list[Candidate]:
-        """One criterion's worth of candidates, starting where last crate stopped.
+        """One criterion's worth of candidates, spread over a few seeds.
 
-        Still one productive seed per criterion — spending the rest of the budget
-        deepening a single criterion would starve the others and make every crate
-        look the same. What changed in KAMP-661 is WHICH seed that is: the seed
-        list is rotated so consecutive crates read different albums, artists and
-        genre slices instead of re-reading the head of the list forever.
+        Two things are being balanced, and they pull opposite ways.
+
+        It used to stop at the FIRST productive seed, so a criterion never spread
+        across its own seed list — which is how three of one crate's records came
+        off a single album page (KAMP-665). Now it keeps going up to
+        ``_SEEDS_PER_CRITERION``.
+
+        But it must not simply run until the budget is gone. The allowance is
+        per ENDPOINT CLASS and three criteria share DISCOVER_API's six requests,
+        so an uncapped first criterion would spend the lot on its own seed list
+        and starve the other two — trading one kind of narrowness for another.
+        Two seeds is deliberately modest: these endpoints are the scarce resource
+        (KAMP-637/639), and crate_budget()'s caps carry only about 2x margin over
+        a measured build.
+
+        *used* is the dimensions other criteria have already taken in this crate.
+        A seed naming one of them is skipped without spending a request — that is
+        what stops genre_top and older_than_ten both landing on Rock.
+
+        The rotation offset DOES advance past a skipped seed, which looks wrong
+        and is not. A dimension only enters *used* when the seed that claimed it
+        actually produced records (see the `if got` below), so a skip always means
+        "the crate already has records for this genre, from the other criterion".
+        The genre was covered; this criterion simply was not the one to cover it.
+        Parking the offset behind it instead would leave this criterion
+        permanently a step behind whichever one happens to run first.
         """
         state = {} if state is None else state
         offsets = _sub(state, "seeds")
+        used = set() if used is None else used
 
         seeds = list(criterion.seeds(profile))
         if not seeds:
@@ -293,23 +337,37 @@ class BandcampDiscoverySource(DiscoverySource):
         start = int(offsets.get(criterion.key, 0)) % len(seeds)
 
         found: list[Candidate] = []
-        tried = 0
+        productive = 0
+        # Where to resume next crate: advanced only over seeds actually TRIED, and
+        # tracked as an absolute step so a run of skips does not shift it.
+        consumed = 0
         for step in range(len(seeds)):
+            if productive >= _SEEDS_PER_CRITERION:
+                break
             seed = seeds[(start + step) % len(seeds)]
             if not budget.allow(criterion.endpoint_class):
                 break
-            tried += 1
-            found.extend(self._run_seed(criterion, seed, budget, owned or set(), state))
-            if found:
-                break
+
+            dimension = seed_dimension(seed.seed_data)
+            if dimension is not None and dimension in used:
+                # Someone else is on this genre. Leave the offset behind it.
+                continue
+
+            consumed = step + 1
+            got = self._run_seed(criterion, seed, budget, owned or set(), state)
+            if got:
+                found.extend(got)
+                productive += 1
+                if dimension is not None:
+                    used.add(dimension)
 
         # Advance past every seed TRIED, not just a productive one. Advancing only
         # on success looks right and is the trap: a seed at the head of the list
         # that yields nothing (a deleted album, an artist page with one release)
         # would be re-fetched at the head of every crate for the life of the
         # install, and the rotation would never begin.
-        if tried:
-            offsets[criterion.key] = (start + tried) % len(seeds)
+        if consumed:
+            offsets[criterion.key] = (start + consumed) % len(seeds)
         return found
 
     def _run_seed(

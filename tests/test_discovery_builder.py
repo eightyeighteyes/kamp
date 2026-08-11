@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -47,7 +48,9 @@ def _candidate(item_id: str, criterion: str = "also_like", **kw: Any) -> Candida
         title=kw.pop("title", f"Title {item_id}"),
         criterion=criterion,
         why=f"because {criterion}",
-        seed={"kind": criterion},
+        # Overridable, because KAMP-665 made the seed something the builder reads
+        # rather than provenance it only stores.
+        seed=kw.pop("seed", {"kind": criterion}),
         **kw,
     )
 
@@ -215,6 +218,112 @@ class TestSelection:
         _build(index, _FakeSource(_spread({"a": 8, "b": 8})))
         used = _criteria(index, 1)
         assert used.count("a") > 1 and used.count("b") > 1
+
+
+class TestSeedCaps:
+    """KAMP-665: a crate can have too much of one SEED, not just one criterion.
+
+    Measured on a real crate: three of its ten records came off a single album
+    page, so three clerk lines all said "filed next to DOGGOD". The builder had
+    no way to notice, because Candidate.seed was provenance it never read.
+    """
+
+    def test_no_more_than_two_records_share_a_seed(self, index: LibraryIndex) -> None:
+        """A SEED-RICH profile, which is the condition the cap needs to hold.
+
+        Six seeds at two apiece covers a crate of ten with room over. Give it
+        three and the cap is arithmetically unsatisfiable — 3 x 2 = 6 — and the
+        backfill correctly overruns it rather than shipping a six-record crate.
+        That case has its own test below; this one is about the cap doing its job
+        when it can.
+        """
+        candidates = []
+        for n in range(3):
+            candidates += [
+                _candidate(
+                    f"a{n}{i}", "also_like", seed={"kind": "album", "album_id": n}
+                )
+                for i in range(4)
+            ]
+        for genre in ("rock", "metal"):
+            candidates += [
+                _candidate(
+                    f"g{genre}{i}", "genre_top", seed={"kind": "genre", "genre": genre}
+                )
+                for i in range(4)
+            ]
+        candidates += [
+            _candidate(
+                f"x{i}", "favorite_artist", seed={"kind": "artist", "artist": "X"}
+            )
+            for i in range(4)
+        ]
+
+        _build(index, _FakeSource(candidates))
+        items = index.crate_items(1)
+        assert len(items) == CRATE_SIZE, "the cap must not have cost records"
+        seeds = [json.dumps(row["seed"], sort_keys=True) for row in items]
+        for seed, count in Counter(seeds).items():
+            assert count <= 2, f"{count} records share one seed: {seed}"
+
+    def test_the_cap_is_overrun_rather_than_shipping_a_short_crate(
+        self, index: LibraryIndex
+    ) -> None:
+        """Three seeds cannot cover ten records at two apiece.
+
+        The cap is a preference, exactly as the criterion caps are (KAMP-648): a
+        crate that leans on one album page is a better answer than a crate with
+        four empty slots.
+        """
+        candidates = []
+        for n in range(3):
+            candidates += [
+                _candidate(
+                    f"a{n}{i}", "also_like", seed={"kind": "album", "album_id": n}
+                )
+                for i in range(8)
+            ]
+        status = _build(index, _FakeSource(candidates))
+        assert len(index.crate_items(1)) == CRATE_SIZE
+        assert status["short"] is False
+
+    def test_a_seed_cap_never_shrinks_the_crate(self, index: LibraryIndex) -> None:
+        """The same rule the criterion cap follows (KAMP-648).
+
+        A thin profile can yield a single seed's worth of candidates and nothing
+        else; honouring the cap unconditionally would hand that user a two-record
+        crate, which is a worse answer than a crate that leans on one album page.
+        """
+        source = _FakeSource(
+            [
+                _candidate(str(n), "best_seller", seed={"kind": "chart"})
+                for n in range(20)
+            ]
+        )
+        status = _build(index, source)
+        assert len(index.crate_items(1)) == CRATE_SIZE
+        assert status["short"] is False
+
+    def test_candidates_without_a_seed_dimension_are_not_all_one_seed(
+        self, index: LibraryIndex
+    ) -> None:
+        """The chart has no dimension, and must not therefore be capped to two.
+
+        Treating "no dimension" as a single shared key would collapse every
+        chart pick into one bucket and cap the criterion at two by accident.
+        """
+        source = _FakeSource(
+            [
+                _candidate(str(n), "best_seller", seed={"kind": "chart"})
+                for n in range(6)
+            ]
+            + [
+                _candidate(f"x{n}", "also_like", seed={"kind": "album", "album_id": n})
+                for n in range(6)
+            ]
+        )
+        _build(index, source)
+        assert len(index.crate_items(1)) == CRATE_SIZE
 
 
 class TestCriterionCaps:

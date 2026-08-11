@@ -557,14 +557,30 @@
   bottom: var(--bin-sleeve);
   transform: translateX(-50%);
   z-index: 0;
-  /* Never wider than the record it stands behind — a divider card sticking out
-     past the sleeves reads as a caption rather than as part of the crate. */
-  width: fit-content;
-  max-width: var(--bin-sleeve);
-  padding: 4px 14px 6px;
+  /* EXACTLY the width of the record it stands behind, which is what a divider
+     card is: cut to the same size as the sleeves it separates.
+   *
+   * It was `width: fit-content; max-width: var(--bin-sleeve)`, and that combination
+   * is a trap. The cap made the label wrap, and fit-content then shrank the card
+   * to the longest WRAPPED line — so a card that was correctly capped to the art
+   * rendered around two thirds of it and read as a small floating caption.
+   *
+   * The label may still wrap at a narrow window, and that is fine: what read as
+   * wrong was the CARD shrinking, not the text taking two lines. Two lines is the
+   * cap, with an ellipsis beyond it, so no crate name can grow the card down into
+   * the artwork. Padding and letter-spacing are trimmed so the usual name fits on
+   * one line at full size, and border-box keeps the total equal to the sleeve
+   * rather than sleeve + padding. */
+  box-sizing: border-box;
+  width: var(--bin-sleeve);
+  padding: 4px 8px 6px;
   text-align: center;
   font-size: 11px;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.05em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
   color: var(--text-dim);
   /* Kraft: a warm wash over the theme surface rather than a hardcoded tan,
      which would be wrong in seven of the eight palettes. */

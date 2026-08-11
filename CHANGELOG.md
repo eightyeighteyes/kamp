@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.27.0](https://github.com/eightyeighteyes/kamp/compare/v1.26.1...v1.27.0) (2026-08-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **KAMP-674:** remove 'pass' from the Crate ([#761](https://github.com/eightyeighteyes/kamp/issues/761))
+
+### Features
+
+* **KAMP-645:** discovery groundwork — schema v61, seed profile, provider ABC ([#744](https://github.com/eightyeighteyes/kamp/issues/744)) ([f97c81c](https://github.com/eightyeighteyes/kamp/commit/f97c81ce2f37f8fa52ddb3588882919433f137a6))
+* **KAMP-646:** Bandcamp rate-limit governor + calibrated crate budget ([#746](https://github.com/eightyeighteyes/kamp/issues/746)) ([1b68335](https://github.com/eightyeighteyes/kamp/commit/1b68335728928e4fe14e8912f4a3f9583f4ab0a8))
+* **KAMP-661:** let the crate's reachable pool grow with use ([#764](https://github.com/eightyeighteyes/kamp/issues/764)) ([44b6caa](https://github.com/eightyeighteyes/kamp/commit/44b6caab1103be640f22dcf0421497b708014256))
+* **KAMP-674:** remove 'pass' from the Crate ([#761](https://github.com/eightyeighteyes/kamp/issues/761)) ([54dcb71](https://github.com/eightyeighteyes/kamp/commit/54dcb71f17a689cef1bbd8d1fa768b36c15589ca))
+
+
+### Miscellaneous Chores
+
+* release the Crate work as 1.27.0, not 2.0.0 ([#766](https://github.com/eightyeighteyes/kamp/issues/766)) ([7e0779d](https://github.com/eightyeighteyes/kamp/commit/7e0779d50ac6e41003bae4b245d369118a5fc877))
+
 ## [1.26.1](https://github.com/eightyeighteyes/kamp/compare/v1.26.0...v1.26.1) (2026-08-02)
 
 

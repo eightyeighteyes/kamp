@@ -44,15 +44,18 @@ export function CrateSleeve({
   return (
     <li
       className={classes.join(' ')}
-      role="option"
-      aria-selected={focused}
+      data-crate-sleeve=""
+      // Plain list item rather than role="option", matching the bin — the
+      // listbox pattern promises arrow-key navigation and the arrows belong to
+      // the transport now (KAMP-672). , and . move the selection.
+      aria-current={focused ? 'true' : undefined}
       aria-setsize={total}
       aria-posinset={index + 1}
       aria-label={`${item.title} by ${item.artist}`}
-      // Roving tabindex: only the focused sleeve is reachable by Tab, and the
-      // arrow keys move which one that is. Keeping real DOM focus in the rail is
-      // what lets the view scope its key handling to its own container instead
-      // of listening on document (which would pre-empt every modal's Escape).
+      // Roving tabindex: only the focused sleeve is reachable by Tab. Keeping
+      // real DOM focus in the rail is what lets the view scope its key handling
+      // to its own container instead of listening on document (which would
+      // pre-empt every modal's Escape).
       tabIndex={focused ? 0 : -1}
       onClick={() => onFocus(index)}
       style={{ '--crate-tilt': `${tiltFor(index)}deg` } as React.CSSProperties}

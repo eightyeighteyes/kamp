@@ -1,9 +1,9 @@
 // The bin (KAMP-656) — a three-quarter crate you flip through.
 //
-// PROTOTYPE. This is the checkpoint the ticket mandates: build the flip first,
-// and if it reads as cover-flow pastiche after tuning, fall back to the flat
-// "Counter" treatment. CrateSleeve and its styles are deliberately left intact
-// so that fallback is a one-line switch in CrateView rather than a rewrite.
+// CrateSleeve and its styles are deliberately left intact: the flat "Counter"
+// treatment is still the fallback if this ever needs pulling, and it is a
+// one-line switch in CrateView rather than a rewrite. It is also what the build
+// still renders while a crate streams in.
 //
 // The whole thing is a re-skin of state that already existed. `focusIndex` is
 // KAMP-650's; records before it lie on the flipped pile at the crate lip,
@@ -12,10 +12,12 @@
 // to the store. That is also why riffling keeps up: a CSS transition on
 // transform retargets mid-flight, where a @keyframes animation would restart.
 //
-// Accessibility is NOT part of the skin. This is still the listbox KAMP-650
-// shipped — roving tabindex, aria-setsize/aria-posinset, arrows inside the
-// widget — and the perspective sits on top of that contract rather than
-// replacing it.
+// Accessibility is not part of the skin, but the semantics DID change in
+// KAMP-672: this was a role="listbox" until the arrows became the deck's
+// transport keys. A listbox whose arrows do not move between options is a
+// broken promise, so it is a plain list now — roving tabindex and
+// aria-setsize/aria-posinset kept, aria-current in place of aria-selected, and
+// the titles list carries the crate as real buttons.
 import React, { useEffect, useRef, useState } from 'react'
 import { crateArtUrl } from '../api/client'
 import type { CrateItem } from '../api/client'
@@ -63,10 +65,11 @@ function BinSleeve({
   const classes = ['bin-sleeve']
   if (focused) classes.push('bin-sleeve--focused')
   if (flipped) classes.push('bin-sleeve--flipped')
-  // On the deck: the record is genuinely out of the crate, so you see into the
-  // gap where it was. Hidden rather than unmounted — the element keeps its place
-  // in the listbox, so roving tabindex, aria-posinset and the focus recovery all
-  // carry on working while the record is away (KAMP-668).
+  // On the deck. Rendered as a GHOST rather than hidden (KAMP-672): the record
+  // out on the deck is the one you are most likely to act on next, and an empty
+  // slot left nothing to aim at. Never unmounted under either treatment, so the
+  // list semantics, roving tabindex and the focus recovery hold throughout
+  // (KAMP-668) — only the look of the sleeve changes.
   if (away) classes.push('bin-sleeve--away')
   // No 'dismissed' branch: pass is gone (KAMP-674). A legacy dismissed row from
   // before the removal is an ordinary record now, which is the honest rendering
@@ -93,15 +96,24 @@ function BinSleeve({
       // ref per sleeve: the view needs to measure exactly one of these, once, at
       // the moment a flight begins.
       data-bin-item={item.id}
-      role="option"
-      aria-selected={focused}
+      data-crate-sleeve=""
+      // A plain list item, NOT role="option" (KAMP-672). The listbox pattern
+      // promises arrow-key navigation between options, and the arrows are the
+      // deck's transport keys now — , and . are the only way to move the
+      // selection. Claiming the role while not honouring its keyboard contract
+      // would announce "listbox, 10 items" to a screen reader and then do nothing
+      // when they pressed an arrow.
+      //
+      // aria-current marks the record on show; setsize/posinset are valid on a
+      // listitem and still say where in the crate you are. The full crate is also
+      // in the titles list as real buttons, which is the better way through it.
+      aria-current={focused ? 'true' : undefined}
       aria-setsize={total}
       aria-posinset={index + 1}
       aria-label={`${item.title} by ${item.artist}`}
-      // Roving tabindex, exactly as the rail had it: only the focused sleeve is
-      // reachable by Tab, and the arrows move which one that is. Keeping real
-      // DOM focus in the widget is what lets CrateView scope its key handling to
-      // its own container instead of listening on document.
+      // Roving tabindex: only the focused sleeve is reachable by Tab. Keeping
+      // real DOM focus in the widget is what lets CrateView scope its key
+      // handling to its own container instead of listening on document.
       tabIndex={focused ? 0 : -1}
       onClick={() => onFocus(index)}
       style={
@@ -211,13 +223,9 @@ export function CrateBin({
           under them. Written in marker, and the one place a
           handwritten-adjacent face is allowed: small, and once. */}
       {spineName && <p className="crate-bin-spine">{spineName}</p>}
-      <ul
-        className="crate-bin-records"
-        role="listbox"
-        aria-label="Crate"
-        ref={railRef}
-        tabIndex={-1}
-      >
+      {/* A plain list. It was role="listbox" until KAMP-672 took the arrows for
+          the deck's transport — see the note on the sleeve. */}
+      <ul className="crate-bin-records" aria-label="Crate" ref={railRef} tabIndex={-1}>
         {items.map((item, index) => (
           <BinSleeve
             key={item.id}

@@ -4,12 +4,12 @@
 // you had set aside; this shows all ten and lets you jump to any of them, which
 // is strictly the larger answer to the same question.
 //
-// Deliberately NOT a second role="listbox". The bin is the listbox — it owns the
-// roving tabindex, aria-setsize/aria-posinset and the KAMP-598 focus recovery —
-// and a second one over the same selection would make a screen reader announce
-// every record twice and give the arrow keys two competing meanings. So this is
-// a plain list of ordinary buttons, with aria-current marking the record the bin
-// is currently showing.
+// A plain list of ordinary buttons, with aria-current marking the record the bin
+// is showing. It was written this way to avoid being a second listbox over the
+// same selection, and since KAMP-672 took the arrows for the deck's transport it
+// is the only way through the crate that a keyboard offers besides , and . —
+// which makes real, labelled buttons the right shape for it rather than a
+// compromise. The bin is a plain list too now.
 import React from 'react'
 import type { CrateItem } from '../api/client'
 import { FavoriteIcon } from './TransportIcons'

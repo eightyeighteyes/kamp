@@ -44,12 +44,22 @@ const GROUPS: Group[] = [
       {
         keys: [',', '.'],
         description: 'Previous / next record',
-        note: 'Arrows stay on the transport; ← → also work inside the rail'
+        note: 'The only keys that move through the crate'
       },
       {
         keys: ['Space'],
         description: 'Preview / hold',
         note: 'Your queue pauses and comes back'
+      },
+      {
+        keys: ['←', '→'],
+        description: 'Previous / next track',
+        note: 'The preview while one is playing, otherwise your own queue'
+      },
+      {
+        keys: ['click', 'transport'],
+        description: 'Hand the keys back',
+        note: 'Space and the arrows return to your queue until the next preview'
       },
       {
         keys: ['W'],

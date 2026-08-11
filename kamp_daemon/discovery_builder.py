@@ -36,6 +36,7 @@ from .discovery import (
     build_seed_profile,
     crate_budget,
 )
+from .discovery_criteria import seed_dimension
 
 if TYPE_CHECKING:  # pragma: no cover - types only
     from kamp_core.library import LibraryIndex
@@ -46,6 +47,15 @@ logger = logging.getLogger(__name__)
 #: rather than a tuning knob: a crate you can finish in a sitting is the whole
 #: affordance.
 CRATE_SIZE = 10
+
+#: How many records in one crate may come from a single seed (KAMP-665).
+#:
+#: Two, because one is too strict — a genre you actually listen to earning two
+#: records is a crate reflecting your taste, not a crate repeating itself — and
+#: three is what the complaint was: three cards off one album page, three clerk
+#: lines naming the same record. Enforced as a preference, not a ceiling; the
+#: backfill in select_crate overruns it rather than shipping a short crate.
+SEED_CAP = 2
 
 #: Where the source's scratch space is kept between crates (KAMP-661): which seed
 #: each criterion stopped on, how far into each paginated query it has read. One
@@ -268,12 +278,17 @@ def select_crate(
     order = list(groups)
     rng.shuffle(order)
 
-    picks = _deal(groups, order, size, caps)
+    picks = _deal(groups, order, size, caps, seed_cap=SEED_CAP)
     if len(picks) < size:
         # A cap is a preference, not a ceiling: honouring one to the point of
         # shrinking the crate is how a brand-new library (whose only criterion is
         # the chart) would get a one-item crate. Backfill from what the caps held
         # back, uncapped criteria having already been exhausted by _deal.
+        #
+        # The seed cap is dropped here for the same reason as the criterion caps
+        # (KAMP-665): a thin profile can yield one seed's worth of candidates and
+        # nothing else, and a two-record crate is a worse answer than a crate that
+        # leans on one album page.
         picks.extend(_deal(groups, order, size - len(picks), caps={}, skip=picks))
     return picks
 
@@ -289,15 +304,47 @@ def _deal(
     size: int,
     caps: dict[str, int],
     skip: list[Candidate] | None = None,
+    seed_cap: int | None = None,
 ) -> list[Candidate]:
     """Round-robin one card per criterion until *size* or nothing is left.
 
     Round-robin is what enforces "a criterion may repeat but a crate must span
     several" without the builder interpreting a single label -- which is what
     keeps a future non-Bandcamp provider from having to teach it their criteria.
+
+    *seed_cap* bounds how many cards may come from one SEED (KAMP-665). One album
+    page returns about twenty recommendations, so a criterion could satisfy the
+    round-robin while quietly taking three of its cards off the same page --
+    three clerk lines all reading "filed next to DOGGOD". A criterion is not a
+    fine enough unit to catch that; the seed is.
+
+    A candidate whose seed names nothing shareable is never capped. The chart is
+    the case: it carries no personal claim and one seed produces the whole
+    criterion, so folding every chart pick into a single bucket would cap the
+    criterion at two by accident.
+
+    **The cap is not enough on its own, and measuring a live crate is what showed
+    it.** Five criteria over ten slots is two slots each, so a cap of two never
+    binds -- a criterion only ever had two cards to place. It then spent both on
+    the FIRST seed in its group, because groups are built in gather order and one
+    seed's candidates are contiguous, so gathering a second album page changed
+    nothing about what reached the crate. Crates 22, 23 and 24 each had two
+    records from one album page for exactly this reason.
+
+    So the pick inside a group goes to the seed used LEAST so far. It costs no
+    requests -- the same candidates in a better order -- and it is what makes the
+    extra seeds gathered upstream actually show up in the crate.
     """
     taken = {id(c) for c in (skip or [])}
     counts: dict[str, int] = {}
+    # Seeded from what an earlier pass already took, so the backfill below cannot
+    # undo the cap it is backfilling past.
+    seed_counts: dict[str, int] = {}
+    for candidate in skip or []:
+        key = seed_dimension(candidate.seed)
+        if key is not None:
+            seed_counts[key] = seed_counts.get(key, 0) + 1
+
     picks: list[Candidate] = []
     while len(picks) < size:
         progressed = False
@@ -307,11 +354,27 @@ def _deal(
             cap = caps.get(criterion)
             if cap is not None and counts.get(criterion, 0) >= cap:
                 continue
-            for candidate in groups[criterion]:
-                if id(candidate) in taken:
+
+            # Least-used seed first. Stable within a tie, so a group whose seeds
+            # are all equally used keeps its gather order and the existing
+            # ordering tests still describe the behaviour.
+            available = [c for c in groups[criterion] if id(c) not in taken]
+            available.sort(
+                key=lambda c: seed_counts.get(seed_dimension(c.seed) or "", 0)
+            )
+
+            for candidate in available:
+                key = seed_dimension(candidate.seed)
+                if (
+                    seed_cap is not None
+                    and key is not None
+                    and seed_counts.get(key, 0) >= seed_cap
+                ):
                     continue
                 taken.add(id(candidate))
                 counts[criterion] = counts.get(criterion, 0) + 1
+                if key is not None:
+                    seed_counts[key] = seed_counts.get(key, 0) + 1
                 picks.append(candidate)
                 progressed = True
                 break

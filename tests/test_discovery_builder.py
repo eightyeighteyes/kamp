@@ -266,6 +266,68 @@ class TestSeedCaps:
         for seed, count in Counter(seeds).items():
             assert count <= 2, f"{count} records share one seed: {seed}"
 
+    def test_a_criterion_spends_its_slots_on_different_seeds(
+        self, index: LibraryIndex
+    ) -> None:
+        """The bug the seed cap alone did not catch, found in crate 24.
+
+        The round-robin gives five criteria two slots each over a crate of ten,
+        so a cap of two per seed never binds — a criterion only ever had two
+        cards to place. It then took both off the FIRST seed in its group,
+        because groups are built in gather order and a seed's candidates are
+        contiguous. Fetching a second album page changed nothing about what
+        landed in the crate.
+
+        So the choice inside a group has to prefer the seed used least so far.
+        Costs no requests: it is the same candidates, picked in a better order.
+
+        FIVE criteria over a crate of ten is the real shape — that is what makes
+        two slots each, and two slots is where a cap of two stops binding. With
+        fewer criteria each gets more slots and the cap catches it, which is why
+        this has to mirror the live registry rather than a convenient pair.
+        """
+        # Two seeds each, exactly as _SEEDS_PER_CRITERION gathers.
+        candidates: list[Candidate] = []
+        for criterion, dimension in (
+            ("also_like", "album_id"),
+            ("genre_top", "genre"),
+            ("older_than_ten", "genre"),
+            ("favorite_artist", "artist"),
+            ("best_seller", None),
+        ):
+            for s in range(2):
+                for i in range(4):
+                    seed = (
+                        {"kind": criterion, dimension: f"{criterion}-{s}"}
+                        if dimension
+                        else {"kind": "chart"}
+                    )
+                    candidates.append(
+                        _candidate(f"{criterion}{s}{i}", criterion, seed=seed)
+                    )
+
+        _build(index, _FakeSource(candidates))
+        rows = index.crate_items(1)
+        assert len(rows) == CRATE_SIZE
+
+        # Every criterion that had two seeds available should have used both.
+        for criterion in (
+            "also_like",
+            "genre_top",
+            "older_than_ten",
+            "favorite_artist",
+        ):
+            seeds = {
+                json.dumps(r["seed"], sort_keys=True)
+                for r in rows
+                if r["criterion"] == criterion
+            }
+            picked = [r for r in rows if r["criterion"] == criterion]
+            if len(picked) > 1:
+                assert (
+                    len(seeds) > 1
+                ), f"{criterion} spent {len(picked)} slots on one seed: {seeds}"
+
     def test_the_cap_is_overrun_rather_than_shipping_a_short_crate(
         self, index: LibraryIndex
     ) -> None:

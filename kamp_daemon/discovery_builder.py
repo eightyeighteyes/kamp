@@ -322,6 +322,18 @@ def _deal(
     the case: it carries no personal claim and one seed produces the whole
     criterion, so folding every chart pick into a single bucket would cap the
     criterion at two by accident.
+
+    **The cap is not enough on its own, and measuring a live crate is what showed
+    it.** Five criteria over ten slots is two slots each, so a cap of two never
+    binds -- a criterion only ever had two cards to place. It then spent both on
+    the FIRST seed in its group, because groups are built in gather order and one
+    seed's candidates are contiguous, so gathering a second album page changed
+    nothing about what reached the crate. Crates 22, 23 and 24 each had two
+    records from one album page for exactly this reason.
+
+    So the pick inside a group goes to the seed used LEAST so far. It costs no
+    requests -- the same candidates in a better order -- and it is what makes the
+    extra seeds gathered upstream actually show up in the crate.
     """
     taken = {id(c) for c in (skip or [])}
     counts: dict[str, int] = {}
@@ -342,9 +354,16 @@ def _deal(
             cap = caps.get(criterion)
             if cap is not None and counts.get(criterion, 0) >= cap:
                 continue
-            for candidate in groups[criterion]:
-                if id(candidate) in taken:
-                    continue
+
+            # Least-used seed first. Stable within a tie, so a group whose seeds
+            # are all equally used keeps its gather order and the existing
+            # ordering tests still describe the behaviour.
+            available = [c for c in groups[criterion] if id(c) not in taken]
+            available.sort(
+                key=lambda c: seed_counts.get(seed_dimension(c.seed) or "", 0)
+            )
+
+            for candidate in available:
                 key = seed_dimension(candidate.seed)
                 if (
                     seed_cap is not None

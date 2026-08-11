@@ -10,6 +10,7 @@ rate limit that presents as a hang.
 
 from __future__ import annotations
 
+import json
 import random
 import sqlite3
 from pathlib import Path
@@ -80,11 +81,54 @@ class _FakeSource(DiscoverySource):
     def criterion_caps(self) -> dict[str, int]:
         return self._caps
 
-    def gather(self, profile: SeedProfile, budget: RequestBudget) -> list[Candidate]:
+    def gather(
+        self,
+        profile: SeedProfile,
+        budget: RequestBudget,
+        state: Any = None,
+    ) -> list[Candidate]:
         self.gather_calls += 1
+        self.last_state = state
         if self._error is not None:
             raise self._error
         return list(self._candidates)
+
+
+class _PaginatingSource(DiscoverySource):
+    """A source with a deep well, reachable only by carrying the cursor.
+
+    Stands in for the discover API: it holds far more candidates than one crate
+    needs and hands out the next page each time, remembering where it got to in
+    the *state* the builder passes back. A source that ignored the state would
+    return page one forever, which is the bug KAMP-661 is about.
+    """
+
+    provider_id = "fake"
+
+    def __init__(self, pool: int = 200, page: int = 20) -> None:
+        self._pool = pool
+        self._page = page
+        self.states: list[dict[str, Any]] = []
+
+    def gather(
+        self,
+        profile: SeedProfile,
+        budget: RequestBudget,
+        state: Any = None,
+    ) -> list[Candidate]:
+        state = {} if state is None else state
+        self.states.append(dict(state))
+        offset = int(state.get("offset", 0))
+        # Its own id namespace. _spread() numbers from 1, so a bare str(n) here
+        # would collide with candidates another fake source had already put in a
+        # crate — and `seen_before` would then reject them for the right reason
+        # under a test asserting the wrong thing.
+        rows = [
+            _candidate(f"page-{n}", "genre_top")
+            for n in range(offset, min(offset + self._page, self._pool))
+        ]
+        state["offset"] = offset + len(rows)
+        return rows
 
 
 class _FakeGovernor:
@@ -300,6 +344,133 @@ class TestExclusions:
 # ---------------------------------------------------------------------------
 # Degradation — short crates and rate limits are normal, not errors
 # ---------------------------------------------------------------------------
+
+
+class TestVarietyAcrossSessions:
+    """KAMP-661 — the reachable pool has to grow with use, not stay fixed."""
+
+    def test_ten_consecutive_crates_are_full_and_share_no_records(
+        self, index: LibraryIndex
+    ) -> None:
+        """The acceptance criterion the whole story is built around.
+
+        Before this, roughly five crates exhausted the reachable candidates and
+        every crate after that was silently short — the pool was one page of one
+        query per criterion, re-fetched forever, against a `seen_before` that
+        (correctly) excludes anything already shown.
+        """
+        source = _PaginatingSource()
+        seen: set[str] = set()
+        for crate_no in range(1, 11):
+            status = _build(index, source)
+            assert status["state"] == "ready", f"crate {crate_no} did not build"
+            assert status["short"] is False, f"crate {crate_no} came up short"
+            titles = _titles(index, crate_no)
+            assert len(titles) == 10
+            assert not (seen & set(titles)), f"crate {crate_no} repeated a record"
+            seen.update(titles)
+        assert len(seen) == 100
+
+    def test_the_rotation_state_survives_between_builds(
+        self, index: LibraryIndex
+    ) -> None:
+        """Persisted in one settings row, so it outlives the daemon.
+
+        Held in memory it would reset on every restart, and the pool would look
+        exhausted again after each launch — the same bug on a longer fuse.
+        """
+        source = _PaginatingSource()
+        _build(index, source)
+        _build(index, source)
+        assert source.states[0] == {}, "the first build starts with a blank slate"
+        assert source.states[1].get("offset") == 20, "state did not come back"
+
+        # Round-tripped through the settings row rather than the source object.
+        stored = json.loads(index.get_setting("discovery.rotation") or "{}")
+        assert stored["offset"] == 40
+
+    def test_a_source_that_never_ran_leaves_no_setting(
+        self, index: LibraryIndex
+    ) -> None:
+        """A cooldown refuses before the gather, so there is nothing to remember."""
+        _build(index, _FakeSource(_spread({"a": 12})), governor=_FakeGovernor(42.0))
+        assert index.get_setting("discovery.rotation") is None
+
+    def test_corrupt_rotation_state_costs_variety_not_the_crate(
+        self, index: LibraryIndex
+    ) -> None:
+        """It is a hint, and a hint that fails to parse is worth exactly one crate
+        of variety — never an exception on the build thread."""
+        index.set_setting("discovery.rotation", "{not json")
+        status = _build(index, _PaginatingSource())
+        assert status["state"] == "ready"
+
+    def test_a_rotation_state_of_the_wrong_type_is_discarded(
+        self, index: LibraryIndex
+    ) -> None:
+        """Valid JSON, wrong shape — a list where a dict belongs."""
+        index.set_setting("discovery.rotation", "[1, 2, 3]")
+        assert _build(index, _PaginatingSource())["state"] == "ready"
+
+    def test_a_failed_state_write_does_not_lose_the_crate(
+        self, index: LibraryIndex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The crate is the product; the rotation state is a cache of where to
+        resume. Letting a failed cache write take a built crate with it would be
+        exactly the wrong trade."""
+        monkeypatch.setattr(
+            index,
+            "set_setting",
+            lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("disk")),
+        )
+        status = _build(index, _PaginatingSource())
+        assert status["state"] == "ready"
+        assert len(index.crate_items(1)) == 10
+
+
+class TestTheWellRunningDry:
+    def test_a_crate_short_because_everything_was_seen_says_so(
+        self, index: LibraryIndex
+    ) -> None:
+        """Distinct from a budget stop: the user is owed the difference.
+
+        A half-empty crate with no explanation reads as "discovery is broken";
+        "we have shown you everything in these racks lately" is a true sentence
+        about a working feature.
+        """
+        source = _FakeSource(_spread({"a": 12}))
+        _build(index, source)  # first crate takes ten of the twelve
+        status = _build(index, source)  # only two are left, and both are new
+        assert status["short"] is True
+        assert status["exhausted"] is True
+
+    def test_a_full_crate_is_never_exhausted(self, index: LibraryIndex) -> None:
+        status = _build(index, _PaginatingSource())
+        assert status["short"] is False
+        assert status["exhausted"] is False
+
+    def test_a_thin_gather_is_short_but_not_exhausted(
+        self, index: LibraryIndex
+    ) -> None:
+        """Nothing was rejected for having been seen — the well is not dry, the
+        source simply found little. Saying "you have seen everything" here would
+        be the clerk inventing a reason."""
+        status = _build(index, _FakeSource(_spread({"a": 3})))
+        assert status["short"] is True
+        assert status["exhausted"] is False
+
+    def test_exhausted_does_not_stick_to_the_next_crate(
+        self, index: LibraryIndex
+    ) -> None:
+        """_publish MERGES, so a flag left unset carries over from the last build.
+
+        Same trap `short` already has to work around: every terminal path must
+        state the flag rather than leaving it.
+        """
+        source = _FakeSource(_spread({"a": 12}))
+        _build(index, source)
+        assert _build(index, source)["exhausted"] is True
+        assert _build(index, _PaginatingSource())["exhausted"] is False
 
 
 class TestDegradation:

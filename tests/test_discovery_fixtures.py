@@ -139,6 +139,25 @@ def test_discover_api_fixture_shape() -> None:
         assert "release_date" in row
 
 
+def test_discover_api_fixture_carries_a_cursor_and_a_deep_result_count() -> None:
+    """The evidence KAMP-661 rests on: the pool is huge and it is paginated.
+
+    Crates went short after about five digs and the diagnosis on the ticket was a
+    small candidate space. It is the opposite — this single captured response
+    reports six figures of results and hands back a cursor for the next page. We
+    asked for the first 20 and threw the cursor away, forever.
+
+    Pinned as a fixture test because both facts are contract, not trivia: lose the
+    cursor key and pagination silently stops advancing, which looks exactly like
+    the bug this story fixed.
+    """
+    if "discover_web_ambient_top" not in FIXTURE_NAMES:
+        pytest.skip("discover fixture not captured")
+    payload = json.loads(_read("discover_web_ambient_top"))
+    assert payload["cursor"], "no cursor — the discover response is not paginated"
+    assert payload["result_count"] > len(payload["results"]) * 100
+
+
 def test_discover_root_fixture_carries_the_facet_vocabulary() -> None:
     """Genres/locations/times/slices are read from this blob, not hard-coded."""
     if "discover_root" not in FIXTURE_NAMES:

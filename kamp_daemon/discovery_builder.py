@@ -19,6 +19,7 @@ into a UI that never updates.
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import time
@@ -45,6 +46,12 @@ logger = logging.getLogger(__name__)
 #: rather than a tuning knob: a crate you can finish in a sitting is the whole
 #: affordance.
 CRATE_SIZE = 10
+
+#: Where the source's scratch space is kept between crates (KAMP-661): which seed
+#: each criterion stopped on, how far into each paginated query it has read. One
+#: settings row rather than a table, because the shape is the source's own and the
+#: builder only round-trips it — nothing here or in the schema knows what is in it.
+_ROTATION_KEY = "discovery.rotation"
 
 #: The endpoint classes discovery spends. Each carries its own cooldown, so a
 #: single "am I rate limited" answer has to consider all of them.
@@ -111,6 +118,10 @@ def build_crate(
         filled=0,
         crate_no=None,
         short=False,
+        # Stated rather than left, and that is load-bearing: _publish MERGES, so a
+        # flag omitted here would carry over from the previous build and a full
+        # crate would inherit the last one's "you have seen everything" (KAMP-661).
+        exhausted=False,
         # Genres come from the local profile, not the provider: it lets the UI
         # name what is being dug through without the builder knowing any
         # provider's criteria.
@@ -121,11 +132,22 @@ def build_crate(
         thin=profile.is_thin,
     )
 
+    # The source's memory of previous crates (KAMP-661). Loaded before the gather
+    # and saved after it, so seed rotation and discover pagination survive a
+    # daemon restart — held in memory they would reset on every launch and the
+    # pool would look exhausted again each time, which is the same bug on a
+    # longer fuse.
+    rotation = _load_rotation(index)
     try:
-        candidates = source.gather(profile, budget or crate_budget())
+        candidates = source.gather(profile, budget or crate_budget(), rotation)
     except Exception:  # noqa: BLE001 - a provider must not take the daemon with it
         logger.exception("discovery: gather failed")
         return _publish(publish, state="error")
+    finally:
+        # Saved even when the gather raised: whatever it managed to advance before
+        # failing is still progress, and re-reading those same pages next time is
+        # exactly the waste this exists to stop.
+        _save_rotation(index, rotation)
 
     picks = select_crate(
         candidates,
@@ -135,6 +157,14 @@ def build_crate(
         rng=rng,
         wishlist_ids=wishlist_ids,
     )
+    # Attributed BEFORE anything is written, and that ordering is the whole
+    # correctness of the flag: place first and this crate's own ten records are
+    # `seen_before` by the time we ask, so every short crate would report the well
+    # dry — including a three-record crate where nothing had been seen at all.
+    dry = len(picks) < size and _short_because_seen(
+        candidates, index=index, picked=len(picks)
+    )
+
     if not picks:
         # Do not burn a crate number on nothing. An empty crate is a distinct
         # state from a short one -- the UI offers a retry rather than a tally.
@@ -182,9 +212,26 @@ def build_crate(
         return _publish(publish, state="empty", crate_no=None)
 
     short = placed < size
+    # `dry` was measured against the picks; `short` is measured against what
+    # actually landed. Both have to hold: a crate short only because rows failed
+    # to persist is a write problem, not a picked-over rack, and must not be
+    # explained to the user as one.
+    exhausted = short and dry
     if short:
-        logger.info("discovery: short crate %d (%d/%d)", crate_no, placed, size)
-    return _publish(publish, state="ready", crate_no=crate_no, short=short)
+        logger.info(
+            "discovery: short crate %d (%d/%d)%s",
+            crate_no,
+            placed,
+            size,
+            " — everything else was already shown" if exhausted else "",
+        )
+    return _publish(
+        publish,
+        state="ready",
+        crate_no=crate_no,
+        short=short,
+        exhausted=exhausted,
+    )
 
 
 def select_crate(
@@ -281,6 +328,62 @@ def _group_by_criterion(
     for candidate in candidates:
         groups.setdefault(candidate.criterion, []).append(candidate)
     return groups
+
+
+def _load_rotation(index: "LibraryIndex") -> dict[str, Any]:
+    """The source's scratch space from the settings row, or a blank slate.
+
+    Never raises. The blob is a hint about where to resume, so a value that fails
+    to parse — hand-edited, or written by a build that shaped it differently —
+    costs exactly one crate's worth of variety. Letting it reach the build thread
+    would cost the crate, which is a far worse trade for a cache.
+    """
+    raw = index.get_setting(_ROTATION_KEY)
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except ValueError:
+        logger.warning("discovery: rotation state unreadable, starting over")
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _save_rotation(index: "LibraryIndex", rotation: dict[str, Any]) -> None:
+    """Persist the scratch space. Never raises, for the same reason as above."""
+    if not rotation:
+        # Nothing learned — a source that ignores the state, or a gather that
+        # never got as far as a request. Writing "{}" would be noise.
+        return
+    try:
+        index.set_setting(_ROTATION_KEY, json.dumps(rotation))
+    except Exception:  # noqa: BLE001 - a cache write must not fail a built crate
+        logger.warning("discovery: could not save rotation state", exc_info=True)
+
+
+def _short_because_seen(
+    candidates: "Sequence[Candidate]", *, index: "LibraryIndex", picked: int
+) -> bool:
+    """True when the shortfall is the well being dry rather than a thin gather.
+
+    The distinction is the whole point of the flag. A crate can come up short
+    because the budget stopped us, because a 429 cut the gather off, or because
+    everything found had already been shown — and only the last of those is a
+    sentence the user should be told, because only it means the racks are
+    genuinely picked over rather than something having gone wrong.
+
+    Attributed by re-running the one exclusion that means "you have already seen
+    this". `seen_before` is an indexed lookup and the candidate list is tens of
+    rows, so re-checking is cheaper than threading a counter out of select_crate
+    and through a signature every existing caller and test depends on.
+    """
+    if not candidates:
+        return False
+    seen = sum(
+        1 for c in candidates if index.seen_before(c.provider, c.provider_item_id)
+    )
+    # Every candidate that did not make the crate had already been shown.
+    return seen > 0 and picked + seen >= len(candidates)
 
 
 def _excluded(

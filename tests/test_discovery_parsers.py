@@ -191,10 +191,25 @@ class TestDiscoverResults:
         assert [i["is_owned"] for i in items] == [True, False]
         assert [i["is_wishlisted"] for i in items] == [False, True]
 
+    def test_carries_the_cursor_for_the_next_page(self, discover_results: str) -> None:
+        """The whole of KAMP-661 hangs off this value being kept.
+
+        It was parsed and dropped, so every crate asked for the first page of the
+        same query — which is why the candidate pool looked exhausted after about
+        five digs when the response itself reports six figures of results.
+        """
+        assert parse_discover_results(discover_results).cursor
+
+    def test_a_response_without_a_cursor_is_the_end_of_the_line(self) -> None:
+        """None rather than '' — the caller stores it and must be able to tell
+        'no more pages' from 'a page I have not asked for yet'."""
+        assert parse_discover_results({"results": []}).cursor is None
+
     def test_malformed_json_is_not_drift(self) -> None:
         result = parse_discover_results("not json")
         assert result.items == []
         assert result.marker_present is False
+        assert result.cursor is None
 
     def test_empty_result_list_is_an_honest_empty_and_does_not_warn(
         self, caplog

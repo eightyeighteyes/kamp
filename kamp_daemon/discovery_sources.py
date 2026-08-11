@@ -55,6 +55,8 @@ from .discovery_criteria import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - types only
+    from collections.abc import MutableMapping
+
     from .bandcamp import _AnySession
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,21 @@ DISCOVER_API_URL = "https://bandcamp.com/api/discover/1/discover_web"
 # only to the album-page GET that supplies the crumb and band_id.
 COLLECT_URL = "https://bandcamp.com/collect_item_cb"
 UNCOLLECT_URL = "https://bandcamp.com/uncollect_item_cb"
+
+
+def _sub(state: "MutableMapping[str, Any]", key: str) -> dict[str, Any]:
+    """The ``key`` sub-dict of the rotation state, created and attached if absent.
+
+    The blob is round-tripped through JSON in the settings row, so a value that
+    arrives as the wrong type (hand-edited, or written by an older build) is
+    replaced rather than raising — rotation state is a hint, and losing it costs
+    one crate's variety, while a crash here costs the crate.
+    """
+    value = state.get(key)
+    if not isinstance(value, dict):
+        value = {}
+        state[key] = value
+    return value
 
 
 def _is_fetchable(url: str) -> bool:
@@ -193,16 +210,33 @@ class BandcampDiscoverySource(DiscoverySource):
     # Gather
     # ------------------------------------------------------------------
 
-    def gather(self, profile: SeedProfile, budget: RequestBudget) -> list[Candidate]:
+    def gather(
+        self,
+        profile: SeedProfile,
+        budget: RequestBudget,
+        state: "MutableMapping[str, Any] | None" = None,
+    ) -> list[Candidate]:
         """Collect candidates across the criteria that suit *profile*.
 
         Mirrors ``genre_sources.fetch_all_genres``: each criterion is best-effort
         and a broken one costs a card rather than the crate. Unlike that helper,
         this stops early on a 429 — letting the remaining criteria each rediscover
         the limit would turn one rate limit into several and log it repeatedly.
+
+        *state* carries what this source learned last time: which seed each
+        criterion stopped on, and how far into each discover query it has read
+        (KAMP-661). It is mutated in place and the caller persists it. Passed in
+        rather than read from a database because this class is provider code
+        behind a provider-neutral ABC and has no business holding a LibraryIndex;
+        a plain dict also makes rotation and pagination assertable in a test with
+        no network and no storage.
         """
         out: list[Candidate] = []
         seen: set[str] = set()
+        if state is None:
+            # A caller that does not care about rotation gets one throwaway round,
+            # which is exactly the old behaviour.
+            state = {}
 
         # Albums the user already owns. The discover surface reports is_owned
         # itself, but album-page recommendations and the discography grid do not,
@@ -214,7 +248,7 @@ class BandcampDiscoverySource(DiscoverySource):
 
         for criterion in criteria_for(profile):
             try:
-                found = self._run_criterion(criterion, profile, budget, owned)
+                found = self._run_criterion(criterion, profile, budget, owned, state)
             except RateLimitedError as exc:
                 logger.warning("discovery: stopping gather early — %s", exc)
                 break
@@ -240,17 +274,42 @@ class BandcampDiscoverySource(DiscoverySource):
         profile: SeedProfile,
         budget: RequestBudget,
         owned: set[str] | None = None,
+        state: "MutableMapping[str, Any] | None" = None,
     ) -> list[Candidate]:
+        """One criterion's worth of candidates, starting where last crate stopped.
+
+        Still one productive seed per criterion — spending the rest of the budget
+        deepening a single criterion would starve the others and make every crate
+        look the same. What changed in KAMP-661 is WHICH seed that is: the seed
+        list is rotated so consecutive crates read different albums, artists and
+        genre slices instead of re-reading the head of the list forever.
+        """
+        state = {} if state is None else state
+        offsets = _sub(state, "seeds")
+
+        seeds = list(criterion.seeds(profile))
+        if not seeds:
+            return []
+        start = int(offsets.get(criterion.key, 0)) % len(seeds)
+
         found: list[Candidate] = []
-        for seed in criterion.seeds(profile):
+        tried = 0
+        for step in range(len(seeds)):
+            seed = seeds[(start + step) % len(seeds)]
             if not budget.allow(criterion.endpoint_class):
                 break
-            found.extend(self._run_seed(criterion, seed, budget, owned or set()))
+            tried += 1
+            found.extend(self._run_seed(criterion, seed, budget, owned or set(), state))
             if found:
-                # One good seed per criterion is enough for a crate; spending the
-                # rest of the budget deepening a single criterion would starve the
-                # others and make every crate look the same.
                 break
+
+        # Advance past every seed TRIED, not just a productive one. Advancing only
+        # on success looks right and is the trap: a seed at the head of the list
+        # that yields nothing (a deleted album, an artist page with one release)
+        # would be re-fetched at the head of every crate for the life of the
+        # install, and the rotation would never begin.
+        if tried:
+            offsets[criterion.key] = (start + tried) % len(seeds)
         return found
 
     def _run_seed(
@@ -259,9 +318,10 @@ class BandcampDiscoverySource(DiscoverySource):
         seed: Seed,
         budget: RequestBudget,
         owned: set[str],
+        state: "MutableMapping[str, Any] | None" = None,
     ) -> list[Candidate]:
         if criterion.surface == SURFACE_DISCOVER:
-            return self._discover(criterion, seed, budget, owned)
+            return self._discover(criterion, seed, budget, owned, state)
         if criterion.surface == SURFACE_ALBUM_RECS:
             body = self._fetch(criterion.endpoint_class, str(seed.target), budget)
             if body is None:
@@ -290,19 +350,28 @@ class BandcampDiscoverySource(DiscoverySource):
         seed: Seed,
         budget: RequestBudget,
         owned: set[str],
+        state: "MutableMapping[str, Any] | None" = None,
     ) -> list[Candidate]:
         params: dict[str, Any] = dict(seed.target)
         # Normalise here rather than in the criterion: the seed carries the display
         # genre so the clerk card can say "you've been deep in Indie Rock lately",
         # while the API needs "indie-rock".
         tag = tag_slug(params.get("tag") or "")
+        slice_ = params.get("slice", "top")
+
+        # Where this query got to last time (KAMP-661). Keyed on the query rather
+        # than on the criterion, because two criteria can ask about the same tag
+        # with different slices and each has its own place in the results.
+        cursors = _sub({} if state is None else state, "cursors")
+        cursor_key = f"{criterion.key}:{tag}:{slice_}"
+
         payload = {
             "category_id": 0,
             "tag_norm_names": [tag] if tag else [],
             "geoname_id": 0,
-            "slice": params.get("slice", "top"),
+            "slice": slice_,
             "time_facet_id": None,
-            "cursor": None,
+            "cursor": cursors.get(cursor_key),
             "size": params.get("size", 20),
             "include_result_types": ["a"],
             "followed_bands": False,
@@ -314,6 +383,17 @@ class BandcampDiscoverySource(DiscoverySource):
             return []
         result = parse_discover_results(body)
         result.warn_if_drifted(criterion.surface, DISCOVER_API_URL)
+
+        # Advance, or start the query over.
+        #
+        # The reset on an empty page is the important half. A cursor that has
+        # walked off the end — or gone stale, since it is opaque and Bandcamp owes
+        # us nothing about its lifetime — would otherwise pin this query on an
+        # empty page for the rest of the install, silently. That is a worse
+        # version of the bug this story exists to fix, so an empty page always
+        # returns the query to the beginning rather than storing whatever came
+        # back with it.
+        cursors[cursor_key] = result.cursor if result.items else None
 
         # Bandcamp reports ownership on this surface, so let it do the exclusion.
         result.items = [

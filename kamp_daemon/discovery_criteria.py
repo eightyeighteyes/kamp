@@ -100,11 +100,28 @@ def _also_like_seeds(profile: SeedProfile) -> Iterable[Seed]:
 
 
 def _genre_top_seeds(profile: SeedProfile) -> Iterable[Seed]:
-    """Best-selling right now within a genre the user actually listens to."""
+    """Selling well right now within a genre the user actually listens to.
+
+    Two seeds per genre, not one (KAMP-661). ``slice=top`` for the same tag
+    returns the same twenty albums next week, so a criterion that only ever asks
+    for it contributes the same records to every crate forever. ``rand`` reaches a
+    different part of the same catalogue at identical request cost — the trick
+    ``_old_album_seeds`` already relies on to get past the current year's
+    releases.
+
+    Emitting both as ordinary seeds means the rotation in ``_run_criterion``
+    cycles them for free: no slice-picking logic anywhere, and the copy stays
+    honest because each variant carries its own ``why``.
+    """
     for genre in profile.top_genres:
         yield Seed(
             target={"tag": genre, "slice": "top"},
             why=f"You've been deep in {genre} lately; this is near the top of the pile.",
+            seed_data={"kind": "genre", "genre": genre},
+        )
+        yield Seed(
+            target={"tag": genre, "slice": "rand"},
+            why=f"Pulled at random from the {genre} racks.",
             seed_data={"kind": "genre", "genre": genre},
         )
 

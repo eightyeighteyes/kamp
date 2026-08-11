@@ -166,6 +166,30 @@ class TestCrateSnapshot:
         assert body["filled"] == 4
         assert body["short"] is True
 
+    def test_the_dry_well_reaches_the_client(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """`exhausted` is what lets the UI say WHY a crate is short (KAMP-661)."""
+        _stock(index, 1, count=4)
+        harness.publish({"state": "ready", "crate_no": 1, "exhausted": True})
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["short"] is True
+        assert body["exhausted"] is True
+
+    def test_a_restored_short_crate_does_not_claim_the_well_is_dry(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """`short` IS re-derived from the rows after a restart; `exhausted` is not.
+
+        Nothing on disk records why a build stopped, so restating it would be a
+        guess — and "you have seen everything" is precisely the kind of invented
+        explanation this feature is defined against. False on a fresh daemon.
+        """
+        _stock(index, 1, count=4)
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["short"] is True
+        assert body["exhausted"] is False
+
     def test_a_live_build_keeps_its_own_progress(
         self, index: LibraryIndex, harness: _Harness
     ) -> None:

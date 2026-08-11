@@ -314,7 +314,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       // clipped fixed-height box (KAMP-671). A scroll-into-view on a leaning
       // element can shift the whole composition inside that clip.
       const rail = railRef.current
-      const option = rail?.querySelectorAll<HTMLElement>('[role="option"]')[index]
+      const option = rail?.querySelectorAll<HTMLElement>('[data-crate-sleeve]')[index]
       option?.focus({ preventScroll: true })
     },
     [crateNo]
@@ -351,34 +351,28 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // afterwards, since those are document listeners too and registration order
   // decides.
   //
-  // Digging is , and . — always, in both states. They are the crate's own keys
-  // and nothing takes them.
+  // Digging is , and . — ONLY. The arrows never move the crate selection.
   //
-  // The ARROWS have two meanings, decided by ownsTransport (KAMP-672):
+  // They are transport keys everywhere else in the app and they stay transport
+  // keys here; which player they drive is the only thing that changes:
   //
-  //   nothing playing  -> the bin's listbox navigation, inside the rail only.
-  //                       That is the contract a screen-reader user expects of a
-  //                       role="option" list, and it holds right up until the
-  //                       user explicitly starts a transport session.
-  //   preview running  -> the deck's prev/next TRACK, anywhere in the view. The
-  //                       deck is the player you are looking at, so it should be
-  //                       the one the transport keys drive.
+  //   preview running  -> the deck's prev/next TRACK. The deck is the player you
+  //                       are looking at, so it is the one they should drive.
+  //   otherwise        -> straight through to the app's global prev/next, by not
+  //                       being handled at all.
   //
-  // Either way the app's global prev/next never sees them, and stopPropagation is
-  // what makes that true: App listens on `window`, React attaches at the root
-  // container below it, so stopping here means the key never reaches the global
-  // handler. Same mechanism that already gives the Crate Space and , / .
+  // stopPropagation is what makes that true in both directions: App listens on
+  // `window` and React attaches at the root container below it, so stopping here
+  // means the key never reaches the global handler — and NOT stopping is how the
+  // unowned case reaches it. Same mechanism that gives the Crate Space and , / .
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
     const target = e.target as HTMLElement
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
     if (e.metaKey || e.ctrlKey || e.altKey) return
 
-    const inRail = railRef.current?.contains(target) ?? false
     const arrowNext = e.key === 'ArrowRight'
     const arrowPrev = e.key === 'ArrowLeft'
 
-    // Owned: the arrows are the deck's, and they are claimed even where the bin
-    // would otherwise have taken them.
     if (ownsTransport && (arrowNext || arrowPrev)) {
       e.preventDefault()
       e.stopPropagation()
@@ -386,8 +380,8 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       return
     }
 
-    const isNext = e.key === '.' || (inRail && arrowNext)
-    const isPrev = e.key === ',' || (inRail && arrowPrev)
+    const isNext = e.key === '.'
+    const isPrev = e.key === ','
 
     if (isNext) {
       e.preventDefault()
@@ -438,7 +432,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const onBlurCapture = (e: React.FocusEvent<HTMLDivElement>): void => {
     if (e.relatedTarget !== null || !active) return
     const rail = railRef.current
-    const option = rail?.querySelectorAll<HTMLElement>('[role="option"]')[focusIndex]
+    const option = rail?.querySelectorAll<HTMLElement>('[data-crate-sleeve]')[focusIndex]
     option?.focus()
   }
 
@@ -459,7 +453,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     // Never steal focus from something already in use inside the view — a
     // pressed action button, or a record the user just clicked.
     if (rail.contains(document.activeElement)) return
-    const option = rail.querySelectorAll<HTMLElement>('[role="option"]')[focusIndex]
+    const option = rail.querySelectorAll<HTMLElement>('[data-crate-sleeve]')[focusIndex]
     option?.focus({ preventScroll: true })
   }, [active, items.length, focusIndex])
 
@@ -607,7 +601,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             the flat rail still runs — the empty slots are the fill indicator and
             a half-full bin has no pile to show yet. */}
         {building ? (
-          <ul className="crate-rail" role="listbox" aria-label="Crate" ref={railRef} tabIndex={-1}>
+          <ul className="crate-rail" aria-label="Crate" ref={railRef} tabIndex={-1}>
             {items.map((item, index) => (
               <CrateSleeve
                 key={item.id}

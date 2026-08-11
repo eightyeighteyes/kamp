@@ -44,7 +44,7 @@ const GROUPS: Group[] = [
       {
         keys: [',', '.'],
         description: 'Previous / next record',
-        note: 'Always flips the crate, whether or not something is playing'
+        note: 'The only keys that move through the crate'
       },
       {
         keys: ['Space'],
@@ -54,7 +54,7 @@ const GROUPS: Group[] = [
       {
         keys: ['←', '→'],
         description: 'Previous / next track',
-        note: 'While a preview is playing. Otherwise they move through the crate'
+        note: 'The preview while one is playing, otherwise your own queue'
       },
       {
         keys: ['click', 'transport'],

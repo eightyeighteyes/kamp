@@ -9,18 +9,30 @@
  * nothing animates height (the project rule — Electron makes it jerky).
  */
 
+/* The view FILLS its pane and never scrolls (KAMP-671).
+ *
+ * The spec's one hard layout rule is that the footer is always in the viewport.
+ * Rather than pin it — which fights a bin whose sleeves lean out of their own
+ * box — the whole view takes the pane's height and distributes it internally.
+ * layout.css turns off .main-content's scroll for this view to match.
+ *
+ * overflow: hidden here is the ONLY clip in the composition. Grid cells do not
+ * clip, so the flipped pile can still hang out of the bin's box the way it has
+ * since KAMP-656; it just cannot push the page around any more. */
 .crate-view {
-  /* One number for the content column. The rail is the widest thing in the
-     view (10 sleeves + gaps ≈ 810px), so this is sized from it rather than
-     from the card — set it too narrow and the rail wraps to two rows. */
-  --crate-width: 880px;
+  /* One number for the whole three-column stage. Was 880px when the view was a
+     single column sized to the flat rail; the spec's three columns need
+     appreciably more, and the columns themselves are minmax()-bounded below so
+     this is a ceiling rather than a fixed width. */
+  --crate-width: 1200px;
 
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px 20px 24px;
+  gap: 12px;
+  padding: 12px 20px 16px;
+  height: 100%;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 /* Everything sits in one centred column rather than hugging the left edge.
@@ -32,6 +44,13 @@
   width: 100%;
   max-width: var(--crate-width);
   margin-inline: auto;
+}
+
+/* The empty and error states are still a centred single column — there is no
+   crate to lay out in three. Scrollable in its own right so a long error plus
+   the history line cannot be cut off by the view's clip. */
+.crate-view--empty {
+  overflow-y: auto;
 }
 
 .crate-banner {
@@ -73,74 +92,139 @@
   max-width: 42ch;
 }
 
-/* --- Focus card ----------------------------------------------------------- */
-
+/* --- The stage: three columns under a header ------------------------------
+ *
+ * titles | bin | deck, with the header spanning all three.
+ *
+ * The header sat over the middle column alone at first, matching the spec's
+ * drawing, and that made the layout hostage to one record's title: an item
+ * confined to a single track contributes ITS min-content to that track, so a
+ * long album name widened the middle column and shoved both neighbours. Spanning
+ * every column bounds the header by the stage instead of by a track, so no one
+ * record can resize the page. The titles are ellipsised too — the span alone
+ * raises the ceiling rather than removing it.
+ *
+ * minmax(0, 1fr) on the records row, never a bare 1fr: `1fr` is shorthand for
+ * minmax(auto, 1fr), whose auto minimum refuses to shrink below content — which
+ * is exactly how a grid that is supposed to fit the viewport silently overflows
+ * it instead. The 0 minimum lets the row actually take the height it is given.
+ */
 .crate-stage {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(300px, 1.3fr) minmax(260px, 0.9fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'header header header'
+    'titles bin    deck'
+    'footer footer footer';
+  gap: 12px 20px;
+  align-items: start;
 }
 
-.crate-focus {
+/* Type only, since KAMP-671's second pass: the action icons that used to sit at
+   the right of this band are gone and the whole header is given over to naming
+   the record and saying why it is here.
+
+   Capped at a readable measure rather than run to the full span — 26px type set
+   across 1200px would be a banner, not a heading. */
+.crate-header {
+  grid-area: header;
+  min-width: 0;
+  max-width: 62ch;
   display: flex;
-  gap: 20px;
-  align-items: flex-start;
-  /* The card is narrower than the rail, so centring the pair keeps the two
-     visually stacked instead of the card sitting off to one side. */
-  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.crate-titles-col {
+  grid-area: titles;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Top-aligned, NOT centred, and that is the pile's clearance.
+ *
+ * The flipped pile is a projection of a sleeve rotated -96deg about its bottom
+ * edge, so it hangs well below the bin's own box — by more than the sleeve is
+ * tall. Centring the bin in this row split the leftover space evenly above and
+ * below, which put the pile straight through the footer as soon as more than a
+ * couple of records had been flipped past. Pushing the bin to the top of the
+ * row gives the whole of the leftover height to the side that actually needs
+ * it. */
+.crate-bin-col {
+  grid-area: bin;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.crate-deck-col {
+  grid-area: deck;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Building: the streaming rail replaces the bin, and it needs the whole width
+   rather than the middle third — ten sleeves do not fit in a column. */
+.crate-stage--building {
+  grid-template-areas:
+    'header header header'
+    'bin    bin    bin'
+    'footer footer footer';
 }
 
 .crate-focus--digging {
   min-height: 220px;
-  align-items: center;
-  justify-content: center;
-}
-
-.crate-focus-art {
-  flex: 0 0 auto;
-  width: 220px;
-  aspect-ratio: 1;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
-  color: var(--text-dim);
-  font-size: 32px;
 }
 
-/* Same contract as .album-art: no JS fallback branch — an item with no art_url
-   (or a 404 the <img> reports) simply never gets .has-art and the glyph shows. */
-.crate-focus-art:not(.has-art)::before {
-  content: '♪';
-}
-
-.crate-focus-art-img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: var(--bg);
-}
-
-.crate-focus-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
+/* The band name takes the accent, matching the spec and the titles list. It is
+   the one place a colour carries meaning here; every state elsewhere is opacity
+   and weight, because --accent swings across eight palettes. */
 .crate-focus-artist {
-  color: var(--text-dim);
+  color: var(--accent);
   font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* Exactly two lines, ALWAYS — reserved whether the title needs one or two.
+ *
+ * The clamp alone was not enough. A title that wrapped to two lines made the
+ * header band taller, and since the header is a grid row sized to `auto`, that
+ * pushed the titles list, the bin and the footer down; flipping past a wordy
+ * record shunted the whole page. Fixing the box at two lines' height means the
+ * header is the same height for every record in the crate.
+ *
+ * Two rather than one because Bandcamp titles are genuinely long — "- if i had
+ * a body - consecutions from tranZmachine" — and cutting most of them at one
+ * line would be its own kind of wrong. overflow-wrap catches a single unspaced
+ * monster that no ellipsis would. */
 .crate-focus-title {
   color: var(--text);
-  font-size: 20px;
+  font-size: 26px;
   font-weight: 600;
-  line-height: 1.25;
+  line-height: 1.2;
+  height: 2.4em; /* 2 lines at line-height 1.2 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .crate-focus-position {
@@ -150,8 +234,18 @@
 
 /* The clerk card: a shelf tag, not body copy. Deliberately set apart from the
    title block so the reason reads as something written by hand and slipped into
-   the sleeve. */
+   the sleeve.
+
+   Two lines, reserved, for the same reason the title is: the header is a grid
+   row sized to `auto`, so anything in it that changes height with the record
+   moves the columns, the bin and the footer underneath. */
 .crate-clerk-card {
+  box-sizing: border-box;
+  height: calc(2.8em + 14px); /* 2 lines at line-height 1.4, plus the padding */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
   margin: 4px 0 2px;
   padding: 7px 10px;
   border-left: 2px solid var(--accent);
@@ -162,58 +256,12 @@
   max-width: 52ch;
 }
 
-/* --- Actions -------------------------------------------------------------- */
-
-.crate-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.crate-action {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  border-radius: 4px;
-  padding: 6px 12px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.crate-action:hover:not(:disabled) {
-  background: var(--surface-hover);
-}
-
-.crate-action--primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--text-on-accent);
-}
-
-.crate-action:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-/* The wishlist done-state. Deliberately not --primary: the primary slot belongs
-   to "Give it a spin", and two accent-filled buttons side by side would read as
-   competing calls to action. This is a quiet confirmation of something already
-   true, so it takes the accent as a tint and an outline rather than a fill. */
-.crate-action--done {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-/* Still clickable when done — pressing it again removes the record — so it must
-   not inherit the flat :disabled treatment. */
-.crate-action--done:hover:not(:disabled) {
-  background: var(--surface-hover);
-}
-
-/* Sits under the action row, beside the button that is also the retry. Matches
-   .crate-preview-error rather than shouting in an error colour: the clerk is
-   explaining, not warning, and Copy link is right there. */
+/* The header carries no controls at all — see .crate-header. Play lives on the
+   deck (and Space), the heart on every titles row and on the deck, the link on
+   C. So nothing here needs a button style; the only thing left is the failure
+   message, at the foot of the header. Matches .crate-preview-error rather than
+   shouting in an error colour: the clerk is explaining, not warning, and the
+   record it happened to is named directly above. */
 .crate-action-error {
   margin: 8px 0 0;
   color: var(--text-dim);
@@ -257,25 +305,46 @@
      meant guessing at two unrelated constants. Everything below is a ratio of
      this, so a crate of four and a crate of ten need no separate treatment and
      the bin scales with the content column rather than against it. */
-  /* vw, NOT a percentage, and that is load-bearing rather than a preference.
-     This token is used for `width` AND inside `calc()` for `height` below. A
-     percentage means "of the containing block's width" in one and "of its
-     height" in the other — and the parent's height is auto, so the height calc
-     went indefinite, the records box collapsed to zero, and every sleeve (all
-     absolutely positioned at bottom: 0) hung its full height UPWARD out of a box
-     with no height, straight over the focus card. A viewport unit resolves
-     identically in both contexts. */
-  --bin-sleeve: clamp(150px, 20vw, 230px);
+  /* Viewport units, NOT percentages, and that is load-bearing rather than a
+     preference. This token is used for `width` AND inside `calc()` for `height`
+     below. A percentage means "of the containing block's width" in one and "of
+     its height" in the other — and the parent's height was auto, so the height
+     calc went indefinite, the records box collapsed to zero, and every sleeve
+     (all absolutely positioned at bottom: 0) hung its full height UPWARD out of
+     a box with no height, straight over the focus card. A viewport unit resolves
+     identically in both contexts.
+   *
+   * Sizing is deliberately WIDTH-only. A vh term was tried in KAMP-671 to keep
+   * the bin inside a non-scrolling view and reverted: the pile is a projection
+   * of the sleeve through a -96deg rotation, so it grows over 1.2x faster than
+   * the sleeve does, and a taller sleeve made the pile comically large long
+   * before the bin itself ran out of room. The pile is given space by
+   * top-aligning the bin in its column instead — see .crate-bin-col.
+   *
+   * The ceiling then went back UP once the divider card was capped to this same
+   * token: the artwork has to be at least as wide as the card standing behind
+   * it, and it was not. If the pile reads too large again the lever is
+   * `perspective` on .crate-bin-records, which controls how far a record lying
+   * at -96deg splays out — NOT this token, which would shrink the art with it. */
+  --bin-sleeve: clamp(170px, 24vw, 300px);
   --bin-lean: 15deg;
   /* Proportional to the sleeve, so the stagger stays a constant fraction of the
      art rather than collapsing at large sizes and swamping it at small ones. */
   --bin-depth-step: calc(var(--bin-sleeve) * 0.07);
+  /* Clearance above the art: room for the lean, the perspective scale-up, and
+     the divider card that now sits in it. The card is ANCHORED to the sleeve top
+     rather than sized against this, so this only has to be big enough — it is no
+     longer a number two rules have to agree on. */
+  --bin-headroom: calc(var(--bin-sleeve) * 0.3);
 
   position: relative;
   width: 100%;
   max-width: var(--crate-width);
   margin-inline: auto;
-  padding: 28px 0 12px;
+  /* Zero, deliberately: the divider card is anchored with `bottom` against this
+     box, so any bottom padding here would offset it from the sleeves' own
+     bottom: 0 baseline and reopen the gap it exists to close. */
+  padding: 0;
 }
 
 .crate-bin-records {
@@ -300,9 +369,11 @@
      the lean starts to look like a funhouse mirror. */
   perspective: 900px;
   perspective-origin: 50% 30%;
-  /* The sleeve is square, plus room for the lean behind it and the pile in
-     front. A fixed height here is what clipped the top of a larger sleeve. */
-  height: calc(var(--bin-sleeve) * 1.3);
+  /* The sleeve is square, plus the headroom the lean and the perspective
+     scale-up need above it. A fixed height here is what clipped the top of a
+     larger sleeve. The headroom is a named token because the divider card
+     cancels exactly this much to sit flush on the artwork. */
+  height: calc(var(--bin-sleeve) + var(--bin-headroom));
   margin: 0;
   padding: 0;
   list-style: none;
@@ -470,14 +541,46 @@
 .crate-bin-spine {
   /* Above the records, because the card stands at the BACK of the bin — you
      read it over their tops. The tab is therefore clipped on its top corners
-     and open at the bottom, where the card continues down behind the sleeves. */
-  margin: 0 auto 8px;
-  width: fit-content;
-  max-width: 90%;
-  padding: 4px 14px 6px;
+     and open at the bottom, where the card continues down behind the sleeves.
+   *
+   * ANCHORED, not flowed. Getting it flush with the artwork by cancelling the
+   * headroom with a negative margin was arithmetic that had to stay in step with
+   * the sleeve's own transforms — the focused record is translated up and scaled
+   * by the perspective, so its painted top never quite matched the nominal one
+   * and a gap survived. Positioning it against the same `bottom: 0` baseline the
+   * sleeves use, offset by exactly one sleeve height, puts its lower edge on the
+   * top edge of the artwork by construction at any size.
+   *
+   * z-index 0 so the records paint over it: the card stands behind them. */
+  position: absolute;
+  left: 50%;
+  bottom: var(--bin-sleeve);
+  transform: translateX(-50%);
+  z-index: 0;
+  /* EXACTLY the width of the record it stands behind, which is what a divider
+     card is: cut to the same size as the sleeves it separates.
+   *
+   * It was `width: fit-content; max-width: var(--bin-sleeve)`, and that combination
+   * is a trap. The cap made the label wrap, and fit-content then shrank the card
+   * to the longest WRAPPED line — so a card that was correctly capped to the art
+   * rendered around two thirds of it and read as a small floating caption.
+   *
+   * The label may still wrap at a narrow window, and that is fine: what read as
+   * wrong was the CARD shrinking, not the text taking two lines. Two lines is the
+   * cap, with an ellipsis beyond it, so no crate name can grow the card down into
+   * the artwork. Padding and letter-spacing are trimmed so the usual name fits on
+   * one line at full size, and border-box keeps the total equal to the sleeve
+   * rather than sleeve + padding. */
+  box-sizing: border-box;
+  width: var(--bin-sleeve);
+  padding: 4px 8px 6px;
   text-align: center;
   font-size: 11px;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.05em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
   color: var(--text-dim);
   /* Kraft: a warm wash over the theme surface rather than a hardcoded tan,
      which would be wrong in seven of the eight palettes. */
@@ -584,7 +687,13 @@
 
 /* --- The rail ------------------------------------------------------------- */
 
+/* The build-time rail. Takes the bin's grid slot, which .crate-stage--building
+   widens to all three columns — ten sleeves plus their empty slots do not fit in
+   the middle third, and neither the titles list nor the deck is rendered while a
+   crate is still arriving. */
 .crate-rail {
+  grid-area: bin;
+  align-self: center;
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
@@ -684,47 +793,52 @@
   opacity: 0.5;
 }
 
-/* Dig button and the digging-history line, centred in the space between the
-   preview slot above and the app's transport bar below. */
+/* Dig button and the digging-history line, spanning all three columns at the
+   foot of the stage. Always in the viewport — that is the whole reason the view
+   fills its pane instead of scrolling (KAMP-671). */
 .crate-footer {
+  grid-area: footer;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding-top: 20px;
+  padding-top: 8px;
 }
 
-/* --- The deck (KAMP-668) ---------------------------------------------------
+/* --- The deck (KAMP-668, re-columned in KAMP-671) --------------------------
  *
  * Always present, with or without a record on it. It used to be a reserved slot
  * that showed a hint line until something played, which held the space without
  * ever reading as an object — and a record cannot be put ON something that only
  * exists once it is playing.
  *
- * The top margin is clearance rather than taste: the flipped pile sits forward
- * at the crate lip and is translated up, so it hangs below the bin's own box and
- * would otherwise land here.
+ * Now the right-hand column, stacked: the playing record's art on top, then the
+ * transport, then the track list. It no longer needs the top-margin clearance it
+ * had when it sat under the bin (the pile hangs below the bin's own box), which
+ * is one benefit of the columns being siblings rather than stacked.
  */
 .crate-deck {
-  min-height: 236px;
-  max-width: 60ch;
-  margin: 44px auto 0;
+  height: 100%;
+  min-height: 0;
   display: flex;
-  gap: 16px;
-  align-items: flex-start;
-  padding: 14px;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--surface);
 }
 
-/* Where a record lands. Sized in ch-independent px so the flight has a stable
-   target, and empty-but-obvious when nothing is on it — a turntable with no
-   record still looks like a turntable. */
+/* Where a record lands, and the largest the art gets on this side of the screen.
+   Square via aspect-ratio and capped so a tall window does not turn the platter
+   into the whole column; the flight targets this box, so it needs a stable size
+   rather than one that depends on what is playing. */
 .crate-deck-platter {
   flex: 0 0 auto;
-  width: 96px;
+  width: 100%;
+  max-width: 180px;
+  margin-inline: auto;
   aspect-ratio: 1;
   border-radius: 3px;
   border: 1px dashed var(--border);
@@ -752,8 +866,10 @@
 .crate-deck-body {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  gap: 8px;
 }
 
 .crate-deck-empty {
@@ -804,86 +920,129 @@
    main transport keeps showing the user's own queue, so two players on screen
    is the point. */
 .crate-preview {
-  margin-top: 12px;
-  padding: 10px 12px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--surface);
-  max-width: 52ch;
+  background: var(--bg);
 }
 
-.crate-preview-head {
+/* Transport left, the record it belongs to in the middle, the heart at the far
+   right — the spec's arrangement, and it reads as a player rather than a list of
+   controls with a caption. */
+.crate-preview-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 6px;
 }
 
-.crate-preview-chip {
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  padding: 2px 6px;
-  border-radius: 2px;
-  background: var(--accent);
-  color: var(--text-on-accent);
+/* Band and album, NOT the track title (KAMP-671). The track is named in the list
+   directly below with the current one highlighted, so repeating it here spent
+   the most prominent line in the player on the one fact already on screen —
+   while the record it belongs to went unnamed. */
+.crate-preview-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding-inline: 4px;
 }
 
-.crate-preview-title {
-  color: var(--text);
-  font-size: 13px;
+.crate-preview-artist {
+  color: var(--accent);
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.crate-preview-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.crate-preview-btn {
-  border: 1px solid var(--border);
-  background: transparent;
+.crate-preview-title {
   color: var(--text);
-  border-radius: 3px;
-  min-width: 28px;
-  padding: 3px 6px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.crate-preview-btn:hover {
-  background: var(--surface-hover);
-}
-
-.crate-preview-btn--play {
-  min-width: 34px;
-}
-
-.crate-preview-seek {
-  flex: 1;
-  min-width: 0;
-  accent-color: var(--accent);
-}
-
-.crate-preview-clock {
-  color: var(--text-dim);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.crate-preview-bar {
-  margin-top: 8px;
-  height: 2px;
-  background: var(--border);
-  overflow: hidden;
+.crate-preview-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 3px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  cursor: pointer;
 }
 
-.crate-preview-bar-fill {
-  height: 100%;
-  background: var(--accent);
+.crate-preview-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.crate-preview-btn--play {
+  color: var(--text);
+}
+
+.crate-preview-btn--done {
+  color: var(--accent);
+}
+
+.crate-preview-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ONE progress bar, and it is still a real control.
+ *
+ * The spec asks for the thin bar without a handle; there used to be both a
+ * range input AND a decorative div. Deleting the input would have taken keyboard
+ * seeking with it, so instead the input IS the bar: thumb hidden, track thin,
+ * progress painted with a gradient stop at --pct. Pointer seek and arrow-key
+ * seek both survive, and there is exactly one bar on screen. */
+.crate-preview-seek {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0 var(--pct, 0%),
+    var(--border) var(--pct, 0%) 100%
+  );
+  cursor: pointer;
+}
+
+.crate-preview-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  /* Present but invisible: a zero-width thumb is not draggable, so it keeps its
+     hit area and loses only its paint. */
+  width: 12px;
+  height: 12px;
+  opacity: 0;
+}
+
+/* Keyboard focus still has to be visible even though the thumb is not. */
+.crate-preview-seek:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.crate-preview-clock {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .crate-preview-error {
@@ -894,15 +1053,19 @@
 
 /* --- Track list ----------------------------------------------------------- */
 
-/* Bounded and scrolling: track counts vary wildly and an unbounded list is
-   what pushed the rail off the bottom on a long record. */
+/* Scrolls inside its column rather than growing it: track counts vary wildly,
+   and the view no longer has a page scroll to absorb a 20-track album. It takes
+   whatever height the deck column has left, and no more. */
 .crate-tracklist {
   list-style: none;
-  margin: 10px 0 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
   padding: 0;
-  max-width: 52ch;
-  max-height: 132px;
   overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
 }
 
 .crate-track {
@@ -947,6 +1110,127 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* --- Crate titles (KAMP-671) -----------------------------------------------
+ *
+ * The whole crate at a glance, down the left. This is what retired the hold
+ * shelf (KAMP-669): showing every record and letting you jump to any of them is
+ * strictly more useful than showing only the ones you hearted.
+ *
+ * Deliberately NOT a second role="listbox". The bin is the listbox — it owns the
+ * roving tabindex, aria-setsize/aria-posinset and the KAMP-598 focus recovery,
+ * and duplicating that here would make a screen reader announce every record
+ * twice and give the arrow keys two meanings. This is a plain list of ordinary
+ * buttons, with aria-current marking the one the bin is showing.
+ */
+.crate-titles {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+}
+
+/* Scrolls rather than compressing: a full crate is ten records and the rows keep
+   a legible height whatever the window does. */
+.crate-titles-list {
+  list-style: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.crate-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+/* The record the bin is currently showing. Border weight plus a lifted surface,
+   not hue — same rule as the sleeves, because --accent swings across the eight
+   palettes and a coloured row would fight the band names. */
+.crate-title-row--current {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+/* min-width: 0 is load-bearing on both the button and the spans inside it: a
+   flex item's automatic minimum size is min-content, so without it a long
+   unbroken title refuses to shrink and widens the whole column instead of
+   ellipsising. Same reason the header has a ceiling. */
+.crate-title-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  border: 0;
+  background: transparent;
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.crate-title-artist {
+  color: var(--accent);
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crate-title-album {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crate-title-heart {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0;
+}
+
+.crate-title-heart:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.crate-title-heart--done {
+  color: var(--accent);
+}
+
+.crate-title-heart:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* --- Motion --------------------------------------------------------------- */
 
 @media (prefers-reduced-motion: no-preference) {
@@ -956,18 +1240,10 @@
       opacity 160ms ease;
   }
 
-  .crate-focus-art-img {
-    animation: crateArtIn 200ms ease both;
-  }
-
-  @keyframes crateArtIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
+  /* The header's own copy of the artwork is gone (KAMP-671) — the large art is
+     now the bin's front record — so the fade that covered its swap goes with it.
+     The deck's platter does not fade: a record arriving there arrives by flight,
+     and cross-fading the destination of a flight double-animates one event. */
 
   /* The settle — the payload of the whole bin concept (KAMP-656).
 

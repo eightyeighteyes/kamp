@@ -12,9 +12,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { crateArtUrl } from '../api/client'
-import type { CrateItem, DiggingStats } from '../api/client'
+import type { DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
 import { CrateBin } from './CrateBin'
+import { CrateTitles } from './CrateTitles'
 import { crateSpineName } from './crateSpine'
 import { CratePreviewStrip } from './CratePreviewStrip'
 import { RecordFlight } from './RecordFlight'
@@ -111,21 +112,16 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const focusIndex = items.length === 0 ? 0 : Math.min(focused, items.length - 1)
   const current = items[focusIndex] ?? null
 
-  // The done-state is read from item.state, never from a local flag. A confirmed
-  // write re-broadcasts the whole crate, so this arrives from the daemon — which
-  // makes "never show a done-state Bandcamp has not confirmed" structural rather
-  // than something the click handler has to remember. It also survives a remount,
-  // a view switch, and KAMP-652 marking items out of band.
-  const wishlisted = current?.state === 'wishlisted'
-  const wishlistSaving = current ? wishlistPending.includes(current.id) : false
-  // A bought record is not offered a wishlist toggle at all (KAMP-654).
+  // Read from item.state, never from a local flag: a confirmed write
+  // re-broadcasts the whole crate, so this arrives from the daemon — which makes
+  // "never show a done-state Bandcamp has not confirmed" structural rather than
+  // something a click handler has to remember. The heart itself now lives in the
+  // titles list and the deck; what is needed HERE is the guard for the W key.
   //
   // Not cosmetic: `state` is a single-slot rank cache and 'purchased' (rank 4)
-  // MASKS 'wishlisted' (rank 3), so after attribution `wishlisted` above goes
-  // false for a record that really is on the user's Bandcamp wishlist — and the
-  // next W press would POST an *add* for it. Retiring the toggle once the record
-  // is owned sidesteps the masking entirely, and is the better answer anyway:
-  // you do not wishlist something you already have.
+  // MASKS 'wishlisted' (rank 3), so after attribution a record really on the
+  // user's Bandcamp wishlist reports false — and the next W press would POST an
+  // *add* for something already owned (KAMP-654).
   const purchased = current?.state === 'purchased'
 
   // KAMP-655. Both ride the crate snapshot, so they are live without a fetch and
@@ -203,11 +199,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
 
   // Preview state for the record on screen. The engine plays one item at a
   // time, so a preview belonging to another card must not light this one up.
+  // Only Space reads this now that the header carries no play button — the
+  // deck's own transport reads `preview` directly, because it follows what is
+  // PLAYING rather than what is focused.
   const previewingThis = Boolean(
     current && preview && preview.item_id === current.id && preview.state !== 'idle'
   )
-  const previewPlaying = previewingThis && preview?.state === 'playing'
-  const previewPreparing = previewingThis && preview?.state === 'preparing'
 
   // Not memoized: `current` is derived from the filtered crate on every render,
   // so a useCallback here cannot keep a stable identity anyway.
@@ -224,11 +221,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     if (useStore.getState().preview?.state !== 'idle') void previewAction('stop')
   }, [active, previewAction])
 
-  // The album's own page, for buying it or reading the notes — preview now
-  // handles listening (KAMP-651).
-  const openOnBandcamp = useCallback((item: CrateItem): void => {
-    if (item.item_url) window.api.openExternal(item.item_url)
-  }, [])
+  // NOTE: there is no longer any way to open the record's own Bandcamp page from
+  // the Crate. Its only affordance was the header icon row, which this story
+  // removed; unlike play (Space, and the deck), the heart (the titles list, the
+  // deck, W) and the link (C), nothing else offers it. Copy link plus a paste is
+  // the remaining path. Flagged rather than quietly kept as dead code — if it
+  // should come back it wants a home and a key, not a reinstated button.
 
   // A failure explains the record it happened on. Carrying it to the next one
   // would have the clerk apologising about something else entirely.
@@ -240,10 +238,17 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const focusSleeve = useCallback((index: number): void => {
     setFocused(index)
     // Move real DOM focus with the selection so the roving tabindex stays
-    // coherent and the container keeps receiving keys.
+    // coherent and the container keeps receiving keys. This is also what a click
+    // in the titles list calls, which is why focus lands in the bin rather than
+    // staying on the row you clicked — the bin is the widget that owns selection.
+    //
+    // preventScroll, for the same reason the mount effect uses it: the sleeves
+    // are absolutely positioned and lean out of their box, and the view is now a
+    // clipped fixed-height box (KAMP-671). A scroll-into-view on a leaning
+    // element can shift the whole composition inside that clip.
     const rail = railRef.current
     const option = rail?.querySelectorAll<HTMLElement>('[role="option"]')[index]
-    option?.focus()
+    option?.focus({ preventScroll: true })
   }, [])
 
   // Escape leaves the view. Deliberately a window listener, matching
@@ -439,95 +444,65 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     <div className="crate-view" onKeyDown={onKeyDown} onBlurCapture={onBlurCapture}>
       {banner}
 
-      <div className="crate-stage">
+      <div className={`crate-stage${building ? ' crate-stage--building' : ''}`}>
+        {/* The header belongs to the MIDDLE column, not the page: in the spec
+            its text starts at the same x as the centre album art, so it reads as
+            that column's heading. It carries no artwork of its own any more —
+            the large art is the bin's front record, one screen-width away from
+            being the same picture twice (KAMP-671). */}
         {current ? (
-          <article className="crate-focus">
-            <div className={`crate-focus-art${current.art_url ? ' has-art' : ''}`}>
-              {current.art_url && (
-                <img
-                  className="crate-focus-art-img"
-                  src={crateArtUrl(current.id)}
-                  alt=""
-                  key={current.id}
-                />
-              )}
-            </div>
-            <div className="crate-focus-meta">
-              <p className="crate-focus-artist">{current.artist}</p>
-              <h2 className="crate-focus-title">{current.title}</h2>
-              {current.why && (
-                <p className="crate-clerk-card" {...tooltip(TOOLTIPS.CRATE_WHY)}>
-                  {current.why}
-                </p>
-              )}
-              <p className="crate-focus-position">
-                Record {focusIndex + 1} of {items.length}
-                {current.release_date ? ` · ${current.release_date.slice(0, 4)}` : ''}
-              </p>
-              <div className="crate-actions">
-                <button
-                  className="crate-action crate-action--primary"
-                  onClick={togglePreview}
-                  disabled={previewPreparing}
-                  {...tooltip(TOOLTIPS.CRATE_PREVIEW)}
-                >
-                  {previewPreparing
-                    ? 'Cueing it up…'
-                    : previewPlaying
-                      ? 'Hold on'
-                      : 'Give it a spin'}
-                </button>
-                <button
-                  className="crate-action"
-                  onClick={() => openOnBandcamp(current)}
-                  disabled={!current.item_url}
-                >
-                  Open on Bandcamp
-                </button>
-                <button
-                  className={`crate-action${wishlisted || purchased ? ' crate-action--done' : ''}`}
-                  onClick={() => void toggleCrateWishlist(current)}
-                  disabled={wishlistSaving || purchased}
-                  {...tooltip(
-                    purchased
-                      ? TOOLTIPS.CRATE_PURCHASED
-                      : wishlisted
-                        ? TOOLTIPS.CRATE_UNWISHLIST
-                        : TOOLTIPS.CRATE_WISHLIST
-                  )}
-                >
-                  {purchased
-                    ? '◆ In your collection'
-                    : wishlistSaving
-                      ? 'Setting it aside…'
-                      : wishlisted
-                        ? '♥ In your wishlist'
-                        : 'Wishlist it'}
-                </button>
-                <button
-                  className="crate-action"
-                  onClick={() => void copyCrateItemUrl(current)}
-                  {...tooltip(TOOLTIPS.CRATE_COPY)}
-                >
-                  Copy link
-                </button>
-              </div>
+          <header className="crate-header">
+            {/* Type only. The header used to end in a row of action icons; they
+                are gone and the whole band is given over to naming the record
+                and saying why it is here. Every action they carried is still
+                reachable: play from the deck or Space, the heart from the titles
+                list and the deck, the link from C.
 
-              {/* The clerk explains a failed wishlist write here rather than in a
-                  toast: the retry is this button, so the message belongs beside
-                  it. Copy link is right there as the fallback every reason ends
-                  at. Not a reserved slot — unlike the preview strip it appears
-                  rarely and pushes nothing the user is mid-interaction with. */}
-              {wishlistError && (
-                <p className="crate-action-error" role="status">
-                  {wishlistError}
-                </p>
-              )}
-            </div>
-          </article>
+                The title box is a FIXED two lines whether the title needs one or
+                two. Letting it size to content made the header taller on a long
+                title and shorter on a short one, which shifted the columns, the
+                bin and the footer every time you flipped past a wordy record. */}
+            <p className="crate-focus-artist">{current.artist}</p>
+            <h2 className="crate-focus-title">{current.title}</h2>
+            {current.why && (
+              <p className="crate-clerk-card" {...tooltip(TOOLTIPS.CRATE_WHY)}>
+                {current.why}
+              </p>
+            )}
+            <p className="crate-focus-position">
+              Record {focusIndex + 1} of {items.length}
+              {current.release_date ? ` · ${current.release_date.slice(0, 4)}` : ''}
+            </p>
+
+            {/* A failed wishlist write still explains itself here — the writes
+                now come from the titles list and the deck, but the header is the
+                one place that names the record the message is about. */}
+            {wishlistError && (
+              <p className="crate-action-error" role="status">
+                {wishlistError}
+              </p>
+            )}
+          </header>
         ) : (
-          <div className="crate-focus crate-focus--digging">
-            <p className="crate-empty-hint">Digging through the racks…</p>
+          <header className="crate-header">
+            <div className="crate-focus crate-focus--digging">
+              <p className="crate-empty-hint">Digging through the racks…</p>
+            </div>
+          </header>
+        )}
+
+        {/* The whole crate at a glance. Only once the bin is up: during a build
+            the middle column is the streaming rail across the full width, and a
+            list that grows a row at a time beside it is noise. */}
+        {!building && (
+          <div className="crate-titles-col">
+            <CrateTitles
+              items={items}
+              focusIndex={focusIndex}
+              wishlistPending={wishlistPending}
+              onFocus={focusSleeve}
+              onToggleWishlist={(item) => void toggleCrateWishlist(item)}
+            />
           </div>
         )}
 
@@ -553,87 +528,95 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             ))}
           </ul>
         ) : (
-          <CrateBin
-            items={items}
-            crateNo={crate?.crate_no ?? null}
-            focusIndex={focusIndex}
-            awayItemId={awayItemId}
-            spineName={spineName}
-            railRef={railRef}
-            onFocus={focusSleeve}
-          />
+          <div className="crate-bin-col">
+            <CrateBin
+              items={items}
+              crateNo={crate?.crate_no ?? null}
+              focusIndex={focusIndex}
+              awayItemId={awayItemId}
+              spineName={spineName}
+              railRef={railRef}
+              onFocus={focusSleeve}
+            />
+          </div>
         )}
 
-        {/* The deck (KAMP-668). Always here, whether or not a record is on it —
-            it is the thing a record gets put ON, so it has to exist before one
-            does. It used to be a reserved-but-empty slot showing a hint line,
-            which reserved the room without ever reading as an object.
-
-            Below the bin because the sleeves are absolutely positioned and lean
-            out of their container: ordering it after them keeps them off it by
-            construction rather than by fighting overflow.
+        {/* The deck (KAMP-668, the right column since KAMP-671). Always here,
+            whether or not a record is on it — it is the thing a record gets put
+            ON, so it has to exist before one does.
 
             The platter shows whatever is PLAYING, which is not necessarily the
             focused record — you can keep flipping while something plays, and the
-            deck should not change under you when you do. */}
-        <div className="crate-deck" role="group" aria-label="Preview deck">
-          <div
-            className={`crate-deck-platter${platterItem ? ' is-loaded' : ''}`}
-            ref={deckArtRef}
-            aria-hidden="true"
-          >
-            {platterItem?.art_url && (
-              <img className="crate-deck-art" src={crateArtUrl(platterItem.id)} alt="" />
-            )}
-          </div>
-
-          <div className="crate-deck-body">
-            {deckItem && preview ? (
-              <>
-                <CratePreviewStrip
-                  preview={preview}
-                  onToggle={togglePreview}
-                  onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
-                  onSeek={(position) => void previewSeek(position)}
-                />
-
-                {preview.tracks.length > 0 && (
-                  <ol className="crate-tracklist">
-                    {preview.tracks.map((track) => (
-                      <li key={track.track_num}>
-                        <button
-                          className={`crate-track${
-                            track.track_num === preview.track_num ? ' crate-track--current' : ''
-                          }`}
-                          onClick={() => void previewPlay(deckItem.id, track.track_num)}
-                        >
-                          <span className="crate-track-num">{track.track_num}</span>
-                          <span className="crate-track-title">
-                            {track.title || `Track ${track.track_num}`}
-                          </span>
-                          <span className="crate-track-time">{formatClock(track.duration)}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
+            deck should not change under you when you do. It is also the flight's
+            destination rect, which is why it keeps a fixed size rather than one
+            that depends on what is on it. */}
+        {!building && (
+          <div className="crate-deck-col">
+            <div className="crate-deck" role="group" aria-label="Preview deck">
+              <div
+                className={`crate-deck-platter${platterItem ? ' is-loaded' : ''}`}
+                ref={deckArtRef}
+                aria-hidden="true"
+              >
+                {platterItem?.art_url && (
+                  <img className="crate-deck-art" src={crateArtUrl(platterItem.id)} alt="" />
                 )}
+              </div>
 
-                {preview.error && (
-                  <p className="crate-preview-error" role="status">
-                    {preview.error === 'rate_limited'
-                      ? 'Bandcamp asked us to slow down — try again shortly.'
-                      : 'No preview for this one.'}
+              <div className="crate-deck-body">
+                {deckItem && preview ? (
+                  <>
+                    <CratePreviewStrip
+                      preview={preview}
+                      item={deckItem}
+                      wishlistSaving={wishlistPending.includes(deckItem.id)}
+                      onToggle={togglePreview}
+                      onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
+                      onSeek={(position) => void previewSeek(position)}
+                      onToggleWishlist={(item) => void toggleCrateWishlist(item)}
+                    />
+
+                    {preview.tracks.length > 0 && (
+                      <ol className="crate-tracklist">
+                        {preview.tracks.map((track) => (
+                          <li key={track.track_num}>
+                            <button
+                              className={`crate-track${
+                                track.track_num === preview.track_num ? ' crate-track--current' : ''
+                              }`}
+                              onClick={() => void previewPlay(deckItem.id, track.track_num)}
+                            >
+                              <span className="crate-track-num">{track.track_num}</span>
+                              <span className="crate-track-title">
+                                {track.title || `Track ${track.track_num}`}
+                              </span>
+                              <span className="crate-track-time">
+                                {formatClock(track.duration)}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+
+                    {preview.error && (
+                      <p className="crate-preview-error" role="status">
+                        {preview.error === 'rate_limited'
+                          ? 'Bandcamp asked us to slow down — try again shortly.'
+                          : 'No preview for this one.'}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="crate-deck-empty">
+                    Nothing on the deck. Space puts the record you&rsquo;re looking at on — your
+                    queue stays where it is.
                   </p>
                 )}
-              </>
-            ) : (
-              <p className="crate-deck-empty">
-                Nothing on the deck. Space puts the record you&rsquo;re looking at on — your queue
-                stays where it is.
-              </p>
-            )}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="crate-footer">
           {digButton}

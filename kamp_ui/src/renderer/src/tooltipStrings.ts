@@ -54,8 +54,9 @@ export const TOOLTIPS = {
   CRATE_WISHLIST: 'Add to your Bandcamp wishlist (W)',
   CRATE_UNWISHLIST: 'Remove from your Bandcamp wishlist (W)',
   CRATE_PURCHASED: 'You brought this one home',
-  CRATE_PREVIEW: 'Play a preview (Space) — your queue stays put',
-  CRATE_COPY: 'Copy link (C)',
+  // No CRATE_PREVIEW / CRATE_COPY / CRATE_BANDCAMP: the header's icon row was
+  // removed, so those three have no button left to hang a tooltip on. Preview is
+  // Space and the deck's own transport, copy is C.
 
   // Track / album favorites
   ALBUM_FAVORITE_ADD: 'Add to favorites',

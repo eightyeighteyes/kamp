@@ -468,10 +468,28 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           The distributor&rsquo;s on the phone — back in {formatPause(pauseRemaining)}.
         </div>
       )
+    {
+      /* Two reasons a crate can be short, and the clerk gives the one that is
+         true (KAMP-661). The dry-well case used to fall through to the line
+         below and blame a rate limit that had not happened — an invented
+         explanation, which is the one thing this feature cannot do.
+
+         The other line no longer claims a cause either. Short can also mean the
+         request budget ran out or a surface drifted, and the daemon does not
+         tell the UI which; asserting "Bandcamp asked us to slow down" was right
+         only some of the time. A real rate limit has its own banner above, with
+         a countdown. */
+    }
+    if (state === 'ready' && crate?.exhausted)
+      return (
+        <div className="crate-banner" role="status">
+          That&rsquo;s everything in these racks for now — more turns up as you listen.
+        </div>
+      )
     if (state === 'ready' && crate?.short)
       return (
         <div className="crate-banner" role="status">
-          Short crate today — Bandcamp asked us to slow down.
+          Short crate today — we couldn&rsquo;t fill it.
         </div>
       )
     if (crate?.thin && hasCrate)

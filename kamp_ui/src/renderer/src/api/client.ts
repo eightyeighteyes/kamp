@@ -602,6 +602,12 @@ export type CrateSnapshot = {
   crate_no: number | null
   filled: number
   short: boolean
+  // KAMP-661: WHY the crate is short — everything else had already been shown,
+  // rather than a budget stop or a rate limit. Unlike `short` this is not
+  // re-derived from the stored rows, because nothing on disk records why a build
+  // ended; it resets to false on a daemon restart, which is honest rather than
+  // restating a guess.
+  exhausted: boolean
   paused_until: number // Unix seconds; 0 when running
   hints: string[] // the user's top genres, for the digging status lines
   thin: boolean // a library with no listening history yet — chart picks only

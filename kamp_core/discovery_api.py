@@ -112,6 +112,12 @@ _INITIAL_STATUS: dict[str, Any] = {
     "crate_no": None,
     "filled": 0,
     "short": False,
+    # Why the last crate came up short: everything else had already been shown,
+    # as opposed to a budget stop or a 429 (KAMP-661). Deliberately NOT derived
+    # from the stored rows the way `short` is below — nothing on disk records why
+    # a build ended, and the claim is about the build that just happened, so it
+    # resets to False on a restart rather than being restated from stale data.
+    "exhausted": False,
     "paused_until": 0.0,
     "hints": [],
     "thin": False,
@@ -215,6 +221,11 @@ def register_discovery_routes(
             # be the previous crate's.
             snap["filled"] = len(items)
             snap["short"] = bool(items) and len(items) < CRATE_SIZE
+            # `exhausted` is deliberately NOT re-derived alongside these. Nothing
+            # on disk records why a build stopped, so it could only be guessed at
+            # here -- and guessing "you have seen everything" about a restored
+            # crate is exactly the kind of invented explanation the clerk does not
+            # give. It rides the live build's publish and resets on a restart.
         # The digging history rides along rather than being fetched separately
         # (KAMP-655). Five COUNTs over two small indexed tables, against a
         # snapshot that already reads every row of the crate -- so the numbers

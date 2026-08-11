@@ -26,7 +26,13 @@ from kamp_daemon.discovery import (
     SimpleBudget,
     crate_budget,
 )
-from kamp_daemon.discovery_criteria import REGISTRY, Criterion, criteria_for
+from kamp_daemon.discovery_criteria import (
+    REGISTRY,
+    Criterion,
+    Seed,
+    _genre_top_seeds,
+    criteria_for,
+)
 from kamp_daemon.discovery_sources import (
     BandcampDiscoverySource,
     RateLimitedError,
@@ -386,6 +392,192 @@ class TestGatherAgainstFixtures:
         profile = SeedProfile(top_genres=["a", "b"])
         found = _source(session).gather(profile, crate_budget())
         assert len(found) == 1
+
+
+class TestRotationAndPagination:
+    """KAMP-661: the reachable candidate space has to grow with use.
+
+    Everything here asserts on what the source *asked for*, not on what came back
+    — variety is a property of the requests, and a fake that returns the same body
+    every time would make an output-based assertion pass for the wrong reason.
+    """
+
+    # A THIN profile throughout the pagination tests, deliberately. It yields
+    # seeds for nothing but the chart, so exactly one criterion with exactly one
+    # seed runs and rotation cannot move. Testing pagination against a profile
+    # with genres conflates the two: rotation correctly advances to the `rand`
+    # slice on the second crate, which is a different query with its own place in
+    # the results, so the cursor legitimately starts over and the assertion fails
+    # for a reason that is not a bug.
+    def test_the_discover_cursor_is_carried_into_the_next_gather(self) -> None:
+        """Page two, without a network.
+
+        Before this, `"cursor": None` was hard-coded, so every crate for the life
+        of the install re-asked for the first 20 rows of the same query.
+        """
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+        source = _source(session)
+        state: dict[str, Any] = {}
+
+        source.gather(SeedProfile(), crate_budget(), state)
+        first = session.posts[0][1]["cursor"]
+        session.posts.clear()
+        source.gather(SeedProfile(), crate_budget(), state)
+        second = session.posts[0][1]["cursor"]
+
+        assert first is None, "the first ever request has no page to continue from"
+        assert second, "the second gather did not continue where the first stopped"
+
+    def test_an_empty_page_drops_the_cursor_rather_than_pinning_the_seed(self) -> None:
+        """A cursor that has walked off the end must not strand the query there.
+
+        Storing it unconditionally is the worse bug: that query would return
+        nothing for the rest of the install, invisibly, which is a quieter version
+        of the failure this story exists to remove.
+        """
+        state: dict[str, Any] = {}
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+        _source(session).gather(SeedProfile(), crate_budget(), state)
+        assert any(v for v in state.get("cursors", {}).values())
+
+        dry = FakeSession(post_body='{"results": [], "cursor": "zzz"}')
+        _source(dry).gather(SeedProfile(), crate_budget(), state)
+        assert not any(v for v in state.get("cursors", {}).values())
+
+    def test_consecutive_gathers_use_different_seeds_for_the_same_criterion(
+        self,
+    ) -> None:
+        """Rotation, asserted on the URL fetched rather than on the candidates."""
+        session = FakeSession(get_body=_fixture("album_page_with_recs"))
+        profile = SeedProfile(
+            recent_album_ids={1, 2},
+            recent_albums=[
+                _album_seed(album_id=1, url="https://a.bandcamp.com/album/one"),
+                _album_seed(album_id=2, url="https://b.bandcamp.com/album/two"),
+            ],
+        )
+        source = _source(session)
+        state: dict[str, Any] = {}
+
+        source.gather(profile, crate_budget(), state)
+        first = list(session.gets)
+        session.gets.clear()
+        source.gather(profile, crate_budget(), state)
+        second = list(session.gets)
+
+        assert first and second
+        assert first[0] != second[0], "the same seed was fetched twice running"
+
+    def test_rotation_advances_past_a_seed_that_produced_nothing(self) -> None:
+        """Otherwise a dead seed at the head of the list is retried forever.
+
+        Advancing only past PRODUCTIVE seeds looks right and is the trap: a seed
+        that yields nothing — a deleted album, an artist page with one release —
+        would sit at the head of every crate's fetch and the rotation would never
+        begin.
+
+        Driven through _run_criterion with a stubbed _run_seed rather than through
+        gather: the point is precisely which seeds were TRIED, and a fake session
+        cannot make the first fetch barren and the second fruitful.
+        """
+        source = _source(FakeSession())
+        tried: list[Any] = []
+
+        def fake_run_seed(criterion, seed, budget, owned, state=None):  # noqa: ANN001
+            tried.append(seed.target)
+            # Barren, barren, then a hit — so it stops on the third of three.
+            return [MagicMock()] if len(tried) == 3 else []
+
+        source._run_seed = fake_run_seed  # type: ignore[method-assign]
+        criterion = Criterion(
+            key="fake",
+            surface="fake",
+            endpoint_class=ALBUM_PAGE,
+            seeds=lambda _p: [
+                Seed(target=f"https://x/{i}", why="", seed_data={}) for i in range(3)
+            ],
+            label="fake",
+        )
+        state: dict[str, Any] = {}
+        source._run_criterion(criterion, SeedProfile(), crate_budget(), set(), state)
+
+        assert len(tried) == 3
+        # Past all three, wrapping — not parked on the first barren one.
+        assert state["seeds"]["fake"] == 0
+
+        tried.clear()
+        source._run_criterion(criterion, SeedProfile(), crate_budget(), set(), state)
+        assert tried[0] == "https://x/0", "wrapped offset should restart the list"
+
+    def test_genre_top_reaches_both_slices_over_successive_crates(self) -> None:
+        """Same tag, same request cost, a different part of the catalogue.
+
+        slice=top skews hard to the current year; alternating with rand is free
+        variety that needs no new mechanism — the seed list carries both and
+        rotation cycles them.
+        """
+        seeds = [
+            s.target for s in _genre_top_seeds(SeedProfile(top_genres=["ambient"]))
+        ]
+        assert {s["slice"] for s in seeds} == {"top", "rand"}
+
+    def test_a_criterion_with_no_seeds_is_not_a_division_by_zero(self) -> None:
+        """`start = offset % len(seeds)` needs the guard above it.
+
+        criteria_for() filters seedless criteria out before gather ever sees
+        them, so this is only reachable directly — which is exactly why it is
+        worth pinning rather than trusting the caller to keep filtering.
+        """
+        criterion = Criterion(
+            key="empty",
+            surface="fake",
+            endpoint_class=ALBUM_PAGE,
+            seeds=lambda _p: [],
+            label="empty",
+        )
+        source = _source(FakeSession())
+        assert (
+            source._run_criterion(criterion, SeedProfile(), crate_budget(), set(), {})
+            == []
+        )
+
+    def test_a_budget_stop_does_not_advance_past_seeds_never_tried(self) -> None:
+        """The offset records where to RESUME, so it may only move over seeds that
+        actually got a request. Advancing on the loop counter instead would skip
+        whatever the budget cut off, and those seeds would never be read.
+
+        Five seeds against a budget for two, so the expected offset is 2 — a
+        number that is neither "none tried" nor "all tried", which is what makes
+        the assertion mean something.
+        """
+        source = _source(FakeSession())
+        budget = SimpleBudget(limits={ALBUM_PAGE: 2})
+        criterion = Criterion(
+            key="fake",
+            surface="fake",
+            endpoint_class=ALBUM_PAGE,
+            seeds=lambda _p: [
+                Seed(target=f"https://x/{i}", why="", seed_data={}) for i in range(5)
+            ],
+            label="fake",
+        )
+
+        def barren(_c, _s, b, _o, _st=None):  # noqa: ANN001, ANN202
+            # Spends the budget the way a real fetch would, and finds nothing —
+            # so the loop keeps going until the budget, not the results, stops it.
+            b.consume(ALBUM_PAGE)
+            return []
+
+        source._run_seed = barren  # type: ignore[method-assign]
+        state: dict[str, Any] = {}
+        source._run_criterion(criterion, SeedProfile(), budget, set(), state)
+        assert state["seeds"]["fake"] == 2
+
+    def test_state_is_optional_so_every_existing_caller_still_works(self) -> None:
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+        assert _source(session).gather(
+            SeedProfile(top_genres=["ambient"]), crate_budget()
+        )
 
 
 class TestFetchPolicy:

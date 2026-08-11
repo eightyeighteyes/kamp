@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, types only
+    from collections.abc import MutableMapping
+
     from kamp_core.library import LibraryIndex, SeedAlbum, SeedArtist
 
 logger = logging.getLogger(__name__)
@@ -321,7 +323,12 @@ class DiscoverySource(ABC):
         return {}
 
     @abstractmethod
-    def gather(self, profile: SeedProfile, budget: RequestBudget) -> list[Candidate]:
+    def gather(
+        self,
+        profile: SeedProfile,
+        budget: RequestBudget,
+        state: "MutableMapping[str, Any] | None" = None,
+    ) -> list[Candidate]:
         """Return candidates for *profile*, spending no more than *budget* allows.
 
         Criteria are provider-internal: the source decides what to look for and
@@ -332,6 +339,14 @@ class DiscoverySource(ABC):
         have logged a WARNING naming the surface and URL.** Every discovery surface is
         an unofficial endpoint that will eventually drift, and silent emptiness is how
         that arrives as "discovery is broken" with nothing in the log to explain it.
+
+        *state* is scratch space the source may carry between crates: which seed it
+        stopped on, how far into a paginated query it has read (KAMP-661). Its shape
+        is the source's own business — the caller only persists it and hands it back,
+        which is what keeps rotation out of the builder and out of the schema. Mutate
+        it in place; it must stay JSON-serialisable. Optional, and a source that
+        needs no memory may ignore it, but one that ignores it can only ever reach
+        the first page of whatever it queries.
         """
 
     def preview_tracks(self, candidate: Candidate) -> list[PreviewStream]:

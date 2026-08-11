@@ -49,6 +49,11 @@ class ParseResult:
     #: from "marker present and empty" got the JSON case backwards and warned on
     #: every genuinely empty query.
     drifted: bool = False
+    #: Opaque continuation token for surfaces that page (KAMP-661). Only the
+    #: discover API sets it; None means "this surface does not page" or "there is
+    #: nothing after this", and the caller may not tell those apart — it stores
+    #: whatever it gets and stops paging when it gets None.
+    cursor: str | None = None
 
     def __bool__(self) -> bool:
         return bool(self.items)
@@ -270,8 +275,16 @@ def parse_discover_results(payload: str | dict[str, Any]) -> ParseResult:
     # returns exactly that for a tag outside its vocabulary, which is a normal
     # query outcome and must not be reported as drift. Drift on this surface means
     # the response parsed as JSON but no longer has a results key at all.
+    # The cursor is the whole of KAMP-661: it was parsed and dropped, so every
+    # crate re-asked for page one of the same query and the candidate pool looked
+    # exhausted after about five digs. The captured fixture reports 815,356
+    # results behind it. Coerced to str|None because an absent key, an explicit
+    # null and an empty string all mean the same thing to the caller.
+    cursor = body.get("cursor")
     result = ParseResult(
-        marker_present=isinstance(rows, list), drifted="results" not in body
+        marker_present=isinstance(rows, list),
+        drifted="results" not in body,
+        cursor=str(cursor) if cursor else None,
     )
     for row in rows or []:
         item_id = normalise_item_id(row.get("item_id"))

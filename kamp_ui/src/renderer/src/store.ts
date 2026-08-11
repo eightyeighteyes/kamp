@@ -968,8 +968,20 @@ export const useStore = create<PlayerStore>((set, get) => ({
   newCrate: async () => {
     try {
       await api.newCrate()
-      // No optimistic state: the builder publishes state:'building' immediately,
-      // and inventing a local 'building' would race a 409 we already lost.
+      // Clear the old records once the dig is ACCEPTED (KAMP-672).
+      //
+      // The daemon builds into a new crate_no and the snapshot serves
+      // latest_crate_no(), so until the first record of the new crate is placed
+      // the old one is still what comes back — it sat there looking live while a
+      // different crate was being dug, and the first new record then appeared
+      // among the previous ten.
+      //
+      // AFTER the await, never before: a 409 ("a crate is already building") is a
+      // real outcome, and clearing optimistically would empty the crate the user
+      // is still reading for a request we lost. `state` is left alone so the
+      // daemon's own 'building' stays authoritative; only the stale rows go.
+      const crate = get().crate
+      if (crate) set({ crate: { ...crate, items: [], crate_stats: null } })
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Could not dig a crate'
       get().showFlashToast(msg)

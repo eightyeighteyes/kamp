@@ -908,12 +908,31 @@
   background: var(--bg);
 }
 
-/* The gap in the crate. `visibility` rather than `display` or unmounting: the
-   element keeps its box and its place in the listbox, so roving tabindex,
-   aria-posinset and the focus recovery all carry on working while the record is
-   away — only the picture of it leaves. */
-.bin-sleeve--away {
-  visibility: hidden;
+/* The record that is out on the deck — a GHOST, not a gap (KAMP-672).
+ *
+ * KAMP-668 hid it outright (`visibility: hidden`) so you saw into the crate
+ * where it used to be. That was the more literal reading of taking a record out,
+ * and it was wrong in use: the record on the deck is the one you are most likely
+ * to act on next, and with an empty slot there was nothing to aim at — you could
+ * not tell what you were interacting with.
+ *
+ * So it stays on screen, drained of colour and flattened against the back of the
+ * bin, reading as the space a record came out of rather than as a record. The
+ * element was never unmounted for either treatment, so the listbox contract,
+ * roving tabindex and focus recovery are untouched; this only ever changed what
+ * the sleeve looks like. */
+.bin-sleeve--away .bin-sleeve-art {
+  opacity: 0.28;
+  filter: grayscale(1);
+  border-style: dashed;
+  box-shadow: none;
+}
+
+/* The corner sticker goes with it — a legible year and label floating over a
+   ghosted sleeve reads as the record still being there. */
+.bin-sleeve--away .bin-sleeve-sticker,
+.bin-sleeve--away .bin-sleeve-badge {
+  opacity: 0.3;
 }
 
 /* Its own strip rather than the TransportBar: the whole promise is that the

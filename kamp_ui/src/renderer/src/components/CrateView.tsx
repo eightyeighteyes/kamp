@@ -77,7 +77,18 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const previewSeek = useStore((s) => s.previewSeek)
   const tooltip = useTooltip()
 
-  const [focused, setFocused] = useState(0)
+  // Which record is selected, TAGGED WITH THE CRATE IT BELONGS TO (KAMP-672).
+  //
+  // A bare index would carry over to the next crate: dig from record 8 and the
+  // new crate opened at record 8. Storing the crate alongside it makes the index
+  // self-invalidating — one from a crate you are no longer looking at simply does
+  // not apply, and `focused` falls back to the front. That is a derivation rather
+  // than an effect that resets it afterwards, so there is no frame where the old
+  // index is briefly live against the new crate.
+  const [focus, setFocus] = useState<{ crate: number | null; index: number }>({
+    crate: null,
+    index: 0
+  })
   const railRef = useRef<HTMLUListElement | null>(null)
   const [pauseRemaining, setPauseRemaining] = useState(0)
 
@@ -104,6 +115,14 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
   }, [pausedUntil])
+
+  // A new crate opens at the front of it. Keyed on crate_no rather than on the
+  // dig click, because a crate can also arrive from a reconnect or another
+  // window and "start at record 1" has to hold for those too. Clamping alone
+  // would not do it: ten records in, index 7 is perfectly legal and simply the
+  // wrong place to be standing.
+  const crateNo = crate?.crate_no ?? null
+  const focused = focus.crate === crateNo ? focus.index : 0
 
   // Clamped during render rather than corrected in an effect: the crate grows
   // while a build streams, so the stored index can briefly point past the end.
@@ -221,6 +240,52 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     if (useStore.getState().preview?.state !== 'idle') void previewAction('stop')
   }, [active, previewAction])
 
+  // ---------------------------------------------------------------------------
+  // Transport ownership (KAMP-672)
+  //
+  // Once you put a record on, the deck owns the transport keys: the arrows become
+  // its prev/next track instead of the app's. Held here rather than in the store
+  // because nothing outside this view needs to read it and every release
+  // condition is something the view can already see.
+  //
+  // DERIVED from the preview being non-idle rather than set by the play handler.
+  // Preview state is daemon-owned and survives a renderer reload (KAMP-651), so
+  // deriving it means arriving with something already playing owns the transport
+  // too — and a preview that dies (not_found / unavailable / rate_limited) hands
+  // the keys back on its own rather than stranding them.
+  //
+  // Scoped to a live preview on purpose. KAMP-650 chose , and . over the arrows
+  // precisely because claiming the arrows for a whole view would strand a
+  // listener mid-album; a claim that lasts exactly as long as the thing it
+  // controls is the case that objection does not cover.
+  // One transport session: the record on the deck, for as long as it is live.
+  // null when nothing is playing, and a different value for the next record.
+  const session =
+    preview && preview.state !== 'idle' && preview.item_id != null ? String(preview.item_id) : null
+
+  // Yielding is recorded AGAINST THE SESSION it applies to rather than as a bare
+  // flag. A flag would have to be cleared when the next preview starts, which is
+  // a setState in an effect — and an effect that resets state leaves one render
+  // where the stale value is live. Comparing against the current session means a
+  // new record simply is not the one that was yielded, so it owns the transport
+  // again with no reset step at all.
+  const [yieldedSession, setYieldedSession] = useState<string | null>(null)
+  const ownsTransport = session !== null && yieldedSession !== session
+
+  // Clicking the global transport hands the keys straight back — the user has
+  // just said, with a pointer, which of the two players they mean. Capture phase,
+  // and pointerdown rather than click, so it lands before the button's own
+  // handler and before any focus change. Mirrors App's KAMP-598 listener.
+  useEffect(() => {
+    if (!active || session === null) return
+    const onPointerDown = (e: PointerEvent): void => {
+      const el = e.target as HTMLElement | null
+      if (el?.closest('.transport-bar')) setYieldedSession(session)
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => window.removeEventListener('pointerdown', onPointerDown, true)
+  }, [active, session])
+
   // NOTE: there is no longer any way to open the record's own Bandcamp page from
   // the Crate. Its only affordance was the header icon row, which this story
   // removed; unlike play (Space, and the deck), the heart (the titles list, the
@@ -235,21 +300,25 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     clearCrateWishlistError()
   }, [currentId, clearCrateWishlistError])
 
-  const focusSleeve = useCallback((index: number): void => {
-    setFocused(index)
-    // Move real DOM focus with the selection so the roving tabindex stays
-    // coherent and the container keeps receiving keys. This is also what a click
-    // in the titles list calls, which is why focus lands in the bin rather than
-    // staying on the row you clicked — the bin is the widget that owns selection.
-    //
-    // preventScroll, for the same reason the mount effect uses it: the sleeves
-    // are absolutely positioned and lean out of their box, and the view is now a
-    // clipped fixed-height box (KAMP-671). A scroll-into-view on a leaning
-    // element can shift the whole composition inside that clip.
-    const rail = railRef.current
-    const option = rail?.querySelectorAll<HTMLElement>('[role="option"]')[index]
-    option?.focus({ preventScroll: true })
-  }, [])
+  const focusSleeve = useCallback(
+    (index: number): void => {
+      // Tagged with the crate, so the index cannot outlive the crate it names.
+      setFocus({ crate: crateNo, index })
+      // Move real DOM focus with the selection so the roving tabindex stays
+      // coherent and the container keeps receiving keys. This is also what a
+      // click in the titles list calls, which is why focus lands in the bin
+      // rather than staying on the row you clicked — the bin owns selection.
+      //
+      // preventScroll, for the same reason the mount effect uses it: the sleeves
+      // are absolutely positioned and lean out of their box, and the view is a
+      // clipped fixed-height box (KAMP-671). A scroll-into-view on a leaning
+      // element can shift the whole composition inside that clip.
+      const rail = railRef.current
+      const option = rail?.querySelectorAll<HTMLElement>('[role="option"]')[index]
+      option?.focus({ preventScroll: true })
+    },
+    [crateNo]
+  )
 
   // Escape leaves the view. Deliberately a window listener, matching
   // DownloadsView: modals listen on document, which runs first, so Escape closes
@@ -282,24 +351,43 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // afterwards, since those are document listeners too and registration order
   // decides.
   //
-  // Digging is , and . rather than the arrows. The arrows are transport
-  // prev/next track globally, and taking them for the length of a whole view
-  // would strand a listener mid-album — the same objection that keeps Space
-  // unclaimed here (the ticket reserves it for preview, which is KAMP-651;
-  // swallowing it now would remove play/pause from a view of a music player for
-  // nothing).
+  // Digging is , and . — always, in both states. They are the crate's own keys
+  // and nothing takes them.
   //
-  // The arrows still work *inside the rail*, because that is the listbox
-  // contract a screen-reader user expects of a role="option" list and the scope
-  // is the widget rather than the view.
+  // The ARROWS have two meanings, decided by ownsTransport (KAMP-672):
+  //
+  //   nothing playing  -> the bin's listbox navigation, inside the rail only.
+  //                       That is the contract a screen-reader user expects of a
+  //                       role="option" list, and it holds right up until the
+  //                       user explicitly starts a transport session.
+  //   preview running  -> the deck's prev/next TRACK, anywhere in the view. The
+  //                       deck is the player you are looking at, so it should be
+  //                       the one the transport keys drive.
+  //
+  // Either way the app's global prev/next never sees them, and stopPropagation is
+  // what makes that true: App listens on `window`, React attaches at the root
+  // container below it, so stopping here means the key never reaches the global
+  // handler. Same mechanism that already gives the Crate Space and , / .
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
     const target = e.target as HTMLElement
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
     if (e.metaKey || e.ctrlKey || e.altKey) return
 
     const inRail = railRef.current?.contains(target) ?? false
-    const isNext = e.key === '.' || (inRail && e.key === 'ArrowRight')
-    const isPrev = e.key === ',' || (inRail && e.key === 'ArrowLeft')
+    const arrowNext = e.key === 'ArrowRight'
+    const arrowPrev = e.key === 'ArrowLeft'
+
+    // Owned: the arrows are the deck's, and they are claimed even where the bin
+    // would otherwise have taken them.
+    if (ownsTransport && (arrowNext || arrowPrev)) {
+      e.preventDefault()
+      e.stopPropagation()
+      void previewAction(arrowNext ? 'next' : 'prev')
+      return
+    }
+
+    const isNext = e.key === '.' || (inRail && arrowNext)
+    const isPrev = e.key === ',' || (inRail && arrowPrev)
 
     if (isNext) {
       e.preventDefault()
@@ -324,10 +412,17 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       // key would otherwise walk straight past it and re-add an owned record to
       // the wishlist (see the `purchased` note above).
       if (current && !purchased) void toggleCrateWishlist(current)
-    } else if (e.key === ' ') {
-      // Now that preview exists, Space is the Crate's (KAMP-651). KAMP-650
-      // deliberately left it global, because claiming it for a no-op would have
-      // removed play/pause from a whole view of a music player.
+    } else if (e.key === ' ' && (session === null || ownsTransport)) {
+      // Space is the Crate's (KAMP-651) — with one exception, and it is the same
+      // ownership rule the arrows follow (KAMP-672): once the user has clicked
+      // the global transport during a live preview, they have said which player
+      // they mean, and Space goes with the arrows. Falling through rather than
+      // handling it is the whole implementation — App's global play/pause picks
+      // it up because nothing stopped it.
+      //
+      // With nothing playing Space is unconditionally ours, because starting a
+      // preview is the primary action of the view and there is no session to
+      // have yielded yet.
       e.preventDefault()
       e.stopPropagation()
       togglePreview()

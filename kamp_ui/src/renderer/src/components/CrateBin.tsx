@@ -63,10 +63,11 @@ function BinSleeve({
   const classes = ['bin-sleeve']
   if (focused) classes.push('bin-sleeve--focused')
   if (flipped) classes.push('bin-sleeve--flipped')
-  // On the deck: the record is genuinely out of the crate, so you see into the
-  // gap where it was. Hidden rather than unmounted — the element keeps its place
-  // in the listbox, so roving tabindex, aria-posinset and the focus recovery all
-  // carry on working while the record is away (KAMP-668).
+  // On the deck. Rendered as a GHOST rather than hidden (KAMP-672): the record
+  // out on the deck is the one you are most likely to act on next, and an empty
+  // slot left nothing to aim at. Never unmounted under either treatment, so the
+  // listbox contract, roving tabindex and the focus recovery hold throughout
+  // (KAMP-668) — only the look of the sleeve changes.
   if (away) classes.push('bin-sleeve--away')
   // No 'dismissed' branch: pass is gone (KAMP-674). A legacy dismissed row from
   // before the removal is an ordinary record now, which is the honest rendering

@@ -58,8 +58,8 @@ const GROUPS: Group[] = [
       },
       {
         keys: ['click', 'transport'],
-        description: 'Hand the keys back',
-        note: 'Space and the arrows return to your queue until the next preview'
+        description: 'Your queue takes over',
+        note: 'The record stays on the deck — press play there to pick it back up'
       },
       {
         keys: ['W'],

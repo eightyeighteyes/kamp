@@ -689,6 +689,13 @@ export type PreviewState = {
   // 'not_found' | 'unavailable' | 'rate_limited' — a rate limit and an album
   // with nothing streamable want different words on screen.
   error: string | null
+  // The record still ON the deck with nothing playing, because the main
+  // transport took the floor (KAMP-678). Set only while `state` is 'idle': it is
+  // metadata about the deck, not a state of the engine, which is why the deck is
+  // the one thing that reads it and every "is a preview live" check still just
+  // reads `state`.
+  parked_item_id: number | null
+  parked_track_num: number | null
 }
 
 // An empty deck, as a value (KAMP-678). The deck's strip renders unconditionally
@@ -708,7 +715,9 @@ export const IDLE_PREVIEW: PreviewState = {
   duration: 0,
   buffering: false,
   tracks: [],
-  error: null
+  error: null,
+  parked_item_id: null,
+  parked_track_num: null
 }
 
 export const getPreviewState = (): Promise<PreviewState> => get('/api/v1/discovery/preview/state')

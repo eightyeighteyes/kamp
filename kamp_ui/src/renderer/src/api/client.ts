@@ -691,6 +691,26 @@ export type PreviewState = {
   error: string | null
 }
 
+// An empty deck, as a value (KAMP-678). The deck's strip renders unconditionally
+// so its transport is a visible affordance before anything is on — and so the
+// error line has somewhere to live, since every failure publishes state=idle.
+// A constant rather than a nullable prop: guarding ~150 lines of strip would put
+// a future divergence at every `?.`, and a second component would drift from
+// this one the first time the seek bar's CSS changed. Mirrors the daemon's
+// _IDLE_STATE, which is also what `preview` is before loadPreview resolves.
+export const IDLE_PREVIEW: PreviewState = {
+  state: 'idle',
+  item_id: null,
+  track_num: null,
+  title: '',
+  position: 0,
+  position_updated_at: 0,
+  duration: 0,
+  buffering: false,
+  tracks: [],
+  error: null
+}
+
 export const getPreviewState = (): Promise<PreviewState> => get('/api/v1/discovery/preview/state')
 
 export const previewPlay = (itemId: number, trackNum?: number): Promise<PreviewState> =>

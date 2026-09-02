@@ -1016,6 +1016,20 @@
   cursor: default;
 }
 
+/* Nothing on the deck (KAMP-678). The strip renders anyway — its transport is
+ * what tells you the deck is there — so the controls that need a record are
+ * dimmed rather than hidden. Play deliberately keeps full strength: it stays
+ * live, and means "put the record you're looking at on". */
+.crate-preview-seek:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.crate-preview-title--empty {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
 /* ONE progress bar, and it is still a real control.
  *
  * The spec asks for the thin bar without a handle; there used to be both a

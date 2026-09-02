@@ -11,7 +11,7 @@
 // and is rendered verbatim — it is the promise that every pick explains itself.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { crateArtUrl } from '../api/client'
+import { crateArtUrl, IDLE_PREVIEW } from '../api/client'
 import type { DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
 import { CrateBin } from './CrateBin'
@@ -231,6 +231,16 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     if (!current) return
     if (previewingThis) void previewAction('toggle')
     else void previewPlay(current.id)
+  }
+
+  // The deck's own play button acts on what is ON the deck; Space acts on what
+  // you are LOOKING AT. The two coincide until you flip while something plays —
+  // at which point the deck button used to swap the deck to the focused record,
+  // which is not what a play button on an occupied deck means (KAMP-678). With
+  // an empty deck it falls through to Space's meaning: put this one on.
+  const toggleDeck = (): void => {
+    if (deckItem) void previewAction('toggle')
+    else togglePreview()
   }
 
   // Leaving the view stops the preview: audio with no visible controls is the
@@ -671,53 +681,60 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
               </div>
 
               <div className="crate-deck-body">
-                {deckItem && preview ? (
-                  <>
-                    <CratePreviewStrip
-                      preview={preview}
-                      item={deckItem}
-                      wishlistSaving={wishlistPending.includes(deckItem.id)}
-                      onToggle={togglePreview}
-                      onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
-                      onSeek={(position) => void previewSeek(position)}
-                      onToggleWishlist={(item) => void toggleCrateWishlist(item)}
-                    />
+                {/* The strip renders whether or not anything is on: its transport
+                    is what tells you the deck is there and ready (KAMP-678). It
+                    also gives the error line below a home — every failure path
+                    publishes state=idle, which used to unmount this whole block
+                    and take the message with it. */}
+                <CratePreviewStrip
+                  preview={preview ?? IDLE_PREVIEW}
+                  item={deckItem}
+                  wishlistSaving={deckItem !== null && wishlistPending.includes(deckItem.id)}
+                  onToggle={toggleDeck}
+                  onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
+                  onSeek={(position) => void previewSeek(position)}
+                  onToggleWishlist={(item) => void toggleCrateWishlist(item)}
+                />
 
-                    {preview.tracks.length > 0 && (
-                      <ol className="crate-tracklist">
-                        {preview.tracks.map((track) => (
-                          <li key={track.track_num}>
-                            <button
-                              className={`crate-track${
-                                track.track_num === preview.track_num ? ' crate-track--current' : ''
-                              }`}
-                              onClick={() => void previewPlay(deckItem.id, track.track_num)}
-                            >
-                              <span className="crate-track-num">{track.track_num}</span>
-                              <span className="crate-track-title">
-                                {track.title || `Track ${track.track_num}`}
-                              </span>
-                              <span className="crate-track-time">
-                                {formatClock(track.duration)}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
+                {deckItem && preview && preview.tracks.length > 0 && (
+                  <ol className="crate-tracklist">
+                    {preview.tracks.map((track) => (
+                      <li key={track.track_num}>
+                        <button
+                          className={`crate-track${
+                            track.track_num === preview.track_num ? ' crate-track--current' : ''
+                          }`}
+                          onClick={() => void previewPlay(deckItem.id, track.track_num)}
+                        >
+                          <span className="crate-track-num">{track.track_num}</span>
+                          <span className="crate-track-title">
+                            {track.title || `Track ${track.track_num}`}
+                          </span>
+                          <span className="crate-track-time">{formatClock(track.duration)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                )}
 
-                    {preview.error && (
-                      <p className="crate-preview-error" role="status">
-                        {preview.error === 'rate_limited'
-                          ? 'Bandcamp asked us to slow down — try again shortly.'
-                          : 'No preview for this one.'}
-                      </p>
-                    )}
-                  </>
-                ) : (
+                {/* Deliberately OUTSIDE the deckItem gate: every failure path
+                    publishes state=idle, which empties the deck — so gating this
+                    on an occupied deck is precisely why it has never once been
+                    seen on screen. */}
+                {preview?.error && (
+                  <p className="crate-preview-error" role="status">
+                    {preview.error === 'rate_limited'
+                      ? 'Bandcamp asked us to slow down — try again shortly.'
+                      : 'No preview for this one.'}
+                  </p>
+                )}
+
+                {/* The strip's meta line already says "Nothing on the deck"; this
+                    keeps the part no icon conveys — which key, and that using it
+                    does not disturb the user's own queue. */}
+                {!deckItem && (
                   <p className="crate-deck-empty">
-                    Nothing on the deck. Space puts the record you&rsquo;re looking at on — your
-                    queue stays where it is.
+                    Space puts the record you&rsquo;re looking at on — your queue stays where it is.
                   </p>
                 )}
               </div>

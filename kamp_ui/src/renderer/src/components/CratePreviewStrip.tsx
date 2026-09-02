@@ -57,15 +57,27 @@ export function CratePreviewStrip({
   const playing = preview.state === 'playing'
   const preparing = preview.state === 'preparing' || preview.buffering
 
+  // Nothing on the deck (KAMP-678). The strip still renders — its transport is
+  // the affordance that says the deck is there — but the controls that need a
+  // record are disabled rather than merely inert. Play stays live: it means
+  // "put the record you're looking at on", which is the whole point of showing
+  // the strip early.
+  const empty = item === null
+
   const wishlisted = item?.state === 'wishlisted'
   const purchased = item?.state === 'purchased'
 
   return (
-    <div className="crate-preview" role="group" aria-label="Preview">
+    <div
+      className={`crate-preview${empty ? ' crate-preview--empty' : ''}`}
+      role="group"
+      aria-label="Preview"
+    >
       <div className="crate-preview-controls">
         <button
           className="crate-preview-btn"
           onClick={() => onStep(-1)}
+          disabled={empty}
           aria-label="Previous track"
         >
           <PrevIcon size={16} />
@@ -77,7 +89,12 @@ export function CratePreviewStrip({
         >
           {playing ? <PauseIcon size={20} /> : <PlayIcon size={20} />}
         </button>
-        <button className="crate-preview-btn" onClick={() => onStep(1)} aria-label="Next track">
+        <button
+          className="crate-preview-btn"
+          onClick={() => onStep(1)}
+          disabled={empty}
+          aria-label="Next track"
+        >
           <NextIcon size={16} />
         </button>
 
@@ -89,6 +106,10 @@ export function CratePreviewStrip({
         <div className="crate-preview-meta">
           {preparing ? (
             <span className="crate-preview-title">Cueing it up…</span>
+          ) : empty ? (
+            <span className="crate-preview-title crate-preview-title--empty">
+              Nothing on the deck
+            </span>
           ) : (
             <>
               <span className="crate-preview-artist">{item?.artist ?? ''}</span>
@@ -136,6 +157,7 @@ export function CratePreviewStrip({
         max={Math.max(1, Math.floor(preview.duration))}
         value={Math.floor(position)}
         onChange={(e) => onSeek(Number(e.target.value))}
+        disabled={empty}
         style={{ '--pct': `${pct}%` } as React.CSSProperties}
         aria-label="Seek preview"
       />

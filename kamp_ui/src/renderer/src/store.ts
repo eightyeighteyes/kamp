@@ -34,6 +34,7 @@ import type { DisplayStyle } from './components/modules/registry'
 import { applyTheme } from '../../shared/theme'
 import type { ThemeName } from '../../shared/theme'
 import type { MagicPlaylistContents, MagicPlaylistSort } from './api/client'
+import { jsonEqual } from './utils/jsonEqual'
 
 export type TrackDisplaySize = 'teeny' | 'less-teeny' | 'large-print'
 
@@ -1232,11 +1233,41 @@ export const useStore = create<PlayerStore>((set, get) => ({
   },
 
   applyServerState: (state) => {
-    const prevTrack = get().player.current_track
-    set({ player: state })
+    const prev = get().player
+    // KAMP-684: this snapshot arrives ~4x/sec whether or not anything moved —
+    // client.ts pings on a fixed interval and the server answers
+    // unconditionally — and JSON.parse mints fresh objects every time.
+    // Installing them verbatim re-rendered every `s.player` and
+    // `s.player.current_track` subscriber at 4 Hz forever, which is O(albums):
+    // AlbumGrid is unvirtualized and LibraryView stays mounted behind
+    // `display: none`. Reusing the previous objects wherever the incoming ones
+    // are field-equal makes Object.is do that work once, here, instead of a
+    // dozen components each having to select defensively.
+    const next: PlayerState = {
+      ...state,
+      current_track: jsonEqual(prev.current_track, state.current_track)
+        ? prev.current_track
+        : state.current_track,
+      next_track: jsonEqual(prev.next_track, state.next_track) ? prev.next_track : state.next_track
+    }
+    // Hold the whole snapshot too, not just the tracks. At idle the scalars are
+    // static as well, so keeping `prev` wholesale is what also stops the three
+    // components that subscribe to the entire slice (TransportBar,
+    // NowPlayingView, StereoRackModule). While playing, `position` moves every
+    // tick and they update exactly as before.
+    const moved =
+      next.current_track !== prev.current_track ||
+      next.next_track !== prev.next_track ||
+      next.playing !== prev.playing ||
+      next.position !== prev.position ||
+      next.duration !== prev.duration ||
+      next.volume !== prev.volume ||
+      next.muted !== prev.muted ||
+      next.buffering !== prev.buffering
+    if (moved) set({ player: next })
     // When the track changes (e.g. auto-advance at end-of-track), the queue
     // position has moved server-side — reload so the panel stays in sync.
-    if (state.current_track?.id !== prevTrack?.id) {
+    if (state.current_track?.id !== prev.current_track?.id) {
       void get().loadQueue()
     }
   },

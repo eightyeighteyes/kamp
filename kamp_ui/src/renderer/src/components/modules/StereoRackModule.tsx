@@ -165,8 +165,39 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
     // Pause idle tracking — local to this closure, no React state involved.
     let pauseStartTs = -1
     let idleElapsedMs = 0
+    let idleTimerId: ReturnType<typeof setTimeout> | undefined
 
-    const frame = (timestamp: number): void => {
+    // KAMP-684: draw dead air at ~10fps rather than at the display refresh.
+    // The dead-air branch of the oscilloscope is pure per-pixel Math.random()
+    // noise — it returns before the AR(1) and smoothing work — so drawing it
+    // less often costs no signal fidelity, and VUMeter's decay and peak-hold
+    // are time-delta based, so their speed is unaffected by the rate. The
+    // signal path deliberately stays at full rate: its AR(1) loop advances once
+    // per FRAME, so throttling that would change the trace's character.
+    const IDLE_FRAME_MS = 100
+
+    const stop = (): void => {
+      cancelAnimationFrame(rafIdRef.current)
+      clearTimeout(idleTimerId)
+      idleTimerId = undefined
+    }
+
+    // Going through a timer while idle is what actually stops the renderer
+    // producing frames. Skipping the draw inside a still-full-rate callback
+    // would keep waking it 60-120 times a second to decide to do nothing.
+    const schedule = (): void => {
+      if (deadAirRef.current) {
+        idleTimerId = setTimeout(() => {
+          rafIdRef.current = requestAnimationFrame(frame)
+        }, IDLE_FRAME_MS)
+      } else {
+        rafIdRef.current = requestAnimationFrame(frame)
+      }
+    }
+
+    // Hoisted declaration rather than an arrow: frame and schedule call each
+    // other, so one of the two has to be reachable before its own definition.
+    function frame(timestamp: number): void {
       // Stamp the real start timestamp on the first frame after arming.
       if (coldBootRef.current.startTs === -1) {
         coldBootRef.current = { startTs: timestamp }
@@ -211,23 +242,23 @@ export function StereoRackModule({ displayStyle: _ds }: ModuleProps): React.JSX.
       }
 
       drawsRef.current.forEach((draw) => draw(level, peak, timestamp))
-      rafIdRef.current = requestAnimationFrame(frame)
+      schedule()
     }
 
-    rafIdRef.current = requestAnimationFrame(frame)
+    schedule()
 
     const onVisibilityChange = (): void => {
-      if (document.hidden) {
-        cancelAnimationFrame(rafIdRef.current)
-      } else {
-        rafIdRef.current = requestAnimationFrame(frame)
-      }
+      // Stop unconditionally first. The old shape scheduled a second chain here
+      // without cancelling the live one, and because both wrote the same ref the
+      // orphan could never be cancelled again — not even by the cleanup below.
+      stop()
+      if (!document.hidden) schedule()
     }
 
     document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
-      cancelAnimationFrame(rafIdRef.current)
+      stop()
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [])

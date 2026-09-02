@@ -844,6 +844,16 @@ def _cmd_daemon(
         import time
 
         tick = 0
+        # KAMP-684: what was last persisted, so an unchanged tick writes nothing.
+        # Both saves COMMIT, and the library is WAL with synchronous=FULL, so
+        # each one is an fsync — and fsync stalls system-wide on macOS, not just
+        # this process. The old gate was `if current:`, so a daemon sitting on a
+        # restored queue with nothing playing fsynced twice every five seconds
+        # forever, re-serialising an identical queue to JSON each time.
+        # get_state() returns fresh lists, so caching its result is safe from
+        # mutation underneath us.
+        last_player_state: tuple[int, float] | None = None
+        last_queue_state: tuple[list[int], list[int], int, bool, str] | None = None
         while True:
             time.sleep(1)
             current = queue.current()
@@ -870,9 +880,17 @@ def _cmd_daemon(
                 _et_prev_pos[0] = pos
                 _et_playing[0] = playing
                 if tick % 5 == 0:
-                    index.save_player_state(current.id, engine.state.position)
-                    q_ids, q_order, q_pos, q_shuffle, q_repeat = queue.get_state()
-                    index.save_queue_state(q_ids, q_order, q_pos, q_shuffle, q_repeat)
+                    player_state = (current.id, engine.state.position)
+                    if player_state != last_player_state:
+                        index.save_player_state(*player_state)
+                        last_player_state = player_state
+                    queue_state = queue.get_state()
+                    if queue_state != last_queue_state:
+                        q_ids, q_order, q_pos, q_shuffle, q_repeat = queue_state
+                        index.save_queue_state(
+                            q_ids, q_order, q_pos, q_shuffle, q_repeat
+                        )
+                        last_queue_state = queue_state
             elif _et_path[0] is not None:
                 # Queue became empty — flush any accumulated time.
                 _flush_elapsed()

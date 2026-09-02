@@ -258,17 +258,30 @@ export default function App(): React.JSX.Element {
     // Never give up in packaged mode — retry indefinitely at the 30s cap.
     const MAX_ATTEMPTS = window.api.isPackaged ? Infinity : 8
 
-    const connect = (): (() => void) => {
-      return connectStateStream(
+    // KAMP-684: the stream's lifecycle needs three handles, not one. `dispose`
+    // so a reconnect can shut the previous stream's 250ms ping interval down
+    // (it used to be dropped on the floor, leaking one timer per reconnect for
+    // the life of the process); `retryId` so a pending retry can be cancelled;
+    // `torn` so nothing reconnects after the effect has been cleaned up.
+    let dispose: (() => void) | null = null
+    let retryId: ReturnType<typeof setTimeout> | undefined
+    let torn = false
+
+    const connect = (): void => {
+      if (torn) return
+      // The previous socket is already closed — this is here for its interval.
+      dispose?.()
+      dispose = connectStateStream(
         applyServerState,
         () => {
+          if (torn) return
           attempts++
           if (attempts >= MAX_ATTEMPTS) {
             setServerStatus('disconnected')
           } else {
             setServerStatus('reconnecting')
             const delay = Math.min(1000 * 2 ** (attempts - 1), 30000)
-            setTimeout(connect, delay)
+            retryId = setTimeout(connect, delay)
           }
         },
         () => {
@@ -378,8 +391,13 @@ export default function App(): React.JSX.Element {
       )
     }
 
-    const disconnect = connect()
-    return disconnect
+    connect()
+    return () => {
+      torn = true
+      clearTimeout(retryId)
+      dispose?.()
+      dispose = null
+    }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // KAMP-598: any pointer press means the focus it establishes is mouse-driven,

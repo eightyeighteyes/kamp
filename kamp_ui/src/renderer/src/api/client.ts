@@ -1301,7 +1301,15 @@ export function connectStateStream(
     }
   }
 
-  ws.onclose = () => onClose?.()
+  // KAMP-684: set once teardown begins, so a close event already in flight
+  // cannot reach onClose (which is what schedules a reconnect) and so calling
+  // the disposer twice is harmless.
+  let disposed = false
+
+  ws.onclose = () => {
+    if (disposed) return
+    onClose?.()
+  }
 
   // Keep state fresh while playing: poll at ~4 Hz.
   const interval = setInterval(() => {
@@ -1309,7 +1317,15 @@ export function connectStateStream(
   }, 250)
 
   return () => {
+    // KAMP-684: teardown has to be silent as well as complete. Closing an OPEN
+    // socket fires onclose asynchronously, and that handler is what schedules
+    // the reconnect — so disposing a live stream used to spawn a replacement
+    // socket and a 250ms interval that nothing held a handle to. Flag first,
+    // detach the handler, then close.
+    if (disposed) return
+    disposed = true
     clearInterval(interval)
+    ws.onclose = null
     ws.close()
   }
 }

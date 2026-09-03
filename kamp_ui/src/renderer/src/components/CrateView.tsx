@@ -11,7 +11,7 @@
 // and is rendered verbatim — it is the promise that every pick explains itself.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { crateArtUrl } from '../api/client'
+import { crateArtUrl, IDLE_PREVIEW } from '../api/client'
 import type { DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
 import { CrateBin } from './CrateBin'
@@ -159,11 +159,17 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // engine plays one item at a time and you can keep flipping while it plays, so
   // the deck must follow the preview rather than the focus. Looked up in the
   // crate because the preview state carries an id, not the row (KAMP-668).
+  //
+  // "Occupied" and "live" are different questions, and `state !== 'idle'` was
+  // answering both. A record the main transport took over from is cued on the
+  // deck without being live (KAMP-678) — it rides on the idle state as
+  // `parked_item_id`, so every predicate that genuinely means "live" keeps
+  // reading `state` and only this one falls back.
   const deckItem = useMemo(() => {
-    const id = preview?.item_id
-    if (id == null || preview?.state === 'idle') return null
+    const id = preview?.state === 'idle' ? preview?.parked_item_id : preview?.item_id
+    if (id == null) return null
     return items.find((item) => item.id === id) ?? null
-  }, [items, preview?.item_id, preview?.state])
+  }, [items, preview?.item_id, preview?.parked_item_id, preview?.state])
 
   // Where a record flies TO. Measured at the moment a flight starts rather than
   // held as state — the view scrolls, so a rect captured earlier is stale.
@@ -233,6 +239,16 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     else void previewPlay(current.id)
   }
 
+  // The deck's own play button acts on what is ON the deck; Space acts on what
+  // you are LOOKING AT. The two coincide until you flip while something plays —
+  // at which point the deck button used to swap the deck to the focused record,
+  // which is not what a play button on an occupied deck means (KAMP-678). With
+  // an empty deck it falls through to Space's meaning: put this one on.
+  const toggleDeck = (): void => {
+    if (deckItem) void previewAction('toggle')
+    else togglePreview()
+  }
+
   // Leaving the view stops the preview: audio with no visible controls is the
   // one outcome worse than no preview at all.
   useEffect(() => {
@@ -258,33 +274,22 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // precisely because claiming the arrows for a whole view would strand a
   // listener mid-album; a claim that lasts exactly as long as the thing it
   // controls is the case that objection does not cover.
-  // One transport session: the record on the deck, for as long as it is live.
-  // null when nothing is playing, and a different value for the next record.
-  const session =
-    preview && preview.state !== 'idle' && preview.item_id != null ? String(preview.item_id) : null
-
-  // Yielding is recorded AGAINST THE SESSION it applies to rather than as a bare
-  // flag. A flag would have to be cleared when the next preview starts, which is
-  // a setState in an effect — and an effect that resets state leaves one render
-  // where the stale value is live. Comparing against the current session means a
-  // new record simply is not the one that was yielded, so it owns the transport
-  // again with no reset step at all.
-  const [yieldedSession, setYieldedSession] = useState<string | null>(null)
-  const ownsTransport = session !== null && yieldedSession !== session
-
-  // Clicking the global transport hands the keys straight back — the user has
-  // just said, with a pointer, which of the two players they mean. Capture phase,
-  // and pointerdown rather than click, so it lands before the button's own
-  // handler and before any focus change. Mirrors App's KAMP-598 listener.
-  useEffect(() => {
-    if (!active || session === null) return
-    const onPointerDown = (e: PointerEvent): void => {
-      const el = e.target as HTMLElement | null
-      if (el?.closest('.transport-bar')) setYieldedSession(session)
-    }
-    window.addEventListener('pointerdown', onPointerDown, true)
-    return () => window.removeEventListener('pointerdown', onPointerDown, true)
-  }, [active, session])
+  // The deck owns the transport keys for exactly as long as a preview is LIVE.
+  //
+  // This used to be a session id plus a `yieldedSession` set by a capture-phase
+  // pointerdown on `.transport-bar`, on the theory that clicking the global
+  // transport said which of the two players the user meant. The daemon already
+  // records that, and more reliably: the only way to claim the floor is a POST
+  // under /api/v1/player/, and every one of those parks the preview (server.py's
+  // _preview_yields_to_transport), which ends the live state by itself.
+  //
+  // Deriving it removes two bugs the local flag carried (KAMP-678). Volume and
+  // mute are deliberately exempt from that middleware — they are not a demand
+  // for the floor — yet a pointerdown anywhere in the transport bar handed the
+  // arrows away while the preview kept playing. And because the flag was keyed
+  // on the item id, replaying a record that had been parked produced a session
+  // string identical to the yielded one, so the deck never got its keys back.
+  const ownsTransport = preview != null && preview.state !== 'idle'
 
   // NOTE: there is no longer any way to open the record's own Bandcamp page from
   // the Crate. Its only affordance was the header icon row, which this story
@@ -406,17 +411,16 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       // key would otherwise walk straight past it and re-add an owned record to
       // the wishlist (see the `purchased` note above).
       if (current && !purchased) void toggleCrateWishlist(current)
-    } else if (e.key === ' ' && (session === null || ownsTransport)) {
-      // Space is the Crate's (KAMP-651) — with one exception, and it is the same
-      // ownership rule the arrows follow (KAMP-672): once the user has clicked
-      // the global transport during a live preview, they have said which player
-      // they mean, and Space goes with the arrows. Falling through rather than
-      // handling it is the whole implementation — App's global play/pause picks
-      // it up because nothing stopped it.
-      //
-      // With nothing playing Space is unconditionally ours, because starting a
-      // preview is the primary action of the view and there is no session to
-      // have yielded yet.
+    } else if (e.key === ' ') {
+      // Space is the Crate's while the Crate is up (KAMP-651). It used to carry
+      // an exception mirroring the arrows' ownership rule (KAMP-672) — fall
+      // through to App's global play/pause once the user had clicked the global
+      // transport during a live preview. That exception was unreachable in the
+      // case it described: a real transport press parks the preview before the
+      // keypress can land, so the fall-through only ever fired for volume and
+      // mute, which are exactly the two the daemon exempts as "not a demand for
+      // the floor" (KAMP-678). Starting a preview is the primary action of this
+      // view, so Space belongs to it unconditionally.
       e.preventDefault()
       e.stopPropagation()
       togglePreview()
@@ -671,53 +675,60 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
               </div>
 
               <div className="crate-deck-body">
-                {deckItem && preview ? (
-                  <>
-                    <CratePreviewStrip
-                      preview={preview}
-                      item={deckItem}
-                      wishlistSaving={wishlistPending.includes(deckItem.id)}
-                      onToggle={togglePreview}
-                      onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
-                      onSeek={(position) => void previewSeek(position)}
-                      onToggleWishlist={(item) => void toggleCrateWishlist(item)}
-                    />
+                {/* The strip renders whether or not anything is on: its transport
+                    is what tells you the deck is there and ready (KAMP-678). It
+                    also gives the error line below a home — every failure path
+                    publishes state=idle, which used to unmount this whole block
+                    and take the message with it. */}
+                <CratePreviewStrip
+                  preview={preview ?? IDLE_PREVIEW}
+                  item={deckItem}
+                  wishlistSaving={deckItem !== null && wishlistPending.includes(deckItem.id)}
+                  onToggle={toggleDeck}
+                  onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
+                  onSeek={(position) => void previewSeek(position)}
+                  onToggleWishlist={(item) => void toggleCrateWishlist(item)}
+                />
 
-                    {preview.tracks.length > 0 && (
-                      <ol className="crate-tracklist">
-                        {preview.tracks.map((track) => (
-                          <li key={track.track_num}>
-                            <button
-                              className={`crate-track${
-                                track.track_num === preview.track_num ? ' crate-track--current' : ''
-                              }`}
-                              onClick={() => void previewPlay(deckItem.id, track.track_num)}
-                            >
-                              <span className="crate-track-num">{track.track_num}</span>
-                              <span className="crate-track-title">
-                                {track.title || `Track ${track.track_num}`}
-                              </span>
-                              <span className="crate-track-time">
-                                {formatClock(track.duration)}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
+                {deckItem && preview && preview.tracks.length > 0 && (
+                  <ol className="crate-tracklist">
+                    {preview.tracks.map((track) => (
+                      <li key={track.track_num}>
+                        <button
+                          className={`crate-track${
+                            track.track_num === preview.track_num ? ' crate-track--current' : ''
+                          }`}
+                          onClick={() => void previewPlay(deckItem.id, track.track_num)}
+                        >
+                          <span className="crate-track-num">{track.track_num}</span>
+                          <span className="crate-track-title">
+                            {track.title || `Track ${track.track_num}`}
+                          </span>
+                          <span className="crate-track-time">{formatClock(track.duration)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                )}
 
-                    {preview.error && (
-                      <p className="crate-preview-error" role="status">
-                        {preview.error === 'rate_limited'
-                          ? 'Bandcamp asked us to slow down — try again shortly.'
-                          : 'No preview for this one.'}
-                      </p>
-                    )}
-                  </>
-                ) : (
+                {/* Deliberately OUTSIDE the deckItem gate: every failure path
+                    publishes state=idle, which empties the deck — so gating this
+                    on an occupied deck is precisely why it has never once been
+                    seen on screen. */}
+                {preview?.error && (
+                  <p className="crate-preview-error" role="status">
+                    {preview.error === 'rate_limited'
+                      ? 'Bandcamp asked us to slow down — try again shortly.'
+                      : 'No preview for this one.'}
+                  </p>
+                )}
+
+                {/* The strip's meta line already says "Nothing on the deck"; this
+                    keeps the part no icon conveys — which key, and that using it
+                    does not disturb the user's own queue. */}
+                {!deckItem && (
                   <p className="crate-deck-empty">
-                    Nothing on the deck. Space puts the record you&rsquo;re looking at on — your
-                    queue stays where it is.
+                    Space puts the record you&rsquo;re looking at on — your queue stays where it is.
                   </p>
                 )}
               </div>

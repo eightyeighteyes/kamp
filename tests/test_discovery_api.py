@@ -974,6 +974,18 @@ class TestMainTransportWins:
         assert preview.calls == []
 
 
+class TestIdlePreviewParity:
+    def test_the_idle_shape_matches_the_daemons(self) -> None:
+        """kamp_core cannot import kamp_daemon, so _IDLE_PREVIEW is a hand-copy
+        of _IDLE_STATE — and nothing has ever kept the two in step. A field added
+        to one and not the other means the no-preview path answers /preview/state
+        with a snapshot missing a key the UI's type says is always there."""
+        from kamp_core.discovery_api import _IDLE_PREVIEW
+        from kamp_daemon.discovery_preview import _IDLE_STATE
+
+        assert _IDLE_PREVIEW == _IDLE_STATE
+
+
 class TestArtHostAllowlist:
     def test_art_hosts_are_a_subset_of_the_proxy_allowlist(self) -> None:
         """Two lists that must not drift apart: anything the art proxy will fetch

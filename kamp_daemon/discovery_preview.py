@@ -69,6 +69,16 @@ _IDLE_STATE: dict[str, Any] = {
     "buffering": False,
     "tracks": [],
     "error": None,
+    # The record still ON the deck with nothing playing (KAMP-678): the main
+    # transport took the floor, but that is not a statement about the record the
+    # user was listening to, so it stays cued rather than going back to the
+    # crate. Metadata on IDLE rather than a state of its own on purpose -- every
+    # guard in this class reads `state` to decide whether the ENGINE is busy, and
+    # a cued record's honest answer is no. A fifth state would make _idle_kill
+    # refuse to reap the engine, pinning an mpv process and the audio device open
+    # for the rest of the session.
+    "parked_item_id": None,
+    "parked_track_num": None,
 }
 
 
@@ -259,6 +269,12 @@ class PreviewPlayer:
                 buffering=True,
                 position=0.0,
                 duration=0.0,
+                # This record is live now, so it is no longer merely cued. Cleared
+                # here rather than on success: the error returns below all publish
+                # IDLE, and a stale cued id would leave the PREVIOUS record on the
+                # deck as though the failed one had never been asked for.
+                parked_item_id=None,
+                parked_track_num=None,
             )
 
             try:
@@ -302,6 +318,15 @@ class PreviewPlayer:
 
     def resume(self) -> dict[str, Any]:
         with self._lock:
+            # A cued record has nothing loaded to resume: release_for_main
+            # unloaded it, and the idle timer may since have reaped the process
+            # outright. Replaying is the honest equivalent, and branching here
+            # rather than at the call sites means Space, the deck's play button
+            # and the API's resume route all get it without special-casing
+            # (KAMP-678). The lock is an RLock, so re-entering play() is safe.
+            parked = self._state["parked_item_id"]
+            if parked is not None and self._state["state"] == IDLE:
+                return self.play(int(parked), self._state["parked_track_num"])
             if self._engine is None or self._state["state"] != PAUSED:
                 return self.snapshot()
             self._take_over_from_main()
@@ -333,6 +358,10 @@ class PreviewPlayer:
                 buffering=False,
                 tracks=[],
                 error=None,
+                # Stop is the deliberate "take it off the deck" gesture, unlike
+                # release_for_main which only cues it (KAMP-678).
+                parked_item_id=None,
+                parked_track_num=None,
             )
 
     def seek(self, position: float) -> dict[str, Any]:
@@ -381,14 +410,24 @@ class PreviewPlayer:
             self._main.resume()
 
     def release_for_main(self) -> None:
-        """Stop the preview because the main transport was used.
+        """Cue the record and hand the floor to the main transport.
 
         The main transport always wins. Called from the player endpoints, so it
         must not resume main afterwards -- main is about to do whatever the user
         just asked for.
+
+        The record stays ON the deck (KAMP-678) rather than flying back to the
+        crate: pressing play on your own queue says nothing about the record you
+        were listening to. `title` and `tracks` ride along so the deck can keep
+        naming it.
         """
         with self._lock:
-            if self._state["state"] == IDLE and self._engine is None:
+            item_id = self._state["item_id"]
+            if item_id is None:
+                # Nothing live to release -- never previewed, already stopped, or
+                # already cued. Without this the middleware fires on EVERY
+                # subsequent transport press, each one re-publishing and
+                # clobbering the cued record with None.
                 return
             if self._engine is not None:
                 try:
@@ -402,11 +441,14 @@ class PreviewPlayer:
                 state=IDLE,
                 item_id=None,
                 track_num=None,
-                title="",
+                parked_item_id=item_id,
+                parked_track_num=self._state["track_num"],
+                # Zeroed deliberately: the engine is unloaded and the deck's play
+                # button replays from the top, so a retained position would paint
+                # a playhead partway through a track that is about to restart.
                 position=0.0,
-                duration=0.0,
+                position_updated_at=0.0,
                 buffering=False,
-                tracks=[],
                 error=None,
             )
 

@@ -56,6 +56,9 @@ _IDLE_PREVIEW: dict[str, Any] = {
     "buffering": False,
     "tracks": [],
     "error": None,
+    # The record cued on the deck with nothing playing (KAMP-678).
+    "parked_item_id": None,
+    "parked_track_num": None,
 }
 
 #: Records in a full crate. Mirrors discovery_builder.CRATE_SIZE, duplicated

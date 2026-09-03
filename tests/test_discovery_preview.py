@@ -294,6 +294,110 @@ class TestHandoff:
 
 
 # ---------------------------------------------------------------------------
+# Parking (KAMP-678)
+# ---------------------------------------------------------------------------
+
+
+class TestParking:
+    """Pressing play on your own queue cues the crate record rather than
+    shelving it. Carried as metadata on IDLE rather than as a fifth state, so
+    every guard that reads `state` to ask "is the engine busy" keeps working."""
+
+    def test_the_cued_record_stays_readable(self, index: LibraryIndex) -> None:
+        h = Harness(index, main_playing=True)
+        item = _item(index)
+        h.player.play(item)
+
+        h.player.release_for_main()
+        snap = h.player.snapshot()
+        # Idle to every engine guard...
+        assert snap["state"] == IDLE
+        assert snap["item_id"] is None
+        # ...but the deck can still name what is on it.
+        assert snap["parked_item_id"] == item
+
+    def test_the_engine_is_still_reaped_while_a_record_is_cued(
+        self, index: LibraryIndex
+    ) -> None:
+        """The whole reason parking is metadata and not a state. _idle_kill
+        returns on any non-IDLE state AND clears its timer without re-arming, so
+        a fifth state would pin an mpv process and the audio device open for the
+        rest of the session — and the existing teardown test drives stop(), so
+        it would not have noticed."""
+        h = Harness(index)
+        h.player.play(_item(index))
+
+        h.player.release_for_main()
+        assert _wait_for(lambda: h.engines[0].shutdown_count == 1), "engine not reaped"
+        # And the record is still on the deck after the process is gone.
+        assert h.player.snapshot()["parked_item_id"] is not None
+
+    def test_a_second_transport_press_does_not_clobber_the_cued_record(
+        self, index: LibraryIndex
+    ) -> None:
+        """The middleware fires on every non-volume player POST, so this runs
+        once per button press for as long as the record stays cued."""
+        h = Harness(index, main_playing=True)
+        item = _item(index)
+        h.player.play(item)
+
+        h.player.release_for_main()
+        h.player.release_for_main()
+        assert h.player.snapshot()["parked_item_id"] == item
+
+    def test_resume_replays_a_cued_record_and_retakes_the_floor(
+        self, index: LibraryIndex
+    ) -> None:
+        h = Harness(index, main_playing=True)
+        item = _item(index)
+        h.player.play(item)
+        h.player.release_for_main()
+        # The user's queue has the floor now.
+        h.main.settle()
+        h.main.state.playing = True
+        h.main.calls.clear()
+
+        snap = h.player.resume()
+        assert snap["state"] == PLAYING
+        assert snap["item_id"] == item
+        assert snap["parked_item_id"] is None
+        assert "pause" in h.main.calls
+
+    def test_stop_takes_the_record_off_the_deck(self, index: LibraryIndex) -> None:
+        """Stop is the deliberate take-it-off gesture; parking is not."""
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.player.release_for_main()
+
+        h.player.stop()
+        assert h.player.snapshot()["parked_item_id"] is None
+
+    def test_a_failed_play_does_not_strand_the_cued_record(
+        self, index: LibraryIndex
+    ) -> None:
+        """Every failure below the PREPARING publish returns IDLE. Without
+        clearing the cued id up front, the PREVIOUS record would sit on the deck
+        as though the one that just failed had never been asked for."""
+        h = Harness(index, main_playing=True)
+        h.player.play(_item(index, "1"))
+        h.player.release_for_main()
+        assert h.player.snapshot()["parked_item_id"] is not None
+
+        h.source.tracks = []
+        snap = h.player.play(_item(index, "2"))
+        assert snap["error"] == "unavailable"
+        assert snap["parked_item_id"] is None
+
+    def test_releasing_with_nothing_live_does_nothing(
+        self, index: LibraryIndex
+    ) -> None:
+        h = Harness(index)
+        h.player.release_for_main()
+        assert h.player.snapshot()["parked_item_id"] is None
+        assert h.events == []
+
+
+# ---------------------------------------------------------------------------
 # Audio settings
 # ---------------------------------------------------------------------------
 

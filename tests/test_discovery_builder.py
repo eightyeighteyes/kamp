@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
+import time as _time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
@@ -510,6 +511,89 @@ class TestExclusions:
         index.add_discovery_candidate(provider="fake", provider_item_id="1")
         _build(index, _FakeSource(_spread({"a": 12})))
         assert "1" in {r["provider_item_id"] for r in index.crate_items(1)}
+
+
+class TestCandidateBuffer:
+    """KAMP-657 — the surplus a build cannot use is kept for the next one."""
+
+    @staticmethod
+    def _batch(prefix: str, count: int, criterion: str) -> list[Candidate]:
+        """A gather with its own id space.
+
+        `_spread` restarts numbering on every call, so two of them share ids and
+        the second build is really re-offering the first's records. That is the
+        right fixture for the seen-ledger tests above and the wrong one here.
+        """
+        return [_candidate(f"{prefix}{i}", criterion) for i in range(count)]
+
+    def test_the_surplus_is_kept(self, index: LibraryIndex) -> None:
+        _build(index, _FakeSource(_spread({"a": 25})))
+        buffered = {c["provider_item_id"] for c in index.buffered_candidates()}
+        placed = {r["provider_item_id"] for r in index.crate_items(1)}
+        assert len(placed) == CRATE_SIZE
+        assert len(buffered) == 15
+        assert not (buffered & placed), "a placed record must not also be buffered"
+
+    def test_a_thin_gather_is_filled_from_stock(self, index: LibraryIndex) -> None:
+        """The whole point of the buffer. A build cut short by a 429 or an
+        exhausted budget still produces a full crate."""
+        _build(index, _FakeSource(self._batch("a", 25, "a")))  # stocks 15
+        thin = self._batch("b", 1, "b")
+        assert _build(index, _FakeSource(thin))["state"] == "ready"
+
+        second = index.crate_items(2)
+        assert len(second) == CRATE_SIZE
+        # Nine came out of stock, so the crate is not all one criterion.
+        assert {r["criterion"] for r in second} == {"a", "b"}
+
+    def test_stock_is_not_used_when_the_gather_can_fill_the_crate(
+        self, index: LibraryIndex
+    ) -> None:
+        """Fallback, not blend: leftovers must not dilute a healthy build."""
+        _build(index, _FakeSource(self._batch("a", 25, "a")))
+        _build(index, _FakeSource(self._batch("b", 30, "b")))
+        assert {r["criterion"] for r in index.crate_items(2)} == {"b"}
+
+    def test_a_record_in_both_the_gather_and_the_buffer_lands_once(
+        self, index: LibraryIndex
+    ) -> None:
+        """_deal dedupes on id(), so a rehydrated buffer row and a freshly
+        gathered one for the same album are two dealable objects. Left alone, both
+        get picked, the second place_in_crate MOVES the row rather than adding
+        one, and the crate reports ten while holding nine with a hole in it."""
+        overlap = self._batch("a", 25, "a")
+        _build(index, _FakeSource(overlap))  # buffers 15 of these
+
+        _build(index, _FakeSource(overlap))
+        second = index.crate_items(2)
+        assert len(second) == CRATE_SIZE
+        assert [r["position"] for r in second] == list(range(CRATE_SIZE))
+        ids = [r["provider_item_id"] for r in second]
+        assert len(set(ids)) == CRATE_SIZE
+
+    def test_a_short_crate_from_stock_does_not_claim_the_well_is_dry(
+        self, index: LibraryIndex
+    ) -> None:
+        """`exhausted` is attributed against the FRESH gather. Counting stock
+        picks in it would make the inequality trivially easier and tell the user
+        they had seen everything when the buffer was simply too small."""
+        _build(index, _FakeSource(self._batch("a", 12, "a")))  # buffers 2
+        out = _build(index, _FakeSource(self._batch("b", 3, "b")))
+        assert out["short"] is True
+        assert out["exhausted"] is False
+
+    def test_aged_stock_is_swept_before_it_is_offered(
+        self, index: LibraryIndex
+    ) -> None:
+        _build(index, _FakeSource(self._batch("a", 25, "a")))
+        index._conn.execute(
+            "UPDATE discovery_items SET first_seen_at = ? WHERE crate_no IS NULL",
+            (_time.time() - 40 * 86400,),
+        )
+        index._conn.commit()
+
+        _build(index, _FakeSource(self._batch("b", 2, "b")))
+        assert len(index.crate_items(2)) == 2, "swept stock must not be offered"
 
 
 # ---------------------------------------------------------------------------

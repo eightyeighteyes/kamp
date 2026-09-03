@@ -872,6 +872,38 @@
   gap: 8px;
 }
 
+/* Dragging a record to the deck (KAMP-679).
+ *
+ * The ghost must not be hit-testable: the drop is resolved with
+ * elementFromPoint, and a ghost under the cursor would answer every query with
+ * itself. */
+.crate-drag-ghost {
+  position: fixed;
+  top: -100px;
+  left: -100px;
+  z-index: 9999;
+  pointer-events: none;
+  max-width: 220px;
+  overflow: hidden;
+  padding: 4px 10px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Lit only while a drag is actually over the deck. The strip's own "Cueing it
+ * up…" covers the beat between the drop and the audio, so this does not need to
+ * stay lit past the release. */
+.crate-deck--drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
 .crate-deck-empty {
   margin: auto 0;
   color: var(--text-dim);

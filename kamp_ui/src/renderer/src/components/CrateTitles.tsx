@@ -19,17 +19,26 @@ import { TOOLTIPS } from '../tooltipStrings'
 export function CrateTitles({
   items,
   focusIndex,
+  awayItemId,
   wishlistPending,
   onFocus,
   onPlay,
+  onDragStart,
   onToggleWishlist
 }: {
   items: CrateItem[]
   focusIndex: number
+  // The record already on the deck. Not draggable — dropping it back on the deck
+  // is a misdrop, and honouring it restarts the album from track 1. Double-click
+  // is still allowed, because that one is explicit.
+  awayItemId: number | null
   wishlistPending: number[]
   onFocus: (index: number) => void
   // Put this record on, replacing whatever is on the deck (KAMP-679).
   onPlay: (item: CrateItem) => void
+  // Begin a pointer drag toward the deck. Never preventDefaults, so the row's
+  // own click, double-click and focus all still happen.
+  onDragStart: (item: CrateItem, startX: number, startY: number) => void
   onToggleWishlist: (item: CrateItem) => void
 }): React.JSX.Element {
   const tooltip = useTooltip()
@@ -68,6 +77,13 @@ export function CrateTitles({
                 // These rows are real buttons whose focus matters, so nothing
                 // here preventDefaults and the native events are left alone.
                 onDoubleClick={() => onPlay(item)}
+                onPointerDown={
+                  item.id === awayItemId
+                    ? undefined
+                    : (e) => {
+                        if (e.button === 0) onDragStart(item, e.clientX, e.clientY)
+                      }
+                }
                 // Marks the row the bin is showing without claiming this is a
                 // selection widget in its own right.
                 aria-current={index === focusIndex ? 'true' : undefined}

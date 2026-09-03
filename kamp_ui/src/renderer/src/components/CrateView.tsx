@@ -177,6 +177,8 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   const [flight, setFlight] = useState<Flight | null>(null)
   const lastDeckId = useRef<number | null>(null)
   const seededDeck = useRef(false)
+  // The one arrival a drag has already animated by hand — see the flight effect.
+  const suppressFlightRef = useRef<number | null>(null)
 
   // A record leaves the crate when it goes on the deck and comes back when it
   // comes off. The flight is an enhancement on that STATE CHANGE, never the
@@ -192,6 +194,21 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       return
     }
     if (nextId === prevId) return
+
+    // A record dragged onto the deck has already made the trip by hand, and the
+    // flight would not even start until the previewPlay POST returns — so it
+    // would fly out of the bin a beat late, from a sleeve the cursor left long
+    // ago. Suppress that one arrival (KAMP-679). Held in a ref rather than state
+    // because the effect runs on a daemon snapshot an arbitrary number of
+    // renders later, and cleared on any OTHER change so a drop that failed to
+    // play (every failure publishes state: idle) cannot leave it armed against a
+    // later Space press.
+    if (suppressFlightRef.current !== null) {
+      const suppressed = suppressFlightRef.current
+      suppressFlightRef.current = null
+      if (suppressed === nextId) return
+    }
+
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
 
     const platter = deckArtRef.current?.getBoundingClientRect()
@@ -260,6 +277,98 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // flip and press it, so there is one rule rather than two.
   const playFromCrate = (item: CrateItem): void => {
     void previewPlay(item.id)
+  }
+
+  // Dragging a record onto the deck (KAMP-679).
+  //
+  // Pointer events rather than HTML5 drag, per the KAMP-456/458 lesson: the
+  // Crate has an Escape contract and an HTML5 drag's OS session cannot be
+  // cancelled from JS. Adapted from QueuePanel/DownloadsView, with one
+  // deliberate difference — nothing here calls preventDefault, because that
+  // suppresses the compat mousedown and with it DOM focus, click and dblclick.
+  // Those matter here (real buttons, roving tabindex) and did not there.
+  const justDraggedRef = useRef(false)
+  const [dragOverDeck, setDragOverDeck] = useState(false)
+
+  const startCrateDrag = (item: CrateItem, startX: number, startY: number): void => {
+    let dragStarted = false
+    let ghost: HTMLDivElement | null = null
+
+    const overDeck = (x: number, y: number): boolean =>
+      Boolean(document.elementFromPoint(x, y)?.closest('.crate-deck'))
+
+    const onMove = (ev: PointerEvent): void => {
+      if (!dragStarted) {
+        // Same 4px threshold as the two existing drags, so a press that drifts
+        // is still a click.
+        if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return
+        dragStarted = true
+        ghost = document.createElement('div')
+        ghost.className = 'crate-drag-ghost'
+        ghost.textContent = item.title
+        document.body.appendChild(ghost)
+      }
+      if (ghost) {
+        ghost.style.left = `${ev.clientX + 12}px`
+        ghost.style.top = `${ev.clientY - 12}px`
+      }
+      setDragOverDeck(overDeck(ev.clientX, ev.clientY))
+    }
+
+    const cleanup = (): void => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('pointercancel', cleanup)
+      document.removeEventListener('keydown', onEscape)
+      window.removeEventListener('blur', cleanup)
+      if (ghost) {
+        document.body.removeChild(ghost)
+        ghost = null
+      }
+      setDragOverDeck(false)
+    }
+
+    const onUp = (ev: PointerEvent): void => {
+      const wasDrag = dragStarted
+      const dropped = wasDrag && overDeck(ev.clientX, ev.clientY)
+      cleanup()
+      if (!wasDrag) return
+      // A press that wandered past 4px can still be inside the platform's
+      // double-click DISTANCE, which is far larger — so a shaky double-click
+      // produces a completed drag AND a native dblclick. Without this gate that
+      // is two previewPlay calls and a restarted album. Cleared on the next task
+      // so the click and dblclick this same press generates are the ones caught.
+      justDraggedRef.current = true
+      window.setTimeout(() => {
+        justDraggedRef.current = false
+      }, 0)
+      if (dropped) {
+        suppressFlightRef.current = item.id
+        playFromCrate(item)
+      }
+    }
+
+    const onEscape = (ev: KeyboardEvent): void => {
+      if (ev.key !== 'Escape') return
+      // Cancel the drag and NOTHING else. CrateView's own Escape listener is on
+      // window (deliberately, so document-level modals win), so a document
+      // listener runs first and stopping propagation here keeps a drag-cancel
+      // from also stopping the preview or leaving the view. Bubble phase is
+      // enough; this is the DownloadsView KAMP-585 shape.
+      ev.stopPropagation()
+      cleanup()
+    }
+
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    // Chromium fires pointercancel — on a native drag, a system gesture, a
+    // window blur — and then sends NO pointerup, so without this the ghost
+    // survives on screen and the document listeners leak. Both existing drags in
+    // this codebase are missing it; the drag surface here is almost entirely an
+    // <img>, which is exactly where it bites.
+    document.addEventListener('pointercancel', cleanup)
+    document.addEventListener('keydown', onEscape)
+    window.addEventListener('blur', cleanup)
   }
 
   // Leaving the view stops the preview: audio with no visible controls is the
@@ -337,6 +446,17 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     },
     [crateNo]
   )
+
+  // The cards' click handlers go through these so a completed drag does not also
+  // fire the click and dblclick that the same press still generates (KAMP-679).
+  const focusUnlessDragged = (index: number): void => {
+    if (justDraggedRef.current) return
+    focusSleeve(index)
+  }
+  const playUnlessDragged = (item: CrateItem): void => {
+    if (justDraggedRef.current) return
+    playFromCrate(item)
+  }
 
   // Escape leaves the view. Deliberately a window listener, matching
   // DownloadsView: modals listen on document, which runs first, so Escape closes
@@ -633,9 +753,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             <CrateTitles
               items={items}
               focusIndex={focusIndex}
+              awayItemId={awayItemId}
               wishlistPending={wishlistPending}
-              onFocus={focusSleeve}
-              onPlay={playFromCrate}
+              onFocus={focusUnlessDragged}
+              onPlay={playUnlessDragged}
+              onDragStart={startCrateDrag}
               onToggleWishlist={(item) => void toggleCrateWishlist(item)}
             />
           </div>
@@ -671,8 +793,9 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
               awayItemId={awayItemId}
               spineName={spineName}
               railRef={railRef}
-              onFocus={focusSleeve}
-              onPlay={playFromCrate}
+              onFocus={focusUnlessDragged}
+              onPlay={playUnlessDragged}
+              onDragStart={startCrateDrag}
             />
           </div>
         )}
@@ -688,7 +811,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             that depends on what is on it. */}
         {!building && (
           <div className="crate-deck-col">
-            <div className="crate-deck" role="group" aria-label="Preview deck">
+            <div
+              className={`crate-deck${dragOverDeck ? ' crate-deck--drop-target' : ''}`}
+              role="group"
+              aria-label="Preview deck"
+            >
               <div
                 className={`crate-deck-platter${platterItem ? ' is-loaded' : ''}`}
                 ref={deckArtRef}

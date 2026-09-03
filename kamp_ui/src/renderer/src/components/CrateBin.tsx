@@ -47,7 +47,8 @@ function BinSleeve({
   flipped,
   away,
   onFocus,
-  onPlay
+  onPlay,
+  onDragStart
 }: {
   item: CrateItem
   index: number
@@ -65,6 +66,9 @@ function BinSleeve({
   // double-click at one is a coin flip with the sleeve in front of it. Clicking
   // a back sleeve focuses it, and then it is the front one.
   onPlay: (item: CrateItem) => void
+  // Begin a pointer drag toward the deck. Offered on the same sleeve as onPlay
+  // and for the same reason.
+  onDragStart: (item: CrateItem, startX: number, startY: number) => void
 }): React.JSX.Element {
   const [artFailed, setArtFailed] = useState(false)
   const showArt = Boolean(item.art_url) && !artFailed
@@ -123,9 +127,18 @@ function BinSleeve({
       // handling to its own container instead of listening on document.
       tabIndex={focused ? 0 : -1}
       onClick={() => onFocus(index)}
-      // `away` is the record already on the deck — putting it on again would
-      // restart the album from track 1 for no reason the user asked for.
-      onDoubleClick={focused && !away ? () => onPlay(item) : undefined}
+      // Double-click is an explicit "put this on", so it is allowed even for the
+      // record already on the deck — that restarts it, which is what was asked
+      // for. Dragging it back onto the deck is not: that is a misdrop, and the
+      // cost of honouring it is an album restarting from track 1.
+      onDoubleClick={focused ? () => onPlay(item) : undefined}
+      onPointerDown={
+        focused && !away
+          ? (e) => {
+              if (e.button === 0) onDragStart(item, e.clientX, e.clientY)
+            }
+          : undefined
+      }
       style={
         {
           '--bin-rel': rel,
@@ -148,6 +161,11 @@ function BinSleeve({
             src={crateArtUrl(item.id)}
             alt=""
             loading="lazy"
+            // The sleeve is a pointer drag source and nothing in that path calls
+            // preventDefault (KAMP-679), so without this the browser's own image
+            // drag starts on top of it — an uncancellable OS session, which is
+            // the exact thing KAMP-456 established must not happen here.
+            draggable={false}
             onError={() => setArtFailed(true)}
           />
         )}
@@ -191,7 +209,8 @@ export function CrateBin({
   spineName,
   railRef,
   onFocus,
-  onPlay
+  onPlay,
+  onDragStart
 }: {
   items: CrateItem[]
   crateNo: number | null
@@ -202,6 +221,7 @@ export function CrateBin({
   railRef: React.RefObject<HTMLUListElement | null>
   onFocus: (index: number) => void
   onPlay: (item: CrateItem) => void
+  onDragStart: (item: CrateItem, startX: number, startY: number) => void
 }): React.JSX.Element {
   // Stock-in runs on a DELIVERY, not on every render that happens to have
   // records in it. Arriving at a crate that already exists — switching to the
@@ -250,6 +270,7 @@ export function CrateBin({
             away={item.id === awayItemId}
             onFocus={onFocus}
             onPlay={onPlay}
+            onDragStart={onDragStart}
           />
         ))}
       </ul>

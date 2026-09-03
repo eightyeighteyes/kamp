@@ -57,6 +57,11 @@ const GROUPS: Group[] = [
         note: 'Replaces whatever is on the deck'
       },
       {
+        keys: ['drag', 'to deck'],
+        description: 'Put this record on',
+        note: 'From the record you are looking at, or any row in the list'
+      },
+      {
         keys: ['←', '→'],
         description: 'Previous / next track',
         note: 'The preview while one is playing, otherwise your own queue'

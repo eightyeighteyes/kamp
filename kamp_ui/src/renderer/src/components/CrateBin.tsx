@@ -46,7 +46,8 @@ function BinSleeve({
   focused,
   flipped,
   away,
-  onFocus
+  onFocus,
+  onPlay
 }: {
   item: CrateItem
   index: number
@@ -58,6 +59,12 @@ function BinSleeve({
   // Out of the crate and on the deck.
   away: boolean
   onFocus: (index: number) => void
+  // Put this record on (KAMP-679). Offered on the FOCUSED sleeve only: the
+  // others are stacked in the same place behind a 7% depth step and a 15° lean,
+  // so a back sleeve shows a ~12px crescent — small enough that aiming a
+  // double-click at one is a coin flip with the sleeve in front of it. Clicking
+  // a back sleeve focuses it, and then it is the front one.
+  onPlay: (item: CrateItem) => void
 }): React.JSX.Element {
   const [artFailed, setArtFailed] = useState(false)
   const showArt = Boolean(item.art_url) && !artFailed
@@ -116,6 +123,9 @@ function BinSleeve({
       // handling to its own container instead of listening on document.
       tabIndex={focused ? 0 : -1}
       onClick={() => onFocus(index)}
+      // `away` is the record already on the deck — putting it on again would
+      // restart the album from track 1 for no reason the user asked for.
+      onDoubleClick={focused && !away ? () => onPlay(item) : undefined}
       style={
         {
           '--bin-rel': rel,
@@ -180,7 +190,8 @@ export function CrateBin({
   awayItemId,
   spineName,
   railRef,
-  onFocus
+  onFocus,
+  onPlay
 }: {
   items: CrateItem[]
   crateNo: number | null
@@ -190,6 +201,7 @@ export function CrateBin({
   spineName: string
   railRef: React.RefObject<HTMLUListElement | null>
   onFocus: (index: number) => void
+  onPlay: (item: CrateItem) => void
 }): React.JSX.Element {
   // Stock-in runs on a DELIVERY, not on every render that happens to have
   // records in it. Arriving at a crate that already exists — switching to the
@@ -237,6 +249,7 @@ export function CrateBin({
             flipped={index < focusIndex}
             away={item.id === awayItemId}
             onFocus={onFocus}
+            onPlay={onPlay}
           />
         ))}
       </ul>

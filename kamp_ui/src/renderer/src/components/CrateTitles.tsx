@@ -21,12 +21,15 @@ export function CrateTitles({
   focusIndex,
   wishlistPending,
   onFocus,
+  onPlay,
   onToggleWishlist
 }: {
   items: CrateItem[]
   focusIndex: number
   wishlistPending: number[]
   onFocus: (index: number) => void
+  // Put this record on, replacing whatever is on the deck (KAMP-679).
+  onPlay: (item: CrateItem) => void
   onToggleWishlist: (item: CrateItem) => void
 }): React.JSX.Element {
   const tooltip = useTooltip()
@@ -57,6 +60,14 @@ export function CrateTitles({
               <button
                 className="crate-title-btn"
                 onClick={() => onFocus(index)}
+                // Click flips the bin to this record; double-click puts it on.
+                // Deliberately a plain onDoubleClick rather than the hand-rolled
+                // tap detector QueuePanel uses — that only exists there because
+                // its pointerdown calls preventDefault, which suppresses the
+                // compat mousedown and with it DOM focus, click and dblclick.
+                // These rows are real buttons whose focus matters, so nothing
+                // here preventDefaults and the native events are left alone.
+                onDoubleClick={() => onPlay(item)}
                 // Marks the row the bin is showing without claiming this is a
                 // selection widget in its own right.
                 aria-current={index === focusIndex ? 'true' : undefined}

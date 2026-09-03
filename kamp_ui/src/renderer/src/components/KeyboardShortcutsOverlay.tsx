@@ -52,6 +52,11 @@ const GROUPS: Group[] = [
         note: 'Your queue pauses and comes back'
       },
       {
+        keys: ['Enter', 'double-click'],
+        description: 'Put this record on',
+        note: 'Replaces whatever is on the deck'
+      },
+      {
         keys: ['←', '→'],
         description: 'Previous / next track',
         note: 'The preview while one is playing, otherwise your own queue'

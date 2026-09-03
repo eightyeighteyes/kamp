@@ -12,7 +12,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { crateArtUrl, IDLE_PREVIEW } from '../api/client'
-import type { DiggingStats } from '../api/client'
+import type { CrateItem, DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
 import { CrateBin } from './CrateBin'
 import { CrateTitles } from './CrateTitles'
@@ -249,6 +249,19 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     else togglePreview()
   }
 
+  // Put a NAMED record on, whatever is on the deck already (KAMP-679).
+  //
+  // The routes above are both scoped to something implicit — Space to what you
+  // are looking at, the deck's button to what is on the deck — and between them
+  // they leave a hole: once the deck holds anything, a mouse has no way to play
+  // a DIFFERENT record. You have to press Escape or Stop first, which is a
+  // keyboard key, and not finding the keyboard route is the whole complaint.
+  // Replacing whatever is on the deck matches what Space already does when you
+  // flip and press it, so there is one rule rather than two.
+  const playFromCrate = (item: CrateItem): void => {
+    void previewPlay(item.id)
+  }
+
   // Leaving the view stops the preview: audio with no visible controls is the
   // one outcome worse than no preview at all.
   useEffect(() => {
@@ -396,6 +409,16 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       e.preventDefault()
       e.stopPropagation()
       if (items.length > 0) focusSleeve(Math.max(focusIndex - 1, 0))
+    } else if (e.key === 'Enter') {
+      // The keyboard's answer to double-click (KAMP-679). Both of the routes
+      // this story adds are mouse-only, and Enter was a dead key here: on a
+      // titles row it fired the button's onClick, which re-focuses the row it
+      // is already on, and on a sleeve it did nothing at all. Handled in the
+      // container alongside the other crate keys rather than per component, so
+      // it works from wherever focus happens to be in the view.
+      e.preventDefault()
+      e.stopPropagation()
+      if (current) playFromCrate(current)
     } else if (e.key === 'c' || e.key === 'C') {
       e.preventDefault()
       e.stopPropagation()
@@ -612,6 +635,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
               focusIndex={focusIndex}
               wishlistPending={wishlistPending}
               onFocus={focusSleeve}
+              onPlay={playFromCrate}
               onToggleWishlist={(item) => void toggleCrateWishlist(item)}
             />
           </div>
@@ -648,6 +672,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
               spineName={spineName}
               railRef={railRef}
               onFocus={focusSleeve}
+              onPlay={playFromCrate}
             />
           </div>
         )}
@@ -724,11 +749,15 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                 )}
 
                 {/* The strip's meta line already says "Nothing on the deck"; this
-                    keeps the part no icon conveys — which key, and that using it
-                    does not disturb the user's own queue. */}
+                    keeps the part no icon conveys — how to put one on, and that
+                    doing so does not disturb the user's own queue. It named only
+                    Space until KAMP-679, which is a keyboard instruction shown to
+                    people who could not find the keyboard route: the mouse one
+                    goes first now. */}
                 {!deckItem && (
                   <p className="crate-deck-empty">
-                    Space puts the record you&rsquo;re looking at on — your queue stays where it is.
+                    Double-click a record to put it on, or press Space — your queue stays where it
+                    is.
                   </p>
                 )}
               </div>

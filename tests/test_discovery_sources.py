@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -137,13 +138,18 @@ def _profile(**kw: Any) -> SeedProfile:
     return SeedProfile(**kw)
 
 
-def _album_seed(album_id: int = 1, url: str = "https://a.bandcamp.com/album/x"):
+def _album_seed(
+    album_id: int = 1,
+    url: str = "https://a.bandcamp.com/album/x",
+    last_played_at: float | None = None,
+):
     return SeedAlbum(
         album_id=album_id,
         album_artist="Artist",
         album="Album",
         album_url=url,
         tralbum_id="111",
+        last_played_at=last_played_at,
     )
 
 
@@ -160,6 +166,23 @@ RICH_PROFILE = SeedProfile(
     favorite_artists=[
         SeedArtist(name="Four Tet", artist_page="https://fourtet.bandcamp.com/music")
     ],
+    # owned_count=1 so the lone-album criterion has something; a second artist
+    # with more than one keeps that filter honest rather than vacuous.
+    played_artists=[
+        SeedArtist(
+            name="Loraine James",
+            artist_page="https://lorainejames.bandcamp.com/music",
+            owned_count=1,
+            play_time=9000.0,
+        ),
+        SeedArtist(
+            name="Four Tet",
+            artist_page="https://fourtet.bandcamp.com/music",
+            owned_count=4,
+            play_time=8000.0,
+        ),
+    ],
+    anniversary_albums=[_album_seed(9, "https://c.bandcamp.com/album/z")],
     top_artists=["Four Tet"],
     top_genres=["ambient", "dub techno"],
     labels=["Ghostly"],
@@ -195,7 +218,31 @@ class TestCriteriaRegistry:
         assert keys == ["best_seller"]
 
     def test_rich_profile_runs_several_criteria(self) -> None:
-        assert len(criteria_for(RICH_PROFILE)) >= 4
+        # Raised with the registry (KAMP-658). Left at 4 it would stay green while
+        # half the criteria produced nothing, which is the opposite of its job.
+        assert len(criteria_for(RICH_PROFILE)) >= 6
+
+    def test_the_lone_album_criterion_skips_artists_you_own_several_by(self) -> None:
+        """The claim is about a gap on the shelf, so an artist with four albums
+        in the collection must not produce "you have just the one here"."""
+        lone = next(c for c in REGISTRY if c.key == "lone_album_artist")
+        names = {s.seed_data["artist"] for s in lone.seeds(RICH_PROFILE)}
+        assert names == {"Loraine James"}
+
+    def test_the_artist_criterion_falls_through_to_what_you_play(self) -> None:
+        """Favourites first, then artists merely played a lot — and the two say
+        different things, because starring and playing are different acts."""
+        fav = next(c for c in REGISTRY if c.key == "favorite_artist")
+        seeds = list(fav.seeds(RICH_PROFILE))
+        whys = {s.seed_data["artist"]: s.why for s in seeds}
+        assert "already know you like" in whys["Four Tet"]
+        assert "keep going back to" in whys["Loraine James"]
+
+    def test_a_favourite_is_not_offered_twice_by_the_fall_through(self) -> None:
+        """Four Tet is in both lists; the artist page must be seeded once."""
+        fav = next(c for c in REGISTRY if c.key == "favorite_artist")
+        names = [s.seed_data["artist"] for s in fav.seeds(RICH_PROFILE)]
+        assert names.count("Four Tet") == 1
 
     def test_also_like_dedupes_an_album_that_is_both_recent_and_favourite(
         self,
@@ -213,6 +260,32 @@ class TestCriteriaRegistry:
         fav = SeedProfile(favorite_albums=[_album_seed(2)])
         assert "recently" in list(REGISTRY[0].seeds(recent))[0].why
         assert "favourited" in list(REGISTRY[0].seeds(fav))[0].why
+
+    def test_a_favourite_gone_quiet_gets_its_own_line(self) -> None:
+        """KAMP-658's "clerk remembers". Folded into also_like rather than made a
+        criterion of its own, because this selector already reaches these albums
+        through favorite_albums."""
+        import time as _t
+
+        stale = _album_seed(3, last_played_at=_t.time() - 200 * 86400)
+        seeds = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[stale])))
+        assert "not put" in seeds[0].why
+        assert seeds[0].seed_data["dormant"] is True
+
+    def test_a_favourite_played_last_month_is_not_called_dormant(self) -> None:
+        import time as _t
+
+        warm = _album_seed(4, last_played_at=_t.time() - 30 * 86400)
+        seeds = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[warm])))
+        assert "favourited" in seeds[0].why
+        assert seeds[0].seed_data["dormant"] is False
+
+    def test_a_favourite_never_played_is_not_called_dormant(self) -> None:
+        """ "You have not put it on in a while" is false for a record that has
+        never been on. Never-played reads as an ordinary favourite."""
+        seeds = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[_album_seed(5)])))
+        assert "favourited" in seeds[0].why
+        assert seeds[0].seed_data["dormant"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +704,37 @@ class TestACrateReflectsTheLibrarysRange:
         assert budget.spent[DISCOVER_API] <= budget.limits[DISCOVER_API]
         assert budget.spent.get(ARTIST_PAGE, 0) <= budget.limits[ARTIST_PAGE]
         assert budget.spent.get(FANCOLLECTION, 0) == 0
+
+    def test_no_criterion_is_starved_by_the_budget(self) -> None:
+        """The failure the budget test above cannot see (KAMP-658).
+
+        `gather` iterates criteria in registry order and stops asking once a class
+        is exhausted, so a registry that outgrows its allowance starves whichever
+        criteria come last — silently, and while the <= assertions above stay
+        green. Two criteria per endpoint class times two seeds is exactly the
+        allowance today; a third on either class breaks this, which is the point.
+
+        Given ENOUGH GENRES on purpose. With only two, `older_than_ten` is skipped
+        for a reason that is not starvation: `genre_top` claims both genre
+        dimensions first and the KAMP-665 variety rule deliberately stops the
+        second genre criterion reusing them. That is correct behaviour, and a test
+        that could not tell it apart from budget exhaustion would be worse than no
+        test at all.
+        """
+        budget = crate_budget()
+        session = FakeSession(
+            get_body=_fixture("album_page_with_recs"),
+            post_body=_fixture("discover_web_ambient_top"),
+        )
+        profile = replace(
+            RICH_PROFILE, top_genres=["ambient", "dub techno", "shoegaze", "dub"]
+        )
+        state: dict[str, Any] = {}
+        _source(session).gather(profile, budget, state)
+
+        wanted = {c.key for c in criteria_for(profile)}
+        ran = set(state.get("seeds", {}))
+        assert wanted <= ran, f"never got a request: {sorted(wanted - ran)}"
 
 
 class TestRotationAndPagination:

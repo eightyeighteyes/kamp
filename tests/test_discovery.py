@@ -1207,12 +1207,18 @@ class TestSeedProfile:
         label: str = "",
         album_url: str | None = None,
         sale_item_id: str | None = None,
+        play_time: float | None = None,
     ) -> int:
         """Insert an album, optionally linked to a collection row.
 
         The link matters: seed accessors only return albums with a fetchable
         Bandcamp URL, so an album created without one is deliberately invisible to
         them (a local-only album has no page to read recommendations from).
+
+        *play_time* creates the `artists` row and wires `albums.artist_id` to it,
+        which production does by name at index time. Accessors that rank by play
+        time join through that FK, so without it they return nothing and a test
+        proves only that the fixture is empty (KAMP-658).
         """
         if album_url is not None:
             sale_item_id = sale_item_id or f"sale-{artist}-{title}"
@@ -1223,14 +1229,110 @@ class TestSeedProfile:
                 item_title=title,
                 album_url=album_url,
             )
+        artist_id: int | None = None
+        if play_time is not None:
+            row = index._conn.execute(
+                "SELECT id FROM artists WHERE name = ? COLLATE NOCASE", (artist,)
+            ).fetchone()
+            if row is None:
+                cur = index._conn.execute(
+                    "INSERT INTO artists (name, play_time) VALUES (?, ?)",
+                    (artist, play_time),
+                )
+                artist_id = int(cur.lastrowid or 0)
+            else:
+                artist_id = int(row["id"])
+                index._conn.execute(
+                    "UPDATE artists SET play_time = ? WHERE id = ?",
+                    (play_time, artist_id),
+                )
         cur = index._conn.execute(
             "INSERT INTO albums"
-            " (album_artist, album, last_played_at, favorite, label, sale_item_id)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (artist, title, last_played_at, favorite, label, sale_item_id),
+            " (album_artist, album, last_played_at, favorite, label, sale_item_id,"
+            "  artist_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (artist, title, last_played_at, favorite, label, sale_item_id, artist_id),
         )
         index._conn.commit()
         return int(cur.lastrowid or 0)
+
+    def test_played_artists_rank_by_play_time_and_count_what_you_own(
+        self, index: LibraryIndex
+    ) -> None:
+        """KAMP-658. owned_count is albums in the COLLECTION, which is what the
+        "you have just the one here" copy is allowed to claim."""
+        self._album(
+            index,
+            "Loraine James",
+            "Reflection",
+            album_url="https://lj.bandcamp.com/album/reflection",
+            play_time=9000.0,
+        )
+        self._album(
+            index,
+            "Four Tet",
+            "Rounds",
+            album_url="https://fourtet.bandcamp.com/album/rounds",
+            play_time=8000.0,
+        )
+        self._album(
+            index,
+            "Four Tet",
+            "Pink",
+            album_url="https://fourtet.bandcamp.com/album/pink",
+            play_time=8000.0,
+        )
+
+        artists = index.played_artists_with_pages()
+        by_name = {a.name: a for a in artists}
+        assert [a.name for a in artists] == ["Loraine James", "Four Tet"]
+        assert by_name["Loraine James"].owned_count == 1
+        assert by_name["Four Tet"].owned_count == 2
+        assert by_name["Loraine James"].artist_page == "https://lj.bandcamp.com/music"
+
+    def test_the_anniversary_window_has_both_edges(self, index: LibraryIndex) -> None:
+        """A fortnight either side of a year ago is in; a month out is not. The
+        window exists because purchases are lumpy — an exact-day match would
+        leave the criterion silent on most days (KAMP-658)."""
+        now = time.time()
+        year = 365 * 86400
+        for name, bought in (
+            ("OnTheDay", now - year),
+            ("JustInside", now - year + 13 * 86400),
+            ("WayBefore", now - year - 60 * 86400),
+            ("WayAfter", now - year + 60 * 86400),
+        ):
+            sale = f"sale-{name}"
+            _add_collection_row(
+                index,
+                sale,
+                band_name=name,
+                item_title=name,
+                album_url=f"https://{name.lower()}.bandcamp.com/album/a",
+                added_at=bought,
+            )
+            index._conn.execute(
+                "INSERT INTO albums (album_artist, album, sale_item_id)"
+                " VALUES (?, ?, ?)",
+                (name, name, sale),
+            )
+        index._conn.commit()
+
+        window = 14 * 86400
+        found = index.albums_purchased_between(now - year - window, now - year + window)
+        assert {a.album for a in found} == {"OnTheDay", "JustInside"}
+
+    def test_played_artists_skip_the_never_played(self, index: LibraryIndex) -> None:
+        """play_time 0 is the overwhelming majority of a real library's artists —
+        returning them would make "you play them a lot" a lie."""
+        self._album(
+            index,
+            "Silent",
+            "Untouched",
+            album_url="https://silent.bandcamp.com/album/untouched",
+            play_time=0.0,
+        )
+        assert index.played_artists_with_pages() == []
 
     def test_recency_window_boundaries(self, index: LibraryIndex) -> None:
         """29 days ago is recent; 31 is not. The boundary is the whole point."""

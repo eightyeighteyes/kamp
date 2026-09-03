@@ -4961,6 +4961,83 @@ class LibraryIndex:
         self._conn.commit()
         return int(cur.lastrowid or 0)
 
+    def buffer_candidates(self, rows: "Sequence[dict[str, Any]]") -> int:
+        """Bulk-insert surplus candidates as buffered rows. Returns rows written.
+
+        The bulk counterpart to :meth:`add_discovery_candidate`, and separate from
+        it on purpose (KAMP-657). That one is a read-then-insert committing per
+        row, which is right for the ten picks a build promotes but wrong for the
+        fifty it has left over: the library is WAL with the default
+        ``synchronous=FULL``, so every commit is an fsync, and fifty fsyncs in a
+        burst is an order of magnitude past the rate KAMP-684 treated as a defect
+        worth fixing. One ``executemany``, one commit.
+
+        ``ON CONFLICT DO NOTHING`` on the existing ``UNIQUE (provider,
+        provider_item_id)`` replaces the Python-side existence check, which also
+        closes the read-then-insert race that check leaves open.
+
+        Surplus is never promoted in the same build, so no row ids are returned.
+        """
+        if not rows:
+            return 0
+        now = _time.time()
+        cur = self._conn.executemany(
+            "INSERT INTO discovery_items"
+            " (provider, provider_item_id, item_url, artist, title, art_url,"
+            "  label, release_date, criterion, why, seed_json, first_seen_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (provider, provider_item_id) DO NOTHING",
+            [
+                (
+                    r.get("provider", "bandcamp"),
+                    str(r["provider_item_id"]),
+                    r.get("item_url", ""),
+                    r.get("artist", ""),
+                    r.get("title", ""),
+                    r.get("art_url"),
+                    r.get("label", ""),
+                    r.get("release_date", ""),
+                    r.get("criterion", ""),
+                    r.get("why", ""),
+                    r.get("seed_json", "{}"),
+                    r.get("first_seen_at") or now,
+                )
+                for r in rows
+            ],
+        )
+        self._conn.commit()
+        return int(cur.rowcount or 0)
+
+    def buffered_candidates(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Surplus candidates never shown to anyone, oldest gather first.
+
+        Oldest-first so the tail drains before it ages out; newest-first would
+        leave everything below the waterline write-only, aging out unread.
+
+        Same seed_json handling as :meth:`crate_items` — a malformed blob costs
+        that candidate its structured provenance rather than the whole read, and
+        ``why`` is stored separately so the card still reads correctly.
+        """
+        rows = self._conn.execute(
+            "SELECT id, provider, provider_item_id, item_url, artist, title,"
+            "       art_url, label, release_date, criterion, why, seed_json,"
+            "       first_seen_at"
+            " FROM discovery_items WHERE crate_no IS NULL"
+            " ORDER BY first_seen_at, id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            raw = item.pop("seed_json", None)
+            try:
+                seed = json.loads(raw) if raw else {}
+            except (ValueError, TypeError):
+                seed = {}
+            item["seed"] = seed if isinstance(seed, dict) else {}
+            out.append(item)
+        return out
+
     def seen_before(self, provider: str, provider_item_id: str) -> bool:
         """True only if this candidate has actually been SHOWN to the user.
 

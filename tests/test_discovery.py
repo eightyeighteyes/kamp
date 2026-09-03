@@ -1022,6 +1022,81 @@ class TestEventLedger:
 
 
 # ---------------------------------------------------------------------------
+# The candidate buffer (KAMP-657)
+# ---------------------------------------------------------------------------
+
+
+class TestCandidateBuffer:
+    def _rows(self, *ids: str, **kw: Any) -> list[dict[str, Any]]:
+        return [{"provider_item_id": i, "artist": f"Artist {i}", **kw} for i in ids]
+
+    def test_surplus_is_written_and_read_back(self, index: LibraryIndex) -> None:
+        assert index.buffer_candidates(self._rows("1", "2", "3")) == 3
+        got = index.buffered_candidates()
+        assert [c["provider_item_id"] for c in got] == ["1", "2", "3"]
+        assert all(c["provider"] == "bandcamp" for c in got)
+
+    def test_writing_the_same_album_twice_is_a_no_op(self, index: LibraryIndex) -> None:
+        """The gather re-returns roughly 15% of its recommendations across seeds,
+        so a conflicting write is the normal case, not an error."""
+        index.buffer_candidates(self._rows("1"))
+        index.buffer_candidates(self._rows("1", "2"))
+        assert [c["provider_item_id"] for c in index.buffered_candidates()] == [
+            "1",
+            "2",
+        ]
+
+    def test_buffering_never_resurrects_a_shown_candidate(
+        self, index: LibraryIndex
+    ) -> None:
+        """A record already in a crate must not be re-offered by the buffer, and
+        the ON CONFLICT must not drag it back to crate_no NULL."""
+        shown = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.place_in_crate(shown, 1, 0)
+
+        index.buffer_candidates(self._rows("1"))
+        assert index.buffered_candidates() == []
+        assert index.seen_before("bandcamp", "1") is True
+
+    def test_buffered_rows_are_read_oldest_first(self, index: LibraryIndex) -> None:
+        """So the tail drains before it ages out rather than going write-only."""
+        index.buffer_candidates(
+            [
+                {"provider_item_id": "new", "first_seen_at": 2000.0},
+                {"provider_item_id": "old", "first_seen_at": 1000.0},
+            ]
+        )
+        got = [c["provider_item_id"] for c in index.buffered_candidates()]
+        assert got == ["old", "new"]
+
+    def test_a_malformed_seed_costs_that_row_its_provenance_only(
+        self, index: LibraryIndex
+    ) -> None:
+        """Matches crate_items: `why` is stored separately and still reads."""
+        index.buffer_candidates(
+            [
+                {
+                    "provider_item_id": "1",
+                    "why": "Filed next to something.",
+                    "seed_json": "{not json",
+                }
+            ]
+        )
+        (item,) = index.buffered_candidates()
+        assert item["seed"] == {}
+        assert item["why"] == "Filed next to something."
+
+    def test_a_seed_that_is_not_an_object_reads_as_empty(
+        self, index: LibraryIndex
+    ) -> None:
+        index.buffer_candidates([{"provider_item_id": "1", "seed_json": '"a string"'}])
+        assert index.buffered_candidates()[0]["seed"] == {}
+
+    def test_an_empty_write_touches_nothing(self, index: LibraryIndex) -> None:
+        assert index.buffer_candidates([]) == 0
+
+
+# ---------------------------------------------------------------------------
 # Crate assembly accessors (KAMP-648)
 # ---------------------------------------------------------------------------
 

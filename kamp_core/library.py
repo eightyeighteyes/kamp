@@ -877,6 +877,11 @@ class SeedAlbum:
     album: str
     album_url: str
     tralbum_id: str = ""
+    #: When the album was last started, or None if it never has been (KAMP-658).
+    #: Lets a criterion tell "you have not put this on in months" apart from
+    #: "you have never put this on", which are different clerk lines. Same
+    #: caveat as recently_played_albums: written at track START.
+    last_played_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -5486,7 +5491,8 @@ class LibraryIndex:
     # it. A seed with no album_url is useless to a fetcher, so these filter them
     # out at the source rather than making every caller remember to.
     _SEED_ALBUM_SELECT = """
-            SELECT a.id, a.album_artist, a.album, bc.album_url, bc.tralbum_id
+            SELECT a.id, a.album_artist, a.album, bc.album_url, bc.tralbum_id,
+                   a.last_played_at
             FROM albums a
             JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id"""
 
@@ -5499,6 +5505,11 @@ class LibraryIndex:
                 album=r["album"],
                 album_url=r["album_url"],
                 tralbum_id=r["tralbum_id"] or "",
+                last_played_at=(
+                    float(r["last_played_at"])
+                    if r["last_played_at"] is not None
+                    else None
+                ),
             )
             for r in rows
             if r["album_url"]

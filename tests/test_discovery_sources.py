@@ -137,13 +137,18 @@ def _profile(**kw: Any) -> SeedProfile:
     return SeedProfile(**kw)
 
 
-def _album_seed(album_id: int = 1, url: str = "https://a.bandcamp.com/album/x"):
+def _album_seed(
+    album_id: int = 1,
+    url: str = "https://a.bandcamp.com/album/x",
+    last_played_at: float | None = None,
+):
     return SeedAlbum(
         album_id=album_id,
         album_artist="Artist",
         album="Album",
         album_url=url,
         tralbum_id="111",
+        last_played_at=last_played_at,
     )
 
 
@@ -213,6 +218,32 @@ class TestCriteriaRegistry:
         fav = SeedProfile(favorite_albums=[_album_seed(2)])
         assert "recently" in list(REGISTRY[0].seeds(recent))[0].why
         assert "favourited" in list(REGISTRY[0].seeds(fav))[0].why
+
+    def test_a_favourite_gone_quiet_gets_its_own_line(self) -> None:
+        """KAMP-658's "clerk remembers". Folded into also_like rather than made a
+        criterion of its own, because this selector already reaches these albums
+        through favorite_albums."""
+        import time as _t
+
+        stale = _album_seed(3, last_played_at=_t.time() - 200 * 86400)
+        seeds = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[stale])))
+        assert "not put" in seeds[0].why
+        assert seeds[0].seed_data["dormant"] is True
+
+    def test_a_favourite_played_last_month_is_not_called_dormant(self) -> None:
+        import time as _t
+
+        warm = _album_seed(4, last_played_at=_t.time() - 30 * 86400)
+        seeds = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[warm])))
+        assert "favourited" in seeds[0].why
+        assert seeds[0].seed_data["dormant"] is False
+
+    def test_a_favourite_never_played_is_not_called_dormant(self) -> None:
+        """ "You have not put it on in a while" is false for a record that has
+        never been on. Never-played reads as an ordinary favourite."""
+        seeds = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[_album_seed(5)])))
+        assert "favourited" in seeds[0].why
+        assert seeds[0].seed_data["dormant"] is False
 
 
 # ---------------------------------------------------------------------------

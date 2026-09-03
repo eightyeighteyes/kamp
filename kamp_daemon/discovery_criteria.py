@@ -20,6 +20,7 @@ on data kamp does not have; see the KAMP-647 plan.
 from __future__ import annotations
 
 import logging
+import time as _time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
@@ -34,6 +35,11 @@ SURFACE_DISCOGRAPHY = "discography"
 
 # How far back "over ten years old" reaches, in years.
 OLD_ALBUM_YEARS = 10
+
+# How long a favourite has to have gone unplayed before the clerk remarks on it
+# (KAMP-658). Six months: long enough that "you have not put it on in a while" is
+# true rather than pedantic, short enough that a real library has some.
+_DORMANT_SECS = 183 * 86400
 
 
 @dataclass(frozen=True)
@@ -110,25 +116,45 @@ def _also_like_seeds(profile: SeedProfile) -> Iterable[Seed]:
     is already ordered. Deduped by album_id so an album that is both recent and
     favourited is not fetched twice.
     """
+    now = _time.time()
     seen: set[int] = set()
     for seed_album in [*profile.recent_albums, *profile.favorite_albums]:
         if seed_album.album_id in seen:
             continue
         seen.add(seed_album.album_id)
         recent = seed_album.album_id in profile.recent_album_ids
+        # A favourite gone quiet for half a year is a different claim from a
+        # favourite in general, and it is the more interesting one — the clerk
+        # noticing what has slipped off your turntable rather than what is on it
+        # (KAMP-658). Folded in here rather than added as its own criterion: this
+        # selector ALREADY reaches those albums via favorite_albums, so a second
+        # criterion would collide with this one on the album_id seed dimension
+        # and spend an album-page request to relabel a card it would have
+        # produced anyway.
+        #
+        # Never played at all is deliberately NOT this line: "you have not put it
+        # on in a while" is false for a record that has never been on.
+        dormant = (
+            not recent
+            and seed_album.last_played_at is not None
+            and now - seed_album.last_played_at >= _DORMANT_SECS
+        )
+        if recent:
+            why = f"Filed next to {seed_album.album}, which you played recently."
+        elif dormant:
+            why = f"You have not put {seed_album.album} on in a while — this sits beside it."
+        else:
+            why = f"You favourited {seed_album.album} — this sits beside it."
         yield Seed(
             target=seed_album.album_url,
-            why=(
-                f"Filed next to {seed_album.album}, which you played recently."
-                if recent
-                else f"You favourited {seed_album.album} — this sits beside it."
-            ),
+            why=why,
             seed_data={
                 "kind": "album",
                 "album_id": seed_album.album_id,
                 "album": seed_album.album,
                 "album_artist": seed_album.album_artist,
                 "recent": recent,
+                "dormant": dormant,
             },
         )
 

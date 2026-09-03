@@ -5591,6 +5591,30 @@ class LibraryIndex:
                 )
         return out
 
+    def albums_purchased_between(
+        self, earliest: float, latest: float, limit: int = 25
+    ) -> list["SeedAlbum"]:
+        """Fetchable owned albums bought inside a window, newest purchase first.
+
+        ``bandcamp_collection.added_at`` is Bandcamp's own ``purchased`` field
+        rather than the time kamp synced, so a window around this date last year
+        is a real anniversary (KAMP-658). Note the caller supplies the window: the
+        clock stays out of here so the query is a pure range read.
+
+        An album bought but never downloaded has no ``albums`` row and so is not
+        returned — the same limitation every seed accessor has, since a seed the
+        user does not own locally is still fetchable but is not a shelf fact.
+        """
+        rows = self._conn.execute(
+            self._SEED_ALBUM_SELECT + """
+            WHERE bc.added_at BETWEEN ? AND ?
+            ORDER BY bc.added_at DESC
+            LIMIT ?
+            """,
+            (earliest, latest, limit),
+        ).fetchall()
+        return self._seed_album_rows(rows)
+
     def played_artists_with_pages(self, limit: int = 25) -> list["SeedArtist"]:
         """Artists the user actually plays, most-played first, with a page (KAMP-658).
 

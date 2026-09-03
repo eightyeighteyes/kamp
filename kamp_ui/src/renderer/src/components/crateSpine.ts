@@ -27,7 +27,12 @@ const PHRASES: Record<string, { one: string; many: string }> = {
   older_than_ten: { one: 'ONE DEEP CUT', many: 'DEEP CUTS' },
   best_seller: { one: 'ONE WILDCARD', many: 'WILDCARDS' },
   favorite_artist: { one: 'ONE OLD FRIEND', many: 'OLD FRIENDS' },
-  also_like: { one: 'ONE FILED NEXT DOOR', many: 'FILED NEXT DOOR' }
+  also_like: { one: 'ONE FILED NEXT DOOR', many: 'FILED NEXT DOOR' },
+  // KAMP-658. Both are deliberately not "DEEP CUT" or "OLD FRIEND" — those are
+  // already spoken for above by different criteria, and reusing them would make
+  // the divider card describe the wrong pick.
+  lone_album_artist: { one: 'ONE SECOND HELPING', many: 'SECOND HELPINGS' },
+  purchase_anniversary: { one: 'ONE FROM A YEAR BACK', many: 'FROM A YEAR BACK' }
 }
 
 function stamp(items: CrateItem[]): string {

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -181,6 +182,7 @@ RICH_PROFILE = SeedProfile(
             play_time=8000.0,
         ),
     ],
+    anniversary_albums=[_album_seed(9, "https://c.bandcamp.com/album/z")],
     top_artists=["Four Tet"],
     top_genres=["ambient", "dub techno"],
     labels=["Ghostly"],
@@ -702,6 +704,37 @@ class TestACrateReflectsTheLibrarysRange:
         assert budget.spent[DISCOVER_API] <= budget.limits[DISCOVER_API]
         assert budget.spent.get(ARTIST_PAGE, 0) <= budget.limits[ARTIST_PAGE]
         assert budget.spent.get(FANCOLLECTION, 0) == 0
+
+    def test_no_criterion_is_starved_by_the_budget(self) -> None:
+        """The failure the budget test above cannot see (KAMP-658).
+
+        `gather` iterates criteria in registry order and stops asking once a class
+        is exhausted, so a registry that outgrows its allowance starves whichever
+        criteria come last — silently, and while the <= assertions above stay
+        green. Two criteria per endpoint class times two seeds is exactly the
+        allowance today; a third on either class breaks this, which is the point.
+
+        Given ENOUGH GENRES on purpose. With only two, `older_than_ten` is skipped
+        for a reason that is not starvation: `genre_top` claims both genre
+        dimensions first and the KAMP-665 variety rule deliberately stops the
+        second genre criterion reusing them. That is correct behaviour, and a test
+        that could not tell it apart from budget exhaustion would be worse than no
+        test at all.
+        """
+        budget = crate_budget()
+        session = FakeSession(
+            get_body=_fixture("album_page_with_recs"),
+            post_body=_fixture("discover_web_ambient_top"),
+        )
+        profile = replace(
+            RICH_PROFILE, top_genres=["ambient", "dub techno", "shoegaze", "dub"]
+        )
+        state: dict[str, Any] = {}
+        _source(session).gather(profile, budget, state)
+
+        wanted = {c.key for c in criteria_for(profile)}
+        ran = set(state.get("seeds", {}))
+        assert wanted <= ran, f"never got a request: {sorted(wanted - ran)}"
 
 
 class TestRotationAndPagination:

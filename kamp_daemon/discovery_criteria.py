@@ -249,6 +249,26 @@ def _favorite_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
         )
 
 
+def _purchase_anniversary_seeds(profile: SeedProfile) -> Iterable[Seed]:
+    """Album pages of records bought around this time last year.
+
+    A real anniversary, not a proxy: `added_at` is Bandcamp's own `purchased`
+    field rather than when kamp synced or when the files landed on disk. The
+    window is applied by the profile builder, so this stays a pure read.
+    """
+    for seed_album in profile.anniversary_albums:
+        yield Seed(
+            target=seed_album.album_url,
+            why=f"You bought {seed_album.album} about a year ago.",
+            seed_data={
+                "kind": "album",
+                "album_id": seed_album.album_id,
+                "album": seed_album.album,
+                "album_artist": seed_album.album_artist,
+            },
+        )
+
+
 def _lone_album_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
     """The artist you play constantly and own exactly one record by.
 
@@ -315,6 +335,13 @@ REGISTRY: tuple[Criterion, ...] = (
         endpoint_class=ARTIST_PAGE,
         seeds=_lone_album_artist_seeds,
         label="you only have the one by them",
+    ),
+    Criterion(
+        key="purchase_anniversary",
+        surface=SURFACE_ALBUM_RECS,
+        endpoint_class=ALBUM_PAGE,
+        seeds=_purchase_anniversary_seeds,
+        label="a year to the week since you bought it",
     ),
 )
 

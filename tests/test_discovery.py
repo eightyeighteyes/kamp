@@ -1290,6 +1290,38 @@ class TestSeedProfile:
         assert by_name["Four Tet"].owned_count == 2
         assert by_name["Loraine James"].artist_page == "https://lj.bandcamp.com/music"
 
+    def test_the_anniversary_window_has_both_edges(self, index: LibraryIndex) -> None:
+        """A fortnight either side of a year ago is in; a month out is not. The
+        window exists because purchases are lumpy — an exact-day match would
+        leave the criterion silent on most days (KAMP-658)."""
+        now = time.time()
+        year = 365 * 86400
+        for name, bought in (
+            ("OnTheDay", now - year),
+            ("JustInside", now - year + 13 * 86400),
+            ("WayBefore", now - year - 60 * 86400),
+            ("WayAfter", now - year + 60 * 86400),
+        ):
+            sale = f"sale-{name}"
+            _add_collection_row(
+                index,
+                sale,
+                band_name=name,
+                item_title=name,
+                album_url=f"https://{name.lower()}.bandcamp.com/album/a",
+                added_at=bought,
+            )
+            index._conn.execute(
+                "INSERT INTO albums (album_artist, album, sale_item_id)"
+                " VALUES (?, ?, ?)",
+                (name, name, sale),
+            )
+        index._conn.commit()
+
+        window = 14 * 86400
+        found = index.albums_purchased_between(now - year - window, now - year + window)
+        assert {a.album for a in found} == {"OnTheDay", "JustInside"}
+
     def test_played_artists_skip_the_never_played(self, index: LibraryIndex) -> None:
         """play_time 0 is the overwhelming majority of a real library's artists —
         returning them would make "you play them a lot" a lie."""

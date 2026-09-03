@@ -895,6 +895,10 @@ class SeedArtist:
     name: str
     artist_page: str
     owned_count: int = 0
+    #: Accumulated playback seconds from ``artists.play_time`` (KAMP-658). Zero
+    #: for accessors that do not rank by it, so a criterion must not read this as
+    #: "never played" without knowing which accessor built the row.
+    play_time: float = 0.0
 
 
 def _artist_page_from_album_url(album_url: str) -> str:
@@ -5583,6 +5587,54 @@ class LibraryIndex:
                         name=r["name"],
                         artist_page=page,
                         owned_count=int(r["owned_count"]),
+                    )
+                )
+        return out
+
+    def played_artists_with_pages(self, limit: int = 25) -> list["SeedArtist"]:
+        """Artists the user actually plays, most-played first, with a page (KAMP-658).
+
+        The counterpart to :meth:`favorite_artists_with_pages`, which ranks by how
+        many albums were *starred*. This ranks by ``artists.play_time`` — the
+        accumulated seconds the user has spent on them — so it reaches an artist
+        they play constantly and never got round to favouriting.
+
+        ``owned_count`` here is the number of albums by them **in the Bandcamp
+        collection**, not in the library as a whole, which is the same definition
+        favorite_artists_with_pages uses. A criterion keying on "you only have the
+        one" must word its clerk line to match that: a record bought elsewhere
+        does not count.
+
+        Joined through ``albums.artist_id`` rather than by name — the column is
+        FK'd to ``artists.id`` and backfilled at index time, so it is the
+        authoritative link and avoids a second COLLATE NOCASE name match.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT ar.name       AS name,
+                   ar.play_time  AS play_time,
+                   MIN(bc.album_url) AS album_url,
+                   COUNT(*)      AS owned_count
+            FROM albums a
+            JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id
+            JOIN artists ar ON ar.id = a.artist_id
+            WHERE bc.album_url != '' AND ar.play_time > 0
+            GROUP BY ar.id
+            ORDER BY ar.play_time DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        out: list[SeedArtist] = []
+        for r in rows:
+            page = _artist_page_from_album_url(r["album_url"])
+            if page:
+                out.append(
+                    SeedArtist(
+                        name=r["name"],
+                        artist_page=page,
+                        owned_count=int(r["owned_count"]),
+                        play_time=float(r["play_time"]),
                     )
                 )
         return out

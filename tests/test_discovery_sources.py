@@ -165,6 +165,22 @@ RICH_PROFILE = SeedProfile(
     favorite_artists=[
         SeedArtist(name="Four Tet", artist_page="https://fourtet.bandcamp.com/music")
     ],
+    # owned_count=1 so the lone-album criterion has something; a second artist
+    # with more than one keeps that filter honest rather than vacuous.
+    played_artists=[
+        SeedArtist(
+            name="Loraine James",
+            artist_page="https://lorainejames.bandcamp.com/music",
+            owned_count=1,
+            play_time=9000.0,
+        ),
+        SeedArtist(
+            name="Four Tet",
+            artist_page="https://fourtet.bandcamp.com/music",
+            owned_count=4,
+            play_time=8000.0,
+        ),
+    ],
     top_artists=["Four Tet"],
     top_genres=["ambient", "dub techno"],
     labels=["Ghostly"],
@@ -200,7 +216,31 @@ class TestCriteriaRegistry:
         assert keys == ["best_seller"]
 
     def test_rich_profile_runs_several_criteria(self) -> None:
-        assert len(criteria_for(RICH_PROFILE)) >= 4
+        # Raised with the registry (KAMP-658). Left at 4 it would stay green while
+        # half the criteria produced nothing, which is the opposite of its job.
+        assert len(criteria_for(RICH_PROFILE)) >= 6
+
+    def test_the_lone_album_criterion_skips_artists_you_own_several_by(self) -> None:
+        """The claim is about a gap on the shelf, so an artist with four albums
+        in the collection must not produce "you have just the one here"."""
+        lone = next(c for c in REGISTRY if c.key == "lone_album_artist")
+        names = {s.seed_data["artist"] for s in lone.seeds(RICH_PROFILE)}
+        assert names == {"Loraine James"}
+
+    def test_the_artist_criterion_falls_through_to_what_you_play(self) -> None:
+        """Favourites first, then artists merely played a lot — and the two say
+        different things, because starring and playing are different acts."""
+        fav = next(c for c in REGISTRY if c.key == "favorite_artist")
+        seeds = list(fav.seeds(RICH_PROFILE))
+        whys = {s.seed_data["artist"]: s.why for s in seeds}
+        assert "already know you like" in whys["Four Tet"]
+        assert "keep going back to" in whys["Loraine James"]
+
+    def test_a_favourite_is_not_offered_twice_by_the_fall_through(self) -> None:
+        """Four Tet is in both lists; the artist page must be seeded once."""
+        fav = next(c for c in REGISTRY if c.key == "favorite_artist")
+        names = [s.seed_data["artist"] for s in fav.seeds(RICH_PROFILE)]
+        assert names.count("Four Tet") == 1
 
     def test_also_like_dedupes_an_album_that_is_both_recent_and_favourite(
         self,

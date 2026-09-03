@@ -218,11 +218,55 @@ def _old_album_seeds(profile: SeedProfile) -> Iterable[Seed]:
 
 
 def _favorite_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
-    """More from a band the user has already favourited."""
+    """More from a band the user already knows they like.
+
+    Favourites first, then — once those are exhausted — artists they simply play
+    a lot without ever having starred anything (KAMP-658). The fall-through is
+    folded in here rather than made a criterion of its own: both would read the
+    same discography surface and emit the same `artist` seed dimension, so a
+    separate row would only have contended for the four-request artist-page
+    budget with this one while saying nearly the same thing.
+
+    The two `why` lines are deliberately different claims. Starring something and
+    playing it are different acts, and the card must not report one as the other.
+    """
+    seen: set[str] = set()
     for artist in profile.favorite_artists:
+        seen.add(artist.name.casefold())
         yield Seed(
             target=artist.artist_page,
             why=f"Another one from {artist.name}, who you already know you like.",
+            seed_data={"kind": "artist", "artist": artist.name},
+        )
+    for artist in profile.played_artists:
+        if artist.name.casefold() in seen:
+            continue
+        seen.add(artist.name.casefold())
+        yield Seed(
+            target=artist.artist_page,
+            why=f"You keep going back to {artist.name}. Here is another of theirs.",
+            seed_data={"kind": "artist", "artist": artist.name},
+        )
+
+
+def _lone_album_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
+    """The artist you play constantly and own exactly one record by.
+
+    A gap in the shelf rather than a taste match, which is why it earns its own
+    criterion where the play-time fall-through above does not: the claim is about
+    what is MISSING, and that is a different sentence from "another one from a
+    band you like".
+
+    `owned_count` counts albums in the Bandcamp collection, so the copy says
+    "here" rather than claiming to know the user's whole shelf — a record bought
+    somewhere else would make a flat "you only own one" false.
+    """
+    for artist in profile.played_artists:
+        if artist.owned_count != 1:
+            continue
+        yield Seed(
+            target=artist.artist_page,
+            why=f"You play {artist.name} a lot and have just the one here.",
             seed_data={"kind": "artist", "artist": artist.name},
         )
 
@@ -262,6 +306,15 @@ REGISTRY: tuple[Criterion, ...] = (
         endpoint_class=ARTIST_PAGE,
         seeds=_favorite_artist_seeds,
         label="more from a favourite band",
+    ),
+    # Appended, never inserted: tests index REGISTRY[0] positionally, and
+    # criteria_for() preserves this order for gather.
+    Criterion(
+        key="lone_album_artist",
+        surface=SURFACE_DISCOGRAPHY,
+        endpoint_class=ARTIST_PAGE,
+        seeds=_lone_album_artist_seeds,
+        label="you only have the one by them",
     ),
 )
 

@@ -209,6 +209,11 @@ class SeedProfile:
     favorite_album_ids: set[int] = field(default_factory=set)
     favorite_albums: list["SeedAlbum"] = field(default_factory=list)
     favorite_artists: list["SeedArtist"] = field(default_factory=list)
+    #: Artists ranked by accumulated play time rather than by what was starred
+    #: (KAMP-658), each carrying `owned_count` and a fetchable page. Distinct from
+    #: `top_artists`, which is names only — a criterion that wants to say "you
+    #: only have the one by them" needs the count and the address, not a name.
+    played_artists: list["SeedArtist"] = field(default_factory=list)
     top_artists: list[str] = field(default_factory=list)
     top_genres: list[str] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)
@@ -261,6 +266,7 @@ def build_seed_profile(
         favorite_album_ids={s.album_id for s in favorites},
         favorite_albums=favorites,
         favorite_artists=index.favorite_artists_with_pages(artist_limit),
+        played_artists=index.played_artists_with_pages(artist_limit),
         top_artists=[a.name for a in index.top_artists(artist_limit)],
         top_genres=[name for name, _ in index.taste_genres(genre_limit)],
         labels=[name for name, _ in index.taste_labels(limit=label_limit)],

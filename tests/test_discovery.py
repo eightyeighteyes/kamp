@@ -1022,6 +1022,141 @@ class TestEventLedger:
 
 
 # ---------------------------------------------------------------------------
+# The candidate buffer (KAMP-657)
+# ---------------------------------------------------------------------------
+
+
+class TestCandidateBuffer:
+    def _rows(self, *ids: str, **kw: Any) -> list[dict[str, Any]]:
+        return [{"provider_item_id": i, "artist": f"Artist {i}", **kw} for i in ids]
+
+    def test_surplus_is_written_and_read_back(self, index: LibraryIndex) -> None:
+        assert index.buffer_candidates(self._rows("1", "2", "3")) == 3
+        got = index.buffered_candidates()
+        assert [c["provider_item_id"] for c in got] == ["1", "2", "3"]
+        assert all(c["provider"] == "bandcamp" for c in got)
+
+    def test_writing_the_same_album_twice_is_a_no_op(self, index: LibraryIndex) -> None:
+        """The gather re-returns roughly 15% of its recommendations across seeds,
+        so a conflicting write is the normal case, not an error."""
+        index.buffer_candidates(self._rows("1"))
+        index.buffer_candidates(self._rows("1", "2"))
+        assert [c["provider_item_id"] for c in index.buffered_candidates()] == [
+            "1",
+            "2",
+        ]
+
+    def test_buffering_never_resurrects_a_shown_candidate(
+        self, index: LibraryIndex
+    ) -> None:
+        """A record already in a crate must not be re-offered by the buffer, and
+        the ON CONFLICT must not drag it back to crate_no NULL."""
+        shown = index.add_discovery_candidate(provider="bandcamp", provider_item_id="1")
+        index.place_in_crate(shown, 1, 0)
+
+        index.buffer_candidates(self._rows("1"))
+        assert index.buffered_candidates() == []
+        assert index.seen_before("bandcamp", "1") is True
+
+    def test_buffered_rows_are_read_oldest_first(self, index: LibraryIndex) -> None:
+        """So the tail drains before it ages out rather than going write-only."""
+        index.buffer_candidates(
+            [
+                {"provider_item_id": "new", "first_seen_at": 2000.0},
+                {"provider_item_id": "old", "first_seen_at": 1000.0},
+            ]
+        )
+        got = [c["provider_item_id"] for c in index.buffered_candidates()]
+        assert got == ["old", "new"]
+
+    def test_a_malformed_seed_costs_that_row_its_provenance_only(
+        self, index: LibraryIndex
+    ) -> None:
+        """Matches crate_items: `why` is stored separately and still reads."""
+        index.buffer_candidates(
+            [
+                {
+                    "provider_item_id": "1",
+                    "why": "Filed next to something.",
+                    "seed_json": "{not json",
+                }
+            ]
+        )
+        (item,) = index.buffered_candidates()
+        assert item["seed"] == {}
+        assert item["why"] == "Filed next to something."
+
+    def test_a_seed_that_is_not_an_object_reads_as_empty(
+        self, index: LibraryIndex
+    ) -> None:
+        index.buffer_candidates([{"provider_item_id": "1", "seed_json": '"a string"'}])
+        assert index.buffered_candidates()[0]["seed"] == {}
+
+    def test_an_empty_write_touches_nothing(self, index: LibraryIndex) -> None:
+        assert index.buffer_candidates([]) == 0
+
+    # -- the sweep --
+
+    def test_aged_buffered_rows_are_swept(self, index: LibraryIndex) -> None:
+        old = time.time() - 40 * 86400
+        index.buffer_candidates(
+            [
+                {"provider_item_id": "stale", "first_seen_at": old},
+                {"provider_item_id": "fresh"},
+            ]
+        )
+        assert index.sweep_discovery_buffer() == 1
+        assert [c["provider_item_id"] for c in index.buffered_candidates()] == ["fresh"]
+
+    def test_the_sweep_never_touches_a_shown_row(self, index: LibraryIndex) -> None:
+        """Shown rows are the seen-ledger. Deleting one would re-offer a record
+        the user has already been shown."""
+        shown = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="1", first_seen_at=time.time() - 999e5
+        )
+        index.place_in_crate(shown, 1, 0)
+
+        assert index.sweep_discovery_buffer() == 0
+        assert index.seen_before("bandcamp", "1") is True
+
+    def test_a_purchased_buffered_row_does_not_kill_the_sweep(
+        self, index: LibraryIndex
+    ) -> None:
+        """The trap the RESTRICT FK sets. attribute_purchases records a
+        'purchased' event ignoring crate_no, so buffered rows with events exist.
+        A DELETE that leaned on RESTRICT would raise, SQLite would roll the whole
+        statement back, and this one row -- which never ages out -- would kill
+        every future sweep. It must be skipped, and its neighbours still swept."""
+        old = time.time() - 40 * 86400
+        bought = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="bought", first_seen_at=old
+        )
+        index.record_discovery_event(bought, "purchased", at=old)
+        index.buffer_candidates(
+            [{"provider_item_id": "ordinary", "first_seen_at": old}]
+        )
+
+        assert index.sweep_discovery_buffer() == 1
+        left = [c["provider_item_id"] for c in index.buffered_candidates()]
+        assert left == ["bought"]
+
+    def test_the_cap_evicts_oldest_first(self, index: LibraryIndex) -> None:
+        now = time.time()
+        index.buffer_candidates(
+            [{"provider_item_id": str(i), "first_seen_at": now - i} for i in range(5)]
+        )
+        assert index.sweep_discovery_buffer(cap=2) == 3
+        # first_seen_at descends with i, so 0 and 1 are the newest two.
+        assert {c["provider_item_id"] for c in index.buffered_candidates()} == {
+            "0",
+            "1",
+        }
+
+    def test_an_empty_buffer_sweeps_cleanly(self, index: LibraryIndex) -> None:
+        assert index.sweep_discovery_buffer() == 0
+
+
+# ---------------------------------------------------------------------------
 # Crate assembly accessors (KAMP-648)
 # ---------------------------------------------------------------------------
 

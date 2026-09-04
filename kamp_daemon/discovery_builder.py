@@ -159,6 +159,34 @@ def build_crate(
         # exactly the waste this exists to stop.
         _save_rotation(index, rotation)
 
+    # Swept before it is read, not at daemon start: sweep_orphan_pending_ingest is
+    # the naming precedent but runs once at launch, and this daemon can run for
+    # weeks. Sweeping first is safe — the read below simply sees what survived, and
+    # a row past its TTL is one we would not want to offer anyway.
+    try:
+        index.sweep_discovery_buffer()
+    except Exception:  # noqa: BLE001 - housekeeping must not cost a crate
+        logger.warning("discovery: buffer sweep failed", exc_info=True)
+
+    # Stock from previous builds, offered only if this gather cannot fill the
+    # crate on its own (KAMP-657). Fallback rather than blend: the gather spends
+    # the same requests either way, so mixing leftovers into a healthy build buys
+    # nothing and costs freshness. What the buffer is actually for is the build
+    # that came back thin — a 429, an exhausted budget, pages picked over — where
+    # today the user just gets a short crate.
+    #
+    # Fresh wins any duplicate: its `why` was computed against the current
+    # profile, and `_deal` dedupes on id() rather than on identity, so two objects
+    # for the same album would both be dealable and the second place_in_crate would
+    # MOVE the row rather than add one — leaving a hole in a crate reporting itself
+    # full.
+    fresh_ids = {(c.provider, c.provider_item_id) for c in candidates}
+    stock = [
+        c
+        for c in _rehydrate(index.buffered_candidates())
+        if (c.provider, c.provider_item_id) not in fresh_ids
+    ]
+
     picks = select_crate(
         candidates,
         index=index,
@@ -166,13 +194,22 @@ def build_crate(
         size=size,
         rng=rng,
         wishlist_ids=wishlist_ids,
+        extra=stock,
     )
     # Attributed BEFORE anything is written, and that ordering is the whole
     # correctness of the flag: place first and this crate's own ten records are
     # `seen_before` by the time we ask, so every short crate would report the well
     # dry — including a three-record crate where nothing had been seen at all.
+    #
+    # Counted against the FRESH picks only. `candidates` is the gather, so letting
+    # buffered picks into `picked` compares two different sets and makes the
+    # inequality trivially easier — a crate topped up from stock would report the
+    # racks picked over when the buffer was simply drained by `in_library`.
+    fresh_picked = sum(
+        1 for p in picks if (p.provider, p.provider_item_id) in fresh_ids
+    )
     dry = len(picks) < size and _short_because_seen(
-        candidates, index=index, picked=len(picks)
+        candidates, index=index, picked=fresh_picked
     )
 
     if not picks:
@@ -221,6 +258,15 @@ def build_crate(
         logger.warning("discovery: crate %d persisted nothing", crate_no)
         return _publish(publish, state="empty", crate_no=None)
 
+    # Keep what this gather found and could not use (KAMP-657). After the guard
+    # above on purpose: that branch means writes are failing, and firing fifty
+    # more at a database that just rejected ten is the wrong move.
+    #
+    # Deliberately not filtered by `_excluded` — exclusion is re-checked at
+    # assembly because a candidate can be bought or wishlisted while it sits, so
+    # filtering now would only bake in a verdict that has to be re-taken anyway.
+    _buffer_surplus(index, candidates, picks)
+
     short = placed < size
     # `dry` was measured against the picks; `short` is measured against what
     # actually landed. Both have to hold: a crate short only because rows failed
@@ -244,6 +290,67 @@ def build_crate(
     )
 
 
+def _rehydrate(rows: "Sequence[dict[str, Any]]") -> list[Candidate]:
+    """Turn stored buffer rows back into Candidates (KAMP-657).
+
+    `seed` arrives already parsed by the accessor, which is also where a
+    malformed blob is absorbed — so a candidate whose provenance did not survive
+    the round trip still carries its `why` and is still showable.
+    """
+    return [
+        Candidate(
+            provider=row["provider"],
+            provider_item_id=row["provider_item_id"],
+            item_url=row["item_url"],
+            artist=row["artist"],
+            title=row["title"],
+            art_url=row["art_url"],
+            label=row["label"],
+            release_date=row["release_date"],
+            criterion=row["criterion"],
+            why=row["why"],
+            seed=row.get("seed") or {},
+        )
+        for row in rows
+    ]
+
+
+def _buffer_surplus(
+    index: "LibraryIndex",
+    candidates: "Sequence[Candidate]",
+    picks: "Sequence[Candidate]",
+) -> int:
+    """Persist what this gather found and did not place. Returns rows written."""
+    placed_keys = {(p.provider, p.provider_item_id) for p in picks}
+    surplus = [
+        c for c in candidates if (c.provider, c.provider_item_id) not in placed_keys
+    ]
+    if not surplus:
+        return 0
+    try:
+        return index.buffer_candidates(
+            [
+                {
+                    "provider": c.provider,
+                    "provider_item_id": c.provider_item_id,
+                    "item_url": c.item_url,
+                    "artist": c.artist,
+                    "title": c.title,
+                    "art_url": c.art_url,
+                    "label": c.label,
+                    "release_date": c.release_date,
+                    "criterion": c.criterion,
+                    "why": c.why,
+                    "seed_json": c.seed_json(),
+                }
+                for c in surplus
+            ]
+        )
+    except Exception:  # noqa: BLE001 - a cache write must not fail a built crate
+        logger.warning("discovery: could not buffer surplus", exc_info=True)
+        return 0
+
+
 def select_crate(
     candidates: Sequence[Candidate],
     *,
@@ -252,6 +359,7 @@ def select_crate(
     size: int = CRATE_SIZE,
     rng: random.Random | None = None,
     wishlist_ids: set[str] | None = None,
+    extra: Sequence[Candidate] | None = None,
 ) -> list[Candidate]:
     """Pick up to *size* candidates, excluded and varied. Pure apart from reads.
 
@@ -263,33 +371,51 @@ def select_crate(
     caps = caps or {}
     wishlist_ids = wishlist_ids or set()
 
+    picks: list[Candidate] = []
     groups = _group_by_criterion(
         c
         for c in candidates
         if not _excluded(c, index=index, wishlist_ids=wishlist_ids)
     )
-    if not groups:
-        return []
+    if groups:
+        # Shuffle the group order per crate. criteria_for() preserves REGISTRY
+        # order and gather() iterates it, so without this slot 0 is the same
+        # criterion in every crate for the life of the install -- a poor look for
+        # a feature whose entire affordance is dealing another one.
+        order = list(groups)
+        rng.shuffle(order)
 
-    # Shuffle the group order per crate. criteria_for() preserves REGISTRY order
-    # and gather() iterates it, so without this slot 0 is the same criterion in
-    # every crate for the life of the install -- a poor look for a feature whose
-    # entire affordance is dealing another one.
-    order = list(groups)
-    rng.shuffle(order)
+        picks = _deal(groups, order, size, caps, seed_cap=SEED_CAP)
+        if len(picks) < size:
+            # A cap is a preference, not a ceiling: honouring one to the point of
+            # shrinking the crate is how a brand-new library (whose only criterion
+            # is the chart) would get a one-item crate. Backfill from what the caps
+            # held back, uncapped criteria having already been exhausted by _deal.
+            #
+            # The seed cap is dropped here for the same reason as the criterion
+            # caps (KAMP-665): a thin profile can yield one seed's worth of
+            # candidates and nothing else, and a two-record crate is a worse answer
+            # than a crate that leans on one album page.
+            picks.extend(_deal(groups, order, size - len(picks), caps={}, skip=picks))
 
-    picks = _deal(groups, order, size, caps, seed_cap=SEED_CAP)
-    if len(picks) < size:
-        # A cap is a preference, not a ceiling: honouring one to the point of
-        # shrinking the crate is how a brand-new library (whose only criterion is
-        # the chart) would get a one-item crate. Backfill from what the caps held
-        # back, uncapped criteria having already been exhausted by _deal.
-        #
-        # The seed cap is dropped here for the same reason as the criterion caps
-        # (KAMP-665): a thin profile can yield one seed's worth of candidates and
-        # nothing else, and a two-record crate is a worse answer than a crate that
-        # leans on one album page.
-        picks.extend(_deal(groups, order, size - len(picks), caps={}, skip=picks))
+    # Stock, and only once the fresh pool has had every chance (KAMP-657). This is
+    # the whole reason the buffer exists: a gather cut short by a 429, an
+    # exhausted budget or picked-over pages still fills its crate. On a healthy
+    # build this branch never runs, so leftovers cannot dilute a crate that did
+    # not need them.
+    #
+    # `skip=picks` carries the seed-cap accounting across, so stock cannot pile a
+    # third record onto a seed the fresh pass already used twice.
+    if extra and len(picks) < size:
+        stock = _group_by_criterion(
+            c for c in extra if not _excluded(c, index=index, wishlist_ids=wishlist_ids)
+        )
+        if stock:
+            stock_order = list(stock)
+            rng.shuffle(stock_order)
+            picks.extend(
+                _deal(stock, stock_order, size - len(picks), caps={}, skip=picks)
+            )
     return picks
 
 

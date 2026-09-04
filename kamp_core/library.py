@@ -614,10 +614,17 @@ CREATE INDEX IF NOT EXISTS discovery_items_crate_idx ON discovery_items(crate_no
 -- extension_audit_log. Two reasons this differs from that precedent: RAISE(ABORT)
 -- triggers would make KAMP-657's buffer TTL sweep abort on any item that ever had an
 -- event, and ON DELETE CASCADE would silently shrink the purchase stats every time a
--- row was pruned. RESTRICT means the sweep can only delete event-free rows, which is
--- exactly the buffered ones. Note the edge it gets right: a buffered candidate the
--- user buys independently gains a 'purchased' event and thereby becomes unsweepable,
--- which is what we want -- the attribution outlives the candidate.
+-- row was pruned. RESTRICT lets a buffered candidate the user buys independently
+-- gain a 'purchased' event and thereby become unsweepable, which is what we want --
+-- the attribution outlives the candidate.
+--
+-- Being buffered and being event-free are NOT the same set, and the sweep must not
+-- assume they are: attribute_purchases records that event ignoring crate_no on
+-- purpose, so buffered rows with events exist. RESTRICT is the backstop, not the
+-- filter -- a DELETE that leans on it raises IntegrityError, and because SQLite
+-- rolls the whole statement back, ONE purchased buffered row would kill the sweep
+-- for good (it never ages out). sweep_discovery_buffer therefore excludes
+-- event-bearing rows in its WHERE clause.
 --
 -- provider/provider_item_id are denormalized so aggregate stats stay answerable
 -- without joining a row that may since have been pruned.
@@ -4960,6 +4967,145 @@ class LibraryIndex:
         )
         self._conn.commit()
         return int(cur.lastrowid or 0)
+
+    def buffer_candidates(self, rows: "Sequence[dict[str, Any]]") -> int:
+        """Bulk-insert surplus candidates as buffered rows. Returns rows written.
+
+        The bulk counterpart to :meth:`add_discovery_candidate`, and separate from
+        it on purpose (KAMP-657). That one is a read-then-insert committing per
+        row, which is right for the ten picks a build promotes but wrong for the
+        fifty it has left over: the library is WAL with the default
+        ``synchronous=FULL``, so every commit is an fsync, and fifty fsyncs in a
+        burst is an order of magnitude past the rate KAMP-684 treated as a defect
+        worth fixing. One ``executemany``, one commit.
+
+        ``ON CONFLICT DO NOTHING`` on the existing ``UNIQUE (provider,
+        provider_item_id)`` replaces the Python-side existence check, which also
+        closes the read-then-insert race that check leaves open.
+
+        Surplus is never promoted in the same build, so no row ids are returned.
+        """
+        if not rows:
+            return 0
+        now = _time.time()
+        cur = self._conn.executemany(
+            "INSERT INTO discovery_items"
+            " (provider, provider_item_id, item_url, artist, title, art_url,"
+            "  label, release_date, criterion, why, seed_json, first_seen_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (provider, provider_item_id) DO NOTHING",
+            [
+                (
+                    r.get("provider", "bandcamp"),
+                    str(r["provider_item_id"]),
+                    r.get("item_url", ""),
+                    r.get("artist", ""),
+                    r.get("title", ""),
+                    r.get("art_url"),
+                    r.get("label", ""),
+                    r.get("release_date", ""),
+                    r.get("criterion", ""),
+                    r.get("why", ""),
+                    r.get("seed_json", "{}"),
+                    r.get("first_seen_at") or now,
+                )
+                for r in rows
+            ],
+        )
+        self._conn.commit()
+        return int(cur.rowcount or 0)
+
+    def buffered_candidates(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Surplus candidates never shown to anyone, oldest gather first.
+
+        Oldest-first so the tail drains before it ages out; newest-first would
+        leave everything below the waterline write-only, aging out unread.
+
+        Same seed_json handling as :meth:`crate_items` — a malformed blob costs
+        that candidate its structured provenance rather than the whole read, and
+        ``why`` is stored separately so the card still reads correctly.
+        """
+        rows = self._conn.execute(
+            "SELECT id, provider, provider_item_id, item_url, artist, title,"
+            "       art_url, label, release_date, criterion, why, seed_json,"
+            "       first_seen_at"
+            " FROM discovery_items WHERE crate_no IS NULL"
+            " ORDER BY first_seen_at, id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            raw = item.pop("seed_json", None)
+            try:
+                seed = json.loads(raw) if raw else {}
+            except (ValueError, TypeError):
+                seed = {}
+            item["seed"] = seed if isinstance(seed, dict) else {}
+            out.append(item)
+        return out
+
+    #: Buffered candidates older than this are swept (KAMP-657). Measured from
+    #: first_seen_at, which is gather time -- promotion never restamps it.
+    BUFFER_TTL_SECS = 30 * 86400
+    #: And the pool is capped regardless of age, so it cannot grow into a stale
+    #: swamp on a machine that digs constantly. Oldest evicted first.
+    BUFFER_CAP = 150
+
+    def sweep_discovery_buffer(
+        self, ttl_secs: float | None = None, cap: int | None = None
+    ) -> int:
+        """Drop aged and surplus buffered candidates. Returns rows removed.
+
+        Two passes: anything unshown and older than the TTL, then anything past
+        the cap, oldest first. Shown rows (``crate_no IS NOT NULL``) are never
+        touched -- they are the seen-ledger, and deleting one would re-offer a
+        record the user has already been shown.
+
+        **Event-bearing rows are excluded in the WHERE clause rather than left to
+        the RESTRICT foreign key.** Being buffered does not imply being
+        event-free: ``attribute_purchases`` records a 'purchased' event ignoring
+        ``crate_no`` on purpose, so a buffered candidate the user bought
+        independently carries one. Leaning on RESTRICT would raise IntegrityError,
+        and since SQLite rolls the whole statement back, a single such row would
+        kill every future sweep -- silently, and permanently, because that row
+        never ages out.
+        """
+        ttl = self.BUFFER_TTL_SECS if ttl_secs is None else ttl_secs
+        limit = self.BUFFER_CAP if cap is None else cap
+        # Sweepable at all: buffered, and carrying no history worth keeping.
+        sweepable = (
+            " FROM discovery_items d"
+            " WHERE d.crate_no IS NULL"
+            "   AND NOT EXISTS ("
+            "       SELECT 1 FROM discovery_events e WHERE e.item_id = d.id)"
+        )
+        aged = [
+            r["id"]
+            for r in self._conn.execute(
+                "SELECT d.id" + sweepable + " AND d.first_seen_at < ?",
+                (_time.time() - ttl,),
+            ).fetchall()
+        ]
+        # Re-read rather than subtracting in Python: the aged delete has not been
+        # applied yet, and the cap is about what SURVIVES it.
+        surplus = [
+            r["id"]
+            for r in self._conn.execute(
+                "SELECT d.id" + sweepable + " AND d.first_seen_at >= ?"
+                " ORDER BY d.first_seen_at DESC, d.id DESC LIMIT -1 OFFSET ?",
+                (_time.time() - ttl, limit),
+            ).fetchall()
+        ]
+        doomed = aged + surplus
+        if not doomed:
+            return 0
+        placeholders = ",".join("?" * len(doomed))
+        self._conn.execute(
+            f"DELETE FROM discovery_items WHERE id IN ({placeholders})", doomed
+        )
+        self._conn.commit()
+        return len(doomed)
 
     def seen_before(self, provider: str, provider_item_id: str) -> bool:
         """True only if this candidate has actually been SHOWN to the user.

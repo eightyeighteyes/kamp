@@ -34,6 +34,7 @@ from kamp_daemon.discovery_criteria import (
     Seed,
     _genre_top_seeds,
     criteria_for,
+    phrasings,
     seed_dimension,
 )
 from kamp_daemon.discovery_sources import (
@@ -202,6 +203,30 @@ class TestCriteriaRegistry:
             assert seed.target
 
     @pytest.mark.parametrize("criterion", REGISTRY, ids=lambda c: c.key)
+    def test_alternative_phrasings_are_usable_and_distinct(
+        self, criterion: Criterion
+    ) -> None:
+        """KAMP-664. A variant that renders blank is worse than the repeat it
+        replaces, and one that renders the sentence it is standing in for buys
+        nothing -- so every criterion's alternatives must be sayable and pairwise
+        different from each other and from the original."""
+        for seed in criterion.seeds(RICH_PROFILE):
+            lines = [seed.why, *phrasings(criterion.key, seed.seed_data)]
+            assert all(line.strip() for line in lines), criterion.key
+            assert len(set(lines)) == len(lines), (criterion.key, lines)
+
+    @pytest.mark.parametrize("criterion", REGISTRY, ids=lambda c: c.key)
+    def test_phrasings_tolerate_a_seed_from_an_older_build(
+        self, criterion: Criterion
+    ) -> None:
+        """Rows sitting in the KAMP-657 buffer were written before the
+        discriminators existed, and their seeds outlive any one release. A variant
+        that needs a key the stored seed lacks must degrade to a sentence, not to a
+        KeyError on the crate build."""
+        for line in phrasings(criterion.key, {"kind": criterion.key}):
+            assert line.strip()
+
+    @pytest.mark.parametrize("criterion", REGISTRY, ids=lambda c: c.key)
     def test_thin_profile_never_raises(self, criterion: Criterion) -> None:
         """A brand-new library is the common first run, not an edge case."""
         list(criterion.seeds(SeedProfile()))
@@ -231,9 +256,13 @@ class TestCriteriaRegistry:
         for key in ("genre_top", "older_than_ten"):
             criterion = next(c for c in REGISTRY if c.key == key)
             for seed in criterion.seeds(RICH_PROFILE):
-                low = seed.why.casefold()
-                for phrase in banned:
-                    assert phrase not in low, f"{key} claims '{phrase}': {seed.why}"
+                # The alternatives are held to the same rule as the sentence they
+                # stand in for. A variant is still a claim on a card, so exempting
+                # them would just move the invented claim one hop away.
+                for line in (seed.why, *phrasings(key, seed.seed_data)):
+                    low = line.casefold()
+                    for phrase in banned:
+                        assert phrase not in low, f"{key} claims '{phrase}': {line}"
 
     def test_the_top_genre_makes_a_stronger_claim_than_the_tail(self) -> None:
         """Rank is the honest stand-in for dominance: a share would need a

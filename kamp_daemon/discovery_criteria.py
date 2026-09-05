@@ -321,6 +321,110 @@ def _lone_album_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
         )
 
 
+# ---------------------------------------------------------------------------
+# Alternate phrasings (KAMP-664)
+# ---------------------------------------------------------------------------
+#
+# One seed's sentence is copied onto every candidate that seed produces, and the
+# seed cap is a preference rather than a ceiling — the two backfill deals drop it
+# so a thin gather still returns ten records. Measured, that means a first-run
+# crate is ten cards reading "Selling fast on Bandcamp right now." and a crate
+# built off one album page is nine identical lines.
+#
+# These give the builder somewhere else to go. They are a polish item, not a
+# guarantee: where the alternatives run out the line simply repeats, because a
+# card with NO rationale breaks the promise the whole feature rests on, and a
+# strained ninth phrasing of "selling fast" would be a worse failure than an
+# honest repeat.
+#
+# Kept beside the selectors so a criterion's copy lives in one place. Each takes
+# the stored seed rather than the profile, so a candidate promoted out of the
+# KAMP-657 buffer can be restated from what was written down with it — and every
+# reader tolerates a missing key, because older buffered rows predate them.
+
+
+def _album_of(seed: dict[str, Any]) -> str:
+    return str(seed.get("album") or "it")
+
+
+def _artist_of(seed: dict[str, Any]) -> str:
+    return str(seed.get("artist") or "them")
+
+
+def _genre_of(seed: dict[str, Any]) -> str:
+    return str(seed.get("genre") or "that")
+
+
+def _genre_pile(seed: dict[str, Any]) -> str:
+    """A genre pick's alternative, which has to respect the slice it came from.
+
+    ``genre_top`` seeds two branches per genre: ``top`` is Bandcamp's sales
+    ordering for the tag, ``rand`` is an arbitrary reach into the same catalogue.
+    A restated line that claimed sales rank for a ``rand`` pick would be an
+    invented claim of exactly the kind this ticket removes, so the slice picks the
+    sentence. Seeds written before KAMP-664 carry no ``slice``; they take the
+    neutral line, which is true either way.
+    """
+    genre = _genre_of(seed)
+    if seed.get("slice") == "top":
+        return f"Near the top of the {genre} pile."
+    return f"Another one out of the {genre} racks."
+
+
+def _genre_shelf(seed: dict[str, Any]) -> str:
+    """A second genre alternative, sized down to the claim any rank can carry.
+
+    "which you keep some of" is the weakest thing ``_shelf_standing`` says, and it
+    is true of every tag in ``top_genres`` — so it needs no rank and stays honest
+    for the twenty-fifth genre as well as the first.
+    """
+    genre = _genre_of(seed)
+    if seed.get("slice") == "top":
+        return f"Selling well under {genre}, which you keep some of."
+    return f"Filed under {genre}, which you keep some of."
+
+
+_VARIANTS: dict[str, list[Callable[[dict[str, Any]], str]]] = {
+    "also_like": [
+        lambda s: f"Also in the racks beside {_album_of(s)}.",
+        lambda s: f"{_album_of(s)} led here.",
+        lambda s: f"One more from the same corner as {_album_of(s)}.",
+    ],
+    "genre_top": [_genre_pile, _genre_shelf],
+    "best_seller": [
+        lambda s: "Near the top of Bandcamp's sellers.",
+        lambda s: "Moving quickly on Bandcamp today.",
+        lambda s: "One of the week's best sellers.",
+    ],
+    "older_than_ten": [
+        lambda s: f"An older {_genre_of(s)} record from the back of the rack.",
+        lambda s: f"Been in the {_genre_of(s)} racks a good while.",
+    ],
+    "favorite_artist": [
+        lambda s: f"Another from {_artist_of(s)}.",
+        lambda s: f"More of {_artist_of(s)}, since you have them already.",
+    ],
+    "lone_album_artist": [
+        lambda s: f"A second one from {_artist_of(s)}.",
+        lambda s: f"You have just the one {_artist_of(s)} here — this would be two.",
+    ],
+    "purchase_anniversary": [
+        lambda s: f"Around a year since you picked up {_album_of(s)}.",
+        lambda s: f"Filed near {_album_of(s)}, bought about this time last year.",
+    ],
+}
+
+
+def phrasings(criterion: str, seed: dict[str, Any]) -> list[str]:
+    """Alternative sentences for *criterion*, rendered from a stored seed.
+
+    Alternatives only — the seed's own sentence is not in here, because the
+    caller already has it and it is the one that reads best. An unknown criterion
+    returns nothing, which simply means its line repeats rather than varying.
+    """
+    return [render(seed) for render in _VARIANTS.get(criterion, ())]
+
+
 REGISTRY: tuple[Criterion, ...] = (
     Criterion(
         key="also_like",

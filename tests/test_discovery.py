@@ -1095,6 +1095,59 @@ class TestCandidateBuffer:
     def test_an_empty_write_touches_nothing(self, index: LibraryIndex) -> None:
         assert index.buffer_candidates([]) == 0
 
+    def test_re_finding_a_buffered_record_refreshes_its_reason(
+        self, index: LibraryIndex
+    ) -> None:
+        """KAMP-664. A record can sit in the buffer for weeks, and the sentence
+        stored with it named the profile as it was THEN. When a later gather finds
+        it again the fresh reason must win, or the card explains itself with a
+        claim that is no longer true."""
+        index.buffer_candidates(
+            [
+                {
+                    "provider_item_id": "1",
+                    "criterion": "also_like",
+                    "why": "Filed next to DOGGOD, which you played recently.",
+                    "seed_json": '{"kind": "album", "album_id": 7}',
+                    "art_url": "https://f4.bcbits.com/img/old_16.jpg",
+                }
+            ]
+        )
+
+        index.add_discovery_candidate(
+            provider="bandcamp",
+            provider_item_id="1",
+            criterion="genre_top",
+            why="Near the top of the ambient pile.",
+            seed_json='{"kind": "genre", "genre": "ambient"}',
+            art_url="https://f4.bcbits.com/img/new_16.jpg",
+        )
+
+        (row,) = index.buffered_candidates()
+        assert row["why"] == "Near the top of the ambient pile."
+        assert row["criterion"] == "genre_top"
+        assert row["seed"] == {"kind": "genre", "genre": "ambient"}
+        # Not refreshed on purpose: the art proxy serves this immutable, so a
+        # changing URL would make a year-long cache header a lie.
+        assert row["art_url"] == "https://f4.bcbits.com/img/old_16.jpg"
+
+    def test_refreshing_provenance_does_not_resurrect_a_shown_record(
+        self, index: LibraryIndex
+    ) -> None:
+        """The refresh must not touch crate_no — a record already shown stays
+        shown, and stays out of the buffer."""
+        shown = index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="1", why="first"
+        )
+        index.place_in_crate(shown, 1, 0)
+
+        index.add_discovery_candidate(
+            provider="bandcamp", provider_item_id="1", why="second"
+        )
+        assert index.buffered_candidates() == []
+        assert index.seen_before("bandcamp", "1") is True
+        assert index.crate_items(1)[0]["why"] == "second"
+
     # -- the sweep --
 
     def test_aged_buffered_rows_are_swept(self, index: LibraryIndex) -> None:

@@ -498,6 +498,14 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     playFromCrate(item)
   }
 
+  // Where the Crate hands you back to. Shared by Escape and by the footer's
+  // "That's enough for today" (KAMP-663) so the two destinations cannot drift —
+  // they differ in what they do to a running preview, and in nothing else.
+  const leaveCrate = useCallback((): void => {
+    const prev = useStore.getState().previousView
+    void setActiveView(prev && prev !== 'crate' ? prev : 'library')
+  }, [setActiveView])
+
   // Escape leaves the view. Deliberately a window listener, matching
   // DownloadsView: modals listen on document, which runs first, so Escape closes
   // an open dialog rather than dropping the user out of the Crate underneath it.
@@ -515,12 +523,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
         void previewAction('stop')
         return
       }
-      const prev = useStore.getState().previousView
-      void setActiveView(prev && prev !== 'crate' ? prev : 'library')
+      leaveCrate()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [active, setActiveView, previewAction])
+  }, [active, leaveCrate, previewAction])
 
   // The crate's own keys live on the view container, NOT on document. App's
   // global handler is a window listener and the React root sits below document
@@ -707,6 +714,31 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       disabled={building || pauseRemaining > 0}
     >
       {hasCrate ? 'Dig up another crate' : 'Dig up a crate'}
+    </button>
+  )
+
+  // The way out, offered next to the way on (KAMP-663). "Never infinite" is one
+  // of the epic's hard principles, and a shop that only ever offers you another
+  // crate is not honouring it — so at the end of a crate, stopping is a visible
+  // choice rather than something you have to know a keystroke for.
+  //
+  // It earns its place by doing what no single press does today: Escape is
+  // deliberately two-stage, so with a preview running it stops the preview and
+  // leaves you standing in the Crate. This ends the sitting outright. A control
+  // that merely left would duplicate Escape and the sidebar, and would be
+  // decoration.
+  //
+  // Never disabled. The dig button goes dead during a rate-limit cooldown, and a
+  // cooldown is precisely when leaving is the thing you want.
+  const enoughButton = (
+    <button
+      className="crate-quit-btn"
+      onClick={() => {
+        if (useStore.getState().preview?.state !== 'idle') void previewAction('stop')
+        leaveCrate()
+      }}
+    >
+      That&rsquo;s enough for today
     </button>
   )
 
@@ -944,8 +976,14 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           </div>
         )}
 
+        {/* Statement, then offer, then the quiet register (KAMP-663). The tally
+            used to sit UNDER the button, which read as a footnote to the next
+            dig rather than as the close of this one. Order only — the row keeps
+            the footer exactly as tall either way, which matters because the beat
+            lands when nine records are on the flipped pile at its full extent
+            and the bin row has a fixed height inside a view that never
+            scrolls. */}
         <div className="crate-footer">
-          {digButton}
           {/* The closing beat, at the moment the user has actually just done the
               digging rather than as a running score. A one-record crate gets one
               too (KAMP-663) — reaching the end of a short crate is still
@@ -956,6 +994,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
               That&rsquo;s the crate. {describeTally(crateTally)}
             </p>
           )}
+          {/* One row whether it holds one button or two, so offering the way out
+              costs no height at the moment there is none to spare. */}
+          <div className="crate-actions">
+            {digButton}
+            {atCrateEnd && enoughButton}
+          </div>
           {history && <p className="crate-history">{describeHistory(history)}</p>}
         </div>
 

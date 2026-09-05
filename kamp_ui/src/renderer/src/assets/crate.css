@@ -685,6 +685,35 @@
   cursor: default;
 }
 
+/* Dig and the way out, side by side at the end of a crate (KAMP-663). A row
+   rather than two rows in the footer column: the closing beat lands when the
+   flipped pile is at its full extent and nearest the footer, and .crate-bin-
+   records has a FIXED height inside a view that never scrolls, so a footer that
+   grew by a whole button there would clip the bin. One row is the same height
+   holding one button or two. */
+.crate-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* Quieter than the dig button, and deliberately not a button-looking thing:
+   stopping is offered, not urged. It carries no border or fill, so the primary
+   action stays the only object in the row that reads as one. */
+.crate-quit-btn {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  padding: 8px 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.crate-quit-btn:hover {
+  color: var(--text);
+}
+
 /* --- The rail ------------------------------------------------------------- */
 
 /* The build-time rail. Takes the bin's grid slot, which .crate-stage--building

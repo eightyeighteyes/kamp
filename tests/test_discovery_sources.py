@@ -222,6 +222,31 @@ class TestCriteriaRegistry:
         # half the criteria produced nothing, which is the opposite of its job.
         assert len(criteria_for(RICH_PROFILE)) >= 6
 
+    def test_no_genre_line_claims_listening_or_recency(self) -> None:
+        """KAMP-664. taste_genres counts tag rows and Bandcamp keywords — it has
+        no play signal and no time filter — so a genre line may talk about the
+        shelf and nothing else. "You've been deep in Rock lately" was two
+        invented claims in one sentence."""
+        banned = ("lately", "recently", "you listen", "you've been", "you have been")
+        for key in ("genre_top", "older_than_ten"):
+            criterion = next(c for c in REGISTRY if c.key == key)
+            for seed in criterion.seeds(RICH_PROFILE):
+                low = seed.why.casefold()
+                for phrase in banned:
+                    assert phrase not in low, f"{key} claims '{phrase}': {seed.why}"
+
+    def test_the_top_genre_makes_a_stronger_claim_than_the_tail(self) -> None:
+        """Rank is the honest stand-in for dominance: a share would need a
+        denominator taste_genres cannot give, since its count mixes per-track tag
+        rows with per-album keyword hits."""
+        profile = replace(
+            RICH_PROFILE, top_genres=["ambient"] + [f"g{i}" for i in range(9)]
+        )
+        genre_top = next(c for c in REGISTRY if c.key == "genre_top")
+        by_rank = {s.seed_data["rank"]: s for s in genre_top.seeds(profile)}
+        assert by_rank[0].seed_data["genre"] == "ambient"
+        assert by_rank[0].why != by_rank[9].why
+
     def test_the_lone_album_criterion_skips_artists_you_own_several_by(self) -> None:
         """The claim is about a gap on the shelf, so an artist with four albums
         in the collection must not produce "you have just the one here"."""
@@ -230,13 +255,18 @@ class TestCriteriaRegistry:
         assert names == {"Loraine James"}
 
     def test_the_artist_criterion_falls_through_to_what_you_play(self) -> None:
-        """Favourites first, then artists merely played a lot — and the two say
-        different things, because starring and playing are different acts."""
+        """Favourites first, then artists merely played a lot — and the two make
+        different claims, because starring and playing are different acts.
+
+        Asserted on the `starred` discriminator and the distinctness of the two
+        sentences, not on their wording (KAMP-664). Pinning prose here made every
+        copy pass a test change, and the thing that must hold is that the claims
+        stay distinguishable, not that they use particular words."""
         fav = next(c for c in REGISTRY if c.key == "favorite_artist")
-        seeds = list(fav.seeds(RICH_PROFILE))
-        whys = {s.seed_data["artist"]: s.why for s in seeds}
-        assert "already know you like" in whys["Four Tet"]
-        assert "keep going back to" in whys["Loraine James"]
+        seeds = {s.seed_data["artist"]: s for s in fav.seeds(RICH_PROFILE)}
+        assert seeds["Four Tet"].seed_data["starred"] is True
+        assert seeds["Loraine James"].seed_data["starred"] is False
+        assert seeds["Four Tet"].why != seeds["Loraine James"].why
 
     def test_a_favourite_is_not_offered_twice_by_the_fall_through(self) -> None:
         """Four Tet is in both lists; the artist page must be seeded once."""
@@ -258,8 +288,11 @@ class TestCriteriaRegistry:
         """The clerk card must not claim you played something you only starred."""
         recent = SeedProfile(recent_album_ids={1}, recent_albums=[_album_seed(1)])
         fav = SeedProfile(favorite_albums=[_album_seed(2)])
-        assert "recently" in list(REGISTRY[0].seeds(recent))[0].why
-        assert "favourited" in list(REGISTRY[0].seeds(fav))[0].why
+        recent_seed = list(REGISTRY[0].seeds(recent))[0]
+        fav_seed = list(REGISTRY[0].seeds(fav))[0]
+        assert recent_seed.seed_data["recent"] is True
+        assert fav_seed.seed_data["recent"] is False
+        assert recent_seed.why != fav_seed.why
 
     def test_a_favourite_gone_quiet_gets_its_own_line(self) -> None:
         """KAMP-658's "clerk remembers". Folded into also_like rather than made a
@@ -269,22 +302,22 @@ class TestCriteriaRegistry:
 
         stale = _album_seed(3, last_played_at=_t.time() - 200 * 86400)
         seeds = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[stale])))
-        assert "not put" in seeds[0].why
         assert seeds[0].seed_data["dormant"] is True
+        # Distinct from the plain-favourite line, without pinning either wording.
+        plain = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[_album_seed(3)])))
+        assert seeds[0].why != plain[0].why
 
     def test_a_favourite_played_last_month_is_not_called_dormant(self) -> None:
         import time as _t
 
         warm = _album_seed(4, last_played_at=_t.time() - 30 * 86400)
         seeds = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[warm])))
-        assert "favourited" in seeds[0].why
         assert seeds[0].seed_data["dormant"] is False
 
     def test_a_favourite_never_played_is_not_called_dormant(self) -> None:
         """ "You have not put it on in a while" is false for a record that has
         never been on. Never-played reads as an ordinary favourite."""
         seeds = list(REGISTRY[0].seeds(SeedProfile(favorite_albums=[_album_seed(5)])))
-        assert "favourited" in seeds[0].why
         assert seeds[0].seed_data["dormant"] is False
 
 

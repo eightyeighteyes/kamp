@@ -173,17 +173,43 @@ def _genre_top_seeds(profile: SeedProfile) -> Iterable[Seed]:
     cycles them for free: no slice-picking logic anywhere, and the copy stays
     honest because each variant carries its own ``why``.
     """
-    for genre in profile.top_genres:
+    for rank, genre in enumerate(profile.top_genres):
+        shelf = _shelf_standing(genre, rank)
         yield Seed(
             target={"tag": genre, "slice": "top"},
-            why=f"You've been deep in {genre} lately; this is near the top of the pile.",
-            seed_data={"kind": "genre", "genre": genre},
+            why=f"{shelf} This one is near the top of the {genre} pile.",
+            # `slice` and `rank` are recorded so a stored seed can say which of
+            # these two sentences produced it and how strong a claim it may make
+            # (KAMP-664). Without them the two branches are indistinguishable
+            # after the fact, exactly as `recent`/`dormant` prevent for albums.
+            seed_data={"kind": "genre", "genre": genre, "slice": "top", "rank": rank},
         )
         yield Seed(
             target={"tag": genre, "slice": "rand"},
             why=f"Pulled at random from the {genre} racks.",
-            seed_data={"kind": "genre", "genre": genre},
+            seed_data={"kind": "genre", "genre": genre, "slice": "rand", "rank": rank},
         )
+
+
+def _shelf_standing(genre: str, rank: int) -> str:
+    """How firmly the library lets us claim this genre, given its rank.
+
+    A claim about the SHELF, never about listening (KAMP-664). ``taste_genres``
+    counts tag rows and Bandcamp keywords — it has no play signal at all and no
+    time filter of any kind — so "you've been deep in X lately" was two invented
+    claims in one sentence: the recency and the listening. What the data actually
+    supports is how much of the collection carries the tag, and rank is a free,
+    honest proxy for that.
+
+    Rank is the profile's own ordering rather than a share, which would need a
+    denominator ``taste_genres`` cannot give: its count mixes per-track tag rows
+    with per-album keyword hits, so there is no population to divide by.
+    """
+    if rank == 0:
+        return f"{genre.capitalize()} takes up more of your shelves than anything else."
+    if rank < 5:
+        return f"You have a good stack of {genre} already."
+    return f"There is some {genre} on your shelves."
 
 
 def _best_seller_seeds(profile: SeedProfile) -> Iterable[Seed]:
@@ -209,11 +235,11 @@ def _old_album_seeds(profile: SeedProfile) -> Iterable[Seed]:
     current year, so only the random slice reaches back. The age filter is
     applied client-side on ``release_date``.
     """
-    for genre in profile.top_genres[:3]:
+    for rank, genre in enumerate(profile.top_genres[:3]):
         yield Seed(
             target={"tag": genre, "slice": "rand", "size": 60},
             why=f"An older {genre} record — the kind that turns up at the back.",
-            seed_data={"kind": "genre_old", "genre": genre},
+            seed_data={"kind": "genre_old", "genre": genre, "rank": rank},
         )
 
 
@@ -236,7 +262,11 @@ def _favorite_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
         yield Seed(
             target=artist.artist_page,
             why=f"Another one from {artist.name}, who you already know you like.",
-            seed_data={"kind": "artist", "artist": artist.name},
+            # `starred` distinguishes the two branches after the fact (KAMP-664).
+            # Both emitted {kind, artist} and differed only in prose, so a stored
+            # seed could not say which claim it had made — and the two claims are
+            # different acts: starring a record and playing it are not the same.
+            seed_data={"kind": "artist", "artist": artist.name, "starred": True},
         )
     for artist in profile.played_artists:
         if artist.name.casefold() in seen:
@@ -245,7 +275,7 @@ def _favorite_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
         yield Seed(
             target=artist.artist_page,
             why=f"You keep going back to {artist.name}. Here is another of theirs.",
-            seed_data={"kind": "artist", "artist": artist.name},
+            seed_data={"kind": "artist", "artist": artist.name, "starred": False},
         )
 
 

@@ -140,11 +140,11 @@ def _also_like_seeds(profile: SeedProfile) -> Iterable[Seed]:
             and now - seed_album.last_played_at >= _DORMANT_SECS
         )
         if recent:
-            why = f"Filed next to {seed_album.album}, which you played recently."
+            why = f"You played {seed_album.album} recently, try this one."
         elif dormant:
-            why = f"You have not put {seed_album.album} on in a while — this sits beside it."
+            why = f"You listened to {seed_album.album} a while ago — give this one a shot."
         else:
-            why = f"You favourited {seed_album.album} — this sits beside it."
+            why = f"You favourited {seed_album.album} — you might like this too."
         yield Seed(
             target=seed_album.album_url,
             why=why,
@@ -238,7 +238,7 @@ def _old_album_seeds(profile: SeedProfile) -> Iterable[Seed]:
     for rank, genre in enumerate(profile.top_genres[:3]):
         yield Seed(
             target={"tag": genre, "slice": "rand", "size": 60},
-            why=f"An older {genre} record — the kind that turns up at the back.",
+            why=f"A hidden {genre} gem? Who knows, could be good.",
             seed_data={"kind": "genre_old", "genre": genre, "rank": rank},
         )
 
@@ -289,7 +289,7 @@ def _purchase_anniversary_seeds(profile: SeedProfile) -> Iterable[Seed]:
     for seed_album in profile.anniversary_albums:
         yield Seed(
             target=seed_album.album_url,
-            why=f"You bought {seed_album.album} about a year ago.",
+            why=f"You bought {seed_album.album} about a year ago. This one's pretty similar.",
             seed_data={
                 "kind": "album",
                 "album_id": seed_album.album_id,
@@ -316,7 +316,7 @@ def _lone_album_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
             continue
         yield Seed(
             target=artist.artist_page,
-            why=f"You play {artist.name} a lot and have just the one here.",
+            why=f"You play {artist.name} a lot, but you've just got the one. Try another.",
             seed_data={"kind": "artist", "artist": artist.name},
         )
 
@@ -386,7 +386,7 @@ def _genre_shelf(seed: dict[str, Any]) -> str:
 
 _VARIANTS: dict[str, list[Callable[[dict[str, Any]], str]]] = {
     "also_like": [
-        lambda s: f"Also in the racks beside {_album_of(s)}.",
+        lambda s: f"If you liked {_album_of(s)}, you'll probably like this too.",
         lambda s: f"{_album_of(s)} led here.",
         lambda s: f"One more from the same corner as {_album_of(s)}.",
     ],
@@ -397,8 +397,8 @@ _VARIANTS: dict[str, list[Callable[[dict[str, Any]], str]]] = {
         lambda s: "One of the week's best sellers.",
     ],
     "older_than_ten": [
-        lambda s: f"An older {_genre_of(s)} record from the back of the rack.",
-        lambda s: f"Been in the {_genre_of(s)} racks a good while.",
+        lambda s: f"Here's an odd {_genre_of(s)} record from the back of the rack.",
+        lambda s: f"Give this older {_genre_of(s)} record a shot.",
     ],
     "favorite_artist": [
         lambda s: f"Another from {_artist_of(s)}.",
@@ -409,8 +409,8 @@ _VARIANTS: dict[str, list[Callable[[dict[str, Any]], str]]] = {
         lambda s: f"You have just the one {_artist_of(s)} here — this would be two.",
     ],
     "purchase_anniversary": [
-        lambda s: f"Around a year since you picked up {_album_of(s)}.",
-        lambda s: f"Filed near {_album_of(s)}, bought about this time last year.",
+        lambda s: f"Around a year since you picked up {_album_of(s)}. Try this one too.",
+        lambda s: f"Similar to {_album_of(s)}, bought about this time last year.",
     ],
 }
 

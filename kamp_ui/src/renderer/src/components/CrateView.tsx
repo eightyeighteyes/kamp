@@ -147,7 +147,47 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // the tally cannot drift from the lifetime line.
   const history = crate?.stats ?? null
   const crateTally = crate?.crate_stats ?? null
-  const atLastRecord = items.length > 1 && focusIndex === items.length - 1
+
+  // Reaching the end of a crate is an EVENT, not a position (KAMP-663).
+  //
+  // This used to read the cursor live — `items.length > 1 && focusIndex ===
+  // items.length - 1` — so the closing line vanished the instant you flipped
+  // back a record and announced itself again on your way forward. The ticket
+  // asks for it once per crate; the shipped code gave it once per visit to the
+  // last sleeve. Recording the crate you have reached the end of fixes both,
+  // and self-invalidates the way `focus` does: a crate that is not the one
+  // recorded simply has no beat yet.
+  //
+  // A click straight to the last title COUNTS. Requiring the user to have
+  // stepped there was considered and rejected: jumping to the end of the crate
+  // is still going to the end of the crate, and the line reports what is in the
+  // crate — records, and ledger-derived counts — rather than narrating how
+  // diligently they arrived.
+  // Adjusted during render rather than in an effect. This is React's documented
+  // shape for "derive from what just changed" and the one the compiler's
+  // set-state-in-effect rule pushes you to: the re-render happens before
+  // anything commits, so there is no frame where the user is standing at the end
+  // of the crate with no line under it.
+  const [endedCrate, setEndedCrate] = useState<number | null>(null)
+  // `building` is load-bearing, not defensive. A build streams one record at a
+  // time, and with the first one placed `items.length - 1` is 0 — which is
+  // exactly where a new crate's focus sits, so without this the beat fires on
+  // record one of ten and then sits there for the rest of the dig.
+  if (
+    !building &&
+    crateNo !== null &&
+    items.length > 0 &&
+    focusIndex === items.length - 1 &&
+    endedCrate !== crateNo
+  ) {
+    setEndedCrate(crateNo)
+  }
+
+  // Not `endedCrate === crateNo` alone: newCrate() empties the items but leaves
+  // crate_no alone until the daemon says otherwise (store.ts), so the line has
+  // to go the moment the stage does. A 409 leaves the items in place and this
+  // stays true, which is right — that crate is still on screen and still ended.
+  const atCrateEnd = endedCrate !== null && endedCrate === crateNo && hasCrate && !building
 
   // The name on the crate's divider card (KAMP-656). Derived from the snapshot
   // the view already has, because this story is skin only — no API changes. It
@@ -907,9 +947,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
         <div className="crate-footer">
           {digButton}
           {/* The closing beat, at the moment the user has actually just done the
-              digging rather than as a running score. Only worth showing for a
-              crate with more than one record in it. */}
-          {atLastRecord && crateTally && (
+              digging rather than as a running score. A one-record crate gets one
+              too (KAMP-663) — reaching the end of a short crate is still
+              reaching the end, and the old `items.length > 1` guard denied a
+              closing line to exactly the crates that came up thin. */}
+          {atCrateEnd && crateTally && (
             <p className="crate-tally" role="status">
               That&rsquo;s the crate. {describeTally(crateTally)}
             </p>

@@ -49,7 +49,11 @@ export const TOOLTIPS = {
 
   // Crate (KAMP-650). The clerk card's tooltip is the plain mechanical
   // answer to "why am I seeing this?" — the shelf tag is the short version.
-  CRATE_WHY: 'Picked from your own library and listening — nothing leaves this machine',
+  // "and listening" was wrong for a genre pick (taste_genres has no play signal
+  // at all) and wrong twice over for a chart pick, which reads nothing about you.
+  // "Chosen here" is the claim that holds for every card: the picking happens on
+  // this machine whatever it was based on, which is the part worth promising.
+  CRATE_WHY: 'Chosen here from what is on your shelves — nothing leaves this machine',
   // Names Bandcamp explicitly: this writes to the account, not to anything local.
   CRATE_WISHLIST: 'Add to your Bandcamp wishlist (W)',
   CRATE_UNWISHLIST: 'Remove from your Bandcamp wishlist (W)',

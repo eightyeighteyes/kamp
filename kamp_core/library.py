@@ -4935,15 +4935,39 @@ class LibraryIndex:
         seed_json: str = "{}",
         first_seen_at: float | None = None,
     ) -> int:
-        """Insert a *buffered* candidate (crate_no NULL) and return its row id.
+        """Insert or refresh a *buffered* candidate (crate_no NULL); returns its id.
 
         Idempotent on (provider, provider_item_id): re-gathering an album we have
         already seen or buffered returns the existing row rather than raising, and
         never resurrects it into a new crate. Promotion into a crate is a separate,
         explicit step (KAMP-648).
+
+        Idempotent on identity, NOT on provenance (KAMP-664): an existing row has
+        its `criterion`, `why` and `seed_json` refreshed, because those describe
+        why we are offering it *now* and the stored ones may be weeks old. `art_url`
+        is the deliberate exception — see the UPDATE below.
         """
         existing = self.discovery_item_id(provider, provider_item_id)
         if existing is not None:
+            # Refresh the provenance, do not just hand the id back (KAMP-664).
+            #
+            # A record the gather re-finds may already be sitting in the KAMP-657
+            # buffer from weeks ago, and the row's stored `why` was written then --
+            # naming an album that is no longer recent, or an artist no longer
+            # favourited. Returning early made the crate show that stale sentence
+            # and silently discard the one computed against the current profile,
+            # which is the exact failure the clerk note exists not to have.
+            #
+            # `art_url` is deliberately NOT refreshed: discovery_api grants the art
+            # proxy `immutable` cache-control precisely because this column never
+            # changes, and updating it would make a year-long cache header a lie.
+            self._conn.execute(
+                "UPDATE discovery_items"
+                "   SET criterion = ?, why = ?, seed_json = ?"
+                " WHERE id = ?",
+                (criterion, why, seed_json, existing),
+            )
+            self._conn.commit()
             return existing
         cur = self._conn.execute(
             "INSERT INTO discovery_items"

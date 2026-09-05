@@ -126,6 +126,16 @@ _INITIAL_STATUS: dict[str, Any] = {
     "thin": False,
 }
 
+#: Criteria that need nothing from the library. A crate made only of these was
+#: built with nothing to go on, which is what `thin` reports (KAMP-664).
+#:
+#: Named here rather than imported, because this module deliberately does not
+#: depend on :mod:`kamp_daemon`. `test_the_unpersonalised_criteria_constant_is
+#: _current` holds the two in agreement from the daemon side, where both are
+#: importable -- so adding a criterion that works from an empty profile fails a
+#: test rather than quietly making the banner wrong.
+UNPERSONALISED_CRITERIA = frozenset({"best_seller"})
+
 
 def sized_art_url(art_url: str, size: int) -> str:
     """Swap the bcbits rendition code in *art_url*, or return it untouched.
@@ -224,6 +234,20 @@ def register_discovery_routes(
             # be the previous crate's.
             snap["filled"] = len(items)
             snap["short"] = bool(items) and len(items) < CRATE_SIZE
+            # `thin` IS re-derived, unlike `exhausted` below, because the rows do
+            # record it: a crate built from an empty profile can only have come
+            # from criteria that need nothing to go on, so an all-chart crate IS
+            # the thin case. Left at its in-memory default it stayed False after a
+            # restart, and the first-run user -- the only one who ever sees this
+            # banner -- lost the explanation permanently by relaunching.
+            #
+            # It is also the truer statement of the two. The banner describes the
+            # crate on screen, and this reads the crate on screen; the profile
+            # flag describes the moment the build started, which may be several
+            # syncs ago by the time anyone reads it.
+            snap["thin"] = bool(items) and all(
+                item.get("criterion") in UNPERSONALISED_CRITERIA for item in items
+            )
             # `exhausted` is deliberately NOT re-derived alongside these. Nothing
             # on disk records why a build stopped, so it could only be guessed at
             # here -- and guessing "you have seen everything" about a restored

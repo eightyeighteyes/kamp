@@ -48,7 +48,9 @@ def _candidate(item_id: str, criterion: str = "also_like", **kw: Any) -> Candida
         artist=kw.pop("artist", f"Artist {item_id}"),
         title=kw.pop("title", f"Title {item_id}"),
         criterion=criterion,
-        why=f"because {criterion}",
+        # Overridable so a test can hand every candidate the *same* sentence and
+        # watch what KAMP-664 does with it.
+        why=kw.pop("why", f"because {criterion}"),
         # Overridable, because KAMP-665 made the seed something the builder reads
         # rather than provenance it only stores.
         seed=kw.pop("seed", {"kind": criterion}),
@@ -511,6 +513,65 @@ class TestExclusions:
         index.add_discovery_candidate(provider="fake", provider_item_id="1")
         _build(index, _FakeSource(_spread({"a": 12})))
         assert "1" in {r["provider_item_id"] for r in index.crate_items(1)}
+
+
+class TestClerkNotes:
+    """KAMP-664 — every card explains itself, and a crate does not read as one
+    sentence ten times over."""
+
+    @staticmethod
+    def _one_seed(criterion: str, why: str, seed: dict[str, Any], n: int = 25):
+        return [
+            _candidate(f"{criterion}{i}", criterion, why=why, seed=seed)
+            for i in range(n)
+        ]
+
+    def test_every_card_keeps_a_note(self, index: LibraryIndex) -> None:
+        """The assertion that matters. A repeated line is dull; a blank one breaks
+        the promise the whole feature rests on, so variation must never be bought
+        by dropping the note."""
+        _build(index, _FakeSource(_spread({"a": 8, "b": 8, "c": 8})))
+        assert all(r["why"].strip() for r in index.crate_items(1))
+
+    def test_a_crate_off_one_seed_does_not_read_as_one_sentence(
+        self, index: LibraryIndex
+    ) -> None:
+        """Measured before the fix: nine of ten cards identical. The seed cap is a
+        preference, not a ceiling — both backfill deals drop it so a thin gather
+        still returns ten records — so one seed really can supply almost a crate."""
+        cands = self._one_seed(
+            "also_like",
+            "Filed next to DOGGOD, which you played recently.",
+            {"kind": "album", "album_id": 7, "album": "DOGGOD"},
+        )
+        _build(index, _FakeSource(cands))
+        whys = [r["why"] for r in index.crate_items(1)]
+
+        assert all(w.strip() for w in whys)
+        assert max(Counter(whys).values()) < 9, Counter(whys)
+        assert len(set(whys)) > 1
+
+    def test_a_first_run_crate_does_not_read_as_one_sentence(
+        self, index: LibraryIndex
+    ) -> None:
+        """The thin case, and the worst one measured: ten of ten identical, on the
+        very first crate a new user sees."""
+        cands = self._one_seed(
+            "best_seller", "Selling fast on Bandcamp right now.", {"kind": "chart"}
+        )
+        _build(index, _FakeSource(cands), profile=SeedProfile())
+        whys = [r["why"] for r in index.crate_items(1)]
+
+        assert all(w.strip() for w in whys)
+        assert max(Counter(whys).values()) < 10, Counter(whys)
+
+    def test_a_varied_crate_is_left_alone(self, index: LibraryIndex) -> None:
+        """Nothing to restate, so nothing is restated — the seed's own sentence is
+        the one that reads best and stays first choice."""
+        cands = _spread({"a": 4, "b": 4, "c": 4})
+        _build(index, _FakeSource(cands))
+        whys = {r["why"] for r in index.crate_items(1)}
+        assert whys <= {c.why for c in cands}
 
 
 class TestCandidateBuffer:

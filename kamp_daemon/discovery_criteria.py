@@ -140,11 +140,11 @@ def _also_like_seeds(profile: SeedProfile) -> Iterable[Seed]:
             and now - seed_album.last_played_at >= _DORMANT_SECS
         )
         if recent:
-            why = f"Filed next to {seed_album.album}, which you played recently."
+            why = f"You played {seed_album.album} recently, try this one."
         elif dormant:
-            why = f"You have not put {seed_album.album} on in a while — this sits beside it."
+            why = f"You listened to {seed_album.album} a while ago — give this one a shot."
         else:
-            why = f"You favourited {seed_album.album} — this sits beside it."
+            why = f"You favourited {seed_album.album} — you might like this too."
         yield Seed(
             target=seed_album.album_url,
             why=why,
@@ -173,17 +173,43 @@ def _genre_top_seeds(profile: SeedProfile) -> Iterable[Seed]:
     cycles them for free: no slice-picking logic anywhere, and the copy stays
     honest because each variant carries its own ``why``.
     """
-    for genre in profile.top_genres:
+    for rank, genre in enumerate(profile.top_genres):
+        shelf = _shelf_standing(genre, rank)
         yield Seed(
             target={"tag": genre, "slice": "top"},
-            why=f"You've been deep in {genre} lately; this is near the top of the pile.",
-            seed_data={"kind": "genre", "genre": genre},
+            why=f"{shelf} This one is near the top of the {genre} pile.",
+            # `slice` and `rank` are recorded so a stored seed can say which of
+            # these two sentences produced it and how strong a claim it may make
+            # (KAMP-664). Without them the two branches are indistinguishable
+            # after the fact, exactly as `recent`/`dormant` prevent for albums.
+            seed_data={"kind": "genre", "genre": genre, "slice": "top", "rank": rank},
         )
         yield Seed(
             target={"tag": genre, "slice": "rand"},
             why=f"Pulled at random from the {genre} racks.",
-            seed_data={"kind": "genre", "genre": genre},
+            seed_data={"kind": "genre", "genre": genre, "slice": "rand", "rank": rank},
         )
+
+
+def _shelf_standing(genre: str, rank: int) -> str:
+    """How firmly the library lets us claim this genre, given its rank.
+
+    A claim about the SHELF, never about listening (KAMP-664). ``taste_genres``
+    counts tag rows and Bandcamp keywords — it has no play signal at all and no
+    time filter of any kind — so "you've been deep in X lately" was two invented
+    claims in one sentence: the recency and the listening. What the data actually
+    supports is how much of the collection carries the tag, and rank is a free,
+    honest proxy for that.
+
+    Rank is the profile's own ordering rather than a share, which would need a
+    denominator ``taste_genres`` cannot give: its count mixes per-track tag rows
+    with per-album keyword hits, so there is no population to divide by.
+    """
+    if rank == 0:
+        return f"{genre.capitalize()} takes up more of your shelves than anything else."
+    if rank < 5:
+        return f"You have a good stack of {genre} already."
+    return f"There is some {genre} on your shelves."
 
 
 def _best_seller_seeds(profile: SeedProfile) -> Iterable[Seed]:
@@ -209,11 +235,11 @@ def _old_album_seeds(profile: SeedProfile) -> Iterable[Seed]:
     current year, so only the random slice reaches back. The age filter is
     applied client-side on ``release_date``.
     """
-    for genre in profile.top_genres[:3]:
+    for rank, genre in enumerate(profile.top_genres[:3]):
         yield Seed(
             target={"tag": genre, "slice": "rand", "size": 60},
-            why=f"An older {genre} record — the kind that turns up at the back.",
-            seed_data={"kind": "genre_old", "genre": genre},
+            why=f"A hidden {genre} gem? Who knows, could be good.",
+            seed_data={"kind": "genre_old", "genre": genre, "rank": rank},
         )
 
 
@@ -236,7 +262,11 @@ def _favorite_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
         yield Seed(
             target=artist.artist_page,
             why=f"Another one from {artist.name}, who you already know you like.",
-            seed_data={"kind": "artist", "artist": artist.name},
+            # `starred` distinguishes the two branches after the fact (KAMP-664).
+            # Both emitted {kind, artist} and differed only in prose, so a stored
+            # seed could not say which claim it had made — and the two claims are
+            # different acts: starring a record and playing it are not the same.
+            seed_data={"kind": "artist", "artist": artist.name, "starred": True},
         )
     for artist in profile.played_artists:
         if artist.name.casefold() in seen:
@@ -245,7 +275,7 @@ def _favorite_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
         yield Seed(
             target=artist.artist_page,
             why=f"You keep going back to {artist.name}. Here is another of theirs.",
-            seed_data={"kind": "artist", "artist": artist.name},
+            seed_data={"kind": "artist", "artist": artist.name, "starred": False},
         )
 
 
@@ -259,7 +289,7 @@ def _purchase_anniversary_seeds(profile: SeedProfile) -> Iterable[Seed]:
     for seed_album in profile.anniversary_albums:
         yield Seed(
             target=seed_album.album_url,
-            why=f"You bought {seed_album.album} about a year ago.",
+            why=f"You bought {seed_album.album} about a year ago. This one's pretty similar.",
             seed_data={
                 "kind": "album",
                 "album_id": seed_album.album_id,
@@ -286,9 +316,113 @@ def _lone_album_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
             continue
         yield Seed(
             target=artist.artist_page,
-            why=f"You play {artist.name} a lot and have just the one here.",
+            why=f"You play {artist.name} a lot, but you've just got the one. Try another.",
             seed_data={"kind": "artist", "artist": artist.name},
         )
+
+
+# ---------------------------------------------------------------------------
+# Alternate phrasings (KAMP-664)
+# ---------------------------------------------------------------------------
+#
+# One seed's sentence is copied onto every candidate that seed produces, and the
+# seed cap is a preference rather than a ceiling — the two backfill deals drop it
+# so a thin gather still returns ten records. Measured, that means a first-run
+# crate is ten cards reading "Selling fast on Bandcamp right now." and a crate
+# built off one album page is nine identical lines.
+#
+# These give the builder somewhere else to go. They are a polish item, not a
+# guarantee: where the alternatives run out the line simply repeats, because a
+# card with NO rationale breaks the promise the whole feature rests on, and a
+# strained ninth phrasing of "selling fast" would be a worse failure than an
+# honest repeat.
+#
+# Kept beside the selectors so a criterion's copy lives in one place. Each takes
+# the stored seed rather than the profile, so a candidate promoted out of the
+# KAMP-657 buffer can be restated from what was written down with it — and every
+# reader tolerates a missing key, because older buffered rows predate them.
+
+
+def _album_of(seed: dict[str, Any]) -> str:
+    return str(seed.get("album") or "it")
+
+
+def _artist_of(seed: dict[str, Any]) -> str:
+    return str(seed.get("artist") or "them")
+
+
+def _genre_of(seed: dict[str, Any]) -> str:
+    return str(seed.get("genre") or "that")
+
+
+def _genre_pile(seed: dict[str, Any]) -> str:
+    """A genre pick's alternative, which has to respect the slice it came from.
+
+    ``genre_top`` seeds two branches per genre: ``top`` is Bandcamp's sales
+    ordering for the tag, ``rand`` is an arbitrary reach into the same catalogue.
+    A restated line that claimed sales rank for a ``rand`` pick would be an
+    invented claim of exactly the kind this ticket removes, so the slice picks the
+    sentence. Seeds written before KAMP-664 carry no ``slice``; they take the
+    neutral line, which is true either way.
+    """
+    genre = _genre_of(seed)
+    if seed.get("slice") == "top":
+        return f"Near the top of the {genre} pile."
+    return f"Another one out of the {genre} racks."
+
+
+def _genre_shelf(seed: dict[str, Any]) -> str:
+    """A second genre alternative, sized down to the claim any rank can carry.
+
+    "which you keep some of" is the weakest thing ``_shelf_standing`` says, and it
+    is true of every tag in ``top_genres`` — so it needs no rank and stays honest
+    for the twenty-fifth genre as well as the first.
+    """
+    genre = _genre_of(seed)
+    if seed.get("slice") == "top":
+        return f"Selling well under {genre}, which you keep some of."
+    return f"Filed under {genre}, which you keep some of."
+
+
+_VARIANTS: dict[str, list[Callable[[dict[str, Any]], str]]] = {
+    "also_like": [
+        lambda s: f"If you liked {_album_of(s)}, you'll probably like this too.",
+        lambda s: f"{_album_of(s)} led here.",
+        lambda s: f"One more from the same corner as {_album_of(s)}.",
+    ],
+    "genre_top": [_genre_pile, _genre_shelf],
+    "best_seller": [
+        lambda s: "Near the top of Bandcamp's sellers.",
+        lambda s: "Moving quickly on Bandcamp today.",
+        lambda s: "One of the week's best sellers.",
+    ],
+    "older_than_ten": [
+        lambda s: f"Here's an odd {_genre_of(s)} record from the back of the rack.",
+        lambda s: f"Give this older {_genre_of(s)} record a shot.",
+    ],
+    "favorite_artist": [
+        lambda s: f"Another from {_artist_of(s)}.",
+        lambda s: f"More of {_artist_of(s)}, since you have them already.",
+    ],
+    "lone_album_artist": [
+        lambda s: f"A second one from {_artist_of(s)}.",
+        lambda s: f"You have just the one {_artist_of(s)} here — this would be two.",
+    ],
+    "purchase_anniversary": [
+        lambda s: f"Around a year since you picked up {_album_of(s)}. Try this one too.",
+        lambda s: f"Similar to {_album_of(s)}, bought about this time last year.",
+    ],
+}
+
+
+def phrasings(criterion: str, seed: dict[str, Any]) -> list[str]:
+    """Alternative sentences for *criterion*, rendered from a stored seed.
+
+    Alternatives only — the seed's own sentence is not in here, because the
+    caller already has it and it is the one that reads best. An unknown criterion
+    returns nothing, which simply means its line repeats rather than varying.
+    """
+    return [render(seed) for render in _VARIANTS.get(criterion, ())]
 
 
 REGISTRY: tuple[Criterion, ...] = (

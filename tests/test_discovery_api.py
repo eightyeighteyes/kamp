@@ -91,14 +91,19 @@ def art_dir(tmp_path: Path) -> Path:
     return tmp_path / "art_cache"
 
 
-def _stock(index: LibraryIndex, crate_no: int, count: int = 3) -> None:
+def _stock(
+    index: LibraryIndex,
+    crate_no: int,
+    count: int = 3,
+    criterion: str = "also_like",
+) -> None:
     for position in range(count):
         item = index.add_discovery_candidate(
             provider="bandcamp",
             provider_item_id=f"{crate_no}-{position}",
             artist=f"Artist {position}",
             title=f"Title {position}",
-            criterion="also_like",
+            criterion=criterion,
             why="because",
             seed_json='{"kind": "album"}',
         )
@@ -189,6 +194,44 @@ class TestCrateSnapshot:
         body = harness.client.get("/api/v1/discovery/crate").json()
         assert body["short"] is True
         assert body["exhausted"] is False
+
+    def test_a_restored_first_run_crate_still_says_it_was_unpersonalised(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """KAMP-664. `thin` lived only in memory, so the one user who ever sees
+        that banner -- someone whose library we know nothing about -- lost the
+        explanation the first time they relaunched, and the crate then read as
+        just a short one with no reason given."""
+        _stock(index, 1, count=10, criterion="best_seller")
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["state"] == "idle"
+        assert body["thin"] is True
+
+    def test_a_restored_ordinary_crate_is_not_called_thin(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """The derivation has to be able to say no. One chart pick in a crate of
+        library-driven ones is normal padding, not a first run."""
+        _stock(index, 1, count=9)
+        item = index.add_discovery_candidate(
+            provider="bandcamp",
+            provider_item_id="1-chart",
+            artist="Artist",
+            title="Title",
+            criterion="best_seller",
+            why="because",
+            seed_json='{"kind": "chart"}',
+        )
+        index.place_in_crate(item, 1, 9)
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["thin"] is False
+
+    def test_an_empty_crate_is_not_thin(self, harness: _Harness) -> None:
+        """`all()` over nothing is True, which would have put the first-run banner
+        on the empty state before a user had ever dug a crate."""
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["items"] == []
+        assert body["thin"] is False
 
     def test_a_live_build_keeps_its_own_progress(
         self, index: LibraryIndex, harness: _Harness

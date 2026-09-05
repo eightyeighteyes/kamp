@@ -134,9 +134,14 @@ class Candidate:
 
     ``why`` is the human sentence the clerk card shows, and ``seed`` is the structured
     attribution behind it. Both are required for a pick to be shown: the feature's
-    promise is that every recommendation explains itself, and KAMP-657 re-validates
-    ``seed`` before showing a buffered candidate so the explanation is still true at
-    the moment it is read.
+    promise is that every recommendation explains itself.
+
+    A buffered candidate's ``seed`` is NOT re-validated against the current profile
+    before it is dealt. That was considered for KAMP-657 and deliberately dropped:
+    the seed says what was true when the record was found, which is a fact about
+    provenance and does not expire, and re-checking it would mean discarding stock
+    for having been gathered on a Tuesday. ``why`` can be restated at build time
+    (KAMP-664), which is a separate thing — a rephrasing, not a re-derivation.
     """
 
     provider: str
@@ -201,10 +206,13 @@ class SeedProfile:
     implementation detail.
 
     The qualifying sets are deliberately exposed as plain data rather than being
-    consumed internally and discarded. KAMP-657 re-validates a buffered candidate's
-    seed before showing it (taste drifts; "because you've been on a dub techno kick
-    lately" stops being true), and that check must be a membership lookup rather than
-    a re-derivation of the whole profile.
+    consumed internally and discarded: the selectors read them directly, several of
+    them more than once, and a membership test is what most of them actually want.
+
+    They are NOT a re-validation hook for buffered stock. That reading was written
+    into this docstring and was never true — nothing re-checks a buffered
+    candidate's seed before dealing it, by design (see ``Candidate``). The
+    predicates that existed only to serve the claim are gone with it (KAMP-664).
     """
 
     recent_album_ids: set[int] = field(default_factory=set)
@@ -243,15 +251,6 @@ class SeedProfile:
             or self.top_artists
             or self.top_genres
         )
-
-    def has_genre(self, name: str) -> bool:
-        return name.casefold() in {g.casefold() for g in self.top_genres}
-
-    def has_artist(self, name: str) -> bool:
-        return name.casefold() in {a.casefold() for a in self.top_artists}
-
-    def has_label(self, name: str) -> bool:
-        return name.casefold() in {label.casefold() for label in self.labels}
 
 
 def build_seed_profile(

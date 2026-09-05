@@ -627,6 +627,24 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
          only some of the time. A real rate limit has its own banner above, with
          a countdown. */
     }
+    {
+      /* Thin outranks both of the lines below (KAMP-664). A first crate is
+         routinely thin AND short, and it used to say only "Short crate today",
+         which describes the symptom and hides the cause; the user is left
+         thinking the shop is broken rather than that we have nothing to go on
+         yet. It outranks "everything in these racks" for the same reason — the
+         racks are not empty for a new user, our knowledge of them is.
+
+         All three now gate on `ready` alike. The thin line used to render on any
+         state with rows on screen, so it also sat over a crate that was already
+         rebuilding from a profile that had since filled out. */
+    }
+    if (state === 'ready' && crate?.thin && hasCrate)
+      return (
+        <div className="crate-banner" role="status">
+          Nothing on your shelves to go on yet, so this one is what&rsquo;s selling.
+        </div>
+      )
     if (state === 'ready' && crate?.exhausted)
       return (
         <div className="crate-banner" role="status">
@@ -637,12 +655,6 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       return (
         <div className="crate-banner" role="status">
           Short crate today — we couldn&rsquo;t fill it.
-        </div>
-      )
-    if (crate?.thin && hasCrate)
-      return (
-        <div className="crate-banner" role="status">
-          Nothing on your shelves to go on yet, so this one is what&rsquo;s selling.
         </div>
       )
     return null

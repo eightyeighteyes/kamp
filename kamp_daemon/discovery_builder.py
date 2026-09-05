@@ -23,6 +23,7 @@ import json
 import logging
 import random
 import time
+from collections import Counter
 from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 
 from .discovery import (
@@ -36,7 +37,7 @@ from .discovery import (
     build_seed_profile,
     crate_budget,
 )
-from .discovery_criteria import seed_dimension
+from .discovery_criteria import phrasings, seed_dimension
 
 if TYPE_CHECKING:  # pragma: no cover - types only
     from kamp_core.library import LibraryIndex
@@ -212,6 +213,8 @@ def build_crate(
         candidates, index=index, picked=fresh_picked
     )
 
+    _vary_notes(picks)
+
     if not picks:
         # Do not burn a crate number on nothing. An empty crate is a distinct
         # state from a short one -- the UI offers a retry rather than a tally.
@@ -288,6 +291,37 @@ def build_crate(
         short=short,
         exhausted=exhausted,
     )
+
+
+def _vary_notes(picks: "Sequence[Candidate]") -> None:
+    """Give repeated clerk notes an alternative phrasing, in place (KAMP-664).
+
+    One seed's sentence rides every candidate that seed produced, and the seed cap
+    is a preference rather than a ceiling, so a crate can arrive with the same
+    line ten times over. Walking the picks and restating the repeats is the only
+    place this can happen: the sentence is chosen per seed, and whether it repeats
+    is a fact about the crate, which nothing upstream can see.
+
+    **A note is never blanked.** Where the alternatives run out the line repeats,
+    because every pick explaining itself is the promise the feature rests on and a
+    silent card breaks it far worse than a dull one does.
+
+    Runs before persistence so the stored sentence is the one shown. Surplus keeps
+    its original — a variant is a fact about one crate's composition and means
+    nothing to a row sitting in the buffer.
+
+    One consequence worth naming: after this, `why` and `seed_json` no longer
+    determine each other, so anything that re-renders from the seed will not
+    reproduce the stored sentence.
+    """
+    used: Counter[str] = Counter()
+    for candidate in picks:
+        # Least-used wins rather than first-unused: with ten cards off one seed,
+        # first-unused spends each alternative once and then falls back to the
+        # original for the rest, which is barely better than not varying at all.
+        options = [candidate.why, *phrasings(candidate.criterion, candidate.seed)]
+        candidate.why = min(options, key=lambda text: (used[text], options.index(text)))
+        used[candidate.why] += 1
 
 
 def _rehydrate(rows: "Sequence[dict[str, Any]]") -> list[Candidate]:

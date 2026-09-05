@@ -41,6 +41,7 @@ from kamp_daemon.discovery_sources import (
     BandcampDiscoverySource,
     RateLimitedError,
 )
+from kamp_core.discovery_api import UNPERSONALISED_CRITERIA
 from kamp_core.library import SeedAlbum, SeedArtist
 
 FIXTURES = Path(__file__).parent / "fixtures" / "discovery"
@@ -263,6 +264,16 @@ class TestCriteriaRegistry:
                     low = line.casefold()
                     for phrase in banned:
                         assert phrase not in low, f"{key} claims '{phrase}': {line}"
+
+    def test_the_unpersonalised_criteria_constant_is_current(self) -> None:
+        """KAMP-664. discovery_api derives the "we had nothing to go on" banner
+        from the stored criteria, and names them in its own constant because it
+        must not import kamp_daemon. This is the seam that keeps the two in step:
+        add a criterion that yields seeds from an empty profile and the banner
+        would silently stop appearing, so fail here instead."""
+        thin = SeedProfile()
+        yields_from_nothing = {c.key for c in REGISTRY if list(c.seeds(thin))}
+        assert yields_from_nothing == set(UNPERSONALISED_CRITERIA)
 
     def test_the_top_genre_makes_a_stronger_claim_than_the_tail(self) -> None:
         """Rank is the honest stand-in for dominance: a share would need a

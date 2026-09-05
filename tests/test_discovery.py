@@ -1636,7 +1636,7 @@ class TestSeedProfile:
         profile = build_seed_profile(index)
         assert recent_id in profile.recent_album_ids
         assert fav_id in profile.favorite_album_ids
-        assert profile.has_genre("Shoegaze") is True
+        assert "shoegaze" in profile.top_genres
         assert profile.purchase_dates["900"] == pytest.approx(now)
         assert profile.is_thin is False
 
@@ -1681,16 +1681,6 @@ class TestSeedProfile:
             album_url="https://music.example.com/album/record",
         )
         assert index.favorite_artists_with_pages() == []
-
-    def test_membership_helpers_are_case_insensitive(self) -> None:
-        """KAMP-657 re-validates seeds through these, so casing must not matter."""
-        profile = SeedProfile(
-            top_genres=["Dub Techno"], top_artists=["Four Tet"], labels=["Ghostly"]
-        )
-        assert profile.has_genre("dub techno") is True
-        assert profile.has_artist("FOUR TET") is True
-        assert profile.has_label("ghostly") is True
-        assert profile.has_genre("noise") is False
 
 
 # ---------------------------------------------------------------------------

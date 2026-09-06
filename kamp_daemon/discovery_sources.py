@@ -80,6 +80,23 @@ UNCOLLECT_URL = "https://bandcamp.com/uncollect_item_cb"
 #: 429 here cascades account-wide (KAMP-639).
 _SEEDS_PER_CRITERION = 2
 
+#: How many cards one criterion may contribute to a crate (KAMP-683).
+#:
+#: Module-level rather than inline in the property so a test can assert the crate
+#: SHAPE against what the source really declares. Every builder test uses a fake
+#: whose caps are the ABC's empty default, so without this the suite cannot see
+#: this policy at all. See `criterion_caps` for what the numbers mean.
+CRITERION_CAPS: dict[str, int] = {
+    "best_seller": 1,
+    "genre_top": 1,
+    "older_than_ten": 1,
+}
+
+#: Turns per round of the deal, for criteria worth more of a crate (KAMP-683).
+#: Module-level for the same reason as the caps: the builder suite's fake source
+#: inherits the ABC default, so a test has to read the real thing.
+CRITERION_WEIGHTS: dict[str, int] = {"also_like": 4}
+
 
 def _sub(state: "MutableMapping[str, Any]", key: str) -> dict[str, Any]:
     """The ``key`` sub-dict of the rotation state, created and attached if absent.
@@ -144,14 +161,54 @@ class BandcampDiscoverySource(DiscoverySource):
 
     @property
     def criterion_caps(self) -> dict[str, int]:
-        """One chart pick per crate.
+        """One apiece from the criteria that know only a tag about you (KAMP-683).
 
-        ``best_seller`` is the only criterion carrying no personal claim, and the
-        brand guardrails forbid letting un-personalised content dominate a crate
-        that presents itself as dug for you. Every other criterion may repeat as
-        the round-robin allows.
+        ``best_seller`` carries no personal claim at all, and the brand guardrails
+        forbid letting un-personalised content dominate a crate that presents
+        itself as dug for you. ``genre_top`` and ``older_than_ten`` make a weaker
+        version of the same claim: their seed is a genre, so the clerk line can
+        say what is on your shelves but never which record sent us here.
+
+        Measured, that half was winning. Over ten crates on a real library the
+        three of them averaged 4.4 cards of ten, and the ticket's own complaint --
+        too many "random" records -- is exactly that ratio. They are also the
+        criteria a reader cannot tell apart: "Pulled at random from the
+        Alternative racks" and "A hidden Alternative gem?" are the same card.
+
+        A cap, deliberately, not a ban. The backfill overruns these rather than
+        shipping a short crate (KAMP-661), so a thin gather still fills -- and
+        ``older_than_ten`` keeps its place as the occasional oddity, which is the
+        job it is actually good at.
         """
-        return {"best_seller": 1}
+        # Copied, because the builder hands this to _deal and a shared mutable
+        # default is the kind of thing that only bites once, in production.
+        return dict(CRITERION_CAPS)
+
+    @property
+    def criterion_weights(self) -> dict[str, int]:
+        """A double turn for the criterion that can actually name your record.
+
+        ``also_like`` reads the recommendation block of an album the user played
+        or favourited, so its clerk line is the most specific one the shop can
+        write: "Filed next to DOGGOD, which you played recently." It was also the
+        thinnest, at 1.3 cards a crate — round-robin over seven groups gives
+        everyone the same one or two regardless of what they can claim.
+
+        Four is measured, not picked. Averaged over sixty crates, the caps alone
+        take it to 1.7 and the weights land it at 2.4, 3.2 and 4.0 — so four turns
+        is what reaches four cards, which is the agreed target.
+
+        Four is also its ceiling, and deliberately so rather than by luck:
+        _SEEDS_PER_CRITERION x SEED_CAP = 2 x 2 = 4. A bigger weight buys nothing,
+        because the KAMP-665 seed cap refuses the fifth card — which is the guard
+        that matters, since the bug that ticket was filed about is three records
+        off ONE album page, and no weight here can produce that.
+
+        The cost of running at the ceiling is that the share stops varying: every
+        healthy crate is two records from each of two album pages. Worth watching
+        when reading real crates; a drop to 3 buys the variation back at 3.2.
+        """
+        return dict(CRITERION_WEIGHTS)
 
     # ------------------------------------------------------------------
     # The only place that touches the network

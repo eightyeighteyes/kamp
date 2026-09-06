@@ -411,12 +411,26 @@ class BandcampDiscoverySource(DiscoverySource):
                 continue
 
             consumed = step + 1
-            got = self._run_seed(criterion, seed, budget, owned or set(), state)
+            got, dropped = self._run_seed(
+                criterion, seed, budget, owned or set(), state
+            )
             if got:
                 found.extend(got)
-                productive += 1
                 if dimension is not None:
                     used.add(dimension)
+            # A seed filtered down to nothing is NOT an unproductive seed
+            # (KAMP-670). `productive` decides whether to walk on and spend
+            # another request, so without the `or dropped` the playability filter
+            # would buy extra fetches on the class that rate-limits hardest, and
+            # starve purchase_anniversary, which shares ALBUM_PAGE and runs last.
+            # That would break this ticket's own "no increase in requests" rule.
+            #
+            # Deliberately narrow: the owned and unfetchable drops still make a
+            # seed look unproductive, exactly as before. Walking on when
+            # everything was owned is a real chance of finding something and is
+            # not this change's business.
+            if got or dropped:
+                productive += 1
 
         # Advance past every seed TRIED, not just a productive one. Advancing only
         # on success looks right and is the trap: a seed at the head of the list
@@ -434,20 +448,25 @@ class BandcampDiscoverySource(DiscoverySource):
         budget: RequestBudget,
         owned: set[str],
         state: "MutableMapping[str, Any] | None" = None,
-    ) -> list[Candidate]:
+    ) -> tuple[list[Candidate], int]:
+        """One seed's candidates, and how many it dropped for having no audio.
+
+        The second half rides all the way up to ``_run_criterion`` so a seed whose
+        yield was filtered is not mistaken for a seed that found nothing.
+        """
         if criterion.surface == SURFACE_DISCOVER:
             return self._discover(criterion, seed, budget, owned, state)
         if criterion.surface == SURFACE_ALBUM_RECS:
             body = self._fetch(criterion.endpoint_class, str(seed.target), budget)
             if body is None:
-                return []
+                return [], 0
             result = parse_also_like(body)
             result.warn_if_drifted(criterion.surface, str(seed.target))
             return self._to_candidates(criterion, seed, result, owned)
         if criterion.surface == SURFACE_DISCOGRAPHY:
             body = self._fetch(criterion.endpoint_class, str(seed.target), budget)
             if body is None:
-                return []
+                return [], 0
             result = parse_discography(body, base_url=str(seed.target))
             result.warn_if_drifted(criterion.surface, str(seed.target))
             # The grid carries no artist name — every entry is the page's artist,
@@ -457,7 +476,7 @@ class BandcampDiscoverySource(DiscoverySource):
                 item.setdefault("artist", artist)
             return self._to_candidates(criterion, seed, result, owned)
         logger.warning("discovery: unknown surface %r", criterion.surface)
-        return []
+        return [], 0
 
     def _discover(
         self,
@@ -466,7 +485,7 @@ class BandcampDiscoverySource(DiscoverySource):
         budget: RequestBudget,
         owned: set[str],
         state: "MutableMapping[str, Any] | None" = None,
-    ) -> list[Candidate]:
+    ) -> tuple[list[Candidate], int]:
         params: dict[str, Any] = dict(seed.target)
         # Normalise here rather than in the criterion: the seed carries the display
         # genre so the clerk card can say "you've been deep in Indie Rock lately",
@@ -495,7 +514,7 @@ class BandcampDiscoverySource(DiscoverySource):
             criterion.endpoint_class, DISCOVER_API_URL, budget, payload=payload
         )
         if body is None:
-            return []
+            return [], 0
         result = parse_discover_results(body)
         result.warn_if_drifted(criterion.surface, DISCOVER_API_URL)
 
@@ -533,8 +552,35 @@ class BandcampDiscoverySource(DiscoverySource):
         seed: Seed,
         result: ParseResult,
         owned: set[str],
-    ) -> list[Candidate]:
+    ) -> tuple[list[Candidate], int]:
+        """Usable candidates, and how many were dropped for having no audio.
+
+        The count is returned rather than logged and forgotten because
+        ``_run_criterion`` has to know: a seed judged unproductive walks to the
+        next one and spends another request, so without this the new filter would
+        quietly buy extra fetches on the endpoint class that rate-limits hardest
+        (KAMP-670). It is also the number that answers "does this filter ever
+        actually fire", which no sample so far has been able to.
+        """
         out: list[Candidate] = []
+        # A page where EVERY record reads as unplayable is drift, not twenty dead
+        # records (KAMP-670). Measured, a definite negative is vanishingly rare --
+        # 7/7, 20/20 and 48/48 across every sample ever taken -- so all of them at
+        # once means we stopped understanding the format, and the honest response
+        # is the one this module already uses for that: say so and keep the
+        # records. Dropping them instead would empty the x4-weighted flagship
+        # criterion silently, which is the exact failure ParseResult.drifted was
+        # invented to prevent.
+        verdicts = [item.get("has_preview") for item in result.items]
+        blanket = bool(verdicts) and all(v is False for v in verdicts)
+        if blanket:
+            logger.warning(
+                "discovery: every record on %s reads as unplayable — treating as"
+                " parser drift and keeping them (%d records)",
+                seed.target,
+                len(verdicts),
+            )
+        dropped = 0
         for item in result.items:
             if item["provider_item_id"] in owned:
                 # Recommending someone a record they already own is the clerk who
@@ -545,6 +591,14 @@ class BandcampDiscoverySource(DiscoverySource):
             if not _is_fetchable(url):
                 # Same reasoning as the fetch-side skip: a candidate we could
                 # never fetch art or a preview for is not a usable card.
+                continue
+            if not blanket and item.get("has_preview") is False:
+                # The surface said there is nothing to hear. `is False` and not a
+                # falsy check: None means the surface said nothing, which is every
+                # discography record and anything we failed to parse, and those
+                # keep their place — the preview-time message stays the honest
+                # answer for a record we genuinely do not know about.
+                dropped += 1
                 continue
             out.append(
                 Candidate(
@@ -560,7 +614,15 @@ class BandcampDiscoverySource(DiscoverySource):
                     seed=dict(seed.seed_data),
                 )
             )
-        return out
+        if dropped:
+            logger.info(
+                "discovery: dropped %d unplayable of %d from %s (%s)",
+                dropped,
+                len(result.items),
+                seed.target,
+                criterion.key,
+            )
+        return out, dropped
 
     # ------------------------------------------------------------------
     # Preview

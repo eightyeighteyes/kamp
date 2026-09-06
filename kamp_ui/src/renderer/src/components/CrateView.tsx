@@ -147,7 +147,47 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // the tally cannot drift from the lifetime line.
   const history = crate?.stats ?? null
   const crateTally = crate?.crate_stats ?? null
-  const atLastRecord = items.length > 1 && focusIndex === items.length - 1
+
+  // Reaching the end of a crate is an EVENT, not a position (KAMP-663).
+  //
+  // This used to read the cursor live — `items.length > 1 && focusIndex ===
+  // items.length - 1` — so the closing line vanished the instant you flipped
+  // back a record and announced itself again on your way forward. The ticket
+  // asks for it once per crate; the shipped code gave it once per visit to the
+  // last sleeve. Recording the crate you have reached the end of fixes both,
+  // and self-invalidates the way `focus` does: a crate that is not the one
+  // recorded simply has no beat yet.
+  //
+  // A click straight to the last title COUNTS. Requiring the user to have
+  // stepped there was considered and rejected: jumping to the end of the crate
+  // is still going to the end of the crate, and the line reports what is in the
+  // crate — records, and ledger-derived counts — rather than narrating how
+  // diligently they arrived.
+  // Adjusted during render rather than in an effect. This is React's documented
+  // shape for "derive from what just changed" and the one the compiler's
+  // set-state-in-effect rule pushes you to: the re-render happens before
+  // anything commits, so there is no frame where the user is standing at the end
+  // of the crate with no line under it.
+  const [endedCrate, setEndedCrate] = useState<number | null>(null)
+  // `building` is load-bearing, not defensive. A build streams one record at a
+  // time, and with the first one placed `items.length - 1` is 0 — which is
+  // exactly where a new crate's focus sits, so without this the beat fires on
+  // record one of ten and then sits there for the rest of the dig.
+  if (
+    !building &&
+    crateNo !== null &&
+    items.length > 0 &&
+    focusIndex === items.length - 1 &&
+    endedCrate !== crateNo
+  ) {
+    setEndedCrate(crateNo)
+  }
+
+  // Not `endedCrate === crateNo` alone: newCrate() empties the items but leaves
+  // crate_no alone until the daemon says otherwise (store.ts), so the line has
+  // to go the moment the stage does. A 409 leaves the items in place and this
+  // stays true, which is right — that crate is still on screen and still ended.
+  const atCrateEnd = endedCrate !== null && endedCrate === crateNo && hasCrate && !building
 
   // The name on the crate's divider card (KAMP-656). Derived from the snapshot
   // the view already has, because this story is skin only — no API changes. It
@@ -458,6 +498,14 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     playFromCrate(item)
   }
 
+  // Where the Crate hands you back to. Shared by Escape and by the footer's
+  // "That's enough for today" (KAMP-663) so the two destinations cannot drift —
+  // they differ in what they do to a running preview, and in nothing else.
+  const leaveCrate = useCallback((): void => {
+    const prev = useStore.getState().previousView
+    void setActiveView(prev && prev !== 'crate' ? prev : 'library')
+  }, [setActiveView])
+
   // Escape leaves the view. Deliberately a window listener, matching
   // DownloadsView: modals listen on document, which runs first, so Escape closes
   // an open dialog rather than dropping the user out of the Crate underneath it.
@@ -475,12 +523,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
         void previewAction('stop')
         return
       }
-      const prev = useStore.getState().previousView
-      void setActiveView(prev && prev !== 'crate' ? prev : 'library')
+      leaveCrate()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [active, setActiveView, previewAction])
+  }, [active, leaveCrate, previewAction])
 
   // The crate's own keys live on the view container, NOT on document. App's
   // global handler is a window listener and the React root sits below document
@@ -667,6 +714,31 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
       disabled={building || pauseRemaining > 0}
     >
       {hasCrate ? 'Dig up another crate' : 'Dig up a crate'}
+    </button>
+  )
+
+  // The way out, offered next to the way on (KAMP-663). "Never infinite" is one
+  // of the epic's hard principles, and a shop that only ever offers you another
+  // crate is not honouring it — so at the end of a crate, stopping is a visible
+  // choice rather than something you have to know a keystroke for.
+  //
+  // It earns its place by doing what no single press does today: Escape is
+  // deliberately two-stage, so with a preview running it stops the preview and
+  // leaves you standing in the Crate. This ends the sitting outright. A control
+  // that merely left would duplicate Escape and the sidebar, and would be
+  // decoration.
+  //
+  // Never disabled. The dig button goes dead during a rate-limit cooldown, and a
+  // cooldown is precisely when leaving is the thing you want.
+  const enoughButton = (
+    <button
+      className="crate-quit-btn"
+      onClick={() => {
+        if (useStore.getState().preview?.state !== 'idle') void previewAction('stop')
+        leaveCrate()
+      }}
+    >
+      That&rsquo;s enough for today
     </button>
   )
 
@@ -904,16 +976,30 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           </div>
         )}
 
+        {/* Statement, then offer, then the quiet register (KAMP-663). The tally
+            used to sit UNDER the button, which read as a footnote to the next
+            dig rather than as the close of this one. Order only — the row keeps
+            the footer exactly as tall either way, which matters because the beat
+            lands when nine records are on the flipped pile at its full extent
+            and the bin row has a fixed height inside a view that never
+            scrolls. */}
         <div className="crate-footer">
-          {digButton}
           {/* The closing beat, at the moment the user has actually just done the
-              digging rather than as a running score. Only worth showing for a
-              crate with more than one record in it. */}
-          {atLastRecord && crateTally && (
+              digging rather than as a running score. A one-record crate gets one
+              too (KAMP-663) — reaching the end of a short crate is still
+              reaching the end, and the old `items.length > 1` guard denied a
+              closing line to exactly the crates that came up thin. */}
+          {atCrateEnd && crateTally && (
             <p className="crate-tally" role="status">
               That&rsquo;s the crate. {describeTally(crateTally)}
             </p>
           )}
+          {/* One row whether it holds one button or two, so offering the way out
+              costs no height at the moment there is none to spare. */}
+          <div className="crate-actions">
+            {digButton}
+            {atCrateEnd && enoughButton}
+          </div>
           {history && <p className="crate-history">{describeHistory(history)}</p>}
         </div>
 

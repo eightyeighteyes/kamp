@@ -154,6 +154,17 @@ class Candidate:
     release_date: str = ""
     criterion: str = ""
     why: str = ""
+    #: The provider's own id for whoever made this record (KAMP-689). All three
+    #: Bandcamp surfaces already carry one and used to discard it; it is the key
+    #: the builder caps on, because the artist STRING differs between them -- the
+    #: discography surface fills it in from the seed, which is kamp's spelling,
+    #: while the album page carries Bandcamp's.
+    #:
+    #: Deliberately NOT persisted, and that is only safe because the cap runs on
+    #: the fresh pool alone. A candidate rehydrated from the KAMP-657 buffer
+    #: arrives with this empty and falls back to the name, which costs nothing
+    #: because the pass that deals stock does not cap at all.
+    band_id: str = ""
     seed: dict[str, Any] = field(default_factory=dict)
 
     def seed_json(self) -> str:

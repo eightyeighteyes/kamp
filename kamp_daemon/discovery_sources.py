@@ -228,9 +228,12 @@ class BandcampDiscoverySource(DiscoverySource):
         that matters, since the bug that ticket was filed about is three records
         off ONE album page, and no weight here can produce that.
 
-        The cost of running at the ceiling is that the share stops varying: every
-        healthy crate is two records from each of two album pages. Worth watching
-        when reading real crates; a drop to 3 buys the variation back at 3.2.
+        KAMP-689 lowered that ceiling to min(4, distinct artists across the two
+        pages): one record per artist per crate, so a page whose recommendations
+        cluster on one band gives fewer than two. A seven-rec block essentially
+        always carries two or more, so four still lands in practice — but a
+        label-curated or back-catalogue block genuinely can come up short, and
+        that is the honest reason a crate sometimes shows three.
         """
         return dict(CRITERION_WEIGHTS)
 
@@ -633,6 +636,10 @@ class BandcampDiscoverySource(DiscoverySource):
                     title=item.get("title", ""),
                     art_url=item.get("art_url"),
                     release_date=item.get("release_date", ""),
+                    # Two spellings, one key: the album page calls it artist_id
+                    # and the other two call it band_id, and all three were being
+                    # dropped on the floor here (KAMP-689).
+                    band_id=str(item.get("band_id") or item.get("artist_id") or ""),
                     criterion=criterion.key,
                     why=seed.why,
                     seed=dict(seed.seed_data),

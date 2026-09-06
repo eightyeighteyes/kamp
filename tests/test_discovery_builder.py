@@ -398,6 +398,73 @@ class TestSeedCaps:
         assert len(index.crate_items(1)) == CRATE_SIZE
 
 
+class TestConfirmingAPick:
+    """KAMP-670: the last chance to check a pick no surface vouched for.
+
+    Two of seven criteria come off the discography grid, which carries no audio
+    signal at all — so the gather-time filter is blind to roughly 2.8 records of
+    every ten, and the first no_streams failure seen in the wild was one of them.
+    """
+
+    @staticmethod
+    def _source(dead: set[str], **kw: Any) -> _FakeSource:
+        source = _FakeSource(_spread({"a": 8, "b": 8, "c": 8}), **kw)
+        asked: list[str] = []
+
+        def confirm(candidate: Candidate, budget: Any) -> bool | None:
+            asked.append(candidate.provider_item_id)
+            if candidate.provider_item_id in dead:
+                return False
+            return None
+
+        source.confirm_playable = confirm  # type: ignore[method-assign]
+        source.asked = asked  # type: ignore[attr-defined]
+        return source
+
+    def test_a_confirmed_dead_record_never_reaches_the_crate(
+        self, index: LibraryIndex
+    ) -> None:
+        source = self._source(dead={"1", "2", "3"})
+        _build(index, source)
+        placed = {row["provider_item_id"] for row in index.crate_items(1)}
+        assert not (placed & {"1", "2", "3"})
+
+    def test_the_crate_is_still_full(self, index: LibraryIndex) -> None:
+        """The point of confirming during the deal rather than after it: a
+        rejected pick moves to the next candidate in the same group, so a dead
+        record costs the crate nothing instead of leaving a hole."""
+        _build(index, self._source(dead={"1", "2", "3", "4"}))
+        assert len(index.crate_items(1)) == CRATE_SIZE
+
+    def test_only_records_about_to_be_placed_are_checked(
+        self, index: LibraryIndex
+    ) -> None:
+        """The affordability argument, made checkable. A gather holds tens of
+        candidates and a crate holds ten; confirming the pool would spend tens of
+        album-page requests on records nobody will ever see."""
+        source = self._source(dead=set())
+        _build(index, source)
+        assert len(source.asked) <= CRATE_SIZE, f"asked {len(source.asked)} times"
+
+    def test_a_dead_record_is_not_buffered_for_next_time(
+        self, index: LibraryIndex
+    ) -> None:
+        """Nothing on disk remembers the verdict, so a buffered dead record would
+        be re-fetched and re-proved dead on every future build — paying the same
+        request forever to reach the same answer."""
+        _build(index, self._source(dead={"1"}))
+        buffered = {row["provider_item_id"] for row in index.buffered_candidates()}
+        assert "1" not in buffered
+
+    def test_an_unknown_verdict_places_the_record(self, index: LibraryIndex) -> None:
+        """None means "not worth a request" — already settled at gather time, or
+        the budget is gone. It must never read as a rejection, or a provider that
+        cannot check anything would be unable to fill a crate."""
+        source = _FakeSource(_spread({"a": 8, "b": 8, "c": 8}))
+        _build(index, source)
+        assert len(index.crate_items(1)) == CRATE_SIZE
+
+
 class TestCrateShape:
     """What a crate READS like, against the real registry (KAMP-683).
 

@@ -7,6 +7,7 @@ supply the markup, so these exercise the actual parsers rather than mocks of the
 from __future__ import annotations
 
 import gzip
+import html
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -584,6 +585,216 @@ class TestSeedDimension:
         assert seed_dimension({"kind": "genre", "genre": ""}) is None
 
 
+def _rec_page(*audio: str) -> str:
+    """An album page whose recommendation block is exactly *audio*.
+
+    Synthetic because the captured fixture is checksum-locked AND 7/7 positive --
+    it holds no unplayable record to test against, and one cannot be added to it.
+    Each argument is the raw `data-audiourl` attribute for one recommendation.
+    """
+    # Attributes are double-quoted with the JSON entity-escaped inside, which is
+    # how Bandcamp really ships them — `_attr` only matches double quotes, so a
+    # single-quoted attribute would silently read as absent and the record would
+    # look unknown rather than unplayable.
+    recs = "".join(
+        f'<li class="recommended-album" data-albumid="{n}" data-artist="Artist {n}"'
+        f' data-albumtitle="Title {n}" data-audiourl="{html.escape(raw, quote=True)}">'
+        f'<a class="album-link" href="https://b{n}.bandcamp.com/album/x"></a></li>'
+        for n, raw in enumerate(audio)
+    )
+    return f'<div id="detail_recommendations">{recs}</div>'
+
+
+class TestUnplayableRecords:
+    """KAMP-670: a record the surface says has no audio never reaches a crate."""
+
+    PLAYS = '{"mp3-128": "https://t4.bcbits.com/stream/x"}'
+    SILENT = '{"flac": "https://x/y.flac"}'
+    UNREADABLE = "not json"
+
+    @staticmethod
+    def _seed() -> Seed:
+        return Seed(
+            target="https://a.bandcamp.com/album/x",
+            why="because",
+            seed_data={"kind": "album", "album_id": 1},
+        )
+
+    def _gather_one_seed(self, page: str) -> tuple[list[Any], FakeSession]:
+        session = FakeSession(get_body=page)
+        source = _source(session)
+        criterion = next(c for c in REGISTRY if c.key == "also_like")
+        got, _dropped = source._run_seed(
+            criterion, self._seed(), crate_budget(), set(), {}
+        )
+        return got, session
+
+    def test_a_record_with_no_playable_format_is_dropped(self) -> None:
+        got, _ = self._gather_one_seed(_rec_page(self.PLAYS, self.SILENT))
+        assert [c.provider_item_id for c in got] == ["0"]
+
+    def test_a_record_we_could_not_read_is_kept(self) -> None:
+        """The distinction the whole design rests on. An attribute we failed to
+        parse is our blind spot, not Bandcamp saying no -- and the preview-time
+        message is the honest answer for a record we do not know about."""
+        got, _ = self._gather_one_seed(_rec_page(self.PLAYS, self.UNREADABLE))
+        assert [c.provider_item_id for c in got] == ["0", "1"]
+
+    def test_a_page_where_everything_is_unplayable_is_treated_as_drift(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The failure this module is architected against: a format change that
+        empties a criterion while every test still passes.
+
+        A definite negative has never been observed -- 7/7, 20/20, 48/48 across
+        every sample ever taken -- so ALL of them at once means we stopped
+        understanding the format, not that Bandcamp shipped a page of silent
+        records. Say so and keep them.
+        """
+        with caplog.at_level("WARNING", logger="kamp_daemon.discovery_sources"):
+            got, _ = self._gather_one_seed(_rec_page(self.SILENT, self.SILENT))
+        assert len(got) == 2, "a format change must not empty the criterion"
+        assert "parser drift" in caplog.text
+
+    def test_dropping_a_seed_dry_does_not_buy_another_request(self) -> None:
+        """The acceptance criterion "no increase in requests per crate", made
+        checkable -- and the one the fixtures cannot test, being all-positive.
+
+        `productive` decides whether to walk to the next seed, and it used to be
+        judged on the post-filter list. So a seed filtered down to nothing read as
+        a seed that FOUND nothing, and the loop spent another fetch on the
+        endpoint class that rate-limits hardest.
+        """
+        # One playable record the user already owns, and one with no audio. The
+        # mix matters: a page that is ENTIRELY unplayable is treated as drift and
+        # kept, so the only way a seed empties via this filter is alongside one of
+        # the older drops.
+        session = FakeSession(get_body=_rec_page(self.PLAYS, self.SILENT))
+        source = _source(session)
+        criterion = next(c for c in REGISTRY if c.key == "also_like")
+        profile = SeedProfile(
+            recent_album_ids={1, 2, 3, 4},
+            recent_albums=[
+                _album_seed(album_id=i, url=f"https://a{i}.bandcamp.com/album/x")
+                for i in (1, 2, 3, 4)
+            ],
+        )
+        source._run_criterion(criterion, profile, crate_budget(), {"0"}, {})
+        # Two seeds tried, exactly as _SEEDS_PER_CRITERION allows for a criterion
+        # whose seeds all produce records. Before the fix this walked the whole
+        # seed list until the budget stopped it.
+        assert len(session.gets) == 2, f"spent {len(session.gets)} requests"
+
+    @staticmethod
+    def _pick(criterion: str) -> Candidate:
+        return Candidate(
+            provider="bandcamp",
+            provider_item_id="1",
+            item_url="https://a.bandcamp.com/album/x",
+            criterion=criterion,
+        )
+
+    @pytest.mark.parametrize(
+        "criterion",
+        ["also_like", "purchase_anniversary", "genre_top", "best_seller"],
+    )
+    def test_a_vouched_criterion_costs_no_request_to_confirm(
+        self, criterion: str
+    ) -> None:
+        """Every criterion whose surface carries the signal was already settled
+        during the gather. Asking again would pay twice for the same answer."""
+        session = FakeSession()
+        budget = crate_budget()
+        assert _source(session).confirm_playable(self._pick(criterion), budget) is None
+        assert session.gets == []
+        assert budget.spent.get(ALBUM_PAGE, 0) == 0
+
+    @pytest.mark.parametrize("criterion", ["favorite_artist", "lone_album_artist"])
+    def test_a_discography_pick_is_checked_against_its_album_page(
+        self, criterion: str
+    ) -> None:
+        """The gap this closes: the /music grid says nothing about audio, so the
+        only way to know is the album page — and only for a pick."""
+        session = FakeSession(
+            get_body='<script data-tralbum="'
+            + html.escape('{"trackinfo": [{"title": "A", "file": {}}]}', quote=True)
+            + '"></script>'
+        )
+        budget = crate_budget()
+        assert _source(session).confirm_playable(self._pick(criterion), budget) is False
+        assert len(session.gets) == 1
+        assert budget.spent[ALBUM_PAGE] == 1
+
+    def test_an_exhausted_budget_places_the_record_unchecked(self) -> None:
+        """Bounded by the gather's own allowance rather than a fresh one, so a
+        build degrades to the old behaviour instead of overrunning the endpoint
+        class that rate-limits hardest."""
+        session = FakeSession()
+        budget = SimpleBudget(limits={ALBUM_PAGE: 0})
+        assert (
+            _source(session).confirm_playable(self._pick("favorite_artist"), budget)
+            is None
+        )
+        assert session.gets == [], "spent a request it could not afford"
+
+    @pytest.mark.parametrize(
+        ("body", "status", "reason"),
+        [
+            ("", 404, "http_404"),
+            ("<html>nothing here</html>", 200, "no_tralbum"),
+            # Double-quoted with the JSON entity-escaped inside, the way
+            # parse_tralbum actually matches it.
+            (
+                '<script data-tralbum="'
+                + html.escape('{"trackinfo": [{"title": "A", "file": {}}]}', quote=True)
+                + '"></script>',
+                200,
+                "no_streams",
+            ),
+        ],
+    )
+    def test_every_preview_failure_names_its_cause(
+        self,
+        body: str,
+        status: int,
+        reason: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """KAMP-670. "No preview for this one." has five causes, and they used to
+        be five differently-worded lines at three levels -- with the one that
+        matters most, an album carrying no stream at all, the quietest of them at
+        INFO. A user reporting the failure left nothing behind to say WHICH.
+
+        One prefix to grep, one reason word to tell them apart.
+        """
+        session = FakeSession()
+        session.get_body = body
+        session.get_status = status
+        candidate = Candidate(
+            provider="bandcamp",
+            provider_item_id="1",
+            item_url="https://a.bandcamp.com/album/x",
+        )
+        with caplog.at_level("WARNING", logger="kamp_daemon.discovery_sources"):
+            assert _source(session).preview_tracks(candidate) == []
+        assert f"preview unavailable ({reason})" in caplog.text
+
+    def test_a_discography_record_is_never_dropped(self) -> None:
+        """Two of seven criteria sit on a surface with no audio signal at all. A
+        rule that dropped them would zero those criteria on a guess."""
+        session = FakeSession(get_body=_fixture("artist_discography"))
+        source = _source(session)
+        criterion = next(c for c in REGISTRY if c.key == "favorite_artist")
+        seed = Seed(
+            target="https://fourtet.bandcamp.com/music",
+            why="because",
+            seed_data={"kind": "artist", "artist": "Four Tet"},
+        )
+        got, dropped = source._run_seed(criterion, seed, crate_budget(), set(), {})
+        assert got, "the discography surface must still yield candidates"
+        assert dropped == 0
+
+
 class TestSpreadWithinACrate:
     """KAMP-665: one criterion should not take everything from one seed."""
 
@@ -685,7 +896,7 @@ class TestGenreExclusionAcrossCriteria:
             label="fake",
         )
         state: dict[str, Any] = {}
-        source._run_seed = lambda *a, **k: [MagicMock()]  # type: ignore[method-assign]
+        source._run_seed = lambda *a, **k: ([MagicMock()], 0)  # type: ignore[method-assign]
         source._run_criterion(
             criterion,
             SeedProfile(),
@@ -908,7 +1119,9 @@ class TestRotationAndPagination:
         def fake_run_seed(criterion, seed, budget, owned, state=None):  # noqa: ANN001
             tried.append(seed.target)
             # Barren, barren, then a hit — so it stops on the third of three.
-            return [MagicMock()] if len(tried) == 3 else []
+            # The second value is the KAMP-670 unplayable-drop count; zero here,
+            # because these seeds find nothing rather than finding it unplayable.
+            return ([MagicMock()], 0) if len(tried) == 3 else ([], 0)
 
         source._run_seed = fake_run_seed  # type: ignore[method-assign]
         criterion = Criterion(
@@ -988,7 +1201,7 @@ class TestRotationAndPagination:
             # Spends the budget the way a real fetch would, and finds nothing —
             # so the loop keeps going until the budget, not the results, stops it.
             b.consume(ALBUM_PAGE)
-            return []
+            return [], 0
 
         source._run_seed = barren  # type: ignore[method-assign]
         state: dict[str, Any] = {}

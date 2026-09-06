@@ -46,6 +46,7 @@ from .discovery_bandcamp_parsers import (
 )
 from .discovery_criteria import (
     OLD_ALBUM_YEARS,
+    REGISTRY,
     SURFACE_ALBUM_RECS,
     SURFACE_DISCOGRAPHY,
     SURFACE_DISCOVER,
@@ -97,6 +98,12 @@ CRITERION_CAPS: dict[str, int] = {
 #: inherits the ABC default, so a test has to read the real thing.
 CRITERION_WEIGHTS: dict[str, int] = {"also_like": 4}
 
+#: Which surface each criterion reads, so `confirm_playable` can tell the ones
+#: whose gather already settled playability from the ones it could not (KAMP-670).
+#: Derived from the registry rather than restated, so a new criterion cannot
+#: quietly default to "already checked".
+_CRITERION_SURFACE: dict[str, str] = {c.key: c.surface for c in REGISTRY}
+
 
 def _sub(state: "MutableMapping[str, Any]", key: str) -> dict[str, Any]:
     """The ``key`` sub-dict of the rotation state, created and attached if absent.
@@ -121,6 +128,23 @@ def _is_fetchable(url: str) -> bool:
     real collection) and is skipped rather than attempted.
     """
     return host_allowed(url, FETCHABLE_HOSTS)
+
+
+def _preview_unavailable(reason: str, url: str) -> None:
+    """Record why a preview could not be produced, in one greppable shape.
+
+    "No preview for this one." has five distinct causes and they used to be five
+    differently-worded lines at three different levels — the one that matters
+    most, an album whose page carries no stream at all, was the quietest of them
+    at INFO. So when a user reported the failure there was no way to tell which
+    had happened, and there still would not be next time (KAMP-670).
+
+    One prefix to grep for, one reason word to tell them apart, and all of them
+    at WARNING, because every one of them is a card the user cannot play. The
+    reasons are: ``host_blocked``, ``fetch_failed``, ``http_<status>``,
+    ``no_tralbum``, ``no_streams``.
+    """
+    logger.warning("discovery: preview unavailable (%s) for %s", reason, url)
 
 
 class RateLimitedError(RuntimeError):
@@ -411,12 +435,26 @@ class BandcampDiscoverySource(DiscoverySource):
                 continue
 
             consumed = step + 1
-            got = self._run_seed(criterion, seed, budget, owned or set(), state)
+            got, dropped = self._run_seed(
+                criterion, seed, budget, owned or set(), state
+            )
             if got:
                 found.extend(got)
-                productive += 1
                 if dimension is not None:
                     used.add(dimension)
+            # A seed filtered down to nothing is NOT an unproductive seed
+            # (KAMP-670). `productive` decides whether to walk on and spend
+            # another request, so without the `or dropped` the playability filter
+            # would buy extra fetches on the class that rate-limits hardest, and
+            # starve purchase_anniversary, which shares ALBUM_PAGE and runs last.
+            # That would break this ticket's own "no increase in requests" rule.
+            #
+            # Deliberately narrow: the owned and unfetchable drops still make a
+            # seed look unproductive, exactly as before. Walking on when
+            # everything was owned is a real chance of finding something and is
+            # not this change's business.
+            if got or dropped:
+                productive += 1
 
         # Advance past every seed TRIED, not just a productive one. Advancing only
         # on success looks right and is the trap: a seed at the head of the list
@@ -434,20 +472,25 @@ class BandcampDiscoverySource(DiscoverySource):
         budget: RequestBudget,
         owned: set[str],
         state: "MutableMapping[str, Any] | None" = None,
-    ) -> list[Candidate]:
+    ) -> tuple[list[Candidate], int]:
+        """One seed's candidates, and how many it dropped for having no audio.
+
+        The second half rides all the way up to ``_run_criterion`` so a seed whose
+        yield was filtered is not mistaken for a seed that found nothing.
+        """
         if criterion.surface == SURFACE_DISCOVER:
             return self._discover(criterion, seed, budget, owned, state)
         if criterion.surface == SURFACE_ALBUM_RECS:
             body = self._fetch(criterion.endpoint_class, str(seed.target), budget)
             if body is None:
-                return []
+                return [], 0
             result = parse_also_like(body)
             result.warn_if_drifted(criterion.surface, str(seed.target))
             return self._to_candidates(criterion, seed, result, owned)
         if criterion.surface == SURFACE_DISCOGRAPHY:
             body = self._fetch(criterion.endpoint_class, str(seed.target), budget)
             if body is None:
-                return []
+                return [], 0
             result = parse_discography(body, base_url=str(seed.target))
             result.warn_if_drifted(criterion.surface, str(seed.target))
             # The grid carries no artist name — every entry is the page's artist,
@@ -457,7 +500,7 @@ class BandcampDiscoverySource(DiscoverySource):
                 item.setdefault("artist", artist)
             return self._to_candidates(criterion, seed, result, owned)
         logger.warning("discovery: unknown surface %r", criterion.surface)
-        return []
+        return [], 0
 
     def _discover(
         self,
@@ -466,7 +509,7 @@ class BandcampDiscoverySource(DiscoverySource):
         budget: RequestBudget,
         owned: set[str],
         state: "MutableMapping[str, Any] | None" = None,
-    ) -> list[Candidate]:
+    ) -> tuple[list[Candidate], int]:
         params: dict[str, Any] = dict(seed.target)
         # Normalise here rather than in the criterion: the seed carries the display
         # genre so the clerk card can say "you've been deep in Indie Rock lately",
@@ -495,7 +538,7 @@ class BandcampDiscoverySource(DiscoverySource):
             criterion.endpoint_class, DISCOVER_API_URL, budget, payload=payload
         )
         if body is None:
-            return []
+            return [], 0
         result = parse_discover_results(body)
         result.warn_if_drifted(criterion.surface, DISCOVER_API_URL)
 
@@ -533,8 +576,35 @@ class BandcampDiscoverySource(DiscoverySource):
         seed: Seed,
         result: ParseResult,
         owned: set[str],
-    ) -> list[Candidate]:
+    ) -> tuple[list[Candidate], int]:
+        """Usable candidates, and how many were dropped for having no audio.
+
+        The count is returned rather than logged and forgotten because
+        ``_run_criterion`` has to know: a seed judged unproductive walks to the
+        next one and spends another request, so without this the new filter would
+        quietly buy extra fetches on the endpoint class that rate-limits hardest
+        (KAMP-670). It is also the number that answers "does this filter ever
+        actually fire", which no sample so far has been able to.
+        """
         out: list[Candidate] = []
+        # A page where EVERY record reads as unplayable is drift, not twenty dead
+        # records (KAMP-670). Measured, a definite negative is vanishingly rare --
+        # 7/7, 20/20 and 48/48 across every sample ever taken -- so all of them at
+        # once means we stopped understanding the format, and the honest response
+        # is the one this module already uses for that: say so and keep the
+        # records. Dropping them instead would empty the x4-weighted flagship
+        # criterion silently, which is the exact failure ParseResult.drifted was
+        # invented to prevent.
+        verdicts = [item.get("has_preview") for item in result.items]
+        blanket = bool(verdicts) and all(v is False for v in verdicts)
+        if blanket:
+            logger.warning(
+                "discovery: every record on %s reads as unplayable — treating as"
+                " parser drift and keeping them (%d records)",
+                seed.target,
+                len(verdicts),
+            )
+        dropped = 0
         for item in result.items:
             if item["provider_item_id"] in owned:
                 # Recommending someone a record they already own is the clerk who
@@ -545,6 +615,14 @@ class BandcampDiscoverySource(DiscoverySource):
             if not _is_fetchable(url):
                 # Same reasoning as the fetch-side skip: a candidate we could
                 # never fetch art or a preview for is not a usable card.
+                continue
+            if not blanket and item.get("has_preview") is False:
+                # The surface said there is nothing to hear. `is False` and not a
+                # falsy check: None means the surface said nothing, which is every
+                # discography record and anything we failed to parse, and those
+                # keep their place — the preview-time message stays the honest
+                # answer for a record we genuinely do not know about.
+                dropped += 1
                 continue
             out.append(
                 Candidate(
@@ -560,7 +638,69 @@ class BandcampDiscoverySource(DiscoverySource):
                     seed=dict(seed.seed_data),
                 )
             )
-        return out
+        if dropped:
+            logger.info(
+                "discovery: dropped %d unplayable of %d from %s (%s)",
+                dropped,
+                len(result.items),
+                seed.target,
+                criterion.key,
+            )
+        return out, dropped
+
+    def confirm_playable(
+        self, candidate: Candidate, budget: RequestBudget
+    ) -> bool | None:
+        """Check a discography pick's album page, because nothing else can.
+
+        Two of the seven criteria come off an artist's ``/music`` grid, and that
+        grid says nothing about audio — not in ``data-audiourl``, which it does
+        not carry, nor in ``data-client-items``, which holds only art_id, band_id,
+        id, page_url, title and type. So the gather-time filter is blind to about
+        2.8 records of every ten, and the first no_streams failure seen in the
+        wild was one of them.
+
+        Every other criterion returns None immediately and costs nothing: they
+        were settled from the surface's own signal during the gather, and asking
+        again would be paying twice for the same answer.
+
+        **Only picks reach here.** The ticket forbids "an album-page fetch per
+        candidate" and it is right — a gather holds tens of discography
+        candidates. It holds about three that get placed, which is a different
+        number, and the one this spends.
+
+        Budget-bounded rather than best-effort-unbounded: `allow` says no and this
+        returns None, so a crate degrades to today's behaviour instead of
+        overrunning the class that rate-limits hardest. ALBUM_PAGE is funded at 8
+        and a gather spends about 4.
+        """
+        if _CRITERION_SURFACE.get(candidate.criterion) != SURFACE_DISCOGRAPHY:
+            return None
+        if not budget.allow(ALBUM_PAGE):
+            logger.info(
+                "discovery: no budget left to confirm %s, placing it unchecked",
+                candidate.item_url,
+            )
+            return None
+        budget.consume(ALBUM_PAGE)
+        try:
+            # preview_tracks is the same question asked at play time, so there is
+            # one definition of "playable" rather than two that can disagree. It
+            # is unbudgeted by design; the allowance is spent above, by the caller
+            # that can afford to be refused.
+            return bool(self.preview_tracks(candidate))
+        except RateLimitedError:
+            # Never fail a pick on a rate limit. It says nothing about the record,
+            # and dropping one here would quietly shrink the crate for a reason
+            # the user would see as a short crate with no explanation.
+            raise
+        except Exception:  # noqa: BLE001 - a check that breaks must not lose a card
+            logger.warning(
+                "discovery: could not confirm %s, placing it unchecked",
+                candidate.item_url,
+                exc_info=True,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Preview
@@ -586,13 +726,13 @@ class BandcampDiscoverySource(DiscoverySource):
         # the same host check the art proxy applies (KAMP-649). A Bandcamp Pro
         # custom domain also lands here, and is unfetchable in packaged builds.
         if not _is_fetchable(candidate.item_url):
-            logger.debug("discovery: preview host not fetchable %s", candidate.item_url)
+            _preview_unavailable("host_blocked", candidate.item_url)
             return []
 
         try:
             resp = self._session.get(candidate.item_url, timeout=30)
         except Exception:  # noqa: BLE001 - a failed preview is not an error state
-            logger.warning("discovery: preview fetch failed for %s", candidate.item_url)
+            _preview_unavailable("fetch_failed", candidate.item_url)
             return []
 
         status = resp.status_code
@@ -600,15 +740,13 @@ class BandcampDiscoverySource(DiscoverySource):
             self._governor.report_429("album_page")
             raise RateLimitedError(f"429 from {candidate.item_url}")
         if status != 200:
-            logger.warning(
-                "discovery: preview HTTP %d from %s", status, candidate.item_url
-            )
+            _preview_unavailable(f"http_{status}", candidate.item_url)
             return []
         self._governor.report_ok("album_page")
 
         tralbum = parse_tralbum(resp.text)
         if not tralbum:
-            logger.warning("discovery: no tralbum on %s", candidate.item_url)
+            _preview_unavailable("no_tralbum", candidate.item_url)
             return []
 
         # A standalone single-track page exposes its lone track with
@@ -630,7 +768,11 @@ class BandcampDiscoverySource(DiscoverySource):
                 )
             )
         if not out:
-            logger.info("discovery: nothing streamable on %s", candidate.item_url)
+            # The cause KAMP-670's gather-time filter is meant to pre-empt. If
+            # this still appears after that shipped, the surface did not tell us
+            # -- a discography pick, or a page whose recommendation block we could
+            # not read -- and THAT is the interesting case.
+            _preview_unavailable("no_streams", candidate.item_url)
         return out
 
     # ------------------------------------------------------------------

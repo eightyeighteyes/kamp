@@ -149,8 +149,14 @@ def build_crate(
     # pool would look exhausted again each time, which is the same bug on a
     # longer fuse.
     rotation = _load_rotation(index)
+    # ONE budget for the whole build, resolved once. The gather and the KAMP-670
+    # confirmation both draw on it, and that is the property that makes confirming
+    # affordable: it spends the gather's leftovers rather than a fresh allowance,
+    # so a build can never exceed what crate_budget() funds. Resolving it inline
+    # at each call site would hand the second one a full, untouched allowance.
+    budget = budget or crate_budget()
     try:
-        candidates = source.gather(profile, budget or crate_budget(), rotation)
+        candidates = source.gather(profile, budget, rotation)
     except Exception:  # noqa: BLE001 - a provider must not take the daemon with it
         logger.exception("discovery: gather failed")
         return _publish(publish, state="error")
@@ -188,6 +194,22 @@ def build_crate(
         if (c.provider, c.provider_item_id) not in fresh_ids
     ]
 
+    # Records the provider proved unplayable while the crate was being dealt
+    # (KAMP-670). Kept so they are not written back to the buffer: nothing on disk
+    # remembers the verdict, so a buffered dead record would be re-fetched and
+    # re-proved dead on every future build.
+    unplayable: set[tuple[str, str]] = set()
+
+    def _confirm(candidate: Candidate) -> bool | None:
+        verdict = source.confirm_playable(candidate, budget)
+        if verdict is False:
+            unplayable.add((candidate.provider, candidate.provider_item_id))
+            logger.info(
+                "discovery: %s has nothing playable, taking the next one instead",
+                candidate.item_url,
+            )
+        return verdict
+
     picks = select_crate(
         candidates,
         index=index,
@@ -197,6 +219,7 @@ def build_crate(
         rng=rng,
         wishlist_ids=wishlist_ids,
         extra=stock,
+        confirm=_confirm,
     )
     # Attributed BEFORE anything is written, and that ordering is the whole
     # correctness of the flag: place first and this crate's own ten records are
@@ -269,7 +292,7 @@ def build_crate(
     # Deliberately not filtered by `_excluded` — exclusion is re-checked at
     # assembly because a candidate can be bought or wishlisted while it sits, so
     # filtering now would only bake in a verdict that has to be re-taken anyway.
-    _buffer_surplus(index, candidates, picks)
+    _buffer_surplus(index, candidates, picks, unplayable)
 
     short = placed < size
     # `dry` was measured against the picks; `short` is measured against what
@@ -354,9 +377,17 @@ def _buffer_surplus(
     index: "LibraryIndex",
     candidates: "Sequence[Candidate]",
     picks: "Sequence[Candidate]",
+    unplayable: "set[tuple[str, str]] | None" = None,
 ) -> int:
-    """Persist what this gather found and did not place. Returns rows written."""
+    """Persist what this gather found and did not place. Returns rows written.
+
+    *unplayable* is what the provider proved dead while dealing (KAMP-670), and
+    it is excluded. Nothing on disk remembers that verdict, so a buffered dead
+    record would be re-fetched and re-proved dead on every future build — paying
+    the same request forever to reach the same answer.
+    """
     placed_keys = {(p.provider, p.provider_item_id) for p in picks}
+    placed_keys |= unplayable or set()
     surplus = [
         c for c in candidates if (c.provider, c.provider_item_id) not in placed_keys
     ]
@@ -396,12 +427,19 @@ def select_crate(
     rng: random.Random | None = None,
     wishlist_ids: set[str] | None = None,
     extra: Sequence[Candidate] | None = None,
+    confirm: "Callable[[Candidate], bool | None] | None" = None,
 ) -> list[Candidate]:
-    """Pick up to *size* candidates, excluded and varied. Pure apart from reads.
+    """Pick up to *size* candidates, excluded and varied.
 
     Exclusion runs here, at assembly, rather than at capture: a candidate may
     have been bought or wishlisted since it was gathered, and a buffered one
     (KAMP-657) may have been sitting for weeks.
+
+    Pure apart from reads, EXCEPT for *confirm* (KAMP-670), which may perform I/O
+    — it is the provider's last chance to check a pick whose surface never said
+    whether it was playable. It is injected rather than reached for so this stays
+    testable without a network, and it is called only on a candidate about to be
+    placed, never on the pool.
     """
     rng = rng or random.Random()
     caps = caps or {}
@@ -429,7 +467,7 @@ def select_crate(
         # who opens the crate, which is the property it exists for.
         order = _weighted(order, weights)
 
-        picks = _deal(groups, order, size, caps, seed_cap=SEED_CAP)
+        picks = _deal(groups, order, size, caps, seed_cap=SEED_CAP, confirm=confirm)
         if len(picks) < size:
             # A cap is a preference, not a ceiling: honouring one to the point of
             # shrinking the crate is how a brand-new library (whose only criterion
@@ -440,7 +478,16 @@ def select_crate(
             # caps (KAMP-665): a thin profile can yield one seed's worth of
             # candidates and nothing else, and a two-record crate is a worse answer
             # than a crate that leans on one album page.
-            picks.extend(_deal(groups, order, size - len(picks), caps={}, skip=picks))
+            picks.extend(
+                _deal(
+                    groups,
+                    order,
+                    size - len(picks),
+                    caps={},
+                    skip=picks,
+                    confirm=confirm,
+                )
+            )
 
     # Stock, and only once the fresh pool has had every chance (KAMP-657). This is
     # the whole reason the buffer exists: a gather cut short by a 429, an
@@ -458,7 +505,14 @@ def select_crate(
             stock_order = list(stock)
             rng.shuffle(stock_order)
             picks.extend(
-                _deal(stock, stock_order, size - len(picks), caps={}, skip=picks)
+                _deal(
+                    stock,
+                    stock_order,
+                    size - len(picks),
+                    caps={},
+                    skip=picks,
+                    confirm=confirm,
+                )
             )
     return picks
 
@@ -499,6 +553,7 @@ def _deal(
     caps: dict[str, int],
     skip: list[Candidate] | None = None,
     seed_cap: int | None = None,
+    confirm: "Callable[[Candidate], bool | None] | None" = None,
 ) -> list[Candidate]:
     """Round-robin one card per criterion until *size* or nothing is left.
 
@@ -564,6 +619,15 @@ def _deal(
                     and key is not None
                     and seed_counts.get(key, 0) >= seed_cap
                 ):
+                    continue
+                # Asked only of a card about to be PLACED, which is the whole
+                # reason it is affordable (KAMP-670). Rejecting one here simply
+                # moves to the next candidate in the same group, so a confirmed
+                # dead record costs the crate nothing rather than leaving a hole.
+                # `taken` is marked either way: a record we just proved unplayable
+                # must not be reconsidered by the backfill a moment later.
+                if confirm is not None and confirm(candidate) is False:
+                    taken.add(id(candidate))
                     continue
                 taken.add(id(candidate))
                 counts[criterion] = counts.get(criterion, 0) + 1

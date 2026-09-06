@@ -167,16 +167,46 @@ def _audio_url(raw: str) -> str | None:
     not a bare URL -- reading it as a string yields something unplayable that
     would only fail at the point of pressing play.
     """
+    files = _audio_formats(raw)
+    if files is None:
+        return None
+    url = files.get("mp3-128") or files.get("mp3-v0")
+    return url if isinstance(url, str) and url else None
+
+
+def _audio_formats(raw: str) -> dict[str, Any] | None:
+    """The parsed ``data-audiourl`` object, or None if we could not read it.
+
+    Split out from ``_audio_url`` because the two questions it was answering at
+    once are different questions (KAMP-670). "No playable URL" had four causes --
+    the attribute was absent, the JSON did not parse, it parsed to something other
+    than an object, or it was an object with no format we can play -- and only the
+    LAST of those is Bandcamp telling us anything. The first three are our own
+    blind spots, and a record dropped on our parse failure is a record we removed
+    for no reason.
+    """
     if not raw:
         return None
     try:
         files = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    if not isinstance(files, dict):
+    return files if isinstance(files, dict) else None
+
+
+def _has_preview(raw: str) -> bool | None:
+    """Whether the surface says this recommendation is playable (KAMP-670).
+
+    True and False are claims; None is silence, and silence is the common case
+    for anything that is not simply a well-formed object we understood. Only a
+    format map we read successfully and found nothing playable in is a definite
+    "no" -- everything else leaves the record alone for the preview to settle.
+    """
+    files = _audio_formats(raw)
+    if files is None:
         return None
     url = files.get("mp3-128") or files.get("mp3-v0")
-    return url if isinstance(url, str) and url else None
+    return bool(isinstance(url, str) and url)
 
 
 def parse_also_like(html: str) -> ParseResult:
@@ -210,6 +240,11 @@ def parse_also_like(html: str) -> ParseResult:
                 # spawn plus an album-page fetch; the full track list still needs
                 # the page, but the listener does not wait for it.
                 "audio_url": _audio_url(_attr(body, "data-audiourl")),
+                # The same attribute read as a verdict rather than a URL
+                # (KAMP-670). Kept separate because the URL is signed and expires
+                # within hours, so it is useless by the time a crate is read,
+                # while "was there one" stays true.
+                "has_preview": _has_preview(_attr(body, "data-audiourl")),
                 "supporters": _clean_text(supporters.group(1)) if supporters else "",
                 "fan_comment": _clean_text(comment.group(1)) if comment else "",
             }
@@ -252,6 +287,22 @@ def parse_discover_facets(html: str) -> dict[str, list[dict[str, Any]]]:
         return {}
     state = (blob.get("appData") or {}).get("initialState") or {}
     return {family: state.get(family) or [] for family in FACET_FAMILIES}
+
+
+def _featured_track_plays(featured: Any) -> bool | None:
+    """Whether a discover row's ``featured_track`` carries a stream (KAMP-670).
+
+    The discover surface's equivalent of ``data-audiourl``, and read to the same
+    rule: an object we understood with no ``stream_url`` is a definite no, and
+    anything else -- the key absent, null, or some shape we did not expect -- is
+    silence rather than a verdict. Absence has never been observed (the captured
+    fixture carries one on all twenty rows), so calling it "unplayable" would be
+    inventing a claim from a case nobody has seen.
+    """
+    if not isinstance(featured, dict):
+        return None
+    url = featured.get("stream_url")
+    return bool(isinstance(url, str) and url)
 
 
 def parse_discover_results(payload: str | dict[str, Any]) -> ParseResult:
@@ -301,6 +352,10 @@ def parse_discover_results(payload: str | dict[str, Any]) -> ParseResult:
                 "is_owned": bool(row.get("is_owned")),
                 "is_wishlisted": bool(row.get("is_wishlisted")),
                 "band_id": str(row.get("band_id") or ""),
+                # Passed through as a verdict, the way is_owned/is_wishlisted are
+                # passed through as flags: the parser reads the surface, the
+                # source decides policy (KAMP-670).
+                "has_preview": _featured_track_plays(row.get("featured_track")),
             }
         )
     return result

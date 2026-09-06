@@ -685,6 +685,58 @@ class TestUnplayableRecords:
         # seed list until the budget stopped it.
         assert len(session.gets) == 2, f"spent {len(session.gets)} requests"
 
+    @staticmethod
+    def _pick(criterion: str) -> Candidate:
+        return Candidate(
+            provider="bandcamp",
+            provider_item_id="1",
+            item_url="https://a.bandcamp.com/album/x",
+            criterion=criterion,
+        )
+
+    @pytest.mark.parametrize(
+        "criterion",
+        ["also_like", "purchase_anniversary", "genre_top", "best_seller"],
+    )
+    def test_a_vouched_criterion_costs_no_request_to_confirm(
+        self, criterion: str
+    ) -> None:
+        """Every criterion whose surface carries the signal was already settled
+        during the gather. Asking again would pay twice for the same answer."""
+        session = FakeSession()
+        budget = crate_budget()
+        assert _source(session).confirm_playable(self._pick(criterion), budget) is None
+        assert session.gets == []
+        assert budget.spent.get(ALBUM_PAGE, 0) == 0
+
+    @pytest.mark.parametrize("criterion", ["favorite_artist", "lone_album_artist"])
+    def test_a_discography_pick_is_checked_against_its_album_page(
+        self, criterion: str
+    ) -> None:
+        """The gap this closes: the /music grid says nothing about audio, so the
+        only way to know is the album page — and only for a pick."""
+        session = FakeSession(
+            get_body='<script data-tralbum="'
+            + html.escape('{"trackinfo": [{"title": "A", "file": {}}]}', quote=True)
+            + '"></script>'
+        )
+        budget = crate_budget()
+        assert _source(session).confirm_playable(self._pick(criterion), budget) is False
+        assert len(session.gets) == 1
+        assert budget.spent[ALBUM_PAGE] == 1
+
+    def test_an_exhausted_budget_places_the_record_unchecked(self) -> None:
+        """Bounded by the gather's own allowance rather than a fresh one, so a
+        build degrades to the old behaviour instead of overrunning the endpoint
+        class that rate-limits hardest."""
+        session = FakeSession()
+        budget = SimpleBudget(limits={ALBUM_PAGE: 0})
+        assert (
+            _source(session).confirm_playable(self._pick("favorite_artist"), budget)
+            is None
+        )
+        assert session.gets == [], "spent a request it could not afford"
+
     @pytest.mark.parametrize(
         ("body", "status", "reason"),
         [

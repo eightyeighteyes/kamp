@@ -412,6 +412,29 @@ class DiscoverySource(ABC):
         """The first playable track of *candidate*, or None if there is none."""
         return next(iter(self.preview_tracks(candidate)), None)
 
+    def confirm_playable(
+        self, candidate: Candidate, budget: RequestBudget
+    ) -> bool | None:
+        """Whether *candidate* really has audio, for a pick about to be placed.
+
+        The last-resort half of KAMP-670. Most candidates are settled for free at
+        gather time, from a signal the surface already returned — but not all
+        surfaces carry one, and a provider knows which of its own do. This is
+        where it may spend a request to close that gap.
+
+        Called ONLY for candidates the builder is about to put in a crate, never
+        for the whole gathered pool: an implementation that fetched per candidate
+        would spend tens of requests on records nobody will see. Three answers:
+        True and False are findings, and **None means "not worth a request"** —
+        already known from the gather, budget exhausted, or simply not something
+        this provider can check. None is the safe default and the ABC's behaviour.
+
+        It is BUDGETED, unlike :meth:`preview_tracks`, and that difference is the
+        point: this runs on a background build where refusing is free, while a
+        preview runs under a click where refusing would be a hang.
+        """
+        return None
+
     def save_remote(self, candidate: Candidate) -> bool:
         """Save *candidate* to the provider's own list (Bandcamp: the wishlist).
 

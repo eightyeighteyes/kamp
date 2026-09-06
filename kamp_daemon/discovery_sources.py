@@ -46,6 +46,7 @@ from .discovery_bandcamp_parsers import (
 )
 from .discovery_criteria import (
     OLD_ALBUM_YEARS,
+    REGISTRY,
     SURFACE_ALBUM_RECS,
     SURFACE_DISCOGRAPHY,
     SURFACE_DISCOVER,
@@ -96,6 +97,12 @@ CRITERION_CAPS: dict[str, int] = {
 #: Module-level for the same reason as the caps: the builder suite's fake source
 #: inherits the ABC default, so a test has to read the real thing.
 CRITERION_WEIGHTS: dict[str, int] = {"also_like": 4}
+
+#: Which surface each criterion reads, so `confirm_playable` can tell the ones
+#: whose gather already settled playability from the ones it could not (KAMP-670).
+#: Derived from the registry rather than restated, so a new criterion cannot
+#: quietly default to "already checked".
+_CRITERION_SURFACE: dict[str, str] = {c.key: c.surface for c in REGISTRY}
 
 
 def _sub(state: "MutableMapping[str, Any]", key: str) -> dict[str, Any]:
@@ -640,6 +647,60 @@ class BandcampDiscoverySource(DiscoverySource):
                 criterion.key,
             )
         return out, dropped
+
+    def confirm_playable(
+        self, candidate: Candidate, budget: RequestBudget
+    ) -> bool | None:
+        """Check a discography pick's album page, because nothing else can.
+
+        Two of the seven criteria come off an artist's ``/music`` grid, and that
+        grid says nothing about audio — not in ``data-audiourl``, which it does
+        not carry, nor in ``data-client-items``, which holds only art_id, band_id,
+        id, page_url, title and type. So the gather-time filter is blind to about
+        2.8 records of every ten, and the first no_streams failure seen in the
+        wild was one of them.
+
+        Every other criterion returns None immediately and costs nothing: they
+        were settled from the surface's own signal during the gather, and asking
+        again would be paying twice for the same answer.
+
+        **Only picks reach here.** The ticket forbids "an album-page fetch per
+        candidate" and it is right — a gather holds tens of discography
+        candidates. It holds about three that get placed, which is a different
+        number, and the one this spends.
+
+        Budget-bounded rather than best-effort-unbounded: `allow` says no and this
+        returns None, so a crate degrades to today's behaviour instead of
+        overrunning the class that rate-limits hardest. ALBUM_PAGE is funded at 8
+        and a gather spends about 4.
+        """
+        if _CRITERION_SURFACE.get(candidate.criterion) != SURFACE_DISCOGRAPHY:
+            return None
+        if not budget.allow(ALBUM_PAGE):
+            logger.info(
+                "discovery: no budget left to confirm %s, placing it unchecked",
+                candidate.item_url,
+            )
+            return None
+        budget.consume(ALBUM_PAGE)
+        try:
+            # preview_tracks is the same question asked at play time, so there is
+            # one definition of "playable" rather than two that can disagree. It
+            # is unbudgeted by design; the allowance is spent above, by the caller
+            # that can afford to be refused.
+            return bool(self.preview_tracks(candidate))
+        except RateLimitedError:
+            # Never fail a pick on a rate limit. It says nothing about the record,
+            # and dropping one here would quietly shrink the crate for a reason
+            # the user would see as a short crate with no explanation.
+            raise
+        except Exception:  # noqa: BLE001 - a check that breaks must not lose a card
+            logger.warning(
+                "discovery: could not confirm %s, placing it unchecked",
+                candidate.item_url,
+                exc_info=True,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Preview

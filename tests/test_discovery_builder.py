@@ -31,6 +31,7 @@ from kamp_daemon.discovery import (
     SeedProfile,
 )
 from kamp_daemon.discovery_builder import CRATE_SIZE, build_crate
+from kamp_daemon.discovery_sources import CRITERION_CAPS
 
 
 @pytest.fixture
@@ -389,6 +390,84 @@ class TestSeedCaps:
         )
         _build(index, source)
         assert len(index.crate_items(1)) == CRATE_SIZE
+
+
+class TestCrateShape:
+    """What a crate READS like, against the real registry (KAMP-683).
+
+    Every other test in this file uses synthetic criteria and `_FakeSource`,
+    which inherits the ABC's empty `criterion_caps` -- so the whole suite is blind
+    to what the Bandcamp source actually declares, and none of it would notice
+    the real crate skewing. These use the real seven keys and the real caps.
+    """
+
+    #: Criteria whose seed is a genre or nothing, so the clerk line can never say
+    #: which of YOUR records sent us here. The complaint behind KAMP-683 was that
+    #: half of every crate was these; measured, it was 4-5 of ten.
+    GENRE_ONLY = ("genre_top", "older_than_ten", "best_seller")
+
+    @staticmethod
+    def _realistic() -> list[Candidate]:
+        """A rich gather: every registry criterion, two seeds each, plenty spare.
+
+        Deliberately generous. The question is what the builder CHOOSES when it
+        can have anything, which is the condition a healthy library produces and
+        the one the measured crates were built under.
+        """
+        out: list[Candidate] = []
+        for criterion, dimension in (
+            ("also_like", "album_id"),
+            ("purchase_anniversary", "album_id"),
+            ("favorite_artist", "artist"),
+            ("lone_album_artist", "artist"),
+            ("genre_top", "genre"),
+            ("older_than_ten", "genre"),
+            ("best_seller", None),
+        ):
+            for s in range(2):
+                for i in range(5):
+                    seed = (
+                        {"kind": criterion, dimension: f"{criterion}-{s}"}
+                        if dimension
+                        else {"kind": "chart"}
+                    )
+                    out.append(_candidate(f"{criterion}{s}{i}", criterion, seed=seed))
+        return out
+
+    def test_most_of_a_crate_names_a_record_you_own(self, index: LibraryIndex) -> None:
+        """The acceptance criterion, and it is about the crate rather than the
+        plumbing: a crate that presents itself as dug for you may not be half
+        made of picks that know nothing about you but a tag."""
+        source = _FakeSource(self._realistic(), caps=CRITERION_CAPS)
+        _build(index, source)
+        used = _criteria(index, 1)
+        genre_only = sum(1 for c in used if c in self.GENRE_ONLY)
+        assert len(used) == CRATE_SIZE
+        assert genre_only <= 3, f"{genre_only} of ten know only a genre: {used}"
+
+    def test_no_single_impersonal_criterion_repeats(self, index: LibraryIndex) -> None:
+        """Each of the three is held to one. Measured before the cap, genre_top
+        alone averaged 1.9 a crate and older_than_ten 1.5."""
+        source = _FakeSource(self._realistic(), caps=CRITERION_CAPS)
+        _build(index, source)
+        used = Counter(_criteria(index, 1))
+        for criterion in self.GENRE_ONLY:
+            assert used[criterion] <= 1, f"{criterion} took {used[criterion]}: {used}"
+
+    def test_the_caps_still_yield_to_a_thin_gather(self, index: LibraryIndex) -> None:
+        """Three caps rather than one is three more chances to shrink a crate.
+
+        The contract is unchanged (KAMP-661): a cap is a preference and the
+        backfill overruns it. A gather that found only genre picks must still
+        hand over ten records, not three.
+        """
+        source = _FakeSource(
+            _spread({"genre_top": 8, "older_than_ten": 8, "best_seller": 8}),
+            caps=CRITERION_CAPS,
+        )
+        status = _build(index, source)
+        assert len(index.crate_items(1)) == CRATE_SIZE
+        assert status["short"] is False
 
 
 class TestCriterionCaps:

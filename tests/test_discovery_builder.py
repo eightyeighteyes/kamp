@@ -230,6 +230,155 @@ class TestSelection:
         assert used.count("a") > 1 and used.count("b") > 1
 
 
+class TestOnePerArtist:
+    """KAMP-689: a crate must not offer two records by the same band.
+
+    Every candidate elsewhere in this file gets a UNIQUE artist from `_candidate`'s
+    default, so the suite was structurally unable to see this — nothing here broke
+    when the cap landed, including the four "never shrinks the crate" tests that
+    guard the invariant it could most easily have violated. Each test below sets a
+    shared artist on purpose.
+    """
+
+    @staticmethod
+    def _by(artist: str, criterion: str, n: int, **kw: Any) -> list[Candidate]:
+        """*n* candidates all by *artist* — the shape one discography seed returns."""
+        return [
+            _candidate(f"{artist}-{criterion}-{i}", criterion, artist=artist, **kw)
+            for i in range(n)
+        ]
+
+    def test_one_seed_cannot_offer_a_band_twice(self, index: LibraryIndex) -> None:
+        """The structural case. `lone_album_artist` seeds on an ARTIST and fetches
+        that artist's own /music grid, so every card it returns is by them — two
+        slots meant two cards by one band, every time the criterion ran."""
+        candidates = self._by(
+            "Star Moles", "lone_album_artist", 4, seed={"kind": "artist"}
+        ) + _spread({"genre_top": 8, "best_seller": 8})
+        _build(index, _FakeSource(candidates))
+        artists = [r["artist"] for r in index.crate_items(1)]
+        assert artists.count("Star Moles") == 1, artists
+
+    def test_the_key_is_who_made_the_record_not_the_seed(
+        self, index: LibraryIndex
+    ) -> None:
+        """An also_like recommendation BY a band, plus a favorite_artist seed ON
+        that band, are two different seeds and two different criteria — and still
+        one artist on screen."""
+        candidates = (
+            self._by(
+                "Blackbraid", "also_like", 1, seed={"kind": "album", "album_id": 1}
+            )
+            + self._by("Blackbraid", "favorite_artist", 1, seed={"kind": "artist"})
+            + _spread({"genre_top": 8, "best_seller": 8})
+        )
+        _build(index, _FakeSource(candidates))
+        artists = [r["artist"] for r in index.crate_items(1)]
+        assert artists.count("Blackbraid") == 1, artists
+
+    def test_a_one_artist_gather_still_fills_the_crate(
+        self, index: LibraryIndex
+    ) -> None:
+        """THE test. A cap enforced in the backfill would re-impose, harder, the
+        constraint the backfill exists to drop — and a gather that came back as one
+        artist's grid would ship a crate of ONE.
+
+        Reachable: `blocked_for` is per endpoint class, so DISCOVER_API and
+        ALBUM_PAGE can be cooling down while ARTIST_PAGE is not. The cap is a
+        preference like every other one here (KAMP-661).
+        """
+        source = _FakeSource(self._by("Star Moles", "lone_album_artist", 20))
+        status = _build(index, source)
+        assert len(index.crate_items(1)) == CRATE_SIZE
+        assert status["short"] is False
+
+    def test_a_blocked_record_costs_no_request_to_reject(
+        self, index: LibraryIndex
+    ) -> None:
+        """The cap runs BEFORE KAMP-670's confirm, which does network I/O.
+
+        confirm_playable is free for every criterion except the two discography
+        ones — exactly where this cap binds hardest — so checking after it would
+        spend an ALBUM_PAGE request to validate a record we were about to refuse.
+        """
+        asked: list[str] = []
+
+        source = _FakeSource(
+            self._by("Star Moles", "lone_album_artist", 4)
+            + _spread({"genre_top": 8, "best_seller": 8})
+        )
+
+        def confirm(candidate: Candidate, _budget: Any) -> bool | None:
+            asked.append(candidate.provider_item_id)
+            return None
+
+        source.confirm_playable = confirm  # type: ignore[method-assign]
+        _build(index, source)
+        placed = {r["provider_item_id"] for r in index.crate_items(1)}
+        blocked = [i for i in asked if i.startswith("Star Moles") and i not in placed]
+        assert not blocked, f"paid to confirm records the cap then refused: {blocked}"
+
+    def test_a_record_with_no_artist_is_never_capped(self, index: LibraryIndex) -> None:
+        """Fail open. A parser that stops yielding an identity must not silently
+        empty a crate — the same call the KAMP-670 blanket-drift rule makes."""
+        source = _FakeSource(
+            [_candidate(str(i), "also_like", artist="") for i in range(20)]
+        )
+        status = _build(index, source)
+        assert len(index.crate_items(1)) == CRATE_SIZE
+        assert status["short"] is False
+
+    def test_spelling_and_case_do_not_defeat_the_cap(self, index: LibraryIndex) -> None:
+        """Normalised the way `seed_dimension` already normalises a genre, and for
+        the same reason: these strings come from three different parsers."""
+        candidates = [
+            _candidate("a", "also_like", artist="Star Moles"),
+            _candidate("b", "also_like", artist="  star moles "),
+        ] + _spread({"genre_top": 8, "best_seller": 8})
+        _build(index, _FakeSource(candidates))
+        artists = [r["artist"].strip().casefold() for r in index.crate_items(1)]
+        assert artists.count("star moles") == 1, artists
+
+    def test_a_band_id_beats_two_spellings(self, index: LibraryIndex) -> None:
+        """The reason the id is carried at all. The discography surface fills the
+        artist in from the SEED — kamp's own spelling — while also_like carries
+        Bandcamp's, so a band whose name differs between them slips a string
+        comparison. All three parsers already extract an id."""
+        candidates = [
+            _candidate(
+                "a", "also_like", artist="Godspeed You! Black Emperor", band_id="7"
+            ),
+            _candidate(
+                "b", "favorite_artist", artist="Godspeed You Black Emperor", band_id="7"
+            ),
+        ] + _spread({"genre_top": 8, "best_seller": 8})
+        _build(index, _FakeSource(candidates))
+        ids = [r["provider_item_id"] for r in index.crate_items(1)]
+        assert not ("a" in ids and "b" in ids), "two spellings of one band both placed"
+
+    def test_also_like_still_reaches_four(self, index: LibraryIndex) -> None:
+        """Guards KAMP-683. The weight of 4 survives the cap as long as a
+        recommendation page carries more than one band, which a 7-rec block
+        essentially always does."""
+        candidates: list[Candidate] = []
+        for s in range(2):
+            for i in range(4):
+                candidates.append(
+                    _candidate(
+                        f"al{s}{i}",
+                        "also_like",
+                        artist=f"Band {s}{i}",
+                        seed={"kind": "album", "album_id": s},
+                    )
+                )
+        candidates += _spread({"genre_top": 8, "best_seller": 8, "favorite_artist": 8})
+        _build(
+            index,
+            _FakeSource(candidates, caps=CRITERION_CAPS, weights=CRITERION_WEIGHTS),
+        )
+        assert _criteria(index, 1).count("also_like") == 4
+
+
 class TestSeedCaps:
     """KAMP-665: a crate can have too much of one SEED, not just one criterion.
 

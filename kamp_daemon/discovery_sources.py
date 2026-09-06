@@ -123,6 +123,23 @@ def _is_fetchable(url: str) -> bool:
     return host_allowed(url, FETCHABLE_HOSTS)
 
 
+def _preview_unavailable(reason: str, url: str) -> None:
+    """Record why a preview could not be produced, in one greppable shape.
+
+    "No preview for this one." has five distinct causes and they used to be five
+    differently-worded lines at three different levels — the one that matters
+    most, an album whose page carries no stream at all, was the quietest of them
+    at INFO. So when a user reported the failure there was no way to tell which
+    had happened, and there still would not be next time (KAMP-670).
+
+    One prefix to grep for, one reason word to tell them apart, and all of them
+    at WARNING, because every one of them is a card the user cannot play. The
+    reasons are: ``host_blocked``, ``fetch_failed``, ``http_<status>``,
+    ``no_tralbum``, ``no_streams``.
+    """
+    logger.warning("discovery: preview unavailable (%s) for %s", reason, url)
+
+
 class RateLimitedError(RuntimeError):
     """Raised internally when the origin rate-limits us mid-gather."""
 
@@ -648,13 +665,13 @@ class BandcampDiscoverySource(DiscoverySource):
         # the same host check the art proxy applies (KAMP-649). A Bandcamp Pro
         # custom domain also lands here, and is unfetchable in packaged builds.
         if not _is_fetchable(candidate.item_url):
-            logger.debug("discovery: preview host not fetchable %s", candidate.item_url)
+            _preview_unavailable("host_blocked", candidate.item_url)
             return []
 
         try:
             resp = self._session.get(candidate.item_url, timeout=30)
         except Exception:  # noqa: BLE001 - a failed preview is not an error state
-            logger.warning("discovery: preview fetch failed for %s", candidate.item_url)
+            _preview_unavailable("fetch_failed", candidate.item_url)
             return []
 
         status = resp.status_code
@@ -662,15 +679,13 @@ class BandcampDiscoverySource(DiscoverySource):
             self._governor.report_429("album_page")
             raise RateLimitedError(f"429 from {candidate.item_url}")
         if status != 200:
-            logger.warning(
-                "discovery: preview HTTP %d from %s", status, candidate.item_url
-            )
+            _preview_unavailable(f"http_{status}", candidate.item_url)
             return []
         self._governor.report_ok("album_page")
 
         tralbum = parse_tralbum(resp.text)
         if not tralbum:
-            logger.warning("discovery: no tralbum on %s", candidate.item_url)
+            _preview_unavailable("no_tralbum", candidate.item_url)
             return []
 
         # A standalone single-track page exposes its lone track with
@@ -692,7 +707,11 @@ class BandcampDiscoverySource(DiscoverySource):
                 )
             )
         if not out:
-            logger.info("discovery: nothing streamable on %s", candidate.item_url)
+            # The cause KAMP-670's gather-time filter is meant to pre-empt. If
+            # this still appears after that shipped, the surface did not tell us
+            # -- a discography pick, or a page whose recommendation block we could
+            # not read -- and THAT is the interesting case.
+            _preview_unavailable("no_streams", candidate.item_url)
         return out
 
     # ------------------------------------------------------------------

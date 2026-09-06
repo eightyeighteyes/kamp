@@ -685,6 +685,48 @@ class TestUnplayableRecords:
         # seed list until the budget stopped it.
         assert len(session.gets) == 2, f"spent {len(session.gets)} requests"
 
+    @pytest.mark.parametrize(
+        ("body", "status", "reason"),
+        [
+            ("", 404, "http_404"),
+            ("<html>nothing here</html>", 200, "no_tralbum"),
+            # Double-quoted with the JSON entity-escaped inside, the way
+            # parse_tralbum actually matches it.
+            (
+                '<script data-tralbum="'
+                + html.escape('{"trackinfo": [{"title": "A", "file": {}}]}', quote=True)
+                + '"></script>',
+                200,
+                "no_streams",
+            ),
+        ],
+    )
+    def test_every_preview_failure_names_its_cause(
+        self,
+        body: str,
+        status: int,
+        reason: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """KAMP-670. "No preview for this one." has five causes, and they used to
+        be five differently-worded lines at three levels -- with the one that
+        matters most, an album carrying no stream at all, the quietest of them at
+        INFO. A user reporting the failure left nothing behind to say WHICH.
+
+        One prefix to grep, one reason word to tell them apart.
+        """
+        session = FakeSession()
+        session.get_body = body
+        session.get_status = status
+        candidate = Candidate(
+            provider="bandcamp",
+            provider_item_id="1",
+            item_url="https://a.bandcamp.com/album/x",
+        )
+        with caplog.at_level("WARNING", logger="kamp_daemon.discovery_sources"):
+            assert _source(session).preview_tracks(candidate) == []
+        assert f"preview unavailable ({reason})" in caplog.text
+
     def test_a_discography_record_is_never_dropped(self) -> None:
         """Two of seven criteria sit on a surface with no audio signal at all. A
         rule that dropped them would zero those criteria on a guess."""

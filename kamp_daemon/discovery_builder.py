@@ -192,6 +192,7 @@ def build_crate(
         candidates,
         index=index,
         caps=source.criterion_caps,
+        weights=source.criterion_weights,
         size=size,
         rng=rng,
         wishlist_ids=wishlist_ids,
@@ -390,6 +391,7 @@ def select_crate(
     *,
     index: "LibraryIndex",
     caps: dict[str, int] | None = None,
+    weights: dict[str, int] | None = None,
     size: int = CRATE_SIZE,
     rng: random.Random | None = None,
     wishlist_ids: set[str] | None = None,
@@ -403,6 +405,7 @@ def select_crate(
     """
     rng = rng or random.Random()
     caps = caps or {}
+    weights = weights or {}
     wishlist_ids = wishlist_ids or set()
 
     picks: list[Candidate] = []
@@ -418,6 +421,13 @@ def select_crate(
         # a feature whose entire affordance is dealing another one.
         order = list(groups)
         rng.shuffle(order)
+        # Weighted AFTER the shuffle, and appended rather than inserted beside the
+        # original (KAMP-683). Both matter: shuffling a list that already held the
+        # duplicates would let a weighted criterion land slot 0 more often than the
+        # rest, and inserting beside would hand it two adjacent cards at the front
+        # of the crate instead of two spread through it. The shuffle still decides
+        # who opens the crate, which is the property it exists for.
+        order = _weighted(order, weights)
 
         picks = _deal(groups, order, size, caps, seed_cap=SEED_CAP)
         if len(picks) < size:
@@ -456,6 +466,30 @@ def select_crate(
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+
+def _weighted(order: list[str], weights: dict[str, int]) -> list[str]:
+    """*order* with weighted criteria repeated, so they get extra turns per round.
+
+    The whole weighting mechanism (KAMP-683), and it needs no change to ``_deal``:
+    that function iterates ``for criterion in order``, so a key present twice is
+    simply asked twice a round. ``taken`` stops it dealing the same card, and
+    ``counts``, ``caps`` and ``seed_cap`` all accumulate across both turns, so a
+    weighted criterion is still capped and still seed-spread exactly as before.
+
+    Two things this gets for free that a reserved-slots pass would not. It carries
+    into the BACKFILL, which is handed this same list -- and the backfill is where
+    the skew actually comes from, because the deepest surviving pool wins the
+    tiebreak and the impersonal criteria have far more buffered stock. And it
+    cannot pin the front of the crate, because the caller shuffles first.
+
+    Only keys already in *order* are repeated. ``_deal`` indexes ``groups``
+    unguarded, so inventing a key here would raise straight out of
+    ``select_crate`` -- which ``build_crate`` does not wrap -- and surface as a
+    crate that failed for no stated reason.
+    """
+    extra = [key for key in order for _ in range(max(1, weights.get(key, 1)) - 1)]
+    return order + extra
 
 
 def _deal(

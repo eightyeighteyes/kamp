@@ -31,7 +31,7 @@ from kamp_daemon.discovery import (
     SeedProfile,
 )
 from kamp_daemon.discovery_builder import CRATE_SIZE, build_crate
-from kamp_daemon.discovery_sources import CRITERION_CAPS
+from kamp_daemon.discovery_sources import CRITERION_CAPS, CRITERION_WEIGHTS
 
 
 @pytest.fixture
@@ -78,15 +78,21 @@ class _FakeSource(DiscoverySource):
         candidates: list[Candidate],
         caps: dict[str, int] | None = None,
         error: Exception | None = None,
+        weights: dict[str, int] | None = None,
     ) -> None:
         self._candidates = candidates
         self._caps = caps or {}
+        self._weights = weights or {}
         self._error = error
         self.gather_calls = 0
 
     @property
     def criterion_caps(self) -> dict[str, int]:
         return self._caps
+
+    @property
+    def criterion_weights(self) -> dict[str, int]:
+        return self._weights
 
     def gather(
         self,
@@ -453,6 +459,72 @@ class TestCrateShape:
         used = Counter(_criteria(index, 1))
         for criterion in self.GENRE_ONLY:
             assert used[criterion] <= 1, f"{criterion} took {used[criterion]}: {used}"
+
+    def test_the_crate_leans_on_the_criterion_that_names_your_record(
+        self, index: LibraryIndex
+    ) -> None:
+        """also_like was the thinnest criterion at 1.3 cards a crate, despite
+        writing the most specific line the shop can write. Caps and weight
+        together are meant to make it the one a crate leans on."""
+        source = _FakeSource(
+            self._realistic(), caps=CRITERION_CAPS, weights=CRITERION_WEIGHTS
+        )
+        _build(index, source)
+        used = Counter(_criteria(index, 1))
+        assert used["also_like"] >= 3, f"also_like got {used['also_like']}: {used}"
+
+    def test_a_weight_does_not_beat_the_seed_cap(self, index: LibraryIndex) -> None:
+        """The KAMP-665 guard has to survive the thing pushing against it.
+
+        Extra turns are extra CHANCES, taken from whatever the criterion has
+        left — so a weighted criterion with one seed still cannot pile a crate
+        onto one album page. If this ever fails, the weight is too big.
+        """
+        candidates = [
+            _candidate(f"a{i}", "also_like", seed={"kind": "album", "album_id": 1})
+            for i in range(20)
+        ] + _spread({"genre_top": 8, "favorite_artist": 8})
+        _build(
+            index,
+            _FakeSource(candidates, caps=CRITERION_CAPS, weights=CRITERION_WEIGHTS),
+        )
+        seeds = Counter(
+            json.dumps(r["seed"], sort_keys=True) for r in index.crate_items(1)
+        )
+        one_album = seeds[json.dumps({"album_id": 1, "kind": "album"}, sort_keys=True)]
+        assert one_album <= 2, f"{one_album} records off one album page"
+
+    def test_a_weight_cannot_pin_the_front_of_the_crate(self, tmp_path: Path) -> None:
+        """Weighting is applied AFTER the shuffle for this reason. Repeating a key
+        in a list that was then shuffled would make the weighted criterion the
+        likeliest to open every crate — which is the property
+        test_group_order_varies_between_crates exists to protect, and it cannot
+        see this because it uses unweighted synthetic criteria."""
+        firsts = set()
+        for seed in range(12):
+            idx = LibraryIndex(tmp_path / f"crate-{seed}.db")
+            try:
+                _build(
+                    idx,
+                    _FakeSource(self._realistic(), weights=CRITERION_WEIGHTS),
+                    rng=random.Random(seed),
+                )
+                firsts.add(_criteria(idx, 1)[0])
+            finally:
+                idx.close()
+        assert len(firsts) > 1, f"every crate opened with {firsts}"
+
+    def test_a_weight_never_shrinks_a_crate(self, index: LibraryIndex) -> None:
+        """A weight is a preference like a cap. A criterion with nothing left to
+        give simply does not take its extra turns."""
+        source = _FakeSource(
+            _spread({"also_like": 1, "genre_top": 20}),
+            caps=CRITERION_CAPS,
+            weights=CRITERION_WEIGHTS,
+        )
+        status = _build(index, source)
+        assert len(index.crate_items(1)) == CRATE_SIZE
+        assert status["short"] is False
 
     def test_the_caps_still_yield_to_a_thin_gather(self, index: LibraryIndex) -> None:
         """Three caps rather than one is three more chances to shrink a crate.

@@ -344,6 +344,24 @@ class DiscoverySource(ABC):
         """
         return {}
 
+    @property
+    def criterion_weights(self) -> dict[str, int]:
+        """How many turns a criterion takes per round of the deal (KAMP-683).
+
+        The sibling of ``criterion_caps`` and the mirror of it: caps say "no more
+        than", this says "more often than the rest". Same bargain, for the same
+        reason — the builder deals round-robin precisely so it never has to know
+        what a label means, so the *provider*, which does know, names the ones
+        worth more of a crate and the builder treats the number as opaque.
+
+        A weight is a preference too. It buys extra chances in the round, not
+        reserved slots: a criterion with nothing left to give simply does not take
+        them, and the crate fills from elsewhere rather than coming up short.
+
+        Default 1 for anything unnamed, which is what every criterion gets today.
+        """
+        return {}
+
     @abstractmethod
     def gather(
         self,

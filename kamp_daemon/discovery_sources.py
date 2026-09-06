@@ -92,6 +92,11 @@ CRITERION_CAPS: dict[str, int] = {
     "older_than_ten": 1,
 }
 
+#: Turns per round of the deal, for criteria worth more of a crate (KAMP-683).
+#: Module-level for the same reason as the caps: the builder suite's fake source
+#: inherits the ABC default, so a test has to read the real thing.
+CRITERION_WEIGHTS: dict[str, int] = {"also_like": 4}
+
 
 def _sub(state: "MutableMapping[str, Any]", key: str) -> dict[str, Any]:
     """The ``key`` sub-dict of the rotation state, created and attached if absent.
@@ -178,6 +183,32 @@ class BandcampDiscoverySource(DiscoverySource):
         # Copied, because the builder hands this to _deal and a shared mutable
         # default is the kind of thing that only bites once, in production.
         return dict(CRITERION_CAPS)
+
+    @property
+    def criterion_weights(self) -> dict[str, int]:
+        """A double turn for the criterion that can actually name your record.
+
+        ``also_like`` reads the recommendation block of an album the user played
+        or favourited, so its clerk line is the most specific one the shop can
+        write: "Filed next to DOGGOD, which you played recently." It was also the
+        thinnest, at 1.3 cards a crate — round-robin over seven groups gives
+        everyone the same one or two regardless of what they can claim.
+
+        Four is measured, not picked. Averaged over sixty crates, the caps alone
+        take it to 1.7 and the weights land it at 2.4, 3.2 and 4.0 — so four turns
+        is what reaches four cards, which is the agreed target.
+
+        Four is also its ceiling, and deliberately so rather than by luck:
+        _SEEDS_PER_CRITERION x SEED_CAP = 2 x 2 = 4. A bigger weight buys nothing,
+        because the KAMP-665 seed cap refuses the fifth card — which is the guard
+        that matters, since the bug that ticket was filed about is three records
+        off ONE album page, and no weight here can produce that.
+
+        The cost of running at the ceiling is that the share stops varying: every
+        healthy crate is two records from each of two album pages. Worth watching
+        when reading real crates; a drop to 3 buys the variation back at 3.2.
+        """
+        return dict(CRITERION_WEIGHTS)
 
     # ------------------------------------------------------------------
     # The only place that touches the network

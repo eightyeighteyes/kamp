@@ -334,6 +334,23 @@ class PreviewPlayer:
                 return self.play(int(parked), self._state["parked_track_num"])
             if self._engine is None or self._state["state"] != PAUSED:
                 return self.snapshot()
+            # A pause held overnight is the reported bug (KAMP-673). Nothing reaps
+            # a paused preview -- the idle timer only fires from stop() -- so mpv
+            # sits on the socket for as long as the app runs, and by morning the
+            # signed URL behind it is dead. Every other route back into playback
+            # goes through play() and therefore through _resolve, which re-signs;
+            # this one told mpv to carry on with a link that had expired.
+            #
+            # Replay rather than resume-at-position. Re-signing then seeking back
+            # is not implementable: mpv silently drops a seek issued before
+            # file-loaded, which is why load_paused defers one, and a start=
+            # parameter would be an engine change for a crate bug. Replaying from
+            # the top is already this module's idiom -- see the cued-record branch
+            # just above, and release_for_main's note that the deck's play button
+            # replays.
+            item_id = self._state["item_id"]
+            if item_id is not None and self._is_stale(int(item_id)):
+                return self.play(int(item_id), self._state["track_num"])
             self._take_over_from_main()
             self._engine.resume()
             self._playing_since = self._now()
@@ -536,9 +553,23 @@ class PreviewPlayer:
     # Internals
     # ------------------------------------------------------------------
 
+    def _is_stale(self, item_id: int) -> bool:
+        """Whether this item's cached URLs are past their signature (KAMP-673).
+
+        Split out of `_resolve` so `resume` can ask the same question without
+        fetching: `_resolve`'s answer is "here are usable tracks", which is the
+        wrong shape for a caller that only wants to know whether to replay.
+
+        No cached list reads as stale rather than fresh. It means the tracks were
+        dropped after a failure, or were never resolved -- either way the URL mpv
+        is holding is not one this player can vouch for.
+        """
+        cached = self._tracks.get(item_id)
+        return not cached or any(t.is_expired for t in cached)
+
     def _resolve(self, item_id: int, item: dict[str, Any]) -> list[PreviewStream]:
         cached = self._tracks.get(item_id)
-        if cached and not any(t.is_expired for t in cached):
+        if not self._is_stale(item_id) and cached:
             return cached
 
         source = self._source_factory()

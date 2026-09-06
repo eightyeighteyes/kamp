@@ -633,6 +633,30 @@ class TestAStaleStream:
         h.engine.fail()
         assert h.player.snapshot()["error"] == "expired"
 
+    def test_resuming_a_stale_pause_replays_it(self, index: LibraryIndex) -> None:
+        """The reported repro. Nothing reaps a paused preview — the idle timer
+        only fires from stop() — so mpv holds the socket all night and the signed
+        URL behind it dies. Every other route back into playback goes through
+        play() and re-signs; this one told mpv to carry on regardless."""
+        h = Harness(index, source=FakeSource([_stream(1, expires_at=1.0)]))
+        h.player.play(_item(index))
+        h.player.pause()
+        h.engine.settle()
+        assert h.player.resume()["state"] == PLAYING
+        assert h.source.calls == 2, "resumed a dead socket instead of re-signing"
+        assert h.engine.calls.count("play") == 2, "resumed rather than replayed"
+
+    def test_resuming_a_live_pause_just_resumes(self, index: LibraryIndex) -> None:
+        """The common case must not pay for the rare one: a pause of a few
+        seconds resumes where it was, with no album-page fetch and no restart."""
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.player.pause()
+        h.engine.settle()
+        assert h.player.resume()["state"] == PLAYING
+        assert h.source.calls == 1
+        assert "resume" in h.engine.calls
+
     def test_a_recovered_track_may_fail_again_later(self, index: LibraryIndex) -> None:
         """The retry budget is per attempt, not per session. Clearing it on a
         confirmed load is what stops one bad afternoon disabling the retry for

@@ -102,6 +102,41 @@ class TestAlsoLike:
 
         assert _audio_url(raw) is None
 
+    @pytest.mark.parametrize(
+        "raw", ["{}", '{"flac": "https://x/y.flac"}', '{"mp3-128": ""}']
+    )
+    def test_a_format_map_with_nothing_playable_is_a_definite_no(
+        self, raw: str
+    ) -> None:
+        """KAMP-670. These three are Bandcamp answering the question: we read the
+        object it gave us and there is no format we can play. That is the ONLY
+        case a record may be dropped for."""
+        from kamp_daemon.discovery_bandcamp_parsers import _has_preview
+
+        assert _has_preview(raw) is False
+
+    @pytest.mark.parametrize("raw", ["", "not json", "[]", '"https://x/y.mp3"'])
+    def test_an_unreadable_audio_attribute_says_nothing(self, raw: str) -> None:
+        """The other half of the split that `test_unusable_audio_url_is_none`
+        conflates: absent, unparseable, or a shape we did not expect are OUR
+        blind spots, not a verdict. Dropping a record on our own parse failure
+        would remove it for no reason -- and if Bandcamp ever renames the
+        attribute, this is what stops the whole criterion silently emptying."""
+        from kamp_daemon.discovery_bandcamp_parsers import _has_preview
+
+        assert _has_preview(raw) is None
+
+    def test_every_recommendation_on_the_fixture_reads_as_playable(
+        self, album_page: str
+    ) -> None:
+        """The base rate the drop rule rests on. Measured 7/7 here and 48/48 in
+        the KAMP-644 recon, so a definite negative has never actually been seen
+        -- which is worth pinning, because it means this filter should almost
+        never fire and a sudden change of heart is a signal, not a success."""
+        items = parse_also_like(album_page).items
+        assert items
+        assert all(item["has_preview"] is True for item in items)
+
     def test_tracking_parameter_is_stripped(self, album_page: str) -> None:
         """Bandcamp appends ?from=<seed>, so the same album reached from two seeds
         would otherwise look like two albums and defeat cross-seed dedupe."""
@@ -190,6 +225,47 @@ class TestDiscoverResults:
         items = parse_discover_results(payload).items
         assert [i["is_owned"] for i in items] == [True, False]
         assert [i["is_wishlisted"] for i in items] == [False, True]
+
+    def test_featured_track_is_read_as_a_playability_verdict(self) -> None:
+        """KAMP-670. Same rule as the album page's data-audiourl: an object we
+        understood with no stream_url is a definite no; the key absent or null is
+        silence. Synthetic because the fixture carries a stream on all twenty
+        rows and is checksum-locked, so there is no negative case to draw on."""
+        payload = {
+            "results": [
+                {
+                    "item_id": 1,
+                    "item_url": "https://a.bandcamp.com/album/plays",
+                    "featured_track": {"stream_url": "https://t4.bcbits.com/x"},
+                },
+                {
+                    "item_id": 2,
+                    "item_url": "https://b.bandcamp.com/album/silent",
+                    "featured_track": {"title": "Track", "stream_url": ""},
+                },
+                {
+                    "item_id": 3,
+                    "item_url": "https://c.bandcamp.com/album/nulled",
+                    "featured_track": None,
+                },
+                {
+                    "item_id": 4,
+                    "item_url": "https://d.bandcamp.com/album/absent",
+                },
+            ]
+        }
+        items = parse_discover_results(payload).items
+        assert [i["has_preview"] for i in items] == [True, False, None, None]
+
+    def test_every_discover_row_on_the_fixture_reads_as_playable(
+        self, discover_results: str
+    ) -> None:
+        """The discover half of the base rate, 20/20. Pinned for the same reason
+        as the album page's: the drop rule is designed around definite negatives
+        being rare, and if a re-capture ever changes that we want to know."""
+        items = parse_discover_results(discover_results).items
+        assert len(items) == 20
+        assert all(item["has_preview"] is True for item in items)
 
     def test_carries_the_cursor_for_the_next_page(self, discover_results: str) -> None:
         """The whole of KAMP-661 hangs off this value being kept.

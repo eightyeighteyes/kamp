@@ -955,7 +955,14 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                   <p className="crate-preview-error" role="status">
                     {preview.error === 'rate_limited'
                       ? 'Bandcamp asked us to slow down — try again shortly.'
-                      : 'No preview for this one.'}
+                      : preview.error === 'expired'
+                        ? // Distinct from the line below, because the record is
+                          // fine and only the link went stale — Bandcamp signs
+                          // them for about a day (KAMP-673). Saying "no preview
+                          // for this one" would send the user away from a record
+                          // that plays perfectly well on a second press.
+                          'That link went stale — press play again.'
+                        : 'No preview for this one.'}
                   </p>
                 )}
 

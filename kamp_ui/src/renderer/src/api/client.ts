@@ -686,8 +686,10 @@ export type PreviewState = {
   duration: number
   buffering: boolean
   tracks: PreviewTrack[]
-  // 'not_found' | 'unavailable' | 'rate_limited' — a rate limit and an album
-  // with nothing streamable want different words on screen.
+  // 'not_found' | 'unavailable' | 'rate_limited' | 'expired' — each wants
+  // different words on screen. 'expired' is the one that is not the record's
+  // fault: Bandcamp signs stream URLs for about a day, so a record left on the
+  // deck overnight has a dead link and a working album behind it (KAMP-673).
   error: string | null
   // The record still ON the deck with nothing playing, because the main
   // transport took the floor (KAMP-678). Set only while `state` is 'idle': it is

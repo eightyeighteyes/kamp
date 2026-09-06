@@ -95,6 +95,7 @@ class PreviewPlayer:
         notify: Callable[[dict[str, Any]], None] | None = None,
         idle_timeout: float = IDLE_TIMEOUT_SECS,
         now: Callable[[], float] = _time.time,
+        check_url: Callable[[str], int] | None = None,
     ) -> None:
         self._index = index
         self._main = main_engine
@@ -103,6 +104,10 @@ class PreviewPlayer:
         self._notify = notify
         self._idle_timeout = idle_timeout
         self._now = now
+        # HEAD the URL before mpv sees it (KAMP-673). Injected so tests need no
+        # network, and None simply skips the check — the retry path still catches
+        # a dead link, this only stops it getting that far.
+        self._check_url = check_url
 
         self._lock = threading.RLock()
         self._engine: "MpvPlaybackEngine | None" = None
@@ -292,6 +297,10 @@ class PreviewPlayer:
             track = self._pick(tracks, track_num)
             if track is None:
                 return self._publish(state=IDLE, buffering=False, error="unavailable")
+
+            track = self._validated(item_id, item, track, track_num)
+            if track is None:
+                return self._publish(state=IDLE, buffering=False, error="expired")
 
             self._take_over_from_main()
             engine = self._ensure_engine()
@@ -552,6 +561,47 @@ class PreviewPlayer:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _validated(
+        self,
+        item_id: int,
+        item: dict[str, Any],
+        track: PreviewStream,
+        track_num: int | None,
+    ) -> PreviewStream | None:
+        """*track*, or a re-signed replacement, or None if it cannot be played.
+
+        ``expires_at`` is a guess and the library path already learned that the
+        guess is not enough — ``resolve_playback_uri``'s HEAD step exists because
+        "a 4xx from the CDN means the signed token was invalidated (e.g. 410 Gone
+        when Bandcamp's session key rotates)". A URL can be dead while
+        ``is_expired`` is False, and no amount of clock arithmetic catches that.
+
+        Cheap, which is what makes it worth doing on the play path: the HEAD goes
+        to the bcbits CDN, and per the KAMP-636 lesson the CDN is plain nginx
+        rather than the bot-managed host — it is not the resource that
+        rate-limits. `check_stream_url` returns 0 on a network failure and only a
+        4xx is treated as a verdict, so a blocked or slow check leaves the record
+        alone rather than dropping it.
+        """
+        check = self._check_url
+        if check is None or not track.url.startswith("https://"):
+            return track
+        status = check(track.url)
+        if not 400 <= status < 500:
+            return track
+        logger.info(
+            "preview: HEAD %d for item %s track %s — re-signing before playback",
+            status,
+            item_id,
+            track.track_num,
+        )
+        # Drop the whole album's list, not just this track: they were signed
+        # together on one page fetch, so one dead link means the rest are dead too
+        # and re-fetching per track would pay for the same page repeatedly.
+        self._tracks.pop(item_id, None)
+        tracks = self._resolve(item_id, item)
+        return self._pick(tracks, track_num) if tracks else None
 
     def _is_stale(self, item_id: int) -> bool:
         """Whether this item's cached URLs are past their signature (KAMP-673).

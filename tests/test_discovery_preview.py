@@ -181,6 +181,7 @@ class Harness:
         index: LibraryIndex,
         source: FakeSource | None = None,
         main_playing: bool = False,
+        check_url: Any = None,
     ) -> None:
         self.index = index
         self.main = FakeEngine()
@@ -210,6 +211,9 @@ class Harness:
             notify=self.events.append,
             idle_timeout=0.05,
             now=self.clock,
+            # Default None, so every pre-existing test keeps its exact behaviour
+            # and no test reaches the network (KAMP-673).
+            check_url=check_url,
         )
 
     @property
@@ -632,6 +636,39 @@ class TestAStaleStream:
         h.engine.fail()
         h.engine.fail()
         assert h.player.snapshot()["error"] == "expired"
+
+    def test_a_dead_link_is_caught_before_mpv_sees_it(
+        self, index: LibraryIndex
+    ) -> None:
+        """expires_at is a guess, and the library path already learned it is not
+        enough — a signed token can be invalidated early when Bandcamp rotates a
+        session key, so a URL is dead while is_expired still says fine."""
+        seen: list[str] = []
+
+        def check(url: str) -> int:
+            seen.append(url)
+            return 410 if len(seen) == 1 else 200
+
+        h = Harness(index, check_url=check)
+        h.player.play(_item(index))
+        assert h.source.calls == 2, "trusted the clock over the CDN"
+        assert h.engine.played, "gave up instead of re-signing"
+
+    def test_a_live_link_is_played_without_a_refetch(self, index: LibraryIndex) -> None:
+        """The check must not cost a fetch when it passes."""
+        h = Harness(index, check_url=lambda _url: 200)
+        h.player.play(_item(index))
+        assert h.source.calls == 1
+
+    def test_an_unreachable_check_leaves_the_record_alone(
+        self, index: LibraryIndex
+    ) -> None:
+        """check_stream_url returns 0 on a network failure, and only a 4xx is a
+        verdict. A blocked or slow check must not drop a playable record."""
+        h = Harness(index, check_url=lambda _url: 0)
+        h.player.play(_item(index))
+        assert h.source.calls == 1
+        assert h.engine.played
 
     def test_resuming_a_stale_pause_replays_it(self, index: LibraryIndex) -> None:
         """The reported repro. Nothing reaps a paused preview — the idle timer

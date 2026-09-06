@@ -1179,12 +1179,19 @@ def _cmd_daemon(
     # NOTE the name: _state_saver and create_app both close over `engine`, so
     # this must never be bound to that name or the preview would become the
     # main player as far as the rest of the daemon is concerned.
+    # The same HEAD the main player uses before handing mpv a remote track
+    # (KAMP-673). Goes to the bcbits CDN, not the bot-managed host, so it costs
+    # nothing against the endpoint that rate-limits. Imported here rather than at
+    # the module top to match how the other bandcamp helpers are pulled in below.
+    from kamp_daemon.bandcamp import check_stream_url as _preview_check_url
+
     preview_player = PreviewPlayer(
         index,
         main_engine=engine,
         engine_factory=_preview_engine,
         source_factory=_discovery_source,
         notify=_preview_notify,
+        check_url=_preview_check_url,
     )
 
     # KAMP-652: wishlist ids for crate exclusion. Walked in the background and

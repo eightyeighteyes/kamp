@@ -360,8 +360,10 @@ class TestOnePerArtist:
         """Guards KAMP-683. The weight of 4 survives the cap as long as a
         recommendation page carries more than one band, which a 7-rec block
         essentially always does."""
+        # FOUR seeds, because SEED_CAP is 1 since KAMP-689 — also_like's card count
+        # is now its seed count, which is why it gathers four album pages.
         candidates: list[Candidate] = []
-        for s in range(2):
+        for s in range(4):
             for i in range(4):
                 candidates.append(
                     _candidate(
@@ -387,17 +389,18 @@ class TestSeedCaps:
     no way to notice, because Candidate.seed was provenance it never read.
     """
 
-    def test_no_more_than_two_records_share_a_seed(self, index: LibraryIndex) -> None:
+    def test_no_two_records_share_a_seed(self, index: LibraryIndex) -> None:
         """A SEED-RICH profile, which is the condition the cap needs to hold.
 
-        Six seeds at two apiece covers a crate of ten with room over. Give it
-        three and the cap is arithmetically unsatisfiable — 3 x 2 = 6 — and the
-        backfill correctly overruns it rather than shipping a six-record crate.
-        That case has its own test below; this one is about the cap doing its job
-        when it can.
+        The cap was two until KAMP-689 measured what two produced: 12 of 15 crates
+        put two cards from one seed on screen, which the reader experiences as one
+        album page's recommendations shown twice rather than as taste. Ten seeds
+        for ten slots, so a cap of one is satisfiable; give it fewer and the
+        backfill correctly overruns rather than shipping a short crate, which has
+        its own test below.
         """
         candidates = []
-        for n in range(3):
+        for n in range(10):
             candidates += [
                 _candidate(
                     f"a{n}{i}", "also_like", seed={"kind": "album", "album_id": n}
@@ -423,7 +426,7 @@ class TestSeedCaps:
         assert len(items) == CRATE_SIZE, "the cap must not have cost records"
         seeds = [json.dumps(row["seed"], sort_keys=True) for row in items]
         for seed, count in Counter(seeds).items():
-            assert count <= 2, f"{count} records share one seed: {seed}"
+            assert count == 1, f"{count} records share one seed: {seed}"
 
     def test_a_criterion_spends_its_slots_on_different_seeds(
         self, index: LibraryIndex
@@ -630,11 +633,15 @@ class TestCrateShape:
 
     @staticmethod
     def _realistic() -> list[Candidate]:
-        """A rich gather: every registry criterion, two seeds each, plenty spare.
+        """A rich gather: every registry criterion, several seeds each, plenty spare.
 
         Deliberately generous. The question is what the builder CHOOSES when it
         can have anything, which is the condition a healthy library produces and
         the one the measured crates were built under.
+
+        also_like gets FOUR seeds because that is what the source now gathers for
+        it: SEED_CAP is 1 since KAMP-689, so a criterion's card count is its seed
+        count, and four seeds is what keeps KAMP-683's four-of-ten target.
         """
         out: list[Candidate] = []
         for criterion, dimension in (
@@ -646,7 +653,7 @@ class TestCrateShape:
             ("older_than_ten", "genre"),
             ("best_seller", None),
         ):
-            for s in range(2):
+            for s in range(4 if criterion == "also_like" else 2):
                 for i in range(5):
                     seed = (
                         {"kind": criterion, dimension: f"{criterion}-{s}"}

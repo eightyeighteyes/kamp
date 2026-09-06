@@ -71,7 +71,8 @@ DISCOVER_API_URL = "https://bandcamp.com/api/discover/1/discover_web"
 COLLECT_URL = "https://bandcamp.com/collect_item_cb"
 UNCOLLECT_URL = "https://bandcamp.com/uncollect_item_cb"
 
-#: How many seeds one criterion may read from in a single crate (KAMP-665).
+#: How many seeds a criterion may read from in a single crate, by default
+#: (KAMP-665). `_SEEDS_FOR` below overrides it per criterion.
 #:
 #: Two, not "until the budget is spent". The allowance is per endpoint class and
 #: three criteria share DISCOVER_API's six, so an uncapped criterion would take
@@ -80,6 +81,25 @@ UNCOLLECT_URL = "https://bandcamp.com/uncollect_item_cb"
 #: matters because these endpoints are the thing that rate-limits hardest and a
 #: 429 here cascades account-wide (KAMP-639).
 _SEEDS_PER_CRITERION = 2
+
+#: Criteria allowed more than the default, and why (KAMP-689).
+#:
+#: `also_like` reads four album pages rather than two. SEED_CAP is now 1, so a
+#: criterion's card count IS its seed count — and KAMP-683's agreed target of four
+#: also-like records a crate therefore needs four seeds. The cards come from four
+#: different albums instead of two, which is what the weight was meant to buy.
+#:
+#: It costs two more ALBUM_PAGE requests, and the class is funded at 8: four here
+#: plus two for purchase_anniversary plus about two for KAMP-670's playability
+#: checks is exactly eight. No headroom, deliberately spent — the check degrades
+#: to unverified when the budget runs out rather than overrunning it.
+_SEEDS_FOR: dict[str, int] = {"also_like": 4}
+
+
+def _seeds_allowed(criterion: Criterion) -> int:
+    """How many seeds *criterion* may read in one crate."""
+    return _SEEDS_FOR.get(criterion.key, _SEEDS_PER_CRITERION)
+
 
 #: How many cards one criterion may contribute to a crate (KAMP-683).
 #:
@@ -426,7 +446,7 @@ class BandcampDiscoverySource(DiscoverySource):
         # tracked as an absolute step so a run of skips does not shift it.
         consumed = 0
         for step in range(len(seeds)):
-            if productive >= _SEEDS_PER_CRITERION:
+            if productive >= _seeds_allowed(criterion):
                 break
             seed = seeds[(start + step) % len(seeds)]
             if not budget.allow(criterion.endpoint_class):

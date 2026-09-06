@@ -49,14 +49,23 @@ logger = logging.getLogger(__name__)
 #: affordance.
 CRATE_SIZE = 10
 
-#: How many records in one crate may come from a single seed (KAMP-665).
+#: How many records in one crate may come from a single seed (KAMP-665/689).
 #:
-#: Two, because one is too strict — a genre you actually listen to earning two
-#: records is a crate reflecting your taste, not a crate repeating itself — and
-#: three is what the complaint was: three cards off one album page, three clerk
-#: lines naming the same record. Enforced as a preference, not a ceiling; the
-#: backfill in select_crate overruns it rather than shipping a short crate.
-SEED_CAP = 2
+#: One. Two was the original call — "a genre you actually listen to earning two
+#: records is a crate reflecting your taste, not a crate repeating itself" — and
+#: measurement disagreed: 12 of 15 crates put two cards from one seed on screen,
+#: and the reader does not experience that as taste. They see one album page's
+#: recommendations twice, under two clerk lines naming the same record.
+#:
+#: KAMP-683 made it worse arithmetically rather than causing it. A weight of 4 on
+#: also_like times a cap of 2 is four cards off exactly two album pages, every
+#: crate. also_like now reads FOUR seeds instead of two (see
+#: _SEEDS_PER_CRITERION), so the same four cards come from four different
+#: records — the variety the weight was supposed to buy in the first place.
+#:
+#: Still a preference, not a ceiling: the backfill in select_crate drops it rather
+#: than shipping a short crate.
+SEED_CAP = 1
 
 #: How many records by one artist may share a crate (KAMP-689).
 #:

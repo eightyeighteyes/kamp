@@ -680,10 +680,10 @@ class TestUnplayableRecords:
             ],
         )
         source._run_criterion(criterion, profile, crate_budget(), {"0"}, {})
-        # Two seeds tried, exactly as _SEEDS_PER_CRITERION allows for a criterion
-        # whose seeds all produce records. Before the fix this walked the whole
-        # seed list until the budget stopped it.
-        assert len(session.gets) == 2, f"spent {len(session.gets)} requests"
+        # Four seeds tried, exactly what also_like is allowed since KAMP-689 gave
+        # it four (SEED_CAP is 1, so its card count IS its seed count). Before the
+        # KAMP-670 fix this walked the whole seed list until the budget stopped it.
+        assert len(session.gets) == 4, f"spent {len(session.gets)} requests"
 
     @staticmethod
     def _pick(criterion: str) -> Candidate:
@@ -1076,17 +1076,18 @@ class TestRotationAndPagination:
     ) -> None:
         """Rotation, asserted on the URL fetched rather than on the candidates.
 
-        FOUR albums, not two. KAMP-665 lets a criterion read two seeds per crate,
-        so a two-album profile is fully consumed every time and there is nothing
-        left to rotate — the offset wraps straight back to the head, correctly.
-        Rotation is only observable once the list is longer than the spread.
+        EIGHT albums, because rotation is only observable once the list is longer
+        than one crate's spread — a pool fully consumed every time wraps straight
+        back to the head, correctly, and shows nothing. It was four while
+        also_like read two seeds a crate; KAMP-689 takes it to four seeds, so the
+        pool has to double to keep the assertion meaningful.
         """
         session = FakeSession(get_body=_fixture("album_page_with_recs"))
         profile = SeedProfile(
-            recent_album_ids={1, 2, 3, 4},
+            recent_album_ids=set(range(1, 9)),
             recent_albums=[
                 _album_seed(album_id=i, url=f"https://a{i}.bandcamp.com/album/x")
-                for i in (1, 2, 3, 4)
+                for i in range(1, 9)
             ],
         )
         source = _source(session)

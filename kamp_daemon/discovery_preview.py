@@ -115,6 +115,11 @@ class PreviewPlayer:
         # per button press, so the list is kept for as long as its URLs live.
         self._tracks: dict[int, list[PreviewStream]] = {}
 
+        # The (item, track) whose re-signed URL is currently being tried, or None
+        # (KAMP-673). One retry per track: set before the attempt, and returned in
+        # _on_file_loaded, which is the only evidence a load actually succeeded.
+        self._retry_key: tuple[int, int] | None = None
+
         # Captured BEFORE main is paused and never read back: pause() is a
         # ~0.4s fade (a script-message the Lua schedules), so main.state.playing
         # is still True immediately after the call and would lie.
@@ -457,14 +462,75 @@ class PreviewPlayer:
     # ------------------------------------------------------------------
 
     def _on_file_loaded(self) -> None:
+        # mpv opened the file, which is the only proof a retry actually worked --
+        # so this is where the retry budget is returned (KAMP-673). Spending it
+        # once per attempt rather than once per session is what stops a single
+        # bad afternoon disabling retries for every record after it.
+        self._retry_key = None
         self._publish(buffering=False)
 
     def _on_track_end(self, _had_lookahead: bool) -> None:
-        # Advance within the album; stepping past the last track stops.
+        """A file stopped. Whether that is an ending or a failure decides
+        everything, and until KAMP-673 this could not tell (see `last_end_reason`
+        on the engine: mpv distinguishes them and then hands both here).
+
+        A stale signed URL therefore read as "the record finished" and the deck
+        moved on, which is the reported bug -- silently skipping a track the user
+        had asked to hear, or on the last track emptying the deck with no message.
+        """
         try:
+            engine = self._engine
+            reason = getattr(engine, "last_end_reason", "") if engine else ""
+            if reason and reason != "eof":
+                self._on_playback_failed(reason)
+                return
+            # Advance within the album; stepping past the last track stops.
             self.step(1)
         except Exception:  # noqa: BLE001 - a callback must never kill the reader thread
             logger.warning("preview: advance failed", exc_info=True)
+
+    def _on_playback_failed(self, reason: str) -> None:
+        """mpv could not open or buffer the stream. Re-sign it and try again once.
+
+        The URL is almost always the cause: Bandcamp signs them with a ``ts`` and
+        they die after about a day, so a record that sat on the deck overnight has
+        a whole album of dead links. Dropping the cached list forces `_resolve` to
+        fetch the album page again and hand back freshly signed ones.
+
+        **Bounded to one attempt per track.** An unbounded retry's only natural
+        terminator is a 429 on album pages, which CLAUDE.md records as
+        account-wide -- it would cascade into the download queue and the stream
+        sync, turning one dead track into a poisoned session.
+        """
+        with self._lock:
+            item_id = self._state["item_id"]
+            track_num = self._state["track_num"]
+            if item_id is None or track_num is None:
+                return
+            key = (int(item_id), int(track_num))
+            spent = self._retry_key == key
+            if not spent:
+                self._retry_key = key
+                self._tracks.pop(int(item_id), None)
+        if spent:
+            logger.warning(
+                "preview: item %s track %s still would not play after re-signing"
+                " (reason=%s)",
+                key[0],
+                key[1],
+                reason,
+            )
+            # Published directly, NOT via stop(), which clears `error` in the same
+            # call -- that erasure is why the failure has always been silent.
+            self._publish(
+                state=IDLE,
+                buffering=False,
+                position=0.0,
+                error="expired",
+            )
+            return
+        logger.info("preview: %s ended with reason=%s, re-signing", item_id, reason)
+        self.play(key[0], key[1])
 
     # ------------------------------------------------------------------
     # Internals

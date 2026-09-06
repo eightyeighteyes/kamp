@@ -1131,6 +1131,11 @@ class MpvPlaybackEngine:
         # Stored here rather than in on_file_loaded so it doesn't clobber the
         # external callback chain wired up after engine creation.
         self._pending_seek: float | None = None
+        # Why mpv ended the last file: "eof", "error", "network", "redirect",
+        # "stop", or "" before anything has ended (KAMP-673). Set in _handle_event
+        # just before on_track_end fires, so a callback that needs to tell a clean
+        # finish from a failed open can ask. Read via `last_end_reason`.
+        self._last_end_reason: str = ""
         # Path of the track pre-appended to mpv's playlist as a gapless lookahead.
         # None means mpv's playlist has only the current track (slot 0).
         self._lookahead_path: Path | None = None
@@ -1536,6 +1541,17 @@ class MpvPlaybackEngine:
         # The seek is issued by the Lua kamp-stop handler after the fade completes.
         self._send_command("script-message", "kamp-stop")
 
+    @property
+    def last_end_reason(self) -> str:
+        """Why mpv ended the most recent file (KAMP-673).
+
+        ``"eof"`` is a clean finish; ``"error"``, ``"network"`` and ``"redirect"``
+        are a file that would not open or buffer — a dead CDN URL, a 403, a 410.
+        Both arrive at ``on_track_end``, so a callback that must tell them apart
+        reads this.
+        """
+        return self._last_end_reason
+
     def unload(self) -> None:
         # Fully unload the current file from mpv using mpv's "stop" command.
         # Used before deleting a file that is loaded but not actively playing;
@@ -1702,6 +1718,20 @@ class MpvPlaybackEngine:
                 self.on_file_loaded()
 
         elif name == "end-file":
+            # Recorded BEFORE dispatch, so a callback can ask why the file ended
+            # (KAMP-673). mpv distinguishes a clean finish from a failed open, and
+            # the two branches below then hand both to the same on_track_end — so
+            # a preview whose signed URL expired mid-listen is indistinguishable
+            # from a record that simply ended, and gets silently skipped.
+            #
+            # An attribute rather than a second callback, deliberately. The main
+            # player CHAINS on_track_end by capture-and-reassign at four sites
+            # (queue advance, scrobble, notify, deferred drain): a new callback
+            # fired *instead* would stall its queue forever on a dead CDN URL --
+            # the exact bug the error branch below was added to fix -- and one
+            # fired *as well* would have the main queue advance while a preview
+            # retried. This leaves the shared contract untouched.
+            self._last_end_reason = str(event.get("reason") or "")
             if event.get("reason") == "eof":
                 # Hold _lock across the read+send+clear so a concurrent seek()
                 # cannot send playlist-remove 1 while we are sending

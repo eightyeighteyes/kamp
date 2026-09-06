@@ -48,11 +48,36 @@ class FakeEngine:
         self.played: list[str] = []
         self.calls: list[str] = []
         self.shutdown_count = 0
+        # The reason mpv gave for the last file ending, exactly as the real engine
+        # records it. Without this the fake could not tell a track that finished
+        # from one that failed — which is why nothing caught KAMP-673: the two are
+        # the same callback and the fake never fired it at all.
+        self.last_end_reason: str | None = None
 
     def play(self, path: str) -> None:
         self.played.append(str(path))
         self.calls.append("play")
         self.state.playing = True
+
+    def finish(self) -> None:
+        """The file played to its end — mpv's `end-file reason=eof`."""
+        self._end("eof")
+
+    def fail(self) -> None:
+        """The file would not open or buffer — a dead CDN URL, a 403, a 410.
+
+        mpv reports this as `end-file reason=error`, and the engine funnels it
+        into the SAME on_track_end callback as a clean finish (playback.py). That
+        conflation is the bug: a preview whose signed URL expired mid-listen looks
+        exactly like a record that ended.
+        """
+        self._end("error")
+
+    def _end(self, reason: str) -> None:
+        self.state.playing = False
+        self.last_end_reason = reason
+        if self.on_track_end is not None:
+            self.on_track_end(False)
 
     def pause(self) -> None:
         self.calls.append("pause")
@@ -557,6 +582,69 @@ class TestTransport:
         h.player.play(item)
         h.player.play(item)
         assert h.source.calls == 1
+
+
+class TestAStaleStream:
+    """KAMP-673: a signed URL that died while the record sat on the deck.
+
+    Nothing here could be written before FakeEngine could end a file — it never
+    fired on_track_end at all, which is why a playback failure being read as a
+    clean finish went unnoticed through six tickets in this module.
+    """
+
+    def test_a_track_that_finishes_moves_on(self, index: LibraryIndex) -> None:
+        """The behaviour that must NOT change. An album plays through."""
+        h = Harness(index)
+        h.player.play(_item(index), track_num=1)
+        h.engine.finish()
+        assert h.player.snapshot()["track_num"] == 2
+
+    def test_a_track_that_fails_is_retried_not_skipped(
+        self, index: LibraryIndex
+    ) -> None:
+        """The bug. A dead URL mid-album looked exactly like a record ending, so
+        the deck silently jumped a track the user had asked to hear."""
+        h = Harness(index)
+        h.player.play(_item(index), track_num=1)
+        h.engine.fail()
+        assert h.player.snapshot()["track_num"] == 1, "skipped instead of retrying"
+        assert h.source.calls == 2, "retried without re-signing the URL"
+
+    def test_a_failure_that_repeats_gives_up_and_says_so(
+        self, index: LibraryIndex
+    ) -> None:
+        """Bounded, because an unbounded retry's natural terminator is a 429 on
+        album pages — which is account-wide and cascades into the download queue.
+        One retry, then an honest answer."""
+        h = Harness(index)
+        h.player.play(_item(index), track_num=1)
+        h.engine.fail()
+        h.engine.fail()
+        assert h.player.snapshot()["error"] == "expired"
+        assert h.source.calls == 2, "kept refetching after giving up"
+
+    def test_the_error_survives_the_last_track(self, index: LibraryIndex) -> None:
+        """stop() publishes error=None, so a failure that routed through it would
+        have its own message wiped in the same call that set it — which is the
+        silent vanish the report describes."""
+        h = Harness(index, source=FakeSource([_stream(1)]))
+        h.player.play(_item(index), track_num=1)
+        h.engine.fail()
+        h.engine.fail()
+        assert h.player.snapshot()["error"] == "expired"
+
+    def test_a_recovered_track_may_fail_again_later(self, index: LibraryIndex) -> None:
+        """The retry budget is per attempt, not per session. Clearing it on a
+        confirmed load is what stops one bad afternoon disabling the retry for
+        every record after it."""
+        h = Harness(index)
+        item = _item(index)
+        h.player.play(item, track_num=1)
+        h.engine.fail()
+        h.engine.on_file_loaded()  # mpv confirms the retry actually opened
+        h.engine.fail()
+        assert h.player.snapshot()["track_num"] == 1
+        assert h.player.snapshot()["error"] is None
 
 
 class TestFailures:

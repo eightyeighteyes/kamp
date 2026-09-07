@@ -744,6 +744,49 @@ html[data-platform='win32'] .view-tabs {
   outline-offset: -2px;
 }
 
+/* KAMP-685: no focus ring when focus arrived by mouse.
+
+   This is the enforcement point for a requirement that applies to every UI in
+   kamp. It used to live in App's global keydown handler, which BLURRED the
+   focused element — and a keydown handler is reachable, so any view that
+   stopPropagation'd its own keys (CrateView, seven of them) opted itself out
+   silently. App now publishes how focus was established on the root element and
+   the decision is made here, where nothing can intercept it.
+
+   `!important` is load-bearing, not laziness. Without it this computes to
+   (0,2,1) and merely TIES `.breadcrumb button:focus-visible` in track-list.css,
+   which main.css imports AFTER layout.css — so the breadcrumb ring would survive
+   and nothing would say why. Six selectors tie, several in this same file, which
+   would make rule ORDER the thing holding the requirement up. A modality-scoped
+   global override is the textbook case for !important.
+
+   Text inputs are excluded because they match :focus-visible even on a click and
+   their caret already shows focus; range inputs because `.crate-preview-seek`
+   has an opacity:0 thumb, so the ring is the ONLY thing marking the focused
+   control — and arrowing a slider is real keyboard use that "only Tab sets
+   keyboard modality" cannot see. Excluding the element is simpler and safer than
+   trying to detect that. */
+html[data-focus-modality='mouse'] :focus-visible:not(input, textarea) {
+  outline: none !important;
+}
+
+/* The sibling-subject case, which the rule above cannot reach at any
+   specificity: the real checkbox is opacity:0 and the outline is drawn on its
+   sibling track, so the subject never matches :focus-visible itself. Without
+   naming it, every mouse-clicked preferences toggle keeps its ring. */
+html[data-focus-modality='mouse'] .prefs-toggle input:focus-visible + .prefs-toggle-track {
+  outline: none !important;
+}
+
+/* High-contrast mode draws its own focus indicator and users there depend on it.
+   Never strip a ring in forced colors, whatever the modality. */
+@media (forced-colors: active) {
+  html[data-focus-modality='mouse'] :focus-visible:not(input, textarea),
+  html[data-focus-modality='mouse'] .prefs-toggle input:focus-visible + .prefs-toggle-track {
+    outline: revert !important;
+  }
+}
+
 /* Active / press feedback ------------------------------------------------- */
 
 .transport-btn:active,

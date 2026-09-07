@@ -37,7 +37,7 @@ from .discovery import (
     build_seed_profile,
     crate_budget,
 )
-from .discovery_criteria import phrasings, seed_dimension
+from .discovery_criteria import digging_phrase, phrasings, seed_dimension
 
 if TYPE_CHECKING:  # pragma: no cover - types only
     from kamp_core.library import LibraryIndex
@@ -181,8 +181,21 @@ def build_crate(
     # so a build can never exceed what crate_budget() funds. Resolving it inline
     # at each call site would hand the second one a full, untouched allowance.
     budget = budget or crate_budget()
+
+    # Narrate the gather (KAMP-693). This is the 15-30 seconds of a dig, and
+    # until now the only thing on screen for the whole of it was a static line
+    # over an empty crate. The source announces each seed before fetching it, and
+    # the seeds have always carried their own provenance — every pick has to
+    # explain itself — so saying what is being looked at costs no extra work and
+    # invents nothing.
+    #
+    # Published rather than accumulated: only the current line matters, and a
+    # history of them would be a log, not a status.
+    def _say(criterion: str, seed: dict[str, Any]) -> None:
+        _publish(publish, digging=digging_phrase(criterion, seed))
+
     try:
-        candidates = source.gather(profile, budget, rotation)
+        candidates = source.gather(profile, budget, rotation, on_seed=_say)
     except Exception:  # noqa: BLE001 - a provider must not take the daemon with it
         logger.exception("discovery: gather failed")
         return _publish(publish, state="error")

@@ -307,6 +307,31 @@ class TestCrateSnapshot:
         assert body["crate_no"] == 1
         assert len(body["items"]) == 10
 
+    def test_the_digging_line_reaches_the_client(self, harness: _Harness) -> None:
+        """What the gather is looking at right now (KAMP-693) — the only thing
+        that moves during the 15-30 seconds a dig takes."""
+        harness.publish(
+            {"state": "building", "digging": "Pulling the Acid King shelf…"}
+        )
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["digging"] == "Pulling the Acid King shelf…"
+
+    @pytest.mark.parametrize("state", ["ready", "empty", "error", "paused", "idle"])
+    def test_every_terminal_state_clears_the_digging_line(
+        self, harness: _Harness, state: str
+    ) -> None:
+        """The status MERGES, so a line left standing would sit under a finished
+        crate describing a fetch that ended minutes ago.
+
+        Cleared at the single release point rather than by each publisher, for the
+        same reason the build lock is: __main__'s error paths never touch the
+        builder's publish helper, so anything they had to remember would be
+        forgotten. This is the carry-over trap `exhausted` was fixed for.
+        """
+        harness.publish({"state": "building", "digging": "Seeing what's moving today…"})
+        harness.publish({"state": state})
+        assert harness.client.get("/api/v1/discovery/crate").json()["digging"] == ""
+
     def test_publishing_pushes_to_clients(self, harness: _Harness) -> None:
         harness.publish({"state": "building", "hints": ["dub techno"]})
         assert harness.events[-1]["state"] == "building"

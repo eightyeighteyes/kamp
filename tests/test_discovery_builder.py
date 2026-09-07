@@ -85,6 +85,8 @@ class _FakeSource(DiscoverySource):
         self._weights = weights or {}
         self._error = error
         self.gather_calls = 0
+        # (criterion_key, seed_data) pairs this source will announce as it works.
+        self.seeds: list[tuple[str, dict[str, Any]]] = []
 
     @property
     def criterion_caps(self) -> dict[str, int]:
@@ -99,11 +101,19 @@ class _FakeSource(DiscoverySource):
         profile: SeedProfile,
         budget: RequestBudget,
         state: Any = None,
+        on_seed: Any = None,
     ) -> list[Candidate]:
         self.gather_calls += 1
         self.last_state = state
         if self._error is not None:
             raise self._error
+        # A real source announces each seed before fetching it (KAMP-693). Empty
+        # by default so every pre-existing test is unchanged; a test that cares
+        # sets `seeds` and then gets to assert on what the builder published,
+        # rather than on the fact that a callback was handed over.
+        for criterion, seed in self.seeds:
+            if on_seed is not None:
+                on_seed(criterion, seed)
         return list(self._candidates)
 
 
@@ -128,6 +138,7 @@ class _PaginatingSource(DiscoverySource):
         profile: SeedProfile,
         budget: RequestBudget,
         state: Any = None,
+        on_seed: Any = None,
     ) -> list[Candidate]:
         state = {} if state is None else state
         self.states.append(dict(state))
@@ -167,6 +178,13 @@ class _Publisher:
     def __call__(self, fields: dict[str, Any]) -> None:
         self.raw.append(dict(fields))
         self.status.update(fields)
+        # Mirrors the real _publish, which clears the digging line on any
+        # terminal state (KAMP-693). Modelled rather than ignored because this
+        # merges exactly as the real one does, and a fake that merges but never
+        # clears would let a builder test assert a line still standing under a
+        # finished crate — the opposite of what ships.
+        if fields.get("state") in {"ready", "empty", "error", "paused", "idle"}:
+            self.status["digging"] = ""
         self.pushes.append(dict(self.status))
 
 
@@ -1267,6 +1285,21 @@ class TestPublication:
         _build(index, _FakeSource(_spread({"a": 12})), publish=publisher)
         assert publisher.pushes[0]["state"] == "building"
         assert publisher.pushes[-1]["state"] == "ready"
+
+    def test_the_gather_is_narrated_while_it_runs(self, index: LibraryIndex) -> None:
+        """KAMP-693. The gather is the 15-30 seconds of a dig and the only part
+        that knows what it is doing; without this the UI has a spinner over an
+        empty crate for the whole of it."""
+        publisher = _Publisher()
+        source = _FakeSource(_spread({"a": 12}))
+        source.seeds = [
+            ("also_like", {"kind": "album", "album": "Kid A"}),
+            ("favorite_artist", {"kind": "artist", "artist": "Acid King"}),
+        ]
+        _build(index, source, publish=publisher)
+        lines = [p["digging"] for p in publisher.raw if p.get("digging")]
+        assert "Kid A" in lines[0]
+        assert "Acid King" in lines[1]
 
     def test_each_item_is_published_as_it_lands(self, index: LibraryIndex) -> None:
         publisher = _Publisher()

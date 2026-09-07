@@ -124,6 +124,11 @@ _INITIAL_STATUS: dict[str, Any] = {
     "paused_until": 0.0,
     "hints": [],
     "thin": False,
+    # What the gather is looking at right now, in the clerk's voice (KAMP-693).
+    # Declared here so the shape always carries it — the builder's own `detail`
+    # field was published for the paused state and never declared or read, which
+    # is exactly how a field becomes untrustworthy. Empty except during a dig.
+    "digging": "",
 }
 
 #: Criteria that need nothing from the library. A crate made only of these was
@@ -294,6 +299,15 @@ def register_discovery_routes(
             _status.update(fields)
             if fields.get("state") in _TERMINAL_STATES:
                 _building[0] = False
+                # The dig is over, so nothing is being dug through (KAMP-693).
+                # Cleared here rather than at each publisher because _status
+                # MERGES: a line left standing would sit under a finished crate
+                # describing a fetch that ended minutes ago, and it would have to
+                # be remembered at every terminal publish — including __main__'s
+                # error paths, which never touch the builder's helper. This is the
+                # carry-over trap `exhausted` was fixed for in KAMP-661, and the
+                # single release point is the one place it cannot be forgotten.
+                _status["digging"] = ""
         broadcast({"type": CRATE_EVENT, **_snapshot()})
 
     app.state.discovery_publish = _publish

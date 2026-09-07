@@ -436,6 +436,59 @@ _VARIANTS: dict[str, list[Callable[[dict[str, Any]], str]]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# What the clerk is doing right now (KAMP-693)
+# ---------------------------------------------------------------------------
+#
+# A dig takes 15-30 seconds and every one of them used to show a static line over
+# the previous crate's records. What is actually happening in that time is this
+# module's own loop: one seed at a time, each naming a record, a band or a genre
+# it is about to go and read.
+#
+# So the wait is narrated from the seed rather than from a spinner. These are the
+# same seed_data dicts `phrasings` renders, and the same accessors, which is what
+# keeps the two voices consistent -- but the tense is different and that is the
+# whole point. `why` explains a record that is already in the crate; this says
+# what is being looked at before anything has been found.
+#
+# Present participle and a trailing ellipsis throughout: it is a thing in
+# progress, and the ellipsis is what makes a line that sits for two seconds read
+# as work rather than as a result.
+_DIGGING: dict[str, Callable[[dict[str, Any]], str]] = {
+    "also_like": lambda s: f"Seeing what sits next to {_album_of(s)}…",
+    "genre_top": lambda s: (
+        f"Working through the top of the {_genre_of(s)} pile…"
+        if s.get("slice") == "top"
+        else f"Reaching into the {_genre_of(s)} racks…"
+    ),
+    "best_seller": lambda s: "Seeing what's moving today…",
+    "older_than_ten": lambda s: f"Back through the older {_genre_of(s)} records…",
+    "favorite_artist": lambda s: f"Pulling the {_artist_of(s)} shelf…",
+    "lone_album_artist": lambda s: f"Looking for more {_artist_of(s)}…",
+    "purchase_anniversary": lambda s: (
+        f"Back to what {_album_of(s)} sat next to a year ago…"
+    ),
+}
+
+
+def digging_phrase(criterion: str, seed: dict[str, Any]) -> str:
+    """What to say while *seed* is being fetched.
+
+    Degrades rather than raising, for the same reason ``phrasings`` does and with
+    more at stake: this is called from inside the gather, so a KeyError here would
+    cost the crate in order to decorate it. An unknown criterion, or a seed
+    missing the key its line wants, falls back to something true of every dig.
+    """
+    render = _DIGGING.get(criterion)
+    if render is None:
+        return "Going through the racks…"
+    try:
+        return render(seed)
+    except Exception:  # noqa: BLE001 - a line of copy cannot cost a crate
+        logger.warning("discovery: could not phrase %s", criterion, exc_info=True)
+        return "Going through the racks…"
+
+
 def phrasings(criterion: str, seed: dict[str, Any]) -> list[str]:
     """Alternative sentences for *criterion*, rendered from a stored seed.
 

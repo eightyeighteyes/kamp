@@ -610,6 +610,12 @@ export type CrateSnapshot = {
   exhausted: boolean
   paused_until: number // Unix seconds; 0 when running
   hints: string[] // the user's top genres, for the digging status lines
+  // What the gather is looking at RIGHT NOW, in the clerk's voice (KAMP-693) —
+  // "Seeing what sits next to Kid A…", "Pulling the Acid King shelf…". Pushed
+  // once per seed fetched, so it changes every couple of seconds and is the only
+  // thing that moves during the 15-30 seconds a dig takes. Empty except during a
+  // dig, and cleared the moment one ends.
+  digging: string
   thin: boolean // a library with no listening history yet — chart picks only
   items: CrateItem[]
   // KAMP-655: the digging history, computed on read and carried here so the

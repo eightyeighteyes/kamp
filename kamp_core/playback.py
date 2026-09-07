@@ -1518,6 +1518,10 @@ class MpvPlaybackEngine:
         # lock held between the playlist-remove 1 send and the seek send.
         # file-loaded resets state.position to 0 immediately, so the
         # misdirected seek is visible for at most one frame.
+        #
+        # _lock is NOT reentrant, and the file-loaded handler calls this method
+        # on the reader thread. That branch must stay lock-free — see the note
+        # there before wrapping its reset.
         with self._lock:
             # Only remove the lookahead when the seek target lands within the
             # gapless danger window.  Seeking to an early/middle position carries
@@ -1532,6 +1536,37 @@ class MpvPlaybackEngine:
                 self._lookahead_url = None
                 self._lookahead_id = None
                 self._send_command("playlist-remove", 1)
+
+            # Record where we are going rather than waiting to be told (KAMP-686).
+            #
+            # state.position is otherwise written only by the reader thread on a
+            # time-pos event, so for a full IPC round trip after a seek every
+            # consumer reads where playback USED to be. The 4 Hz main snapshot
+            # papers over that within one frame; the Crate deck does not, because
+            # the preview publishes on transitions only and nothing follows to
+            # correct the anchor it interpolates from.
+            #
+            # This is the norm, not a special case: play(), load_paused() and the
+            # file-loaded handler all write position eagerly for the same reason
+            # — play()'s comment spells it out. seek() was the one that didn't.
+            #
+            # Inside the lock, and after the removal above, so the two land
+            # together: preload_next gates on position against the same guard
+            # window, and a call slipping between them would read the PRE-seek
+            # position, judge the seek safe, and re-arm the lookahead into the
+            # window the removal just cleared.
+            #
+            # Clamped to what mpv will actually do, since the value outlives the
+            # moment: __main__ persists state.position every few seconds and the
+            # restore path feeds it back as a pending seek. duration is 0.0
+            # during load, and clamping to that would record a 0 for every seek.
+            recorded = max(0.0, position)
+            if self.state.duration > 0:
+                recorded = min(recorded, self.state.duration)
+            self.state.position = recorded
+            self.state.position_updated_at = time.time()
+        # Raw, not clamped: mpv's own bounds are authoritative, and second-
+        # guessing them here would mean trusting our duration over its.
         self._send_command("seek", position, "absolute")
 
     def stop(self) -> None:
@@ -1708,6 +1743,15 @@ class MpvPlaybackEngine:
             # Reset stale values from the previous track so preload_next's guard
             # (duration > 0 and position > duration - _GAPLESS_GUARD_SECS) does
             # not fire on the new file-loaded event and block the lookahead re-arm.
+            #
+            # It is the DURATION reset that disarms that guard (KAMP-686). The
+            # position reset no longer survives the pending seek below, which now
+            # records its own target — so a restored session near the end of a
+            # track still re-arms its lookahead, on duration alone.
+            #
+            # Must stay lock-free: seek() takes _lock, which is a plain Lock, so
+            # wrapping this block to make the reset atomic would deadlock the
+            # reader thread on the very first restored session.
             self.state.position = 0.0
             self.state.duration = 0.0
             self.state.position_updated_at = time.time()

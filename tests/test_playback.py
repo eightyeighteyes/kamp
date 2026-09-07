@@ -1519,6 +1519,77 @@ class TestMpvPlaybackEngine:
         send.assert_called_once_with("seek", 235.0, "absolute")
         assert engine._lookahead_path is not None
 
+    def test_seek_records_the_target_position_immediately(self) -> None:
+        """state.position must report the seek target without waiting for mpv.
+
+        It is only ever written by the IPC reader thread on a time-pos event, so
+        for a full round trip after a seek it reports where playback USED to be.
+        Every consumer that samples in that window gets the old number — the
+        Crate deck's bar keeps it permanently, because the preview publishes on
+        transitions only and nothing follows to correct it (KAMP-686).
+        """
+        engine, _ = _make_engine()
+        engine.state.position = 5.0
+        engine.state.duration = 240.0
+        engine.seek(42.5)
+        assert engine.state.position == 42.5
+
+    def test_seek_stamps_position_updated_at(self) -> None:
+        """The timestamp is not optional. _state_snapshot extrapolates
+        position + (now - position_updated_at) once the gap exceeds 0.3s, so
+        recording the position against a stale stamp would report a value
+        INFLATED past the target — worse than the staleness being fixed."""
+        engine, _ = _make_engine()
+        engine.state.position_updated_at = time.time() - 30.0
+        engine.seek(42.5)
+        assert time.time() - engine.state.position_updated_at < 1.0
+
+    def test_seek_floors_the_recorded_position_at_zero(self) -> None:
+        """mpv clamps a negative seek to the start; the record must agree."""
+        engine, _ = _make_engine()
+        engine.state.duration = 240.0
+        engine.seek(-5.0)
+        assert engine.state.position == 0.0
+
+    def test_seek_clamps_the_recorded_position_to_duration(self) -> None:
+        """Past the end, mpv's own clamp is authoritative and the record follows.
+
+        Not cosmetic: __main__ persists state.position every few seconds and the
+        restore path feeds it back as a pending seek, so an unclamped value
+        outlives the session and restores to an instant EOF.
+        """
+        engine, send = _make_engine()
+        engine.state.duration = 240.0
+        engine.seek(1e9)
+        assert engine.state.position == 240.0
+        # The value SENT stays raw — mpv does the real clamping, and second-
+        # guessing it here would mean trusting our own duration over its.
+        send.assert_called_once_with("seek", 1e9, "absolute")
+
+    def test_seek_with_unknown_duration_records_the_raw_target(self) -> None:
+        """duration is 0.0 during load, and clamping to it would report 0."""
+        engine, _ = _make_engine()
+        engine.state.duration = 0.0
+        engine.seek(42.5)
+        assert engine.state.position == 42.5
+
+    def test_seek_into_guard_window_records_position_with_the_removal(self) -> None:
+        """The recorded position and the lookahead removal must land under one
+        lock acquisition.
+
+        preload_next gates on position > duration - _GAPLESS_GUARD_SECS. A
+        concurrent call landing between the removal and the record would read
+        the PRE-seek position, judge the seek safe, and re-arm the lookahead
+        into the danger window the removal exists to clear.
+        """
+        engine, send = _make_engine()
+        engine.state.duration = 240.0
+        engine.preload_next(_track(2))
+        send.reset_mock()
+        engine.seek(235.0)
+        assert engine._lookahead_path is None
+        assert engine.state.position == 235.0
+
     def test_set_volume_sends_set_property(self) -> None:
         engine, send = _make_engine()
         engine.volume = 75
@@ -1638,6 +1709,25 @@ class TestMpvPlaybackEngine:
         engine._handle_event({"event": "file-loaded"})
         send.assert_any_call("seek", 42.5, "absolute")
         assert engine._pending_seek is None  # one-shot: cleared after firing
+
+    def test_pending_seek_records_its_position_and_leaves_the_lookahead_free(
+        self,
+    ) -> None:
+        """Session restore lands on its saved position immediately, and a seek
+        near the end of the track does not block the lookahead.
+
+        The reset above it writes position 0.0 AND duration 0.0, and it is the
+        duration that disarms preload_next's guard — position no longer holds
+        still long enough to matter. Pinning both here so a future reorder of
+        those two lines cannot silently break restored-session gapless.
+        """
+        engine, send = _make_engine()
+        engine.load_paused(Path("/music/track.mp3"), 235.0)
+        engine._handle_event({"event": "file-loaded"})
+        assert engine.state.position == 235.0
+        send.reset_mock()
+        engine.preload_next(_track(2))
+        assert engine._lookahead_path is not None
 
     def test_pending_seek_fires_before_on_file_loaded_callback(self) -> None:
         """Seek must happen before the user callback so position is set first."""

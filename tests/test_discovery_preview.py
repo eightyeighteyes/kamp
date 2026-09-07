@@ -102,6 +102,15 @@ class FakeEngine:
         self.state.playing = False
 
     def seek(self, position: float) -> None:
+        # Deliberately does NOT move state.position, and neither does play()
+        # above. mpv reports position asynchronously on the IPC reader thread, so
+        # a real engine is stale for a full round trip after either call.
+        #
+        # Keeping the fake hostile is what gives the tests below their teeth
+        # (KAMP-686). A fake that helpfully wrote the target would make them pass
+        # against a daemon that still re-pulled the stale value — they would be
+        # asserting the fake, not the product. This is the same shape as the fake
+        # that never fired on_track_end and so could not see KAMP-673.
         self.calls.append(f"seek:{position}")
 
     def shutdown(self) -> None:
@@ -586,6 +595,89 @@ class TestTransport:
         h.player.play(item)
         h.player.play(item)
         assert h.source.calls == 1
+
+
+class TestThePublishedPosition:
+    """KAMP-686: the deck's bar was always one seek behind.
+
+    snapshot() re-pulls position from the engine, which reports asynchronously —
+    so every publish carried the value from BEFORE whatever just happened. The
+    main player hides this by rebuilding on a 4 Hz ping; the preview publishes on
+    transitions only and the strip interpolates from the anchor it was given, so
+    a wrong anchor is permanent.
+
+    Every test here holds the engine at a stale position on purpose. That is the
+    real engine's behaviour, not a contrivance.
+    """
+
+    def test_seeking_publishes_the_target_not_the_engines_stale_position(
+        self, index: LibraryIndex
+    ) -> None:
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.engine.state.position = 5.0
+        assert h.player.seek(90.0)["position"] == 90.0
+
+    def test_seeking_a_paused_preview_publishes_the_target_and_stays_paused(
+        self, index: LibraryIndex
+    ) -> None:
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.player.pause()
+        h.engine.settle()
+        h.engine.state.position = 5.0
+        state = h.player.seek(90.0)
+        assert state["position"] == 90.0
+        assert state["state"] == PAUSED
+
+    def test_a_published_seek_carries_a_fresh_anchor(self, index: LibraryIndex) -> None:
+        """The strip extrapolates `now - position_updated_at` from the last
+        sample, so the anchor has to travel with the position it anchors. Left
+        at the previous publish's stamp, a seek would read as the target PLUS
+        however long the record had been playing."""
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.clock.t += 45  # plays on, publishing nothing — transitions only
+        assert h.player.seek(90.0)["position_updated_at"] == h.clock.t
+
+    def test_a_negative_seek_publishes_the_start(self, index: LibraryIndex) -> None:
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.engine.state.position = 5.0
+        assert h.player.seek(-10.0)["position"] == 0.0
+
+    def test_starting_a_track_publishes_zero_not_the_last_position(
+        self, index: LibraryIndex
+    ) -> None:
+        """The same bug at the other end of the record. Stepping to the next
+        track published the position the previous one had reached, so the bar
+        opened part-way through and interpolated on from there."""
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.engine.state.position = 60.0
+        assert h.player.step(1)["position"] == 0.0
+
+    def test_pausing_still_reports_the_engines_position(
+        self, index: LibraryIndex
+    ) -> None:
+        """The rule is narrow on purpose: only a caller that SUPPLIES a position
+        overrides the pull. pause names no position, so the engine stays the
+        authority — as it must, since nothing else knows how far the record got.
+        """
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.engine.state.position = 42.0
+        assert h.player.pause()["position"] == 42.0
+
+    def test_the_plain_snapshot_still_reports_the_engines_position(
+        self, index: LibraryIndex
+    ) -> None:
+        """The GET route reads through snapshot() with no publish in sight; it
+        must keep pulling, or a reconnecting client would be told 0:00."""
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.engine.state.position = 42.0
+        assert h.player.snapshot()["position"] == 42.0
 
 
 class TestAStaleStream:

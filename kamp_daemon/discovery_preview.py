@@ -139,13 +139,17 @@ class PreviewPlayer:
     # State
     # ------------------------------------------------------------------
 
-    def snapshot(self) -> dict[str, Any]:
-        """The current preview state. Lock-free by design — see the module docstring."""
+    def snapshot(self, pull_position: bool = True) -> dict[str, Any]:
+        """The current preview state. Lock-free by design — see the module docstring.
+
+        *pull_position* is False when the caller already knows where playback is
+        — see :meth:`_publish`.
+        """
         snap = dict(self._state)
         engine = self._engine
         # Position is pulled rather than pushed: the engine has no position
         # callback, and the UI interpolates between snapshots.
-        if engine is not None and snap["state"] in (PLAYING, PAUSED):
+        if pull_position and engine is not None and snap["state"] in (PLAYING, PAUSED):
             snap["position"] = float(engine.state.position)
             snap["position_updated_at"] = self._now()
         return snap
@@ -155,8 +159,26 @@ class PreviewPlayer:
         :meth:`snapshot` can read without a lock."""
         state = dict(self._state)
         state.update(fields)
+        # A caller that supplies a position IS the authority on it, and the pull
+        # in snapshot() would overwrite it with a value the engine has not caught
+        # up to yet (KAMP-686). That is how the deck's bar came to sit one seek
+        # behind: seek() published its target and snapshot() immediately replaced
+        # it with where playback had been before the seek was even sent.
+        #
+        # The engine now records a seek target itself, which alone would be a
+        # race rather than a fix — a time-pos event already in the socket can
+        # land between the engine's write and snapshot's read. Here it cannot: a
+        # supplied position is simply never second-guessed. Local, no flag, no
+        # lifetime, and every caller with nothing to say still pulls.
+        supplied = "position" in fields
+        # The anchor travels with the position it anchors, or the UI adds the age
+        # of the LAST publish to the new value — a seek would read as the target
+        # plus however long the record had been playing. Skipped when the caller
+        # names its own stamp: release_for_main zeroes both on purpose.
+        if supplied and "position_updated_at" not in fields:
+            state["position_updated_at"] = self._now()
         self._state = state
-        snap = self.snapshot()
+        snap = self.snapshot(pull_position=not supplied)
         if self._notify is not None:
             self._notify(snap)
         return snap

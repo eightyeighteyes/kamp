@@ -14,7 +14,7 @@ import { useStore } from '../store'
 import { crateArtUrl, IDLE_PREVIEW } from '../api/client'
 import type { CrateItem, DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
-import { CrateBin } from './CrateBin'
+import { CrateBin, STOCK_IN_MS } from './CrateBin'
 import { CrateTitles } from './CrateTitles'
 import { crateSpineName } from './crateSpine'
 import { CratePreviewStrip } from './CratePreviewStrip'
@@ -193,6 +193,36 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // to go the moment the stage does. A 409 leaves the items in place and this
   // stays true, which is right — that crate is still on screen and still ended.
   const atCrateEnd = endedCrate !== null && endedCrate === crateNo && hasCrate && !building
+
+  // A crate LANDING, which is what the bin's stock-in cascade plays for
+  // (KAMP-656, fixed in KAMP-693).
+  //
+  // This lived in CrateBin and never once ran. The bin is inside the
+  // `building ? rail : bin` ternary below, so it unmounts the instant a dig
+  // starts and remounts when one ends — and a remounted component re-seeds its
+  // "first crate I have seen" ref with the NEW number, taking the silent branch
+  // every time. It has to be decided by something that survives a dig, and this
+  // component never unmounts: App renders every view and toggles a class.
+  //
+  // Seeded silently on first sight so arriving at a crate that already exists —
+  // launching, switching tabs — is not a delivery. A build reports crate_no null
+  // and is skipped, so the pair of changes a dig makes (N → null → N+1) is one
+  // delivery, not two.
+  const seenCrate = useRef<number | null>(null)
+  const seededCrate = useRef(false)
+  const [stocking, setStocking] = useState(false)
+  useEffect(() => {
+    if (!seededCrate.current) {
+      seededCrate.current = true
+      seenCrate.current = crateNo
+      return
+    }
+    if (crateNo === null || crateNo === seenCrate.current) return
+    seenCrate.current = crateNo
+    setStocking(true)
+    const timer = window.setTimeout(() => setStocking(false), STOCK_IN_MS)
+    return () => window.clearTimeout(timer)
+  }, [crateNo])
 
   // The name on the crate's divider card (KAMP-656). Derived from the snapshot
   // the view already has, because this story is skin only — no API changes. It
@@ -727,6 +757,32 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
          state with rows on screen, so it also sat over a crate that was already
          rebuilding from a profile that had since filled out. */
     }
+    {
+      /* A dig that failed now has to say so (KAMP-693).
+
+         It never did, and it never needed to: the old crate stayed on screen for
+         the whole build, so a failed one simply looked like nothing had happened.
+         Emptying the counter changes that — the crate goes, twenty-odd seconds of
+         empty slots pass, and then the old records reappear with no explanation
+         unless something accounts for them. The `error` copy in the early return
+         below is unreachable whenever a previous crate exists, which is almost
+         always.
+
+         Above the `ready` arms rather than among them, because these two are the
+         only states where the crate on screen is NOT the crate just dug. */
+    }
+    if (state === 'empty')
+      return (
+        <div className="crate-banner" role="status">
+          Nothing new came up that time — your last crate&rsquo;s still here.
+        </div>
+      )
+    if (state === 'error')
+      return (
+        <div className="crate-banner" role="status">
+          That dig didn&rsquo;t finish. Try another.
+        </div>
+      )
     if (state === 'ready' && crate?.thin && hasCrate)
       return (
         <div className="crate-banner" role="status">
@@ -937,7 +993,7 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           <div className="crate-bin-col">
             <CrateBin
               items={items}
-              crateNo={crate?.crate_no ?? null}
+              stocking={stocking}
               focusIndex={focusIndex}
               awayItemId={awayItemId}
               spineName={spineName}

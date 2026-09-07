@@ -41,6 +41,7 @@ from kamp_daemon.discovery_criteria import (
 from kamp_daemon.discovery_sources import (
     BandcampDiscoverySource,
     RateLimitedError,
+    _seeds_allowed,
 )
 from kamp_core.discovery_api import UNPERSONALISED_CRITERIA
 from kamp_core.library import SeedAlbum, SeedArtist
@@ -244,10 +245,17 @@ class TestCriteriaRegistry:
         keys = [c.key for c in criteria_for(SeedProfile())]
         assert keys == ["best_seller"]
 
-    def test_rich_profile_runs_several_criteria(self) -> None:
-        # Raised with the registry (KAMP-658). Left at 4 it would stay green while
-        # half the criteria produced nothing, which is the opposite of its job.
-        assert len(criteria_for(RICH_PROFILE)) >= 6
+    def test_a_rich_profile_runs_every_criterion(self) -> None:
+        """Set equality, not a floor (KAMP-690).
+
+        It was `>= 6` against seven criteria — raised from 4 with the registry in
+        KAMP-658 — and a floor cannot tell "all seven ran" from "six ran and one
+        is dead". That is not hypothetical: a criterion that starts reading a NEW
+        SeedProfile field silently produces nothing until RICH_PROFILE populates
+        it, and this test would have stayed green through it. Naming the set is
+        what makes a missing criterion fail loudly.
+        """
+        assert {c.key for c in criteria_for(RICH_PROFILE)} == {c.key for c in REGISTRY}
 
     def test_no_genre_line_claims_listening_or_recency(self) -> None:
         """KAMP-664. taste_genres counts tag rows and Bandcamp keywords — it has
@@ -1019,6 +1027,69 @@ class TestACrateReflectsTheLibrarysRange:
         wanted = {c.key for c in criteria_for(profile)}
         ran = set(state.get("seeds", {}))
         assert wanted <= ran, f"never got a request: {sorted(wanted - ran)}"
+
+
+class TestSeedPoolsAreDeepEnoughToRotate:
+    """KAMP-690: rotation only varies a crate if there is something to rotate.
+
+    Rotation advances `_seeds_allowed(criterion)` per crate and wraps modulo the
+    pool, so a pool barely larger than one crate's spread cycles straight back to
+    the head. Measured on a real library, `lone_album_artist` held 4 seeds and
+    `older_than_ten` 3 — repeating every two crates and every one and a half, and
+    the user saw one artist "in many many crates".
+
+    Driven from a profile through the real selectors rather than from a hand-built
+    seed list, so these track what a criterion actually reaches rather than what a
+    fixture says it does.
+    """
+
+    #: Crates a seed must survive before it may come round again. Ten is what the
+    #: measured complaint needs: at two seeds a crate it means a pool of twenty,
+    #: which takes the reported artist from every other crate to one in ten.
+    MIN_CYCLE = 10
+
+    @staticmethod
+    def _rich() -> SeedProfile:
+        """A profile with plenty of everything the two thin criteria read."""
+        return replace(
+            RICH_PROFILE,
+            top_genres=[f"genre-{i}" for i in range(25)],
+            lone_album_artists=[
+                SeedArtist(
+                    name=f"Solo {i}",
+                    artist_page=f"https://solo{i}.bandcamp.com/music",
+                    owned_count=1,
+                    play_time=float(9000 - i * 100),
+                )
+                for i in range(20)
+            ],
+        )
+
+    @pytest.mark.parametrize("key", ["lone_album_artist", "older_than_ten"])
+    def test_a_seed_does_not_come_round_within_ten_crates(self, key: str) -> None:
+        criterion = next(c for c in REGISTRY if c.key == key)
+        seeds = list(criterion.seeds(self._rich()))
+        cycle = len(seeds) / _seeds_allowed(criterion)
+        assert cycle >= self.MIN_CYCLE, (
+            f"{key} holds {len(seeds)} seeds and reads "
+            f"{_seeds_allowed(criterion)} a crate — repeats every {cycle:.1f}"
+        )
+
+    def test_the_lone_album_pool_is_not_truncated_by_the_shared_limit(self) -> None:
+        """The actual defect. played_artists_with_pages applied its LIMIT and the
+        criterion then filtered owned_count == 1, so a library with 235 qualifying
+        artists surfaced four — the ones that happened to rank inside the 25
+        most-played artists OVERALL."""
+        criterion = next(c for c in REGISTRY if c.key == "lone_album_artist")
+        seeds = list(criterion.seeds(self._rich()))
+        assert len(seeds) == 20, f"the pool was truncated to {len(seeds)}"
+
+    def test_the_older_record_criterion_reads_every_genre(self) -> None:
+        """It sliced top_genres[:3] while genre_top walked all of them, which is
+        why the same three genres cycled forever."""
+        criterion = next(c for c in REGISTRY if c.key == "older_than_ten")
+        genres = {s.seed_data.get("genre") for s in criterion.seeds(self._rich())}
+        assert len(genres) == 25, f"only reached {len(genres)} genres"
 
 
 class TestRotationAndPagination:

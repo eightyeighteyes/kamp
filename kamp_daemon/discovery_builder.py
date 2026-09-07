@@ -49,14 +49,40 @@ logger = logging.getLogger(__name__)
 #: affordance.
 CRATE_SIZE = 10
 
-#: How many records in one crate may come from a single seed (KAMP-665).
+#: How many records in one crate may come from a single seed (KAMP-665/689).
 #:
-#: Two, because one is too strict — a genre you actually listen to earning two
-#: records is a crate reflecting your taste, not a crate repeating itself — and
-#: three is what the complaint was: three cards off one album page, three clerk
-#: lines naming the same record. Enforced as a preference, not a ceiling; the
-#: backfill in select_crate overruns it rather than shipping a short crate.
-SEED_CAP = 2
+#: One. Two was the original call — "a genre you actually listen to earning two
+#: records is a crate reflecting your taste, not a crate repeating itself" — and
+#: measurement disagreed: 12 of 15 crates put two cards from one seed on screen,
+#: and the reader does not experience that as taste. They see one album page's
+#: recommendations twice, under two clerk lines naming the same record.
+#:
+#: KAMP-683 made it worse arithmetically rather than causing it. A weight of 4 on
+#: also_like times a cap of 2 is four cards off exactly two album pages, every
+#: crate. also_like now reads FOUR seeds instead of two (see
+#: _SEEDS_PER_CRITERION), so the same four cards come from four different
+#: records — the variety the weight was supposed to buy in the first place.
+#:
+#: Still a preference, not a ceiling: the backfill in select_crate drops it rather
+#: than shipping a short crate.
+SEED_CAP = 1
+
+#: How many records by one artist may share a crate (KAMP-689).
+#:
+#: One. Measured, 8 of 15 crates offered a band twice, and every instance was two
+#: cards from a single seed -- so SEED_CAP, which exists to prevent narrowness, was
+#: the direct cause of the narrowest thing a crate did. Two of the seven criteria
+#: make it structural rather than unlucky: they seed on an ARTIST and read that
+#: artist's own discography, so both their cards are necessarily by the same band.
+#:
+#: Two would not have been enough. It only catches a third card, which nothing
+#: observed produced -- and the copy argues harder than the counting does, since
+#: `lone_album_artist` says "you've just got the one. Try another." twice, in two
+#: different phrasings (KAMP-664), as if the clerk forgot he had already offered.
+#:
+#: A preference like every other cap here: enforced on the first deal only, so a
+#: gather that came back as one artist's grid still ships ten.
+ARTIST_CAP = 1
 
 #: Where the source's scratch space is kept between crates (KAMP-661): which seed
 #: each criterion stopped on, how far into each paginated query it has read. One
@@ -467,7 +493,15 @@ def select_crate(
         # who opens the crate, which is the property it exists for.
         order = _weighted(order, weights)
 
-        picks = _deal(groups, order, size, caps, seed_cap=SEED_CAP, confirm=confirm)
+        picks = _deal(
+            groups,
+            order,
+            size,
+            caps,
+            seed_cap=SEED_CAP,
+            artist_cap=ARTIST_CAP,
+            confirm=confirm,
+        )
         if len(picks) < size:
             # A cap is a preference, not a ceiling: honouring one to the point of
             # shrinking the crate is how a brand-new library (whose only criterion
@@ -522,6 +556,30 @@ def select_crate(
 # ---------------------------------------------------------------------------
 
 
+def _artist_key(candidate: Candidate) -> str | None:
+    """Who made this record, or None when the surface did not say (KAMP-689).
+
+    The provider's band id first, because the artist STRING is not comparable
+    across surfaces: a discography candidate carries kamp's own spelling (the
+    source fills it in from the seed) while an album-page recommendation carries
+    Bandcamp's, so "Godspeed You! Black Emperor" and "Godspeed You Black Emperor"
+    are one band and two strings.
+
+    Falling back to the name, case- and space-folded exactly as `seed_dimension`
+    folds a genre and for the same reason — these strings pass through three
+    different parsers.
+
+    **None means never capped**, matching `seed_dimension`'s rule. A candidate
+    with neither an id nor a name is a parser that has stopped yielding identity,
+    and quietly emptying a crate over it would be a worse failure than the
+    duplicate this prevents.
+    """
+    if candidate.band_id:
+        return f"band:{candidate.band_id}"
+    name = (candidate.artist or "").strip().casefold()
+    return f"name:{name}" if name else None
+
+
 def _weighted(order: list[str], weights: dict[str, int]) -> list[str]:
     """*order* with weighted criteria repeated, so they get extra turns per round.
 
@@ -553,6 +611,7 @@ def _deal(
     caps: dict[str, int],
     skip: list[Candidate] | None = None,
     seed_cap: int | None = None,
+    artist_cap: int | None = None,
     confirm: "Callable[[Candidate], bool | None] | None" = None,
 ) -> list[Candidate]:
     """Round-robin one card per criterion until *size* or nothing is left.
@@ -594,6 +653,11 @@ def _deal(
         if key is not None:
             seed_counts[key] = seed_counts.get(key, 0) + 1
 
+    # NOT seeded from `skip`, unlike seed_counts, and that asymmetry is the point:
+    # the artist cap is enforced on the first deal only, so the passes that would
+    # consume a carried-over count do not cap at all (KAMP-689).
+    artist_counts: dict[str, int] = {}
+
     picks: list[Candidate] = []
     while len(picks) < size:
         progressed = False
@@ -620,6 +684,24 @@ def _deal(
                     and seed_counts.get(key, 0) >= seed_cap
                 ):
                     continue
+                # Before `confirm`, and that ordering is a cost decision rather
+                # than a style one (KAMP-689): confirm_playable does a network
+                # fetch, and it is free for every criterion EXCEPT the two that
+                # read a discography — which are exactly the ones this cap binds
+                # hardest. Checking after it would spend an album-page request to
+                # validate a record we were about to refuse.
+                #
+                # A bare `continue`, deliberately NOT marking the candidate taken:
+                # mirroring seed_cap is what lets the uncapped backfill reconsider
+                # it, and what sends it to _buffer_surplus to come back as its own
+                # card in a later crate rather than being thrown away.
+                who = _artist_key(candidate)
+                if (
+                    artist_cap is not None
+                    and who is not None
+                    and artist_counts.get(who, 0) >= artist_cap
+                ):
+                    continue
                 # Asked only of a card about to be PLACED, which is the whole
                 # reason it is affordable (KAMP-670). Rejecting one here simply
                 # moves to the next candidate in the same group, so a confirmed
@@ -633,6 +715,8 @@ def _deal(
                 counts[criterion] = counts.get(criterion, 0) + 1
                 if key is not None:
                     seed_counts[key] = seed_counts.get(key, 0) + 1
+                if who is not None:
+                    artist_counts[who] = artist_counts.get(who, 0) + 1
                 picks.append(candidate)
                 progressed = True
                 break

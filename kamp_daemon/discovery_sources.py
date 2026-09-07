@@ -71,7 +71,8 @@ DISCOVER_API_URL = "https://bandcamp.com/api/discover/1/discover_web"
 COLLECT_URL = "https://bandcamp.com/collect_item_cb"
 UNCOLLECT_URL = "https://bandcamp.com/uncollect_item_cb"
 
-#: How many seeds one criterion may read from in a single crate (KAMP-665).
+#: How many seeds a criterion may read from in a single crate, by default
+#: (KAMP-665). `_SEEDS_FOR` below overrides it per criterion.
 #:
 #: Two, not "until the budget is spent". The allowance is per endpoint class and
 #: three criteria share DISCOVER_API's six, so an uncapped criterion would take
@@ -80,6 +81,25 @@ UNCOLLECT_URL = "https://bandcamp.com/uncollect_item_cb"
 #: matters because these endpoints are the thing that rate-limits hardest and a
 #: 429 here cascades account-wide (KAMP-639).
 _SEEDS_PER_CRITERION = 2
+
+#: Criteria allowed more than the default, and why (KAMP-689).
+#:
+#: `also_like` reads four album pages rather than two. SEED_CAP is now 1, so a
+#: criterion's card count IS its seed count — and KAMP-683's agreed target of four
+#: also-like records a crate therefore needs four seeds. The cards come from four
+#: different albums instead of two, which is what the weight was meant to buy.
+#:
+#: It costs two more ALBUM_PAGE requests, and the class is funded at 8: four here
+#: plus two for purchase_anniversary plus about two for KAMP-670's playability
+#: checks is exactly eight. No headroom, deliberately spent — the check degrades
+#: to unverified when the budget runs out rather than overrunning it.
+_SEEDS_FOR: dict[str, int] = {"also_like": 4}
+
+
+def _seeds_allowed(criterion: Criterion) -> int:
+    """How many seeds *criterion* may read in one crate."""
+    return _SEEDS_FOR.get(criterion.key, _SEEDS_PER_CRITERION)
+
 
 #: How many cards one criterion may contribute to a crate (KAMP-683).
 #:
@@ -228,9 +248,12 @@ class BandcampDiscoverySource(DiscoverySource):
         that matters, since the bug that ticket was filed about is three records
         off ONE album page, and no weight here can produce that.
 
-        The cost of running at the ceiling is that the share stops varying: every
-        healthy crate is two records from each of two album pages. Worth watching
-        when reading real crates; a drop to 3 buys the variation back at 3.2.
+        KAMP-689 lowered that ceiling to min(4, distinct artists across the two
+        pages): one record per artist per crate, so a page whose recommendations
+        cluster on one band gives fewer than two. A seven-rec block essentially
+        always carries two or more, so four still lands in practice — but a
+        label-curated or back-catalogue block genuinely can come up short, and
+        that is the honest reason a crate sometimes shows three.
         """
         return dict(CRITERION_WEIGHTS)
 
@@ -423,7 +446,7 @@ class BandcampDiscoverySource(DiscoverySource):
         # tracked as an absolute step so a run of skips does not shift it.
         consumed = 0
         for step in range(len(seeds)):
-            if productive >= _SEEDS_PER_CRITERION:
+            if productive >= _seeds_allowed(criterion):
                 break
             seed = seeds[(start + step) % len(seeds)]
             if not budget.allow(criterion.endpoint_class):
@@ -633,6 +656,10 @@ class BandcampDiscoverySource(DiscoverySource):
                     title=item.get("title", ""),
                     art_url=item.get("art_url"),
                     release_date=item.get("release_date", ""),
+                    # Two spellings, one key: the album page calls it artist_id
+                    # and the other two call it band_id, and all three were being
+                    # dropped on the floor here (KAMP-689).
+                    band_id=str(item.get("band_id") or item.get("artist_id") or ""),
                     criterion=criterion.key,
                     why=seed.why,
                     seed=dict(seed.seed_data),

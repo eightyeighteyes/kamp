@@ -739,7 +739,13 @@ html[data-platform='win32'] .view-tabs {
 .search-clear:focus-visible,
 .track-title:focus-visible,
 .track-artist:focus-visible,
-.track-album:focus-visible {
+.track-album:focus-visible,
+/* KAMP-685: the opposite call to .bin-sleeve, for the opposite reason. Every
+   titles row is tabbable while only one is --current, so Tab position and bin
+   selection genuinely diverge here and the ring is the only thing saying where
+   Tab is. It was getting Chromium's yellow UA ring. Inset because the list
+   scrolls, so an outward outline would be clipped at the column edge. */
+.crate-title-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }

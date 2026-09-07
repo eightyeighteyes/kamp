@@ -32,14 +32,27 @@ import { useExtensionState } from './hooks/useExtensionState'
 import type { UnifiedPanel } from './hooks/usePanelLayout'
 import type { ExtensionInfo } from '../../shared/kampAPI'
 
-// KAMP-598: track whether focus was last established by the mouse (a click) vs
-// the keyboard (Tab). A mouse click leaves DOM focus on the clicked element
-// without a ring; the global transport shortcuts blur it so no phantom
-// :focus-visible ring appears on the next keypress. We track modality ourselves
-// rather than reading :focus-visible at keydown time — Chromium promotes the
-// element to :focus-visible while processing the keydown, *before* our handler
-// runs, so that check reads true and is unreliable here.
-let _focusFromMouse = false
+// How focus was last established: by a click, or by Tab (KAMP-598/685).
+//
+// Published on the document root so CSS can decide whether a ring paints, rather
+// than JavaScript trying to prevent one. That is the whole fix: the previous
+// mechanism blurred the focused element inside App's global keydown handler, and
+// a keydown handler is reachable — CrateView stops propagation on all seven keys
+// it owns, so the blur never ran and the ring appeared. ANY view that claims its
+// own keys opted itself out. An attribute cannot be opted out of.
+//
+// Tracked rather than read off :focus-visible at keydown time, which stays true:
+// Chromium promotes the element to :focus-visible while processing the keydown,
+// *before* any handler runs, so reading it there always says yes.
+//
+// Only Tab returns it to 'key', and that is deliberate rather than an omission.
+// It is what makes "click a record, then press ," show no ring while "Tab to it"
+// does — the question is how focus GOT here, not which device is being used now.
+type FocusModality = 'mouse' | 'key'
+
+function setFocusModality(modality: FocusModality): void {
+  document.documentElement.dataset.focusModality = modality
+}
 
 // ---------------------------------------------------------------------------
 // Register built-in panels before the component mounts.
@@ -400,14 +413,30 @@ export default function App(): React.JSX.Element {
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // KAMP-598: any pointer press means the focus it establishes is mouse-driven,
-  // so the transport shortcuts should blur it rather than let it grow a ring.
+  // Modality tracking, and BOTH listeners are capture-phase on window for the
+  // same reason (KAMP-685): capture on window is the outermost point in the
+  // propagation path, so nothing downstream can stopPropagation its way out of
+  // being tracked. The old Tab reset was bubble-phase and sat inside the
+  // shortcut handler, which is exactly how the Crate escaped it.
+  //
+  // Capture also fixes a second bug for free. KeyboardShortcutsOverlay is a
+  // capture-phase *document* listener that swallows every key including Tab, so
+  // modality could not reset while it was open: open the overlay after clicking
+  // anything, Tab to its close button, and there was no ring to follow.
   useEffect(() => {
-    const onPointerDown = (): void => {
-      _focusFromMouse = true
+    const onPointerDown = (): void => setFocusModality('mouse')
+    const onKeyDownCapture = (e: KeyboardEvent): void => {
+      // Tab is the only key that MOVES focus, so it is the only one that makes
+      // the focus it lands on keyboard-driven. Every other key is operating
+      // whatever the mouse already chose.
+      if (e.key === 'Tab') setFocusModality('key')
     }
     window.addEventListener('pointerdown', onPointerDown, true)
-    return () => window.removeEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('keydown', onKeyDownCapture, true)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKeyDownCapture, true)
+    }
   }, [])
 
   // Global keyboard shortcuts
@@ -432,25 +461,23 @@ export default function App(): React.JSX.Element {
         return
       }
 
-      // Tab moves focus via the keyboard — from here on, focus is keyboard-driven
-      // and its ring should stay (KAMP-598).
-      if (e.key === 'Tab') {
-        _focusFromMouse = false
-        return
-      }
+      // Tab is handled by the capture listener above, which tracks modality.
+      // Nothing to do here but stay out of its way.
+      if (e.key === 'Tab') return
 
+      // SELECT joins INPUT and TEXTAREA (KAMP-685). A focused <select> type-aheads
+      // on a printable key, so `q` and `c` would jump its options AND fire the
+      // shortcut — neither of which is preventDefaulted below. The blur that used
+      // to sit here masked that for mouse users by dropping focus first; it never
+      // covered a keyboard user who tabbed to the select, and it is gone now.
       const tag = (e.target as HTMLElement).tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 
-      // KAMP-598: these are global shortcuts, not input for the focused control.
-      // If the focused element was focused by a mouse click (not Tab), drop that
-      // leftover focus so the keypress can't promote it to a :focus-visible ring.
-      // Genuine keyboard focus (_focusFromMouse === false) is left alone.
-      if (_focusFromMouse) {
-        const active = document.activeElement as HTMLElement | null
-        if (active && active !== document.body) active.blur()
-      }
-
+      // No blur here any more (KAMP-685). It was the KAMP-598 ring suppression,
+      // and it had two faults: any view stopping propagation never reached it, and
+      // it dumped focus to document.body on every shortcut — which loses a screen
+      // reader user's place in the document. Modality is published on the root
+      // element instead and the ring is decided in CSS, so focus can stay put.
       switch (e.key) {
         case '?':
           setShowShortcuts((prev) => !prev)

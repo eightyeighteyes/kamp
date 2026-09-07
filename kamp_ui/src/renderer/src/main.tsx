@@ -22,6 +22,12 @@ window.api.syncThemeChrome(savedTheme)
 // on .view-tabs that clears the Windows titleBarOverlay) can target it.
 document.documentElement.dataset.platform = window.electron.process.platform
 
+// How focus was last established, which decides whether a ring paints (KAMP-685).
+// Seeded here rather than in App so there is no first frame without it, and seeded
+// to 'key' so a keyboard-only user who never touches the mouse gets a ring from
+// their very first Tab. App's capture listeners keep it current from then on.
+document.documentElement.dataset.focusModality = 'key'
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <TooltipProvider>

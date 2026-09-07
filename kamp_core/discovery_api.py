@@ -521,7 +521,13 @@ def register_discovery_routes(
         what keeps it from being an arbitrary method call.
         """
         player = _preview_or_503()
-        if action in ("pause", "resume", "toggle", "stop"):
+        if action == "stop":
+            # A stop can ring the record out instead of cutting it (KAMP-693).
+            # Opt-in, and the caller decides: the crate moving on under a playing
+            # record wants the fade, while Escape and the deck's stop are answers
+            # to "get off" and stay immediate.
+            return cast(dict[str, Any], player.stop(fade=bool((req or {}).get("fade"))))
+        if action in ("pause", "resume", "toggle"):
             return cast(dict[str, Any], getattr(player, action)())
         if action == "next":
             return cast(dict[str, Any], player.step(1))

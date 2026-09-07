@@ -250,7 +250,10 @@ type PlayerStore = {
   loadPreview: () => Promise<void>
   setPreview: (state: PreviewState) => void
   previewPlay: (itemId: number, trackNum?: number) => Promise<void>
-  previewAction: (action: 'pause' | 'resume' | 'toggle' | 'stop' | 'next' | 'prev') => Promise<void>
+  previewAction: (
+    action: 'pause' | 'resume' | 'toggle' | 'stop' | 'next' | 'prev',
+    opts?: { fade?: boolean }
+  ) => Promise<void>
   previewSeek: (position: number) => Promise<void>
   showFlashToast: (msg: string, tone?: 'error') => void
   setRecentlyAddedCount: (n: number) => void
@@ -1052,9 +1055,9 @@ export const useStore = create<PlayerStore>((set, get) => ({
       get().showFlashToast(msg, 'error')
     }
   },
-  previewAction: async (action) => {
+  previewAction: async (action, opts) => {
     try {
-      set({ preview: await api.previewAction(action) })
+      set({ preview: await api.previewAction(action, opts) })
     } catch {
       // A failed transport call leaves the daemon authoritative; re-read rather
       // than showing a state the preview engine does not agree with.

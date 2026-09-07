@@ -733,9 +733,14 @@ export const getPreviewState = (): Promise<PreviewState> => get('/api/v1/discove
 export const previewPlay = (itemId: number, trackNum?: number): Promise<PreviewState> =>
   post('/api/v1/discovery/preview/play', { item_id: itemId, track_num: trackNum ?? null })
 
+// `fade` is read by 'stop' alone (KAMP-693): the crate moving on under a playing
+// record rings it out, while Escape and the deck's own stop cut, because those
+// are answers to "get off" and a fade there is a delay.
 export const previewAction = (
-  action: 'pause' | 'resume' | 'toggle' | 'stop' | 'next' | 'prev'
-): Promise<PreviewState> => post(`/api/v1/discovery/preview/${action}`)
+  action: 'pause' | 'resume' | 'toggle' | 'stop' | 'next' | 'prev',
+  opts?: { fade?: boolean }
+): Promise<PreviewState> =>
+  post(`/api/v1/discovery/preview/${action}`, opts?.fade ? { fade: true } : undefined)
 
 export const previewSeek = (position: number): Promise<PreviewState> =>
   post('/api/v1/discovery/preview/seek', { position })

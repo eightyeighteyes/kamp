@@ -191,6 +191,7 @@ class Harness:
         source: FakeSource | None = None,
         main_playing: bool = False,
         check_url: Any = None,
+        fade_secs: float = 0.01,
     ) -> None:
         self.index = index
         self.main = FakeEngine()
@@ -223,6 +224,10 @@ class Harness:
             # Default None, so every pre-existing test keeps its exact behaviour
             # and no test reaches the network (KAMP-673).
             check_url=check_url,
+            # How long a fading stop waits before unloading (KAMP-693). Short by
+            # default so the suite does not sleep through real fades; a test that
+            # needs the fade still to be in flight sets it long instead.
+            fade_secs=fade_secs,
         )
 
     @property
@@ -579,6 +584,62 @@ class TestTransport:
         h.player.play(_item(index))
         assert h.player.pause()["state"] == PAUSED
         assert h.player.resume()["state"] == PLAYING
+
+    def test_stop_is_a_hard_cut_by_default(self, index: LibraryIndex) -> None:
+        """Escape and the deck's own stop stay immediate: they are answers to "get
+        off", and a fade there is a delay, not a courtesy."""
+        h = Harness(index)
+        h.player.play(_item(index))
+        assert h.player.stop()["state"] == IDLE
+        assert "unload" in h.engine.calls
+
+    def test_a_fading_stop_rides_the_pause_fade_out(self, index: LibraryIndex) -> None:
+        """KAMP-693 wants the record faded, not cut.
+
+        unload() is mpv's raw `stop` — it drops the audio on the frame it
+        arrives. The only per-sample fade in the engine is the Lua one behind
+        pause(), so a faded stop is that fade followed by the unload, rather than
+        a second ramp written next to it.
+        """
+        h = Harness(index)
+        h.player.play(_item(index))
+        h.player.stop(fade=True)
+        assert "pause" in h.engine.calls
+        assert "unload" not in h.engine.calls
+
+    def test_a_fading_stop_still_unloads_once_the_fade_is_over(
+        self, index: LibraryIndex
+    ) -> None:
+        """The fade only silences it. Without the unload behind it the engine
+        keeps the file loaded and the audio device open, which is the pinned-mpv
+        bug _idle_kill exists to prevent."""
+        h = Harness(index, fade_secs=0.01)
+        h.player.play(_item(index))
+        h.player.stop(fade=True)
+        assert _wait_for(lambda: "unload" in h.engine.calls)
+
+    def test_a_fading_stop_reports_idle_at_once(self, index: LibraryIndex) -> None:
+        """The UI must not wait on the fade. Holding the snapshot back would read
+        as a hang on the one gesture that is supposed to feel like letting go —
+        and the deck clearing while the last moment fades out IS the fade."""
+        h = Harness(index, fade_secs=30.0)
+        h.player.play(_item(index))
+        assert h.player.stop(fade=True)["state"] == IDLE
+
+    def test_a_record_played_after_a_fading_stop_is_not_cut_off_by_it(
+        self, index: LibraryIndex
+    ) -> None:
+        """The deferred unload is the hazard this whole path introduces: it fires
+        on a timer, and by then the user may have put something else on. Unloading
+        then would kill a record they had just started, seconds after an action
+        they had forgotten about."""
+        h = Harness(index, fade_secs=0.01)
+        h.player.play(_item(index))
+        h.player.stop(fade=True)
+        h.player.play(_item(index, "2"))
+        # Long enough for the deferred unload to have fired if it were going to.
+        assert not _wait_for(lambda: "unload" in h.engine.calls, timeout=0.2)
+        assert h.engine.state.playing is True
 
     def test_an_expired_cache_is_refetched(self, index: LibraryIndex) -> None:
         """Signed URLs die after about a day; a stale one would fail silently at

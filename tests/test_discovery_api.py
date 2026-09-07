@@ -968,8 +968,9 @@ class FakePreview:
     def toggle(self) -> dict[str, Any]:
         return self._simple("toggle")
 
-    def stop(self) -> dict[str, Any]:
-        return self._simple("stop")
+    def stop(self, fade: bool = False) -> dict[str, Any]:
+        self.calls.append(("stop", fade))
+        return self.snapshot()
 
     def step(self, delta: int) -> dict[str, Any]:
         self.calls.append(("step", delta))
@@ -1011,12 +1012,26 @@ class TestPreviewRoutes:
         client = _preview_app(index, FakePreview())
         assert client.post("/api/v1/discovery/preview/play", json={}).status_code == 422
 
-    @pytest.mark.parametrize("action", ["pause", "resume", "toggle", "stop"])
+    @pytest.mark.parametrize("action", ["pause", "resume", "toggle"])
     def test_simple_actions(self, index: LibraryIndex, action: str) -> None:
         preview = FakePreview()
         client = _preview_app(index, preview)
         assert client.post(f"/api/v1/discovery/preview/{action}").status_code == 200
         assert preview.calls == [(action, None)]
+
+    def test_stop_cuts_unless_asked_to_fade(self, index: LibraryIndex) -> None:
+        """The default has to stay the cut (KAMP-693). Escape and the deck's own
+        stop are answers to "get off", and a fade there is a delay."""
+        preview = FakePreview()
+        client = _preview_app(index, preview)
+        assert client.post("/api/v1/discovery/preview/stop").status_code == 200
+        assert preview.calls == [("stop", False)]
+
+    def test_stop_can_be_asked_to_ring_it_out(self, index: LibraryIndex) -> None:
+        preview = FakePreview()
+        client = _preview_app(index, preview)
+        client.post("/api/v1/discovery/preview/stop", json={"fade": True})
+        assert preview.calls == [("stop", True)]
 
     @pytest.mark.parametrize("action,delta", [("next", 1), ("prev", -1)])
     def test_stepping(self, index: LibraryIndex, action: str, delta: int) -> None:

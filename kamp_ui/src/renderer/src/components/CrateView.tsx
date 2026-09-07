@@ -122,7 +122,12 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // would not do it: ten records in, index 7 is perfectly legal and simply the
   // wrong place to be standing.
   const crateNo = crate?.crate_no ?? null
-  const focused = focus.crate === crateNo ? focus.index : 0
+  // `crateNo !== null` is not redundant (KAMP-693). null used to mean one thing,
+  // "no crate has ever been dug"; a build now reports null too, because the new
+  // crate has no number until the gather is over. Without this, a focus tag left
+  // over from before the first crate would match a dig in progress — and the tag
+  // is meant to be self-invalidating, which only works if null is not an identity.
+  const focused = crateNo !== null && focus.crate === crateNo ? focus.index : 0
 
   // Clamped during render rather than corrected in an effect: the crate grows
   // while a build streams, so the stored index can briefly point past the end.
@@ -860,7 +865,23 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
         ) : (
           <header className="crate-header">
             <div className="crate-focus crate-focus--digging">
-              <p className="crate-empty-hint">Digging through the racks…</p>
+              {/* What the gather is actually looking at, changing every couple of
+                  seconds (KAMP-693) — "Seeing what sits next to Kid A…",
+                  "Pulling the Acid King shelf…". A dig is 15-30 seconds and this
+                  is the only thing that moves in them; the static line below it
+                  was the whole of the wait before, over ten empty slots.
+
+                  aria-live so it is not a purely visual reassurance. `polite`,
+                  not `assertive`: it changes ten times a dig and interrupting a
+                  screen reader on every fetch would be worse than silence.
+
+                  The static line remains the fallback and is not dead code — it
+                  covers the moment between the dig starting and the first seed
+                  being reached, which spans a keychain read and the profile
+                  build, and any older daemon that publishes no line at all. */}
+              <p className="crate-empty-hint" role="status" aria-live="polite">
+                {crate?.digging || 'Digging through the racks…'}
+              </p>
             </div>
           </header>
         )}
@@ -900,8 +921,16 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
                 onFocus={focusSleeve}
               />
             ))}
+            {/* Keyed by POSITION IN THE ROW, not by offset into the slot list
+                (KAMP-693). The tilt was always derived from the absolute position
+                and was always stable; the key was not. As records landed, the
+                slot at position 1 went from `slot-1` to `slot-0`, so React reused
+                position 0's DOM node for it and its --crate-tilt changed under a
+                160ms transform transition — nine slots re-tilting on every record,
+                which is a row-wide wobble through the whole placement burst and
+                exactly what the pulse below would have been competing with. */}
             {Array.from({ length: slots }, (_unused, i) => (
-              <CrateSlot key={`slot-${i}`} index={items.length + i} />
+              <CrateSlot key={`slot-${items.length + i}`} index={items.length + i} />
             ))}
           </ul>
         ) : (

@@ -1343,6 +1343,40 @@
       opacity 160ms ease;
   }
 
+  /* The empty slots read as being worked rather than as ten dead outlines
+     (KAMP-693). A dig is 15-30 seconds and the row is empty for nearly all of
+     it; the changing status line carries the meaning, and this carries the fact
+     that something is still happening.
+
+     Opacity only. Nothing here goes near height, which Electron animates badly
+     enough that the file header forbids it outright, and nothing touches hue —
+     --accent swings from indigo to green across the eight palettes and a
+     coloured pulse would read as a state rather than as activity.
+
+     Staggered off the slot's own position so the row breathes along its length
+     instead of blinking in unison, which is what makes it read as digging rather
+     than as a loading indicator. Slow — 2.4s — because it sits under a line of
+     copy that is the thing to read; anything quicker competes with it.
+
+     The slots hold a stable position for the life of the dig (see CrateView), so
+     the delay is assigned once and a landing record does not restart anyone's
+     cycle. Under `reduce` there is simply no pulse, and the status line does the
+     whole job — which is the honest answer, not a lesser one. */
+  .crate-sleeve--empty .crate-sleeve-art {
+    animation: crate-slot-working 2.4s ease-in-out infinite;
+    animation-delay: calc(var(--crate-slot, 0) * 160ms);
+  }
+
+  @keyframes crate-slot-working {
+    0%,
+    100% {
+      opacity: 0.28;
+    }
+    50% {
+      opacity: 0.62;
+    }
+  }
+
   /* The header's own copy of the artwork is gone (KAMP-671) — the large art is
      now the bin's front record — so the fade that covered its swap goes with it.
      The deck's platter does not fade: a record arriving there arrives by flight,

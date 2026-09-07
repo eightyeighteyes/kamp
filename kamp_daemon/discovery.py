@@ -239,6 +239,15 @@ class SeedProfile:
     #: `top_artists`, which is names only — a criterion that wants to say "you
     #: only have the one by them" needs the count and the address, not a name.
     played_artists: list["SeedArtist"] = field(default_factory=list)
+    #: The same ranking, filtered to artists with exactly one album in the
+    #: collection, and filtered IN THE QUERY (KAMP-690).
+    #:
+    #: Its own field rather than a slice of `played_artists`, because the two want
+    #: different depths for different reasons. `_favorite_artist_seeds` yields
+    #: starred artists first and played ones second, so lengthening the shared
+    #: list to reach more single-album artists would dilute the starred branch's
+    #: share of the rotation and push that criterion toward its weaker claim.
+    lone_album_artists: list["SeedArtist"] = field(default_factory=list)
     #: Albums bought around this date a year ago (KAMP-658). The window is
     #: applied by the profile builder rather than the selector, so the selector
     #: stays a pure function of the profile and carries no clock.
@@ -271,6 +280,10 @@ def build_seed_profile(
     genre_limit: int = 25,
     artist_limit: int = 25,
     label_limit: int = 25,
+    # Its own knob, deliberately NOT artist_limit — that one is shared with
+    # favorite_artists_with_pages and top_artists, so raising it to widen one
+    # criterion's pool would quietly resize two others (KAMP-690).
+    lone_artist_limit: int = 20,
 ) -> SeedProfile:
     """Assemble a :class:`SeedProfile` from local library signals.
 
@@ -291,6 +304,9 @@ def build_seed_profile(
         favorite_albums=favorites,
         favorite_artists=index.favorite_artists_with_pages(artist_limit),
         played_artists=index.played_artists_with_pages(artist_limit),
+        lone_album_artists=index.played_artists_with_pages(
+            lone_artist_limit, owned_count=1
+        ),
         anniversary_albums=index.albums_purchased_between(
             year_ago - ANNIVERSARY_WINDOW_SECS, year_ago + ANNIVERSARY_WINDOW_SECS
         ),

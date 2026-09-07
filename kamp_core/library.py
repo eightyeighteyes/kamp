@@ -5785,7 +5785,9 @@ class LibraryIndex:
         ).fetchall()
         return self._seed_album_rows(rows)
 
-    def played_artists_with_pages(self, limit: int = 25) -> list["SeedArtist"]:
+    def played_artists_with_pages(
+        self, limit: int = 25, owned_count: int | None = None
+    ) -> list["SeedArtist"]:
         """Artists the user actually plays, most-played first, with a page (KAMP-658).
 
         The counterpart to :meth:`favorite_artists_with_pages`, which ranks by how
@@ -5799,12 +5801,20 @@ class LibraryIndex:
         one" must word its clerk line to match that: a record bought elsewhere
         does not count.
 
+        Pass *owned_count* to filter on it **inside the query**, and that is not a
+        convenience (KAMP-690). Filtering the returned list instead applies the
+        LIMIT first, so "the twenty artists you play most who you own one album
+        by" silently became "however many of your twenty most-played artists
+        happen to own-count one" — four, on a library holding 235 of them. The
+        LIMIT then means what it says.
+
         Joined through ``albums.artist_id`` rather than by name — the column is
         FK'd to ``artists.id`` and backfilled at index time, so it is the
         authoritative link and avoids a second COLLATE NOCASE name match.
         """
+        having = "" if owned_count is None else "HAVING owned_count = :owned"
         rows = self._conn.execute(
-            """
+            f"""
             SELECT ar.name       AS name,
                    ar.play_time  AS play_time,
                    MIN(bc.album_url) AS album_url,
@@ -5814,10 +5824,11 @@ class LibraryIndex:
             JOIN artists ar ON ar.id = a.artist_id
             WHERE bc.album_url != '' AND ar.play_time > 0
             GROUP BY ar.id
+            {having}
             ORDER BY ar.play_time DESC
-            LIMIT ?
+            LIMIT :limit
             """,
-            (limit,),
+            {"limit": limit, "owned": owned_count},
         ).fetchall()
         out: list[SeedArtist] = []
         for r in rows:

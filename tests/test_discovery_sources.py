@@ -186,6 +186,17 @@ RICH_PROFILE = SeedProfile(
             play_time=8000.0,
         ),
     ],
+    # Its own field since KAMP-690, filtered in the query rather than out of
+    # `played_artists` here. Four Tet is deliberately absent — the criterion's
+    # claim is "you have just the one", and a test below pins that.
+    lone_album_artists=[
+        SeedArtist(
+            name="Loraine James",
+            artist_page="https://lorainejames.bandcamp.com/music",
+            owned_count=1,
+            play_time=9000.0,
+        ),
+    ],
     anniversary_albums=[_album_seed(9, "https://c.bandcamp.com/album/z")],
     top_artists=["Four Tet"],
     top_genres=["ambient", "dub techno"],

@@ -234,8 +234,21 @@ def _old_album_seeds(profile: SeedProfile) -> Iterable[Seed]:
     when it was released (KAMP-644). ``slice=top`` skews overwhelmingly to the
     current year, so only the random slice reaches back. The age filter is
     applied client-side on ``release_date``.
+
+    Every genre, not the top three (KAMP-690). The old slice arrived whole in
+    KAMP-647 with nothing defending the number, and it was the entire pool — read
+    two a crate, so the criterion cycled the same three genres forever. Measured,
+    ten consecutive crates read Electronic, Alternative, Rock, Electronic,
+    Alternative, Rock. `genre_top` walks the whole list and always has.
+
+    Costs nothing in cards: KAMP-683 caps this criterion at one a crate, so a
+    wider pool changes WHICH genre turns up, never how many. It does make the
+    KAMP-665 dimension collision with `genre_top` more frequent rather than less
+    — the two are near-disjoint today only because they read different parts of
+    the same list — and that is the accepted trade, since a collision means the
+    crate already has that genre covered.
     """
-    for rank, genre in enumerate(profile.top_genres[:3]):
+    for rank, genre in enumerate(profile.top_genres):
         yield Seed(
             target={"tag": genre, "slice": "rand", "size": 60},
             why=f"A hidden {genre} gem? Who knows, could be good.",
@@ -310,8 +323,16 @@ def _lone_album_artist_seeds(profile: SeedProfile) -> Iterable[Seed]:
     `owned_count` counts albums in the Bandcamp collection, so the copy says
     "here" rather than claiming to know the user's whole shelf — a record bought
     somewhere else would make a flat "you only own one" false.
+
+    Reads its own profile field, filtered in the query (KAMP-690). Filtering
+    `played_artists` here meant the LIMIT was applied first, so a library holding
+    235 qualifying artists surfaced the four that happened to rank inside the 25
+    most-played OVERALL — and the criterion cycled the same seeds every second
+    crate. The guard below stays anyway: the query now enforces it, but the guard
+    is what a test asserts the honesty rule against, and an unasserted rule is one
+    that quietly stops being true.
     """
-    for artist in profile.played_artists:
+    for artist in profile.lone_album_artists:
         if artist.owned_count != 1:
             continue
         yield Seed(

@@ -218,12 +218,34 @@ def register_discovery_routes(
         with _lock:
             snap = dict(_status)
         crate_no = snap.get("crate_no")
-        if crate_no is None:
+        # The fallback is the reconnect path: the status is in-memory and the
+        # crate is not, so a client arriving with nothing published still gets the
+        # last crate dug.
+        #
+        # It must NOT apply mid-dig (KAMP-693). The builder publishes
+        # crate_no=None because the new crate has no number yet — next_crate_no()
+        # is not called until the whole gather is over — and reading that as "use
+        # the latest" handed back the PREVIOUS crate's ten records under a
+        # `building` label. That is the reported bug: a 15-30 second dig spent
+        # showing the crate the user had just asked to replace, with the first new
+        # record eventually arriving among the old ten.
+        #
+        # The client cannot fix this from its end, which is why it is fixed here.
+        # `newCrate` does clear the rows once the POST is accepted, but the POST
+        # returns as soon as the worker thread is spawned and the `building`
+        # publish lands after it — and _warm_wishlist republishes partway through
+        # a build anyway, so the old crate came back regardless of who won.
+        #
+        # Deliberately not extended to the failed states. `empty` and `error` also
+        # publish crate_no=None, and there the previous crate genuinely is what is
+        # still on the counter.
+        building = snap.get("state") == "building"
+        if crate_no is None and not building:
             crate_no = index.latest_crate_no()
             snap["crate_no"] = crate_no
         items = index.crate_items(crate_no) if crate_no is not None else []
         snap["items"] = items
-        if snap.get("state") != "building":
+        if not building:
             # The status is in-memory; the crate is not. After a daemon restart
             # _status is still _INITIAL_STATUS while items holds a full crate, so
             # a restored crate of ten reported filled=0 and a genuinely short one

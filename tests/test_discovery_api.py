@@ -243,6 +243,70 @@ class TestCrateSnapshot:
         body = harness.client.get("/api/v1/discovery/crate").json()
         assert body["filled"] == 3
 
+    def test_a_build_does_not_serve_the_previous_crate(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """The counter is emptied the moment digging starts (KAMP-693).
+
+        The builder publishes crate_no=None because the new crate has no number
+        yet -- next_crate_no() is not called until the whole gather is over. The
+        fallback below then read that as "no crate named, use the latest", handed
+        back the PREVIOUS crate's ten records, and labelled them `building`. So a
+        15-30 second dig was spent showing the crate the user had just asked to
+        replace, and the first new record arrived among the old ten.
+        """
+        _stock(index, 1, count=10)
+        harness.publish({"state": "building", "crate_no": None, "filled": 0})
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["items"] == []
+        assert body["crate_no"] is None
+
+    def test_a_build_serves_its_own_records_once_they_land(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """The gate is on having no crate to name, not on building as such. Once
+        the placement loop publishes a real crate_no the rail fills from it, one
+        publish per record, which is the whole progressive fill."""
+        _stock(index, 1, count=10)
+        _stock(index, 2, count=3)
+        harness.publish({"state": "building", "crate_no": 2, "filled": 3})
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert [item["title"] for item in body["items"]] == [
+            "Title 0",
+            "Title 1",
+            "Title 2",
+        ]
+
+    def test_a_build_reports_no_crate_stats_before_it_has_a_crate(
+        self, index: LibraryIndex, harness: _Harness
+    ) -> None:
+        """crate_stats is scoped to the crate on screen, and during a dig there
+        is none -- reporting the previous crate's tally under a crate that is not
+        there is the same lie in a different field."""
+        _stock(index, 1, count=10)
+        harness.publish({"state": "building", "crate_no": None})
+        assert (
+            harness.client.get("/api/v1/discovery/crate").json()["crate_stats"] is None
+        )
+
+    @pytest.mark.parametrize("state", ["idle", "ready", "empty", "error", "paused"])
+    def test_every_other_state_still_falls_back_to_the_latest_crate(
+        self, index: LibraryIndex, harness: _Harness, state: str
+    ) -> None:
+        """The fallback is the reconnect path and must survive.
+
+        `idle` is the one that matters most: _status resets to it on every daemon
+        restart, so gating any wider than `building` would make a relaunch report
+        an empty crate. The failed-build states matter too -- they publish
+        crate_no=None as well, and there the previous crate genuinely IS what is
+        still on the counter.
+        """
+        _stock(index, 1, count=10)
+        harness.publish({"state": state, "crate_no": None})
+        body = harness.client.get("/api/v1/discovery/crate").json()
+        assert body["crate_no"] == 1
+        assert len(body["items"]) == 10
+
     def test_publishing_pushes_to_clients(self, harness: _Harness) -> None:
         harness.publish({"state": "building", "hints": ["dub techno"]})
         assert harness.events[-1]["state"] == "building"

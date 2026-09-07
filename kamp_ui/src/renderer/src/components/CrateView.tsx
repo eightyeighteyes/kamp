@@ -617,12 +617,17 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     }
   }
 
-  // App blurs the focused element on any key it handles when focus came from
-  // the mouse (KAMP-598), which lands focus on document.body — outside this
-  // container, so none of the handlers above would fire again. Click a sleeve,
-  // press a global key, and digging went silently dead. Taking focus back the
-  // moment it falls to nothing fixes that; focus moving into a dialog names
-  // that dialog as relatedTarget, so modals are left alone.
+  // Take focus back whenever it falls to nothing, so digging never goes silently
+  // dead. A null relatedTarget means focus left for no element at all, and this
+  // container holds every key handler above — once focus is on document.body,
+  // none of them fire again. Focus moving into a dialog names that dialog as
+  // relatedTarget, so modals are left alone.
+  //
+  // This was written for App's KAMP-598 blur, which is gone (KAMP-685). It stays
+  // because that was never its only trigger: the focused sleeve UNMOUNTING blurs
+  // with a null relatedTarget too, which is exactly what dropping a record does
+  // (KAMP-670). Removing this on the strength of its old comment would have
+  // broken a flow that shipped three commits ago.
   const onBlurCapture = (e: React.FocusEvent<HTMLDivElement>): void => {
     if (e.relatedTarget !== null || !active) return
     const rail = railRef.current

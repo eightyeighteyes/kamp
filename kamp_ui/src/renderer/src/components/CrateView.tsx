@@ -205,11 +205,28 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // deck without being live (KAMP-678) — it rides on the idle state as
   // `parked_item_id`, so every predicate that genuinely means "live" keeps
   // reading `state` and only this one falls back.
-  const deckItem = useMemo(() => {
-    const id = preview?.state === 'idle' ? preview?.parked_item_id : preview?.item_id
-    if (id == null) return null
-    return items.find((item) => item.id === id) ?? null
-  }, [items, preview?.item_id, preview?.parked_item_id, preview?.state])
+  //
+  // The lookup can fail while a dig runs, and that is not an error state: the
+  // crate is deliberately emptied the moment digging starts (KAMP-693), so the
+  // record ON the deck is one whose row has just left `items`. Falling to null
+  // there would put "Nothing on the deck" over audible music. So the last
+  // resolved item is held, and only a genuinely empty deck clears it.
+  const deckId = preview?.state === 'idle' ? preview?.parked_item_id : preview?.item_id
+  const inCrate = useMemo(
+    () => (deckId == null ? null : (items.find((item) => item.id === deckId) ?? null)),
+    [items, deckId]
+  )
+
+  // Held across the dig, and adjusted DURING RENDER rather than in an effect or a
+  // ref — the compiler forbids both, and this is React's documented pattern for
+  // it (the same one `endedCrate` uses below).
+  //
+  // Keyed on the id throughout, so a held record can never appear under a
+  // DIFFERENT one's preview. The crate it came from is gone; its identity is
+  // still what the daemon is playing.
+  const [heldDeckItem, setHeldDeckItem] = useState<CrateItem | null>(null)
+  const deckItem = inCrate ?? (heldDeckItem?.id === deckId ? heldDeckItem : null)
+  if (deckItem !== heldDeckItem) setHeldDeckItem(deckItem)
 
   // Where a record flies TO. Measured at the moment a flight starts rather than
   // held as state — the view scrolls, so a rect captured earlier is stale.
@@ -628,11 +645,19 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // with a null relatedTarget too, which is exactly what dropping a record does
   // (KAMP-670). Removing this on the strength of its old comment would have
   // broken a flow that shipped three commits ago.
+  //
+  // The rail itself is the fallback, and it is not a nicety (KAMP-693). A dig now
+  // empties the crate, so the focused sleeve unmounts with nothing to replace it
+  // — the empty slots are aria-hidden and carry no tabindex — and focus would
+  // land on document.body for the whole 15-30 seconds. Every key this view owns
+  // is on this container, so all of them would be dead exactly while the deck is
+  // still playing and Space is the thing you want.
   const onBlurCapture = (e: React.FocusEvent<HTMLDivElement>): void => {
     if (e.relatedTarget !== null || !active) return
     const rail = railRef.current
     const option = rail?.querySelectorAll<HTMLElement>('[data-crate-sleeve]')[focusIndex]
-    option?.focus()
+    if (option) option.focus()
+    else rail?.focus({ preventScroll: true })
   }
 
   // Claim focus when the view opens, so , and . work on arrival.
@@ -645,15 +670,21 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // preventScroll matters: the view scrolls, the bin sits below the focus card,
   // and a plain focus() scrolls the record into view, yanking the card off the
   // top of the screen the moment you arrive.
+  //
+  // No longer skips an empty crate (KAMP-693). It used to, because an empty crate
+  // meant "nothing dug yet" and there was nothing to focus — but a dig empties the
+  // crate now, and arriving in the view mid-dig has to leave the keys working.
+  // The rail takes it instead; it is already tabIndex={-1} for exactly this.
   useEffect(() => {
-    if (!active || items.length === 0) return
+    if (!active) return
     const rail = railRef.current
     if (!rail) return
     // Never steal focus from something already in use inside the view — a
     // pressed action button, or a record the user just clicked.
     if (rail.contains(document.activeElement)) return
     const option = rail.querySelectorAll<HTMLElement>('[data-crate-sleeve]')[focusIndex]
-    option?.focus({ preventScroll: true })
+    if (option) option.focus({ preventScroll: true })
+    else rail.focus({ preventScroll: true })
   }, [active, items.length, focusIndex])
 
   // ---------------------------------------------------------------------------
@@ -897,96 +928,101 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
             focused record — you can keep flipping while something plays, and the
             deck should not change under you when you do. It is also the flight's
             destination rect, which is why it keeps a fixed size rather than one
-            that depends on what is on it. */}
-        {!building && (
-          <div className="crate-deck-col">
-            <div
-              className={`crate-deck${dragOverDeck ? ' crate-deck--drop-target' : ''}`}
-              role="group"
-              aria-label="Preview deck"
-            >
-              <div
-                className={`crate-deck-platter${platterItem ? ' is-loaded' : ''}`}
-                ref={deckArtRef}
-                aria-hidden="true"
-              >
-                {platterItem?.art_url && (
-                  <img className="crate-deck-art" src={crateArtUrl(platterItem.id)} alt="" />
-                )}
-              </div>
+            that depends on what is on it.
 
-              <div className="crate-deck-body">
-                {/* The strip renders whether or not anything is on: its transport
+            Through a dig too, since KAMP-693. It used to be hidden while
+            `building`, which meant a record from the old crate went on playing
+            for the whole 15-30 seconds with no transport, nothing naming it and
+            no way to stop it — the exact outcome the comment above the
+            leave-the-view effect calls worse than no preview at all. Emptying the
+            crate made that worse rather than better, so the gate is gone: the
+            record you are listening to survives the dig, controls and all. */}
+        <div className="crate-deck-col">
+          <div
+            className={`crate-deck${dragOverDeck ? ' crate-deck--drop-target' : ''}`}
+            role="group"
+            aria-label="Preview deck"
+          >
+            <div
+              className={`crate-deck-platter${platterItem ? ' is-loaded' : ''}`}
+              ref={deckArtRef}
+              aria-hidden="true"
+            >
+              {platterItem?.art_url && (
+                <img className="crate-deck-art" src={crateArtUrl(platterItem.id)} alt="" />
+              )}
+            </div>
+
+            <div className="crate-deck-body">
+              {/* The strip renders whether or not anything is on: its transport
                     is what tells you the deck is there and ready (KAMP-678). It
                     also gives the error line below a home — every failure path
                     publishes state=idle, which used to unmount this whole block
                     and take the message with it. */}
-                <CratePreviewStrip
-                  preview={preview ?? IDLE_PREVIEW}
-                  item={deckItem}
-                  wishlistSaving={deckItem !== null && wishlistPending.includes(deckItem.id)}
-                  onToggle={toggleDeck}
-                  onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
-                  onSeek={(position) => void previewSeek(position)}
-                  onToggleWishlist={(item) => void toggleCrateWishlist(item)}
-                />
+              <CratePreviewStrip
+                preview={preview ?? IDLE_PREVIEW}
+                item={deckItem}
+                wishlistSaving={deckItem !== null && wishlistPending.includes(deckItem.id)}
+                onToggle={toggleDeck}
+                onStep={(delta) => void previewAction(delta > 0 ? 'next' : 'prev')}
+                onSeek={(position) => void previewSeek(position)}
+                onToggleWishlist={(item) => void toggleCrateWishlist(item)}
+              />
 
-                {deckItem && preview && preview.tracks.length > 0 && (
-                  <ol className="crate-tracklist">
-                    {preview.tracks.map((track) => (
-                      <li key={track.track_num}>
-                        <button
-                          className={`crate-track${
-                            track.track_num === preview.track_num ? ' crate-track--current' : ''
-                          }`}
-                          onClick={() => void previewPlay(deckItem.id, track.track_num)}
-                        >
-                          <span className="crate-track-num">{track.track_num}</span>
-                          <span className="crate-track-title">
-                            {track.title || `Track ${track.track_num}`}
-                          </span>
-                          <span className="crate-track-time">{formatClock(track.duration)}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                )}
+              {deckItem && preview && preview.tracks.length > 0 && (
+                <ol className="crate-tracklist">
+                  {preview.tracks.map((track) => (
+                    <li key={track.track_num}>
+                      <button
+                        className={`crate-track${
+                          track.track_num === preview.track_num ? ' crate-track--current' : ''
+                        }`}
+                        onClick={() => void previewPlay(deckItem.id, track.track_num)}
+                      >
+                        <span className="crate-track-num">{track.track_num}</span>
+                        <span className="crate-track-title">
+                          {track.title || `Track ${track.track_num}`}
+                        </span>
+                        <span className="crate-track-time">{formatClock(track.duration)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              )}
 
-                {/* Deliberately OUTSIDE the deckItem gate: every failure path
+              {/* Deliberately OUTSIDE the deckItem gate: every failure path
                     publishes state=idle, which empties the deck — so gating this
                     on an occupied deck is precisely why it has never once been
                     seen on screen. */}
-                {preview?.error && (
-                  <p className="crate-preview-error" role="status">
-                    {preview.error === 'rate_limited'
-                      ? 'Bandcamp asked us to slow down — try again shortly.'
-                      : preview.error === 'expired'
-                        ? // Distinct from the line below, because the record is
-                          // fine and only the link went stale — Bandcamp signs
-                          // them for about a day (KAMP-673). Saying "no preview
-                          // for this one" would send the user away from a record
-                          // that plays perfectly well on a second press.
-                          'That link went stale — press play again.'
-                        : 'No preview for this one.'}
-                  </p>
-                )}
+              {preview?.error && (
+                <p className="crate-preview-error" role="status">
+                  {preview.error === 'rate_limited'
+                    ? 'Bandcamp asked us to slow down — try again shortly.'
+                    : preview.error === 'expired'
+                      ? // Distinct from the line below, because the record is
+                        // fine and only the link went stale — Bandcamp signs
+                        // them for about a day (KAMP-673). Saying "no preview
+                        // for this one" would send the user away from a record
+                        // that plays perfectly well on a second press.
+                        'That link went stale — press play again.'
+                      : 'No preview for this one.'}
+                </p>
+              )}
 
-                {/* The strip's meta line already says "Nothing on the deck"; this
+              {/* The strip's meta line already says "Nothing on the deck"; this
                     keeps the part no icon conveys — how to put one on, and that
                     doing so does not disturb the user's own queue. It named only
                     Space until KAMP-679, which is a keyboard instruction shown to
                     people who could not find the keyboard route: the mouse one
                     goes first now. */}
-                {!deckItem && (
-                  <p className="crate-deck-empty">
-                    Double-click a record to put it on, or press Space — your queue stays where it
-                    is.
-                  </p>
-                )}
-              </div>
+              {!deckItem && (
+                <p className="crate-deck-empty">
+                  Double-click a record to put it on, or press Space — your queue stays where it is.
+                </p>
+              )}
             </div>
           </div>
-        )}
+        </div>
 
         {/* Statement, then offer, then the quiet register (KAMP-663). The tally
             used to sit UNDER the button, which read as a footnote to the next

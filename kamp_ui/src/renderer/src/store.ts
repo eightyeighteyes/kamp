@@ -16,6 +16,7 @@ import type {
   ConfigValues,
   CrateItem,
   CrateSnapshot,
+  CrateState,
   PreviewState,
   PurchasedPick,
   CriteriaDoc,
@@ -178,6 +179,11 @@ type PlayerStore = {
   // first snapshot arrives, which the view renders as "not dug yet" rather than
   // as an error.
   crate: CrateSnapshot | null
+  // Whether a dig THIS window started is still in flight, and so whether the
+  // record on the deck should be faded out when it lands (KAMP-693). Not derived
+  // from the crate state, which cannot tell a dig this client asked for from one
+  // it merely heard about.
+  crateStopArmed: boolean
   // KAMP-651: preview transport state. Daemon-owned — it survives a renderer
   // reload, so this is seeded from GET .../preview/state on every WS connect
   // and kept live by the `discovery.preview` event, never invented locally.
@@ -429,6 +435,12 @@ const _albumTracksKey = (albumArtist: string, album: string, trackId: number | n
 // concurrent calls measured at ~21s), so the fan-out — not any single call —
 // was the ~12s bug. The input text still updates synchronously; only the
 // network call is deferred. _searchAbort cancels a superseded in-flight request.
+// States a dig can end in — the client half of the daemon's _TERMINAL_STATES
+// (KAMP-693). Every one of them has to disarm the pending fade-and-stop, not
+// just `ready`: a flag left armed after a failed dig would fire on some
+// unrelated crate arriving later.
+const CRATE_TERMINAL_STATES = new Set<CrateState>(['ready', 'empty', 'error', 'paused', 'idle'])
+
 const SEARCH_DEBOUNCE_MS = 250
 let _searchTimer: ReturnType<typeof setTimeout> | null = null
 let _searchAbort: AbortController | null = null
@@ -611,6 +623,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
   downloadPausedUntil: 0,
   downloadBatch: null,
   crate: null,
+  crateStopArmed: false,
   crateWishlistPending: [],
   crateWishlistError: null,
   preview: null,
@@ -968,9 +981,37 @@ export const useStore = create<PlayerStore>((set, get) => ({
       // transition, and a crate that never loads renders as "not dug yet".
     }
   },
-  setCrate: (snapshot) => set({ crate: snapshot }),
+  // The WS entry point for a crate, and the only one (KAMP-693). `loadCrate`
+  // deliberately bypasses it with a direct set: that is the REST/reconnect path,
+  // and a reconnect re-delivering a `ready` snapshot must not read as a dig
+  // finishing. Same for a crate restored at launch.
+  setCrate: (snapshot) => {
+    // Fade the record out once the dig is DONE, not when it starts (KAMP-693).
+    // A dig is 15-30 seconds and the point is that you keep listening through it;
+    // the stop belongs at the moment the new crate is on the counter.
+    //
+    // Armed by this client's own dig and disarmed here, so it can only ever fire
+    // for a build this window started. Without that a reconnect, a second window,
+    // or a crate restored on launch would silently stop a preview the user had
+    // deliberately put on — a worse bug than the one being fixed.
+    if (get().crateStopArmed && CRATE_TERMINAL_STATES.has(snapshot.state)) {
+      set({ crateStopArmed: false })
+      // `ready` only. A 409, an error or an empty dig never replaced anything, so
+      // there is nothing to move on FROM — taking the record away would be a
+      // consolation prize for a dig that failed.
+      if (snapshot.state === 'ready' && get().preview?.state !== 'idle') {
+        void get().previewAction('stop', { fade: true })
+      }
+    }
+    set({ crate: snapshot })
+  },
   newCrate: async () => {
     try {
+      // Armed BEFORE the request, not after. The build's terminal publish can
+      // reach us before this promise resolves, and arming afterwards would then
+      // miss it — the record would simply play on with the new crate in front of
+      // it. Disarmed in the catch below, so a refused dig arms nothing.
+      set({ crateStopArmed: true })
       await api.newCrate()
       // Clear the old records once the dig is ACCEPTED (KAMP-672).
       //
@@ -987,6 +1028,7 @@ export const useStore = create<PlayerStore>((set, get) => ({
       const crate = get().crate
       if (crate) set({ crate: { ...crate, items: [], crate_stats: null } })
     } catch (err) {
+      set({ crateStopArmed: false })
       const msg = err instanceof Error ? err.message : 'Could not dig a crate'
       get().showFlashToast(msg)
     }

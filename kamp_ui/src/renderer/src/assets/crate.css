@@ -505,6 +505,15 @@
   border-width: 2px;
 }
 
+/* No ring on a sleeve, from any modality (KAMP-685). The bin uses a roving
+   tabindex, so the only sleeve Tab can reach IS the focused one — and it already
+   says so three ways: pulled forward out of the bin, a 2px accent border on its
+   art, and aria-current for anyone listening. A ring would stack a second accent
+   outline on that border, inside a clipped perspective box that would crop it. */
+.bin-sleeve:focus-visible {
+  outline: none;
+}
+
 /* Same rule as the flat rail: state is opacity, border weight and a glyph —
    never hue. There is one --accent token and it swings from indigo to magenta
    to green across the eight palettes. */

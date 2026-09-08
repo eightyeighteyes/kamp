@@ -1037,6 +1037,160 @@ class TestSpreadWithinACrate:
         ), "genre_top consumed the whole discover allowance"
 
 
+class TestTheGatherOverlapsItsEndpointClasses:
+    """KAMP-698. A dig was 15-30 seconds and every request in it was serial.
+
+    `_MIN_SPACING` is keyed per endpoint class and `wait_turn` reserves its slot
+    under a lock -- explicitly so two threads in one class cannot both go -- so
+    the three classes never needed to wait on each other. They did it anyway,
+    purely because gather looped criteria in one thread.
+    """
+
+    def test_the_classes_run_at_the_same_time(self) -> None:
+        """The whole point, and it has to be asserted on OVERLAP rather than on
+        elapsed time, which would be a flaky way to say the same thing.
+
+        Each class records when it is inside a fetch. If the gather is serial, no
+        two classes are ever in one at the same moment.
+        """
+        import threading
+
+        inside: dict[str, int] = {}
+        overlapped: set[frozenset[str]] = set()
+        lock = threading.Lock()
+        gate = threading.Barrier(3, timeout=5)
+
+        class _Watched(FakeSession):
+            def _note(self, endpoint_class: str) -> None:
+                with lock:
+                    inside[endpoint_class] = inside.get(endpoint_class, 0) + 1
+                    live = {k for k, v in inside.items() if v > 0}
+                    if len(live) > 1:
+                        overlapped.add(frozenset(live))
+
+            def get(self, url: str, timeout: int = 30) -> Any:
+                cls = ARTIST_PAGE if url.endswith("/music") else ALBUM_PAGE
+                self._note(cls)
+                try:
+                    gate.wait()
+                except threading.BrokenBarrierError:
+                    pass
+                resp = super().get(url, timeout)
+                with lock:
+                    inside[cls] -= 1
+                return resp
+
+            def post(self, url: str, **kw: Any) -> Any:
+                self._note(DISCOVER_API)
+                try:
+                    gate.wait()
+                except threading.BrokenBarrierError:
+                    pass
+                resp = super().post(url, **kw)
+                with lock:
+                    inside[DISCOVER_API] -= 1
+                return resp
+
+        session = _Watched(
+            get_body=_fixture("album_page_with_recs"),
+            post_body=_fixture("discover_web_ambient_top"),
+        )
+        _source(session).gather(RICH_PROFILE, crate_budget(), {})
+        # The barrier only releases when three different classes are waiting in a
+        # fetch at once, so reaching this line at all is the property. The
+        # recorded set makes the failure message say which classes made it.
+        assert overlapped, "no two endpoint classes were ever in flight together"
+
+    def test_the_same_candidates_come_back(self) -> None:
+        """Concurrency must not change WHAT a crate is offered, only when.
+
+        Compared against a deliberately serialised run of the same source, so
+        this stays true if the grouping or merge order is ever reworked.
+        """
+
+        def _gather(max_workers: int) -> list[str]:
+            session = FakeSession(
+                get_body=_fixture("album_page_with_recs"),
+                post_body=_fixture("discover_web_ambient_top"),
+            )
+            found = _source(session).gather(
+                RICH_PROFILE, crate_budget(), {}, max_workers=max_workers
+            )
+            return [c.provider_item_id for c in found]
+
+        assert _gather(1) == _gather(4)
+
+    def test_the_request_count_per_class_is_unchanged(self) -> None:
+        """The one number that must not move. These endpoints rate-limit hardest
+        and a 429 cascades account-wide (KAMP-639), so overlapping them is only
+        acceptable while it costs exactly what it cost before."""
+
+        def _spend(max_workers: int) -> dict[str, int]:
+            session = FakeSession(
+                get_body=_fixture("album_page_with_recs"),
+                post_body=_fixture("discover_web_ambient_top"),
+            )
+            budget = crate_budget()
+            _source(session).gather(RICH_PROFILE, budget, {}, max_workers=max_workers)
+            return dict(budget.spent)
+
+        assert _spend(4) == _spend(1)
+
+    def test_a_rate_limit_in_one_class_stops_every_class(self) -> None:
+        """A 429 is account-wide, not that class's problem (KAMP-639).
+
+        Serially this fell out of a bare `break`. Concurrently it has to be said
+        out loud, or the other two workers keep hammering an account that has
+        already been told to stop -- turning one rate limit into three.
+        """
+        session = FakeSession(get_body=_fixture("album_page_with_recs"))
+        session.post_status = 429
+        budget = crate_budget()
+        profile = replace(RICH_PROFILE, top_genres=[f"g{i}" for i in range(25)])
+        _source(session).gather(profile, budget, {}, max_workers=4)
+        # The discover worker hits the 429 on its first request; the album and
+        # artist workers must not spend their full allowance afterwards.
+        assert budget.spent.get(ALBUM_PAGE, 0) < budget.limits[ALBUM_PAGE]
+
+    def test_the_rotation_survives_concurrent_writers(self) -> None:
+        """`_sub` is a check-then-create on the shared state dict, so two workers
+        would each build a fresh {} and one would clobber the other's offsets --
+        losing a whole class's rotation silently, which reads as a criterion that
+        never varies rather than as a bug."""
+        state: dict[str, Any] = {}
+        session = FakeSession(
+            get_body=_fixture("album_page_with_recs"),
+            post_body=_fixture("discover_web_ambient_top"),
+        )
+        _source(session).gather(RICH_PROFILE, crate_budget(), state, max_workers=4)
+        ran = {c.key for c in criteria_for(RICH_PROFILE)}
+        recorded = set(state.get("seeds", {}))
+        assert ran <= recorded, f"lost rotation for {sorted(ran - recorded)}"
+
+    def test_no_seed_dimension_is_shared_across_endpoint_classes(self) -> None:
+        """The property that lets `used` be partitioned by worker.
+
+        Album dimensions arise only in ALBUM_PAGE criteria, genre only in
+        DISCOVER_API, artist only in ARTIST_PAGE -- so the two criteria that
+        genuinely collide over genres are both DISCOVER_API and stay in one
+        thread, in order, exactly as before.
+
+        `used` is locked anyway, so correctness does not rest on this. What this
+        guards is the REASONING: a future criterion that read genres off an album
+        page would make the guard order-dependent, and this fails loudly instead
+        of producing a crate that quietly repeats a genre now and then.
+        """
+        kinds: dict[str, set[str]] = {}
+        for criterion in REGISTRY:
+            for seed in criterion.seeds(RICH_PROFILE):
+                dimension = seed_dimension(seed.seed_data)
+                if dimension is not None:
+                    kind = dimension.split(":", 1)[0]
+                    kinds.setdefault(kind, set()).add(criterion.endpoint_class)
+        straddling = {k: v for k, v in kinds.items() if len(v) > 1}
+        assert not straddling, f"dimension kinds spanning classes: {straddling}"
+
+
 class TestGenreExclusionAcrossCriteria:
     def test_the_two_genre_criteria_do_not_take_the_same_genre(self) -> None:
         """Both read top_genres and both started at its head, so one genre

@@ -15,7 +15,9 @@ document or nothing.
 from __future__ import annotations
 
 import logging
+import threading
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from kamp_core.proxy_hosts import FETCHABLE_HOSTS, host_allowed
@@ -95,10 +97,12 @@ _SEEDS_PER_CRITERION = 2
 #: to unverified when the budget runs out rather than overrunning it.
 _SEEDS_FOR: dict[str, int] = {"also_like": 4}
 
-
-def _seeds_allowed(criterion: Criterion) -> int:
-    """How many seeds *criterion* may read in one crate."""
-    return _SEEDS_FOR.get(criterion.key, _SEEDS_PER_CRITERION)
+#: Gather workers, which is one per endpoint class and deliberately not more
+#: (KAMP-698). There are three classes; a fourth worker would have nothing to do
+#: but queue on a class's own spacing, and workers *within* a class would break
+#: the partition that keeps `used`, the rotation offsets and the budget correct
+#: without a lock between them.
+_GATHER_WORKERS = 3
 
 
 #: How many cards one criterion may contribute to a crate (KAMP-683).
@@ -112,6 +116,30 @@ CRITERION_CAPS: dict[str, int] = {
     "genre_top": 1,
     "older_than_ten": 1,
 }
+
+
+def _seeds_allowed(criterion: Criterion) -> int:
+    """How many seeds *criterion* may read in one crate.
+
+    Never more than it can place (KAMP-698). SEED_CAP is 1, so a criterion's card
+    cap IS its seed ceiling — and `genre_top` and `older_than_ten` were each
+    reading two seeds against a cap of one. That second request was pure cost:
+    the backfill pass drops caps and can take a second card from the first seed's
+    remaining twenty-odd items, so the extra fetch bought a card the crate could
+    already have had, on the class that rate-limits hardest.
+
+    Derived from the cap rather than restated as a third list. There are already
+    two of these to keep in agreement, and the symptom of a third disagreeing —
+    a criterion quietly unable to fill its own cap — is invisible in any one
+    crate.
+
+    The cap is a ceiling, never a floor: an uncapped criterion keeps its full
+    allowance, which is what lets `also_like` read four.
+    """
+    allowed = _SEEDS_FOR.get(criterion.key, _SEEDS_PER_CRITERION)
+    cap = CRITERION_CAPS.get(criterion.key)
+    return allowed if cap is None else min(allowed, cap)
+
 
 #: Turns per round of the deal, for criteria worth more of a crate (KAMP-683).
 #: Module-level for the same reason as the caps: the builder suite's fake source
@@ -331,6 +359,7 @@ class BandcampDiscoverySource(DiscoverySource):
         budget: RequestBudget,
         state: "MutableMapping[str, Any] | None" = None,
         on_seed: "Callable[[str, dict[str, Any]], None] | None" = None,
+        max_workers: int = _GATHER_WORKERS,
     ) -> list[Candidate]:
         """Collect candidates across the criteria that suit *profile*.
 
@@ -358,6 +387,13 @@ class BandcampDiscoverySource(DiscoverySource):
         and each is its own request, so per-criterion would leave the line still
         for whole fetches. Skipped seeds are silent — announcing work that never
         happens would name a genre the crate is not digging through.
+
+        With the classes overlapped it also interleaves between them, which is
+        honest: three things really are being looked at. Throttle the line before
+        re-serialising the gather if that ever reads as frantic.
+
+        *max_workers* exists for tests, which need a serial baseline to compare
+        against. 1 runs the classes in order, exactly as this did before KAMP-698.
         """
         out: list[Candidate] = []
         seen: set[str] = set()
@@ -374,29 +410,101 @@ class BandcampDiscoverySource(DiscoverySource):
         # ids, so no database access is needed here.
         owned = set(profile.purchase_dates)
 
-        # Seed dimensions already spoken for in THIS crate (KAMP-665). Criteria
-        # run in sequence here, which is what lets a later one be told what an
-        # earlier one took: genre_top and older_than_ten both read top_genres and
-        # both started at its head, so one genre covered two criteria in the same
-        # crate. Per gather, never persisted — it is about the shape of one crate,
-        # not about what previous crates did (that is rotation's job, KAMP-661).
+        # Seed dimensions already spoken for in THIS crate (KAMP-665): genre_top
+        # and older_than_ten both read top_genres and both start at its head, so
+        # without this one genre covers two criteria in the same crate. Per
+        # gather, never persisted — it is about the shape of one crate, not about
+        # what previous crates did (that is rotation's job, KAMP-661).
+        #
+        # Unsynchronised, and safe, because dimension kinds do not cross endpoint
+        # classes: album dimensions arise only in ALBUM_PAGE criteria, genre only
+        # in DISCOVER_API, artist only in ARTIST_PAGE. So the two criteria that
+        # genuinely collide are both DISCOVER_API and still run in one worker, in
+        # order, exactly as they did serially.
+        # `test_no_seed_dimension_is_shared_across_endpoint_classes` fails loudly
+        # if a future criterion breaks that, rather than leaving a crate to
+        # quietly repeat a genre now and then.
         used: set[str] = set()
 
+        # Created before any worker can race to build one. `_sub` is a
+        # check-then-create on this shared dict, so two workers arriving together
+        # would each make a fresh {} and one would clobber the other — losing a
+        # whole class's rotation, which reads as a criterion that never varies
+        # rather than as a bug.
+        _sub(state, "seeds")
+        _sub(state, "cursors")
+
+        # A 429 is account-wide, not that class's problem (KAMP-639). Serially
+        # this fell out of a bare `break`; concurrently it has to be said out
+        # loud, or the other workers keep hammering an account that has already
+        # been told to stop — turning one rate limit into three.
+        stop = threading.Event()
+
+        # Grouped by endpoint class, REGISTRY order preserved within each group.
+        #
+        # This is the whole change: _MIN_SPACING is keyed per class and wait_turn
+        # reserves its slot under a lock, explicitly so two threads in one class
+        # cannot both go — so the classes never needed to wait on each other. They
+        # did it anyway, purely because this loop was one thread. Serially that is
+        # 6x1.5 + 5x1.0 + 4x1.5 = 20s of enforced spacing; by class it is
+        # max(9, 5, 6) = 9s, with per-request latency parallelising alongside.
+        #
+        # One worker PER CLASS, never per criterion: two workers inside one class
+        # would just queue on that class's spacing, and every ordering property
+        # that matters — `used`, the rotation offsets, the budget — holds because
+        # a class is worked by exactly one thread.
+        groups: dict[str, list[Criterion]] = {}
         for criterion in criteria_for(profile):
-            try:
-                found = self._run_criterion(
-                    criterion, profile, budget, owned, state, used=used, on_seed=on_seed
-                )
-            except RateLimitedError as exc:
-                logger.warning("discovery: stopping gather early — %s", exc)
-                break
-            except Exception:  # noqa: BLE001 - a buggy criterion cannot break the crate
-                logger.warning(
-                    "discovery: criterion %s failed (best-effort)",
-                    criterion.key,
-                    exc_info=True,
-                )
-                continue
+            groups.setdefault(criterion.endpoint_class, []).append(criterion)
+
+        def _run_class(criteria: list[Criterion]) -> list[Candidate]:
+            found: list[Candidate] = []
+            for criterion in criteria:
+                if stop.is_set():
+                    break
+                try:
+                    found.extend(
+                        self._run_criterion(
+                            criterion,
+                            profile,
+                            budget,
+                            owned,
+                            state,
+                            used=used,
+                            on_seed=on_seed,
+                            stop=stop,
+                        )
+                    )
+                except RateLimitedError as exc:
+                    logger.warning("discovery: stopping gather early — %s", exc)
+                    stop.set()
+                    break
+                except Exception:  # noqa: BLE001 - one criterion cannot break the crate
+                    logger.warning(
+                        "discovery: criterion %s failed (best-effort)",
+                        criterion.key,
+                        exc_info=True,
+                    )
+                    continue
+            return found
+
+        if max_workers <= 1 or len(groups) <= 1:
+            results = [_run_class(criteria) for criteria in groups.values()]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=min(max_workers, len(groups)),
+                thread_name_prefix="crate-gather",
+            ) as pool:
+                futures = [
+                    pool.submit(_run_class, criteria) for criteria in groups.values()
+                ]
+                # Collected in submission order, not completion order, so the
+                # dedupe below keeps the same winner every time. A crate assembled
+                # from whichever worker happened to finish first would differ run
+                # to run for no reason the user could see.
+                results = [future.result() for future in futures]
+
+        for found in results:
             for candidate in found:
                 # Dedupe within the gather: ~15% of recommendations recur across
                 # seeds (KAMP-644). Crate-level variety and caps are KAMP-648's.
@@ -415,6 +523,7 @@ class BandcampDiscoverySource(DiscoverySource):
         state: "MutableMapping[str, Any] | None" = None,
         used: set[str] | None = None,
         on_seed: "Callable[[str, dict[str, Any]], None] | None" = None,
+        stop: "threading.Event | None" = None,
     ) -> list[Candidate]:
         """One criterion's worth of candidates, spread over a few seeds.
 
@@ -461,6 +570,13 @@ class BandcampDiscoverySource(DiscoverySource):
         consumed = 0
         for step in range(len(seeds)):
             if productive >= _seeds_allowed(criterion):
+                break
+            # Another class was rate-limited (KAMP-698). Checked per SEED rather
+            # than only between criteria, so a 429 stops the other workers within
+            # one request instead of letting each finish its criterion first —
+            # which for also_like is four more album pages against an account
+            # that has already been told to slow down.
+            if stop is not None and stop.is_set():
                 break
             seed = seeds[(start + step) % len(seeds)]
             if not budget.allow(criterion.endpoint_class):

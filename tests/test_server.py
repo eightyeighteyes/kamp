@@ -1476,7 +1476,28 @@ class TestPlayerWebSocket:
     def test_websocket_sends_initial_state(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:
-        mock_engine.state = PlaybackState(playing=True, position=10.0, duration=200.0)
+        # No duration, and that is what makes this deterministic rather than
+        # fast-machine-dependent.
+        #
+        # _state_snapshot extrapolates position from wall-clock while playing,
+        # once position_updated_at is more than 0.3s stale AND duration > 0 —
+        # the KAMP-392 behaviour that test_extrapolates_position_when_time_pos_
+        # events_stale pins. position_updated_at defaults to the moment the state
+        # is CONSTRUCTED, so with a duration set this asserted a raw 10.0 while
+        # creating the exact conditions for it to be extrapolated: on a loaded CI
+        # runner, building the app and completing the websocket handshake took
+        # longer than 0.3s and it failed with 10.30.
+        #
+        # Pinning position_updated_at at construction does NOT fix it — verified,
+        # not assumed — because the staleness accrues between construction and the
+        # read, which is the very interval that varies. Only the duration gate is
+        # under the test's control.
+        #
+        # Dropping it costs nothing: this test asserts the type, playing, position
+        # and the current track, never the duration. playing with duration 0 is
+        # also a real state — it is what every track looks like between file-loaded
+        # and mpv's first duration event.
+        mock_engine.state = PlaybackState(playing=True, position=10.0)
         mock_queue.current.return_value = _track(1)
         app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
         c = TestClient(app)

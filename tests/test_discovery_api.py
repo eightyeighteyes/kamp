@@ -277,17 +277,17 @@ class TestCrateSnapshot:
             "Title 2",
         ]
 
-    def test_a_build_reports_no_crate_stats_before_it_has_a_crate(
-        self, index: LibraryIndex, harness: _Harness
-    ) -> None:
-        """crate_stats is scoped to the crate on screen, and during a dig there
-        is none -- reporting the previous crate's tally under a crate that is not
-        there is the same lie in a different field."""
-        _stock(index, 1, count=10)
-        harness.publish({"state": "building", "crate_no": None})
-        assert (
-            harness.client.get("/api/v1/discovery/crate").json()["crate_stats"] is None
-        )
+    def test_the_snapshot_carries_no_per_crate_tally(self, harness: _Harness) -> None:
+        """KAMP-699. The end-of-crate line these fed is gone, and nothing else
+        ever read them.
+
+        Asserted as an ABSENCE rather than just deleted, because the cost was in
+        computing them: five COUNT queries inside every _snapshot(), and a
+        snapshot is built once per placed record during a build plus on every
+        reconnect. A well-meaning re-add would be fifty COUNTs a build for a
+        field with no consumer, and nothing else would notice.
+        """
+        assert "crate_stats" not in harness.client.get("/api/v1/discovery/crate").json()
 
     @pytest.mark.parametrize("state", ["idle", "ready", "empty", "error", "paused"])
     def test_every_other_state_still_falls_back_to_the_latest_crate(
@@ -466,18 +466,15 @@ class TestDiggingHistoryRoutes:
     def test_the_snapshot_carries_the_history(
         self, index: LibraryIndex, harness: _Harness
     ) -> None:
-        """Riding the snapshot is what keeps the numbers live without a second
-        request, and what stops the tally and the lifetime line disagreeing."""
+        """Riding the snapshot is what keeps the lifetime line live without a
+        second request."""
         _stock(index, 1, count=2)
         body = harness.client.get("/api/v1/discovery/crate").json()
         assert body["stats"]["records"] == 2
-        assert body["crate_stats"]["records"] == 2
 
-    def test_an_empty_library_reports_no_crate_stats(self, harness: _Harness) -> None:
-        """There is no crate to tally, which is different from a crate of zero."""
+    def test_an_empty_library_reports_a_zeroed_history(self, harness: _Harness) -> None:
         body = harness.client.get("/api/v1/discovery/crate").json()
         assert body["stats"]["records"] == 0
-        assert body["crate_stats"] is None
 
     def test_the_endpoint_and_the_snapshot_agree(
         self, index: LibraryIndex, harness: _Harness

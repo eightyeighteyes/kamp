@@ -283,14 +283,16 @@ def register_discovery_routes(
         # The digging history rides along rather than being fetched separately
         # (KAMP-655). Five COUNTs over two small indexed tables, against a
         # snapshot that already reads every row of the crate -- so the numbers
-        # are live with no second request and no staleness, and the end-of-crate
-        # tally cannot drift from the lifetime line.
+        # are live with no second request and no staleness.
+        #
+        # The crate-scoped tally that used to sit beside this is gone (KAMP-699)
+        # along with the end-of-crate line it fed. It was another five COUNTs, and
+        # this function runs once per placed record during a build plus on every
+        # reconnect -- fifty a build for a field the renderer no longer read.
+        # `GET /api/v1/discovery/stats` still serves the same aggregates, and
+        # LibraryIndex.discovery_stats keeps its crate_no parameter: the cost was
+        # in calling it, not in the WHERE clause existing.
         snap["stats"] = index.discovery_stats()
-        # Scoped to the crate on screen, which is always the LATEST one -- see
-        # crate_no above. If crate browsing ever arrives this has to follow it.
-        snap["crate_stats"] = (
-            index.discovery_stats(crate_no=crate_no) if crate_no is not None else None
-        )
         return snap
 
     def _publish(fields: dict[str, Any]) -> None:

@@ -12,7 +12,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -40,8 +40,10 @@ from kamp_daemon.discovery_criteria import (
     seed_dimension,
 )
 from kamp_daemon.discovery_sources import (
+    CRITERION_CAPS,
     BandcampDiscoverySource,
     RateLimitedError,
+    _SEEDS_PER_CRITERION,
     _seeds_allowed,
 )
 from kamp_core.discovery_api import UNPERSONALISED_CRITERIA
@@ -298,6 +300,46 @@ class TestCriteriaRegistry:
         """crate_budget denies unknown classes, so an undeclared one would return
         empty forever and look exactly like parser drift."""
         assert crate_budget().allow(criterion.endpoint_class) is True
+
+    @pytest.mark.parametrize("criterion", REGISTRY, ids=lambda c: c.key)
+    def test_no_criterion_reads_more_seeds_than_it_can_place(
+        self, criterion: Criterion
+    ) -> None:
+        """A seed is one request against the endpoints that rate-limit hardest,
+        and SEED_CAP is 1, so a criterion's card cap IS its seed ceiling (KAMP-698).
+
+        genre_top and older_than_ten each read two seeds and are capped at one
+        card. The second was pure cost: the backfill pass drops caps and can take
+        a second card from the first seed's remaining twenty-odd items, so the
+        extra fetch bought a card the crate could already have had.
+        """
+        cap = CRITERION_CAPS.get(criterion.key)
+        if cap is None:
+            return
+        assert _seeds_allowed(criterion) <= cap
+
+    def test_the_seed_allowance_is_derived_from_the_cap_not_restated(self) -> None:
+        """Raising a cap must raise the seeds that serve it, with nothing to edit.
+
+        There are already two lists to keep in agreement (_SEEDS_FOR and
+        CRITERION_CAPS); a third hardcoded one would be a third chance for them to
+        disagree silently, and the symptom — a criterion quietly unable to fill
+        its own cap — is invisible in any single crate.
+        """
+        capped = next(c for c in REGISTRY if CRITERION_CAPS.get(c.key) == 1)
+        assert _seeds_allowed(capped) == 1
+        with patch.dict(
+            "kamp_daemon.discovery_sources.CRITERION_CAPS", {capped.key: 3}
+        ):
+            assert _seeds_allowed(capped) == _SEEDS_PER_CRITERION
+
+    def test_an_uncapped_criterion_keeps_its_full_allowance(self) -> None:
+        """The cap is a ceiling, never a floor. also_like is uncapped and reads
+        four seeds because KAMP-683 wants four also-like records off four
+        different album pages."""
+        also_like = next(c for c in REGISTRY if c.key == "also_like")
+        assert also_like.key not in CRITERION_CAPS
+        assert _seeds_allowed(also_like) == 4
 
     def test_thin_profile_still_yields_the_chart_criterion(self) -> None:
         """The un-personalised fallback: a new user gets a crate, not an apology."""
@@ -1123,6 +1165,31 @@ class TestACrateReflectsTheLibrarysRange:
         assert budget.spent[DISCOVER_API] <= budget.limits[DISCOVER_API]
         assert budget.spent.get(ARTIST_PAGE, 0) <= budget.limits[ARTIST_PAGE]
         assert budget.spent.get(FANCOLLECTION, 0) == 0
+
+    def test_a_capped_criterion_costs_one_request_not_two(self) -> None:
+        """The saving, pinned exactly rather than as an upper bound (KAMP-698).
+
+        The budget test above asserts `<= limits` and would stay green whichever
+        way this moved — in either direction, which is the more dangerous half.
+
+        Driven from a 25-genre profile because RICH_PROFILE carries ONE, and with
+        one genre both genre_top seeds name it: the second is skipped by the
+        `used` guard before it costs anything, so a single-genre profile cannot
+        see this change at all. That is exactly the trap that made the first
+        measurement of this ticket read "no saving".
+
+        Three DISCOVER_API requests for three criteria, each capped at one card.
+        It was five. The candidates gathered are unchanged.
+        """
+        budget = crate_budget()
+        session = FakeSession(
+            get_body=_fixture("album_page_with_recs"),
+            post_body=_fixture("discover_web_ambient_top"),
+        )
+        profile = replace(RICH_PROFILE, top_genres=[f"genre-{i}" for i in range(25)])
+        found = _source(session).gather(profile, budget, {})
+        assert budget.spent[DISCOVER_API] == 3
+        assert found
 
     def test_no_criterion_is_starved_by_the_budget(self) -> None:
         """The failure the budget test above cannot see (KAMP-658).

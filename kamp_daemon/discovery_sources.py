@@ -96,11 +96,6 @@ _SEEDS_PER_CRITERION = 2
 _SEEDS_FOR: dict[str, int] = {"also_like": 4}
 
 
-def _seeds_allowed(criterion: Criterion) -> int:
-    """How many seeds *criterion* may read in one crate."""
-    return _SEEDS_FOR.get(criterion.key, _SEEDS_PER_CRITERION)
-
-
 #: How many cards one criterion may contribute to a crate (KAMP-683).
 #:
 #: Module-level rather than inline in the property so a test can assert the crate
@@ -112,6 +107,30 @@ CRITERION_CAPS: dict[str, int] = {
     "genre_top": 1,
     "older_than_ten": 1,
 }
+
+
+def _seeds_allowed(criterion: Criterion) -> int:
+    """How many seeds *criterion* may read in one crate.
+
+    Never more than it can place (KAMP-698). SEED_CAP is 1, so a criterion's card
+    cap IS its seed ceiling — and `genre_top` and `older_than_ten` were each
+    reading two seeds against a cap of one. That second request was pure cost:
+    the backfill pass drops caps and can take a second card from the first seed's
+    remaining twenty-odd items, so the extra fetch bought a card the crate could
+    already have had, on the class that rate-limits hardest.
+
+    Derived from the cap rather than restated as a third list. There are already
+    two of these to keep in agreement, and the symptom of a third disagreeing —
+    a criterion quietly unable to fill its own cap — is invisible in any one
+    crate.
+
+    The cap is a ceiling, never a floor: an uncapped criterion keeps its full
+    allowance, which is what lets `also_like` read four.
+    """
+    allowed = _SEEDS_FOR.get(criterion.key, _SEEDS_PER_CRITERION)
+    cap = CRITERION_CAPS.get(criterion.key)
+    return allowed if cap is None else min(allowed, cap)
+
 
 #: Turns per round of the deal, for criteria worth more of a crate (KAMP-683).
 #: Module-level for the same reason as the caps: the builder suite's fake source

@@ -35,6 +35,7 @@ from kamp_daemon.discovery_criteria import (
     Seed,
     _genre_top_seeds,
     criteria_for,
+    digging_phrase,
     phrasings,
     seed_dimension,
 )
@@ -241,6 +242,53 @@ class TestCriteriaRegistry:
             assert line.strip()
 
     @pytest.mark.parametrize("criterion", REGISTRY, ids=lambda c: c.key)
+    def test_every_seed_can_say_what_it_is_about_to_do(
+        self, criterion: Criterion
+    ) -> None:
+        """KAMP-693. A dig is 15-30 seconds and this line is what fills them, so
+        every seed of every criterion has to produce one -- a criterion that fell
+        through to a blank would freeze the line for its whole turn, which is the
+        symptom the ticket exists to remove."""
+        for seed in criterion.seeds(RICH_PROFILE):
+            phrase = digging_phrase(criterion.key, seed.seed_data)
+            assert phrase.strip()
+            assert phrase.endswith("…")
+
+    @pytest.mark.parametrize("criterion", REGISTRY, ids=lambda c: c.key)
+    def test_the_digging_line_names_the_thing_it_is_following(
+        self, criterion: Criterion
+    ) -> None:
+        """The point of the line is that it is specific. "Digging…" for twenty
+        seconds is a spinner with words; naming the record, band or genre being
+        followed is the shop actually being dug through."""
+        # kind -> the seed_data field carrying the subject. Not the same thing:
+        # `genre` and `genre_old` are two kinds naming one field, which is exactly
+        # what lets seed_dimension stop them both taking Rock.
+        fields = {
+            "album": "album",
+            "artist": "artist",
+            "genre": "genre",
+            "genre_old": "genre",
+            "chart": None,  # the chart is about nobody, and says so
+        }
+        subject = "Ambivalent Sausage"
+        for seed in criterion.seeds(RICH_PROFILE):
+            field = fields[seed.seed_data["kind"]]
+            if field is None:
+                continue
+            seeded = {**seed.seed_data, field: subject}
+            assert subject in digging_phrase(criterion.key, seeded)
+
+    @pytest.mark.parametrize("criterion", REGISTRY, ids=lambda c: c.key)
+    def test_the_digging_line_survives_a_seed_it_does_not_recognise(
+        self, criterion: Criterion
+    ) -> None:
+        """Same reason phrasings degrades rather than raising: this runs inside
+        the gather, and a KeyError here would cost the crate to decorate it."""
+        assert digging_phrase(criterion.key, {}).strip()
+        assert digging_phrase("no_such_criterion", {"kind": "album"}).strip()
+
+    @pytest.mark.parametrize("criterion", REGISTRY, ids=lambda c: c.key)
     def test_thin_profile_never_raises(self, criterion: Criterion) -> None:
         """A brand-new library is the common first run, not an edge case."""
         list(criterion.seeds(SeedProfile()))
@@ -411,6 +459,74 @@ class TestGatherAgainstFixtures:
             "best_seller",
             "older_than_ten",
         }
+
+    def test_the_gather_says_what_it_is_about_to_fetch(self) -> None:
+        """KAMP-693: the 15-30 seconds of a dig, narrated.
+
+        One call per seed actually fetched, which is one per HTTP round trip —
+        that is what makes the line move at the pace the work does rather than on
+        a timer with nothing behind it.
+        """
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+        seen: list[tuple[str, dict[str, Any]]] = []
+        _source(session).gather(
+            SeedProfile(top_genres=["ambient"]),
+            crate_budget(),
+            on_seed=lambda criterion, seed: seen.append((criterion, seed)),
+        )
+        assert seen
+        assert len(seen) == len(session.posts)
+        assert all(seed.get("kind") for _criterion, seed in seen)
+
+    def test_the_gather_reports_a_seed_before_fetching_it(self) -> None:
+        """Before, not after: a line that appears once a fetch has RETURNED
+        describes work that is already done, and the last one would never be seen
+        at all."""
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+        order: list[str] = []
+        source = _source(session)
+
+        def _note(criterion: str, seed: dict[str, Any]) -> None:
+            order.append(f"say:{criterion}")
+
+        original = source._run_seed
+
+        def _watched(*args: Any, **kwargs: Any) -> Any:
+            order.append("fetch")
+            return original(*args, **kwargs)
+
+        source._run_seed = _watched  # type: ignore[method-assign]
+        source.gather(
+            SeedProfile(top_genres=["ambient"]), crate_budget(), on_seed=_note
+        )
+        assert order[0].startswith("say:")
+        assert order[1] == "fetch"
+
+    def test_a_broken_progress_callback_cannot_cost_the_crate(self) -> None:
+        """It is a line of copy. A criterion that raises is already best-effort
+        here; a narrator that raises must not be worse than that."""
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+
+        def _boom(criterion: str, seed: dict[str, Any]) -> None:
+            raise RuntimeError("no")
+
+        found = _source(session).gather(
+            SeedProfile(top_genres=["ambient"]), crate_budget(), on_seed=_boom
+        )
+        assert found
+
+    def test_a_skipped_seed_is_never_announced(self) -> None:
+        """A seed the crate already covers is skipped without spending a request,
+        so announcing it would put a line on screen for work that never happens —
+        and, worse, name a genre the crate is not actually digging through."""
+        session = FakeSession(post_body=_fixture("discover_web_ambient_top"))
+        seen: list[tuple[str, dict[str, Any]]] = []
+        _source(session).gather(
+            SeedProfile(top_genres=["ambient"]),
+            crate_budget(),
+            on_seed=lambda criterion, seed: seen.append((criterion, seed)),
+        )
+        assert len(seen) == len(session.posts)
 
     def test_discover_payload_matches_the_documented_shape(self) -> None:
         session = FakeSession(post_body=_fixture("discover_web_ambient_top"))

@@ -91,12 +91,19 @@ export function CrateSleeve({
 
 // An unfilled slot, shown while a crate is being dug so the rail has its full
 // shape from the first moment rather than growing a sleeve at a time.
+//
+// `--crate-slot` is its position in the row, which the stylesheet staggers the
+// working-pulse off so the row breathes along its length rather than blinking in
+// unison (KAMP-693). The caller keys these by position for exactly this reason —
+// a slot that got re-keyed as the row shortened would restart its cycle.
 export function CrateSlot({ index }: { index: number }): React.JSX.Element {
   return (
     <li
       className="crate-sleeve crate-sleeve--empty"
       aria-hidden="true"
-      style={{ '--crate-tilt': `${tiltFor(index)}deg` } as React.CSSProperties}
+      style={
+        { '--crate-tilt': `${tiltFor(index)}deg`, '--crate-slot': index } as React.CSSProperties
+      }
     >
       <div className="crate-sleeve-art" />
     </li>

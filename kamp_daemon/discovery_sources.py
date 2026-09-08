@@ -57,7 +57,7 @@ from .discovery_criteria import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - types only
-    from collections.abc import MutableMapping
+    from collections.abc import Callable, MutableMapping
 
     from .bandcamp import _AnySession
 
@@ -330,6 +330,7 @@ class BandcampDiscoverySource(DiscoverySource):
         profile: SeedProfile,
         budget: RequestBudget,
         state: "MutableMapping[str, Any] | None" = None,
+        on_seed: "Callable[[str, dict[str, Any]], None] | None" = None,
     ) -> list[Candidate]:
         """Collect candidates across the criteria that suit *profile*.
 
@@ -345,6 +346,18 @@ class BandcampDiscoverySource(DiscoverySource):
         behind a provider-neutral ABC and has no business holding a LibraryIndex;
         a plain dict also makes rotation and pagination assertable in a test with
         no network and no storage.
+
+        *on_seed* is called with ``(criterion_key, seed_data)`` immediately before
+        each seed is fetched, and is how the 15-30 seconds of a dig get narrated
+        (KAMP-693). This loop is the only thing that knows what a dig is actually
+        DOING, and it knew it all along — the seeds have carried their own
+        provenance since the first crate, because every pick has to explain
+        itself. Reporting it costs nothing extra.
+
+        One call per seed fetched, not per criterion: a criterion spans two seeds
+        and each is its own request, so per-criterion would leave the line still
+        for whole fetches. Skipped seeds are silent — announcing work that never
+        happens would name a genre the crate is not digging through.
         """
         out: list[Candidate] = []
         seen: set[str] = set()
@@ -372,7 +385,7 @@ class BandcampDiscoverySource(DiscoverySource):
         for criterion in criteria_for(profile):
             try:
                 found = self._run_criterion(
-                    criterion, profile, budget, owned, state, used=used
+                    criterion, profile, budget, owned, state, used=used, on_seed=on_seed
                 )
             except RateLimitedError as exc:
                 logger.warning("discovery: stopping gather early — %s", exc)
@@ -401,6 +414,7 @@ class BandcampDiscoverySource(DiscoverySource):
         owned: set[str] | None = None,
         state: "MutableMapping[str, Any] | None" = None,
         used: set[str] | None = None,
+        on_seed: "Callable[[str, dict[str, Any]], None] | None" = None,
     ) -> list[Candidate]:
         """One criterion's worth of candidates, spread over a few seeds.
 
@@ -458,6 +472,19 @@ class BandcampDiscoverySource(DiscoverySource):
                 continue
 
             consumed = step + 1
+            # Announced here and nowhere else: past every skip, so the line only
+            # ever names work that is actually about to happen, and BEFORE the
+            # fetch, so it describes what is being done rather than what has just
+            # finished — the last seed's line would otherwise never be seen.
+            if on_seed is not None:
+                try:
+                    on_seed(criterion.key, seed.seed_data)
+                except Exception:  # noqa: BLE001 - a status line cannot cost a crate
+                    logger.warning(
+                        "discovery: progress callback failed for %s",
+                        criterion.key,
+                        exc_info=True,
+                    )
             got, dropped = self._run_seed(
                 criterion, seed, budget, owned or set(), state
             )

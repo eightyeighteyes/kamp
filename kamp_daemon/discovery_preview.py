@@ -53,6 +53,13 @@ IDLE_TIMEOUT_SECS = 300.0
 #: card forever and inflate KAMP-655's engagement stats.
 MIN_PREVIEW_SECS = 10.0
 
+#: How long a fading stop lets the record ring out before unloading (KAMP-693).
+#: Comfortably longer than the engine's own 0.15s ramp: what has to finish is not
+#: the ramp but the already-buffered audio downstream of it, and mpv hands the
+#: output device ~0.2s before any of it is heard (the KAMP-508 lesson). Unloading
+#: on the ramp's nominal end would cut the tail that is still on its way out.
+FADE_OUT_SECS = 0.6
+
 IDLE = "idle"
 PREPARING = "preparing"
 PLAYING = "playing"
@@ -96,6 +103,7 @@ class PreviewPlayer:
         idle_timeout: float = IDLE_TIMEOUT_SECS,
         now: Callable[[], float] = _time.time,
         check_url: Callable[[str], int] | None = None,
+        fade_secs: float = FADE_OUT_SECS,
     ) -> None:
         self._index = index
         self._main = main_engine
@@ -103,6 +111,7 @@ class PreviewPlayer:
         self._source_factory = source_factory
         self._notify = notify
         self._idle_timeout = idle_timeout
+        self._fade_secs = fade_secs
         self._now = now
         # HEAD the URL before mpv sees it (KAMP-673). Injected so tests need no
         # network, and None simply skips the check — the retry path still catches
@@ -242,6 +251,55 @@ class PreviewPlayer:
         timer.daemon = True
         self._idle_timer = timer
         timer.start()
+
+    def _fade_out(self) -> None:
+        """Ring the record out, then unload it (KAMP-693).
+
+        ``unload()`` is mpv's raw ``stop`` — it drops the audio on the frame it
+        arrives, which is why the deck has always cut rather than faded. The
+        engine's only per-sample ramp is the Lua one behind ``pause()``
+        (KAMP-508), so a faded stop is that ramp followed by the unload rather
+        than a second ramp written alongside it. Nothing new to keep in tune.
+
+        The unload has to be deferred, and deferring it is the whole hazard here:
+        by the time the timer fires the user may have put another record on, and
+        unloading THEN would kill something they had just started, seconds after
+        an action they had already forgotten about. So the timer re-checks that
+        the deck is still idle before touching the engine — the same guard, and
+        the same reason, as ``_idle_kill`` above it.
+
+        Caller holds the lock.
+        """
+        engine = self._engine
+        if engine is None:
+            return
+        try:
+            engine.pause()
+        except Exception:  # noqa: BLE001 - falling back to the cut is fine
+            logger.warning("preview: fade-out failed, unloading now", exc_info=True)
+            try:
+                engine.unload()
+            except Exception:  # noqa: BLE001
+                logger.warning("preview: unload failed", exc_info=True)
+            return
+        timer = threading.Timer(self._fade_secs, self._finish_fade_out, args=(engine,))
+        timer.daemon = True
+        timer.start()
+
+    def _finish_fade_out(self, engine: "MpvPlaybackEngine") -> None:
+        with self._lock:
+            # Not merely "is this still the engine": a replayed preview reuses the
+            # same object, so identity alone would let this unload a record the
+            # user had started in the meantime. IDLE is the real question — it is
+            # the state stop() published, and anything that put a record back on
+            # the deck has left it.
+            if self._engine is not engine or self._state["state"] != IDLE:
+                logger.debug("preview: fade-out overtaken, leaving the deck alone")
+                return
+            try:
+                engine.unload()
+            except Exception:  # noqa: BLE001
+                logger.warning("preview: unload after fade failed", exc_info=True)
 
     def _cancel_idle_timer(self) -> None:
         if self._idle_timer is not None:
@@ -390,14 +448,24 @@ class PreviewPlayer:
     def toggle(self) -> dict[str, Any]:
         return self.pause() if self._state["state"] == PLAYING else self.resume()
 
-    def stop(self) -> dict[str, Any]:
-        """End the preview and give the main player back."""
+    def stop(self, fade: bool = False) -> dict[str, Any]:
+        """End the preview and give the main player back.
+
+        A hard cut by default, and *fade* is the exception rather than the other
+        way round: Escape and the deck's own stop are answers to "get off", where
+        a fade is a delay, not a courtesy. The one place it is wanted is a crate
+        being replaced under a record that is still playing (KAMP-693), which is
+        not the user asking for silence — it is the shop moving on.
+        """
         with self._lock:
             if self._engine is not None:
-                try:
-                    self._engine.unload()
-                except Exception:  # noqa: BLE001
-                    logger.warning("preview: unload failed", exc_info=True)
+                if fade and self._state["state"] == PLAYING:
+                    self._fade_out()
+                else:
+                    try:
+                        self._engine.unload()
+                    except Exception:  # noqa: BLE001
+                        logger.warning("preview: unload failed", exc_info=True)
             self._record_listened()
             self._hand_back_to_main()
             self._arm_idle_timer()

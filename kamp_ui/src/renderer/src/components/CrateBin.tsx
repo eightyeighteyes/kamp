@@ -18,7 +18,7 @@
 // broken promise, so it is a plain list now — roving tabindex and
 // aria-setsize/aria-posinset kept, aria-current in place of aria-selected, and
 // the titles list carries the crate as real buttons.
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useState } from 'react'
 import { crateArtUrl } from '../api/client'
 import type { CrateItem } from '../api/client'
 
@@ -199,21 +199,22 @@ function BinSleeve({
 
 // How long the stock-in cascade needs to finish: the last record's delay plus
 // its own drop, with a little slack. Ten records at 70ms is 630ms + 260ms.
-const STOCK_IN_MS = 1200
+//
+// Exported for CrateView, which owns the timing now — see `stocking` below.
+export const STOCK_IN_MS = 1200
 
 export function CrateBin({
   items,
-  crateNo,
   focusIndex,
   awayItemId,
   spineName,
   railRef,
   onFocus,
   onPlay,
-  onDragStart
+  onDragStart,
+  stocking
 }: {
   items: CrateItem[]
-  crateNo: number | null
   focusIndex: number
   // The record currently out of the crate and on the deck, if any.
   awayItemId: number | null
@@ -222,32 +223,20 @@ export function CrateBin({
   onFocus: (index: number) => void
   onPlay: (item: CrateItem) => void
   onDragStart: (item: CrateItem, startX: number, startY: number) => void
-}): React.JSX.Element {
-  // Stock-in runs on a DELIVERY, not on every render that happens to have
-  // records in it. Arriving at a crate that already exists — switching to the
-  // tab, reloading the renderer — is not a delivery, and replaying the cascade
-  // there would turn a moment into a tic.
+  // Whether a crate is landing right now, decided by CrateView (KAMP-693).
   //
-  // So the first crate_no this component sees is seeded silently, and only a
-  // change from it counts. That also gets the first-ever crate right: mount
-  // seeds null, the build completes, null -> 1 is a change, and it plays.
-  const seenRef = useRef<number | null>(null)
-  const seededRef = useRef(false)
-  const [stocking, setStocking] = useState(false)
-
-  useEffect(() => {
-    if (!seededRef.current) {
-      seededRef.current = true
-      seenRef.current = crateNo
-      return
-    }
-    if (crateNo === null || crateNo === seenRef.current) return
-    seenRef.current = crateNo
-    setStocking(true)
-    const timer = window.setTimeout(() => setStocking(false), STOCK_IN_MS)
-    return () => window.clearTimeout(timer)
-  }, [crateNo])
-
+  // It used to be decided here, and it never once ran. This component is inside
+  // CrateView's `building ? rail : bin` ternary, so it UNMOUNTS the moment a dig
+  // starts and remounts when it ends — and a remounted component re-seeds its own
+  // "first crate_no I have seen" ref with the NEW number, which is precisely the
+  // silent branch. The seeding comment assumed the bin stayed mounted across a
+  // build; it does not, and on the first-ever crate it is not mounted at the start
+  // of one either. So the cascade this file describes has been dead on every path
+  // since it was written.
+  //
+  // The decision belongs to something that survives a dig. CrateView does.
+  stocking: boolean
+}): React.JSX.Element {
   return (
     <div className={`crate-bin${stocking ? ' crate-bin--stocking' : ''}`}>
       {/* The divider card, ABOVE the records — it stands at the back of the bin,

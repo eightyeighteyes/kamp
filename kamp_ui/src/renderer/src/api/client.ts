@@ -610,6 +610,12 @@ export type CrateSnapshot = {
   exhausted: boolean
   paused_until: number // Unix seconds; 0 when running
   hints: string[] // the user's top genres, for the digging status lines
+  // What the gather is looking at RIGHT NOW, in the clerk's voice (KAMP-693) —
+  // "Seeing what sits next to Kid A…", "Pulling the Acid King shelf…". Pushed
+  // once per seed fetched, so it changes every couple of seconds and is the only
+  // thing that moves during the 15-30 seconds a dig takes. Empty except during a
+  // dig, and cleared the moment one ends.
+  digging: string
   thin: boolean // a library with no listening history yet — chart picks only
   items: CrateItem[]
   // KAMP-655: the digging history, computed on read and carried here so the
@@ -727,9 +733,14 @@ export const getPreviewState = (): Promise<PreviewState> => get('/api/v1/discove
 export const previewPlay = (itemId: number, trackNum?: number): Promise<PreviewState> =>
   post('/api/v1/discovery/preview/play', { item_id: itemId, track_num: trackNum ?? null })
 
+// `fade` is read by 'stop' alone (KAMP-693): the crate moving on under a playing
+// record rings it out, while Escape and the deck's own stop cut, because those
+// are answers to "get off" and a fade there is a delay.
 export const previewAction = (
-  action: 'pause' | 'resume' | 'toggle' | 'stop' | 'next' | 'prev'
-): Promise<PreviewState> => post(`/api/v1/discovery/preview/${action}`)
+  action: 'pause' | 'resume' | 'toggle' | 'stop' | 'next' | 'prev',
+  opts?: { fade?: boolean }
+): Promise<PreviewState> =>
+  post(`/api/v1/discovery/preview/${action}`, opts?.fade ? { fade: true } : undefined)
 
 export const previewSeek = (position: number): Promise<PreviewState> =>
   post('/api/v1/discovery/preview/seek', { position })

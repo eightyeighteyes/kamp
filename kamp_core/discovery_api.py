@@ -124,6 +124,11 @@ _INITIAL_STATUS: dict[str, Any] = {
     "paused_until": 0.0,
     "hints": [],
     "thin": False,
+    # What the gather is looking at right now, in the clerk's voice (KAMP-693).
+    # Declared here so the shape always carries it — the builder's own `detail`
+    # field was published for the paused state and never declared or read, which
+    # is exactly how a field becomes untrustworthy. Empty except during a dig.
+    "digging": "",
 }
 
 #: Criteria that need nothing from the library. A crate made only of these was
@@ -218,12 +223,34 @@ def register_discovery_routes(
         with _lock:
             snap = dict(_status)
         crate_no = snap.get("crate_no")
-        if crate_no is None:
+        # The fallback is the reconnect path: the status is in-memory and the
+        # crate is not, so a client arriving with nothing published still gets the
+        # last crate dug.
+        #
+        # It must NOT apply mid-dig (KAMP-693). The builder publishes
+        # crate_no=None because the new crate has no number yet — next_crate_no()
+        # is not called until the whole gather is over — and reading that as "use
+        # the latest" handed back the PREVIOUS crate's ten records under a
+        # `building` label. That is the reported bug: a 15-30 second dig spent
+        # showing the crate the user had just asked to replace, with the first new
+        # record eventually arriving among the old ten.
+        #
+        # The client cannot fix this from its end, which is why it is fixed here.
+        # `newCrate` does clear the rows once the POST is accepted, but the POST
+        # returns as soon as the worker thread is spawned and the `building`
+        # publish lands after it — and _warm_wishlist republishes partway through
+        # a build anyway, so the old crate came back regardless of who won.
+        #
+        # Deliberately not extended to the failed states. `empty` and `error` also
+        # publish crate_no=None, and there the previous crate genuinely is what is
+        # still on the counter.
+        building = snap.get("state") == "building"
+        if crate_no is None and not building:
             crate_no = index.latest_crate_no()
             snap["crate_no"] = crate_no
         items = index.crate_items(crate_no) if crate_no is not None else []
         snap["items"] = items
-        if snap.get("state") != "building":
+        if not building:
             # The status is in-memory; the crate is not. After a daemon restart
             # _status is still _INITIAL_STATUS while items holds a full crate, so
             # a restored crate of ten reported filled=0 and a genuinely short one
@@ -272,6 +299,15 @@ def register_discovery_routes(
             _status.update(fields)
             if fields.get("state") in _TERMINAL_STATES:
                 _building[0] = False
+                # The dig is over, so nothing is being dug through (KAMP-693).
+                # Cleared here rather than at each publisher because _status
+                # MERGES: a line left standing would sit under a finished crate
+                # describing a fetch that ended minutes ago, and it would have to
+                # be remembered at every terminal publish — including __main__'s
+                # error paths, which never touch the builder's helper. This is the
+                # carry-over trap `exhausted` was fixed for in KAMP-661, and the
+                # single release point is the one place it cannot be forgotten.
+                _status["digging"] = ""
         broadcast({"type": CRATE_EVENT, **_snapshot()})
 
     app.state.discovery_publish = _publish
@@ -485,7 +521,13 @@ def register_discovery_routes(
         what keeps it from being an arbitrary method call.
         """
         player = _preview_or_503()
-        if action in ("pause", "resume", "toggle", "stop"):
+        if action == "stop":
+            # A stop can ring the record out instead of cutting it (KAMP-693).
+            # Opt-in, and the caller decides: the crate moving on under a playing
+            # record wants the fade, while Escape and the deck's stop are answers
+            # to "get off" and stay immediate.
+            return cast(dict[str, Any], player.stop(fade=bool((req or {}).get("fade"))))
+        if action in ("pause", "resume", "toggle"):
             return cast(dict[str, Any], getattr(player, action)())
         if action == "next":
             return cast(dict[str, Any], player.step(1))

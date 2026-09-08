@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, types only
-    from collections.abc import MutableMapping
+    from collections.abc import Callable, MutableMapping
 
     from kamp_core.library import LibraryIndex, SeedAlbum, SeedArtist
 
@@ -395,6 +395,7 @@ class DiscoverySource(ABC):
         profile: SeedProfile,
         budget: RequestBudget,
         state: "MutableMapping[str, Any] | None" = None,
+        on_seed: "Callable[[str, dict[str, Any]], None] | None" = None,
     ) -> list[Candidate]:
         """Return candidates for *profile*, spending no more than *budget* allows.
 
@@ -414,6 +415,15 @@ class DiscoverySource(ABC):
         it in place; it must stay JSON-serialisable. Optional, and a source that
         needs no memory may ignore it, but one that ignores it can only ever reach
         the first page of whatever it queries.
+
+        *on_seed* is an optional progress channel, called with ``(criterion_key,
+        seed_data)`` before each fetch (KAMP-693). A gather takes 15-30 seconds
+        and it is the only thing that knows what those seconds are being spent on;
+        without this the UI can only show a spinner over an empty crate. Ignoring
+        it is allowed and costs nothing but a stiller status line — but a source
+        that calls it must do so BEFORE the work, or the line describes what has
+        already finished. Treat a raising callback as best-effort, exactly like a
+        raising criterion: it is a line of copy and must not cost the crate.
         """
 
     def preview_tracks(self, candidate: Candidate) -> list[PreviewStream]:

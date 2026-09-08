@@ -176,15 +176,50 @@
 
 /* Building: the streaming rail replaces the bin, and it needs the whole width
    rather than the middle third — ten sleeves do not fit in a column. */
+/* A dig re-columns the stage, but the DECK KEEPS ITS CELL — same row, same
+   column, same size as when a crate is on screen (KAMP-693).
+
+   Its area used to be dropped from this template entirely, from back when the
+   deck was not rendered during a build at all. Now that it is, an unresolvable
+   `grid-area: deck` falls through to auto-placement, which put the mini player in
+   an implicit row below the footer and blew the stage's height out — everything
+   else crushed into the top-left, and the dig button landing over the slots.
+
+   The third column stays empty in the header and footer rows rather than being
+   spanned into. That is what stops the deck moving a pixel between digging and
+   dug, which is the whole point: it is the thing you are still listening to. */
 .crate-stage--building {
   grid-template-areas:
-    'header header header'
-    'bin    bin    bin'
-    'footer footer footer';
+    'header header .   '
+    'bin    bin    deck'
+    'footer footer .   ';
 }
 
+/* Centred over the space the dig actually occupies — the two columns the rail
+   spans, not the full width, since the deck holds the third. The 62ch measure is
+   for a record's title and why-line; a single status sentence reads better
+   centred over the slots it describes. */
+.crate-stage--building .crate-header {
+  max-width: none;
+  align-items: center;
+  text-align: center;
+}
+
+/* Reserves the same band a record's header occupies, so the deck, the rail and
+   the footer sit at the same y whether a crate is being dug or is on screen
+   (KAMP-693). The header row is sized to `auto`, so anything here that differs
+   from the crate header's height moves everything below it — which is the same
+   reasoning that fixed the title box at two lines and reserved the clerk card.
+   It simply never applied across the two STATES before, because the deck was not
+   rendered during a dig at all.
+      artist   ~16px  (13px, normal line-height)
+    + title     62px  (2.4em at 26px)
+    + card      56px  (2.8em at 13px + 14px padding + 6px margin)
+    + position ~15px  (12px, normal line-height)
+    + gaps      18px  (3 x 6px)
+   Recompute this if any of those change; the arithmetic is the contract. */
 .crate-focus--digging {
-  min-height: 220px;
+  min-height: 167px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -726,9 +761,13 @@
 /* --- The rail ------------------------------------------------------------- */
 
 /* The build-time rail. Takes the bin's grid slot, which .crate-stage--building
-   widens to all three columns — ten sleeves plus their empty slots do not fit in
-   the middle third, and neither the titles list nor the deck is rendered while a
-   crate is still arriving. */
+   widens across the titles column as well — ten sleeves do not fit in the middle
+   third, and the titles list is not rendered while a crate is still arriving.
+   The deck IS rendered now (KAMP-693) and keeps the third column, so the rail
+   stops one column short of the full width and centres in what is left.
+
+   The row always holds exactly ten children — a record landing converts a slot
+   rather than adding one — so it cannot reflow mid-dig. */
 .crate-rail {
   grid-area: bin;
   align-self: center;

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "kamp"
-version = "1.26.1"
+version = "1.27.0"
 description = "Automated audio library ingest from Bandcamp downloads."
 authors = []
 license = "GPL-3.0-or-later"

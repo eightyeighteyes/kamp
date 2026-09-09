@@ -16,7 +16,6 @@ import type { CrateItem, DiggingStats } from '../api/client'
 import { CrateSleeve, CrateSlot } from './CrateSleeve'
 import { CrateBin, STOCK_IN_MS } from './CrateBin'
 import { CrateTitles } from './CrateTitles'
-import { crateSpineName } from './crateSpine'
 import { CratePreviewStrip } from './CratePreviewStrip'
 import { RecordFlight } from './RecordFlight'
 import type { FlightRect } from './RecordFlight'
@@ -171,12 +170,6 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
     const timer = window.setTimeout(() => setStocking(false), STOCK_IN_MS)
     return () => window.clearTimeout(timer)
   }, [crateNo])
-
-  // The name on the crate's divider card (KAMP-656). Derived from the snapshot
-  // the view already has, because this story is skin only — no API changes. It
-  // is memoised on the item identities rather than recomputed per render, and it
-  // reads nothing from the clock, so a crate keeps its name.
-  const spineName = useMemo(() => crateSpineName(items, crate?.hints ?? []), [items, crate?.hints])
 
   // What is actually ON the deck, which is deliberately NOT `current`: the
   // engine plays one item at a time and you can keep flipping while it plays, so
@@ -946,7 +939,6 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
               stocking={stocking}
               focusIndex={focusIndex}
               awayItemId={awayItemId}
-              spineName={spineName}
               railRef={railRef}
               onFocus={focusUnlessDragged}
               onPlay={playUnlessDragged}

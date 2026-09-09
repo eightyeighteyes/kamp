@@ -312,15 +312,6 @@
   text-align: center;
 }
 
-/* The closing beat when you reach the last record. One step less dim than the
-   lifetime line, because it is about what just happened. */
-.crate-tally {
-  margin: 10px 0 0;
-  color: var(--text);
-  font-size: 13px;
-  text-align: center;
-}
-
 /* --- The bin (KAMP-656, prototype) ---------------------------------------
  *
  * A three-quarter crate of records you flip through, rendering exactly the state

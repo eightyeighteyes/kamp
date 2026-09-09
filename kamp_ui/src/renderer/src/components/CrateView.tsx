@@ -50,18 +50,6 @@ function describeHistory(s: DiggingStats): string {
   return parts.join(' · ')
 }
 
-// One crate's tally. Omits the zeroes: "0 brought home" at the end of a crate
-// reads as a reprimand, which is the opposite of what this is for.
-function describeTally(s: DiggingStats): string {
-  const parts: string[] = []
-  if (s.previewed > 0) parts.push(`${s.previewed} previewed`)
-  if (s.wishlisted > 0) parts.push(`${s.wishlisted} set aside`)
-  if (s.purchased > 0) parts.push(`${s.purchased} brought home`)
-  return parts.length > 0
-    ? `${plural(s.records, 'record')} — ${parts.join(', ')}.`
-    : `${plural(s.records, 'record')}.`
-}
-
 export function CrateView({ active = false }: { active?: boolean }): React.JSX.Element {
   const crate = useStore((s) => s.crate)
   const newCrate = useStore((s) => s.newCrate)
@@ -148,51 +136,11 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   // *add* for something already owned (KAMP-654).
   const purchased = current?.state === 'purchased'
 
-  // KAMP-655. Both ride the crate snapshot, so they are live without a fetch and
-  // the tally cannot drift from the lifetime line.
+  // The lifetime line, riding the crate snapshot so it is live without a fetch
+  // (KAMP-655). The per-crate tally that used to sit beside it is gone with the
+  // closing line it fed (KAMP-699) — these counts belong to the register under
+  // the buttons, not to a moment.
   const history = crate?.stats ?? null
-  const crateTally = crate?.crate_stats ?? null
-
-  // Reaching the end of a crate is an EVENT, not a position (KAMP-663).
-  //
-  // This used to read the cursor live — `items.length > 1 && focusIndex ===
-  // items.length - 1` — so the closing line vanished the instant you flipped
-  // back a record and announced itself again on your way forward. The ticket
-  // asks for it once per crate; the shipped code gave it once per visit to the
-  // last sleeve. Recording the crate you have reached the end of fixes both,
-  // and self-invalidates the way `focus` does: a crate that is not the one
-  // recorded simply has no beat yet.
-  //
-  // A click straight to the last title COUNTS. Requiring the user to have
-  // stepped there was considered and rejected: jumping to the end of the crate
-  // is still going to the end of the crate, and the line reports what is in the
-  // crate — records, and ledger-derived counts — rather than narrating how
-  // diligently they arrived.
-  // Adjusted during render rather than in an effect. This is React's documented
-  // shape for "derive from what just changed" and the one the compiler's
-  // set-state-in-effect rule pushes you to: the re-render happens before
-  // anything commits, so there is no frame where the user is standing at the end
-  // of the crate with no line under it.
-  const [endedCrate, setEndedCrate] = useState<number | null>(null)
-  // `building` is load-bearing, not defensive. A build streams one record at a
-  // time, and with the first one placed `items.length - 1` is 0 — which is
-  // exactly where a new crate's focus sits, so without this the beat fires on
-  // record one of ten and then sits there for the rest of the dig.
-  if (
-    !building &&
-    crateNo !== null &&
-    items.length > 0 &&
-    focusIndex === items.length - 1 &&
-    endedCrate !== crateNo
-  ) {
-    setEndedCrate(crateNo)
-  }
-
-  // Not `endedCrate === crateNo` alone: newCrate() empties the items but leaves
-  // crate_no alone until the daemon says otherwise (store.ts), so the line has
-  // to go the moment the stage does. A 409 leaves the items in place and this
-  // stays true, which is right — that crate is still on screen and still ended.
-  const atCrateEnd = endedCrate !== null && endedCrate === crateNo && hasCrate && !building
 
   // A crate LANDING, which is what the bin's stock-in cascade plays for
   // (KAMP-656, fixed in KAMP-693).
@@ -253,8 +201,10 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
   )
 
   // Held across the dig, and adjusted DURING RENDER rather than in an effect or a
-  // ref — the compiler forbids both, and this is React's documented pattern for
-  // it (the same one `endedCrate` uses below).
+  // ref — the compiler forbids both (`set-state-in-effect`, and "Cannot access
+  // refs during render"), and this is React's documented pattern for deriving
+  // from what just changed. The re-render happens before anything commits, so
+  // there is no frame showing an empty deck under audible music.
   //
   // Keyed on the id throughout, so a held record can never appear under a
   // DIFFERENT one's preview. The crate it came from is gone; its identity is
@@ -1109,29 +1059,22 @@ export function CrateView({ active = false }: { active?: boolean }): React.JSX.E
           </div>
         </div>
 
-        {/* Statement, then offer, then the quiet register (KAMP-663). The tally
-            used to sit UNDER the button, which read as a footnote to the next
-            dig rather than as the close of this one. Order only — the row keeps
-            the footer exactly as tall either way, which matters because the beat
-            lands when nine records are on the flipped pile at its full extent
-            and the bin row has a fixed height inside a view that never
-            scrolls. */}
+        {/* Two offers over the quiet register.
+
+            KAMP-663 put a closing line above these — "That's the crate", plus
+            that crate's counts — and gated the way out until you reached the
+            last record. Both are gone (KAMP-699). The counts were superfluous
+            beside the lifetime register directly below them, and the way out is
+            useful whether or not you have finished: a shop you can only leave
+            from the back of the last rack is not offering much of an exit.
+
+            Nothing announces the end of a crate now, which also means nothing
+            has to remember where the end WAS — the sticky-beat state that
+            existed only to fire that line once per crate went with it. */}
         <div className="crate-footer">
-          {/* The closing beat, at the moment the user has actually just done the
-              digging rather than as a running score. A one-record crate gets one
-              too (KAMP-663) — reaching the end of a short crate is still
-              reaching the end, and the old `items.length > 1` guard denied a
-              closing line to exactly the crates that came up thin. */}
-          {atCrateEnd && crateTally && (
-            <p className="crate-tally" role="status">
-              That&rsquo;s the crate. {describeTally(crateTally)}
-            </p>
-          )}
-          {/* One row whether it holds one button or two, so offering the way out
-              costs no height at the moment there is none to spare. */}
           <div className="crate-actions">
             {digButton}
-            {atCrateEnd && enoughButton}
+            {enoughButton}
           </div>
           {history && <p className="crate-history">{describeHistory(history)}</p>}
         </div>

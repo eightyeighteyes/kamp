@@ -1015,18 +1015,18 @@ export const useStore = create<PlayerStore>((set, get) => ({
       await api.newCrate()
       // Clear the old records once the dig is ACCEPTED (KAMP-672).
       //
-      // The daemon builds into a new crate_no and the snapshot serves
-      // latest_crate_no(), so until the first record of the new crate is placed
-      // the old one is still what comes back — it sat there looking live while a
-      // different crate was being dug, and the first new record then appeared
-      // among the previous ten.
+      // The daemon stopped serving the previous crate mid-build in KAMP-693, so
+      // this is no longer the fix for that — it covers the window between the
+      // POST resolving and the daemon's own `building` snapshot arriving, which
+      // is short but is the difference between the crate going now and going a
+      // moment after the click.
       //
       // AFTER the await, never before: a 409 ("a crate is already building") is a
       // real outcome, and clearing optimistically would empty the crate the user
       // is still reading for a request we lost. `state` is left alone so the
       // daemon's own 'building' stays authoritative; only the stale rows go.
       const crate = get().crate
-      if (crate) set({ crate: { ...crate, items: [], crate_stats: null } })
+      if (crate) set({ crate: { ...crate, items: [] } })
     } catch (err) {
       set({ crateStopArmed: false })
       const msg = err instanceof Error ? err.message : 'Could not dig a crate'

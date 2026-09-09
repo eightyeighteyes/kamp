@@ -619,11 +619,9 @@ export type CrateSnapshot = {
   thin: boolean // a library with no listening history yet — chart picks only
   items: CrateItem[]
   // KAMP-655: the digging history, computed on read and carried here so the
-  // numbers are live without a second request. `crate_stats` is the same five
-  // counts scoped to this crate — null when there is no crate to tally, which is
-  // different from a crate of zero.
+  // numbers are live without a second request. The crate-scoped tally that used
+  // to sit beside this went with the end-of-crate line it fed (KAMP-699).
   stats: DiggingStats
-  crate_stats: DiggingStats | null
 }
 
 // Deliberately not mutually exclusive: a record you previewed, wishlisted and

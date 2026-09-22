@@ -632,12 +632,21 @@ class TestTransport:
         """The deferred unload is the hazard this whole path introduces: it fires
         on a timer, and by then the user may have put something else on. Unloading
         then would kill a record they had just started, seconds after an action
-        they had forgotten about."""
-        h = Harness(index, fade_secs=0.01)
+        they had forgotten about.
+
+        Deliberately NOT the short fade_secs used elsewhere in this file: stop()
+        and play() run back-to-back on this thread with nothing between them, so a
+        short fade races the timer thread against that pair of calls -- on a
+        loaded CI box the timer can win and unload() lands before play() reuses
+        the engine, flaking a test that has nothing to do with fade timing. A
+        fade far longer than the assertion's wait window removes the race; only
+        the "did it get cut off" behaviour is under test here.
+        """
+        h = Harness(index, fade_secs=5.0)
         h.player.play(_item(index))
         h.player.stop(fade=True)
         h.player.play(_item(index, "2"))
-        # Long enough for the deferred unload to have fired if it were going to.
+        # Long enough to catch a wrongful unload without waiting on the real fade.
         assert not _wait_for(lambda: "unload" in h.engine.calls, timeout=0.2)
         assert h.engine.state.playing is True
 

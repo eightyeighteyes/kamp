@@ -207,7 +207,6 @@ export function CrateBin({
   items,
   focusIndex,
   awayItemId,
-  spineName,
   railRef,
   onFocus,
   onPlay,
@@ -218,7 +217,6 @@ export function CrateBin({
   focusIndex: number
   // The record currently out of the crate and on the deck, if any.
   awayItemId: number | null
-  spineName: string
   railRef: React.RefObject<HTMLUListElement | null>
   onFocus: (index: number) => void
   onPlay: (item: CrateItem) => void
@@ -239,11 +237,11 @@ export function CrateBin({
 }): React.JSX.Element {
   return (
     <div className={`crate-bin${stocking ? ' crate-bin--stocking' : ''}`}>
-      {/* The divider card, ABOVE the records — it stands at the back of the bin,
-          so from this angle you read it over the tops of the sleeves rather than
-          under them. Written in marker, and the one place a
-          handwritten-adjacent face is allowed: small, and once. */}
-      {spineName && <p className="crate-bin-spine">{spineName}</p>}
+      {/* The bin is records, and nothing else (KAMP-702). A kraft divider card
+          used to stand behind them naming the crate by category; testers could
+          not tell what it was for, and its numbers did not add up. Measured, they
+          could not: it capped at three clauses while half the crates hold five or
+          more categories, so 91% of cards described 5-7 of the ten records. */}
       {/* A plain list. It was role="listbox" until KAMP-672 took the arrows for
           the deck's transport — see the note on the sleeve. */}
       <ul className="crate-bin-records" aria-label="Crate" ref={railRef} tabIndex={-1}>

@@ -583,6 +583,17 @@ def _cmd_daemon(
     from kamp_daemon.tagger import lookup_release_by_mbid, search_release_candidates
 
     _logger = logging.getLogger(__name__)
+
+    # KAMP-680: start allocation tracking before ANY startup work — the index
+    # opens below and the library scan follows, and the burst being attributed
+    # (+715 MiB inside the first minute) happens in there. tracemalloc only sees
+    # allocations made after it starts, so a later call would miss the thing it
+    # exists to measure. Separate env var from KAMP_DIAGNOSTICS because tracing
+    # every allocation is not free; see kamp_core/diagnostics.py.
+    if _diagnostics.tracemalloc_enabled():
+        _diagnostics.start_tracemalloc()
+        _logger.info("tracemalloc enabled — allocation sites will be logged")
+
     pkg_version = _get_version()
     install_path = Path(__file__).resolve().parent
     _logger.info(

@@ -67,7 +67,40 @@ The daemon writes to `<state dir>/diagnostics/` (`~/.local/share/kamp` on
 macOS/Linux, `%LOCALAPPDATA%\kamp` on Windows); Electron writes to
 `diagnostics/` under its `userData` directory.
 
-Memory is sampled every 60s and the renderer probe every 10s. Totals per tick:
+Memory is sampled every 60s and the renderer probe every 10s.
+
+### Attributing Python memory growth
+
+`KAMP_DIAGNOSTICS=1` says *which process* grew. To find out *what* inside the
+daemon is holding the memory, add `KAMP_DIAGNOSTICS_TRACEMALLOC=1`:
+
+```bash
+cd kamp_ui
+KAMP_DIAGNOSTICS=1 KAMP_DIAGNOSTICS_TRACEMALLOC=1 npm start
+```
+
+It is a separate switch because tracing intercepts every allocation and is not
+free — fine for a diagnostic run, not for leaving on for days.
+
+Each `memory-*.jsonl` tick then also carries `traced_current_bytes` and
+`traced_peak_bytes`, and a second log `alloc-<date>.jsonl` records the largest
+live allocation sites (first tick, then every 10th).
+
+**Reading it — the comparison is the diagnosis**, not either number alone:
+
+| RSS | `traced_current_bytes` | Meaning | Fix |
+|---|---|---|---|
+| high | high | live objects are retained | find and drop the reference; `alloc-*.jsonl` names the line |
+| high | low | Python freed it, the allocator kept the pages | subprocess isolation (see `kamp_daemon/syncer.py`) |
+
+That second row is the trap worth knowing about: a mechanism test can pass while
+RSS stays put, which is exactly what happened with an earlier `sys.modules`
+eviction attempt. Only the RSS curve flattening counts as fixed.
+
+```bash
+jq -r '"\(.t|strftime("%H:%M")) rss=\([.procs[]|select(.role=="daemon").rss_bytes]|add/1048576|floor) traced=\((.traced_current_bytes//0)/1048576|floor)"' \
+  ~/.local/share/kamp/diagnostics/memory-*.jsonl
+``` Totals per tick:
 
 ```bash
 jq -r '"\(.t) \([.procs[].rss_bytes] | add)"' ~/.local/share/kamp/diagnostics/memory-*.jsonl

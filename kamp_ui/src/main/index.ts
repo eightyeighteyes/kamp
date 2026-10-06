@@ -21,6 +21,12 @@ import { theme, themes } from '../shared/theme'
 import type { ThemeName } from '../shared/theme'
 import { discoverExtensions, installExtension, uninstallExtension } from './extensions'
 import { readManifest } from './communityManifest'
+import {
+  diagnosticsEnabled,
+  startDiagnostics,
+  stopDiagnostics,
+  writeRendererSample
+} from './diagnostics'
 
 // ---------------------------------------------------------------------------
 // Auth token
@@ -705,6 +711,27 @@ app.whenReady().then(async () => {
 
   buildAppMenu()
 
+  // KAMP-716: opt-in per-process sampling (KAMP_DIAGNOSTICS=1). Started before
+  // the window so the baseline includes startup. No-op when the env var is unset.
+  startDiagnostics()
+
+  // The renderer probe asks before arming itself: an always-on rAF loop would
+  // itself be one more animation running on an unfocused window.
+  ipcMain.handle('diagnostics:enabled', () => diagnosticsEnabled())
+
+  // The renderer's animation-activity probe reports here (KAMP-704). Writing
+  // from main rather than the renderer keeps file I/O off the render thread --
+  // the very thing being measured.
+  ipcMain.on(
+    'diagnostics:renderer-sample',
+    (
+      _event,
+      sample: { focused: boolean; hidden: boolean; rafTicks: number; runningAnimations: number }
+    ) => {
+      writeRendererSample(sample)
+    }
+  )
+
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
   // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
@@ -1200,6 +1227,7 @@ app.on('window-all-closed', () => {
 // catchable SIGTERM, so we fall through to the existing force-kill path.
 // `process.on('exit')` is the synchronous fallback for abrupt exits.
 app.on('will-quit', (event) => {
+  stopDiagnostics()
   stopNowPlayingHelper()
 
   if (!serverProcess?.pid || process.platform === 'win32') {

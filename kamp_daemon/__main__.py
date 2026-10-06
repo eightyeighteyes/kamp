@@ -571,6 +571,7 @@ def _cmd_daemon(
 
     import uvicorn
 
+    from kamp_core import diagnostics as _diagnostics
     from kamp_core.library import LibraryIndex, Track
     from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
 
@@ -637,6 +638,18 @@ def _cmd_daemon(
     # daemon (which may run with a stale PATH) can find the Homebrew binary.
     engine = MpvPlaybackEngine(mpv_bin=_resolve_mpv_binary())
     queue: PlaybackQueue = PlaybackQueue()
+
+    # KAMP-716: opt-in RSS sampling (KAMP_DIAGNOSTICS=1), the prerequisite for
+    # KAMP-680. mpv is tracked via a resolver rather than a pid because it has
+    # not spawned yet at this point.
+    _diag_sampler: "_diagnostics.DiagnosticsSampler | None" = None
+    if _diagnostics.enabled():
+        _diag_sampler = _diagnostics.DiagnosticsSampler(_state_dir() / "diagnostics")
+        _diag_sampler.register_resolver("mpv", lambda: engine.pid)
+        _diag_sampler.start()
+        _logger.info(
+            "diagnostics sampling enabled → %s", _diag_sampler.current_path().parent
+        )
 
     # Restore the last session's queue and position, paused, so the user can
     # resume with a single press of play rather than hunting for the album again.
@@ -1193,6 +1206,10 @@ def _cmd_daemon(
         notify=_preview_notify,
         check_url=_preview_check_url,
     )
+
+    # The preview engine is a second mpv, so it gets its own row in the sample.
+    if _diag_sampler is not None:
+        _diag_sampler.register_resolver("mpv-preview", lambda: preview_player.pid)
 
     # KAMP-652: wishlist ids for crate exclusion. Walked in the background and
     # cached for an hour -- see kamp_daemon/wishlist.py for why it must never sit
@@ -1802,6 +1819,8 @@ def _cmd_daemon(
         if _scrobbler_ref[0] is not None:
             _scrobbler_ref[0].shutdown(timeout=2.0)
     finally:
+        if _diag_sampler is not None:
+            _diag_sampler.stop()
         preview_player.shutdown()
         engine.shutdown()
     # Flush any accumulated artist play time before closing the DB.

@@ -1890,6 +1890,24 @@ class TestMpvPlaybackEngine:
             playing=False, position=0.0, duration=0.0, volume=100
         )
 
+    def test_pid_exposes_the_mpv_process_id(self) -> None:
+        # Read by the KAMP-716 diagnostics sampler so mpv's RSS can be
+        # attributed separately from the daemon's.
+        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
+            engine = MpvPlaybackEngine()
+        mock_proc = MagicMock()
+        mock_proc.pid = 4242
+        engine._proc = mock_proc
+
+        assert engine.pid == 4242
+
+    def test_pid_is_none_before_mpv_spawns(self) -> None:
+        with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
+            engine = MpvPlaybackEngine()
+        engine._proc = None
+
+        assert engine.pid is None
+
     def test_shutdown_terminates_process(self) -> None:
         with patch("kamp_core.playback.MpvPlaybackEngine._start_mpv"):
             engine = MpvPlaybackEngine()

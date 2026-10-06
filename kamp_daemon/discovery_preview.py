@@ -323,6 +323,18 @@ class PreviewPlayer:
             except Exception:  # noqa: BLE001 - teardown must not raise
                 logger.warning("preview: engine shutdown failed", exc_info=True)
 
+    @property
+    def pid(self) -> int | None:
+        """The preview mpv's process id, or None while no engine is alive.
+
+        The preview engine is a second mpv (KAMP-651) that comes and goes with
+        the idle timer, so the diagnostics sampler (KAMP-716) reads this each
+        tick to attribute its memory separately from the main engine's.
+        """
+        with self._lock:
+            engine = self._engine
+        return engine.pid if engine is not None else None
+
     def shutdown(self) -> None:
         """Tear everything down. Safe to call more than once."""
         with self._lock:

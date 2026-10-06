@@ -44,6 +44,41 @@ npm start
 
 `npm start` builds and launches Electron and the Vite server, as well as the kamp server. Frontend changes are not hotloaded, but visual performance for things like meters and animations matches what users see.
 
+## Diagnostics sampling
+
+Set `KAMP_DIAGNOSTICS=1` to record per-process memory (and, on the Electron
+side, CPU) to disk. It is off by default and costs nothing when unset.
+
+```bash
+cd kamp_ui
+KAMP_DIAGNOSTICS=1 npm start
+```
+
+Three JSONL logs accumulate, one line per sample tick, date-stamped so a
+multi-day capture does not land in a single unbounded file:
+
+| File | Written by | Covers |
+| --- | --- | --- |
+| `memory-<date>.jsonl` | Python daemon | daemon, mpv, preview mpv |
+| `electron-<date>.jsonl` | Electron main | main, renderer, GPU, utility processes |
+| `renderer-<date>.jsonl` | renderer probe | window focus vs. running animations |
+
+The daemon writes to `<state dir>/diagnostics/` (`~/.local/share/kamp` on
+macOS/Linux, `%LOCALAPPDATA%\kamp` on Windows); Electron writes to
+`diagnostics/` under its `userData` directory.
+
+Memory is sampled every 60s and the renderer probe every 10s. Totals per tick:
+
+```bash
+jq -r '"\(.t) \([.procs[].rss_bytes] | add)"' ~/.local/share/kamp/diagnostics/memory-*.jsonl
+```
+
+Two notes on reading these. The daemon reports *current* RSS, not peak — peak
+only ever rises, so it cannot show a leak that has been fixed. And
+`runningAnimations` in the renderer log is the number to watch while the window
+is unfocused: it is the measurement that confirms or kills the KAMP-704
+hypothesis that kamp keeps animating when it is not the active app.
+
 ## Tests and linting
 
 ```bash

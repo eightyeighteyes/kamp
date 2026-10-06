@@ -105,7 +105,17 @@ const api = {
   // KAMP-631: sync native window chrome (background + Windows titlebar overlay)
   // to a theme. The main process derives the colors from the shared themes table
   // so there is one source of truth; the renderer just names the active theme.
-  syncThemeChrome: (name: string): void => ipcRenderer.send('kamp:sync-theme-chrome', name)
+  syncThemeChrome: (name: string): void => ipcRenderer.send('kamp:sync-theme-chrome', name),
+  // KAMP-716: the renderer's animation-activity probe for KAMP-704. The sample
+  // is written to disk by the main process, not here -- file I/O on the render
+  // thread would perturb the very thing being measured.
+  diagnosticsEnabled: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:enabled'),
+  reportDiagnosticsSample: (sample: {
+    focused: boolean
+    hidden: boolean
+    rafTicks: number
+    runningAnimations: number
+  }): void => ipcRenderer.send('diagnostics:renderer-sample', sample)
 }
 
 const kampAPI = buildKampAPI()

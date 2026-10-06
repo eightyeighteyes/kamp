@@ -28,6 +28,13 @@ declare global {
       openPath: (path: string) => void
       openExternal: (url: string) => void
       syncThemeChrome: (name: string) => void
+      diagnosticsEnabled: () => Promise<boolean>
+      reportDiagnosticsSample: (sample: {
+        focused: boolean
+        hidden: boolean
+        rafTicks: number
+        runningAnimations: number
+      }) => void
     }
     KampAPI: KampAPI
   }

@@ -1502,6 +1502,19 @@ class MpvPlaybackEngine:
         """True when a next-track is pre-appended to mpv's playlist."""
         return self._lookahead_path is not None or self._lookahead_url is not None
 
+    @property
+    def pid(self) -> int | None:
+        """mpv's process id, or None before it spawns.
+
+        Read each tick by the diagnostics sampler (KAMP-716) rather than
+        captured once, because mpv is started lazily and respawned after a
+        crash — a stored pid would go stale. Deliberately a read-only property
+        and not a spawn callback: a callback is the shape that silently
+        no-ops when a wrapper forgets to forward it (see the KAMP-436 lesson).
+        """
+        proc = self._proc
+        return proc.pid if proc is not None else None
+
     def pause(self) -> None:
         self._send_command("script-message", "kamp-pause")
 

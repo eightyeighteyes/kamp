@@ -25,6 +25,7 @@ import { UpdateBanner } from './components/UpdateBanner'
 import { KeyboardShortcutsOverlay } from './components/KeyboardShortcutsOverlay'
 import { StyleRail } from './components/StyleRail'
 import { DownloadArrowIcon } from './components/TransportIcons'
+import { useDiagnosticsProbe } from './components/useDiagnosticsProbe'
 import { useTooltip } from './hooks/useTooltip'
 import { TOOLTIPS } from './tooltipStrings'
 import { registerBuiltInPanel, usePanelLayout } from './hooks/usePanelLayout'
@@ -130,6 +131,9 @@ function SlotPanel({ panel }: { panel: UnifiedPanel }): React.JSX.Element {
 }
 
 export default function App(): React.JSX.Element {
+  // KAMP-716: no-op unless the app was started with KAMP_DIAGNOSTICS set.
+  useDiagnosticsProbe()
+
   const loadLibrary = useStore((s) => s.loadLibrary)
   const refreshOpenAlbum = useStore((s) => s.refreshOpenAlbum)
   const setAlbumRenameProgress = useStore((s) => s.setAlbumRenameProgress)

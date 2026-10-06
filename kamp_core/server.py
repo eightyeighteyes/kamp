@@ -3276,6 +3276,21 @@ def create_app(
         # UI requests art for every album card on every launch, so it recurred at
         # every start. Remote art already cached to disk; this brings local art in
         # line, and FileResponse keeps the bytes out of the Python heap entirely.
+        #
+        # Cached art is stored FULL SIZE and the cache is UNCAPPED. That is a
+        # deliberate, owner-approved trade, not an oversight — do not "optimise"
+        # it without asking. Measured on a real 13k-track library: embedded art
+        # averages ~2.8 MB and reaches 19 MB, so full coverage of ~1150 albums is
+        # roughly 3 GB on disk. Downscaling (the `_compress_to_max_bytes` +
+        # `artwork.min_dimension` primitives already in this module) would cut
+        # that to ~150 MB, and capping with LRU eviction would bound it; both
+        # were considered and declined in favour of keeping the exact original
+        # bytes. Disk was judged cheaper than RSS.
+        #
+        # Known consequence of "uncapped": re-embedding art bumps art_version,
+        # which changes the key, so the superseded entry is orphaned rather than
+        # replaced. Nothing prunes them. Growth is therefore proportional to art
+        # *edits* as well as album count.
         def _local_cache_base() -> Path | None:
             """Extension-less cache path for this album's art, or None if uncacheable."""
             if art_cache_dir is None:

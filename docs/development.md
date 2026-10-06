@@ -69,6 +69,24 @@ macOS/Linux, `%LOCALAPPDATA%\kamp` on Windows); Electron writes to
 
 Memory is sampled every 60s and the renderer probe every 10s.
 
+### Album art cache
+
+`GET /api/v1/album-art` extracts each album's embedded art once and then serves it
+from `<state dir>/art_cache/local/`, keyed by `albums.id` + `art_version`. Before
+this, every request re-ran a full `id3.ID3()` parse and copied the image, which
+cost **+429 MiB of permanently resident RSS** per pass over the library — Python
+freed it and the allocator kept the pages (KAMP-680).
+
+The cache stores **full-size** art and is **uncapped**, deliberately. On a real
+13k-track library embedded art averages ~2.8 MB and reaches 19 MB, so expect
+roughly **3 GB** at full coverage. Re-embedding art changes the key, so the old
+entry is orphaned rather than replaced and nothing prunes it — growth tracks art
+edits as well as album count. Downscaling or LRU eviction were considered and
+declined; keep the original bytes.
+
+It is safe to delete the directory at any time: entries are re-extracted on
+demand, at the cost of one slow request each.
+
 ### Attributing Python memory growth
 
 `KAMP_DIAGNOSTICS=1` says *which process* grew. To find out *what* inside the

@@ -32,7 +32,7 @@ declare global {
       reportDiagnosticsSample: (sample: {
         focused: boolean
         hidden: boolean
-        rafTicks: number
+        appRafRequests: number
         runningAnimations: number
       }) => void
     }

@@ -726,7 +726,12 @@ app.whenReady().then(async () => {
     'diagnostics:renderer-sample',
     (
       _event,
-      sample: { focused: boolean; hidden: boolean; rafTicks: number; runningAnimations: number }
+      sample: {
+        focused: boolean
+        hidden: boolean
+        appRafRequests: number
+        runningAnimations: number
+      }
     ) => {
       writeRendererSample(sample)
     }

@@ -73,11 +73,22 @@ Memory is sampled every 60s and the renderer probe every 10s. Totals per tick:
 jq -r '"\(.t) \([.procs[].rss_bytes] | add)"' ~/.local/share/kamp/diagnostics/memory-*.jsonl
 ```
 
-Two notes on reading these. The daemon reports *current* RSS, not peak — peak
-only ever rises, so it cannot show a leak that has been fixed. And
+Three notes on reading these.
+
+The daemon reports *current* RSS, not peak — peak only ever rises, so it cannot
+show a leak that has been fixed.
+
 `runningAnimations` in the renderer log is the number to watch while the window
-is unfocused: it is the measurement that confirms or kills the KAMP-704
-hypothesis that kamp keeps animating when it is not the active app.
+is unfocused: it is the measurement that confirmed kamp does *not* keep CSS
+animations running when it is not the active app (KAMP-704).
+
+`appRafRequests` counts animation frames application code asked for in the
+interval — 0 means nothing is driving frames and Chromium can idle, ~600 means a
+rAF loop being served at 60fps, ~100 means one throttled to 10fps. It replaced an
+earlier `rafTicks` field that counted the probe's *own* rAF loop, which measured
+Chromium's frame cadence rather than the app's demand and kept the compositor
+awake while doing it. Captures predating the rename carry `rafTicks` and are not
+comparable.
 
 ## Tests and linting
 

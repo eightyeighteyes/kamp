@@ -113,7 +113,7 @@ const api = {
   reportDiagnosticsSample: (sample: {
     focused: boolean
     hidden: boolean
-    rafTicks: number
+    appRafRequests: number
     runningAnimations: number
   }): void => ipcRenderer.send('diagnostics:renderer-sample', sample)
 }

@@ -112,16 +112,22 @@ export function stopDiagnostics(): void {
 /**
  * Record one renderer probe reading (KAMP-704's hypothesis test).
  *
- * The claim under test is that kamp keeps animating when its window is not
- * focused: every animation in the app gates on `document.hidden`, which is only
- * true when the window is minimized or fully occluded — not when the user has
- * simply task-switched to Chrome. `runningAnimations` turns that claim into a
- * number, so the fix is driven by a measurement instead of an argument.
+ * `runningAnimations` is the headline: the claim under test was that kamp keeps
+ * animating when its window is not focused, because every animated surface gates
+ * on `document.hidden` — true only when minimized or fully occluded, not when the
+ * user task-switches away. Measuring it settled the question (it is ~0).
+ *
+ * `appRafRequests` counts animation frames *application code* asked for. It
+ * replaced an earlier `rafTicks` field that counted callbacks served to the
+ * probe's own rAF loop, which measured Chromium's frame cadence rather than the
+ * app's demand for frames — and kept the compositor awake in the process. The
+ * rename is deliberate: the two numbers are not comparable, so old captures must
+ * not be read as if they were new ones.
  */
 export function writeRendererSample(sample: {
   focused: boolean
   hidden: boolean
-  rafTicks: number
+  appRafRequests: number
   runningAnimations: number
 }): void {
   try {

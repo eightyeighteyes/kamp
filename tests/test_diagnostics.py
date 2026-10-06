@@ -10,7 +10,9 @@ disappears mid-read.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -129,7 +131,14 @@ def test_statm_path_points_at_proc() -> None:
     assert diagnostics._statm_path(1234) == Path("/proc/1234/statm")
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "sysconf"),
+    reason="os.sysconf is POSIX-only; the Linux reader is unreachable on Windows",
+)
 def test_page_size_is_a_positive_power_of_two() -> None:
+    # Guarded on the attribute rather than the platform name: _page_size is only
+    # ever reached from _rss_linux, which process_rss only dispatches to on
+    # linux, so there is nothing to assert where sysconf does not exist.
     size = diagnostics._page_size()
     assert size > 0 and size & (size - 1) == 0
 
@@ -142,6 +151,32 @@ def test_process_rss_dispatches_on_platform(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(diagnostics.sys, "platform", "darwin")
     monkeypatch.setattr(diagnostics, "_rss_darwin", lambda pid: 222)
     assert diagnostics.process_rss(1) == 222
+
+
+@pytest.mark.skipif(
+    not (
+        sys.platform == "win32"
+        or sys.platform == "darwin"
+        or sys.platform.startswith("linux")
+    ),
+    reason="no reader for this platform",
+)
+def test_process_rss_reads_a_plausible_value_for_a_live_process() -> None:
+    # The only unmocked test of the platform readers, and the one that matters:
+    # every other test fakes the syscall, so they prove the parsing but not that
+    # the reader works here. This is what keeps the Windows ctypes path honest --
+    # CI runs it on Windows, where nothing else asserts a real number.
+    rss = diagnostics.process_rss(os.getpid())
+
+    assert rss is not None
+    assert rss > 1_000_000, f"implausibly small RSS for a live interpreter: {rss}"
+
+
+def test_process_rss_returns_none_for_a_reaped_process() -> None:
+    victim = subprocess.Popen([sys.executable, "-c", "pass"])
+    victim.wait()
+
+    assert diagnostics.process_rss(victim.pid) is None
 
 
 def test_process_rss_returns_none_on_unknown_platform(

@@ -172,6 +172,14 @@ def test_process_rss_reads_a_plausible_value_for_a_live_process() -> None:
     assert rss > 1_000_000, f"implausibly small RSS for a live interpreter: {rss}"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "POSIX-only guarantee: Popen holds the Win32 process handle open after "
+        "wait(), so the process object survives, OpenProcess succeeds, and "
+        "Windows reports a residual working set (~32 KB) rather than nothing"
+    ),
+)
 def test_process_rss_returns_none_for_a_reaped_process() -> None:
     victim = subprocess.Popen([sys.executable, "-c", "pass"])
     victim.wait()

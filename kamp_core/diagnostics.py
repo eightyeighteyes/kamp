@@ -124,6 +124,16 @@ def _rss_windows(pid: int) -> int | None:  # pragma: no cover - needs Windows
     ``type: ignore`` comments: ``ctypes.WinDLL`` and ``ctypes.wintypes`` do not
     exist off Windows, and narrowing on the platform is how mypy is told that
     without blanket-suppressing attribute errors for the whole module.
+
+    A Windows caveat that shows up when reading the logs: a process that has
+    *exited* may still read back a small working set (~32 KB observed) rather
+    than nothing, because a Win32 process object survives as long as any handle
+    to it is open — and ``subprocess.Popen`` holds its handle past ``wait()``.
+    So on Windows, "a row stopped appearing" is the signal that a child is gone;
+    "a row went tiny and flat" means exited-but-not-yet-closed. On POSIX the pid
+    simply becomes unreadable and the row drops out. Not normalised here: the
+    reader reports what the OS reports, and the alternative is another
+    Windows-only branch that cannot be verified outside CI.
     """
     if sys.platform != "win32":
         return None

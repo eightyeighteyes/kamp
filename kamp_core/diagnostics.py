@@ -61,6 +61,12 @@ DEFAULT_INTERVAL_SECONDS: Final[float] = 60.0
 # is taken on the very first tick, so a startup burst is still captured.
 DEFAULT_ALLOC_EVERY: Final[int] = 10
 
+# Startup is sampled finely, then the cadence settles. 24 x 5s covers the first
+# two minutes, which is where KAMP-680's +740 MiB step happens — at the steady
+# 60s cadence it appeared as one unhelpful jump between consecutive ticks.
+DEFAULT_BURST_TICKS: Final[int] = 24
+DEFAULT_BURST_INTERVAL_SECONDS: Final[float] = 5.0
+
 
 def enabled() -> bool:
     """Return True when diagnostics sampling has been switched on."""
@@ -274,11 +280,15 @@ class DiagnosticsSampler:
         clock: Callable[[], float] = time.time,
         self_role: str = "daemon",
         alloc_every: int = DEFAULT_ALLOC_EVERY,
+        burst_ticks: int = DEFAULT_BURST_TICKS,
+        burst_interval_seconds: float = DEFAULT_BURST_INTERVAL_SECONDS,
     ) -> None:
         self._out_dir = Path(out_dir)
         self._interval = interval_seconds
         self._clock = clock
         self._alloc_every = alloc_every
+        self._burst_ticks = burst_ticks
+        self._burst_interval = burst_interval_seconds
         # pid -> role.  Guarded because children are registered from the
         # playback and sync threads while the sampler thread reads.
         self._tracked: dict[int, str] = {os.getpid(): self_role}
@@ -416,14 +426,29 @@ class DiagnosticsSampler:
         # Sample immediately so a short-lived session still records something,
         # then wait on the Event rather than sleeping — stop() must not block
         # for a whole interval during shutdown.
+        #
+        # The first burst_ticks run at burst_interval rather than interval. Two
+        # reasons, both learned the hard way on KAMP-680:
+        #
+        #  - At a flat 60s cadence the startup growth showed up as a single
+        #    64 -> 804 MiB jump between two ticks. The ramp carries the
+        #    information about *what* is allocating; one jump carries none.
+        #  - Allocation snapshots fired on tick 0 and then tick 10. Tick 0 is
+        #    *before* any startup work, so a short run captured one empty
+        #    snapshot and nothing else.
+        #
+        # Note what a snapshot can and cannot show: it lists allocations that are
+        # still LIVE, so it finds retained references but never a churner that
+        # frees what it allocates. KAMP-680 turned out to be the latter, which is
+        # why sampling frequently enough to land near traced-peak matters — that
+        # is the only moment a churner's working set is visible at all.
         tick = 0
         while True:
             self.write_sample()
-            # Snapshot on the first tick and every alloc_every after it. The
-            # first one matters most: KAMP-680's largest single step is +715 MiB
-            # inside the first minute, so a snapshot that waited would miss it.
-            if self._alloc_every > 0 and tick % self._alloc_every == 0:
+            in_burst = tick < self._burst_ticks
+            if in_burst or (self._alloc_every > 0 and tick % self._alloc_every == 0):
                 self.write_allocation_snapshot()
             tick += 1
-            if self._stop.wait(self._interval):
+            delay = self._burst_interval if tick < self._burst_ticks else self._interval
+            if self._stop.wait(delay):
                 return

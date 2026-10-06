@@ -214,6 +214,52 @@ def test_allocation_log_is_a_separate_file_from_the_rss_log(tmp_path: Path) -> N
     assert sampler.alloc_path() != sampler.current_path()
 
 
+def test_burst_mode_samples_fast_then_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The startup ramp is the informative part: at a flat 60s cadence KAMP-680's
+    # growth was a single 64 -> 804 MiB jump between two ticks.
+    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1)
+    waits: list[float] = []
+    sampler = _sampler(
+        tmp_path, interval_seconds=60.0, burst_ticks=3, burst_interval_seconds=0.01
+    )
+
+    def record_wait(timeout: float | None = None) -> bool:
+        waits.append(float(timeout or 0))
+        # Stop once the burst has elapsed and one steady wait is observed.
+        return len(waits) >= 3
+
+    monkeypatch.setattr(sampler._stop, "wait", record_wait)
+    sampler._run()
+
+    # burst_ticks=3 means three burst *samples*, so two waits at the burst
+    # interval; the wait after the last burst sample is already the steady one.
+    assert waits == [0.01, 0.01, 60.0], waits
+
+
+def test_burst_mode_snapshots_every_tick_not_just_the_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The original cadence snapshotted tick 0 (before any startup work) and then
+    # tick 10, so a short run captured one empty snapshot. A churner is only
+    # visible near traced-peak, so the burst has to snapshot every tick.
+    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1)
+    diagnostics.start_tracemalloc()
+    taken: list[int] = []
+    sampler = _sampler(
+        tmp_path, interval_seconds=60.0, burst_ticks=3, burst_interval_seconds=0.01
+    )
+    monkeypatch.setattr(
+        sampler, "write_allocation_snapshot", lambda *a, **k: taken.append(1)
+    )
+    monkeypatch.setattr(sampler._stop, "wait", lambda t=None: len(taken) >= 3)
+
+    sampler._run()
+
+    assert len(taken) == 3, f"expected a snapshot on each burst tick, got {len(taken)}"
+
+
 def test_allocation_snapshot_errors_are_swallowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

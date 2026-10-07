@@ -931,6 +931,18 @@ def _scrub_os_metadata(directory: Path) -> None:
         pass
 
 
+# Image types the local art cache will store (KAMP-680). An unknown mime is
+# served but not cached rather than guessed at — a wrong extension would make the
+# entry unreadable, and the mime has to survive the round trip through a filename.
+_ART_MIME_EXT: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+_ART_EXT_MIME: dict[str, str] = {ext: mime for mime, ext in _ART_MIME_EXT.items()}
+
+
 def _scrub_cover_art(directory: Path) -> None:
     """Remove image files and macOS resource forks from *directory*.
 
@@ -3254,6 +3266,80 @@ def create_app(
         else:
             tracks = index.tracks_for_album(album_artist, album)
 
+        # KAMP-680: local art is extracted once and then served from disk.
+        #
+        # extract_art does a full id3.ID3() parse (every frame, artwork included)
+        # and then copies the image with bytes(frame.data). Doing that per request
+        # cost +429 MiB of *permanently resident* RSS across one pass over the
+        # library, while Python held 1.1 MiB of it — allocator retention, not a
+        # reference leak, so no amount of reference-hunting would have helped. The
+        # UI requests art for every album card on every launch, so it recurred at
+        # every start. Remote art already cached to disk; this brings local art in
+        # line, and FileResponse keeps the bytes out of the Python heap entirely.
+        #
+        # Cached art is stored FULL SIZE and the cache is UNCAPPED. That is a
+        # deliberate, owner-approved trade, not an oversight — do not "optimise"
+        # it without asking. Measured on a real 13k-track library: embedded art
+        # averages ~2.8 MB and reaches 19 MB, so full coverage of ~1150 albums is
+        # roughly 3 GB on disk. Downscaling (the `_compress_to_max_bytes` +
+        # `artwork.min_dimension` primitives already in this module) would cut
+        # that to ~150 MB, and capping with LRU eviction would bound it; both
+        # were considered and declined in favour of keeping the exact original
+        # bytes. Disk was judged cheaper than RSS.
+        #
+        # Known consequence of "uncapped": re-embedding art bumps art_version,
+        # which changes the key, so the superseded entry is orphaned rather than
+        # replaced. Nothing prunes them. Growth is therefore proportional to art
+        # *edits* as well as album count.
+        def _local_cache_base() -> Path | None:
+            """Extension-less cache path for this album's art, or None if uncacheable."""
+            if art_cache_dir is None:
+                return None
+            album_id = next((t.album_id for t in tracks if t.album_id), 0)
+            if not album_id:
+                # Missing-album tracks (empty album tag) have no albums row, so
+                # there is no stable key. They take the uncached path.
+                return None
+            try:
+                row = index.album_identity_for_ids({album_id}).get(album_id)
+                version = None if row is None else row["art_version"]
+            except Exception:  # noqa: BLE001 - a cache key is never worth a 500
+                version = None
+            # art_version is a float mtime; '.' is swapped out so the stem carries
+            # no suffix for Path to misread. Re-embedding art bumps the version,
+            # which changes the key, so stale bytes can never be served.
+            stamp = (
+                "0" if version is None else f"{float(version):.6f}".replace(".", "_")
+            )
+            return art_cache_dir / "local" / f"{album_id}-{stamp}"
+
+        def _cached_local_response() -> Response | None:
+            base = _local_cache_base()
+            if base is None:
+                return None
+            from fastapi.responses import FileResponse  # noqa: PLC0415
+
+            for ext, mime in _ART_EXT_MIME.items():
+                path = Path(str(base) + ext)
+                if path.exists():
+                    return FileResponse(
+                        path,
+                        media_type=mime,
+                        headers={"Cache-Control": cache_control},
+                    )
+            return None
+
+        def _store_local(data: bytes, mime: str) -> None:
+            base = _local_cache_base()
+            ext = _ART_MIME_EXT.get(mime)
+            if base is None or ext is None:
+                return  # unknown mime: serve it, but do not guess a filename
+            try:
+                base.parent.mkdir(parents=True, exist_ok=True)
+                Path(str(base) + ext).write_bytes(data)
+            except OSError:
+                pass  # a cold cache is a slow request, not a failed one
+
         def _embedded_response() -> Response | None:
             for track in tracks:
                 if track.is_remote:
@@ -3262,6 +3348,7 @@ def create_app(
                     result = extract_art(track.file_path)
                     if result:
                         data, mime = result
+                        _store_local(data, mime)
                         return Response(
                             content=data,
                             media_type=mime,
@@ -3276,6 +3363,7 @@ def create_app(
             result = read_cover_file(local_tracks[0].file_path.parent)
             if result:
                 data, mime = result
+                _store_local(data, mime)
                 return Response(
                     content=data,
                     media_type=mime,
@@ -3283,10 +3371,14 @@ def create_app(
                 )
             return None
 
-        if save_format == "cover-file":
-            resp = _cover_file_response() or _embedded_response()
-        else:
-            resp = _embedded_response() or _cover_file_response()
+        # A cache hit short-circuits both local sources — neither the audio file
+        # nor the cover file is touched.
+        resp = _cached_local_response()
+        if resp is None:
+            if save_format == "cover-file":
+                resp = _cover_file_response() or _embedded_response()
+            else:
+                resp = _embedded_response() or _cover_file_response()
 
         if resp is not None:
             return resp

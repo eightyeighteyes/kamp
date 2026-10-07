@@ -41,22 +41,91 @@ import subprocess
 import sys
 import threading
 import time
+import tracemalloc
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Final
 
 _ENV_VAR: Final[str] = "KAMP_DIAGNOSTICS"
+_TRACEMALLOC_ENV_VAR: Final[str] = "KAMP_DIAGNOSTICS_TRACEMALLOC"
 _TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
 # A leak that takes days to show is not sampled usefully at second resolution,
 # and a tighter interval only inflates the log.
 DEFAULT_INTERVAL_SECONDS: Final[float] = 60.0
 
+# Allocation snapshots walk every tracked allocation, so they run once every N
+# RSS ticks rather than every tick. At the default interval that is ~10 minutes,
+# which is fine resolution for a leak measured in hours — and the first snapshot
+# is taken on the very first tick, so a startup burst is still captured.
+DEFAULT_ALLOC_EVERY: Final[int] = 10
+
+# Startup is sampled finely, then the cadence settles. 24 x 5s covers the first
+# two minutes, which is where KAMP-680's +740 MiB step happens — at the steady
+# 60s cadence it appeared as one unhelpful jump between consecutive ticks.
+DEFAULT_BURST_TICKS: Final[int] = 24
+DEFAULT_BURST_INTERVAL_SECONDS: Final[float] = 5.0
+
 
 def enabled() -> bool:
     """Return True when diagnostics sampling has been switched on."""
     return os.environ.get(_ENV_VAR, "").strip().lower() in _TRUTHY
+
+
+def tracemalloc_enabled() -> bool:
+    """Return True when Python allocation tracking has been switched on.
+
+    A **separate** gate from :func:`enabled` on purpose. RSS sampling is three
+    cheap reads a minute and can be left on for days; tracemalloc intercepts
+    every allocation and costs real CPU and memory of its own, so it must be
+    opted into deliberately rather than riding along on ``KAMP_DIAGNOSTICS``.
+    """
+    return os.environ.get(_TRACEMALLOC_ENV_VAR, "").strip().lower() in _TRUTHY
+
+
+def start_tracemalloc() -> None:
+    """Begin tracking Python allocations. Idempotent.
+
+    One frame per traceback: the question this answers is "which line is holding
+    the memory", and deeper stacks multiply tracemalloc's own overhead for
+    detail that the allocation site already provides.
+    """
+    if not tracemalloc.is_tracing():
+        tracemalloc.start(1)
+
+
+def traced_memory() -> tuple[int, int] | None:
+    """``(current, peak)`` bytes of live traced allocations, or None if not tracing.
+
+    ``current`` against RSS is the diagnosis for KAMP-680: close together means
+    live objects are being retained and the top allocation sites name them; far
+    apart means Python released the memory and the allocator kept the pages, for
+    which the only fix in this codebase's experience is subprocess isolation.
+    """
+    if not tracemalloc.is_tracing():
+        return None
+    current, peak = tracemalloc.get_traced_memory()
+    return int(current), int(peak)
+
+
+def top_allocations(limit: int = 15) -> list[dict[str, object]]:
+    """The *limit* largest live allocation sites, biggest first.
+
+    Empty when not tracing, so callers need no separate guard.
+    """
+    if not tracemalloc.is_tracing():
+        return []
+    stats = tracemalloc.take_snapshot().statistics("lineno")[:limit]
+    return [
+        {
+            "file": stat.traceback[0].filename,
+            "line": stat.traceback[0].lineno,
+            "size_bytes": int(stat.size),
+            "count": int(stat.count),
+        }
+        for stat in stats
+    ]
 
 
 @dataclass(frozen=True)
@@ -210,10 +279,16 @@ class DiagnosticsSampler:
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.time,
         self_role: str = "daemon",
+        alloc_every: int = DEFAULT_ALLOC_EVERY,
+        burst_ticks: int = DEFAULT_BURST_TICKS,
+        burst_interval_seconds: float = DEFAULT_BURST_INTERVAL_SECONDS,
     ) -> None:
         self._out_dir = Path(out_dir)
         self._interval = interval_seconds
         self._clock = clock
+        self._alloc_every = alloc_every
+        self._burst_ticks = burst_ticks
+        self._burst_interval = burst_interval_seconds
         # pid -> role.  Guarded because children are registered from the
         # playback and sync threads while the sampler thread reads.
         self._tracked: dict[int, str] = {os.getpid(): self_role}
@@ -277,22 +352,54 @@ class DiagnosticsSampler:
         stamp = datetime.fromtimestamp(self._clock(), tz=timezone.utc)
         return self._out_dir / f"memory-{stamp:%Y-%m-%d}.jsonl"
 
+    def alloc_path(self) -> Path:
+        """Path of the allocation-snapshot log for the current date (UTC).
+
+        Separate from the RSS log because the records have a different shape and
+        a much lower cadence; mixing them would make both awkward to read.
+        """
+        stamp = datetime.fromtimestamp(self._clock(), tz=timezone.utc)
+        return self._out_dir / f"alloc-{stamp:%Y-%m-%d}.jsonl"
+
     def write_sample(self) -> None:
         """Append one tick to the log.  Never raises."""
         samples = self.sample()
-        record = {
+        record: dict[str, object] = {
             "t": self._clock(),
             "procs": [
                 {"pid": s.pid, "role": s.role, "rss_bytes": s.rss_bytes}
                 for s in samples
             ],
         }
+        # Only present while tracing, so a reader can tell "not measured" from
+        # "measured as zero" without consulting the env var the run used.
+        traced = traced_memory()
+        if traced is not None:
+            record["traced_current_bytes"] = traced[0]
+            record["traced_peak_bytes"] = traced[1]
         try:
             self._out_dir.mkdir(parents=True, exist_ok=True)
             with self.current_path().open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record) + "\n")
         except OSError:
             # Diagnostics are never worth failing the daemon over.
+            pass
+
+    def write_allocation_snapshot(self, limit: int = 15) -> None:
+        """Append the largest live allocation sites.  No-op unless tracing.
+
+        Taking a snapshot walks every tracked allocation, so this runs on a much
+        slower cadence than :meth:`write_sample` — see ``alloc_every``.
+        """
+        top = top_allocations(limit)
+        if not top:
+            return
+        record = {"t": self._clock(), "top": top}
+        try:
+            self._out_dir.mkdir(parents=True, exist_ok=True)
+            with self.alloc_path().open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+        except OSError:
             pass
 
     # -- lifecycle -------------------------------------------------------
@@ -319,7 +426,29 @@ class DiagnosticsSampler:
         # Sample immediately so a short-lived session still records something,
         # then wait on the Event rather than sleeping — stop() must not block
         # for a whole interval during shutdown.
+        #
+        # The first burst_ticks run at burst_interval rather than interval. Two
+        # reasons, both learned the hard way on KAMP-680:
+        #
+        #  - At a flat 60s cadence the startup growth showed up as a single
+        #    64 -> 804 MiB jump between two ticks. The ramp carries the
+        #    information about *what* is allocating; one jump carries none.
+        #  - Allocation snapshots fired on tick 0 and then tick 10. Tick 0 is
+        #    *before* any startup work, so a short run captured one empty
+        #    snapshot and nothing else.
+        #
+        # Note what a snapshot can and cannot show: it lists allocations that are
+        # still LIVE, so it finds retained references but never a churner that
+        # frees what it allocates. KAMP-680 turned out to be the latter, which is
+        # why sampling frequently enough to land near traced-peak matters — that
+        # is the only moment a churner's working set is visible at all.
+        tick = 0
         while True:
             self.write_sample()
-            if self._stop.wait(self._interval):
+            in_burst = tick < self._burst_ticks
+            if in_burst or (self._alloc_every > 0 and tick % self._alloc_every == 0):
+                self.write_allocation_snapshot()
+            tick += 1
+            delay = self._burst_interval if tick < self._burst_ticks else self._interval
+            if self._stop.wait(delay):
                 return

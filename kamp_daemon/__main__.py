@@ -657,6 +657,11 @@ def _cmd_daemon(
     if _diagnostics.enabled():
         _diag_sampler = _diagnostics.DiagnosticsSampler(_state_dir() / "diagnostics")
         _diag_sampler.register_resolver("mpv", lambda: engine.pid)
+        # KAMP-718: recorded in the same tick as mpv's RSS so the demuxer cache's
+        # share of it can be measured rather than inferred from the flag defaults.
+        _diag_sampler.register_metric(
+            "mpv_demuxer_cache_bytes", lambda: engine.state.demuxer_cache_bytes
+        )
         _diag_sampler.start()
         _logger.info(
             "diagnostics sampling enabled → %s", _diag_sampler.current_path().parent

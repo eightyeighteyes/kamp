@@ -979,6 +979,48 @@ class TestPlayerStateEndpoint:
         data = c.get("/api/v1/player/state").json()
         assert data["position"] == pytest.approx(42.0)
 
+    def test_does_not_extrapolate_while_stalled_on_cache(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """KAMP-718: a demuxer underrun sets `paused-for-cache`, not `pause`.
+
+        `playing` therefore stays True and time-pos events stop, so the
+        extrapolation added for KAMP-392 runs the progress bar forward at 1x
+        while the audio is frozen — it races to the end of a stalled track.
+        Freezing the bar is the honest rendering of a stall.
+        """
+        import time
+
+        state = PlaybackState(playing=True, position=42.0, duration=180.0)
+        state.position_updated_at = time.time() - 5.0
+        state.paused_for_cache = True
+        mock_engine.state = state
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        data = c.get("/api/v1/player/state").json()
+
+        assert data["position"] == pytest.approx(42.0)
+        # Still playing: a stall must not read as a user pause, or the play/pause
+        # button flips and the UI offers "resume" for something already playing.
+        assert data["playing"] is True
+
+    def test_extrapolation_resumes_once_the_cache_recovers(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        import time
+
+        state = PlaybackState(playing=True, position=42.0, duration=180.0)
+        state.position_updated_at = time.time() - 2.0
+        state.paused_for_cache = False
+        mock_engine.state = state
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+
+        data = c.get("/api/v1/player/state").json()
+
+        assert data["position"] > 42.0
+
     def test_buffering_false_by_default(self, client: TestClient) -> None:
         data = client.get("/api/v1/player/state").json()
         assert data["buffering"] is False

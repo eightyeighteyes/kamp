@@ -1595,6 +1595,12 @@ def create_app(
             engine.state.playing
             and engine.state.duration > 0
             and _t.time() - engine.state.position_updated_at > 0.3
+            # KAMP-718: not while mpv is stalled refilling its demuxer cache.
+            # A stall sets `paused-for-cache`, never `pause`, so `playing` stays
+            # True and time-pos events stop — exactly the conditions above. Without
+            # this guard the bar advances at 1x through frozen audio and sprints to
+            # the end of the track. A frozen bar is the honest rendering of a stall.
+            and not engine.state.paused_for_cache
         ):
             pos = min(
                 pos + (_t.time() - engine.state.position_updated_at),

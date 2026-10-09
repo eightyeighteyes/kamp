@@ -295,6 +295,8 @@ class DiagnosticsSampler:
         # Roles whose pid is not known up front (mpv is spawned lazily on first
         # playback) are resolved fresh each tick instead of registered once.
         self._resolvers: dict[str, Callable[[], int | None]] = {}
+        # Scalar readings recorded alongside RSS — see register_metric.
+        self._metrics: dict[str, Callable[[], float | None]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -310,6 +312,20 @@ class DiagnosticsSampler:
         """Stop tracking *pid*.  Unknown pids are ignored."""
         with self._lock:
             self._tracked.pop(pid, None)
+
+    def register_metric(self, name: str, read: Callable[[], float | None]) -> None:
+        """Track a scalar read on every tick, recorded next to the RSS readings.
+
+        For attributing how much of a process's memory one subsystem accounts for
+        — KAMP-718 reads mpv's demuxer cache size against mpv's RSS. Both have to
+        land in the same record: two independently sampled logs cannot be lined
+        up after the fact.
+
+        A reader that returns None or raises is omitted rather than recorded as
+        zero, so "not running" stays distinguishable from "measured zero".
+        """
+        with self._lock:
+            self._metrics[name] = read
 
     def register_resolver(self, role: str, resolve: Callable[[], int | None]) -> None:
         """Track *role* via a callable re-read on every tick.
@@ -361,6 +377,22 @@ class DiagnosticsSampler:
         stamp = datetime.fromtimestamp(self._clock(), tz=timezone.utc)
         return self._out_dir / f"alloc-{stamp:%Y-%m-%d}.jsonl"
 
+    def _read_metrics(self) -> dict[str, float]:
+        """Read every registered metric, skipping any that fails or has no value."""
+        with self._lock:
+            readers = dict(self._metrics)
+        out: dict[str, float] = {}
+        for name, read in readers.items():
+            try:
+                value = read()
+            except Exception:
+                # Same contract as the pid resolvers: one bad reader must not
+                # cost the whole tick.
+                continue
+            if value is not None:
+                out[name] = value
+        return out
+
     def write_sample(self) -> None:
         """Append one tick to the log.  Never raises."""
         samples = self.sample()
@@ -371,6 +403,9 @@ class DiagnosticsSampler:
                 for s in samples
             ],
         }
+        metrics = self._read_metrics()
+        if metrics:
+            record["metrics"] = metrics
         # Only present while tracing, so a reader can tell "not measured" from
         # "measured as zero" without consulting the env var the run used.
         traced = traced_memory()

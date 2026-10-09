@@ -268,6 +268,71 @@ def test_resolver_supplies_a_pid_that_does_not_exist_yet(
     assert by_role["mpv"].pid == 5555
 
 
+def test_metrics_are_recorded_alongside_rss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KAMP-718 needs mpv's demuxer cache size next to mpv's RSS in the same tick.
+
+    Attributing how much of a process's memory one subsystem accounts for means
+    reading both at the same instant; two logs sampled independently cannot be
+    lined up afterwards.
+    """
+    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    sampler = _sampler(tmp_path)
+    sampler.register_metric("mpv_demuxer_cache_bytes", lambda: 12_345)
+
+    sampler.write_sample()
+
+    record = json.loads(sampler.current_path().read_text().strip())
+    assert record["metrics"] == {"mpv_demuxer_cache_bytes": 12_345}
+
+
+def test_metrics_key_is_absent_when_none_registered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Absent rather than empty, so a reader can tell "not instrumented" from
+    # "instrumented and measured zero".
+    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    sampler = _sampler(tmp_path)
+
+    sampler.write_sample()
+
+    assert "metrics" not in json.loads(sampler.current_path().read_text().strip())
+
+
+def test_metric_that_raises_does_not_break_the_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    sampler = _sampler(tmp_path)
+
+    def boom() -> float:
+        raise RuntimeError("engine torn down mid-read")
+
+    sampler.register_metric("broken", boom)
+    sampler.register_metric("fine", lambda: 7)
+
+    sampler.write_sample()
+
+    record = json.loads(sampler.current_path().read_text().strip())
+    # The healthy metric still lands; the broken one is simply absent.
+    assert record["metrics"] == {"fine": 7}
+    assert record["procs"], "RSS sampling must be unaffected by a bad metric"
+
+
+def test_metric_returning_none_is_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # mpv is not always running; "no reading" is absent, not zero.
+    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    sampler = _sampler(tmp_path)
+    sampler.register_metric("mpv_demuxer_cache_bytes", lambda: None)
+
+    sampler.write_sample()
+
+    assert "metrics" not in json.loads(sampler.current_path().read_text().strip())
+
+
 def test_resolver_that_raises_does_not_break_the_tick(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

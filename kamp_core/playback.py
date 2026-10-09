@@ -55,6 +55,15 @@ class PlaybackState:
     # after seeking near EOF of an HTTP stream: mpv drains its audio
     # buffer while the demuxer is already at EOF and stops emitting events).
     position_updated_at: float = field(default_factory=time.time, compare=False)
+    # True while mpv has stalled output waiting for the demuxer cache to refill
+    # (KAMP-718). This is mpv's `paused-for-cache`, which is NOT `pause`: a stall
+    # leaves `playing` True, so without this flag _state_snapshot's wall-clock
+    # extrapolation runs the progress bar forward while the audio is frozen.
+    paused_for_cache: bool = field(default=False, compare=False)
+    # Bytes currently held by mpv's demuxer cache, from `demuxer-cache-state`.
+    # Recorded so the cache's share of mpv's resident memory can be measured
+    # rather than inferred from the flag defaults.
+    demuxer_cache_bytes: int = field(default=0, compare=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1048,6 +1057,13 @@ _OBSERVED: list[tuple[int, str]] = [
     (1, "time-pos"),
     (2, "duration"),
     (3, "pause"),
+    # KAMP-718. `paused-for-cache` is the one that matters behaviourally: a
+    # demuxer underrun stalls output without touching `pause`, so observing only
+    # `pause` leaves the daemon extrapolating the progress bar through a stall.
+    # `demuxer-cache-state` is diagnostic — it is what lets the cache's share of
+    # mpv's resident memory be measured instead of inferred.
+    (4, "paused-for-cache"),
+    (5, "demuxer-cache-state"),
 ]
 
 # Per-channel RMS + Crest_factor at ~20 Hz (2205-sample frames at 44.1 kHz).
@@ -1215,6 +1231,38 @@ class MpvPlaybackEngine:
         self._proc = subprocess.Popen(
             [
                 self._mpv_bin,
+                # MUST stay first: mpv resolves config loading in a pre-parse pass,
+                # so a later --no-config can still let ~/.config/mpv/mpv.conf win
+                # and silently undo the cache bounds below. It also stops
+                # ~/.config/mpv/scripts/ loading alongside kamp_fade.lua. Nothing
+                # kamp needs comes from config files — --input-media-keys=no is
+                # passed explicitly and all control is over IPC, not input.conf.
+                "--no-config",
+                # The demuxer cache is deliberately NOT bounded here (KAMP-718).
+                #
+                # mpv's defaults are video-sized (150 MiB forward + 50 MiB back,
+                # with --cache-secs at ~1000h so bytes are the only cap), which
+                # looked like the obvious cause of mpv settling at ~460 MiB against
+                # ~105 idle. Capping at 32/16 MiB was tried and measured on BOTH
+                # paths, and it does nothing:
+                #
+                #   local playback  - the cache never binds at all; mpv reads ahead
+                #                     per --demuxer-readahead-secs=1 and was measured
+                #                     holding 0.05 MiB.
+                #   streaming       - the cache does bind, but occupancy is only
+                #                     ~10-12 MiB, far below both the 32 MiB cap and
+                #                     mpv's own 150 MiB default. The cap is inert.
+                #
+                # And the growth is decoupled from it: RSS climbed 364 -> 405 MiB
+                # while `demuxer-cache-state.total-bytes` stayed flat at 10-12. The
+                # real driver is per-track allocator churn (~12 MiB/track measured
+                # locally, more on streams), which plateaus but at a high level.
+                #
+                # Re-adding these flags would constrain streaming for no measured
+                # benefit while carrying the KAMP-508 fade risk: a thin cache lets a
+                # demuxer underrun stall PTS while kamp_fade.lua's wall-clock
+                # timeout keeps running, landing a pause on un-faded audio. Measure
+                # occupancy first if anyone is tempted again.
                 "--no-video",
                 "--idle=yes",
                 "--really-quiet",
@@ -1751,6 +1799,18 @@ class MpvPlaybackEngine:
                 self.state.playing = new_playing
                 if changed and self.on_play_state_changed is not None:
                     self.on_play_state_changed()
+            elif prop == "paused-for-cache" and isinstance(data, bool):
+                # Deliberately does NOT touch `playing`: this is a stall, not a
+                # user pause, so the transport and play button must read unchanged.
+                # Its only consumer is _state_snapshot, which stops extrapolating
+                # position while it is set (KAMP-718).
+                self.state.paused_for_cache = data
+            elif prop == "demuxer-cache-state" and isinstance(data, dict):
+                # mpv omits fields from this dict depending on the stream, so a
+                # missing total-bytes must not raise on the reader thread.
+                total = data.get("total-bytes")
+                if isinstance(total, (int, float)):
+                    self.state.demuxer_cache_bytes = int(total)
 
         elif name == "file-loaded":
             # Reset stale values from the previous track so preload_next's guard

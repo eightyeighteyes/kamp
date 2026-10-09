@@ -1851,6 +1851,82 @@ class TestMpvPlaybackEngine:
         )
         assert engine.state.playing is False
 
+    def test_paused_for_cache_is_tracked(self) -> None:
+        """KAMP-718: a demuxer underrun sets `paused-for-cache`, NOT `pause`.
+
+        Without observing it, the daemon believes playback is still running and
+        _state_snapshot extrapolates the progress bar from wall clock while audio
+        is frozen — the bar races to the end of a stalled track.
+        """
+        engine, _ = _make_engine()
+        assert engine.state.paused_for_cache is False
+
+        engine._handle_event(
+            {"event": "property-change", "name": "paused-for-cache", "data": True}
+        )
+        assert engine.state.paused_for_cache is True
+
+        engine._handle_event(
+            {"event": "property-change", "name": "paused-for-cache", "data": False}
+        )
+        assert engine.state.paused_for_cache is False
+
+    def test_paused_for_cache_does_not_change_playing(self) -> None:
+        # It is a stall, not a user pause: the transport should still read as
+        # playing so resume/pause semantics and the UI's play button are unchanged.
+        engine, _ = _make_engine()
+        engine._handle_event(
+            {"event": "property-change", "name": "pause", "data": False}
+        )
+        engine._handle_event(
+            {"event": "property-change", "name": "paused-for-cache", "data": True}
+        )
+
+        assert engine.state.playing is True
+        assert engine.state.paused_for_cache is True
+
+    def test_paused_for_cache_ignores_non_bool_payloads(self) -> None:
+        engine, _ = _make_engine()
+        engine._handle_event(
+            {"event": "property-change", "name": "paused-for-cache", "data": None}
+        )
+        assert engine.state.paused_for_cache is False
+
+    def test_demuxer_cache_bytes_is_tracked(self) -> None:
+        """Recorded so the cache's share of mpv's RSS can be measured rather than
+        assumed — the ticket's premise is that the demuxer allowance drives it."""
+        engine, _ = _make_engine()
+        assert engine.state.demuxer_cache_bytes == 0
+
+        engine._handle_event(
+            {
+                "event": "property-change",
+                "name": "demuxer-cache-state",
+                "data": {"total-bytes": 12_345_678, "fw-bytes": 1_000},
+            }
+        )
+        assert engine.state.demuxer_cache_bytes == 12_345_678
+
+    def test_demuxer_cache_state_survives_a_missing_total(self) -> None:
+        # mpv omits fields from this dict depending on the stream; a missing
+        # total-bytes must not raise on the reader thread.
+        engine, _ = _make_engine()
+        engine._handle_event(
+            {
+                "event": "property-change",
+                "name": "demuxer-cache-state",
+                "data": {"fw-bytes": 10},
+            }
+        )
+        assert engine.state.demuxer_cache_bytes == 0
+
+    def test_demuxer_cache_state_survives_a_non_dict_payload(self) -> None:
+        engine, _ = _make_engine()
+        engine._handle_event(
+            {"event": "property-change", "name": "demuxer-cache-state", "data": None}
+        )
+        assert engine.state.demuxer_cache_bytes == 0
+
     def test_on_play_state_changed_fires_when_pause_flips(self) -> None:
         engine, _ = _make_engine()
         callback = MagicMock()
@@ -2628,6 +2704,61 @@ class TestMpvPlaybackEngine:
         cmd = self._spawn_argv(monkeypatch)
         assert "--msg-level=ffmpeg=v" in cmd
         assert any(c.startswith("--af=lavfi=graph=") for c in cmd)
+
+    # -- KAMP-718: the demuxer cache is deliberately NOT bounded -----------
+
+    def test_demuxer_cache_is_not_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A regression guard on a measurement, not on a preference.
+
+        Capping the cache is the obvious-looking fix for mpv settling at ~460 MiB,
+        and it was tried and measured on both paths. Local playback never binds it
+        (0.05 MiB held). Streaming does bind it, but occupancy is only ~10-12 MiB
+        — below both the 32 MiB cap tried and mpv's own 150 MiB default, so the cap
+        is inert. Growth is decoupled from the cache besides: RSS climbed
+        364 -> 405 MiB while occupancy stayed flat at 10-12.
+
+        Re-adding these would constrain streaming for no measured benefit while
+        carrying the KAMP-508 fade risk (a thin cache lets an underrun stall PTS
+        while the Lua fade's wall-clock timeout keeps running). Measure occupancy
+        via `metrics.mpv_demuxer_cache_bytes` before trying again.
+        """
+        cmd = self._spawn_argv(monkeypatch)
+
+        assert not any(c.startswith("--demuxer-max-bytes") for c in cmd)
+        assert not any(c.startswith("--demuxer-max-back-bytes") for c in cmd)
+        assert not any(c.startswith("--cache-secs") for c in cmd)
+
+    # -- KAMP-718: user config must not override our flags -----------------
+
+    def test_no_config_is_passed_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """mpv resolves config loading in a pre-parse pass, so --no-config has to
+        lead or a user mpv.conf can still win and silently undo the cache bounds.
+        It also stops ~/.config/mpv/scripts/ loading alongside kamp_fade.lua.
+        """
+        cmd = self._spawn_argv(monkeypatch)
+
+        assert "--no-config" in cmd
+        # cmd[0] is the mpv binary itself, so --no-config leads the flags.
+        assert cmd[1] == "--no-config", f"expected --no-config first, got {cmd[1]!r}"
+
+    def test_transport_critical_flags_survive_the_new_ones(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """KAMP-519: pause/resume/stop/mute are pure script-messages, so --script
+        and both afade filters are load-bearing and fail silently. Re-asserted
+        here because this change reorders the argv.
+        """
+        cmd = self._spawn_argv(monkeypatch)
+
+        assert any(c.startswith("--script=") for c in cmd)
+        assert any(c.startswith("--af-append=@kampfade:") for c in cmd)
+        assert any(c.startswith("--af-append=@kampmute:") for c in cmd)
+        assert "--input-media-keys=no" in cmd
+        assert "--no-video" in cmd
+        assert "--idle=yes" in cmd
+        assert any(c.startswith("--input-ipc-server=") for c in cmd)
 
     def test_shutdown_reaps_the_child(self) -> None:
         """Dropping the Popen without waiting leaves a zombie — harmless for the

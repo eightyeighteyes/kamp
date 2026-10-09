@@ -23,7 +23,7 @@ import uuid as _uuid
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Final, Literal, cast
 from urllib.parse import urlparse
 
 from fastapi import (
@@ -943,6 +943,100 @@ _ART_MIME_EXT: dict[str, str] = {
 _ART_EXT_MIME: dict[str, str] = {ext: mime for mime, ext in _ART_MIME_EXT.items()}
 
 
+#: Events that are pure telemetry: only the newest value has any worth, so they
+#: are coalesced into a single slot rather than queued (KAMP-717). `audio.level`
+#: arrives at ~20 Hz from the metering graph and a frame that is even one tick old
+#: is already wrong on screen.
+_COALESCED_EVENTS: frozenset[str] = frozenset({"audio.level"})
+
+#: Upper bound on queued (non-coalesced) events per client. Generous: with the
+#: 20 Hz flood coalesced away, the remaining traffic is state transitions, so this
+#: is defence in depth against a future high-frequency event rather than a limit
+#: anything should reach in practice.
+_WS_QUEUE_MAXSIZE: int = 512
+
+
+class _ClientSink:
+    """Per-client event sink that cannot grow with the producer's rate.
+
+    Replaces a bare unbounded ``asyncio.Queue`` (KAMP-717). That queue held one
+    entry per event, and ``_notify_audio_level`` fires at ~20 Hz while the drain
+    loop sends one event per iteration behind ``await ws.send_json`` — so the
+    backlog grew without bound. Measured: 59,491 of 60,000 events retained, with
+    ``gc.collect()`` freeing none, because they were live objects held by the
+    queue. That accounted for roughly 460 MiB over a 16-hour session.
+
+    Two mechanisms, because the two kinds of event want opposite things:
+
+    * **Coalesced** (``_COALESCED_EVENTS``) land in a single slot, newest wins. A
+      sentinel is queued only when the slot was empty, so telemetry occupies at
+      most one queue entry no matter how fast it arrives.
+    * **Everything else** queues in order, bounded, dropping the *oldest* on
+      overflow. These are idempotent refresh signals, so recency is what matters
+      — and the ping path re-sends a full snapshot anyway.
+
+    Not thread-safe by design: every mutation is scheduled onto the event loop
+    via ``call_soon_threadsafe``, so it only ever runs on the loop thread.
+    """
+
+    #: Queued in place of a coalesced event to wake the drain loop. Never sent.
+    _SENTINEL: Final[dict[str, Any]] = {"__coalesced__": True}
+
+    def __init__(self, maxsize: int = _WS_QUEUE_MAXSIZE) -> None:
+        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._maxsize = maxsize
+        self._latest: dict[str, Any] | None = None
+        self._dropped = 0
+
+    def push(self, event: dict[str, Any]) -> None:
+        """Record *event*. Runs on the event loop thread; never blocks or raises."""
+        if event.get("type") in _COALESCED_EVENTS:
+            had_pending = self._latest is not None
+            self._latest = event
+            if not had_pending:
+                # Only the first level since the last delivery takes a slot.
+                self._queue.put_nowait(self._SENTINEL)
+            return
+
+        while self._queue.qsize() >= self._maxsize:
+            try:
+                dropped = self._queue.get_nowait()
+            except asyncio.QueueEmpty:  # pragma: no cover - qsize said otherwise
+                break
+            # A dropped sentinel would orphan the pending level, so re-arm it.
+            if dropped is self._SENTINEL and self._latest is not None:
+                self._latest = None
+            self._dropped += 1
+            if self._dropped in (1, 100, 1000):
+                logger.warning(
+                    "ws sink over %d events; dropping oldest (%d dropped so far)",
+                    self._maxsize,
+                    self._dropped,
+                )
+        self._queue.put_nowait(event)
+
+    async def get(self) -> dict[str, Any]:
+        """Await the next event to send, resolving a coalesced slot to its newest
+        value."""
+        while True:
+            event = await self._queue.get()
+            if event is not self._SENTINEL:
+                return event
+            latest = self._latest
+            self._latest = None
+            if latest is not None:
+                return latest
+            # Sentinel without a value: its level was consumed by an overflow
+            # re-arm. Nothing to send, so wait for the next event.
+
+    def pending(self) -> int:
+        """Number of events currently held — queued plus any coalesced slot.
+
+        The property under test: this must not grow with the producer's rate.
+        """
+        return self._queue.qsize()
+
+
 def _scrub_cover_art(directory: Path) -> None:
     """Remove image files and macOS resource forks from *directory*.
 
@@ -1175,19 +1269,25 @@ def create_app(
     # made before the client connected are not silently dropped.
     _pending_proxy_fetches: dict[str, dict[str, Any]] = {}
 
-    # Active WebSocket queues — one asyncio.Queue per connected client.
-    # Events are broadcast to all queues so push notifications wake every client.
-    _ws_queues: set[asyncio.Queue[dict[str, Any]]] = set()
+    # Active WebSocket sinks — one per connected client. Events are broadcast to
+    # all of them so push notifications wake every client. A _ClientSink rather
+    # than a bare asyncio.Queue because the queue was unbounded and the ~20 Hz
+    # audio.level stream outran the drain loop (KAMP-717).
+    _ws_queues: set[_ClientSink] = set()
     # The running event loop, captured on first WS connection (thread-safe puts
     # need call_soon_threadsafe, which requires the loop reference).
     _event_loop: asyncio.AbstractEventLoop | None = None
 
     def _broadcast(event: dict[str, Any]) -> None:
-        """Thread-safe: enqueue *event* for every connected WebSocket client."""
+        """Thread-safe: hand *event* to every connected WebSocket client.
+
+        Called from engine/worker threads, so the mutation is scheduled onto the
+        loop — which is also what makes _ClientSink safe without a lock of its own.
+        """
         if _event_loop is None:
             return
-        for q in list(_ws_queues):
-            _event_loop.call_soon_threadsafe(q.put_nowait, event)
+        for sink in list(_ws_queues):
+            _event_loop.call_soon_threadsafe(sink.push, event)
 
     def _notify_library_changed() -> None:
         """Push library.changed to all connected WebSocket clients immediately."""
@@ -4755,7 +4855,7 @@ def create_app(
             return
         nonlocal _event_loop
         _event_loop = asyncio.get_running_loop()
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = _ClientSink()
         _ws_queues.add(q)
 
         await ws.accept()

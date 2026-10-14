@@ -106,28 +106,41 @@ live allocation sites (first tick, then every 10th).
 
 **Reading it — the comparison is the diagnosis**, not either number alone:
 
-| RSS | `traced_current_bytes` | Meaning | Fix |
+| footprint | `traced_current_bytes` | Meaning | Fix |
 |---|---|---|---|
 | high | high | live objects are retained | find and drop the reference; `alloc-*.jsonl` names the line |
 | high | low | Python freed it, the allocator kept the pages | subprocess isolation (see `kamp_daemon/syncer.py`) |
 
 That second row is the trap worth knowing about: a mechanism test can pass while
-RSS stays put, which is exactly what happened with an earlier `sys.modules`
-eviction attempt. Only the RSS curve flattening counts as fixed.
+the footprint stays put, which is exactly what happened with an earlier `sys.modules`
+eviction attempt. Only the footprint curve flattening counts as fixed.
+
+The daemon's footprint against what Python holds live:
 
 ```bash
-jq -r '"\(.t|strftime("%H:%M")) rss=\([.procs[]|select(.role=="daemon").rss_bytes]|add/1048576|floor) traced=\((.traced_current_bytes//0)/1048576|floor)"' \
+jq -r '"\(.t|strftime("%H:%M")) mem=\([.procs[]|select(.role=="daemon").footprint_bytes]|add/1048576|floor) traced=\((.traced_current_bytes//0)/1048576|floor)"' \
   ~/.local/share/kamp/diagnostics/memory-*.jsonl
-``` Totals per tick:
-
-```bash
-jq -r '"\(.t) \([.procs[].rss_bytes] | add)"' ~/.local/share/kamp/diagnostics/memory-*.jsonl
 ```
 
-Three notes on reading these.
+Or the total across every tracked process, per tick:
 
-The daemon reports *current* RSS, not peak — peak only ever rises, so it cannot
+```bash
+jq -r '"\(.t) \([.procs[].footprint_bytes] | add)"' ~/.local/share/kamp/diagnostics/memory-*.jsonl
+```
+
+Four notes on reading these.
+
+The daemon reports *current* usage, not peak — peak only ever rises, so it cannot
 show a leak that has been fixed.
+
+**`footprint_bytes` is the physical footprint, the figure Activity Monitor shows.**
+It replaced `rss_bytes`, which on macOS came from `ps -o rss` and was wrong for
+this purpose: `ps rss` keeps counting pages the kernel no longer charges to the
+process, so after transient allocation it ratchets and never recovers. Measured
+on a process churning 200 MiB blobs, `ps rss` read 310 MiB against a real 10 — and
+the daemon appeared to reach 900+ MiB while Activity Monitor showed ~199 MB
+(KAMP-719). **Captures predating the rename carry `rss_bytes` and must not be
+compared against new ones**; on macOS their numbers are inflated several-fold.
 
 `runningAnimations` in the renderer log is the number to watch while the window
 is unfocused: it is the measurement that confirmed kamp does *not* keep CSS

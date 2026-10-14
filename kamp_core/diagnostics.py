@@ -7,12 +7,23 @@ knows which of kamp's processes is responsible, and the CLAUDE.md
 diagnosis-discipline lesson is explicit that a fix without evidence is how
 sessions get burned on components that were never broken.
 
-Two decisions here are load-bearing and easy to get wrong:
+Three decisions here are load-bearing and easy to get wrong:
 
-**Current RSS, not peak.**  ``resource.getrusage(...).ru_maxrss`` is the
+**Current usage, not peak.**  ``resource.getrusage(...).ru_maxrss`` is the
 obvious stdlib answer and it is useless for this job — it is a high-water mark,
 so it only ever rises and a leak that has been *fixed* looks identical to one
-that has not.  Each platform reader below returns the process's RSS right now.
+that has not.  Each platform reader below returns usage right now.
+
+**On macOS, physical footprint — NOT ``ps -o rss`` (KAMP-719).**  ``ps rss`` is
+the obvious POSIX answer and it is wrong here: it keeps counting pages the
+kernel no longer charges to the process, so after transient allocation it
+ratchets and never recovers.  Measured on a process churning 200 MiB blobs,
+``ps rss`` read 310 MiB while the OS charged it 10.  This module shipped with
+that reader, and the daemon consequently appeared to reach 900+ MiB while
+Activity Monitor showed ~199 MB for the same app — several hypotheses were
+tested and discarded against a number that was not real.  The lesson is general:
+**validate an instrument against an independent reading before trusting it.**
+Linux ``statm`` and Windows ``WorkingSetSize`` do not share the flaw.
 
 **A missing reading is data, not an error.**  Children (mpv, spawn-mode sync
 workers) come and go, and a sampler that raised when one exited mid-read would
@@ -36,6 +47,7 @@ Python daemon and the processes it owns.
 from __future__ import annotations
 
 import json
+import ctypes
 import os
 import subprocess
 import sys
@@ -56,7 +68,7 @@ _TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 DEFAULT_INTERVAL_SECONDS: Final[float] = 60.0
 
 # Allocation snapshots walk every tracked allocation, so they run once every N
-# RSS ticks rather than every tick. At the default interval that is ~10 minutes,
+# memory ticks rather than every tick. At the default interval that is ~10 minutes,
 # which is fine resolution for a leak measured in hours — and the first snapshot
 # is taken on the very first tick, so a startup burst is still captured.
 DEFAULT_ALLOC_EVERY: Final[int] = 10
@@ -76,7 +88,7 @@ def enabled() -> bool:
 def tracemalloc_enabled() -> bool:
     """Return True when Python allocation tracking has been switched on.
 
-    A **separate** gate from :func:`enabled` on purpose. RSS sampling is three
+    A **separate** gate from :func:`enabled` on purpose. Footprint sampling is three
     cheap reads a minute and can be left on for days; tracemalloc intercepts
     every allocation and costs real CPU and memory of its own, so it must be
     opted into deliberately rather than riding along on ``KAMP_DIAGNOSTICS``.
@@ -98,7 +110,7 @@ def start_tracemalloc() -> None:
 def traced_memory() -> tuple[int, int] | None:
     """``(current, peak)`` bytes of live traced allocations, or None if not tracing.
 
-    ``current`` against RSS is the diagnosis for KAMP-680: close together means
+    ``current`` against the footprint is the diagnosis for KAMP-680: close together means
     live objects are being retained and the top allocation sites name them; far
     apart means Python released the memory and the allocator kept the pages, for
     which the only fix in this codebase's experience is subprocess isolation.
@@ -132,13 +144,13 @@ def top_allocations(limit: int = 15) -> list[dict[str, object]]:
 class ProcessSample:
     """One process's resident size at one instant.
 
-    ``rss_bytes`` is None when the process could not be read — usually because
+    ``footprint_bytes`` is None when the process could not be read — usually because
     it exited between registration and this tick.
     """
 
     pid: int
     role: str
-    rss_bytes: int | None
+    footprint_bytes: int | None
 
 
 # --------------------------------------------------------------------------
@@ -154,7 +166,7 @@ def _page_size() -> int:
     return os.sysconf("SC_PAGE_SIZE")
 
 
-def _rss_linux(pid: int) -> int | None:
+def _footprint_linux(pid: int) -> int | None:
     """Resident size from /proc/<pid>/statm (field 2, in pages)."""
     try:
         fields = _statm_path(pid).read_text().split()
@@ -163,30 +175,65 @@ def _rss_linux(pid: int) -> int | None:
         return None
 
 
-def _rss_darwin(pid: int) -> int | None:
-    """Resident size via ``ps``, which reports kilobytes.
+class _RUsageInfoV0(ctypes.Structure):
+    """``rusage_info_v0`` from ``<sys/resource.h>``.
 
-    macOS has no /proc.  Shelling out is acceptable at a 60-second cadence and
-    avoids binding libproc through ctypes for one number.
+    Flavor 0 deliberately: it already carries ``ri_phys_footprint``, so there is
+    no longer struct to lay out incorrectly for the one field that matters.
+    """
+
+    _fields_ = [
+        ("ri_uuid", ctypes.c_uint8 * 16),
+        ("ri_user_time", ctypes.c_uint64),
+        ("ri_system_time", ctypes.c_uint64),
+        ("ri_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_interrupt_wkups", ctypes.c_uint64),
+        ("ri_pageins", ctypes.c_uint64),
+        ("ri_wired_size", ctypes.c_uint64),
+        ("ri_resident_size", ctypes.c_uint64),
+        ("ri_phys_footprint", ctypes.c_uint64),
+        ("ri_proc_start_abstime", ctypes.c_uint64),
+        ("ri_proc_exit_abstime", ctypes.c_uint64),
+    ]
+
+
+_RUSAGE_INFO_V0: Final[int] = 0
+
+
+def _footprint_darwin(pid: int) -> int | None:
+    """Physical footprint via ``proc_pid_rusage``.
+
+    **Not** ``ps -o rss``, which this used to read and which is simply wrong for
+    this purpose on macOS (KAMP-719). ``ps rss`` keeps counting pages the kernel
+    no longer charges to the process, so after transient allocation — exactly
+    kamp's workload — it ratchets and never recovers. Measured on a process
+    churning 200 MiB blobs: ``ps rss`` reported 310 MiB while the OS charged it
+    10, and the daemon appeared to reach 900+ MiB while Activity Monitor showed
+    ~199 MB. Several hypotheses were chased against that phantom.
+
+    ``ri_phys_footprint`` is the figure Activity Monitor shows and the one Apple
+    treats as authoritative. It is cheap enough for 5-second sampling, unlike
+    ``vmmap --summary``, which walks the entire address space.
     """
     try:
-        result = subprocess.run(
-            ["ps", "-o", "rss=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        return int(result.stdout.strip()) * 1024
-    except ValueError:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.proc_pid_rusage.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(_RUsageInfoV0),
+        ]
+        libc.proc_pid_rusage.restype = ctypes.c_int
+        info = _RUsageInfoV0()
+        # Non-zero means the process is gone or not ours to query — absent, not
+        # an error, which is this module's contract for every reader.
+        if libc.proc_pid_rusage(pid, _RUSAGE_INFO_V0, ctypes.byref(info)) != 0:
+            return None
+        return int(info.ri_phys_footprint)
+    except (OSError, AttributeError, ValueError):
         return None
 
 
-def _rss_windows(pid: int) -> int | None:  # pragma: no cover - needs Windows
+def _footprint_windows(pid: int) -> int | None:  # pragma: no cover - needs Windows
     """Resident size via GetProcessMemoryInfo's WorkingSetSize.
 
     The body is inside a ``sys.platform`` guard rather than carrying
@@ -248,14 +295,14 @@ def _rss_windows(pid: int) -> int | None:  # pragma: no cover - needs Windows
         kernel32.CloseHandle(handle)
 
 
-def process_rss(pid: int) -> int | None:
+def process_footprint(pid: int) -> int | None:
     """Return *pid*'s current resident set size in bytes, or None."""
     if sys.platform == "win32":  # pragma: no cover - needs Windows
-        return _rss_windows(pid)
+        return _footprint_windows(pid)
     if sys.platform == "darwin":
-        return _rss_darwin(pid)
+        return _footprint_darwin(pid)
     if sys.platform.startswith("linux"):
-        return _rss_linux(pid)
+        return _footprint_linux(pid)
     return None
 
 
@@ -265,7 +312,7 @@ def process_rss(pid: int) -> int | None:
 
 
 class DiagnosticsSampler:
-    """Periodically append per-process RSS readings to a JSONL log.
+    """Periodically append per-process memory readings to a JSONL log.
 
     One line per tick (rather than per process) so a tick's processes stay
     correlated — the question being asked is "where did the total go", which
@@ -295,7 +342,7 @@ class DiagnosticsSampler:
         # Roles whose pid is not known up front (mpv is spawned lazily on first
         # playback) are resolved fresh each tick instead of registered once.
         self._resolvers: dict[str, Callable[[], int | None]] = {}
-        # Scalar readings recorded alongside RSS — see register_metric.
+        # Scalar readings recorded alongside the footprints — see register_metric.
         self._metrics: dict[str, Callable[[], float | None]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -314,10 +361,10 @@ class DiagnosticsSampler:
             self._tracked.pop(pid, None)
 
     def register_metric(self, name: str, read: Callable[[], float | None]) -> None:
-        """Track a scalar read on every tick, recorded next to the RSS readings.
+        """Track a scalar read on every tick, recorded next to the memory readings.
 
         For attributing how much of a process's memory one subsystem accounts for
-        — KAMP-718 reads mpv's demuxer cache size against mpv's RSS. Both have to
+        — KAMP-718 reads mpv's demuxer cache size against mpv's footprint. Both have to
         land in the same record: two independently sampled logs cannot be lined
         up after the fact.
 
@@ -340,13 +387,13 @@ class DiagnosticsSampler:
     # -- sampling --------------------------------------------------------
 
     def sample(self) -> list[ProcessSample]:
-        """Read every tracked process's RSS right now."""
+        """Read every tracked process's memory footprint right now."""
         with self._lock:
             tracked = dict(self._tracked)
             resolvers = dict(self._resolvers)
 
         samples = [
-            ProcessSample(pid=pid, role=role, rss_bytes=process_rss(pid))
+            ProcessSample(pid=pid, role=role, footprint_bytes=process_footprint(pid))
             for pid, role in tracked.items()
         ]
         for role, resolve in resolvers.items():
@@ -359,7 +406,9 @@ class DiagnosticsSampler:
             if pid is None:
                 continue
             samples.append(
-                ProcessSample(pid=pid, role=role, rss_bytes=process_rss(pid))
+                ProcessSample(
+                    pid=pid, role=role, footprint_bytes=process_footprint(pid)
+                )
             )
         return samples
 
@@ -371,7 +420,7 @@ class DiagnosticsSampler:
     def alloc_path(self) -> Path:
         """Path of the allocation-snapshot log for the current date (UTC).
 
-        Separate from the RSS log because the records have a different shape and
+        Separate from the memory log because the records have a different shape and
         a much lower cadence; mixing them would make both awkward to read.
         """
         stamp = datetime.fromtimestamp(self._clock(), tz=timezone.utc)
@@ -399,7 +448,7 @@ class DiagnosticsSampler:
         record: dict[str, object] = {
             "t": self._clock(),
             "procs": [
-                {"pid": s.pid, "role": s.role, "rss_bytes": s.rss_bytes}
+                {"pid": s.pid, "role": s.role, "footprint_bytes": s.footprint_bytes}
                 for s in samples
             ],
         }

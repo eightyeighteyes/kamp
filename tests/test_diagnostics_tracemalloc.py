@@ -161,7 +161,7 @@ def test_record_omits_traced_fields_when_not_tracing(
 ) -> None:
     if tracemalloc.is_tracing():
         tracemalloc.stop()
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1024)
     sampler = _sampler(tmp_path)
 
     sampler.write_sample()
@@ -173,7 +173,7 @@ def test_record_omits_traced_fields_when_not_tracing(
 def test_record_carries_traced_totals_when_tracing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1024)
     diagnostics.start_tracemalloc()
     sampler = _sampler(tmp_path)
 
@@ -219,7 +219,7 @@ def test_burst_mode_samples_fast_then_settles(
 ) -> None:
     # The startup ramp is the informative part: at a flat 60s cadence KAMP-680's
     # growth was a single 64 -> 804 MiB jump between two ticks.
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1)
     waits: list[float] = []
     sampler = _sampler(
         tmp_path, interval_seconds=60.0, burst_ticks=3, burst_interval_seconds=0.01
@@ -244,7 +244,7 @@ def test_burst_mode_snapshots_every_tick_not_just_the_first(
     # The original cadence snapshotted tick 0 (before any startup work) and then
     # tick 10, so a short run captured one empty snapshot. A churner is only
     # visible near traced-peak, so the burst has to snapshot every tick.
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1)
     diagnostics.start_tracemalloc()
     taken: list[int] = []
     sampler = _sampler(

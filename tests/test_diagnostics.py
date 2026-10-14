@@ -2,7 +2,7 @@
 
 The sampler exists to answer KAMP-680's blocking question — *which* process
 holds the 1.6 GB — so the properties under test are the ones that make a
-multi-day RSS curve trustworthy: current (not peak) RSS, one durable line per
+multi-day memory curve trustworthy: current (not peak) usage, one durable line per
 tick, and a sampler that never takes the daemon down with it when a process
 disappears mid-read.
 """
@@ -48,11 +48,11 @@ def test_enabled_rejects_falsey_spellings(
 
 
 # --------------------------------------------------------------------------
-# process_rss() — platform readers
+# process_footprint() — platform readers
 # --------------------------------------------------------------------------
 
 
-def test_rss_linux_converts_resident_pages_to_bytes(
+def test_footprint_linux_converts_resident_pages_to_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # statm fields are "size resident shared text lib data dt", in pages.
@@ -61,70 +61,121 @@ def test_rss_linux_converts_resident_pages_to_bytes(
     monkeypatch.setattr(diagnostics, "_statm_path", lambda pid: statm)
     monkeypatch.setattr(diagnostics, "_page_size", lambda: 4096)
 
-    assert diagnostics._rss_linux(999) == 1234 * 4096
+    assert diagnostics._footprint_linux(999) == 1234 * 4096
 
 
-def test_rss_linux_returns_none_when_process_is_gone(
+def test_footprint_linux_returns_none_when_process_is_gone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     missing = tmp_path / "nope" / "statm"
     monkeypatch.setattr(diagnostics, "_statm_path", lambda pid: missing)
 
-    assert diagnostics._rss_linux(999) is None
+    assert diagnostics._footprint_linux(999) is None
 
 
-def test_rss_linux_returns_none_on_malformed_statm(
+def test_footprint_linux_returns_none_on_malformed_statm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     statm = tmp_path / "statm"
     statm.write_text("garbage\n")
     monkeypatch.setattr(diagnostics, "_statm_path", lambda pid: statm)
 
-    assert diagnostics._rss_linux(999) is None
+    assert diagnostics._footprint_linux(999) is None
 
 
-def test_rss_darwin_parses_ps_kilobytes(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=" 20480 \n")
-
-    monkeypatch.setattr(diagnostics.subprocess, "run", fake_run)
-
-    # ps reports KB; the sampler's unit is bytes throughout.
-    assert diagnostics._rss_darwin(999) == 20480 * 1024
+_darwin_only = pytest.mark.skipif(
+    sys.platform != "darwin", reason="proc_pid_rusage is a macOS interface"
+)
 
 
-def test_rss_darwin_returns_none_when_ps_finds_no_process(
+@_darwin_only
+def test_footprint_darwin_reads_a_plausible_value() -> None:
+    value = diagnostics._footprint_darwin(os.getpid())
+
+    assert value is not None
+    assert value > 1_000_000, f"implausibly small footprint: {value}"
+
+
+@_darwin_only
+def test_footprint_darwin_agrees_with_vmmap() -> None:
+    """Cross-check against an independent reading of the same quantity.
+
+    The whole reason this reader was rewritten (KAMP-719) is that the previous
+    one was never validated against anything. `vmmap --summary` reports the same
+    `phys_footprint` Activity Monitor shows, so if these two disagree the reader
+    is wrong — which is precisely the failure that went unnoticed before.
+    """
+    out = subprocess.run(
+        ["vmmap", "--summary", str(os.getpid())],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    ).stdout
+    reported = None
+    for line in out.splitlines():
+        if "Physical footprint:" in line and "Peak" not in line:
+            raw = line.split(":", 1)[1].strip()
+            scale = {"G": 1024**3, "M": 1024**2, "K": 1024}.get(raw[-1])
+            if scale:
+                reported = float(raw[:-1]) * scale
+            break
+    if reported is None:
+        pytest.skip("vmmap did not report a physical footprint")
+
+    value = diagnostics._footprint_darwin(os.getpid())
+    assert value is not None
+    # vmmap rounds to one decimal in its own unit, and the process keeps running
+    # between the two reads, so agreement means "same ballpark", not identical.
+    assert abs(value - reported) < max(
+        4 * 1024 * 1024, reported * 0.25
+    ), f"reader says {value / 1048576:.1f} MiB, vmmap says {reported / 1048576:.1f} MiB"
+
+
+@_darwin_only
+def test_footprint_darwin_falls_back_after_a_large_transient() -> None:
+    """The property that `ps rss` failed and this exists to provide.
+
+    `ps rss` kept counting released pages: after churning 200 MiB blobs it read
+    310 MiB while the OS charged the process 10. That is what made the daemon
+    appear to reach 900+ MiB when Activity Monitor showed ~199 MB, and it sent
+    several hypotheses chasing a number that was not real.
+    """
+    pid = os.getpid()
+    before = diagnostics._footprint_darwin(pid)
+    assert before is not None
+
+    blob = [bytearray(2_000_000) for _ in range(50)]  # ~100 MiB held
+    during = diagnostics._footprint_darwin(pid)
+    assert during is not None
+    assert during > before + 50_000_000, "should track memory actually held"
+
+    del blob
+    after = diagnostics._footprint_darwin(pid)
+    assert after is not None
+    # The point: it comes back down. ps rss did not.
+    assert after < during - 50_000_000, (
+        f"footprint stayed at {after / 1048576:.0f} MiB after releasing "
+        f"~100 MiB (peak {during / 1048576:.0f})"
+    )
+
+
+@_darwin_only
+def test_footprint_darwin_returns_none_for_an_unknown_pid() -> None:
+    # Unreadable or gone is absent, not an error — the contract every reader in
+    # this module shares, because children exit mid-tick.
+    assert diagnostics._footprint_darwin(999_999) is None
+
+
+def test_footprint_darwin_returns_none_when_the_call_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args=[], returncode=1, stdout="")
+    class _Broken:
+        def __getattr__(self, name: str) -> Any:
+            raise OSError("libSystem unavailable")
 
-    monkeypatch.setattr(diagnostics.subprocess, "run", fake_run)
+    monkeypatch.setattr(diagnostics.ctypes, "CDLL", lambda *a, **k: _Broken())
 
-    assert diagnostics._rss_darwin(999) is None
-
-
-def test_rss_darwin_returns_none_when_ps_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise OSError("ps missing")
-
-    monkeypatch.setattr(diagnostics.subprocess, "run", fake_run)
-
-    assert diagnostics._rss_darwin(999) is None
-
-
-def test_rss_darwin_returns_none_when_ps_prints_non_numeric(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A zero-exit ps that printed a header or a warning instead of a number.
-    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout="RSS\n")
-
-    monkeypatch.setattr(diagnostics.subprocess, "run", fake_run)
-
-    assert diagnostics._rss_darwin(999) is None
+    assert diagnostics._footprint_darwin(999) is None
 
 
 def test_statm_path_points_at_proc() -> None:
@@ -137,20 +188,22 @@ def test_statm_path_points_at_proc() -> None:
 )
 def test_page_size_is_a_positive_power_of_two() -> None:
     # Guarded on the attribute rather than the platform name: _page_size is only
-    # ever reached from _rss_linux, which process_rss only dispatches to on
+    # ever reached from _footprint_linux, which process_footprint only dispatches to on
     # linux, so there is nothing to assert where sysconf does not exist.
     size = diagnostics._page_size()
     assert size > 0 and size & (size - 1) == 0
 
 
-def test_process_rss_dispatches_on_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_process_footprint_dispatches_on_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(diagnostics.sys, "platform", "linux")
-    monkeypatch.setattr(diagnostics, "_rss_linux", lambda pid: 111)
-    assert diagnostics.process_rss(1) == 111
+    monkeypatch.setattr(diagnostics, "_footprint_linux", lambda pid: 111)
+    assert diagnostics.process_footprint(1) == 111
 
     monkeypatch.setattr(diagnostics.sys, "platform", "darwin")
-    monkeypatch.setattr(diagnostics, "_rss_darwin", lambda pid: 222)
-    assert diagnostics.process_rss(1) == 222
+    monkeypatch.setattr(diagnostics, "_footprint_darwin", lambda pid: 222)
+    assert diagnostics.process_footprint(1) == 222
 
 
 @pytest.mark.skipif(
@@ -161,12 +214,12 @@ def test_process_rss_dispatches_on_platform(monkeypatch: pytest.MonkeyPatch) -> 
     ),
     reason="no reader for this platform",
 )
-def test_process_rss_reads_a_plausible_value_for_a_live_process() -> None:
+def test_process_footprint_reads_a_plausible_value_for_a_live_process() -> None:
     # The only unmocked test of the platform readers, and the one that matters:
     # every other test fakes the syscall, so they prove the parsing but not that
     # the reader works here. This is what keeps the Windows ctypes path honest --
     # CI runs it on Windows, where nothing else asserts a real number.
-    rss = diagnostics.process_rss(os.getpid())
+    rss = diagnostics.process_footprint(os.getpid())
 
     assert rss is not None
     assert rss > 1_000_000, f"implausibly small RSS for a live interpreter: {rss}"
@@ -180,18 +233,18 @@ def test_process_rss_reads_a_plausible_value_for_a_live_process() -> None:
         "Windows reports a residual working set (~32 KB) rather than nothing"
     ),
 )
-def test_process_rss_returns_none_for_a_reaped_process() -> None:
+def test_process_footprint_returns_none_for_a_reaped_process() -> None:
     victim = subprocess.Popen([sys.executable, "-c", "pass"])
     victim.wait()
 
-    assert diagnostics.process_rss(victim.pid) is None
+    assert diagnostics.process_footprint(victim.pid) is None
 
 
-def test_process_rss_returns_none_on_unknown_platform(
+def test_process_footprint_returns_none_on_unknown_platform(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(diagnostics.sys, "platform", "sunos5")
-    assert diagnostics.process_rss(1) is None
+    assert diagnostics.process_footprint(1) is None
 
 
 # --------------------------------------------------------------------------
@@ -214,19 +267,19 @@ def test_registers_own_process_as_daemon(tmp_path: Path) -> None:
 def test_sample_reports_registered_processes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: pid * 10)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: pid * 10)
     sampler = _sampler(tmp_path)
     sampler.register(4321, "mpv")
 
     by_role = {s.role: s for s in sampler.sample()}
     assert by_role["mpv"].pid == 4321
-    assert by_role["mpv"].rss_bytes == 43210
+    assert by_role["mpv"].footprint_bytes == 43210
 
 
 def test_unregister_drops_the_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1)
     sampler = _sampler(tmp_path)
     sampler.register(4321, "mpv")
     sampler.unregister(4321)
@@ -244,11 +297,11 @@ def test_dead_process_is_reported_as_none_not_an_error(
 ) -> None:
     # A sampler that raises when a child exits mid-read would take the daemon
     # with it. Absent RSS is data ("process gone"), not a failure.
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: None)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: None)
     sampler = _sampler(tmp_path)
     sampler.register(4321, "mpv")
 
-    assert all(s.rss_bytes is None for s in sampler.sample())
+    assert all(s.footprint_bytes is None for s in sampler.sample())
 
 
 def test_resolver_supplies_a_pid_that_does_not_exist_yet(
@@ -256,7 +309,7 @@ def test_resolver_supplies_a_pid_that_does_not_exist_yet(
 ) -> None:
     # mpv is spawned lazily on first playback, so its pid is unknown when the
     # sampler starts. A resolver is re-read every tick instead.
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 7)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 7)
     sampler = _sampler(tmp_path)
     pid_box: list[int | None] = [None]
     sampler.register_resolver("mpv", lambda: pid_box[0])
@@ -277,7 +330,7 @@ def test_metrics_are_recorded_alongside_rss(
     reading both at the same instant; two logs sampled independently cannot be
     lined up afterwards.
     """
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1024)
     sampler = _sampler(tmp_path)
     sampler.register_metric("mpv_demuxer_cache_bytes", lambda: 12_345)
 
@@ -292,7 +345,7 @@ def test_metrics_key_is_absent_when_none_registered(
 ) -> None:
     # Absent rather than empty, so a reader can tell "not instrumented" from
     # "instrumented and measured zero".
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1024)
     sampler = _sampler(tmp_path)
 
     sampler.write_sample()
@@ -303,7 +356,7 @@ def test_metrics_key_is_absent_when_none_registered(
 def test_metric_that_raises_does_not_break_the_tick(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1024)
     sampler = _sampler(tmp_path)
 
     def boom() -> float:
@@ -324,7 +377,7 @@ def test_metric_returning_none_is_omitted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # mpv is not always running; "no reading" is absent, not zero.
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1024)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1024)
     sampler = _sampler(tmp_path)
     sampler.register_metric("mpv_demuxer_cache_bytes", lambda: None)
 
@@ -336,7 +389,7 @@ def test_metric_returning_none_is_omitted(
 def test_resolver_that_raises_does_not_break_the_tick(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 7)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 7)
     sampler = _sampler(tmp_path)
 
     def boom() -> int | None:
@@ -350,7 +403,7 @@ def test_resolver_that_raises_does_not_break_the_tick(
 def test_write_sample_appends_one_json_line_per_tick(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 2048)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 2048)
     sampler = _sampler(tmp_path)
     sampler.register(4321, "mpv")
 
@@ -363,7 +416,7 @@ def test_write_sample_appends_one_json_line_per_tick(
     record = json.loads(lines[0])
     assert record["t"] == 1_760_000_000.0
     assert {p["role"] for p in record["procs"]} == {"daemon", "mpv"}
-    assert all(p["rss_bytes"] == 2048 for p in record["procs"])
+    assert all(p["footprint_bytes"] == 2048 for p in record["procs"])
 
 
 def test_log_file_is_named_by_date_so_long_runs_rotate(tmp_path: Path) -> None:
@@ -401,7 +454,7 @@ def test_write_errors_are_swallowed(
 def test_start_samples_then_stop_joins_promptly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 512)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 512)
     wrote = threading.Event()
     sampler = _sampler(tmp_path, interval_seconds=0.01)
     real_write = sampler.write_sample
@@ -428,7 +481,7 @@ def test_stop_is_safe_without_start(tmp_path: Path) -> None:
 def test_start_twice_runs_a_single_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1)
     sampler = _sampler(tmp_path, interval_seconds=60.0)
 
     sampler.start()
@@ -445,7 +498,7 @@ def test_stop_waits_out_a_long_interval(
 ) -> None:
     # stop() must interrupt the wait rather than block for the full interval,
     # or daemon shutdown stalls for minutes.
-    monkeypatch.setattr(diagnostics, "process_rss", lambda pid: 1)
+    monkeypatch.setattr(diagnostics, "process_footprint", lambda pid: 1)
     sampler = _sampler(tmp_path, interval_seconds=3600.0)
     sampler.start()
     sampler.stop()

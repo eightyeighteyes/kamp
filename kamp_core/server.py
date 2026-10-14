@@ -1510,6 +1510,20 @@ def create_app(
 
     app.state.notify_crate_purchase = _notify_crate_purchase
 
+    def _ws_sink_depth() -> int:
+        """Largest pending-event count across connected clients (KAMP-717).
+
+        The measurement that was skipped when the coalescing fix went in. The
+        reproduction that motivated that fix used a client which never read, so
+        it proved the sink *can* accumulate — not that it does with a real
+        renderer attached. If this reads ~0 in a live session, the queue is not
+        where the daemon's memory goes and the search continues elsewhere.
+        """
+        return max((s.pending() for s in _ws_queues), default=0)
+
+    app.state.ws_sink_depth = _ws_sink_depth
+    app.state.ws_client_count = lambda: len(_ws_queues)
+
     # Wired by the daemon after create_app() to suppress watcher events and
     # trigger a direct scan following a tag-edit file move.
     app.state.on_track_file_moved = None

@@ -165,6 +165,30 @@ def test_get_blocks_until_something_arrives() -> None:
         loop.close()
 
 
+def test_sink_depth_is_exposed_for_diagnostics() -> None:
+    """The measurement that was skipped when the coalescing fix went in.
+
+    The reproduction behind that fix used a client which never read, proving the
+    sink *can* accumulate but not that it does with a real renderer attached.
+    Without this reading there is no way to tell those apart in a live session.
+    """
+    from unittest.mock import MagicMock
+
+    from kamp_core.playback import PlaybackState
+    from kamp_core.server import create_app
+
+    engine = MagicMock()
+    engine.state = PlaybackState(playing=False, position=0.0, duration=0.0)
+    queue = MagicMock()
+    queue.current.return_value = None
+    queue.peek_next.return_value = None
+    app = create_app(index=MagicMock(), engine=engine, queue=queue)
+
+    # No clients connected yet: a reading of zero, not a crash on max(()).
+    assert app.state.ws_sink_depth() == 0
+    assert app.state.ws_client_count() == 0
+
+
 def test_regular_events_are_delivered_in_order() -> None:
     sink = _ClientSink()
     loop = asyncio.new_event_loop()

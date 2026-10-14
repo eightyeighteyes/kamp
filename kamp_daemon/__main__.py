@@ -662,6 +662,8 @@ def _cmd_daemon(
         _diag_sampler.register_metric(
             "mpv_demuxer_cache_bytes", lambda: engine.state.demuxer_cache_bytes
         )
+        # The WebSocket sink metrics are registered after create_app below —
+        # `app` does not exist yet here.
         _diag_sampler.start()
         _logger.info(
             "diagnostics sampling enabled → %s", _diag_sampler.current_path().parent
@@ -1320,6 +1322,15 @@ def _cmd_daemon(
         mb_release_fn=lookup_release_by_mbid,
         genre_fetch_fn=_genre_fetch_fn,
     )
+
+    # KAMP-717: is the WebSocket sink actually backing up in a live session? The
+    # coalescing fix was motivated by a reproduction using a client that never
+    # read, which proves the sink CAN accumulate but not that it does with a real
+    # renderer attached. If this sits at 0 through a session that still drifts,
+    # the queue is not where the memory goes.
+    if _diag_sampler is not None:
+        _diag_sampler.register_metric("ws_sink_depth", app.state.ws_sink_depth)
+        _diag_sampler.register_metric("ws_clients", app.state.ws_client_count)
 
     # ---------------------------------------------------------------------------
     # Single-consumer album download worker (KAMP-408; queue engine KAMP-565)

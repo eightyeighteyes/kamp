@@ -11,7 +11,9 @@ import stat
 import sys
 import threading
 import time as _time
+import weakref
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -1089,6 +1091,55 @@ _NAMED_ALBUM_FROM = """
             LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id"""
 
 
+class _ConnHolder:
+    """Weakref-able owner of one thread's SQLite connection (KAMP-720).
+
+    sqlite3.Connection does not support weak references, so the thread-local
+    slot holds this instead. When a thread dies CPython releases its local
+    storage, the holder becomes unreachable, and the weakref.finalize armed in
+    LibraryIndex._conn closes the connection the holder owns.
+
+    Do not "simplify" this away by subclassing sqlite3.Connection to make it
+    weakref-able: the finalizer needs the connection as an argument in order to
+    close it, and finalize holds its arguments strongly — so the referent would
+    never be collected and the finalizer would never run.
+    """
+
+    __slots__ = ("conn", "__weakref__")
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+
+def _retire_conn(
+    conn: sqlite3.Connection,
+    all_conns: list[sqlite3.Connection],
+    lock: AbstractContextManager[bool],
+) -> None:
+    """Deregister and close *conn*, whose owning thread has exited.
+
+    Deliberately a module-level function taking the list and lock directly
+    rather than a method: weakref.finalize holds its callback and arguments
+    strongly, so a bound method would keep the entire LibraryIndex alive for as
+    long as the registering thread — and the main thread never exits. The daemon
+    builds and discards short-lived indexes (one just to initialise the DB), so
+    that would trade this leak for a different one.
+    """
+    with lock:
+        try:
+            all_conns.remove(conn)
+        except ValueError:
+            # close() already claimed it during shutdown.
+            pass
+    try:
+        conn.close()
+    except Exception:
+        # A second close is a no-op. Anything else is unactionable here: the
+        # thread that owned this connection is already gone. Note that closing
+        # with an open write transaction rolls it back silently.
+        pass
+
+
 class LibraryIndex:
     """Persistent SQLite index of all tracks in the music library."""
 
@@ -1099,7 +1150,11 @@ class LibraryIndex:
         # Track every connection opened across threads so close() can shut them
         # all down cleanly at server shutdown.
         self._all_conns: list[sqlite3.Connection] = []
-        self._all_conns_lock = threading.Lock()
+        # Reentrant because _retire_conn takes this lock from a finalizer, and a
+        # finalizer can run at any allocation point — including on a thread that
+        # is already inside close(), which holds the lock while closing
+        # connections. A plain Lock deadlocks there.
+        self._all_conns_lock = threading.RLock()
         # Injected by the server to push magic_playlist.updated WebSocket events
         # when a field referenced by magic criteria changes. Default None so
         # library mutations work without a server context (e.g. in tests).
@@ -1145,13 +1200,38 @@ class LibraryIndex:
         Python's sqlite3 wrapper shares internal cursor state on a single
         connection object, causing InterfaceError when multiple threads call
         execute() concurrently. One connection per thread eliminates this.
+
+        The connection is retired when the owning thread exits (KAMP-720) — see
+        _ConnHolder and _retire_conn. Without that, every thread that touched
+        the index left a connection, and its SQLite page cache, alive for the
+        life of the process.
         """
-        if not hasattr(self._local, "conn"):
+        holder: _ConnHolder | None = getattr(self._local, "holder", None)
+        if holder is None:
             conn = self._make_conn()
-            self._local.conn = conn
+            holder = _ConnHolder(conn)
+            # Arm the finalizer before publishing the connection anywhere, so
+            # that an exception part-way through this block cannot strand a
+            # connection with nothing left to close it.
+            finalizer = weakref.finalize(
+                holder,
+                _retire_conn,
+                conn,
+                self._all_conns,
+                self._all_conns_lock,
+            )
+            # Shutdown belongs to close(). An armed atexit hook would close
+            # connections during interpreter teardown out from under the daemon
+            # threads still using them (download worker, genre enrich, watcher).
+            # The ignore is a typeshed inaccuracy, not a real violation: the stub
+            # declares finalize.atexit as a bare attribute next to
+            # __slots__ = (), so mypy reads this as a slots assignment. At
+            # runtime atexit is a property with a setter.
+            finalizer.atexit = False  # type: ignore[misc]
             with self._all_conns_lock:
                 self._all_conns.append(conn)
-        return self._local.conn  # type: ignore[no-any-return]
+            self._local.holder = holder
+        return holder.conn
 
     def _migrate(self) -> None:
         """Create schema and run any pending version migrations."""
@@ -8859,10 +8939,17 @@ class LibraryIndex:
         self._conn.commit()
 
     def close(self) -> None:
+        # Take a snapshot and drop the list before closing anything. conn.close()
+        # allocates, which can run a _ConnHolder finalizer for a thread that has
+        # just exited; _retire_conn then removes from this same list, and since
+        # the lock is reentrant it would not block — mutating the list while it
+        # was being iterated. Closing outside the lock also keeps the lock off
+        # the stack during the allocation-heavy part (KAMP-720).
         with self._all_conns_lock:
-            for conn in self._all_conns:
-                conn.close()
+            conns = list(self._all_conns)
             self._all_conns.clear()
+        for conn in conns:
+            conn.close()
 
     # ------------------------------------------------------------------
     # Extension library writes + audit log

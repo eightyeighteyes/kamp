@@ -137,7 +137,16 @@ class TestStop:
 
     def test_stop_joins_thread(self, tmp_path: Path) -> None:
         """stop() waits for the polling thread to finish."""
-        with patch("kamp_daemon.syncer._spawn_worker", side_effect=_noop_worker):
+        # sync_once() is patched out, not just its worker: _run calls it
+        # immediately on entry, and with no seeded collection it takes the
+        # first-run branch — building a fresh LibraryIndex (62 migrations, and
+        # WAL creates .db/.db-shm/.db-wal) plus a spawn-context mp.Queue. That
+        # is real filesystem and pipe I/O happening on the very thread this
+        # test races against stop()'s 5s join, and on a loaded Windows runner
+        # scanning three new files it was enough to blow the bound (KAMP-721).
+        # Patching the worker alone left all of it in place. sync_once() is
+        # covered by TestSyncOnce; TestStop only needs the thread to exit.
+        with patch.object(Syncer, "sync_once"):
             with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
                 syncer = Syncer(_make_config(tmp_path, poll_interval=60))
                 syncer.start()

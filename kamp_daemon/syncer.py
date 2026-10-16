@@ -359,7 +359,15 @@ class Syncer:
         )
 
     def stop(self) -> None:
-        """Signal the polling thread to exit and wait for it."""
+        """Signal the polling thread to exit and wait for it.
+
+        The join is deliberately bounded: _run only checks the stop event
+        between iterations, so a sync already in flight cannot be interrupted
+        and a wedged one must not block daemon shutdown. The thread is a daemon
+        thread, so anything still running is reaped at interpreter exit. This
+        means stop() returning does NOT guarantee the thread has exited — do
+        not write tests that assume it does (KAMP-721).
+        """
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=5)

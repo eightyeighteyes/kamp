@@ -44,6 +44,17 @@ const api = {
     // Return a cleanup function so the caller can unsubscribe.
     return () => ipcRenderer.off('open-preferences', handler)
   },
+  // Fullscreen (KAMP-676): the nav bar reserves 76px for the macOS traffic
+  // lights, which macOS hides in fullscreen — the renderer needs to know so it
+  // can collapse that padding. isFullScreen() covers the initial mount, since a
+  // window restored fullscreen entered it before the renderer loaded.
+  isFullScreen: (): Promise<boolean> => ipcRenderer.invoke('window:is-full-screen'),
+  onFullScreenChange: (callback: (fullScreen: boolean) => void): (() => void) => {
+    const handler = (_: Electron.IpcRendererEvent, fullScreen: boolean): void =>
+      callback(fullScreen)
+    ipcRenderer.on('window:full-screen', handler)
+    return () => ipcRenderer.off('window:full-screen', handler)
+  },
   // View cycling (KAMP-560): the main process forwards Ctrl+Tab / Ctrl+Shift+Tab
   // here as a direction so the renderer can advance through the top-level tabs.
   onCycleView: (callback: (direction: 'next' | 'prev') => void): (() => void) => {

@@ -9,6 +9,8 @@ declare global {
       appVersion: string
       openDirectory: () => Promise<string | null>
       onOpenPreferences: (callback: () => void) => () => void
+      isFullScreen: () => Promise<boolean>
+      onFullScreenChange: (callback: (fullScreen: boolean) => void) => () => void
       onCycleView: (callback: (direction: 'next' | 'prev') => void) => () => void
       bandcamp: {
         beginLogin: () => Promise<{ ok: boolean; error?: string }>

@@ -501,33 +501,116 @@ async function openBandcampLogin(): Promise<BandcampLoginResult> {
 // which is handled here.  net.fetch uses session.defaultSession so Chromium's
 // TLS stack (real browser fingerprint, cf_clearance cookie) handles the request.
 
-type WindowBounds = { x: number; y: number; width: number; height: number }
+// x/y/width/height are always the window's *normal* (un-maximized,
+// non-fullscreen) geometry, so un-maximizing after a restore lands on the size
+// the user last chose rather than filling the screen (KAMP-676).
+type WindowState = {
+  x: number
+  y: number
+  width: number
+  height: number
+  maximized: boolean
+  fullScreen: boolean
+}
 
-function loadWindowBounds(): WindowBounds {
+function windowStateFile(): string {
+  return join(app.getPath('userData'), 'window-state.json')
+}
+
+function loadWindowState(): WindowState {
   const { width: sw, height: sh } = electronScreen.getPrimaryDisplay().workAreaSize
   const w = 900
   const h = 1000
-  const defaults: WindowBounds = {
+  const defaults: WindowState = {
     x: Math.round((sw - w) / 2),
     y: Math.round((sh - h) / 2),
     width: w,
-    height: h
+    height: h,
+    maximized: false,
+    fullScreen: false
   }
   try {
-    const file = join(app.getPath('userData'), 'window-state.json')
-    return JSON.parse(readFileSync(file, 'utf8')) as WindowBounds
+    const raw: unknown = JSON.parse(readFileSync(windowStateFile(), 'utf8'))
+    if (typeof raw !== 'object' || raw === null) return defaults
+    const f = raw as Partial<Record<keyof WindowState, unknown>>
+    // Validate each field rather than casting the parsed JSON wholesale: a
+    // truncated or hand-edited file would otherwise hand NaN/undefined straight
+    // to the BrowserWindow constructor. Files written by builds before KAMP-676
+    // simply lack the two flags and fall back to false.
+    const num = (v: unknown, fallback: number): number =>
+      typeof v === 'number' && Number.isFinite(v) ? v : fallback
+    return {
+      x: num(f.x, defaults.x),
+      y: num(f.y, defaults.y),
+      width: num(f.width, defaults.width),
+      height: num(f.height, defaults.height),
+      maximized: f.maximized === true,
+      fullScreen: f.fullScreen === true
+    }
   } catch {
     return defaults
   }
 }
 
-function saveWindowBounds(win: BrowserWindow): void {
+// The live state, kept in memory and mutated by the window event handlers. The
+// handlers deliberately do NOT re-query the window for the flags: isFullScreen()
+// is documented as unsafe to read during the asynchronous macOS fullscreen
+// transition, so the flags are captured only from the discrete transition
+// events, which fire once the transition has settled (KAMP-676).
+let windowState: WindowState | null = null
+let windowStateTimer: NodeJS.Timeout | null = null
+// Set on 'before-quit' so teardown-time window events cannot rewrite the state
+// we are about to persist — see the app.on('before-quit') handler.
+let windowStateQuitting = false
+
+function flushWindowState(): void {
+  if (windowStateTimer !== null) {
+    clearTimeout(windowStateTimer)
+    windowStateTimer = null
+  }
+  if (windowState === null) return
   try {
-    const file = join(app.getPath('userData'), 'window-state.json')
-    writeFileSync(file, JSON.stringify(win.getBounds()))
+    writeFileSync(windowStateFile(), JSON.stringify(windowState))
   } catch {
     // Non-critical — ignore write errors.
   }
+}
+
+function scheduleWindowStateSave(): void {
+  // Debounced because 'moved' is an alias of 'move' on macOS and fires for every
+  // frame of a drag; a synchronous write per frame blocks the UI thread. 'close'
+  // flushes synchronously, so a pending save is never lost on quit.
+  if (windowStateTimer !== null) return
+  windowStateTimer = setTimeout(() => {
+    windowStateTimer = null
+    flushWindowState()
+  }, 300)
+}
+
+// `atClose` bypasses the quitting guard: the close handler is the only geometry
+// read on Linux, where 'moved'/'resized' never fire at all, so it must still run
+// after 'before-quit'. Ordinary move/resize events stay gated so a teardown
+// animation cannot write an intermediate rect.
+function recordWindowGeometry(win: BrowserWindow, atClose = false): void {
+  if (windowState === null) return
+  if (windowStateQuitting && !atClose) return
+  // Only record geometry from a settled normal state. A fullscreen animation
+  // emits 'move' repeatedly with intermediate rects, and persisting one of
+  // those as the normal size is worse than the bug this fixes.
+  if (win.isMaximized() || win.isFullScreen()) return
+  const { x, y, width, height } = win.getNormalBounds()
+  windowState = { ...windowState, x, y, width, height }
+  scheduleWindowStateSave()
+}
+
+function setWindowFlags(flags: Partial<Pick<WindowState, 'maximized' | 'fullScreen'>>): void {
+  if (windowState === null || windowStateQuitting) return
+  const next = { ...windowState, ...flags }
+  // Kept mutually exclusive with fullscreen winning, so the ambiguous both-true
+  // case never reaches disk and the restore path has no precedence to resolve.
+  if (next.fullScreen) next.maximized = false
+  windowState = next
+  scheduleWindowStateSave()
 }
 
 function buildAppMenu(): void {
@@ -618,11 +701,23 @@ function buildAppMenu(): void {
 }
 
 function createWindow(): void {
-  const bounds = loadWindowBounds()
+  const restored = loadWindowState()
+  windowState = restored
 
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    ...bounds,
+    // Destructured rather than spread: the constructor option is lowercase
+    // `fullscreen`, so spreading this object would pass a camelCase `fullScreen`
+    // that silently does nothing (TypeScript does not flag excess properties
+    // arriving via spread).
+    x: restored.x,
+    y: restored.y,
+    width: restored.width,
+    height: restored.height,
+    // Only ever set when true. Electron: "When explicitly set to false the
+    // fullscreen button will be hidden or disabled on macOS" — passing false on
+    // a normal launch would take away the green traffic-light button.
+    ...(restored.fullScreen ? { fullscreen: true as const } : {}),
     minWidth: 800,
     minHeight: 600,
     show: false,
@@ -648,12 +743,47 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
+    // maximize() before show(): Electron's maximize "will also show (but not
+    // focus) the window if it isn't being displayed already", so the window
+    // first appears already maximized rather than popping from small to large,
+    // and the show() below supplies the focus maximize withholds. Fullscreen
+    // needs nothing here — it came from the constructor option above.
+    if (restored.maximized) mainWindow.maximize()
     mainWindow.show()
   })
 
-  // Persist bounds on every move/resize so the next launch restores them.
-  mainWindow.on('moved', () => saveWindowBounds(mainWindow))
-  mainWindow.on('resized', () => saveWindowBounds(mainWindow))
+  // Persist geometry on move/resize, and the maximized/fullscreen flags from
+  // their own transition events — see the windowState helpers for why the flags
+  // cannot be read from the geometry handlers (KAMP-676).
+  mainWindow.on('moved', () => recordWindowGeometry(mainWindow))
+  mainWindow.on('resized', () => recordWindowGeometry(mainWindow))
+  mainWindow.on('maximize', () => setWindowFlags({ maximized: true }))
+  mainWindow.on('unmaximize', () => setWindowFlags({ maximized: false }))
+  // Guarded because macOS can emit a fullscreen transition while the window is
+  // being torn down, and sending to a destroyed webContents throws.
+  const notifyFullScreen = (on: boolean): void => {
+    if (!mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('window:full-screen', on)
+    }
+  }
+  mainWindow.on('enter-full-screen', () => {
+    setWindowFlags({ fullScreen: true })
+    notifyFullScreen(true)
+  })
+  mainWindow.on('leave-full-screen', () => {
+    // isMaximized() is safe to read here: the transition has settled by the
+    // time this fires, and on macOS leaving fullscreen can land on a zoomed
+    // window rather than a normal one.
+    setWindowFlags({ fullScreen: false, maximized: mainWindow.isMaximized() })
+    notifyFullScreen(false)
+  })
+  // 'moved'/'resized' are macOS+Windows only, so without this Linux never
+  // persisted window geometry at all. Also the flush point for any debounced
+  // save still pending when the user quits.
+  mainWindow.on('close', () => {
+    recordWindowGeometry(mainWindow, true)
+    flushWindowState()
+  })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -1124,6 +1254,15 @@ app.whenReady().then(async () => {
   // before ipcRenderer.on('update:available') was registered (timing race).
   ipcMain.handle('update:get-pending', () => _pendingUpdate)
 
+  // Same timing race as above, for fullscreen (KAMP-676): a window restored
+  // fullscreen is already fullscreen before the renderer loads, so the
+  // enter-full-screen event has long fired by the time the renderer subscribes.
+  // Resolved against the asking window rather than getAllWindows()[0], which
+  // can be the Bandcamp login window.
+  ipcMain.handle('window:is-full-screen', (event) => {
+    return BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false
+  })
+
   ipcMain.handle('open-directory', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory', 'createDirectory'],
@@ -1215,6 +1354,16 @@ app.whenReady().then(async () => {
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// Freeze the persisted window state once a quit starts (KAMP-676). macOS tears
+// down the fullscreen space during termination, and if that emits
+// 'leave-full-screen' the handler would clear the flag moments before 'close'
+// flushes it — so quitting from fullscreen would silently fail to restore it,
+// which is the most likely path for this bug in the first place. The state at
+// the moment the user chose to quit is the state worth keeping.
+app.on('before-quit', () => {
+  windowStateQuitting = true
 })
 
 // Quit when all windows are closed, except on macOS. There, it's common

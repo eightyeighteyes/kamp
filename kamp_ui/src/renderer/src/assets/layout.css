@@ -161,6 +161,15 @@ html[data-platform='win32'] .view-tabs {
   padding-right: 140px;
 }
 
+/* Fullscreen: macOS hides the traffic lights and Windows hides the
+   titleBarOverlay buttons, so the space reserved for either becomes a dead gap
+   (KAMP-676). Same specificity as the win32 rule above, so it must stay after
+   it to win on both platforms. */
+html[data-fullscreen='true'] .view-tabs {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
 /* Left/right rail groups flank the search bar. Both flex:1 so the search bar
    sits centered in the rail's free space (KAMP-585). */
 .view-tabs__group {

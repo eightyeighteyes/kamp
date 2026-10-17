@@ -615,8 +615,28 @@ def sync_collection_stream(
         # auto Last.fm genre enrichment; pre-order/backfill re-inspections of existing
         # albums are not (they're already in the library).
         is_new_album = not index.has_remote_album_tracks(str(sid))
-        if album_url and (
-            is_preorder_already or api_says_preorder or is_new_album or needs_backfill
+        # KAMP-682: a release bought twice returns a second sale item for the
+        # same tralbum_id. Keyed on sale_item_id alone that looks brand new, and
+        # the fetch below ingests a whole duplicate track set. This gates the
+        # FETCH rather than just is_new_album, because is_new_album is one of
+        # four disjuncts — a re-purchased pre-order would sail straight past it
+        # and upsert_many would run anyway.
+        # is_new_album means this sale item has no tracks of its OWN, so if the
+        # release-wide check still finds some, a sibling sale item owns them.
+        # Scoping it this way keeps pre-order re-inspection and date backfill
+        # working for the surviving sale item, which does have its own tracks.
+        is_duplicate_release = is_new_album and index.has_remote_album_tracks(
+            str(sid), tralbum_id=str(item.get("tralbum_id", ""))
+        )
+        if (
+            album_url
+            and not is_duplicate_release
+            and (
+                is_preorder_already
+                or api_says_preorder
+                or is_new_album
+                or needs_backfill
+            )
         ):
             if fetch_index > 0:
                 time.sleep(0.5)

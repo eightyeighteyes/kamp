@@ -79,7 +79,7 @@ def _add_collection_row(
 
 
 class TestSchema:
-    def test_fresh_db_is_v62_with_discovery_tables(self, tmp_path: Path) -> None:
+    def test_fresh_db_is_current_with_discovery_tables(self, tmp_path: Path) -> None:
         LibraryIndex(tmp_path / "library.db").close()
         conn = sqlite3.connect(str(tmp_path / "library.db"))
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
@@ -88,7 +88,10 @@ class TestSchema:
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         conn.close()
-        assert version == 62
+        # Tracks _SCHEMA_VERSION rather than pinning a number: this test is
+        # about the discovery tables existing, and a pinned version makes every
+        # later migration fail here for no reason.
+        assert version == _SCHEMA_VERSION
         assert {"discovery_items", "discovery_events"} <= tables
 
     def test_fresh_db_accepts_a_retraction_without_any_migration(
@@ -165,7 +168,10 @@ class TestSchema:
         finally:
             reopened.close()
 
-        assert version == 62
+        # A v61 DB runs the whole remaining ladder, not just v61 -> v62, so this
+        # tracks _SCHEMA_VERSION. What the test is really asserting is below:
+        # the widened CHECK now accepts the retraction.
+        assert version == _SCHEMA_VERSION
         # id copied verbatim -- nothing downstream keys on an event id today, but a
         # renumbering rebuild would be a silent trap for whatever does first.
         assert [(r["id"], r["kind"]) for r in surviving] == [(event_id, "wishlisted")]

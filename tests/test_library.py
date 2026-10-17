@@ -808,6 +808,115 @@ class TestLibraryIndex:
         assert index.has_remote_album_tracks("s7") is True
         index.close()
 
+    # -- KAMP-682: a release bought twice is still one release ---------------
+
+    def _seed_streamed_release(
+        self, index: LibraryIndex, sale_item_id: str, tralbum_id: str
+    ) -> None:
+        """Give *sale_item_id* one streamed track, under *tralbum_id*."""
+        c = index._conn
+        c.execute(
+            "INSERT INTO bandcamp_collection (sale_item_id, tralbum_id)"
+            " VALUES (?, ?)",
+            (sale_item_id, tralbum_id),
+        )
+        stream = Track(
+            file_path=f"bandcamp://{sale_item_id}/1",
+            title="A Song",
+            artist="The Artist",
+            album_artist="The Artist",
+            album="The Album",
+            release_date="",
+            track_number=1,
+            disc_number=1,
+            ext="mp3",
+            embedded_art=False,
+            mb_release_id="",
+            mb_recording_id="",
+        )
+        stream.source = "bandcamp"
+        index.upsert_many([stream])
+        c.commit()
+
+    def test_sibling_sale_item_counts_as_already_present(self, tmp_path: Path) -> None:
+        """A second purchase of an owned release is not a new album (KAMP-682).
+
+        Buying the same release twice returns two sale_item_ids for one
+        tralbum_id. Keyed on sale_item_id alone the second looks brand new, and
+        the sync ingests a whole duplicate track set.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        self._seed_streamed_release(index, "389633897", "3498893942")
+        # The re-purchase: a different sale item, same release.
+        index._conn.execute(
+            "INSERT INTO bandcamp_collection (sale_item_id, tralbum_id)"
+            " VALUES ('394186224', '3498893942')"
+        )
+
+        # Keyed on its own sale item it looks new...
+        assert index.has_remote_album_tracks("394186224") is False
+        # ...but the release is already present.
+        assert (
+            index.has_remote_album_tracks("394186224", tralbum_id="3498893942") is True
+        )
+        index.close()
+
+    @pytest.mark.parametrize("bogus", ["", "None", "0", "   ", "abc"])
+    def test_unusable_tralbum_id_never_matches(
+        self, tmp_path: Path, bogus: str
+    ) -> None:
+        """A malformed tralbum_id must not collapse unrelated releases.
+
+        Every writer is ``str(item.get("tralbum_id", ""))`` and ``.get`` with a
+        default only fires when the KEY IS ABSENT — a JSON null yields the
+        string 'None' and a numeric 0 yields '0'. A blanket ``!= ''`` guard
+        would treat both as real ids and merge unrelated albums, which is the
+        most destructive way this could go wrong.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        self._seed_streamed_release(index, "111", bogus)
+        index._conn.execute(
+            "INSERT INTO bandcamp_collection (sale_item_id, tralbum_id)"
+            " VALUES ('222', ?)",
+            (bogus,),
+        )
+
+        assert index.has_remote_album_tracks("222", tralbum_id=bogus) is False
+        index.close()
+
+    def test_resync_without_tralbum_id_keeps_the_known_one(
+        self, tmp_path: Path
+    ) -> None:
+        """A response missing tralbum_id must not erase the stored id (KAMP-682).
+
+        The writers pass ``str(item.get("tralbum_id", ""))``, so an omitted
+        field arrives as ''. Assigning that unconditionally would wipe the very
+        identity the dedup guard keys on, silently re-opening the duplicate.
+        """
+        index = LibraryIndex(tmp_path / "library.db")
+        index.upsert_collection_item(
+            sale_item_id="389633897", tralbum_id="3498893942", mode="remote"
+        )
+        # A later sync whose payload omitted the field.
+        index.upsert_collection_item(
+            sale_item_id="389633897", tralbum_id="", mode="remote"
+        )
+
+        stored = index._conn.execute(
+            "SELECT tralbum_id FROM bandcamp_collection WHERE sale_item_id = ?",
+            ("389633897",),
+        ).fetchone()["tralbum_id"]
+        assert stored == "3498893942"
+        index.close()
+
+    def test_unrelated_release_does_not_match(self, tmp_path: Path) -> None:
+        """A different tralbum_id is a different release."""
+        index = LibraryIndex(tmp_path / "library.db")
+        self._seed_streamed_release(index, "111", "3498893942")
+
+        assert index.has_remote_album_tracks("222", tralbum_id="9999999999") is False
+        index.close()
+
     def test_scan_merges_into_source_less_incumbent(self, tmp_path: Path) -> None:
         """A scan that merges into a source-less incumbent must not crash.
 

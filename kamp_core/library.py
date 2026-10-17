@@ -93,7 +93,7 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 62
+_SCHEMA_VERSION = 63
 
 
 class NoStreamableVersionError(Exception):
@@ -1089,6 +1089,19 @@ _NAMED_ALBUM_FROM = """
             FROM albums a
             LEFT JOIN tracks_with_stats t ON t.album_id = a.id
             LEFT JOIN bandcamp_collection bc ON bc.sale_item_id = a.sale_item_id"""
+
+
+def _is_tralbum_id(value: str) -> bool:
+    """Return True when *value* is a usable Bandcamp release id (KAMP-682).
+
+    Deliberately a positive match on digits rather than a ``!= ''`` guard. Every
+    writer goes through ``str(item.get("tralbum_id", ""))``, and ``.get`` with a
+    default only fires when the KEY IS ABSENT — a JSON ``null`` value yields the
+    literal string ``'None'`` and a numeric ``0`` yields ``'0'``. A blacklist
+    would treat both as real release ids and collapse unrelated albums onto one
+    another, which is the most destructive way this check could fail.
+    """
+    return value.isdigit() and value != "0"
 
 
 class _ConnHolder:
@@ -2859,7 +2872,31 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 62")
             self._conn.commit()
-            version = 62  # noqa: F841
+            version = 62
+
+        if version == 62:
+            # v62 -> v63 (KAMP-682): collapse track sets duplicated by buying
+            # the same release twice. No DDL at all — this is a row merge, so
+            # the KAMP-552 foreign_keys=OFF rebuild ceremony does not apply.
+            # The heal backs up first and leaves anything ambiguous alone; a
+            # library with no re-purchases does nothing here.
+            try:
+                self._heal_repurchased_releases()
+            except Exception as exc:  # pragma: no cover - defensive
+                # A failed heal must never make the DB unopenable. The version
+                # still advances: the duplicate is cosmetic, and the KAMP-682
+                # ingest guard already stops it recurring.
+                self._conn.rollback()
+                logger.warning("KAMP-682 heal failed (%s); continuing", exc)
+            rows = self._conn.execute("PRAGMA foreign_key_check").fetchall()
+            if rows:  # pragma: no cover - defensive
+                # foreign_key_check RETURNS rows, it does not raise.
+                logger.warning(
+                    "KAMP-682 heal: %d foreign key violation(s) after merge", len(rows)
+                )
+            self._conn.execute("UPDATE schema_version SET version = 63")
+            self._conn.commit()
+            version = 63  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -3727,6 +3764,114 @@ class LibraryIndex:
             self._merge_album_pair(keep, drop)
         logger.info("KAMP-523 heal: merged %d forked album row(s)", len(merge_into))
 
+    def _tracks_by_sale_item(self, sale_item_id: str) -> dict[tuple[int, int], int]:
+        """Map (disc_number, track_number) -> track id for one sale item."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT t.id, t.disc_number, t.track_number"
+            " FROM tracks t JOIN track_sources s ON s.track_id = t.id"
+            " WHERE s.provider_item_id = ?",
+            (sale_item_id,),
+        ).fetchall()
+        return {
+            (int(r["disc_number"]), int(r["track_number"])): int(r["id"]) for r in rows
+        }
+
+    def _heal_repurchased_releases(self) -> None:
+        """Collapse track sets duplicated by buying one release twice (KAMP-682).
+
+        Two bandcamp_collection rows can share a tralbum_id — the stable release
+        identity — while carrying different sale_item_ids. Track identity keyed
+        on sale_item_id, so the second purchase ingested a whole second track
+        set and the album showed double its tracks.
+
+        Only the provable case is healed: one sale item's tracks carry file
+        sources and the other's are stream-only. Anything ambiguous — both
+        stream-only, both with files, or tracks that do not correspond
+        one-to-one — is left alone rather than guessed at, mirroring the
+        KAMP-541 collapse. Merging (not deleting) preserves play counts and
+        moves queue/player/deferred_ops references, none of which
+        foreign_key_check can see.
+        """
+        cols = {
+            r[1]
+            for r in self._conn.execute(
+                "PRAGMA table_info(bandcamp_collection)"
+            ).fetchall()
+        }
+        if "tralbum_id" not in cols:
+            # Partial/synthetic schema from a narrow migration test.
+            return
+
+        groups = self._conn.execute(
+            "SELECT tralbum_id, GROUP_CONCAT(sale_item_id) AS sids"
+            " FROM bandcamp_collection"
+            " GROUP BY tralbum_id HAVING COUNT(*) > 1"
+        ).fetchall()
+
+        # (loser_track_id, survivor_track_id) pairs, resolved before any write.
+        merges: list[tuple[int, int]] = []
+        album_ids: set[int] = set()
+        for g in groups:
+            if not _is_tralbum_id(str(g["tralbum_id"])):
+                continue
+            sids = str(g["sids"]).split(",")
+            sets = {sid: self._tracks_by_sale_item(sid) for sid in sids}
+            with_files = [
+                sid
+                for sid in sids
+                if self._conn.execute(
+                    "SELECT 1 FROM track_sources WHERE provider_item_id = ?"
+                    "   AND kind = 'file' LIMIT 1",
+                    (sid,),
+                ).fetchone()
+            ]
+            losers = [sid for sid in sids if sets[sid] and sid not in with_files]
+            # Exactly one file-bearing winner and at least one stream-only
+            # loser, or we cannot tell which copy the user actually wants.
+            if len(with_files) != 1 or not losers:
+                if losers or len(with_files) > 1:
+                    logger.info(
+                        "KAMP-682 heal: leaving tralbum_id %s alone — "
+                        "%d file-bearing and %d stream-only sale item(s)",
+                        g["tralbum_id"],
+                        len(with_files),
+                        len(losers),
+                    )
+                continue
+            survivors = sets[with_files[0]]
+            for sid in losers:
+                for key, loser_id in sets[sid].items():
+                    survivor_id = survivors.get(key)
+                    # No positional counterpart: not provably the same track.
+                    if survivor_id is None or survivor_id == loser_id:
+                        continue
+                    merges.append((loser_id, survivor_id))
+                    row = self._conn.execute(
+                        "SELECT album_id FROM tracks WHERE id = ?", (survivor_id,)
+                    ).fetchone()
+                    if row and row["album_id"]:
+                        album_ids.add(int(row["album_id"]))
+
+        if not merges:
+            return
+        if not self._backup_db("KAMP-682 repurchase heal"):
+            return
+
+        for loser_id, survivor_id in merges:
+            self._merge_track_into(survivor_id, loser_id)
+        # tracks_fts has no triggers and is synced by hand, so the merged-away
+        # rows would stay searchable without this.
+        self._rebuild_fts()
+        # Aggregates are averaged over the track set — play_count_avg and the
+        # source badge are both wrong until the denominator is corrected. Runs
+        # after the merges so the track_genres cascade has already settled.
+        if album_ids:
+            self._refresh_album_aggregates(sorted(album_ids))
+        logger.info(
+            "KAMP-682 heal: merged %d duplicate track(s) from re-purchased releases",
+            len(merges),
+        )
+
     def _merge_album_pair(self, keep: int, drop: int) -> None:
         """Fold album *drop* into *keep*, merging the duplicate artist too.
 
@@ -4226,7 +4371,14 @@ class LibraryIndex:
                 item_type             = excluded.item_type,
                 band_name             = excluded.band_name,
                 item_title            = excluded.item_title,
-                tralbum_id            = excluded.tralbum_id,
+                -- KAMP-682: never blank a known release id. A response that
+                -- omits tralbum_id arrives here as '' (the writers all use
+                -- str(item.get(...))), and an unconditional assignment would
+                -- erase the identity the dedup guard keys on. Same shape as
+                -- the COALESCE/MIN guards on the two columns below.
+                tralbum_id            = COALESCE(
+                                            NULLIF(excluded.tralbum_id, ''),
+                                            tralbum_id),
                 album_url             = excluded.album_url,
                 mode                  = excluded.mode,
                 synced_at             = COALESCE(excluded.synced_at, synced_at),
@@ -4434,16 +4586,8 @@ class LibraryIndex:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def has_remote_album_tracks(self, sale_item_id: str) -> bool:
-        """Return True if this remote album's stream tracks are already present.
-
-        Checks legacy bandcamp:// (POSIX) and Windows bandcamp:\\ tracks.file_path
-        forms AND (post-KAMP-541 collapse) stream track_sources whose uri encodes
-        this sale_item_id. After the collapse the stream lives as a source on the
-        downloaded canonical rather than as its own tracks row, so a file_path-only
-        check would miss it and make the incremental sync re-fetch and re-insert a
-        duplicate stream row.
-        """
+    def _has_stream_sources(self, sale_item_id: str) -> bool:
+        """Return True if any stream source's uri encodes *sale_item_id*."""
         # KAMP-552: the stream lives as a track_sources row (KAMP-541 collapse), so
         # the source-uri check subsumes the old tracks.file_path LIKE arm.
         row = self._conn.execute(
@@ -4456,6 +4600,33 @@ class LibraryIndex:
             ),
         ).fetchone()
         return row is not None
+
+    def has_remote_album_tracks(self, sale_item_id: str, tralbum_id: str = "") -> bool:
+        """Return True if this release's stream tracks are already present.
+
+        Checks legacy bandcamp:// (POSIX) and Windows bandcamp:\\ tracks.file_path
+        forms AND (post-KAMP-541 collapse) stream track_sources whose uri encodes
+        this sale_item_id. After the collapse the stream lives as a source on the
+        downloaded canonical rather than as its own tracks row, so a file_path-only
+        check would miss it and make the incremental sync re-fetch and re-insert a
+        duplicate stream row.
+
+        KAMP-682: when *tralbum_id* is supplied and usable, a SIBLING sale item
+        for the same release counts too. Buying a release twice yields two
+        sale_item_ids for one tralbum_id, and keying identity on sale_item_id
+        alone made the second purchase look brand new — ingesting a whole
+        duplicate track set. tralbum_id is the stable release identity.
+        """
+        if self._has_stream_sources(sale_item_id):
+            return True
+        if not _is_tralbum_id(tralbum_id):
+            return False
+        siblings = self._conn.execute(
+            "SELECT sale_item_id FROM bandcamp_collection"
+            " WHERE tralbum_id = ? AND sale_item_id != ?",
+            (tralbum_id, sale_item_id),
+        ).fetchall()
+        return any(self._has_stream_sources(r["sale_item_id"]) for r in siblings)
 
     def has_remote_tracks_needing_date_backfill(self, sale_item_id: str) -> bool:
         """Return True if any remote tracks for this album have year-only or empty release_date.

@@ -22,6 +22,20 @@ window.api.syncThemeChrome(savedTheme)
 // on .view-tabs that clears the Windows titleBarOverlay) can target it.
 document.documentElement.dataset.platform = window.electron.process.platform
 
+// KAMP-676: macOS hides the traffic lights in fullscreen, so the 76px the nav
+// bar reserves for them becomes a dead gap. Seeded from the current state
+// because a window restored fullscreen entered it before this script ran, then
+// kept current. Not unsubscribed — this lives for the document's lifetime.
+const setFullScreen = (on: boolean): void => {
+  document.documentElement.dataset.fullscreen = on ? 'true' : 'false'
+}
+setFullScreen(false)
+window.api
+  .isFullScreen()
+  .then(setFullScreen)
+  .catch(() => setFullScreen(false))
+window.api.onFullScreenChange(setFullScreen)
+
 // How focus was last established, which decides whether a ring paints (KAMP-685).
 // Seeded here rather than in App so there is no first frame without it, and seeded
 // to 'key' so a keyboard-only user who never touches the mouse gets a ring from

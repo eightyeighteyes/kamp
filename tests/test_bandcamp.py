@@ -2720,6 +2720,82 @@ class TestSyncCollectionStream:
 
         return result, index
 
+    def test_repurchased_release_is_not_fetched_twice(self, tmp_path: Path) -> None:
+        """A release bought twice ingests one track set, not two (KAMP-682).
+
+        Two sale items share one tralbum_id. The first owns the tracks; the
+        second is the re-purchase and must not be fetched, or upsert_many
+        creates a duplicate set and the album shows 2x its tracks.
+        """
+        items = [
+            _item(1, "Helado Tropical", "Helado Tropical", tralbum_id=3498893942),
+            _item(2, "Helado Tropical", "Helado Tropical", tralbum_id=3498893942),
+        ]
+        owned = {"1"}
+
+        def _has_tracks(sale_item_id: str, tralbum_id: str = "") -> bool:
+            if sale_item_id in owned:
+                return True
+            # The release-wide check sees the sibling that does own them.
+            return bool(tralbum_id) and tralbum_id == "3498893942"
+
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.side_effect = _has_tracks
+        index.has_remote_tracks_needing_date_backfill.return_value = False
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[]) as fetch,
+        ):
+            sync_collection_stream(_bc_config(tmp_path), tmp_path / "watch", index)
+
+        # Neither is fetched: sale item 1 already owns its tracks, and sale
+        # item 2 is the duplicate the guard exists to stop.
+        assert fetch.call_count == 0
+        # Both still get a collection row — the ledger keeps both purchases.
+        assert index.upsert_collection_item.call_count == 2
+
+    def test_repurchase_guard_does_not_block_a_genuinely_new_album(
+        self, tmp_path: Path
+    ) -> None:
+        """The guard must not suppress albums that merely lack a tralbum_id.
+
+        Two of 837 real collection rows carry a blank tralbum_id, and the
+        writers can also produce 'None' or '0'. If any of those were treated as
+        a shared release identity the sync would silently stop ingesting.
+        """
+        items = [
+            _item(1, "Band A", "Album A", tralbum_id=0),
+            _item(2, "Band B", "Album B", tralbum_id=0),
+        ]
+        index = MagicMock()
+        index.get_collection_state.return_value = {}
+        index.has_remote_album_tracks.return_value = False
+        index.has_remote_tracks_needing_date_backfill.return_value = False
+
+        with (
+            patch(
+                "kamp_daemon.bandcamp._ensure_session",
+                return_value=_make_session_data(),
+            ),
+            patch(
+                "kamp_daemon.bandcamp._make_requests_session",
+                return_value=_make_requests_mock(items),
+            ),
+            patch("kamp_daemon.bandcamp.fetch_album_tracks", return_value=[]) as fetch,
+        ):
+            sync_collection_stream(_bc_config(tmp_path), tmp_path / "watch", index)
+
+        assert fetch.call_count == 2
+
     def test_upserts_all_items_as_remote(self, tmp_path: Path) -> None:
         items = [_item(1, "Artist A", "Album 1"), _item(2, "Artist B", "Album 2")]
         (album_count, _track_count, _keys), index = self._run(tmp_path, items)

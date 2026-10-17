@@ -317,6 +317,13 @@ class Syncer:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._stop_event = threading.Event()
+        # KAMP-726: set by reload() to break the polling sleep early so a
+        # shortened interval takes effect now rather than after the old one
+        # elapses. Distinct from _stop_event, which ends the loop entirely.
+        self._wake = threading.Event()
+        # One-way latch. stop() is the last thing before shutdown, so once it
+        # has run nothing may start a thread that would outlive the daemon.
+        self._stopped = False
         self._thread: threading.Thread | None = None
         self.status_callback: Callable[[str], None] | None = None
         # KAMP-436/566: per-album byte-progress (sale_item_id, downloaded_bytes,
@@ -346,17 +353,37 @@ class Syncer:
     # Public interface
     # ------------------------------------------------------------------
 
-    def start(self) -> None:
-        """Start the background polling thread (no-op if interval is 0)."""
+    def _interval_seconds(self) -> float:
+        """The current poll interval, read live so reload() needs no restart."""
+        bc = self._config.bandcamp
+        return (bc.poll_interval_minutes * 60) if bc else 0.0
+
+    def start(self) -> bool:
+        """Start the polling thread. Return True only if this call started it.
+
+        Exactly one thread owns sync management (KAMP-726). A caller that finds
+        one already running gets False rather than a second thread — two
+        generations polling at once doubles the request rate against the
+        Bandcamp collection endpoint, which is the hardest-rate-limited one.
+        """
+        if self._stopped:
+            return False
         bc = self._config.bandcamp
         if bc is None or bc.poll_interval_minutes <= 0:
-            return
+            return False
+        if self._thread is not None and self._thread.is_alive():
+            # Deliberately not an error: reload()/resume() and `kamp daemon
+            # resume` all route here, and "one is already running" is the
+            # correct outcome for each.
+            return False
+        self._wake.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="syncer")
         self._thread.start()
         logger.info(
             "Bandcamp syncer started — polling every %d minute(s).",
             bc.poll_interval_minutes,
         )
+        return True
 
     def stop(self) -> None:
         """Signal the polling thread to exit and wait for it.
@@ -367,17 +394,30 @@ class Syncer:
         thread, so anything still running is reaped at interpreter exit. This
         means stop() returning does NOT guarantee the thread has exited — do
         not write tests that assume it does (KAMP-721).
+
+        Terminal: after this, start() will not spawn again (KAMP-726). reload()
+        and resume() are reachable from HTTP handlers on the anyio worker pool
+        while this arrives on the main thread via SIGTERM, so without the latch
+        a start() can win that race and leave a thread polling after shutdown.
         """
+        self._stopped = True
         self._stop_event.set()
+        self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
 
     def reload(self, config: Config) -> None:
         """Apply a new config live.
 
-        If ``poll_interval_minutes`` changed the polling thread is restarted so
-        the new interval takes effect immediately rather than at the end of the
-        current sleep.
+        A changed ``poll_interval_minutes`` takes effect immediately without
+        restarting the thread: _run reads the interval live and _wake breaks
+        the current sleep.
+
+        This used to stop the thread, join it with a 5s bound, CLEAR the stop
+        event and start a replacement. A sync outlasting that join — a real
+        collection walk easily does — left the old thread looping against a
+        cleared event, so two generations polled at once (KAMP-726). Not
+        restarting at all is the fix: there is no second generation to race.
         """
         old_interval = (
             self._config.bandcamp.poll_interval_minutes if self._config.bandcamp else 0
@@ -387,15 +427,14 @@ class Syncer:
 
         if old_interval != new_interval:
             logger.info(
-                "Poll interval changed (%d → %d min); restarting syncer thread.",
+                "Poll interval changed (%d → %d min); applying to the syncer thread.",
                 old_interval,
                 new_interval,
             )
-            self._stop_event.set()
-            if self._thread is not None:
-                self._thread.join(timeout=5)
-            self._stop_event.clear()
-            self._thread = None
+            # Wake a sleeping thread so it re-reads the interval now. start()
+            # is a no-op while one is running, and covers the case where the
+            # interval rose from 0 and there is no thread yet.
+            self._wake.set()
             self.start()
         else:
             logger.info("Syncer config reloaded.")
@@ -405,16 +444,26 @@ class Syncer:
 
         The stop event is set and the thread is joined, but the event is *not*
         cleared — call resume() to restart polling.
+
+        Deliberately does NOT clear self._thread (KAMP-726). The join is
+        bounded, so a sync still in flight outlives it; nulling the reference
+        would hide that live thread from start()'s liveness check and let
+        resume() spawn a second one alongside it.
         """
         self._stop_event.set()
+        self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
-        self._thread = None
         logger.info("Syncer paused")
 
     def resume(self) -> None:
-        """Restart the polling thread after a pause."""
+        """Resume polling after a pause.
+
+        If the paused thread is still winding down it simply picks up again
+        once the event is clear — start() declines to add a second.
+        """
         self._stop_event.clear()
+        self._wake.clear()
         self.start()
         logger.info("Syncer resumed")
 
@@ -708,11 +757,21 @@ class Syncer:
     # ------------------------------------------------------------------
 
     def _run(self) -> None:
-        bc = self._config.bandcamp
-        assert bc is not None
-        interval_seconds = bc.poll_interval_minutes * 60
+        me = threading.current_thread()
 
         while not self._stop_event.is_set():
+            # Backstop (KAMP-726). start()'s liveness guard should make this
+            # unreachable, but a thread outliving its owner is expensive to
+            # diagnose and this is the cheapest possible tripwire. The
+            # is-not-None arm matters: _run is also called directly, on the
+            # main thread, by tests that drive one iteration by hand.
+            if self._thread is not None and self._thread is not me:
+                logger.info("Syncer thread retired — another generation owns sync.")
+                break
+            # Cleared BEFORE the sync, not before the wait: a reload() landing
+            # while sync_once() runs must survive to the wait below, or the
+            # wake-up is lost and the thread sleeps out the whole old interval.
+            self._wake.clear()
             try:
                 self.sync_once()
             except NeedsLoginError:
@@ -733,7 +792,17 @@ class Syncer:
                         "Bandcamp sync failed",
                         str(exc)[:120],
                     )
-            self._stop_event.wait(timeout=interval_seconds)
+            # Read the interval live so reload() needs no restart, and wait on
+            # _wake so a shortened interval does not sit out the old sleep.
+            interval = self._interval_seconds()
+            if interval <= 0:
+                # Polling turned off at runtime. Retire rather than loop: a
+                # zero timeout would return instantly and spin the sync.
+                # Checked here, after the sync, so a direct _run() call at
+                # interval 0 still performs its single iteration.
+                logger.info("Bandcamp polling disabled; syncer thread exiting.")
+                break
+            self._wake.wait(timeout=interval)
 
 
 def logout() -> None:

@@ -214,28 +214,45 @@ class TestReload:
                 assert syncer._thread is original_thread
                 syncer.stop()
 
-    def test_reload_changed_interval_restarts_thread(self, tmp_path: Path) -> None:
-        """reload() with a new poll_interval stops and restarts the thread."""
+    def test_reload_changed_interval_keeps_the_same_thread(
+        self, tmp_path: Path
+    ) -> None:
+        """reload() applies a new interval in place, without restarting.
+
+        This asserted the opposite until KAMP-726. Restarting meant setting the
+        stop event, joining with a 5s bound and then CLEARING it — and a sync
+        outlasting that join left the old thread polling against a cleared
+        event, so two generations hit Bandcamp at once. The interval is read
+        live now, so there is no second generation to race.
+        """
         with patch("kamp_daemon.syncer._spawn_worker", side_effect=_noop_worker):
             with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
                 syncer = Syncer(_make_config(tmp_path, poll_interval=60))
                 syncer.start()
                 original_thread = syncer._thread
                 syncer.reload(_make_config(tmp_path, poll_interval=30))
-                assert syncer._thread is not original_thread
+                assert syncer._thread is original_thread
                 assert syncer._thread is not None
-                assert syncer._thread.is_alive()
                 syncer.stop()
 
-    def test_reload_interval_to_zero_stops_thread(self, tmp_path: Path) -> None:
-        """reload() with interval=0 stops the polling thread."""
+    def test_reload_interval_to_zero_stops_polling(self, tmp_path: Path) -> None:
+        """reload() with interval=0 retires the thread rather than spinning.
+
+        A zero interval would make the poll wait return instantly, so the
+        thread exits instead of looping. _thread keeps pointing at the dead
+        thread — only start() ever replaces it (KAMP-726).
+        """
         with patch("kamp_daemon.syncer._spawn_worker", side_effect=_noop_worker):
             with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
                 syncer = Syncer(_make_config(tmp_path, poll_interval=60))
                 syncer.start()
-                assert syncer._thread is not None
+                thread = syncer._thread
+                assert thread is not None
                 syncer.reload(_make_config(tmp_path, poll_interval=0))
-                assert syncer._thread is None
+                # Unbounded join: the thread exits on its own once it sees the
+                # zero interval, so this is deterministic (KAMP-721).
+                thread.join()
+                assert not thread.is_alive()
 
 
 class TestPauseResume:

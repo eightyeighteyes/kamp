@@ -165,6 +165,39 @@ def test_start_after_stop_does_not_spawn(tmp_path: Path) -> None:
     assert syncer._thread is None
 
 
+def test_a_sync_failing_during_shutdown_is_not_an_error(
+    tmp_path: Path, caplog: Any
+) -> None:
+    """Shutdown killing the worker mid-sync is expected, not a fault.
+
+    stop() kills the sync subprocess, so sync_once raises "subprocess exited
+    without returning a result". Logging that as an unhandled error with a
+    traceback sends the next person debugging a real problem chasing a
+    shutdown artefact.
+    """
+    syncer = Syncer(_config(tmp_path, 60))
+    started = threading.Event()
+
+    def _dies_on_shutdown(**_: Any) -> None:
+        started.set()
+        # Mirrors the real sequence: stop() lands, then the worker is gone.
+        syncer._stop_event.wait()
+        raise RuntimeError("Sync subprocess exited without returning a result")
+
+    syncer.sync_once = _dies_on_shutdown  # type: ignore[method-assign]
+    with caplog.at_level("INFO", logger="kamp_daemon.syncer"):
+        syncer.start()
+        started.wait()
+        syncer.stop()
+        thread = syncer._thread
+        assert thread is not None
+        thread.join()
+
+    messages = [r.message for r in caplog.records]
+    assert "Bandcamp sync interrupted by shutdown." in messages
+    assert "Unhandled error during Bandcamp sync" not in messages
+
+
 def test_a_dead_thread_can_be_restarted(tmp_path: Path) -> None:
     """The guard must not over-block: a thread that exited can be replaced.
 

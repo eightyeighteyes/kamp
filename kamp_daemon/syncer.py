@@ -785,6 +785,14 @@ class Syncer:
                     self.status_callback("Login required")
                 break
             except Exception as exc:
+                if self._stop_event.is_set():
+                    # Shutdown killed the worker subprocess mid-walk, so
+                    # sync_once correctly reports that it vanished. Expected,
+                    # not a fault: logging it as an unhandled error with a
+                    # traceback sends the next person debugging a real problem
+                    # chasing a shutdown artefact.
+                    logger.info("Bandcamp sync interrupted by shutdown.")
+                    break
                 logger.exception("Unhandled error during Bandcamp sync")
                 if self.error_callback is not None:
                     self.error_callback(

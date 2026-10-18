@@ -93,7 +93,12 @@ def _maybe_unprotect(text: str) -> str:
 
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".flac", ".ogg"})
 
-_SCHEMA_VERSION = 63
+_SCHEMA_VERSION = 64
+
+#: Settings key holding the time of the last *complete* wishlist walk
+#: (KAMP-666). Owned here rather than by the daemon so clear_wishlist() can
+#: drop the rows and the freshness marker together — see its docstring.
+_WISHLIST_WALKED_AT = "bandcamp.wishlist_walked_at"
 
 
 class NoStreamableVersionError(Exception):
@@ -447,6 +452,41 @@ CREATE TABLE IF NOT EXISTS bandcamp_collection (
     -- KAMP-588: JSON array of the album's Bandcamp tags, cached at sync time so a
     -- later download can stamp them into the files (and KAMP-591 has a fast path).
     keywords              TEXT
+);
+
+-- The Bandcamp wishlist, walked in the background and read for crate exclusion
+-- (KAMP-666). Rows rather than the hour-long in-memory id set KAMP-652 used, so
+-- exclusion works from the first crate after a restart instead of waiting out a
+-- ~37s nine-page walk.
+--
+-- Keyed on (tralbum_id, tralbum_type): a wishlist holds individual tracks as
+-- well as albums (11 of 825 on the measured account) and the numeric ids share
+-- a space, so a track and an album must be distinct rows. Reads filter to
+-- albums — see wishlist_album_ids() for why that matters.
+--
+-- walked_at is nullable ON PURPOSE, unlike bandcamp_collection.added_at: a row
+-- the user wishlisted mid-walk has never been seen by a walk, and the prune
+-- predicate distinguishes that from a stale row. NOT NULL DEFAULT 0 would make
+-- it look infinitely stale and delete it.
+--
+-- Deliberately does NOT store a stream_url. Bandcamp's signed mp3-128 URLs
+-- expire in about a day (KAMP-644), so a stored one is a silent playback
+-- failure waiting to happen; PreviewStream's docstring is explicit that "never
+-- persisted" means never written to the database. Volatile fields (price,
+-- is_purchasable, merch_sold_out) are left out for the same class of reason:
+-- read within the hour they are fine, read by a feature six weeks later they
+-- are actively misleading.
+CREATE TABLE IF NOT EXISTS bandcamp_wishlist (
+    tralbum_id   TEXT NOT NULL,
+    tralbum_type TEXT NOT NULL DEFAULT 'a',
+    band_name    TEXT NOT NULL DEFAULT '',
+    item_title   TEXT NOT NULL DEFAULT '',
+    item_url     TEXT NOT NULL DEFAULT '',
+    item_art_id  TEXT NOT NULL DEFAULT '',
+    band_id      TEXT NOT NULL DEFAULT '',
+    added        TEXT NOT NULL DEFAULT '',
+    walked_at    REAL,
+    PRIMARY KEY (tralbum_id, tralbum_type)
 );
 
 -- Serialized album download queue (KAMP-408; extended into a platform-neutral
@@ -2896,7 +2936,17 @@ class LibraryIndex:
                 )
             self._conn.execute("UPDATE schema_version SET version = 63")
             self._conn.commit()
-            version = 63  # noqa: F841
+            version = 63
+
+        if version == 63:
+            # v63 -> v64 (KAMP-666): the bandcamp_wishlist table. Purely
+            # additive — _DDL carries the CREATE, so a fresh DB already has it
+            # and this only has to exist for the version ladder. No heal, no
+            # data to migrate: the wishlist was in-memory before this, so there
+            # is nothing on disk to convert, and the first walk populates it.
+            self._conn.execute("UPDATE schema_version SET version = 64")
+            self._conn.commit()
+            version = 64  # noqa: F841
 
     def _create_artist_name_nocase_index(self) -> None:
         """Enforce case-insensitive uniqueness on artists.name (KAMP-545).
@@ -4971,6 +5021,171 @@ class LibraryIndex:
                 (album_artist, album),
             ).fetchone()
         return dict(row) if row else None
+
+    # ---- Bandcamp wishlist (KAMP-666) -----------------------------------
+
+    def upsert_wishlist_items(
+        self,
+        rows: "Sequence[dict[str, Any]]",
+        *,
+        walked_at: float | None = None,
+    ) -> int:
+        """Write a walk's rows in one transaction. Returns the number written.
+
+        Bulk because both alternatives are worse: committing per row is ~825
+        fsyncs on a real account, and holding one transaction open *across* the
+        walk parks the WAL write lock for the ~40s the nine pages take, which
+        puts every other writer on the 30s busy timeout. The walk collects
+        first and this writes after, so the lock is held for milliseconds.
+
+        *walked_at* is the walk's START time, not "now". The prune that follows
+        deletes rows older than that same instant, so stamping with "now" would
+        let the prune delete a page that landed while the walk was still going.
+
+        Missing keys take the column defaults rather than raising: the only
+        field a row genuinely cannot do without is tralbum_id, and a row
+        without one is dropped (an id-less exclusion entry excludes nothing).
+        """
+        payload = [
+            (
+                str(row["tralbum_id"]),
+                str(row.get("tralbum_type") or "a"),
+                str(row.get("band_name") or ""),
+                str(row.get("item_title") or ""),
+                str(row.get("item_url") or ""),
+                str(row.get("item_art_id") or ""),
+                str(row.get("band_id") or ""),
+                str(row.get("added") or ""),
+                walked_at,
+            )
+            for row in rows
+            if row.get("tralbum_id")
+        ]
+        if not payload:
+            return 0
+        self._conn.executemany(
+            """
+            INSERT INTO bandcamp_wishlist
+                (tralbum_id, tralbum_type, band_name, item_title, item_url,
+                 item_art_id, band_id, added, walked_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tralbum_id, tralbum_type) DO UPDATE SET
+                band_name   = excluded.band_name,
+                item_title  = excluded.item_title,
+                item_url    = excluded.item_url,
+                item_art_id = excluded.item_art_id,
+                band_id     = excluded.band_id,
+                added       = excluded.added,
+                walked_at   = excluded.walked_at
+            """,
+            payload,
+        )
+        self._conn.commit()
+        return len(payload)
+
+    def add_wishlist_item(self, tralbum_id: str, tralbum_type: str = "a") -> None:
+        """Record that kamp itself just wishlisted something (KAMP-653).
+
+        Writes an id-only row and leaves walked_at NULL so a walk in flight
+        cannot prune what the user added seconds ago. INSERT OR IGNORE rather
+        than an upsert: if a walk already knows this item, its metadata is real
+        and must not be blanked by this call's empty defaults.
+        """
+        self._conn.execute(
+            """INSERT OR IGNORE INTO bandcamp_wishlist (tralbum_id, tralbum_type)
+               VALUES (?, ?)""",
+            (tralbum_id, tralbum_type),
+        )
+        self._conn.commit()
+
+    def remove_wishlist_item(self, tralbum_id: str, tralbum_type: str = "a") -> None:
+        """Drop one row after the user un-wishlists it.
+
+        Without this the album stays excluded from every crate until the next
+        complete walk, with nothing on screen to explain why.
+        """
+        self._conn.execute(
+            "DELETE FROM bandcamp_wishlist WHERE tralbum_id = ? AND tralbum_type = ?",
+            (tralbum_id, tralbum_type),
+        )
+        self._conn.commit()
+
+    def wishlist_album_ids(self) -> set[str]:
+        """Album ids to exclude from crates — the only read of this table.
+
+        Album-only, and deliberately the sole accessor. `Candidate` carries no
+        tralbum_type and its id has been through `normalise_item_id`, which
+        strips the `album-`/`track-` prefix to a bare numeral. A wishlisted
+        track id in this set would therefore suppress an unrelated album that
+        happens to share the number — the confusion `wishlist.py` already
+        filters for. Exposing a general "all ids" read would hand the next
+        caller that bug, so there isn't one.
+        """
+        return {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT tralbum_id FROM bandcamp_wishlist WHERE tralbum_type = 'a'"
+            )
+        }
+
+    def prune_wishlist(self, before: float) -> int:
+        """Delete rows no walk at or after *before* saw. Returns the row count.
+
+        NULL is handled explicitly rather than coalesced. A row the user
+        wishlisted mid-walk has no walked_at, and that means "no walk has seen
+        this yet", not "infinitely stale" — `COALESCE(walked_at, 0) < before`
+        reads it as the latter and deletes it, which is the same bug declaring
+        the column NOT NULL DEFAULT 0 would have caused. A bare
+        `walked_at < before` happens to spare the row (NULL is not true), but
+        only as an accident of three-valued logic; say it out loud instead.
+
+        Only ever called after a *complete* walk — a walk that failed on page 2
+        of 9 has no business deciding what is absent.
+        """
+        cur = self._conn.execute(
+            """DELETE FROM bandcamp_wishlist
+               WHERE walked_at IS NOT NULL AND walked_at < ?""",
+            (before,),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def wishlist_walked_at(self) -> float | None:
+        """When the last *complete* walk ran, or None if there has never been one.
+
+        A settings row rather than MAX(walked_at) over the table, because MAX
+        cannot tell an empty wishlist from a never-walked one and the decision
+        to re-walk rests on exactly that distinction.
+
+        Parsed defensively: settings.value is TEXT NOT NULL, and a hand-edited
+        or half-written value must not take the daemon down at startup. Reading
+        a corrupt value as "never walked" costs at most one extra walk.
+        """
+        raw = self.get_setting(_WISHLIST_WALKED_AT)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logger.warning("wishlist: ignoring unparseable walk timestamp %r", raw)
+            return None
+
+    def set_wishlist_walked_at(self, when: float) -> None:
+        """Record that a complete walk finished at *when*."""
+        self.set_setting(_WISHLIST_WALKED_AT, repr(float(when)))
+
+    def clear_wishlist(self) -> None:
+        """Empty the table AND drop the walk timestamp, on disconnect or switch.
+
+        Both, in one method, deliberately. Rows and freshness are a single
+        piece of state: clear only the rows and the next account reads "walked
+        recently", skips its walk, and filters on an empty table for the rest
+        of the TTL. Leaving that to the caller to remember is how that bug gets
+        written, so there is no way to do half of it from out here.
+        """
+        self._conn.execute("DELETE FROM bandcamp_wishlist")
+        self._conn.execute("DELETE FROM settings WHERE key = ?", (_WISHLIST_WALKED_AT,))
+        self._conn.commit()
 
     def update_stream_url(
         self, file_path_uri: str, stream_url: str, expires_at: float

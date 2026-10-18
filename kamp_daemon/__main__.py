@@ -576,7 +576,7 @@ def _cmd_daemon(
     from kamp_core.playback import MpvPlaybackEngine, PlaybackQueue
 
     from .discovery_preview import PreviewPlayer
-    from .wishlist import WishlistCache, mark_wishlisted_crate_items, write_wishlist
+    from .wishlist import WishlistWalker, mark_wishlisted_crate_items, write_wishlist
     from kamp_core.scrobbler import Scrobbler, authenticate as _lastfm_authenticate
     from kamp_core.server import create_app, resolve_playback_uri
     from kamp_daemon.config import config_set as _config_set
@@ -977,6 +977,11 @@ def _cmd_daemon(
         session_data: dict[str, Any] = dict(payload)
         index.set_session("bandcamp", session_data)
         index.set_setting("bandcamp.ever_connected", "true")
+        # A login can be a different account than the last one, and connecting
+        # without a disconnect first is a supported path. Before KAMP-666 that
+        # was an hour of stale exclusion; now it is persisted rows belonging to
+        # someone else, so the new session starts from a clean table.
+        _wishlist_walker.invalidate()
         _logger.info("Bandcamp session saved from Electron login flow.")
         # Extract username immediately so the UI can show "Connected as {username}".
         # Primary source: the logout cookie (URL-encoded JSON, always present after
@@ -1005,8 +1010,11 @@ def _cmd_daemon(
 
     def _on_bandcamp_disconnect() -> None:
         index.clear_session("bandcamp")
-        # The wishlist ids belong to an account that can change (KAMP-652).
-        _wishlist_cache.invalidate()
+        # The wishlist belongs to an account that can change (KAMP-652). Since
+        # KAMP-666 it is rows on disk rather than an hour of memory, so this is
+        # no longer just a staleness nicety -- those rows carry the departing
+        # account's band_name and item_title.
+        _wishlist_walker.invalidate()
 
     def _on_bandcamp_sync_trigger() -> None:
         from .syncer import NeedsLoginError
@@ -1089,23 +1097,23 @@ def _cmd_daemon(
 
     # --- KAMP-648: Discovery Crate build ---
     def _warm_wishlist(session: Any) -> None:
-        """Refresh the wishlist cache. Cheap when fresh, silent when it fails."""
+        """Refresh the persisted wishlist. Cheap when fresh, silent when it fails."""
         try:
             from .bandcamp import _get_fan_info
 
             # fan_id is not persisted anywhere -- _get_fan_info re-reads it from
             # collection_summary -- so it costs one request on top of the walk.
-            # Only paid when the cache is actually stale, since refresh() bails
-            # before this on a fresh cache.
-            if _wishlist_cache.is_fresh:
+            # Only paid when the rows are actually stale, since refresh() bails
+            # before this on a fresh walk timestamp.
+            if _wishlist_walker.is_fresh:
                 return
             fan_id, _ = _get_fan_info(session)
-            _wishlist_cache.refresh(session, fan_id)
-            # The crate on screen was assembled against whatever was cached at
-            # the time -- nothing at all, on the first build after launch. Mark
-            # anything in it that turns out to be wishlisted so the rail shows a
-            # heart rather than presenting it as new.
-            mark_wishlisted_crate_items(index, _wishlist_cache.ids)
+            _wishlist_walker.refresh(session, fan_id)
+            # The crate on screen was assembled against whatever was on disk at
+            # the time, which since KAMP-666 is the previous session's rows
+            # rather than nothing. Mark anything in it that turns out to be
+            # wishlisted so the rail shows a heart rather than calling it new.
+            mark_wishlisted_crate_items(index, _wishlist_walker.album_ids)
             app.state.discovery_publish({})
         except Exception:
             _logger.warning("wishlist warm-up failed", exc_info=True)
@@ -1118,7 +1126,9 @@ def _cmd_daemon(
         without a daemon restart. That costs a keychain read, which is fine on a
         click and is exactly why the crate snapshot does not do it.
         """
-        return write_wishlist(_discovery_source(), item, add=add, cache=_wishlist_cache)
+        return write_wishlist(
+            _discovery_source(), item, add=add, walker=_wishlist_walker
+        )
 
     def _on_crate_build_start() -> None:
         """Assemble a crate on a background thread.
@@ -1153,8 +1163,9 @@ def _cmd_daemon(
                 # real wishlist is 9 pages / ~40s (KAMP-652), and waiting for it
                 # would park the UI on "building" -- the KAMP-639 failure the
                 # builder already refuses to commit. So this crate is filtered by
-                # whatever is cached (nothing, on the very first build) and every
-                # crate after it gets the full set.
+                # whatever is on disk and the walk only refreshes it. Since
+                # KAMP-666 that is the previous session's rows rather than an
+                # empty set, so the first crate after a restart is filtered too.
                 threading.Thread(
                     target=_warm_wishlist,
                     args=(session,),
@@ -1163,7 +1174,10 @@ def _cmd_daemon(
                 ).start()
 
                 build_crate(
-                    index, source, publish=publish, wishlist_ids=_wishlist_cache.ids
+                    index,
+                    source,
+                    publish=publish,
+                    wishlist_ids=_wishlist_walker.album_ids,
                 )
             except Exception:
                 # build_crate does not raise, so reaching here means the session
@@ -1230,9 +1244,9 @@ def _cmd_daemon(
         _diag_sampler.register_resolver("mpv-preview", lambda: preview_player.pid)
 
     # KAMP-652: wishlist ids for crate exclusion. Walked in the background and
-    # cached for an hour -- see kamp_daemon/wishlist.py for why it must never sit
-    # on the crate path.
-    _wishlist_cache = WishlistCache()
+    # persisted since KAMP-666 -- see kamp_daemon/wishlist.py for why it must
+    # never sit on the crate path, and why the walk reports completeness.
+    _wishlist_walker = WishlistWalker(index)
 
     # Bandcamp username comes only from the session (set after Electron login flow).
     _bc_session = index.get_session("bandcamp")

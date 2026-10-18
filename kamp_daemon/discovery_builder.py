@@ -812,6 +812,13 @@ def _excluded(
     A miss here is the feature's worst failure: recommending someone a record
     they already own reads as the clerk not knowing his own shop.
     """
+    # Unqualified by provider, unlike seen_before below, and that is a standing
+    # contract rather than an oversight: `wishlist_ids` is single-provider by
+    # construction (since KAMP-666, the rows of bandcamp_wishlist), so the
+    # caller must not mix providers into one crate while passing it. Harmless
+    # with one provider; a second one would need a per-provider mapping here,
+    # since a numeric-id collision would silently withhold a record and a
+    # hardcoded "bandcamp" check would silently stop filtering the new provider.
     if candidate.provider_item_id in wishlist_ids:
         return True
     if index.seen_before(candidate.provider, candidate.provider_item_id):

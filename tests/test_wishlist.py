@@ -1,4 +1,4 @@
-"""Wishlist read + cache tests (KAMP-652).
+"""Wishlist walk + walker tests (KAMP-652, persisted by KAMP-666).
 
 No fixture file: the spike captures pages anonymously on purpose (public repo),
 and a wishlist payload is inherently personal. These payloads are hand-built
@@ -18,8 +18,8 @@ from kamp_core.library import LibraryIndex
 from kamp_daemon.discovery import FANCOLLECTION, PREVIEW, SAVE_REMOTE
 from kamp_daemon.wishlist import (
     PAGE_SIZE,
-    WishlistCache,
-    fetch_wishlist_album_ids,
+    WishlistWalker,
+    walk_wishlist,
     write_wishlist,
 )
 
@@ -38,6 +38,10 @@ def _row(tralbum_id: int, tralbum_type: str = "a") -> dict[str, Any]:
         "item_id": tralbum_id,
         "band_name": "Band",
         "item_title": "Album",
+        "item_url": f"https://band.bandcamp.com/album/{tralbum_id}",
+        "item_art_id": "900",
+        "band_id": "7",
+        "added": "01 Jan 2025 00:00:00 GMT",
     }
 
 
@@ -77,12 +81,16 @@ def _gov() -> MagicMock:
     return gov
 
 
+def _ids(result: Any) -> set[str]:
+    return {str(row["tralbum_id"]) for row in result.rows}
+
+
 class TestWalk:
     def test_the_first_page_carries_a_seeded_token(self) -> None:
         """Omitting it returns zero rows with NO error — indistinguishable from
         an empty wishlist, and exactly how this looked when first measured."""
         session = FakeSession([_page([_row(1)], last_token="")])
-        fetch_wishlist_album_ids(session, 42, governor=_gov(), now=lambda: 1000.0)
+        walk_wishlist(session, 42, governor=_gov(), now=lambda: 1000.0)
 
         sent = session.posts[0]
         assert sent["older_than_token"] == "1000:0:a::"
@@ -91,46 +99,97 @@ class TestWalk:
 
     def test_paginates_until_a_short_page(self) -> None:
         pages = [_page([_row(i) for i in range(PAGE_SIZE)]), _page([_row(999)])]
-        ids = fetch_wishlist_album_ids(FakeSession(pages), 1, governor=_gov())
-        assert "999" in ids
-        assert len(ids) == PAGE_SIZE + 1
+        result = walk_wishlist(FakeSession(pages), 1, governor=_gov())
+        assert "999" in _ids(result)
+        assert len(result.rows) == PAGE_SIZE + 1
+        assert result.complete is True
 
     def test_stops_on_a_falsy_token_even_with_a_full_page(self) -> None:
         """The shipped collection walk does not trust more_available; nor does
         this — a full page with no token is the end."""
         full = _page([_row(i) for i in range(PAGE_SIZE)], last_token="")
         session = FakeSession([full, _page([_row(12345)])])
-        ids = fetch_wishlist_album_ids(session, 1, governor=_gov())
+        result = walk_wishlist(session, 1, governor=_gov())
         assert len(session.posts) == 1
-        assert "12345" not in ids
+        assert "12345" not in _ids(result)
+        assert result.complete is True
 
-    def test_only_albums_enter_the_set(self) -> None:
-        """A wishlist holds tracks too, and normalise_item_id flattens
-        `track-N` and `album-N` to the same string — so a wishlisted track would
-        silently suppress an unrelated album sharing its numeric id."""
+    def test_tracks_come_back_as_rows_too(self) -> None:
+        """The walk no longer filters; the table stores both types and the read
+        accessor filters to albums.
+
+        Storing tracks is what lets the prune delete an un-wishlisted track,
+        and keying on (tralbum_id, tralbum_type) is what stops one shadowing an
+        album with the same numeral — the thing the old set-building filter was
+        protecting against by throwing the track away.
+        """
         page = _page([_row(1, "a"), _row(2, "t"), _row(3, "a")], last_token="")
-        ids = fetch_wishlist_album_ids(FakeSession([page]), 1, governor=_gov())
-        assert ids == {"1", "3"}
+        result = walk_wishlist(FakeSession([page]), 1, governor=_gov())
+        assert {(str(r["tralbum_id"]), r["tralbum_type"]) for r in result.rows} == {
+            ("1", "a"),
+            ("2", "t"),
+            ("3", "a"),
+        }
+
+    def test_a_row_with_no_id_is_dropped(self) -> None:
+        """An id-less row is an exclusion entry that excludes nothing."""
+        page = _page([{"tralbum_type": "a", "band_name": "Band"}], last_token="")
+        result = walk_wishlist(FakeSession([page]), 1, governor=_gov())
+        assert result.rows == []
+        assert result.complete is True
+
+    def test_item_id_stands_in_for_a_missing_tralbum_id(self) -> None:
+        """Measured on a real account they agree on every row, but the fallback
+        was there before and removing it would be an unforced regression."""
+        page = _page([{"item_id": 55, "tralbum_type": "a"}], last_token="")
+        result = walk_wishlist(FakeSession([page]), 1, governor=_gov())
+        assert _ids(result) == {"55"}
 
     def test_pages_after_the_first_are_governor_spaced(self) -> None:
         gov = _gov()
         pages = [_page([_row(i) for i in range(PAGE_SIZE)]), _page([_row(999)])]
-        fetch_wishlist_album_ids(FakeSession(pages), 1, governor=gov)
+        walk_wishlist(FakeSession(pages), 1, governor=gov)
         # Spacing between pages, but never before the first — that would add
         # latency to a walk that is already the most expensive call available.
         assert gov.wait_turn.call_count == 1
         gov.wait_turn.assert_called_with(FANCOLLECTION)
 
-    def test_the_page_cap_truncates_and_says_so(self, caplog: Any) -> None:
+    def test_the_page_cap_is_incomplete_not_complete(self, caplog: Any) -> None:
+        """Truncation is a partial view, so it must not license a prune."""
         full = _page([_row(i) for i in range(PAGE_SIZE)])
-        ids = fetch_wishlist_album_ids(
-            FakeSession([full]), 1, governor=_gov(), max_pages=3
-        )
-        assert len(ids) == PAGE_SIZE
+        result = walk_wishlist(FakeSession([full]), 1, governor=_gov(), max_pages=3)
+        assert len(result.rows) == PAGE_SIZE * 3
+        assert result.complete is False
         assert "partial" in caplog.text
+
+    def test_rows_are_not_deduplicated_by_the_walk(self, index: Any) -> None:
+        """A list, not a set — the composite primary key does the deduplicating.
+
+        Worth pinning: the KAMP-652 walk returned a set, so a page the session
+        happened to serve twice collapsed for free. The upsert is what makes
+        that safe now, and doing it in SQL rather than in the walk is also what
+        lets a track and an album share a numeral.
+        """
+        repeated = _page([_row(1), _row(1), _row(1, "t")], last_token="")
+        result = walk_wishlist(FakeSession([repeated]), 1, governor=_gov())
+        assert len(result.rows) == 3
+        index.upsert_wishlist_items(result.rows, walked_at=100.0)
+        assert (
+            index._conn.execute("SELECT COUNT(*) FROM bandcamp_wishlist").fetchone()[0]
+            == 2
+        )
+        assert index.wishlist_album_ids() == {"1"}
 
 
 class TestWalkFailures:
+    """Every failure path reports ``complete=False``.
+
+    ``-> set[str]`` could not distinguish any of these from a genuinely empty
+    or genuinely complete wishlist, which is what made "delete rows no longer
+    present" unsafe to build on it: a 429 on page 2 of 9 would have deleted
+    ~625 real rows from disk.
+    """
+
     def test_a_429_keeps_what_was_already_collected(self) -> None:
         """A partial exclusion beats none, and discarding pages would make the
         most expensive call in the design also the most wasteful."""
@@ -139,8 +198,9 @@ class TestWalkFailures:
             FakeResponse(_page([_row(i) for i in range(PAGE_SIZE)])),
             FakeResponse(status_code=429),
         ]
-        ids = fetch_wishlist_album_ids(FakeSession(pages), 1, governor=gov)
-        assert len(ids) == PAGE_SIZE
+        result = walk_wishlist(FakeSession(pages), 1, governor=gov)
+        assert len(result.rows) == PAGE_SIZE
+        assert result.complete is False
         gov.report_429.assert_called_once_with(FANCOLLECTION)
 
     @pytest.mark.parametrize("status", [401, 403, 302, 500])
@@ -149,19 +209,24 @@ class TestWalkFailures:
         out because a discovery nicety got a 403 is wildly disproportionate, so
         this returns empty and leaves the session alone."""
         session = FakeSession([FakeResponse(status_code=status)])
-        assert fetch_wishlist_album_ids(session, 1, governor=_gov()) == set()
+        result = walk_wishlist(session, 1, governor=_gov())
+        assert result.rows == []
+        assert result.complete is False
 
     def test_a_network_error_returns_what_it_had(self) -> None:
         pages = [
             FakeResponse(_page([_row(i) for i in range(PAGE_SIZE)])),
             RuntimeError("connection reset"),
         ]
-        ids = fetch_wishlist_album_ids(FakeSession(pages), 1, governor=_gov())
-        assert len(ids) == PAGE_SIZE
+        result = walk_wishlist(FakeSession(pages), 1, governor=_gov())
+        assert len(result.rows) == PAGE_SIZE
+        assert result.complete is False
 
     def test_an_unparseable_page_is_not_fatal(self) -> None:
         session = FakeSession([FakeResponse(ValueError("not json"))])
-        assert fetch_wishlist_album_ids(session, 1, governor=_gov()) == set()
+        result = walk_wishlist(session, 1, governor=_gov())
+        assert result.rows == []
+        assert result.complete is False
 
 
 class TestMarkingCrateItems:
@@ -209,130 +274,302 @@ class TestMarkingCrateItems:
         assert mark_wishlisted_crate_items(index, {"1"}) == 0
 
 
-class TestCache:
-    def _cache(self, t: list[float]) -> WishlistCache:
-        return WishlistCache(ttl=100.0, now=lambda: t[0])
+class TestWalker:
+    """The walker is coordination over a persisted table, not a cache.
 
-    def test_empty_before_the_first_walk(self) -> None:
-        cache = WishlistCache()
-        assert cache.ids == set()
-        assert cache.is_fresh is False
+    The ids live in bandcamp_wishlist and survive a restart — that is the whole
+    of KAMP-666. What is still in memory is the concurrent-walk guard and the
+    removal-during-walk set, neither of which a column can express.
+    """
 
-    def test_refresh_populates_and_marks_fresh(self) -> None:
+    def _walker(self, index: Any, t: list[float]) -> WishlistWalker:
+        return WishlistWalker(index, ttl=100.0, now=lambda: t[0])
+
+    def test_empty_before_the_first_walk(self, index: Any) -> None:
+        walker = WishlistWalker(index)
+        assert walker.album_ids == set()
+        assert walker.is_fresh is False
+
+    def test_a_restart_keeps_the_ids(self, tmp_path: Path) -> None:
+        """The headline acceptance criterion: exclusion works from the first
+        crate after a restart, with no 37s walk in front of it."""
+        db = tmp_path / "library.db"
+        first = LibraryIndex(db)
+        WishlistWalker(first, now=lambda: 1000.0).refresh(
+            FakeSession([_page([_row(1), _row(2)], last_token="")]),
+            42,
+            governor=_gov(),
+        )
+        first.close()
+
+        second = LibraryIndex(db)
+        walker = WishlistWalker(second, now=lambda: 1001.0)
+        assert walker.album_ids == {"1", "2"}
+        assert walker.is_fresh is True
+        second.close()
+
+    def test_refresh_populates_and_marks_fresh(self, index: Any) -> None:
         t = [1000.0]
-        cache = self._cache(t)
+        walker = self._walker(index, t)
         page = _page([_row(1), _row(2)], last_token="")
-        cache.refresh(FakeSession([page]), 42, governor=_gov())
-        assert cache.ids == {"1", "2"}
-        assert cache.is_fresh is True
+        walker.refresh(FakeSession([page]), 42, governor=_gov())
+        assert walker.album_ids == {"1", "2"}
+        assert walker.is_fresh is True
 
-    def test_a_fresh_cache_is_not_re_walked(self) -> None:
+    def test_a_fresh_walk_is_not_repeated(self, index: Any) -> None:
         """Nine pages amortised across many crates is the whole point."""
         t = [1000.0]
-        cache = self._cache(t)
+        walker = self._walker(index, t)
         session = FakeSession([_page([_row(1)], last_token="")])
-        cache.refresh(session, 42, governor=_gov())
-        cache.refresh(session, 42, governor=_gov())
+        walker.refresh(session, 42, governor=_gov())
+        walker.refresh(session, 42, governor=_gov())
         assert len(session.posts) == 1
 
-    def test_an_expired_cache_is_re_walked(self) -> None:
+    def test_a_stale_walk_is_repeated(self, index: Any) -> None:
         """Un-wishlisting in a browser must not be suppressed forever."""
         t = [1000.0]
-        cache = self._cache(t)
+        walker = self._walker(index, t)
         session = FakeSession([_page([_row(1)], last_token="")])
-        cache.refresh(session, 42, governor=_gov())
+        walker.refresh(session, 42, governor=_gov())
         t[0] += 101.0
-        cache.refresh(session, 42, governor=_gov())
+        walker.refresh(session, 42, governor=_gov())
         assert len(session.posts) == 2
 
-    def test_a_cooldown_skips_the_walk_without_a_request(self) -> None:
+    def test_a_cooldown_skips_the_walk_without_a_request(self, index: Any) -> None:
         """Consulted, never waited on — a background thread parked for 300s on
         this endpoint is how it ends up back on a blocking path."""
         gov = _gov()
         gov.blocked_for.return_value = 300.0
         session = FakeSession([_page([_row(1)], last_token="")])
-        WishlistCache().refresh(session, 42, governor=gov)
+        WishlistWalker(index).refresh(session, 42, governor=gov)
         assert session.posts == []
         gov.wait_turn.assert_not_called()
 
-    def test_a_failed_walk_keeps_the_previous_ids(self) -> None:
-        """An empty result is far likelier to be a failed walk than an empty
-        wishlist; replacing good data with nothing turns the filter off."""
+    def test_a_concurrent_walk_is_refused(self, index: Any) -> None:
+        """The reason this class survives KAMP-666 at all.
+
+        A build is 15-30s and a walk ~40s, and the warm-up is spawned
+        fire-and-forget, so dig → wait → dig overlaps them routinely. Two
+        nine-page walks at once is the KAMP-637/639 cascade on the endpoint
+        this module's docstring calls the hardest-limited one.
+        """
+        walker = WishlistWalker(index)
+        reentered: list[int] = []
+
+        class WalkDuringWalk(FakeSession):
+            def post(self, url, json=None, timeout=30, headers=None):  # type: ignore[no-untyped-def]
+                inner = FakeSession([_page([_row(9)], last_token="")])
+                walker.refresh(inner, 42, governor=_gov())
+                reentered.append(len(inner.posts))
+                return super().post(url, json=json, timeout=timeout, headers=headers)
+
+        walker.refresh(
+            WalkDuringWalk([_page([_row(1)], last_token="")]), 42, governor=_gov()
+        )
+        assert reentered == [0]  # the inner walk made no request at all
+
+
+class TestWalkerCompleteness:
+    """A partial walk must never delete a row.
+
+    The KAMP-652 walk had seven return points, four of them failures, all
+    returning an indistinguishable ``set[str]``. Pruning against that would
+    delete ~625 real rows on a 429 at page 2 of 9, which is why the completeness
+    flag arrived in the same change as the table.
+    """
+
+    def test_a_complete_walk_prunes_what_it_did_not_see(self, index: Any) -> None:
+        """An album un-wishlisted upstream becomes offerable again."""
         t = [1000.0]
-        cache = self._cache(t)
-        cache.refresh(
+        walker = WishlistWalker(index, ttl=100.0, now=lambda: t[0])
+        walker.refresh(
+            FakeSession([_page([_row(1), _row(2)], last_token="")]), 42, governor=_gov()
+        )
+        t[0] += 101.0
+        walker.refresh(
+            FakeSession([_page([_row(1)], last_token="")]), 42, governor=_gov()
+        )
+        assert walker.album_ids == {"1"}
+
+    def test_an_incomplete_walk_writes_its_rows_but_deletes_nothing(
+        self, index: Any
+    ) -> None:
+        """A partial result still improves the filter; it just cannot prune."""
+        t = [1000.0]
+        walker = WishlistWalker(index, ttl=100.0, now=lambda: t[0])
+        walker.refresh(
+            FakeSession([_page([_row(1), _row(2)], last_token="")]), 42, governor=_gov()
+        )
+        t[0] += 101.0
+
+        # A full first page, then a 429 — nothing says 1 and 2 are still there.
+        walker.refresh(
+            FakeSession(
+                [
+                    FakeResponse(_page([_row(i) for i in range(PAGE_SIZE)])),
+                    FakeResponse(status_code=429),
+                ]
+            ),
+            42,
+            governor=_gov(),
+        )
+        assert {"1", "2"} <= walker.album_ids
+        assert "50" in walker.album_ids  # the page it did get was still written
+
+    def test_an_incomplete_walk_does_not_stamp_itself_fresh(self, index: Any) -> None:
+        """The live miniature of the same bug: the old cache marked itself fresh
+        for any non-empty result, so a 429 after page 1 suppressed re-walks for
+        an hour with 100 of 825 ids."""
+        t = [1000.0]
+        walker = WishlistWalker(index, ttl=100.0, now=lambda: t[0])
+        walker.refresh(
+            FakeSession(
+                [
+                    FakeResponse(_page([_row(i) for i in range(PAGE_SIZE)])),
+                    FakeResponse(status_code=429),
+                ]
+            ),
+            42,
+            governor=_gov(),
+        )
+        assert walker.is_fresh is False
+
+        session = FakeSession([_page([_row(1)], last_token="")])
+        walker.refresh(session, 42, governor=_gov())
+        assert len(session.posts) == 1  # re-walked immediately, not in an hour
+
+    def test_a_complete_walk_of_an_empty_wishlist_empties_the_table(
+        self, index: Any
+    ) -> None:
+        """The case the old "an empty result means a failed walk" heuristic got
+        wrong. Completeness answers it directly: emptying every record off a
+        wishlist is a thing people do, and the filter must follow."""
+        t = [1000.0]
+        walker = WishlistWalker(index, ttl=100.0, now=lambda: t[0])
+        walker.refresh(
             FakeSession([_page([_row(1)], last_token="")]), 42, governor=_gov()
         )
         t[0] += 101.0
-        cache.refresh(FakeSession([FakeResponse(status_code=500)]), 42, governor=_gov())
-        assert cache.ids == {"1"}
+        walker.refresh(FakeSession([_page([], last_token="")]), 42, governor=_gov())
+        assert walker.album_ids == set()
+        assert walker.is_fresh is True
 
-    def test_add_records_kamps_own_write(self) -> None:
-        cache = WishlistCache()
-        cache.add("77")
-        assert "77" in cache.ids
+    def test_a_failed_walk_keeps_what_was_on_disk(self, index: Any) -> None:
+        """Replacing good data with nothing would quietly turn the filter off."""
+        t = [1000.0]
+        walker = WishlistWalker(index, ttl=100.0, now=lambda: t[0])
+        walker.refresh(
+            FakeSession([_page([_row(1)], last_token="")]), 42, governor=_gov()
+        )
+        t[0] += 101.0
+        walker.refresh(
+            FakeSession([FakeResponse(status_code=500)]), 42, governor=_gov()
+        )
+        assert walker.album_ids == {"1"}
 
-    def test_discard_records_kamps_own_removal(self) -> None:
+
+class TestWalkerOwnWrites:
+    """kamp's own wishlist clicks (KAMP-653) land on disk immediately."""
+
+    def test_add_writes_through(self, index: Any) -> None:
+        walker = WishlistWalker(index)
+        walker.add("77")
+        assert index.wishlist_album_ids() == {"77"}
+
+    def test_discard_writes_through(self, index: Any) -> None:
         """Without it, an album the user just un-wishlisted stays excluded from
-        every crate for the rest of the TTL, with nothing to explain why."""
-        cache = WishlistCache()
-        cache.refresh(
+        every crate until the next walk, with nothing to explain why."""
+        walker = WishlistWalker(index)
+        walker.refresh(
             FakeSession([_page([_row(1), _row(2)], last_token="")]), 42, governor=_gov()
         )
-        cache.discard("1")
-        assert cache.ids == {"2"}
+        walker.discard("1")
+        assert walker.album_ids == {"2"}
 
-    def test_an_add_during_a_walk_survives_the_walk_landing(self) -> None:
-        """A walk takes ~40s and runs outside the lock, so it can start before a
-        wishlist click and finish after it. Replacing the id set wholesale would
-        silently undo what the user just did — and Bandcamp confirmed it."""
-        cache = WishlistCache()
+    def test_an_add_during_a_walk_survives_the_walk_landing(self, index: Any) -> None:
+        """Survives by design, not by luck: the row goes in with a NULL
+        walked_at, the walk's own rows are stamped with its start time, and the
+        prune only touches rows that carry a stamp older than that."""
+        walker = WishlistWalker(index, now=lambda: 1000.0)
         clicked: list[str] = []
 
         class ClickMidWalk(FakeSession):
             def post(self, url, json=None, timeout=30, headers=None):  # type: ignore[no-untyped-def]
-                # Mid-flight, exactly as a request thread would.
                 if not clicked:
                     clicked.append("77")
-                    cache.add("77")
-                    cache.discard("1")
+                    walker.add("77")
                 return super().post(url, json=json, timeout=timeout, headers=headers)
 
-        # The walk's own view is stale: it still has 1 and has never seen 77.
-        cache.refresh(
+        # The walk's own view is stale: it has never seen 77.
+        walker.refresh(
+            ClickMidWalk([_page([_row(1)], last_token="")]), 42, governor=_gov()
+        )
+        assert walker.album_ids == {"1", "77"}
+
+    def test_a_removal_during_a_walk_is_not_undone_by_it(self, index: Any) -> None:
+        """The case no column can carry. The row is gone, so there is nothing
+        left to timestamp, and the walk — which read Bandcamp ~40s ago and
+        still sees it — would simply put it back."""
+        walker = WishlistWalker(index, now=lambda: 1000.0)
+        clicked: list[str] = []
+
+        class ClickMidWalk(FakeSession):
+            def post(self, url, json=None, timeout=30, headers=None):  # type: ignore[no-untyped-def]
+                if not clicked:
+                    clicked.append("1")
+                    walker.discard("1")
+                return super().post(url, json=json, timeout=timeout, headers=headers)
+
+        walker.refresh(
             ClickMidWalk([_page([_row(1), _row(2)], last_token="")]),
             42,
             governor=_gov(),
         )
-        assert cache.ids == {"2", "77"}
+        assert walker.album_ids == {"2"}
 
-    def test_mutations_outside_a_walk_do_not_leak_into_the_next_one(self) -> None:
-        """Only in-flight mutations are re-applied. One made before a walk is
-        already reflected in what that walk read, and replaying it would pin a
-        stale id past a genuine change made in a browser."""
+    def test_a_re_add_during_a_walk_beats_the_removal(self, index: Any) -> None:
+        """Last write wins. Replaying the removal would undo a click Bandcamp
+        has already confirmed."""
+        walker = WishlistWalker(index, now=lambda: 1000.0)
+        clicked: list[str] = []
+
+        class ClickMidWalk(FakeSession):
+            def post(self, url, json=None, timeout=30, headers=None):  # type: ignore[no-untyped-def]
+                if not clicked:
+                    clicked.append("1")
+                    walker.discard("1")
+                    walker.add("1")
+                return super().post(url, json=json, timeout=timeout, headers=headers)
+
+        walker.refresh(
+            ClickMidWalk([_page([_row(1)], last_token="")]), 42, governor=_gov()
+        )
+        assert walker.album_ids == {"1"}
+
+    def test_mutations_outside_a_walk_do_not_leak_into_the_next_one(
+        self, index: Any
+    ) -> None:
+        """A removal made before a walk is already reflected in what that walk
+        read, and replaying it would pin the row deleted past a genuine
+        re-wishlisting made in a browser."""
         t = [1000.0]
-        cache = self._cache(t)
-        cache.add("99")
-        cache.refresh(
+        walker = WishlistWalker(index, ttl=100.0, now=lambda: t[0])
+        walker.discard("1")
+        walker.refresh(
             FakeSession([_page([_row(1)], last_token="")]), 42, governor=_gov()
         )
-        assert cache.ids == {"1"}
+        assert walker.album_ids == {"1"}
 
-    def test_invalidate_drops_everything(self) -> None:
-        """The ids belong to an account that can change."""
-        cache = WishlistCache()
-        cache.refresh(
+    def test_invalidate_drops_the_rows_and_the_freshness(self, index: Any) -> None:
+        """The ids belong to an account that can change, and persisted rows
+        carry the other account's band_name and item_title."""
+        walker = WishlistWalker(index, now=lambda: 1000.0)
+        walker.refresh(
             FakeSession([_page([_row(1)], last_token="")]), 42, governor=_gov()
         )
-        cache.invalidate()
-        assert cache.ids == set()
-        assert cache.is_fresh is False
-
-    def test_ids_returns_a_copy(self) -> None:
-        cache = WishlistCache()
-        cache.add("1")
-        cache.ids.add("2")
-        assert cache.ids == {"1"}
+        walker.invalidate()
+        assert walker.album_ids == set()
+        assert walker.is_fresh is False
 
 
 class _FakeSource:
@@ -374,26 +611,26 @@ _ITEM = {
 
 
 class TestWriteWishlist:
-    def test_a_confirmed_add_reports_ok_and_updates_the_cache(self) -> None:
-        cache = WishlistCache()
+    def test_a_confirmed_add_reports_ok_and_records_the_row(self, index: Any) -> None:
+        walker = WishlistWalker(index)
         source = _FakeSource()
-        assert write_wishlist(source, _ITEM, add=True, cache=cache) == "ok"
-        assert cache.ids == {"555"}
+        assert write_wishlist(source, _ITEM, add=True, walker=walker) == "ok"
+        assert walker.album_ids == {"555"}
         assert source.saved[0].item_url == "https://a.bandcamp.com/album/x"
 
-    def test_a_confirmed_removal_drops_it_from_the_cache(self) -> None:
+    def test_a_confirmed_removal_drops_the_row(self, index: Any) -> None:
         """Otherwise the album the user just removed stays excluded from every
-        crate for the rest of the TTL, with nothing to explain why."""
-        cache = WishlistCache()
-        cache.add("555")
-        assert write_wishlist(_FakeSource(), _ITEM, add=False, cache=cache) == "ok"
-        assert cache.ids == set()
+        crate until the next walk, with nothing to explain why."""
+        walker = WishlistWalker(index)
+        walker.add("555")
+        assert write_wishlist(_FakeSource(), _ITEM, add=False, walker=walker) == "ok"
+        assert walker.album_ids == set()
 
-    def test_the_cache_is_untouched_when_the_write_fails(self) -> None:
-        cache = WishlistCache()
+    def test_nothing_is_written_when_the_remote_write_fails(self, index: Any) -> None:
+        walker = WishlistWalker(index)
         source = _FakeSource(result=False)
-        assert write_wishlist(source, _ITEM, add=True, cache=cache) == "rejected"
-        assert cache.ids == set()
+        assert write_wishlist(source, _ITEM, add=True, walker=walker) == "rejected"
+        assert walker.album_ids == set()
 
     def test_no_source_is_not_connected(self) -> None:
         assert write_wishlist(None, _ITEM, add=True) == "not_connected"

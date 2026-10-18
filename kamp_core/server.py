@@ -4929,7 +4929,19 @@ def create_app(
                         await t
 
                 if push_task in done:
-                    await ws.send_json(push_task.result())
+                    pushed = push_task.result()
+                    # KAMP-730: record the version this frame just delivered.
+                    # Without it the ping-path diff below sees the same bump
+                    # and sends library.changed a second time ~250ms later, so
+                    # every notification — from any of the ~20 producers —
+                    # cost the renderer two full library reloads.
+                    #
+                    # The ping-path diff stays as the safety net: a bump this
+                    # socket never received a push for (a dropped frame on a
+                    # full sink) is still recovered on the next ping.
+                    if pushed.get("type") == "library.changed":
+                        last_library_version = _state["library_version"]
+                    await ws.send_json(pushed)
 
                 if recv_task in done:
                     # Retrieve the exception (if any) before branching so asyncio

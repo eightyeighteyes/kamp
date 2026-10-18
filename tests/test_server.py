@@ -1550,6 +1550,35 @@ class TestPlayerWebSocket:
         assert msg["position"] == pytest.approx(10.0)
         assert msg["current_track"]["title"] == "Track 1"
 
+    def test_library_changed_is_delivered_once_not_twice(
+        self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
+    ) -> None:
+        """One notify must produce one frame (KAMP-730).
+
+        The push path sent the broadcast but never stamped
+        last_library_version, so the ping-path diff saw the same bump and sent
+        library.changed again. The renderer pings at 4 Hz, so every
+        notification — from any of the ~20 producers — cost two full library
+        reloads about 250ms apart.
+        """
+        mock_engine.state = PlaybackState()
+        app = create_app(index=mock_index, engine=mock_engine, queue=mock_queue)
+        c = TestClient(app)
+        with c.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()  # initial state
+
+            app.state.notify_library_changed()
+            assert ws.receive_json()["type"] == "library.changed"
+
+            # The ping path answers with player.state first and only then,
+            # historically, a duplicate library.changed. Two pings expose it:
+            # if the version were re-sent, the second read would be
+            # library.changed rather than the second state frame.
+            ws.send_text("ping")
+            assert ws.receive_json()["type"] == "player.state"
+            ws.send_text("ping")
+            assert ws.receive_json()["type"] == "player.state"
+
     def test_websocket_state_updates_on_poll(
         self, mock_index: MagicMock, mock_engine: MagicMock, mock_queue: MagicMock
     ) -> None:

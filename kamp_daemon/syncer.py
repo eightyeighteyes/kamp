@@ -585,10 +585,9 @@ class Syncer:
             while True:
                 try:
                     notify_q.get_nowait()
-                    if self.on_tracks_indexed is not None:
-                        self.on_tracks_indexed()
                 except queue.Empty:
                     break
+                self._notify_tracks_indexed()
 
         # Drain any messages that arrived just before the process exited.
         while True:
@@ -601,10 +600,9 @@ class Syncer:
         while True:
             try:
                 notify_q.get_nowait()
-                if self.on_tracks_indexed is not None:
-                    self.on_tracks_indexed()
             except queue.Empty:
                 break
+            self._notify_tracks_indexed()
 
         proc.join(timeout=10)
         _replay_log_queue(log_q)
@@ -630,8 +628,7 @@ class Syncer:
                     album_count,
                     track_count,
                 )
-                if self.on_tracks_indexed is not None:
-                    self.on_tracks_indexed()
+                self._notify_tracks_indexed()
             else:
                 logger.info(
                     "Sync complete: %d album(s) already up to date.", album_count
@@ -668,6 +665,22 @@ class Syncer:
                 self.on_collection_synced()
             except Exception:  # noqa: BLE001
                 logger.warning("on_collection_synced failed", exc_info=True)
+
+    def _notify_tracks_indexed(self) -> None:
+        """Tell listeners new tracks landed, without letting one break the sync.
+
+        These fire from inside the notify_q drain, and _broadcast ends in
+        call_soon_threadsafe, which raises on a closed event loop. A shutdown
+        race used to take the whole sync down mid-drain — and a parent that
+        stops draining makes the subprocess block on put(). Mirrors the guard
+        on_collection_synced already has (KAMP-730).
+        """
+        if self.on_tracks_indexed is None:
+            return
+        try:
+            self.on_tracks_indexed()
+        except Exception:  # noqa: BLE001
+            logger.warning("on_tracks_indexed failed", exc_info=True)
 
     def sync_all_purchases(self) -> None:
         """Re-sync or re-download the entire Bandcamp collection.

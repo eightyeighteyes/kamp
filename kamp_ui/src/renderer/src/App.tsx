@@ -284,6 +284,41 @@ export default function App(): React.JSX.Element {
     let retryId: ReturnType<typeof setTimeout> | undefined
     let torn = false
 
+    // KAMP-730: a library.changed costs six fetches (loadLibrary is four,
+    // plus the queue, plus refreshOpenAlbum when an album is open). Bursty
+    // producers — a stream sync, the startup deferred-op drain, the download
+    // worker — used to pay that per item.
+    //
+    // Leading edge plus trailing, NOT trailing-only: a single change is the
+    // common case and must still refresh at once, or every tag edit feels
+    // laggy. A burst reloads once at the start and once at the end, so new
+    // albums still appear progressively while the middle is dropped.
+    const LIBRARY_RELOAD_WINDOW_MS = 300
+    let libraryReloadAt = 0
+    let libraryReloadTrailing: ReturnType<typeof setTimeout> | undefined
+
+    const reloadLibrary = (): void => {
+      libraryReloadAt = Date.now()
+      void loadLibrary().then(() => refreshOpenAlbum())
+      void loadQueue()
+    }
+
+    const onLibraryChanged = (): void => {
+      if (torn) return
+      const since = Date.now() - libraryReloadAt
+      if (since >= LIBRARY_RELOAD_WINDOW_MS) {
+        reloadLibrary()
+        return
+      }
+      // Inside the window: coalesce into a single trailing reload so the
+      // final state is never the one that got dropped.
+      if (libraryReloadTrailing !== undefined) return
+      libraryReloadTrailing = setTimeout(() => {
+        libraryReloadTrailing = undefined
+        if (!torn) reloadLibrary()
+      }, LIBRARY_RELOAD_WINDOW_MS - since)
+    }
+
     const connect = (): void => {
       if (torn) return
       // The previous socket is already closed — this is here for its interval.
@@ -318,10 +353,7 @@ export default function App(): React.JSX.Element {
             useStore.setState({ deferredOps: map })
           })
         },
-        () => {
-          void loadLibrary().then(() => refreshOpenAlbum())
-          void loadQueue()
-        },
+        onLibraryChanged,
         (done, total) => {
           setAlbumRenameProgress(total === done ? null : { done, total })
         },
@@ -412,6 +444,9 @@ export default function App(): React.JSX.Element {
     return () => {
       torn = true
       clearTimeout(retryId)
+      // KAMP-730: the coalescing timer is a third handle to tear down, or a
+      // pending trailing reload fires into an unmounted tree.
+      clearTimeout(libraryReloadTrailing)
       dispose?.()
       dispose = null
     }

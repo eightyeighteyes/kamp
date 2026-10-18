@@ -214,6 +214,28 @@ class TestReload:
                 assert syncer._thread is original_thread
                 syncer.stop()
 
+    def test_a_raising_tracks_indexed_listener_does_not_fail_the_sync(
+        self, tmp_path: Path
+    ) -> None:
+        """A broken listener must not take the sync down (KAMP-730).
+
+        These fire from inside the notify_q drain, and the real listener ends
+        in call_soon_threadsafe, which raises on a closed event loop. A
+        shutdown race would otherwise abort the sync mid-drain — and a parent
+        that stops draining makes the subprocess block on put().
+        """
+        _seed_collection_db(tmp_path)
+        with patch("kamp_daemon.syncer._spawn_worker", side_effect=_noop_worker):
+            with patch("kamp_daemon.syncer._state_dir", return_value=tmp_path):
+                syncer = Syncer(_make_config(tmp_path))
+
+                def _raises() -> None:
+                    raise RuntimeError("loop closed")
+
+                syncer.on_tracks_indexed = _raises
+                # Must not raise.
+                syncer.sync_once()
+
     def test_reload_changed_interval_keeps_the_same_thread(
         self, tmp_path: Path
     ) -> None:

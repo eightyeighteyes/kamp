@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from kamp_core.library import LibraryIndex
+from kamp_core.library import _SCHEMA_VERSION, LibraryIndex
 
 TRALBUM = "3498893942"
 
@@ -81,13 +81,18 @@ def _n_tracks(index: LibraryIndex) -> int:
 
 
 def test_fresh_db_is_current_and_heals_nothing(tmp_path: Path) -> None:
-    """A fresh database lands on v63 with no heal to run."""
+    """A fresh database lands on the current version with no heal to run.
+
+    Against _SCHEMA_VERSION rather than a literal: the point of the assertion
+    is that a fresh DB needs no migration pass, not which number that is, and a
+    literal makes every later additive migration look like a regression here.
+    """
     index = LibraryIndex(tmp_path / "library.db")
     version = index._conn.execute("SELECT version FROM schema_version").fetchone()[
         "version"
     ]
     index.close()
-    assert version == 63
+    assert version == _SCHEMA_VERSION
 
 
 def test_heal_collapses_a_repurchased_release(tmp_path: Path) -> None:
@@ -114,7 +119,8 @@ def test_heal_collapses_a_repurchased_release(tmp_path: Path) -> None:
     finally:
         reopened.close()
 
-    assert version == 63
+    # The ladder ran all the way up, not just as far as the heal's own step.
+    assert version == _SCHEMA_VERSION
     # The downloaded copy is the one that survives, by id.
     assert surviving == kept
     assert files == 2

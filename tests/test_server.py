@@ -3001,9 +3001,36 @@ class TestBandcampSync:
         with TestClient(app) as c:
             resp = c.post("/api/v1/bandcamp/sync")
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True}
+        assert resp.json() == {"ok": True, "started": True}
         trigger_done.wait(timeout=2)
         assert called == [True]
+
+    def test_sync_declines_while_one_is_running(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """A press landing on a running sync reports started:false (KAMP-728).
+
+        200, not 409: the UI's trigger does a bare .catch(console.error), so an
+        error status would log noise on an ordinary double-click.
+        """
+        called: list[bool] = []
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_bandcamp_sync_trigger=lambda: called.append(True),
+            is_bandcamp_syncing=lambda: True,
+        )
+        with TestClient(app) as c:
+            resp = c.post("/api/v1/bandcamp/sync")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "started": False}
+        # No thread spawned at all — nothing to decline later.
+        assert called == []
 
     def test_notify_bandcamp_sync_status_exposed_on_app_state(
         self,
@@ -3116,9 +3143,32 @@ class TestBandcampSyncAll:
         with TestClient(app) as c:
             resp = c.post("/api/v1/bandcamp/sync-all")
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True}
+        assert resp.json() == {"ok": True, "started": True}
         trigger_done.wait(timeout=2)
         assert called == [True]
+
+    def test_sync_all_declines_while_a_sync_is_running(
+        self,
+        mock_index: MagicMock,
+        mock_engine: MagicMock,
+        mock_queue: MagicMock,
+    ) -> None:
+        """Matters more here than on /sync: sync-all resets collection state,
+        so two concurrent ones are the worst case available (KAMP-728)."""
+        called: list[bool] = []
+
+        app = create_app(
+            index=mock_index,
+            engine=mock_engine,
+            queue=mock_queue,
+            on_bandcamp_sync_all_trigger=lambda: called.append(True),
+            is_bandcamp_syncing=lambda: True,
+        )
+        with TestClient(app) as c:
+            resp = c.post("/api/v1/bandcamp/sync-all")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "started": False}
+        assert called == []
 
 
 # ---------------------------------------------------------------------------

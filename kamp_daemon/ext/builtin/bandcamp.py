@@ -109,6 +109,18 @@ class KampBandcampSyncer(BaseSyncer):
         assert self._inner is not None, "call _configure() before sync_once()"
         self._inner.sync_once(skip_auto_mark=skip_auto_mark)
 
+    @property
+    def is_syncing(self) -> bool:
+        """True while a sync is in flight (KAMP-728).
+
+        Not part of BaseSyncer: it is a kamp-specific signal the daemon uses to
+        reject a concurrent manual sync. Mirrored here because the daemon only
+        ever holds the wrapper — reading it off the inner Syncer directly is
+        what KAMP-436 is about.
+        """
+        assert self._inner is not None, "call _configure() before is_syncing"
+        return self._inner.is_syncing
+
     def mark_synced(self) -> None:
         """Mark the entire collection as already synced without downloading."""
         assert self._inner is not None, "call _configure() before mark_synced()"

@@ -151,6 +151,19 @@ class TestKampBandcampSyncer:
         syncer.sync_once(skip_auto_mark=True)
         syncer._inner.sync_once.assert_called_once_with(skip_auto_mark=True)
 
+    def test_is_syncing_delegates_to_inner(self) -> None:
+        """The daemon only ever holds the wrapper (KAMP-436/728).
+
+        Reading is_syncing off the wrapper must reach the inner Syncer's lock.
+        A missing property here would make the endpoint's concurrency check
+        silently answer about nothing.
+        """
+        syncer = _make_syncer()
+        syncer._inner.is_syncing = True
+        assert syncer.is_syncing is True
+        syncer._inner.is_syncing = False
+        assert syncer.is_syncing is False
+
     def test_mark_synced_delegates_to_inner(self) -> None:
         syncer = _make_syncer()
         syncer.mark_synced()

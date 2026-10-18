@@ -1198,6 +1198,11 @@ def create_app(
     on_bandcamp_disconnect: Callable[[], None] | None = None,
     on_bandcamp_sync_trigger: Callable[[], None] | None = None,
     on_bandcamp_sync_all_trigger: Callable[[], None] | None = None,
+    # KAMP-728: lets the sync endpoints report started:false instead of
+    # spawning a thread that would only decline. Reads the Syncer's own lock
+    # rather than the sync-status string, so it also sees the poller's syncs —
+    # which is the collision this exists for.
+    is_bandcamp_syncing: Callable[[], bool] | None = None,
     on_genre_backfill_start: Callable[[], None] | None = None,
     on_genre_backfill_cancel: Callable[[], None] | None = None,
     on_crate_build_start: Callable[[], None] | None = None,
@@ -3889,10 +3894,18 @@ def create_app(
 
         if on_bandcamp_sync_trigger is None:
             raise HTTPException(status_code=503, detail="Bandcamp sync not configured")
+        # Advisory (KAMP-728): the Syncer's lock is the authority, since the
+        # poller calls sync_once directly and never reaches this endpoint.
+        # Checking here just avoids spawning a thread that would only decline.
+        # 200 with started:false rather than 409 — the UI's trigger does a bare
+        # .catch(console.error), so an error status would log noise on an
+        # ordinary double-click.
+        if is_bandcamp_syncing is not None and is_bandcamp_syncing():
+            return {"ok": True, "started": False}
         threading.Thread(
             target=on_bandcamp_sync_trigger, daemon=True, name="manual-sync"
         ).start()
-        return {"ok": True}
+        return {"ok": True, "started": True}
 
     @app.post("/api/v1/bandcamp/sync-all")
     def trigger_bandcamp_sync_all() -> dict[str, Any]:
@@ -3907,10 +3920,15 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail="Bandcamp sync-all not configured"
             )
+        # Same advisory check as /sync (KAMP-728), and it matters more here:
+        # sync-all resets the collection state, so two concurrent ones are the
+        # worst case available.
+        if is_bandcamp_syncing is not None and is_bandcamp_syncing():
+            return {"ok": True, "started": False}
         threading.Thread(
             target=on_bandcamp_sync_all_trigger, daemon=True, name="sync-all"
         ).start()
-        return {"ok": True}
+        return {"ok": True, "started": True}
 
     @app.post("/api/v1/genres/backfill")
     def start_genre_backfill() -> dict[str, Any]:

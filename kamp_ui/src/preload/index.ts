@@ -69,16 +69,19 @@ const api = {
       ipcRenderer.invoke('bandcamp:begin-login'),
     /** Subscribe to sync status changes pushed via WebSocket. Returns an unsubscribe function. */
     onSyncStatus: onBandcampSyncStatus,
-    /** Trigger a manual Bandcamp sync. Returns immediately; progress arrives via onSyncStatus. */
-    triggerSync: (): Promise<{ ok: boolean }> => {
+    /** Trigger a manual Bandcamp sync. Returns immediately; progress arrives via onSyncStatus.
+     *  `started` is false when a sync was already running (KAMP-728) — not an
+     *  error, and the in-flight sync keeps reporting through onSyncStatus. */
+    triggerSync: (): Promise<{ ok: boolean; started?: boolean }> => {
       const token = _readKampToken()
       return fetch('http://127.0.0.1:47483/api/v1/bandcamp/sync', {
         method: 'POST',
         headers: token ? { 'X-Kamp-Token': token } : {}
       }).then((r) => r.json())
     },
-    /** Clear sync state and re-download all Bandcamp purchases. Returns immediately. */
-    triggerSyncAll: (): Promise<{ ok: boolean }> => {
+    /** Clear sync state and re-download all Bandcamp purchases. Returns immediately.
+     *  `started` is false when a sync was already running (KAMP-728). */
+    triggerSyncAll: (): Promise<{ ok: boolean; started?: boolean }> => {
       const token = _readKampToken()
       return fetch('http://127.0.0.1:47483/api/v1/bandcamp/sync-all', {
         method: 'POST',

@@ -15,8 +15,8 @@ declare global {
       bandcamp: {
         beginLogin: () => Promise<{ ok: boolean; error?: string }>
         onSyncStatus: (callback: (state: 'idle' | 'syncing') => void) => () => void
-        triggerSync: () => Promise<{ ok: boolean }>
-        triggerSyncAll: () => Promise<{ ok: boolean }>
+        triggerSync: () => Promise<{ ok: boolean; started?: boolean }>
+        triggerSyncAll: () => Promise<{ ok: boolean; started?: boolean }>
       }
       pipeline: {
         onStage: (callback: (stage: string, album: string) => void) => () => void

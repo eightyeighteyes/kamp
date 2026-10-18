@@ -50,6 +50,7 @@ def _sync_worker(
     watch_dir: Path,
     db_path: Path,
     notify_q: Any,
+    stop_event: Any,
     status_q: Any,
     log_q: Any,
     result_q: Any,
@@ -83,6 +84,10 @@ def _sync_worker(
                     art_cache_dir=_state_dir() / "art_cache",
                     batch_indexed_callback=lambda: notify_q.put(True),
                     apply_bandcamp_genres=apply_bc_genres,
+                    # Lets a rate-limit pause end the moment the parent wants
+                    # to stop. This subprocess is NOT a daemon, so without it a
+                    # five-minute cooldown would hold up app quit (KAMP-729).
+                    stop_event=stop_event,
                 )
                 result_q.put(("ok_stream", (album_count, track_count, new_album_keys)))
             else:
@@ -552,10 +557,15 @@ class Syncer:
         if self.status_callback is not None:
             self.status_callback("Syncing\u2026")
 
-        notify_q: Any = multiprocessing.get_context("spawn").Queue()
+        _ctx = multiprocessing.get_context("spawn")
+        notify_q: Any = _ctx.Queue()
+        # Bridges this thread's stop event into the subprocess so a rate-limit
+        # pause in there ends immediately on shutdown (KAMP-729). A plain
+        # threading.Event cannot cross a process boundary.
+        child_stop: Any = _ctx.Event()
         proc, status_q, log_q, result_q = _spawn_worker(
             _sync_worker,
-            (bc, self._config.paths.watch_folder, db_path, notify_q),
+            (bc, self._config.paths.watch_folder, db_path, notify_q, child_stop),
         )
 
         # Drain both queues while the subprocess runs.  log_q MUST be drained
@@ -563,6 +573,8 @@ class Syncer:
         # the subprocess blocks on put() and proc.is_alive() never becomes
         # False (deadlock).  Draining here also surfaces logs in real time.
         while proc.is_alive():  # pragma: no cover
+            if self._stop_event.is_set():
+                child_stop.set()
             try:
                 msg = status_q.get(timeout=0.1)
                 if self.status_callback is not None:

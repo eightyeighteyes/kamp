@@ -147,6 +147,40 @@ mac:
         - '**/*'
 dmg:
   artifactName: ${name}-${version}-${arch}.${ext}
+  # KAMP-675: the mount window as a turntable — see kamp_ui/resources/
+  # dmg_background.svg, which carries the full layout rationale.
+  #
+  # Named explicitly rather than relying on the implicit build/background.png
+  # lookup, and that is deliberate: getResource (app-builder-lib
+  # platformPackager.js) THROWS InvalidConfigurationError when an explicit path
+  # is missing, whereas the implicit lookup falls through to electron-builder's
+  # own stock template (dmg-builder dmgUtil.js computeBackground). The implicit
+  # form would therefore ship an unbranded DMG on green CI if the render step
+  # ever stopped producing the file. This path is resolved against the project
+  # dir; the @2x sibling is picked up automatically and the pair is fused into
+  # a multi-resolution TIFF by tiffutil.
+  background: resources/dmg_background.png
+  # Both entries are required. dmg-builder only injects the default app +
+  # /Applications pair when `contents` is absent entirely, so a partial list
+  # silently ships a DMG with no drop target.
+  #
+  # x/y are the icon CENTRE, y measured from the top of the window. The window
+  # is 540x320 because that is the background's own size — dmg.window is
+  # ignored whenever a background image is set, so it is deliberately not set
+  # here. iconSize is likewise left to its default of 80; the art is drawn to
+  # that number, so changing either means redrawing the SVG.
+  contents:
+    # No `path` on this entry: dmg-builder substitutes the built .app when it
+    # is omitted, and an absolute path outside the workspace root is rejected
+    # outright.
+    - x: 130
+      y: 170
+      type: file
+      name: Kamp.app
+    - x: 410
+      y: 170
+      type: link
+      path: /Applications
 linux:
   target:
     - AppImage

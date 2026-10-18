@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Kamp DMG installer background (KAMP-675).
+
+  With a background image the image's own pixel dimensions ARE the mount
+  window's size — dmg.window is ignored (dmg-builder/out/dmgUtil.js derives the
+  size from the image via sips, then spreads an undefined settings.window over
+  it). So this canvas is the window, and 540x320 is chosen here rather than
+  inherited: the stock template's 380 leaves ~150px of empty ground below the
+  labels once the decks are placed.
+
+  Generate the PNG pair:
+    bash scripts/make_dmg_background.sh
+
+  == Layout contract with electron-builder.yml ==
+  dmg.contents places the two icons at x=130 and x=410, y=170 (y is measured
+  from the TOP of the window to the icon's CENTRE). At the default iconSize of
+  80 each icon spans 40px in every direction from its centre, so both occupy
+  y 130-210. Every coordinate below derives from that. Move an icon in the yml
+  and this art has to move with it.
+
+  == Why the decks stop exactly at y=210 ==
+  Finder draws each item's filename label directly BELOW its icon and nothing in
+  electron-builder controls that text's colour. Measured against this orange a
+  label reads either way (6.0:1 if Finder draws it black, 3.5:1 if white); over
+  the deck colour black text would be 1.1:1, i.e. invisible. So the decks end on
+  the icons' baseline and the labels land on orange.
+
+  == Why orange is the ground but never carries the line work ==
+  Measured contrast against #bf7a20: the deck (#1c1a16) is 4.98:1 and the app
+  icon's own #141414 tile is 5.28:1 — both read strongly, which is what makes
+  "background is kamp orange, elements pop" work. But the gold kamp draws line
+  work in (#c4aa78) is 1.56:1 on orange and 7.75:1 on #1c1a16. Hence the rule
+  this file follows: dark masses sit on the orange, gold detail only ever sits
+  on the dark.
+-->
+<svg
+  width="540"
+  height="320"
+  viewBox="0 0 540 320"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <!-- Ground: the record-label orange from icon_source.svg's centre label. -->
+  <rect width="540" height="320" fill="#bf7a20" />
+
+  <!-- ==================== LEFT: the record, on its mat ====================
+       The app icon is an opaque 80x80 square — icon.icns is drawn as-authored
+       and Finder applies no squircle mask — whose own background is #141414
+       (icon_source.svg's base rect). Left bare on the orange it reads as a
+       stray rectangle.
+
+       So the mat is filled with that EXACT colour. The icon's corners then
+       dissolve into it and what remains visible is the record itself, sitting
+       on a mat with a gold edge. Any other dark would leave a square seam: at
+       the #1c1a16 used elsewhere the tile is a visible square-within-a-square,
+       because 1.06:1 is enough to see as an edge even though it is far too
+       little to see as a colour.
+
+       The mat has to be a rounded rect rather than a disc, much as a disc would
+       suit a turntable better: an ellipse large enough to contain the icon's
+       square corners at y=130 would have to reach past y=210 and collide with
+       the label.
+  -->
+  <g>
+    <rect x="70" y="90" width="120" height="120" rx="10"
+          fill="#141414" stroke="#c4aa78" stroke-width="1.2" />
+    <rect x="77" y="97" width="106" height="106" rx="7"
+          fill="none" stroke="#c4aa78" stroke-width="0.7" opacity="0.28" />
+  </g>
+
+  <!-- ==================== RIGHT: the record player ====================
+       The Applications drop target sits on the platter. Its icon is the standard
+       blue folder and cannot be replaced: electron-builder's DmgContent exposes
+       no per-item icon, and both post-build routes are closed to CI
+       (NSWorkspace.setIcon follows the symlink to the real /Applications; the
+       Finder-alias workaround needs a live Finder and automation permission).
+       So the turntable is drawn here and the folder lands on its platter.
+  -->
+  <g>
+    <!-- Plinth. Same #141414 as the mat, so the two sides read as one deck and
+         neither shows a seam against an icon laid on it. -->
+    <rect x="330" y="90" width="160" height="120" rx="10"
+          fill="#141414" stroke="#c4aa78" stroke-width="1.2" />
+
+    <!-- Platter. An ellipse, not a circle, for two reasons: a circle wide
+         enough to show a rim around the 80px folder would also be 52px tall and
+         would burst through the plinth's base at y=210, and the flattening
+         reads as a deck seen at a low angle. ry=40 keeps it flush with the
+         icon's baseline; rx=56 leaves a 16px rim proud on each side, which is
+         the only part of the platter the folder does not cover — so the gold
+         edge, not a fill difference, is what has to define it. -->
+    <ellipse cx="410" cy="170" rx="56" ry="40"
+             fill="#1c1a16" stroke="#c4aa78" stroke-width="0.9" />
+    <ellipse cx="410" cy="170" rx="48" ry="33"
+             fill="none" stroke="#c4aa78" stroke-width="0.6" opacity="0.3" />
+
+    <!-- Tonearm, in the splash screen's vocabulary — pivot post, bent arm,
+         stylus head (SplashScreen.tsx) — mirrored and rescaled so the two
+         surfaces read as the same instrument. The counterweight behind the
+         pivot is what makes it legible as a tonearm at this size rather than
+         as a stray line. The stylus lands at x=452, on the platter rim just
+         clear of the folder icon's right edge at x=450. -->
+    <path d="M 466 124 L 463 168 Q 462 184 452 191"
+          fill="none" stroke="#c4aa78" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" />
+    <rect x="461" y="107" width="11" height="7" rx="3"
+          fill="#141414" stroke="#c4aa78" stroke-width="1.1" />
+    <circle cx="466" cy="124" r="5" fill="#141414" stroke="#c4aa78" stroke-width="1.3" />
+    <circle cx="466" cy="124" r="1.7" fill="#c4aa78" />
+    <circle cx="452" cy="191" r="2.6" fill="none" stroke="#c4aa78" stroke-width="1.1" />
+    <circle cx="452" cy="191" r="1.3" fill="#c4aa78" />
+
+    <!-- Two controls on the plinth's free left edge, clear of the platter rim,
+         so the corner reads as deck rather than as empty space. -->
+    <circle cx="345" cy="193" r="4.5" fill="none" stroke="#c4aa78" stroke-width="1" />
+    <circle cx="360" cy="193" r="4.5" fill="none" stroke="#c4aa78" stroke-width="1" />
+  </g>
+
+  <!-- ==================== The gesture ====================
+       Dark on orange (4.98:1) rather than gold, per the contrast rule above.
+  -->
+  <g opacity="0.8">
+    <path d="M 222 170 L 288 170" stroke="#1c1a16" stroke-width="2.5"
+          stroke-linecap="round" />
+    <path d="M 279 162 L 288 170 L 279 178" fill="none" stroke="#1c1a16"
+          stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+</svg>

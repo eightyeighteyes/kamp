@@ -324,6 +324,17 @@ class Syncer:
         # One-way latch. stop() is the last thing before shutdown, so once it
         # has run nothing may start a thread that would outlive the daemon.
         self._stopped = False
+        # KAMP-728: serialises the sync itself, independently of which thread
+        # asked. The poller, the manual-sync endpoint and sync-all all converge
+        # on one collection walk, and concurrent walks multiply traffic to the
+        # endpoint that rate-limits hardest.
+        #
+        # A plain Lock is safe despite the KAMP-720 signal-reentrancy lesson,
+        # on one invariant: pause()/resume() arrive via SIGUSR1/SIGUSR2 on the
+        # main thread and touch only _stop_event, _wake and join(). NEVER
+        # acquire this lock from pause(), resume() or stop(), or a signal
+        # delivered mid-sync deadlocks the main thread.
+        self._sync_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self.status_callback: Callable[[str], None] | None = None
         # KAMP-436/566: per-album byte-progress (sale_item_id, downloaded_bytes,
@@ -480,12 +491,38 @@ class Syncer:
         user already has their Bandcamp purchases locally.  Pass
         ``skip_auto_mark=True`` (e.g. via ``kamp sync --download-all``)
         to bypass this behaviour and download everything from scratch.
+
+        Declines, rather than queues, when a sync is already running
+        (KAMP-728). Returns None either way: BaseSyncer.sync_once is the public
+        extension contract and widening it to bool would be an incompatible
+        override. Callers that need to know should read ``is_syncing`` first.
         """
         bc = self._config.bandcamp
         if bc is None:
             logger.warning("No [bandcamp] section in config — nothing to sync.")
             return
+        # Non-blocking: a manual press landing on a running sync should return
+        # at once, not stack up behind a multi-minute collection walk.
+        if not self._sync_lock.acquire(blocking=False):
+            logger.info("Bandcamp sync already running — ignoring this request.")
+            return
+        try:
+            self._sync_once_locked(bc, skip_auto_mark=skip_auto_mark)
+        finally:
+            self._sync_lock.release()
 
+    @property
+    def is_syncing(self) -> bool:
+        """True while a sync holds the lock.
+
+        Deliberately NOT derived from the sync-status string the UI shows:
+        download_album drives that too, so guarding on it would make a queued
+        album download block a manual sync.
+        """
+        return self._sync_lock.locked()
+
+    def _sync_once_locked(self, bc: Any, *, skip_auto_mark: bool = False) -> None:
+        """The body of sync_once. Caller must hold _sync_lock."""
         db_path = _state_dir() / "library.db"
 
         if not skip_auto_mark and bc.collection_mode != "stream":
@@ -626,25 +663,42 @@ class Syncer:
         In stream mode: re-indexes all purchases as remote (no state reset needed;
         stream sync is unconditional).  In download mode: resets sync state so the
         next sync re-downloads everything.
+
+        Takes the sync lock around BOTH halves and calls the already-locked
+        body, rather than going through sync_once (KAMP-728). Two reasons: a
+        non-reentrant lock taken twice would self-deadlock, and more
+        importantly the reset must be atomic with the sync. Resetting and then
+        declining would leave the collection state wiped with no re-download —
+        and with poll_interval_minutes at 0 there is no next poll to recover
+        it, so that loss would be permanent.
         """
         bc = self._config.bandcamp
-        if bc and bc.collection_mode == "stream":
-            logger.info(
-                "Bandcamp re-sync (stream): re-indexing all purchases as remote."
-            )
-            self.sync_once(skip_auto_mark=True)
+        if bc is None:
+            logger.warning("No [bandcamp] section in config — nothing to sync.")
             return
-
-        from kamp_core.library import LibraryIndex as _LI
-
-        db_path = _state_dir() / "library.db"
-        idx = _LI(db_path)
+        if not self._sync_lock.acquire(blocking=False):
+            logger.info("Bandcamp sync already running — ignoring this re-sync.")
+            return
         try:
-            idx.reset_collection_sync_state()
+            if bc.collection_mode == "stream":
+                logger.info(
+                    "Bandcamp re-sync (stream): re-indexing all purchases as remote."
+                )
+                self._sync_once_locked(bc, skip_auto_mark=True)
+                return
+
+            from kamp_core.library import LibraryIndex as _LI
+
+            db_path = _state_dir() / "library.db"
+            idx = _LI(db_path)
+            try:
+                idx.reset_collection_sync_state()
+            finally:
+                idx.close()
+            logger.info("Bandcamp sync-all: reset collection sync state.")
+            self._sync_once_locked(bc, skip_auto_mark=True)
         finally:
-            idx.close()
-        logger.info("Bandcamp sync-all: reset collection sync state.")
-        self.sync_once(skip_auto_mark=True)
+            self._sync_lock.release()
 
     def _dispatch_download_msg(self, msg: str, sale_item_id: str) -> None:
         """Route a status_q message from the download subprocess.

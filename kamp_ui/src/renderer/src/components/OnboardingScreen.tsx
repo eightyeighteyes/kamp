@@ -309,8 +309,12 @@ export function OnboardingScreen({ onComplete, onTitleChange }: Props): React.JS
       if (result.ok) {
         await loadConfig()
         if (collectionMode === 'stream') {
+          // Setting the interval is enough to sync: the daemon reloads the
+          // syncer, which starts its polling thread, and that syncs
+          // immediately on entry rather than waiting out the first interval.
+          // An explicit triggerSync() here asked for a second, concurrent
+          // walk of the rate-limited collection endpoint (KAMP-728).
           await setConfigValue('bandcamp.poll_interval_minutes', '15')
-          window.api.bandcamp.triggerSync().catch(console.error)
         }
         changeStep('lastfm')
       } else {

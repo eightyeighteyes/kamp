@@ -1305,6 +1305,9 @@ def _cmd_daemon(
         on_bandcamp_disconnect=_on_bandcamp_disconnect,
         on_bandcamp_sync_trigger=_on_bandcamp_sync_trigger,
         on_bandcamp_sync_all_trigger=_on_bandcamp_sync_all_trigger,
+        # Reads the live Syncer lock, so it sees the poller's syncs too and not
+        # just the ones this endpoint started (KAMP-728).
+        is_bandcamp_syncing=lambda: core.syncer.is_syncing,
         on_genre_backfill_start=_on_genre_backfill_start,
         on_genre_backfill_cancel=_on_genre_backfill_cancel,
         on_crate_build_start=_on_crate_build_start,
